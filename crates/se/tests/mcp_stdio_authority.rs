@@ -230,7 +230,9 @@ fn mcp_recovers_with_the_same_foreground_home_after_windows_blocks_detachment() 
     se_proc::initialize_file_creation_owner()?;
     let fixture = std::mem::ManuallyDrop::new(fixture::Fixture::new()?);
     let home = &fixture.options.state_directory;
-    let image = Path::new(env!("CARGO_BIN_EXE_se"));
+    let image = fixture.home.join("se.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_se"), &image)?;
+    let image = image.as_path();
     let repo = fixture.home.join("repository");
     std::fs::create_dir(&repo)?;
     checked(
