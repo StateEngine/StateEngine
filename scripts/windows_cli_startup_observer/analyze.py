@@ -36,6 +36,7 @@ for kind in ('product', 'minimal'):
         assert cohort['complete'] and cohort['observed_peak'] == clients
         measures = collections.defaultdict(list)
         modules = collections.Counter()
+        later_modules = collections.Counter()
         missing_stop = 0
         for s in cohort['samples']:
             assert s['verified']
@@ -51,6 +52,8 @@ for kind in ('product', 'minimal'):
                       'total_ms': s['duration_ms']}
             dlls = [i for i in w['images'] if i['name'].lower().endswith('.dll') and i['at'] <= entry]
             modules.update(i['name'] for i in dlls)
+            later_modules.update(i['name'] for i in w['images']
+                                 if i['name'].lower().endswith('.dll') and i['at'] > entry)
             values['dlls_before_main'] = len(dlls)
             if dlls:
                 values['dll_mapping_span_ms'] = (max(i['at'] for i in dlls)-min(i['at'] for i in dlls))/1000
@@ -86,6 +89,7 @@ for kind in ('product', 'minimal'):
                 measures[name].append(value)
         report[kind][str(clients)] = {'metrics': {k: quantiles(v) for k,v in measures.items()},
                                       'missing_or_ambiguous_process_stop': missing_stop,
-                                      'common_pre_main_dlls': modules.most_common(20)}
+                                      'common_pre_main_dlls': modules.most_common(20),
+                                      'post_main_dlls': later_modules.most_common()}
 assert not windows
 print(json.dumps(report, indent=2))

@@ -32,6 +32,18 @@ if (importRva) {
     imports.push({ module: string(name), symbols });
   }
 }
+const delayRva = u32(directories + 13 * 8), delayedImports = [];
+if (delayRva) {
+  for (let at = offset(delayRva); ; at += 32) {
+    const flags = u32(at), name = u32(at + 4), lookup = u32(at + 16);
+    if (!name && !lookup) break;
+    assert.equal(flags & 1, 1, 'Expected RVA-based delayed imports');
+    const table = offset(lookup), stride = wide ? 8 : 4;
+    let symbols = 0;
+    while (wide ? b.readBigUInt64LE(table + symbols * stride) !== 0n : u32(table + symbols * stride) !== 0) symbols++;
+    delayedImports.push({ module: string(name), symbols });
+  }
+}
 const info = { file_bytes: b.length, image_bytes: u32(opt + 56), sections,
-  relocation_directory_bytes: u32(directories + 5 * 8 + 4), imports };
+  relocation_directory_bytes: u32(directories + 5 * 8 + 4), imports, delayed_imports: delayedImports };
 fs.writeFileSync(output, JSON.stringify(info, null, 2) + '\n');

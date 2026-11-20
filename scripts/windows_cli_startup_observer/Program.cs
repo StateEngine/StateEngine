@@ -110,7 +110,7 @@ static class Program
         source.Kernel.ImageLoad += e =>
         {
             long at = Micros(e.TimeStampQPC);
-            if (Find(e.ProcessID, at) is { } w && at <= w.Connect)
+            if (Find(e.ProcessID, at) is { } w && at <= w.Exit)
                 w.Images.Add(new Image(at, Name(e.FileName), Convert.ToInt64(e.ImageSize)));
         };
         source.Kernel.FileIORead += e =>
