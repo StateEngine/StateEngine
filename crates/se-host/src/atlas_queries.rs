@@ -203,7 +203,7 @@ pub(crate) fn owner_read<R: Snapshot>(
             "one admitted registered project",
         ));
     };
-    let trace = std::env::var_os("SE_ATLAS_PHASE_TRACE").is_some();
+    let trace = std::env::var_os("SE_ATLAS_PHASE_TRACE").is_none_or(|value| value != "0");
     let started = std::time::Instant::now();
     request_project(owner, read, project, request.options().root.as_ref())?;
     let request_us = started.elapsed().as_micros();
