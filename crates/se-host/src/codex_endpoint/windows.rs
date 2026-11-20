@@ -141,6 +141,16 @@ fn leaf(record: &Path, session: &SessionId) -> Result<Option<(ObjectId, Vec<u8>)
     Ok(Some((ObjectId::from_bytes(pin.leaf), bytes)))
 }
 
+/// The recorded owner-only directory, or a refusal that preserves a replacement.
+fn same_directory(parent: &Path, value: &Directory) -> Result<()> {
+    if directory_id(parent)?.to_bytes() != value.directory {
+        return Err(failure(
+            "original private listen directory was replaced; it is preserved",
+        ));
+    }
+    Ok(())
+}
+
 /// Before any session secret is sent: the recorded path and directory, and
 /// the socket leaf, pinned the first time and compared on every later check.
 pub(crate) fn check(socket: &Path, record: &Path, session: &SessionId) -> Result<()> {
@@ -149,9 +159,7 @@ pub(crate) fn check(socket: &Path, record: &Path, session: &SessionId) -> Result
     let parent = socket
         .parent()
         .ok_or_else(|| failure("missing listen parent"))?;
-    if directory_id(parent)?.to_bytes() != value.directory {
-        return Err(failure("original private listen directory was replaced"));
-    }
+    same_directory(parent, &value)?;
     let observed = ObjectId::local_socket(socket)
         .map_err(|e| failure(&format!("listen leaf is not the local socket: {e}")))?;
     match leaf(record, session)? {
@@ -189,6 +197,8 @@ pub(crate) fn retire(socket: &Path, record: &Path, session: &SessionId) -> Resul
     };
     let pinned = leaf(record, session)?;
     if present {
+        // The directory is checked before anything inside it is removed.
+        same_directory(parent, &value)?;
         match &pinned {
             Some((pin, _)) => {
                 pin.remove_local_socket(socket)
