@@ -79,11 +79,10 @@ archive="stateengine-VERSION-aarch64-apple-darwin-unsigned.tar.gz"
 shasum -a 256 -c "$archive.sha256" && tar -xzf "$archive" && cd "${archive%.tar.gz}"
 ```
 
-After a successful check and extraction, run the installer from that extracted
-folder as your normal user: `sh ./install.sh`, then use the Linux steps below
-to add StateEngine to PATH and verify it.
+After a successful check and extraction, run the install steps below from
+that extracted folder as your normal user.
 
-**Linux, sh/bash/zsh:**
+**Linux and macOS, sh/bash/zsh:**
 
 ```sh
 sh ./install.sh
