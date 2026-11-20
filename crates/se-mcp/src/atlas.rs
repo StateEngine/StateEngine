@@ -31,15 +31,11 @@ pub(super) async fn call(
                 let text = if format == AtlasFormat::Json {
                     Ok(value.to_string())
                 } else {
-                    crate::atlas_queries::compact(&output, limit.saturating_sub(256), explain)
-                        .and_then(|text| {
-                            text.ok_or_else(|| {
-                                SeError::invalid(
-                                    "Atlas compact output",
-                                    "the requested Atlas family",
-                                )
-                            })
+                    crate::compact(&output, limit.saturating_sub(256), explain).and_then(|text| {
+                        text.ok_or_else(|| {
+                            SeError::invalid("Atlas compact output", "the requested Atlas family")
                         })
+                    })
                 };
                 match text {
                     Ok(text) => json!({"content":[{"type":"text","text":text}],"isError":false}),

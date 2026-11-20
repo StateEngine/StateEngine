@@ -92,7 +92,6 @@
   "crates/se-core/src/ops/process_commit": 6,
   "crates/se-host/src/harness/acp": 6,
   "crates/se-host/src/harness/secode": 6,
-  "crates/se-host/src/mcp": 6,
   "crates/se-host/src/process/acp": 6,
   "crates/se-host/src/remote/auth": 6,
   "crates/se-host/src/remote/session": 6,

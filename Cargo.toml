@@ -11,6 +11,7 @@ members = [
     "crates/se-proc",
     "crates/se-fsevents",
     "crates/se-host",
+    "crates/se-mcp",
     "crates/se-remote-cli",
     "crates/se-remote",
     "crates/se-atlas",

@@ -42,8 +42,10 @@ mod http;
 #[cfg(feature = "listener")]
 pub use http::HttpListener;
 mod ipc;
-pub mod mcp;
 pub use mcp::{McpBackend, McpReply};
+pub mod mcp {
+    pub use se_mcp::{McpBackend, McpPrincipal, McpReply, dispatch};
+}
 mod model;
 #[cfg(all(
     feature = "listener",

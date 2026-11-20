@@ -9,6 +9,7 @@ use std::{future::Future, sync::Arc};
 mod arguments;
 mod atlas;
 mod resume;
+pub mod wire;
 
 /// Protocol revisions spoken here, newest first. An unknown requested
 /// revision is answered with the newest, as the MCP lifecycle prescribes.
@@ -112,20 +113,19 @@ pub async fn dispatch(
 ) -> McpReply {
     // The common decoder refuses duplicate keys and excessive depth before any
     // field is interpreted. Batches were removed from MCP in 2025-06-18.
-    let message: Value =
-        match crate::client::wire::decode_json(body, crate::client::wire::MAX_FRAME_BYTES) {
-            Ok(Value::Object(message)) => Value::Object(message),
-            Ok(_) => {
-                return McpReply::Json(rpc_error(
-                    Value::Null,
-                    -32600,
-                    "one JSON-RPC request object",
-                ));
-            }
-            Err(_) => {
-                return McpReply::Json(rpc_error(Value::Null, -32700, "unreadable JSON body"));
-            }
-        };
+    let message: Value = match crate::wire::decode_json(body, crate::wire::MAX_FRAME_BYTES) {
+        Ok(Value::Object(message)) => Value::Object(message),
+        Ok(_) => {
+            return McpReply::Json(rpc_error(
+                Value::Null,
+                -32600,
+                "one JSON-RPC request object",
+            ));
+        }
+        Err(_) => {
+            return McpReply::Json(rpc_error(Value::Null, -32700, "unreadable JSON body"));
+        }
+    };
     if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
         return McpReply::Json(rpc_error(Value::Null, -32600, "jsonrpc 2.0 required"));
     }
@@ -366,4 +366,27 @@ fn success(id: Value, result: Value) -> Value {
 
 fn rpc_error(id: Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
+}
+
+pub fn compact(
+    output: &se_core::ops::AnyOutput,
+    max_bytes: usize,
+    explain: bool,
+) -> se_atlas::errors::AtlasResult<Option<String>> {
+    use se_core::ops::AnyOutput;
+    let text = match output {
+        AnyOutput::AtlasFind(value) => {
+            se_atlas::render::search(&value.value.answer, max_bytes, explain)?
+        }
+        AnyOutput::AtlasRefs(value) => se_atlas::render::refs(&value.value.answer, max_bytes)?,
+        AnyOutput::AtlasImpact(value) => se_atlas::render::impact(&value.value.answer, max_bytes)?,
+        AnyOutput::AtlasChanges(value) => {
+            se_atlas::render::changes(&value.value.answer, max_bytes)?
+        }
+        AnyOutput::AtlasOutline(value) => {
+            se_atlas::render::outline(&value.value.answer, max_bytes)?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(text))
 }
