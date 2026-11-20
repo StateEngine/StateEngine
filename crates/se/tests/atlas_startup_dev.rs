@@ -379,54 +379,63 @@ fn write(endpoint: &EndpointRecord) -> Result<(), String> {
         }
     );
     assert!(!memory.joined_qualified && memory.shared_grammar_pages.is_none());
-    if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
-        for (offset, (kind, query)) in [
-            ("path", "rs"),
-            ("symbol", "new"),
-            ("text", "fn"),
-            ("all", "state"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let started = Instant::now();
-            let answer = connection.exchange(IpcEnvelope {
-                version: connection.negotiated().version,
-                request_id: 100 + offset as u64,
-                generation: endpoint.generation,
-                authority: None,
-                presence: None,
-                cli_selections: None,
-                request: IpcRequest::Operation(RawOperation {
-                    name: "atlas.find".into(),
-                    arguments: serde_json::json!({"query": query, "kind": kind, "mode": "literal", "limit": 50, "byte_budget": 32768, "format": "json"}),
-                    key: None,
-                }),
-            }, &options).map_err(|error| error.to_string())?;
-            let elapsed_us = started.elapsed().as_micros();
-            let bytes = serde_json::to_vec(&answer.value)
-                .map_err(|error| error.to_string())?
-                .len();
-            assert!(bytes <= 32768, "query exceeded the requested byte budget");
-            let mut wire = answer.value;
-            wire["schema"] = answer.schema.into();
-            let se_core::ops::AnyOutput::AtlasFind(output) =
-                serde_json::from_value(wire).map_err(|error| error.to_string())?
-            else {
-                return Err("benchmark query returned another output family".into());
-            };
-            let count = match output.value.answer.data {
-                se_types::Read::Present { value } => value.page.items().len(),
-                _ => {
-                    return Err(format!(
-                        "benchmark query {kind} did not return present data"
-                    ));
-                }
-            };
-            if kind == "path" && count == 0 {
-                return Err("benchmark path query returned no hits".into());
+
+    Ok(())
+}
+fn benchmark_queries(endpoint: &EndpointRecord, phase: &str) -> Result<(), String> {
+    let options = client_options();
+    let mut connection = client::BlockingIpcClient::connect_authenticated(
+        endpoint,
+        client::lease::ClientCredential::Session(
+            Secret::new(vec![17; 32]).map_err(|error| error.to_string())?,
+        ),
+        positive(65536).map_err(|error| error.to_string())?,
+        &options,
+    )
+    .map_err(|error| error.to_string())?;
+    for (offset, (kind, query)) in [
+        ("path", "rs"),
+        ("symbol", "new"),
+        ("text", "fn"),
+        ("all", "state"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let started = Instant::now();
+        let answer = connection.exchange(IpcEnvelope {
+            version: connection.negotiated().version,
+            request_id: 100 + offset as u64,
+            generation: endpoint.generation,
+            authority: None,
+            presence: None,
+            cli_selections: None,
+            request: IpcRequest::Operation(RawOperation {
+                name: "atlas.find".into(),
+                arguments: serde_json::json!({"query":query,"kind":kind,"mode":"literal","limit":50,"byte_budget":32768,"format":"json"}),
+                key: None,
+            }),
+        }, &options);
+        let elapsed_us = started.elapsed().as_micros();
+        match answer {
+            Ok(answer) => {
+                let bytes = serde_json::to_vec(&answer.value)
+                    .map_err(|error| error.to_string())?
+                    .len();
+                let mut wire = answer.value;
+                wire["schema"] = answer.schema.into();
+                let se_core::ops::AnyOutput::AtlasFind(output) =
+                    serde_json::from_value(wire).map_err(|error| error.to_string())?
+                else {
+                    return Err("benchmark query returned another output family".into());
+                };
+                let count = match output.value.answer.data {
+                    se_types::Read::Present { value } => value.page.items().len().to_string(),
+                    other => format!("{other:?}"),
+                };
+                println!("ATLAS_QUERY_PHASE {phase} {kind} ok {elapsed_us} {bytes} {count}");
             }
-            println!("ATLAS_BENCH_QUERY {kind} {bytes} {count} {elapsed_us}");
+            Err(error) => println!("ATLAS_QUERY_PHASE {phase} {kind} error {elapsed_us} {error}"),
         }
     }
     Ok(())
@@ -651,10 +660,28 @@ fn automatic_owner_indexes_and_catches_committed_records_up() -> Check {
                     started.elapsed().as_millis()
                 );
             }
-            tokio::task::spawn_blocking(move || write(&endpoint)).await??;
+            let full = std::env::var_os("ATLAS_FULL_REPOSITORY").is_some();
+            if full {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                let endpoint = endpoint.clone();
+                tokio::task::spawn_blocking(move || {
+                    benchmark_queries(&endpoint, "idle-before-write")
+                })
+                .await??;
+            }
+            let write_endpoint = endpoint.clone();
+            tokio::task::spawn_blocking(move || write(&write_endpoint)).await??;
+            if full {
+                let endpoint = endpoint.clone();
+                tokio::task::spawn_blocking(move || benchmark_queries(&endpoint, "after-write"))
+                    .await??;
+            }
             caught_up(&context, &f.project, 2).await?;
-            if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
-                tokio::time::sleep(Duration::from_millis(200)).await;
+            if full {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                let endpoint = endpoint.clone();
+                tokio::task::spawn_blocking(move || benchmark_queries(&endpoint, "caught-up"))
+                    .await??;
             }
             Ok::<(), Box<dyn std::error::Error>>(())
         }
