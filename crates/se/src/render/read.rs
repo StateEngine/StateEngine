@@ -97,9 +97,7 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
             if let Some(harness) = &agent.harness {
                 writeln!(out, "    Harness: {harness}")?;
             }
-            if agent.session.end_reason.as_deref()
-                == Some(se_core::ops::process_commit::ENDED_BY_REBOOT)
-            {
+            if agent.session.end_reason.as_deref() == Some(se_proc::ENDED_BY_REBOOT) {
                 writeln!(
                     out,
                     "    The previous session ended when the machine rebooted."

@@ -482,7 +482,7 @@ impl LaunchCoordinator {
 }
 pub(super) fn recovery_method(witness: &se_proc::StopWitness) -> &'static str {
     if witness.ended_by_reboot() {
-        process_commit::ENDED_BY_REBOOT
+        se_proc::ENDED_BY_REBOOT
     } else {
         "native-reconciliation"
     }

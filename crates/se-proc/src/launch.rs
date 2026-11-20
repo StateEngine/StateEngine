@@ -1,5 +1,4 @@
 use crate::{GenerationId, HostInstanceId, LifecycleId, MachineId, ProcError};
-use serde::{Deserialize, Serialize};
 use std::{ffi::OsString, fs::File, path::PathBuf, time::Instant};
 
 pub struct HostConfig {
@@ -108,40 +107,7 @@ pub struct LaunchSpec {
     pub deadline: Instant,
     pub notifications: std::sync::Arc<dyn crate::ExitSink>,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub enum EntryMethod {
-    WindowsJobList,
-    LinuxClone3,
-    LinuxPreExecMigration {
-        clone3_errno: i32,
-    },
-    MacOsSpawn,
-    LinuxProcessGroup,
-    /// Authenticated helper enters the selected scope before vendor exec.
-    TerminalAttach,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub enum ContainmentGuarantee {
-    /// Windows may explicitly permit detached descendants outside this scope.
-    KernelScope { explicit_breakaway: bool },
-    /// Linux fallback still owns/tracks a process group; it is not containment.
-    Uncontained { reason: UncontainedReason },
-    TrackedTree {
-        atomic_signal: bool,
-        escape_prevented: bool,
-    },
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub enum UncontainedReason {
-    NoUserManager,
-    NoDelegation,
-    CgroupV2Absent,
-    CgroupUnreadable,
-    ScopeCreateFailed,
-}
+pub use se_custody::{ContainmentGuarantee, EntryMethod, UncontainedReason};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Capability {
     Supported,

@@ -40,7 +40,7 @@ pub use file_identity::NativeFileIdentity;
 mod identity;
 mod reboot_proof;
 pub use reboot_proof::{
-    ObservedBoot, RebootBoot, RebootProof, VerifiedReboot, match_recorded_root,
+    ENDED_BY_REBOOT, ObservedBoot, RebootBoot, RebootProof, VerifiedReboot, match_recorded_root,
     observe_reboot_boot, prove_reboot,
 };
 mod launch;

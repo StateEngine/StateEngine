@@ -1,6 +1,6 @@
 //! Outside, exact-birth native readback. A stored activation is never liveness.
 use super::*;
-use se_core::ops::process_commit::ENDED_BY_REBOOT;
+use se_proc::ENDED_BY_REBOOT;
 use se_proc::{CheckpointKind, CheckpointPrincipal, CheckpointSource, NativeState, ProcessRead};
 use se_store::{Actor, RecordedIdentity};
 

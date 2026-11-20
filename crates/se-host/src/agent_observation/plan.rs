@@ -10,7 +10,7 @@ impl RecordedExit {
                 to: se_store::ProcessState::Exited,
                 outcome,
                 ..
-            } if outcome == process_commit::ENDED_BY_REBOOT => Self::Reboot,
+            } if outcome == se_proc::ENDED_BY_REBOOT => Self::Reboot,
             _ => Self::Other,
         }
     }

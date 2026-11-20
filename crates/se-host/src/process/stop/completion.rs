@@ -145,7 +145,7 @@ impl LaunchCoordinator {
                     .change(
                         work,
                         if witness.ended_by_reboot() {
-                            process_commit::ENDED_BY_REBOOT
+                            se_proc::ENDED_BY_REBOOT
                         } else {
                             "exited"
                         },
@@ -161,7 +161,7 @@ impl LaunchCoordinator {
         }
         if !work.session_retired {
             let reason = if witness.ended_by_reboot() {
-                process_commit::ENDED_BY_REBOOT
+                se_proc::ENDED_BY_REBOOT
             } else {
                 "native scope exit witnessed"
             };
