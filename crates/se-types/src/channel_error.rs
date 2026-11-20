@@ -1,7 +1,7 @@
 //! Stable transport/control failures never retain provider errors containing URLs.
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MessagingChannelError {
     InvalidToken,
@@ -13,7 +13,10 @@ pub enum MessagingChannelError {
     RevisionConflict,
     IdempotencyConflict,
     Unsupported,
-    CredentialStoreUnavailable,
+    /// A custody failure keeps the real native cause instead of a bare code.
+    CredentialStoreUnavailable {
+        cause: String,
+    },
     CredentialAbsent,
     CredentialScopeMismatch,
     ReceiverNotRunning,
@@ -24,17 +27,24 @@ pub enum MessagingChannelError {
     SendOutcomeUnknown,
     InvalidInput,
     ContentErased,
-    RateLimited { retry_after_seconds: u32 },
+    RateLimited {
+        retry_after_seconds: u32,
+    },
 }
 impl std::fmt::Display for MessagingChannelError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.code())
+        match self {
+            Self::CredentialStoreUnavailable { cause } => {
+                write!(f, "credential_store_unavailable ({cause})")
+            }
+            _ => f.write_str(self.code()),
+        }
     }
 }
 impl std::error::Error for MessagingChannelError {}
 
 impl MessagingChannelError {
-    pub fn code(self) -> &'static str {
+    pub fn code(&self) -> &'static str {
         match self {
             Self::InvalidToken => "invalid_token",
             Self::PollerConflict => "poller_conflict",
@@ -45,7 +55,7 @@ impl MessagingChannelError {
             Self::RevisionConflict => "revision_conflict",
             Self::IdempotencyConflict => "idempotency_conflict",
             Self::Unsupported => "unsupported",
-            Self::CredentialStoreUnavailable => "credential_store_unavailable",
+            Self::CredentialStoreUnavailable { .. } => "credential_store_unavailable",
             Self::CredentialAbsent => "credential_absent",
             Self::CredentialScopeMismatch => "credential_scope_mismatch",
             Self::ReceiverNotRunning => "receiver_not_running",
@@ -62,7 +72,7 @@ impl MessagingChannelError {
 }
 
 impl MessagingChannelError {
-    pub fn remedy(self) -> &'static str {
+    pub fn remedy(&self) -> &'static str {
         match self {
             Self::InvalidToken => {
                 "Enter a valid bot token in the protected native Channels screen; never send it in agent mail or chat."
@@ -79,7 +89,7 @@ impl MessagingChannelError {
             Self::IdempotencyConflict => {
                 "Reuse the original key only with its original payload; select a new key for a different intended change."
             }
-            Self::CredentialStoreUnavailable
+            Self::CredentialStoreUnavailable { .. }
             | Self::CredentialScopeMismatch
             | Self::CredentialAbsent => {
                 "Restore protected native credential custody for this exact home and Owner; never fall back to a token in configuration or agent input."
@@ -117,13 +127,7 @@ impl MessagingChannelError {
         }
     }
     pub fn refusal(self) -> crate::SeError {
-        let mut error = crate::SeError::new(crate::Detail::MessagingChannelRefused(
-            crate::details::MessagingChannelRefused {
-                reason: self,
-                next_step: self.remedy().into(),
-            },
-        ));
-        error.body = error.body.with_retry(match self {
+        let retry = match self {
             Self::RateLimited {
                 retry_after_seconds,
             } => crate::Retry::After(std::time::Duration::from_secs(u64::from(
@@ -133,12 +137,20 @@ impl MessagingChannelError {
             | Self::ProviderProtocol
             | Self::ReplayUnavailable
             | Self::RevisionConflict
-            | Self::CredentialStoreUnavailable
+            | Self::CredentialStoreUnavailable { .. }
             | Self::SaveOutcomeUnknown
             | Self::SendOutcomeUnknown => crate::Retry::AfterReread,
             Self::ReceiverNotRunning => crate::Retry::WhenRuntimeReady,
             _ => crate::Retry::Never,
-        });
+        };
+        let next_step = self.remedy().into();
+        let mut error = crate::SeError::new(crate::Detail::MessagingChannelRefused(
+            crate::details::MessagingChannelRefused {
+                reason: self,
+                next_step,
+            },
+        ));
+        error.body = error.body.with_retry(retry);
         error
     }
 }

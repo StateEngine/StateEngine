@@ -1,6 +1,9 @@
 //! Channel-scoped custody through the same native protected file owner used by
 //! the machine credential. Token bytes never enter SQLite, request DTOs or argv.
-use super::{ChannelError as Error, ChannelResult, CredentialId, CredentialRef};
+use super::{
+    ChannelError as Error, ChannelResult, CredentialId, CredentialRef,
+    error::credential_store_unavailable,
+};
 use se_types::{HumanId, Secret, StoreId};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
@@ -15,13 +18,12 @@ pub struct NativeChannelCredentials {
 impl NativeChannelCredentials {
     pub fn open(home: &std::path::Path, store: StoreId, owner: HumanId) -> ChannelResult<Self> {
         let home_files =
-            se_proc::NativeStateFiles::open(home).map_err(|_| Error::CredentialStoreUnavailable)?;
+            se_proc::NativeStateFiles::open(home).map_err(credential_store_unavailable)?;
         let root = home.join("channel-credentials");
         home_files
             .prepare_directory(&root)
-            .map_err(|_| Error::CredentialStoreUnavailable)?;
-        let files = se_proc::NativeStateFiles::open(&root)
-            .map_err(|_| Error::CredentialStoreUnavailable)?;
+            .map_err(credential_store_unavailable)?;
+        let files = se_proc::NativeStateFiles::open(&root).map_err(credential_store_unavailable)?;
         Ok(Self {
             files,
             store,
@@ -35,7 +37,7 @@ impl NativeChannelCredentials {
         input
             .take(257)
             .read_to_end(&mut bytes)
-            .map_err(|_| Error::CredentialStoreUnavailable)?;
+            .map_err(credential_store_unavailable)?;
         if bytes.last() == Some(&b'\n') {
             bytes.pop();
             if bytes.last() == Some(&b'\r') {
@@ -43,7 +45,7 @@ impl NativeChannelCredentials {
             }
         }
         validate_token(&bytes)?;
-        let random = se_proc::random_secret().map_err(|_| Error::CredentialStoreUnavailable)?;
+        let random = se_proc::random_secret().map_err(credential_store_unavailable)?;
         let id = CredentialId::new(format!(
             "ccr-{}",
             se_types::hex_lower(&random.expose()[..16])
@@ -59,19 +61,21 @@ impl NativeChannelCredentials {
         let mut stage = self
             .files
             .create_staging(self.files.root())
-            .map_err(|_| Error::CredentialStoreUnavailable)?;
+            .map_err(credential_store_unavailable)?;
         stage
             .file
             .write_all(&bytes)
             .and_then(|()| stage.file.sync_all())
-            .map_err(|_| Error::CredentialStoreUnavailable)?;
+            .map_err(credential_store_unavailable)?;
         drop(stage.file);
         self.files
             .publish_no_replace(&stage.path, &path)
-            .map_err(|_| Error::CredentialStoreUnavailable)?;
+            .map_err(credential_store_unavailable)?;
         let actual = self.resolve(&reference)?;
         if actual.expose() != bytes.as_slice() {
-            return Err(Error::CredentialStoreUnavailable);
+            return Err(credential_store_unavailable(
+                "the published credential did not read back identically",
+            ));
         }
         Ok(reference)
     }
@@ -92,12 +96,12 @@ impl NativeChannelCredentials {
         let file = self
             .files
             .readback(path)
-            .map_err(|_| Error::CredentialStoreUnavailable)?
+            .map_err(credential_store_unavailable)?
             .ok_or(Error::CredentialAbsent)?;
         let mut bytes = zeroize::Zeroizing::new(Vec::new());
         file.take(257)
             .read_to_end(&mut bytes)
-            .map_err(|_| Error::CredentialStoreUnavailable)?;
+            .map_err(credential_store_unavailable)?;
         validate_token(&bytes)?;
         Secret::new(std::mem::take(&mut *bytes)).map_err(|_| Error::InvalidToken)
     }
@@ -107,30 +111,35 @@ impl NativeChannelCredentials {
         let names = self
             .files
             .list_owned(self.files.root())
-            .map_err(|_| Error::CredentialStoreUnavailable)?;
+            .map_err(credential_store_unavailable)?;
         let prefix = format!("channel-{}-{}-", self.store, self.owner);
         let mut credentials = Vec::new();
         for path in names {
-            let name = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .ok_or(Error::CredentialStoreUnavailable)?;
+            let name = path.file_name().and_then(|s| s.to_str()).ok_or_else(|| {
+                credential_store_unavailable(
+                    "a credential directory entry is not decodable file name text",
+                )
+            })?;
             let suffix = name
                 .strip_prefix(&prefix)
                 .ok_or(Error::CredentialScopeMismatch)?;
-            let (id, revision) = suffix
-                .rsplit_once("-r")
-                .ok_or(Error::CredentialStoreUnavailable)?;
+            let (id, revision) = suffix.rsplit_once("-r").ok_or_else(|| {
+                credential_store_unavailable("a credential file name has no revision suffix")
+            })?;
             let reference = CredentialRef {
                 store: self.store.clone(),
                 owner: self.owner.clone(),
-                id: CredentialId::new(id).map_err(|_| Error::CredentialStoreUnavailable)?,
-                revision: revision
-                    .parse()
-                    .map_err(|_| Error::CredentialStoreUnavailable)?,
+                id: CredentialId::new(id).map_err(|_| {
+                    credential_store_unavailable("a credential id failed validation")
+                })?,
+                revision: revision.parse().map_err(|_| {
+                    credential_store_unavailable("a credential revision is not a number")
+                })?,
             };
             if self.path(&reference)? != path {
-                return Err(Error::CredentialStoreUnavailable);
+                return Err(credential_store_unavailable(
+                    "a credential file name does not round-trip to its owned path",
+                ));
             }
             credentials.push(reference);
         }
@@ -155,17 +164,19 @@ impl NativeChannelCredentials {
             Err(e) => return Err(e),
         };
         let file = se_proc::OwnedFile::open(&path)
-            .map_err(|_| Error::CredentialStoreUnavailable)?
+            .map_err(credential_store_unavailable)?
             .ok_or(Error::CredentialAbsent)?;
         file.remove(Sha256::digest(secret.expose()).into())
-            .map_err(|_| Error::CredentialStoreUnavailable)?;
+            .map_err(credential_store_unavailable)?;
         if self
             .files
             .readback(&path)
-            .map_err(|_| Error::CredentialStoreUnavailable)?
+            .map_err(credential_store_unavailable)?
             .is_some()
         {
-            return Err(Error::CredentialStoreUnavailable);
+            return Err(credential_store_unavailable(
+                "the credential file is still present after its removal",
+            ));
         }
         Ok(())
     }

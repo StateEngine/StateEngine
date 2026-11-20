@@ -331,6 +331,10 @@ pub(super) fn event(
 pub(super) fn channel_error(error: ChannelError) -> se_types::SeError {
     error.refusal()
 }
+/// Same cause-preserving custody failure, as a host refusal.
+pub(super) fn store_unavailable(cause: impl std::fmt::Display) -> se_types::SeError {
+    channel_error(super::error::credential_store_unavailable(cause))
+}
 pub(super) fn now() -> Result<i64> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -196,8 +196,7 @@ impl Channels {
         let Pairing::Paired { phone } = &state.pairing else {
             return Err(channel_error(ChannelError::BindingRevoked));
         };
-        let random = se_proc::random_secret()
-            .map_err(|_| channel_error(ChannelError::CredentialStoreUnavailable))?;
+        let random = se_proc::random_secret().map_err(store_unavailable)?;
         let action = ResumeAction {
             id: ActionId::new(format!(
                 "cha-{}",

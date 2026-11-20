@@ -21,7 +21,7 @@ fn mac(
     bytes: &[u8],
 ) -> Result<Hmac<Sha256>> {
     let mut mac = Hmac::<Sha256>::new_from_slice(key.expose())
-        .map_err(|_| channel_error(ChannelError::CredentialStoreUnavailable))?;
+        .map_err(|_| store_unavailable("the cursor key has an unsupported length"))?;
     mac.update(b"StateEngine channel inspect cursor v1\0");
     let binding = serde_json::to_vec(&(store, owner, filter, receipt))
         .map_err(|_| channel_error(ChannelError::InvalidInput))?;
