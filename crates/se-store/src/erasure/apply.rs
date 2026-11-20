@@ -1,7 +1,8 @@
 //! Erasure projections: the explicit privacy exception to append-only history.
 //! Each removal runs under a permit for one exact row; the triggers refuse the rest.
-use super::*;
-use crate::erasure::permit;
+use super::permit;
+use crate::{connection::payload, error::*, identity::key, *};
+use rusqlite::{Connection, OptionalExtension};
 use se_types::EventId;
 
 /// The canonical manifest an erasure commits to before any body is removed.
@@ -27,7 +28,7 @@ pub(crate) fn manifest(
 fn erasure_key(erasure: &RecordId) -> StoreResult<Vec<u8>> {
     Ok(erasure.as_bytes().to_vec())
 }
-pub(super) fn requested(
+pub(crate) fn requested(
     c: &Connection,
     seq: i64,
     erasure: &RecordId,
@@ -49,7 +50,7 @@ pub(super) fn requested(
 }
 /// The target must be a still-present body of the requested kind, named in an
 /// open erasure, at the revision the plan recorded and the size the event states.
-pub(super) fn body(
+pub(crate) fn body(
     c: &Connection,
     scope: &[u8],
     target: &EventId,
@@ -165,7 +166,7 @@ fn drop_fingerprint(c: &Connection, operation: Vec<u8>) -> StoreResult<()> {
     }
     Ok(())
 }
-pub(super) fn completed(c: &Connection, seq: i64, erasure: &RecordId) -> StoreResult<()> {
+pub(crate) fn completed(c: &Connection, seq: i64, erasure: &RecordId) -> StoreResult<()> {
     let changed = c
         .execute(
             "UPDATE erasures SET completed_seq=? WHERE erasure_id=? AND completed_seq IS NULL",

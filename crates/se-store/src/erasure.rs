@@ -2,6 +2,7 @@
 //! removes the bodies and their content digests, rewrites the database and
 //! its write-ahead log, and replaces every backup generation taken before it.
 //! Copies outside the store's custody are named, never treated as erased.
+pub(crate) mod apply;
 pub(crate) use se_store_sql::erase_permit as permit;
 use crate::{connection, error::*, open::SqliteHost, *};
 use rusqlite::{Connection, OptionalExtension};
@@ -588,7 +589,7 @@ pub(crate) fn erase(
     }
     let options = options(host)?;
     let observed = observe(&host.engine.db, &plan.targets, &options.state_directory);
-    let manifest = crate::apply::erasure::manifest(&plan.id, &plan.targets, &plan.residuals);
+    let manifest = apply::manifest(&plan.id, &plan.targets, &plan.residuals);
     match (requested(host, &plan.id)?, observed) {
         (Some(true), _) => {
             return Err(fail(

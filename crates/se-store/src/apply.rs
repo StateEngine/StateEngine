@@ -6,7 +6,6 @@ pub(crate) use channel::capacity as channel_capacity;
 pub(crate) mod credential;
 pub(crate) mod cursor;
 pub(crate) mod effect;
-pub(crate) mod erasure;
 mod mail;
 mod mail_rate;
 mod message;
@@ -673,7 +672,7 @@ pub(crate) fn apply(
             targets,
             residuals,
         } => {
-            erasure::requested(c, seq, &erasure, &targets, &residuals)?;
+            crate::erasure::apply::requested(c, seq, &erasure, &targets, &residuals)?;
             codec::aux(c, seq, facts)?;
         }
         TurnErased {
@@ -682,7 +681,7 @@ pub(crate) fn apply(
             original_bytes,
             ..
         } => {
-            erasure::body(c, &s, &target, &erasure, original_bytes, "turn")?;
+            crate::erasure::apply::body(c, &s, &target, &erasure, original_bytes, "turn")?;
             codec::aux(c, seq, facts)?;
         }
         MessageErased {
@@ -691,11 +690,11 @@ pub(crate) fn apply(
             original_bytes,
             ..
         } => {
-            erasure::body(c, &s, &target, &erasure, original_bytes, "message")?;
+            crate::erasure::apply::body(c, &s, &target, &erasure, original_bytes, "message")?;
             codec::aux(c, seq, facts)?;
         }
         ErasureCompleted { erasure, .. } => {
-            erasure::completed(c, seq, &erasure)?;
+            crate::erasure::apply::completed(c, seq, &erasure)?;
             codec::aux(c, seq, facts)?;
         }
         _ => return later("projection"),
