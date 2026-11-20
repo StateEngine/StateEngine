@@ -54,6 +54,10 @@ pub struct AgentRow {
     pub acp_runtime: Option<Read<super::AcpRuntimeView>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_activity: Option<Read<ProviderActivityView>>,
+    /// The Codex login this agent's shared app-server uses now; a login replaced
+    /// while agents run is followed, so this names the current one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_login: Option<Read<CodexLoginView>>,
     pub id: AgentId,
     pub name: String,
     pub role: Option<String>,
@@ -69,6 +73,15 @@ pub struct AgentRow {
     pub secode_binding: Option<Read<super::SecodeBindingView>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secode_runtime: Option<Read<super::SecodeRuntimeView>>,
+}
+/// Which Codex login serves an agent. Identifiers only; never a credential.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct CodexLoginView {
+    /// The login's Codex home folder.
+    pub home: String,
+    /// The account the login is signed in to, when the login records one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 /// A retained provider turn observation, not native liveness or task success.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

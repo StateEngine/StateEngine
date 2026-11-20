@@ -113,6 +113,9 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
             if let Some(activity) = &agent.provider_activity {
                 provider::activity(activity, "    ", out)?;
             }
+            if let Some(login) = &agent.codex_login {
+                provider::codex_login(login, "    ", out)?;
+            }
             if let Some(runtime) = &agent.acp_runtime {
                 super::acp::runtime(runtime, "    ", out)?;
             }

@@ -1,4 +1,4 @@
-use se_core::ops::ProviderActivityView;
+use se_core::ops::{CodexLoginView, ProviderActivityView};
 use se_types::Read;
 use std::io::{self, Write};
 
@@ -28,4 +28,22 @@ pub(crate) fn activity(
         }
     }
     Ok(())
+}
+
+pub(crate) fn codex_login(
+    value: &Read<CodexLoginView>,
+    prefix: &str,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    match value {
+        Read::Present { value } => match &value.account {
+            Some(account) => writeln!(out, "{prefix}Codex login: {account} ({})", value.home),
+            None => writeln!(out, "{prefix}Codex login: {}", value.home),
+        },
+        Read::Absent { checked } => writeln!(out, "{prefix}Codex login: absent ({checked})"),
+        Read::Unknown { what } => writeln!(out, "{prefix}Codex login: unknown ({what})"),
+        Read::Unreadable { reason, .. } => {
+            writeln!(out, "{prefix}Codex login: unreadable ({reason})")
+        }
+    }
 }
