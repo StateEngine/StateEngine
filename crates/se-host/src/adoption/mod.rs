@@ -126,12 +126,10 @@ impl Registration {
         if self.schema != 1 || self.projects.len() > 4096 {
             return Err(invalid("the supported bounded adoption journal"));
         }
-        // Exact registered roots only. A hook in an unrelated child project
-        // cannot inherit an ancestor's registration or caller session.
-        Ok(self
-            .projects
-            .iter()
-            .find(|p| p.root.to_local().is_ok_and(|root| root == cwd)))
+        let roots = self.projects.iter().map(|p| p.root.to_local().ok());
+        let matched = se_repository::registered_worktree(cwd, roots)
+            .map_err(|error| se_core::scope::unreadable("provider adoption worktree", &error))?;
+        Ok(matched.map(|index| &self.projects[index]))
     }
 }
 pub fn read(home: &Path) -> Result<Option<Registration>> {
