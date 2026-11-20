@@ -268,7 +268,7 @@ mod linux {
             return orphan_owner(Path::new(args.get(2).ok_or("missing orphan output")?));
         }
         {
-            use se_proc::atlas_git::{GitRead, read};
+            use se_atlas_cold::atlas_git::{GitRead, read};
             let id = "1".repeat(40);
             let blocked = || {
                 read(

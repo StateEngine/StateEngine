@@ -17,7 +17,7 @@ pub(super) fn check() -> AtlasResult<()> {
         .checked_sub(start)
         .ok_or_else(|| failure("worker CPU clock moved backwards"))?;
     if elapsed >= parse_budget().max_work {
-        Err(crate::atlas_parse::cpu_expired(parse_budget().max_work))
+        Err(crate::deadline::cpu_expired(parse_budget().max_work))
     } else {
         Ok(())
     }

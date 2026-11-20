@@ -548,7 +548,7 @@ fn open(pin: &DatabasePin, role: ConnectionRole, deadline: Instant) -> AtlasResu
     // Win32 calls, so an ordinary path would be capped at MAX_PATH. The
     // verbatim form lets the sidecars exist at any reachable length; the file
     // opened is the one the pin names.
-    let target = se_types::sqlite_path(&pin.path);
+    let target = se_proc::sqlite_path(&pin.path);
     // The verbatim exception is decided before ancestor resolution: only the
     // verbatim prefix cannot honour NOFOLLOW, and a Unix path resolved by
     // se_trusted_path keeps the guard on the database name itself.

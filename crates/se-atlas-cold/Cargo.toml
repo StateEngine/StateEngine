@@ -1,0 +1,50 @@
+[package]
+name = "se-atlas-cold"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+listener = []
+
+[dependencies]
+se-atlas = { path = "../se-atlas" }
+se-proc = { path = "../se-proc" }
+se-types = { path = "../se-types" }
+serde.workspace = true
+serde_json.workspace = true
+ignore = "=0.4.33"
+sha2.workspace = true
+rusqlite = { version = "0.41", features = ["bundled"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+se-atlas = { path = "../se-atlas", features = ["test-clock"] }
+
+[lints.rust]
+unsafe_code = "allow"
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+unreachable = "deny"
+ignore_without_reason = "deny"
+# The structural guardrails the rest of the workspace inherits from the
+# workspace lints, listed here because this crate keeps its own lint table for
+# the FFI override above.
+too_many_lines = "warn"
+cognitive_complexity = "warn"
+too_many_arguments = "warn"
+struct_excessive_bools = "warn"
+
+[[test]]
+name = "atlas_git_failure"
+harness = false
+
+[[test]]
+name = "atlas_worker_failure"
+harness = false

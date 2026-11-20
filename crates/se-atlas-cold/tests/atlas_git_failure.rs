@@ -5,7 +5,7 @@ mod directory;
 #[cfg(target_os = "linux")]
 mod linux {
     use crate::directory::PrivateDirectory;
-    use se_proc::atlas_git::{GitRead, read};
+    use se_atlas_cold::atlas_git::{GitRead, read};
     use std::{
         io::{self, Write},
         path::{Path, PathBuf},
@@ -62,7 +62,7 @@ mod linux {
         root: &Path,
         mode: char,
         deadline: Instant,
-    ) -> io::Result<se_proc::atlas_git::GitOutput> {
+    ) -> io::Result<se_atlas_cold::atlas_git::GitOutput> {
         let oid = mode.to_string().repeat(40);
         read(
             &std::env::current_exe()?,

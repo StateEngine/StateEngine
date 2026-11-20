@@ -151,7 +151,7 @@ pub(super) fn file(
         }
         Err(error) if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas source read") =>
         {
-            return Err(crate::atlas_parse::stall(Duration::from_secs(5)));
+            return Err(crate::deadline::stall(Duration::from_secs(5)));
         }
         Err(error) => {
             phase(protocol::Phase::Commit)?;

@@ -78,7 +78,7 @@ pub use process::{ProcessConfiguration, ProcessDrain, ProcessOptions, Reconcilia
 pub use process_io::UnixProviderIo;
 #[cfg(all(windows, feature = "listener"))]
 pub use process_io::WindowsProviderIo;
-pub mod atlas_cache;
+pub use se_atlas_cold::atlas_cache;
 pub mod atlas_cold;
 #[cfg(feature = "listener")]
 mod atlas_continuity;
@@ -86,7 +86,7 @@ mod atlas_continuity;
 mod atlas_git_watch;
 pub mod atlas_hooks;
 #[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
-mod atlas_ignore;
+use se_atlas_cold::atlas_ignore;
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 mod atlas_parse;
 pub mod atlas_queries;
@@ -94,9 +94,9 @@ pub mod atlas_records;
 #[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
 pub mod atlas_renewal;
 pub mod atlas_runtime;
-pub mod atlas_source;
+pub use se_atlas_cold::atlas_source;
 #[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
-mod atlas_watch_error;
+use se_atlas_cold::atlas_watch_error;
 pub mod codex_forward;
 mod session;
 pub mod state_files;

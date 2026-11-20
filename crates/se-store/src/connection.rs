@@ -33,7 +33,7 @@ pub(crate) fn open(path: &Path, flags: OpenFlags) -> StoreResult<Connection> {
     // its own Win32 calls, so an ordinary drive path is capped at MAX_PATH
     // there. The verbatim form keeps every sidecar reachable; the file opened
     // is the one the caller named.
-    let target = se_types::sqlite_path(path);
+    let target = se_proc::sqlite_path(path);
     // The verbatim exception is decided before ancestor resolution: only the
     // verbatim prefix cannot honour NOFOLLOW, and a Unix path resolved by
     // se_trusted_path keeps the guard on the database name itself.

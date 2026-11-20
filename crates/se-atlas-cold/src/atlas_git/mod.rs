@@ -102,8 +102,8 @@ pub fn read(
     command: GitRead<'_>,
     deadline: Instant,
 ) -> io::Result<GitOutput> {
-    let control_root = crate::NativeSourceRoot::open(control)?;
-    let object_root = crate::NativeSourceRoot::open(objects)?;
+    let control_root = se_proc::NativeSourceRoot::open(control)?;
+    let object_root = se_proc::NativeSourceRoot::open(objects)?;
     read_pinned(
         image,
         control,
@@ -117,7 +117,7 @@ fn read_pinned(
     image: &Path,
     control: &Path,
     objects: &Path,
-    roots: [&crate::NativeSourceRoot; 2],
+    roots: [&se_proc::NativeSourceRoot; 2],
     command: GitRead<'_>,
     deadline: Instant,
 ) -> io::Result<GitOutput> {
@@ -154,6 +154,20 @@ fn read_pinned(
 fn invalid(reason: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, reason.to_owned())
 }
+/// The retained stdout prefix when a bounded read exceeds its byte cap, so
+/// the parser can prove the complete path records already read; the trailing
+/// partial record stays out of trust.
+#[derive(Debug)]
+pub(crate) struct BoundedPrefix {
+    pub(crate) bytes: Vec<u8>,
+    message: String,
+}
+impl std::fmt::Display for BoundedPrefix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for BoundedPrefix {}
 mod control;
 #[cfg(target_os = "linux")]
 mod elf;

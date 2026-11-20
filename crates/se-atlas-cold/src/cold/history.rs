@@ -1,8 +1,8 @@
 //! Parent-side cold history phase. Git reuses the exactly reaped parser's
 //! process reservation; SQL uses the measured host share, not a cold exemption.
 use super::*;
+use crate::atlas_git::{GitRegistration, GitRepository};
 use se_atlas::history::{Commit, HistoryBound, HistoryFeed, HistoryLimit};
-use se_proc::atlas_git::{GitRegistration, GitRepository};
 use std::path::PathBuf;
 
 enum HistoryRead {
@@ -30,7 +30,7 @@ impl Plan {
         cache: &NativeAtlasCache,
         request: &protocol::Request,
         deadline: Instant,
-    ) -> AtlasResult<(Generation, Option<se_types::ErrorBody>)> {
+    ) -> AtlasResult<HistorySeed> {
         if Instant::now() >= deadline {
             return Err(failure("cold job deadline elapsed before Git history"));
         }
@@ -51,41 +51,31 @@ impl Plan {
         )?
         .ok_or_else(|| failure("history candidate disappeared"))?;
         match feed {
-            HistoryRead::Available(Some(feed)) => Ok((
-                se_atlas::history::ingest(&mut db, &feed, sql_deadline().min(deadline))?.generation,
-                None,
-            )),
+            HistoryRead::Available(Some(feed)) => {
+                let notes = se_atlas::history::commit_notes(&feed);
+                let generation =
+                    crate::apply::ingest(&mut db, &feed, sql_deadline().min(deadline))?.generation;
+                // Per-commit omissions replace, never accumulate: they describe
+                // the current history window and clear when it moves on.
+                crate::apply::publish_coverage(
+                    &mut db,
+                    sql_deadline().min(deadline),
+                    &notes,
+                    None,
+                )?;
+                Ok((generation, None, notes))
+            }
             HistoryRead::Unavailable(error) => {
                 let diagnostic = error.body;
-                db.write(131072, sql_deadline().min(deadline), |sql| {
-                    let saved: String = sql
-                        .prepare("SELECT coverage_json FROM meta WHERE singleton=1")?
-                        .query_row([], |r| r.get(0))
-                        .map_err(failure)?;
-                    let mut coverage: Coverage = serde_json::from_str(&saved).map_err(failure)?;
-                    coverage.history_unavailable = Some(diagnostic.clone());
-                    if !coverage
-                        .reasons
-                        .contains(&CoverageReason::HistoryUnavailable)
-                    {
-                        coverage.reasons.push(CoverageReason::HistoryUnavailable);
-                    }
-                    let state = IndexState::VerificationNeeded {
-                        reason: CoverageReason::HistoryUnavailable,
-                    };
-                    sql.prepare(
-                        "UPDATE meta SET coverage_json=?1,state_json=?2 WHERE singleton=1",
-                    )?
-                    .execute([
-                        serde_json::to_string(&coverage).map_err(failure)?,
-                        serde_json::to_string(&state).map_err(failure)?,
-                    ])
-                    .map_err(failure)?;
-                    Ok(())
-                })?;
-                Ok((generation(&mut db, deadline)?, Some(diagnostic)))
+                crate::apply::publish_coverage(
+                    &mut db,
+                    sql_deadline().min(deadline),
+                    &[],
+                    Some(&diagnostic),
+                )?;
+                Ok((generation(&mut db, deadline)?, Some(diagnostic), Vec::new()))
             }
-            HistoryRead::Available(None) => Ok((generation(&mut db, deadline)?, None)),
+            HistoryRead::Available(None) => Ok((generation(&mut db, deadline)?, None, Vec::new())),
         }
     }
     // Unavailable enrichment is data. Failed process or private-directory
@@ -157,41 +147,26 @@ fn feed(
         return Ok(None);
     };
     let deadline = (Instant::now() + Duration::from_secs(60)).min(job_deadline);
-    let mut window = reader.window(&head, 4, deadline).map_err(failure)?;
-    let mut paths = window.commits.iter().map(|c| c.paths.len()).sum::<usize>();
-    while paths > 32 && window.commits.len() > 1 {
-        let removed = window
-            .commits
-            .pop()
-            .ok_or_else(|| failure("history window disappeared"))?;
-        paths -= removed.paths.len();
-        window.next = Some(removed.oid);
-        window.limit = se_proc::atlas_git::HistoryLimit::CommitCount;
-    }
-    if paths > 32 {
-        return Err(failure(
-            "Git history's newest complete commit exceeds 32 changed paths; source index remains available",
-        ));
-    }
-    let oldest = window.commits.last().map(|c| c.oid.clone());
-    let commits = window
+    let window = reader.window(&head, 4, deadline).map_err(failure)?;
+    let limit = match window.limit {
+        crate::atlas_git::HistoryLimit::Complete => HistoryLimit::Complete,
+        crate::atlas_git::HistoryLimit::CommitCount => HistoryLimit::CommitCount,
+        crate::atlas_git::HistoryLimit::Bytes => HistoryLimit::Bytes,
+    };
+    // The writer quantum fits on native paths before portability validation,
+    // so a non-portable path in a commit the quantum degrades cannot unmake
+    // the window; validation then runs once, on retained paths only.
+    let pending = window
         .commits
         .into_iter()
-        .map(|commit| {
-            Ok(Commit {
-                oid: commit.oid,
-                parent: commit.parent,
-                author_unix_ms: commit.author_unix_ms,
-                author: commit.author,
-                subject: commit.subject,
-                paths: commit
-                    .paths
-                    .into_iter()
-                    .map(|path| RelativePath::new(&path))
-                    .collect::<AtlasResult<_>>()?,
-            })
-        })
+        .map(PendingCommit::new)
+        .collect::<Vec<_>>();
+    let (pending, next, limit) = crate::quantum::fit_writer_quantum(pending, window.next, limit);
+    let commits = pending
+        .into_iter()
+        .map(PendingCommit::commit)
         .collect::<AtlasResult<Vec<_>>>()?;
+    let oldest = commits.last().map(|c| c.oid.clone());
     Ok(Some(HistoryFeed {
         project: request.project.clone(),
         root: request.root.clone(),
@@ -199,12 +174,8 @@ fn feed(
         bound: HistoryBound {
             head,
             oldest,
-            next: window.next,
-            limit: match window.limit {
-                se_proc::atlas_git::HistoryLimit::Complete => HistoryLimit::Complete,
-                se_proc::atlas_git::HistoryLimit::CommitCount => HistoryLimit::CommitCount,
-                se_proc::atlas_git::HistoryLimit::Bytes => HistoryLimit::Bytes,
-            },
+            next,
+            limit,
         },
         observed_unix_ms: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -214,6 +185,55 @@ fn feed(
             .map_err(failure)?,
         commits,
     }))
+}
+/// A changed-path window commit whose paths are still native strings, so
+/// the writer quantum fits before portability validation.
+struct PendingCommit {
+    git: crate::atlas_git::GitCommit,
+    withheld: Option<(String, u32)>,
+}
+impl PendingCommit {
+    fn new(git: crate::atlas_git::GitCommit) -> Self {
+        Self {
+            git,
+            withheld: None,
+        }
+    }
+    fn commit(self) -> AtlasResult<Commit> {
+        let (paths, paths_note, allowed_paths) = match self.withheld {
+            Some((note, allowed)) => (Vec::new(), Some(note), Some(allowed)),
+            None => (
+                self.git
+                    .paths
+                    .iter()
+                    .map(|path| RelativePath::new(path.as_str()))
+                    .collect::<AtlasResult<Vec<_>>>()?,
+                self.git.paths_note,
+                self.git.allowed_paths,
+            ),
+        };
+        Ok(Commit {
+            oid: self.git.oid,
+            parent: self.git.parent,
+            author_unix_ms: self.git.author_unix_ms,
+            author: self.git.author,
+            subject: self.git.subject,
+            paths,
+            paths_note,
+            allowed_paths,
+        })
+    }
+}
+impl crate::quantum::WriterQuantumCommit for PendingCommit {
+    fn quantum_oid(&self) -> &str {
+        &self.git.oid
+    }
+    fn quantum_native_paths(&self) -> &[String] {
+        &self.git.paths
+    }
+    fn quantum_withhold(&mut self, note: &str, allowed: u32) {
+        self.withheld = Some((note.to_owned(), allowed));
+    }
 }
 fn git_image() -> AtlasResult<PathBuf> {
     let paths = std::env::var_os("PATH")

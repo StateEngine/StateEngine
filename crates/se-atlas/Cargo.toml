@@ -11,6 +11,7 @@ test-clock = []
 
 [dependencies]
 se-identifiers = { path = "../se-identifiers" }
+se-proc = { path = "../se-proc" }
 se-types = { path = "../se-types" }
 se-trusted-path = { path = "../se-trusted-path" }
 serde.workspace = true

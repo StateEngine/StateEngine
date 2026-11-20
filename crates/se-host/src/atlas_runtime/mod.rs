@@ -46,7 +46,7 @@ pub struct NativeRuntime<D> {
     pending: Option<WorkerRequest>,
     active: Option<(AtlasJobId, RootId)>,
     #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
-    child: Option<atlas_cold::job::ColdJob>,
+    child: Option<se_atlas_cold::cold::job::ColdJob>,
     #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
     child_failure: Option<se_types::ErrorBody>,
 }
@@ -236,14 +236,14 @@ impl<D: RenewalDriver> NativeRuntime<D> {
                     generated_prefixes: request.policy.ignore.generated_prefixes,
                 };
                 let child = if let Some(metadata) = request.root.git_metadata {
-                    atlas_cold::job::ColdJob::spawn_with_history(
+                    se_atlas_cold::cold::job::ColdJob::spawn_with_history(
                         &self.image,
                         frame,
                         metadata,
                         self.profile.as_ref(),
                     )?
                 } else {
-                    atlas_cold::job::ColdJob::spawn(&self.image, frame)?
+                    se_atlas_cold::cold::job::ColdJob::spawn(&self.image, frame)?
                 };
                 Ok(child)
             })(),

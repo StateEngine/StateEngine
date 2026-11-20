@@ -1,6 +1,6 @@
 //! An exclusive private Git directory: repository configuration is never loaded.
 use super::*;
-use crate::source_root::{NativeFileRevision, NativeSourceRoot};
+use se_proc::{NativeFileRevision, NativeSourceRoot};
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::{
@@ -50,7 +50,7 @@ impl Control {
         file.write_all(bytes)?;
         file.sync_all()?;
         self.files
-            .push((name, crate::source_root::observe_file_revision(&file)?));
+            .push((name, se_proc::observe_file_revision(&file)?));
         self.root.check()
     }
     pub(super) fn path(&self) -> &Path {

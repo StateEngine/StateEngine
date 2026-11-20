@@ -267,6 +267,15 @@ pub enum FileCoverage {
         diagnostic: Option<ErrorBody>,
     },
 }
+/// One degraded commit in the current history window: its changed paths were
+/// omitted within bounds, retaining only allowed-path evidence.
+#[derive(
+    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct HistoryCommitNote {
+    pub oid: String,
+    pub note: String,
+}
 #[derive(
     Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
@@ -291,6 +300,9 @@ pub struct Coverage {
     /// Optional Git enrichment failed; source coverage remains independently usable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_unavailable: Option<ErrorBody>,
+    /// Bounded per-commit notes for the current Git history window.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history_commit_notes: Vec<HistoryCommitNote>,
 }
 
 #[derive(
