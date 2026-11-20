@@ -54,6 +54,7 @@ fn request(f: &Fixture, sequence: u8) -> Check<HarnessRequest> {
         )?,
         mcp_bearer: Secret::new(format!("sels-synthetic-fixture-bearer-{sequence}").into_bytes())?,
         key: IdempotencyKey::new(format!("synthetic-fixture-request-{sequence}"))?,
+        sign_in: None,
     })
 }
 

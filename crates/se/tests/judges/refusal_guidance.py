@@ -165,8 +165,14 @@ class Judge:
                 assert "--home" in text and "directory" in text and "init" in text, row
                 assert path.read_bytes() == original
         replacement = self.root / "new directory"
-        self.ok("init", "--repo", str(self.repo), home=replacement)
-        self.ok("status", home=replacement)
+        # One provider config directory registers one home's stateengine
+        # entry, so the replacement home owns its provider home.
+        owner = self.root / "file-home-owner"
+        owner.mkdir()
+        environment = dict(self.env)
+        isolate(environment, self.root, owner)
+        self.ok("init", "--repo", str(self.repo), home=replacement, extra=environment)
+        self.ok("status", home=replacement, extra=environment)
         assert path.read_bytes() == original
 
     def close(self):

@@ -1,6 +1,6 @@
 //! External SE Code service control. Native lifecycle effects remain with the
 //! launch coordinator; these readers never start a service or replay input.
-//! Image and bundle qualification live beside this module in `secode_image`.
+//! Image and bundle qualification live in the `se-secode-image` crate (`secode_image`).
 mod contract;
 mod control;
 #[path = "../../rebind/control_proof.rs"]

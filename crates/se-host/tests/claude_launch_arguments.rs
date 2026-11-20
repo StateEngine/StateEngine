@@ -72,6 +72,7 @@ fn window_task_cannot_supply_claude_options_on_new_or_resumed_launches()
         launch_credential: Secret::new(vec![1; 32])?,
         mcp_bearer: Secret::new(vec![2; 32])?,
         key: IdempotencyKey::new("leading-dash-task")?,
+        sign_in: None,
     };
     for named_profile in ["default", "workspace-write"] {
         request.profile.named_profile = named_profile.into();

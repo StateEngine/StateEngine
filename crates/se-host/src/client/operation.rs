@@ -13,6 +13,7 @@ pub fn operation(
     op.validate()?;
     selections.validate()?;
     let name = op.meta().name.to_owned();
+    let launch = matches!(op, AnyOp::AgentLaunch(_));
     let key = op.idempotency_key().cloned();
     let mut encoded = serde_json::to_value(op).map_err(|_| invalid("serializable closed input"))?;
     let arguments = encoded
@@ -26,10 +27,14 @@ pub fn operation(
         generation,
         authority: None,
         presence: None,
-        cli_selections: Some(
-            serde_json::to_value(selections)
-                .map_err(|_| invalid("serializable CLI routing metadata"))?,
-        ),
+        cli_selections: Some({
+            let mut encoded = serde_json::to_value(selections)
+                .map_err(|_| invalid("serializable CLI routing metadata"))?;
+            if launch {
+                crate::launch_sign_in::attach(&mut encoded);
+            }
+            encoded
+        }),
         request: IpcRequest::Operation(RawOperation {
             name,
             arguments,

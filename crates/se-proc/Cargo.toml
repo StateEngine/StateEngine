@@ -7,6 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+se-native-path = { path = "../se-native-path" }
 se-types = { path = "../se-types" }
 se-native-memory = { path = "../se-native-memory" }
 sha2.workspace = true
@@ -56,10 +57,4 @@ harness = false
 name = "linux_process_facts"
 harness = false
 
-[[test]]
-name = "atlas_worker_failure"
-harness = false
 
-[[test]]
-name = "atlas_git_failure"
-harness = false

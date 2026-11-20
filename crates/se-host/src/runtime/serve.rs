@@ -530,6 +530,8 @@ async fn connection(
             continue;
         }
         let call = exchange.take_call();
+        // Taken now, so no branch keeps it for the connection's life.
+        let sign_in = exchange.sign_in.take();
         if let Ok(RoutedCall::Deferred { admitted, .. }) = &call
             && admitted.selections.as_ref().is_some_and(|s| s.mail_follow)
         {
@@ -558,7 +560,9 @@ async fn connection(
                     output = router.execute_call(call, &deadline) => output,
                 }
             }
-            Ok(call) => router.execute_call(call, &deadline).await,
+            Ok(call) => {
+                crate::launch_sign_in::scope(sign_in, router.execute_call(call, &deadline)).await
+            }
             Err(error) => Err(error),
         };
         // An expired execution clock may already carry the known-commit error.

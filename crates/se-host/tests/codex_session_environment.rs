@@ -46,6 +46,7 @@ fn external_stdio_gets_only_the_new_public_session_in_both_surfaces()
         launch_credential: Secret::new(b"sec1.never-in-environment".to_vec())?,
         mcp_bearer: Secret::new(b"sels-never-in-environment".to_vec())?,
         key: IdempotencyKey::new("fresh-public-session")?,
+        sign_in: None,
     };
     let resolved = ResolvedProfile {
         name: "default".into(),
@@ -135,6 +136,7 @@ fn a_named_windows_sandbox_reaches_the_providers_launch_settings()
         launch_credential: Secret::new(b"sec1.never-in-environment".to_vec())?,
         mcp_bearer: Secret::new(b"sels-never-in-environment".to_vec())?,
         key: IdempotencyKey::new("named-sandbox-launch")?,
+        sign_in: None,
     };
     let resolved = ResolvedProfile {
         name: "default".into(),

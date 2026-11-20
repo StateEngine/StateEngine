@@ -5,9 +5,9 @@ use std::{
 };
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
-pub(crate) struct Lease(bool);
+pub struct Lease(bool);
 impl Lease {
-    pub(crate) fn acquire() -> io::Result<Self> {
+    pub fn acquire() -> io::Result<Self> {
         if ACTIVE.swap(true, Ordering::AcqRel) {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -18,7 +18,7 @@ impl Lease {
     }
     /// A failed native reap retains the reservation, even after Rust custody
     /// drops. It must never admit another independently capped child.
-    pub(crate) fn retain_on_failed_reap(&mut self) {
+    pub fn retain_on_failed_reap(&mut self) {
         self.0 = false;
     }
 }

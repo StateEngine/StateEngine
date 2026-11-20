@@ -356,6 +356,11 @@ impl se_host::McpBackend for Backend {
     ) -> Result<Option<Arc<Secret>>> {
         Backend::capability(self, metadata, supplied)
     }
+    fn configured_atlas(&mut self) -> Option<Result<bool>> {
+        let op = AnyOp::ProjectStatus(ProjectStatus::default());
+        let cx = crate::bootstrap::Bootstrap::resolve(self.home.clone(), None, false, true, &op);
+        Some(cx.map(|cx| cx.config.value.atlas.enabled))
+    }
     async fn check_session(&mut self, capability: Arc<Secret>) -> Result<()> {
         Backend::check_session(self, &capability)
     }

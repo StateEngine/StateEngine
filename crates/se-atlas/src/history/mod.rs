@@ -1,11 +1,21 @@
 //! Bounded Git metadata feed. Git authors never imply current-content authorship.
-mod apply;
 use crate::{
     errors::{AtlasResult, cache_error},
     model::*,
 };
-pub use apply::{apply, ingest};
 use se_types::{ProjectId, code::AtlasText};
+pub fn commit_notes(feed: &HistoryFeed) -> Vec<se_types::code::HistoryCommitNote> {
+    feed.commits
+        .iter()
+        .filter_map(|commit| {
+            let note = commit.paths_note.as_ref()?;
+            Some(se_types::code::HistoryCommitNote {
+                oid: commit.oid.clone(),
+                note: note.clone(),
+            })
+        })
+        .collect()
+}
 /// A source reconciliation does not fill an intentionally bounded Git seed.
 /// Both hosted status and query readers retain that independent limitation.
 pub fn limitation(
@@ -52,6 +62,15 @@ pub struct Commit {
     pub author: String,
     pub subject: String,
     pub paths: Vec<RelativePath>,
+    /// Present when the changed-path list was unreadable within bounds;
+    /// paths is empty and the note names the omission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paths_note: Option<String>,
+    /// Set exactly when paths was omitted: omitted changed paths that clear
+    /// the built-in denial policy. Metadata is retained only when greater
+    /// than zero; the omission note remains in coverage either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_paths: Option<u32>,
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -70,7 +89,7 @@ pub struct HistoryReceipt {
     pub generation: Generation,
     pub replay: bool,
 }
-pub(super) fn object(value: &str) -> AtlasResult<Vec<u8>> {
+pub fn object(value: &str) -> AtlasResult<Vec<u8>> {
     if !matches!(value.len(), 40 | 64)
         || !value
             .bytes()
@@ -134,9 +153,20 @@ impl HistoryFeed {
                 || commit.author.contains('\0')
                 || commit.subject.contains('\0')
                 || commit.paths.len() > 256
+                || commit.paths_note.as_ref().is_some_and(|n| n.len() > 512)
             {
                 return Err(cache_error(
                     "Git commit exceeds its complete bounded metadata contract",
+                ));
+            }
+            if commit.paths_note.is_some() && !commit.paths.is_empty() {
+                return Err(cache_error(
+                    "a degraded Git commit retains no changed paths",
+                ));
+            }
+            if commit.paths_note.is_some() != commit.allowed_paths.is_some() {
+                return Err(cache_error(
+                    "degraded Git commits require allowed-path evidence and complete commits carry none",
                 ));
             }
             if let Some(parent) = &commit.parent {
@@ -157,6 +187,7 @@ impl HistoryFeed {
                     + commit.parent.as_ref().map_or(0, String::capacity)
                     + commit.author.capacity()
                     + commit.subject.capacity()
+                    + commit.paths_note.as_ref().map_or(0, String::len)
                     + commit.paths.capacity() * std::mem::size_of::<RelativePath>()
                     + commit.paths.iter().map(|p| p.as_str().len()).sum::<usize>(),
             );

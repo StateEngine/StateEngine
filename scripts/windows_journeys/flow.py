@@ -6,7 +6,7 @@ import time
 import uuid
 
 from harness_matrix.flow import Smoke
-from harness_matrix.io import digest, require
+from harness_matrix.io import digest, raw_census, require
 from .credentials import Credentials, Prerequisite, protect
 from .usage import snapshot, difference
 from .release import download
@@ -73,12 +73,27 @@ class Journeys(Smoke):
             process_image = Path(process['exe'])
             require(process_image.is_absolute(), 'Launched provider image must have an absolute path')
             observed = process_image.resolve(strict=True)
+            if self.settings['provider'] == 'codex':
+                # A Codex agent's own process is our forwarder to the login's shared app-server.
+                require(observed == self.binary.resolve(strict=True),
+                        'Codex agent process is not the installed StateEngine forwarder')
+                observed = self.codex_server_image()
             require(observed == Path(expected).resolve(strict=True),
                     'Provider launched a different native image than the pinned version probe')
             observed_digest = digest(observed)
             require(any(Path(row['path']).resolve() == observed and row['sha256'] == observed_digest
                         for row in self.settings['images']), 'Launched provider image does not match its pin')
         return launched
+
+    def codex_server_image(self):
+        servers = [row for row in raw_census()
+                   if row.get('exe') and (row['pid'], row['birth']) not in self.commands.observer.baseline
+                   and not row['state'].startswith(('Z', 'X', 'x'))
+                   and ' app-server ' in ' ' + (row['command'] or '') + ' ']
+        require(servers, 'No shared Codex app-server started for this journey')
+        images = {Path(row['exe']).resolve(strict=True) for row in servers}
+        require(len(images) == 1, 'Shared Codex app-servers run different native images')
+        return images.pop()
 
     def phase(self, name, operation):
         before, usage_error = None, None

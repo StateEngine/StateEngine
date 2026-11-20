@@ -58,11 +58,14 @@ fn snapshot(file: &File, path: &Path) -> Result<PermissionSnapshot> {
         .map_err(|e| io_error("read repair object kind", path, e))?;
     let directory = info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0;
     let identity = metadata(file, path, directory, false)?;
-    let descriptor = crate::windows_native::acl::SecurityDescriptor::query(
-        file.as_raw_handle(),
-        SE_FILE_OBJECT,
-        OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-    )
+    // SAFETY: the caller retains the native handle throughout this query.
+    let descriptor = unsafe {
+        crate::windows_native::acl::SecurityDescriptor::query(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+        )
+    }
     .map_err(|e| io_error("read repair object security", path, e))?;
     let owner = crate::windows_native::sid_text(descriptor.owner)
         .map_err(|e| io_error(e.operation, path, e.source))?;

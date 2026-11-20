@@ -32,6 +32,7 @@ $rows = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Pr
         birth = if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') } else { $null }
         state = $state
         command = $command
+        exe = $_.ExecutablePath
         owner_state = $attribution
     }
 })

@@ -1,8 +1,6 @@
 //! Independent foundation consumer checks. The native test adapter is not a production
 //! custody implementation or a qualification of the proposed SQL overhead profile.
 #![cfg(unix)]
-#[path = "../../test-support/atlas_clock.rs"]
-mod test_clock;
 use se_atlas::{
     cache::{connection::*, pointer, prune, *},
     errors::AtlasResult,
@@ -157,8 +155,6 @@ fn setup() -> Result<(Native, CacheSeed, SqlProfile), Box<dyn Error>> {
 fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(5)
 }
-#[path = "foundation_judge/history.rs"]
-mod history;
 #[test]
 fn empty_cache_real_consumer_prune() -> Check {
     let _serial = SERIAL.lock().map_err(|_| "lock")?;

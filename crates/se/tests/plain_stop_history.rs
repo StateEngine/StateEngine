@@ -420,8 +420,12 @@ fn public_tool_history_and_exact_events_show_actions_and_keep_unknowns_honest() 
 fn plain_status_and_show_explain_the_actual_resume_state() -> Check {
     let f = Fixture::new()?;
     for provider in ["claude", "codex"] {
-        let home = f.home.join(format!("plain-resume-{provider}-home"));
-        let repo = f.home.join(format!("plain-resume-{provider}-repo"));
+        // One provider config directory registers one home's stateengine
+        // entry, so each iteration owns its provider home.
+        let root = f.home.join(format!("plain-resume-{provider}"));
+        std::fs::create_dir(&root)?;
+        let home = root.join("home");
+        let repo = root.join("repo");
         std::fs::create_dir(&repo)?;
         let call = |args: &[&str]| -> Result<std::process::Output, Box<dyn std::error::Error>> {
             let mut command = Command::new(env!("CARGO_BIN_EXE_se"));
@@ -432,7 +436,7 @@ fn plain_status_and_show_explain_the_actual_resume_state() -> Check {
                 .current_dir(&repo)
                 .env_clear()
                 .env("PATH", std::env::var_os("PATH").ok_or("PATH")?);
-            provider_home::isolate(&mut command, &f.home);
+            provider_home::isolate(&mut command, &root);
             #[cfg(windows)]
             if let Some(root) = std::env::var_os("SystemRoot") {
                 command.env("SystemRoot", root);

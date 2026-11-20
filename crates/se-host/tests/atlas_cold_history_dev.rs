@@ -103,6 +103,7 @@ mod native {
     enum Case {
         Bounded,
         Wide,
+        SecretWide,
         Unqualified,
         Unreadable,
     }
@@ -121,10 +122,13 @@ mod native {
         }
         let cases: &[Case] = if std::env::args().any(|arg| arg == "--wide-history") {
             &[Case::Wide]
+        } else if std::env::args().any(|arg| arg == "--secret-wide-history") {
+            &[Case::SecretWide]
         } else {
             &[
                 Case::Bounded,
                 Case::Wide,
+                Case::SecretWide,
                 Case::Unqualified,
                 Case::Unreadable,
             ]
@@ -137,10 +141,13 @@ mod native {
     }
     fn run_case(case: Case) -> Check {
         let bounded = case == Case::Bounded;
-        let expected_reason = if bounded {
-            CoverageReason::ResultLimit
-        } else {
+        let wide = case == Case::Wide;
+        let secret_wide = case == Case::SecretWide;
+        let unavailable = matches!(case, Case::Unqualified | Case::Unreadable);
+        let expected_reason = if unavailable {
             CoverageReason::HistoryUnavailable
+        } else {
+            CoverageReason::ResultLimit
         };
         let base = std::env::temp_dir().join(format!(
             "atlas-cold-history-{}-{}",
@@ -177,6 +184,19 @@ mod native {
             }
             git(&source, &["add", "--", "."])?;
             git(&source, &["commit", "-m", "wide_history_marker"])?;
+        }
+        if case == Case::SecretWide {
+            // The same overflow with every path denied: the window degrades
+            // the commit, but none of its metadata may survive.
+            fs::create_dir(source.join("secret"))?;
+            for index in 0..33 {
+                fs::write(
+                    source.join(format!("secret/secret_{index}.js")),
+                    format!("export function secret_{index}() {{ return {index}; }}\n"),
+                )?;
+            }
+            git(&source, &["add", "--", "."])?;
+            git(&source, &["commit", "-m", "secret_wide_marker"])?;
         }
         if case == Case::Unreadable {
             fs::remove_file(source.join(".git/HEAD"))?;
@@ -270,7 +290,7 @@ mod native {
             summary.epoch.is_some(),
             "successful source parser has no published epoch"
         );
-        if !bounded {
+        if unavailable {
             let error = summary
                 .coverage
                 .history_unavailable
@@ -278,10 +298,9 @@ mod native {
                 .ok_or("history failure diagnostic absent")?;
             let text = se_types::SeError::from(error.clone()).to_string();
             let expected = match case {
-                Case::Wide => "exceeds 32 changed paths",
                 Case::Unqualified => "requires measured host SQL overhead",
                 Case::Unreadable => "HEAD is absent",
-                Case::Bounded => panic!("bounded fixture reached unavailable-history assertions"),
+                _ => panic!("available fixture reached unavailable-history assertions"),
             };
             assert!(text.contains(expected), "wrong history failure: {text}");
             assert!(
@@ -342,8 +361,46 @@ mod native {
         assert!(!current.epoch_retired);
         assert_eq!(
             count(&mut current.connection, "SELECT count(*) FROM commits")?,
-            if bounded { 3 } else { 0 }
+            match case {
+                Case::Bounded => 3,
+                Case::Wide => 1,
+                Case::SecretWide => 0,
+                Case::Unqualified | Case::Unreadable => 0,
+            }
         );
+        if wide || secret_wide {
+            // The writer-quantum commit degrades: its paths are omitted and
+            // coverage names the omission. Metadata survives only on evidence
+            // of an allowed omitted path.
+            assert!(
+                summary
+                    .coverage
+                    .history_commit_notes
+                    .iter()
+                    .any(|note| note.note.contains("32-path writer quantum")),
+                "the writer-quantum omission must be named in coverage"
+            );
+        }
+        if wide {
+            assert_eq!(
+                count(
+                    &mut current.connection,
+                    "SELECT count(*) FROM commits WHERE subject='wide_history_marker'"
+                )?,
+                1,
+                "the degraded commit must keep its metadata row"
+            );
+        }
+        if secret_wide {
+            assert_eq!(
+                count(
+                    &mut current.connection,
+                    "SELECT count(*) FROM commits WHERE subject='secret_wide_marker'"
+                )?,
+                0,
+                "a denied-only degraded commit must keep no metadata"
+            );
+        }
         assert_eq!(
             count(
                 &mut current.connection,
@@ -363,18 +420,18 @@ mod native {
                 .query_row([], |r| r.get(0))
                 .map_err(|e| se_types::SeError::invalid("history bound", &e.to_string()))
         })?;
-        if bounded {
+        if unavailable {
+            assert!(
+                bound.is_none(),
+                "unavailable history fabricated a successful cursor"
+            );
+        } else {
             let bound: se_atlas::history::HistoryBound =
                 serde_json::from_str(&bound.ok_or("history bound absent")?)?;
             assert_eq!(bound.limit, se_atlas::history::HistoryLimit::CommitCount);
             assert!(
                 bound.next.is_some(),
                 "the partial seed hid its continuation"
-            );
-        } else {
-            assert!(
-                bound.is_none(),
-                "unavailable history fabricated a successful cursor"
             );
         }
         assert_eq!(
@@ -394,7 +451,10 @@ mod native {
         if bounded {
             assert!(touches > 0, "Git seed did not reach file ranking");
         } else {
-            assert_eq!(touches, 0, "unavailable history fabricated file activity");
+            assert_eq!(
+                touches, 0,
+                "history without usable paths fabricated file activity"
+            );
         }
         use se_types::code::{
             AtlasValidation, FindQuery, SearchKind, SearchMode, SearchOrder, SearchScope,

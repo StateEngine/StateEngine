@@ -57,6 +57,8 @@ pub struct AdmittedExchange {
     pub(super) connection: HostedConnection,
     pub(super) request_id: u64,
     call: Option<Result<RoutedCall>>,
+    /// An owner terminal's launch sign-in, scoped around this call's execution.
+    pub(super) sign_in: Option<crate::launch_sign_in::SignIn>,
     pub(super) channels: Option<crate::channels::ChannelRequest>,
     spawner: Option<Result<OperationOutput>>,
     pub(super) adopted: Option<crate::adoption::NativeCall>,
@@ -243,11 +245,13 @@ impl HostedRouter {
     async fn admit_request(
         &self,
         connection: HostedConnection,
-        wire: crate::IpcEnvelope,
+        mut wire: crate::IpcEnvelope,
         deadline: &Deadline,
     ) -> Result<Option<AdmittedExchange>> {
         let admitted_at = Instant::now();
         let request_id = wire.request_id;
+        let owner = connection.connection.connection_authority();
+        let sign_in = crate::launch_sign_in::take(owner, &mut wire)?;
         self.check_open()?;
         let context = self.context.clone();
         let execution = self.execution.clone();
@@ -317,6 +321,7 @@ impl HostedRouter {
                     connection,
                     request_id,
                     call,
+                    sign_in: None,
                     channels,
                     spawner: spawner_result,
                     adopted,
@@ -329,6 +334,7 @@ impl HostedRouter {
             .await?;
         if let Some(exchange) = &mut exchange {
             exchange.admission = Some(span);
+            exchange.sign_in = sign_in;
         }
         Ok(exchange)
     }

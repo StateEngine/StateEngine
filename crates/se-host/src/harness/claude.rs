@@ -396,6 +396,20 @@ pub(crate) fn session_uuid(request: &HarnessRequest) -> Result<&str> {
         .ok_or_else(|| SeError::invalid("session id", "a canonical ses_<UUID> session"))
 }
 
+/// The host's provider environment with a launching terminal's sign-in laid over
+/// it for one launch; the host's own process environment is never changed.
+pub fn launch_environment(
+    sign_in: Option<&crate::launch_sign_in::SignIn>,
+) -> Vec<(OsString, OsString)> {
+    let mut environment = provider_environment();
+    for name in crate::launch_sign_in::CLAUDE {
+        if let Some(value) = sign_in.and_then(|sign_in| sign_in.get(name)) {
+            environment.retain(|(key, _)| !key.to_string_lossy().eq_ignore_ascii_case(name));
+            environment.push((name.into(), value.into()));
+        }
+    }
+    environment
+}
 /// The base environment handed to the provider, built from an allowlist.
 pub fn provider_environment() -> Vec<(OsString, OsString)> {
     std::env::vars_os()
@@ -478,6 +492,7 @@ mod transcript_location_tests {
             launch_credential: Secret::new(vec![1; 32])?,
             mcp_bearer: Secret::new(vec![2; 32])?,
             key: se_types::IdempotencyKey::new("transcript-location-unit")?,
+            sign_in: None,
         })
     }
 

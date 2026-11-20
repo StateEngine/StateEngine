@@ -2,7 +2,7 @@ use crate::{
     errors::{AtlasResult, capacity},
     model::*,
 };
-use se_types::code::AtlasText;
+use se_types::code::{AtlasText, RelativePath};
 use std::time::Duration;
 pub fn validate(policy: &AtlasPolicy) -> AtlasResult<()> {
     if policy.max_files == 0
@@ -66,6 +66,20 @@ pub fn language(path: &RelativePath) -> Option<Language> {
     }
 }
 
+/// The changed-path budget one writer quantum may carry across the cache
+/// connection; commits beyond it are dropped oldest-first, and a final
+/// oversized commit degrades behind an omission note.
+pub const WRITER_QUANTUM_PATHS: usize = 32;
+/// Count the changed native paths proven allowed: portable spelling and not
+/// built-in denied.
+pub fn writer_quantum_allowed(paths: &[String]) -> u32 {
+    paths
+        .iter()
+        .filter(|path| {
+            RelativePath::new(path.as_str()).is_ok_and(|relative| !built_in_denied(&relative))
+        })
+        .count() as u32
+}
 /// Always denied before traversal, observation or live text access. Ignore-file
 /// negations cannot override this private-file boundary.
 pub fn built_in_denied(path: &RelativePath) -> bool {

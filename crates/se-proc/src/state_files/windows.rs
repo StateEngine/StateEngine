@@ -14,6 +14,7 @@ use windows_sys::Win32::{Foundation::*, Security::*, Storage::FileSystem::*};
 
 mod metadata;
 pub(crate) mod security;
+mod short_cli;
 use security::{Layout, descriptor};
 fn validate_component(value: &std::ffi::OsStr, path: &Path) -> Result<()> {
     let units: Vec<_> = value.encode_wide().collect();
@@ -137,7 +138,7 @@ fn open_with_layout(
     };
     let attributes = descriptor.as_ref().map(|s| SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: s.0,
+        lpSecurityDescriptor: s.as_ptr(),
         bInheritHandle: 0,
     });
     let flags = FILE_FLAG_OPEN_REPARSE_POINT
@@ -190,11 +191,22 @@ fn walk_with_ancestry(
     private_from: Option<&Path>,
     layout: Layout,
 ) -> Result<(File, bool)> {
+    walk_with_parent(path, create, private_from, layout, false)
+        .map(|(file, ordinary, _)| (file, ordinary))
+}
+fn walk_with_parent(
+    path: &Path,
+    create: bool,
+    private_from: Option<&Path>,
+    layout: Layout,
+    retain_parent: bool,
+) -> Result<(File, bool, Option<File>)> {
     if !path.is_absolute() {
         return Err(unsafe_path("absolute state directory required", path));
     }
     let mut prefix = PathBuf::new();
     let mut last_file = None;
+    let mut root_parent = None;
     let mut ordinary_ancestry = true;
     for component in path.components() {
         match component {
@@ -212,7 +224,7 @@ fn walk_with_ancestry(
                     let sd = descriptor(&prefix, true)?;
                     let sa = SECURITY_ATTRIBUTES {
                         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-                        lpSecurityDescriptor: sd.0,
+                        lpSecurityDescriptor: sd.as_ptr(),
                         bInheritHandle: 0,
                     };
                     // SAFETY: valid descriptor and terminated native path outlive creation.
@@ -289,10 +301,13 @@ fn walk_with_ancestry(
             metadata(&file, &prefix, true, false)?;
             file
         };
+        if retain_parent && prefix == path {
+            root_parent = last_file.take();
+        }
         last_file = Some(file);
     }
     last_file
-        .map(|file| (file, ordinary_ancestry))
+        .map(|file| (file, ordinary_ancestry, root_parent))
         .ok_or_else(|| unsafe_path("state directory missing", path))
 }
 pub(super) fn create_directories(path: &Path) -> Result<()> {
@@ -305,6 +320,7 @@ pub(super) struct Directory {
     identity: Identity,
     resolved_root: PathBuf,
     layout: Layout,
+    short_cli_parent: Option<(File, std::time::Instant)>,
 }
 impl Directory {
     pub fn identity(&self, file: &File, path: &Path) -> Result<Identity> {
@@ -335,7 +351,13 @@ impl Directory {
         Self::open_with_layout(path, Layout::UserPrivate)
     }
     fn open_with_layout(path: &Path, layout: Layout) -> Result<Self> {
-        let file = walk_for(path, false, None, layout)?;
+        Self::open_for(path, layout, false)
+    }
+    pub fn open_short_cli(path: &Path) -> Result<Self> {
+        Self::open_for(path, Layout::State, true)
+    }
+    fn open_for(path: &Path, layout: Layout, short_cli: bool) -> Result<Self> {
+        let (file, _, short_cli_parent) = walk_with_parent(path, false, None, layout, short_cli)?;
         let identity = metadata_for(&file, path, true, layout)?;
         let mut buffer = vec![0u16; 32768];
         // SAFETY: retained directory handle, writable UTF-16 buffer and explicit
@@ -363,9 +385,22 @@ impl Directory {
             identity,
             resolved_root,
             layout,
+            short_cli_parent: short_cli_parent.map(|parent| (parent, std::time::Instant::now())),
         })
     }
     pub fn check_name(&self, path: &Path) -> Result<()> {
+        if let Some((parent, checked)) = &self.short_cli_parent
+            && checked.elapsed() <= SHORT_CLI_ANCESTRY_AGE
+        {
+            let leaf = path
+                .file_name()
+                .ok_or_else(|| unsafe_path("state root name missing", path))?;
+            match short_cli::open(parent, leaf, path, true) {
+                Ok(found) => return self.same_metadata_root(&found, path),
+                Err(error) if short_cli::retry_by_name(&error) => (),
+                Err(error) => return Err(error),
+            }
+        }
         let found = walk_for(path, false, None, self.layout)?;
         self.same_metadata_root(&found, path)
     }
@@ -403,7 +438,7 @@ impl Directory {
         let descriptor = security::descriptor_for(path, true, self.layout)?;
         let attributes = SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: descriptor.0,
+            lpSecurityDescriptor: descriptor.as_ptr(),
             bInheritHandle: 0,
         };
         // SAFETY: resolved held-root descendant, retained parent and descriptor;
@@ -512,6 +547,13 @@ impl Directory {
         Ok(file)
     }
     pub fn readback(&self, path: &Path, root: &Path) -> Result<Option<File>> {
+        if self.short_cli_parent.is_some() && path.parent() == Some(root) {
+            match self.readback_short_cli(path) {
+                Ok(result) => return Ok(result),
+                Err(error) if short_cli::retry_by_name(&error) => (),
+                Err(error) => return Err(error),
+            }
+        }
         let _parent = match self.parent(path, root) {
             Ok(v) => v,
             Err(e)

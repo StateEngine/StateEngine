@@ -159,7 +159,7 @@ pub(in crate::state_files) fn prepare_created_directory(
         RootDirectory: parent.file()?.as_raw_handle(),
         ObjectName: &mut unicode,
         Attributes: 0x40, // OBJ_CASE_INSENSITIVE; no inherited handle or namespace escape.
-        SecurityDescriptor: descriptor.0.cast(),
+        SecurityDescriptor: descriptor.as_ptr().cast(),
         SecurityQualityOfService: ptr::null_mut(),
     };
     let mut raw = ptr::null_mut();
