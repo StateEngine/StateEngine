@@ -182,17 +182,9 @@ pub fn restore_image_cache(
 ) -> IpcNativeResult<ImageCacheRead> {
     restore(root, NAME, expected, None, bound)
 }
-/// A local CLI can also reuse the published host digest when both live
-/// processes map the same writer-excluded executable file object.
-pub fn restore_cli_image_cache(
-    root: &Path,
-    expected: Sha256,
-    peer: &ProcessInstance,
-    bound: &IpcIoBound,
-) -> IpcNativeResult<ImageCacheRead> {
-    restore(root, NAME, expected, Some(peer), bound)
-}
-/// The image hint under `root`; a peer selects the local CLI form.
+/// The image hint under `root`. With a peer, a local CLI can also reuse the
+/// published host digest when both live processes map the same
+/// writer-excluded executable file object.
 pub fn restore_image_hint_at(
     root: &Path,
     expected: Sha256,
