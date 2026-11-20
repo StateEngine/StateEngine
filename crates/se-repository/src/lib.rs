@@ -3,6 +3,8 @@
 //! the reservation until it finishes, including after its receiver times out.
 #[path = "git2.rs"]
 mod backend;
+mod registered_root;
+pub use registered_root::registered_worktree;
 #[cfg(any(windows, target_os = "macos"))]
 mod watch_inventory;
 #[cfg(any(windows, target_os = "macos"))]
