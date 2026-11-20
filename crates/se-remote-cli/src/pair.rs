@@ -1,13 +1,15 @@
 //! Native image staging has its own clock between two short Owner admissions.
-use super::*;
+use crate::{Input, OwnerCommands};
 use se_host::remote::{OwnerInput, ssh::ImageProgress};
+use se_types::{Result, SeError};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 
-pub(super) fn execute(
-    context: &crate::bootstrap::Bootstrap,
+pub(crate) fn execute<H: OwnerCommands + 'static>(
+    host: &'static H,
+    context: &H::Context,
     input: Input,
     progress: &mut dyn FnMut(ImageProgress) -> Result<()>,
 ) -> Result<se_host::OperationOutput> {
@@ -19,7 +21,7 @@ pub(super) fn execute(
         distribution,
     } = input
     else {
-        return crate::route::remote_owner::execute(context, Input::Ready(input));
+        return host.execute_owner(context, Input::Ready(input));
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -30,6 +32,7 @@ pub(super) fn execute(
         let interrupted = interruption()?;
         let pairing = async {
             request(
+                host,
                 context,
                 OwnerInput::PrepareAdd {
                     destination: destination.clone(),
@@ -48,6 +51,7 @@ pub(super) fn execute(
             // Resolve current native presence, endpoint and generation again:
             // image staging did not renew any IPC request or Owner admission.
             request(
+                host,
                 context,
                 OwnerInput::Add {
                     destination,
@@ -78,16 +82,15 @@ pub(super) fn execute(
     })
 }
 
-async fn request(
-    context: &crate::bootstrap::Bootstrap,
+async fn request<H: OwnerCommands + 'static>(
+    host: &'static H,
+    context: &H::Context,
     input: OwnerInput,
     cancelled: Arc<AtomicBool>,
 ) -> Result<se_host::OperationOutput> {
-    let (home, no_color, json) = (context.home.clone(), context.no_color, context.json);
+    let (home, no_color, json) = host.owner_args(context);
     tokio::task::spawn_blocking(move || {
-        let context =
-            crate::bootstrap::Bootstrap::resolve_remote_owner(Some(home), no_color, json)?;
-        crate::route::remote_owner::execute_with_cancel(&context, Input::Ready(input), cancelled)
+        host.execute_owner_with_cancel(home, no_color, json, Input::Ready(input), cancelled)
     })
     .await
     .map_err(|_| SeError::invalid("remote setup admission", "a joined native Owner request"))?

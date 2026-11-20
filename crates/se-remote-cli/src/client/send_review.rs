@@ -47,25 +47,6 @@ fn preparation(input: &RemoteSendCall) -> io::Result<RemoteSendPreparation> {
         body_bytes: u32::try_from(input.request.body.len()).map_err(io::Error::other)?,
     })
 }
-fn bootstrap() -> Bootstrap {
-    Bootstrap {
-        home: std::path::PathBuf::new(),
-        cwd: std::path::PathBuf::new(),
-        project: None,
-        selections: Default::default(),
-        config: crate::config::Loaded {
-            value: Default::default(),
-            origin: crate::config::Origin::BuiltIn,
-        },
-        session: None,
-        log: None,
-        no_color: true,
-        json: true,
-        retry_invocation: None,
-        legacy_environment_present: false,
-    }
-}
-
 #[test]
 fn pending_and_bound_facts_are_flushed_before_their_dispatches() -> io::Result<()> {
     let input = input()?;
@@ -75,13 +56,13 @@ fn pending_and_bound_facts_are_flushed_before_their_dispatches() -> io::Result<(
     let mut stdout = Vec::new();
     let mut calls = 0;
     let code = run(
-        &bootstrap(),
+        &tests::TestPresentation,
         AnyOp::RemoteSend(input.clone()),
         true,
         false,
         &mut stdout,
         &mut stderr,
-        &mut |_, operation, _| {
+        &mut |operation, _| {
             calls += 1;
             let rows = observer
                 .rows()
@@ -172,13 +153,13 @@ fn preparation_mismatch_never_dispatches_a_mutating_send() -> io::Result<()> {
         let mut stderr = Observed::default();
         let mut stdout = Vec::new();
         let code = run(
-            &bootstrap(),
+            &tests::TestPresentation,
             AnyOp::RemoteSend(input),
             true,
             false,
             &mut stdout,
             &mut stderr,
-            &mut |_, op, _| {
+            &mut |op, _| {
                 calls += 1;
                 assert!(matches!(op, AnyOp::RemotePrepareSend(_)));
                 Ok(p.clone().into())
@@ -218,7 +199,7 @@ fn unflushed_status_never_allows_the_next_dispatch() -> io::Result<()> {
         let p = preparation(&input)?;
         let mut calls = 0;
         let result = run(
-            &bootstrap(),
+            &tests::TestPresentation,
             AnyOp::RemoteSend(input),
             true,
             false,
@@ -227,7 +208,7 @@ fn unflushed_status_never_allows_the_next_dispatch() -> io::Result<()> {
                 flushes: 0,
                 fail_at,
             },
-            &mut |_, op, _| {
+            &mut |op, _| {
                 calls += 1;
                 assert!(matches!(op, AnyOp::RemotePrepareSend(_)));
                 Ok(p.clone().into())

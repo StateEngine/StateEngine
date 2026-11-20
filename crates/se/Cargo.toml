@@ -8,12 +8,12 @@ publish.workspace = true
 
 [features]
 rebind-fixture = []
-remote = ["se-host/remote", "dep:se-remote-cli", "se-remote-cli/remote"]
+remote = ["se-host/remote", "se-remote-cli/remote"]
 import = ["se-host/import", "se-core/import"]
 
 [dependencies]
 se-config = { path = "../se-config" }
-se-remote-cli = { path = "../se-remote-cli", optional = true }
+se-remote-cli = { path = "../se-remote-cli" }
 se-host = { path = "../se-host" }
 se-store = { path = "../se-store" }
 se-core = { path = "../se-core" }

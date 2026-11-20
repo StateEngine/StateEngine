@@ -6,11 +6,7 @@ use std::{
     time::Instant,
 };
 
-pub(super) fn flushed(
-    page: &RemoteWatchOutput,
-    started: Instant,
-    out: &mut impl Write,
-) -> io::Result<()> {
+pub fn flushed(page: &RemoteWatchOutput, started: Instant, out: &mut impl Write) -> io::Result<()> {
     let request_us = u64::try_from(started.elapsed().as_micros().saturating_add(1))
         .map_err(|_| io::Error::other("terminal measurement interval overflow"))?;
     let after_release = page
