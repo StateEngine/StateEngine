@@ -1,7 +1,6 @@
 //! Shared Windows query primitives. Callers retain their handles/token buffers;
 //! typed adapters add their own operation context without copying native walks.
-pub(crate) mod acl;
-pub(crate) mod allocation;
+pub(crate) use se_native_path::windows::{acl, allocation};
 pub(crate) mod attributes;
 pub(crate) mod console;
 mod parent;
@@ -19,7 +18,7 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::*,
-    Security::{Authorization::ConvertSidToStringSidW, *},
+    Security::*,
     Storage::FileSystem::*,
     System::{Diagnostics::ToolHelp::*, Threading::*},
 };
@@ -49,31 +48,11 @@ pub(crate) fn handle(raw: HANDLE, operation: &'static str) -> Result<OwnedHandle
     Ok(unsafe { OwnedHandle::from_raw_handle(raw) })
 }
 pub(crate) fn sid_text(sid: PSID) -> Result<String> {
-    // SAFETY: callers retain the successful native token/security buffer containing this SID.
-    if sid.is_null() || unsafe { IsValidSid(sid) } == 0 {
-        return Err(invalid("encode native SID", "invalid native SID"));
-    }
-    let mut raw = ptr::null_mut();
-    // SAFETY: validated retained SID and writable LocalFree-owned output.
-    if unsafe { ConvertSidToStringSidW(sid, &mut raw) } == 0 {
-        return Err(last("encode native SID"));
-    }
-    let _text = allocation::Allocation(raw.cast());
-    let mut length = 0;
-    // SAFETY: successful native conversion supplies a terminated SID string;
-    // the allocation remains retained for this bounded scan and copy.
-    while length < 256 && unsafe { *raw.add(length) } != 0 {
-        length += 1;
-    }
-    if length == 256 {
-        return Err(invalid(
-            "encode native SID",
-            "native SID text exceeds 256 units",
-        ));
-    }
-    // SAFETY: measured extent belongs to the retained native allocation.
-    String::from_utf16(unsafe { std::slice::from_raw_parts(raw, length) })
-        .map_err(|_| invalid("encode native SID", "native SID text is invalid UTF-16"))
+    // SAFETY: callers retain the native token or descriptor that owns this SID.
+    unsafe { se_native_path::windows::sid::text(sid) }.map_err(|source| Error {
+        operation: "encode native SID",
+        source,
+    })
 }
 pub(crate) fn process_sid(process: HANDLE) -> Result<String> {
     let mut raw = ptr::null_mut();
@@ -246,32 +225,11 @@ pub(crate) fn open_image_file(path: &[u16], delete: bool) -> io::Result<File> {
     // SAFETY: successful CreateFileW transferred one unique reference.
     Ok(File::from(unsafe { OwnedHandle::from_raw_handle(raw) }))
 }
-pub(crate) fn file_information(file: &File) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
-    // SAFETY: native POD is initialized before its exact writable query.
-    let mut info = unsafe { zeroed() };
-    // SAFETY: retained file and correctly typed writable metadata output.
-    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(info)
-}
+pub(crate) use se_native_path::windows::file::file_information;
 pub(crate) fn file_id(file: &File) -> io::Result<FileIdentity> {
-    // SAFETY: native POD is initialized before its exact sized query.
-    let mut id: FILE_ID_INFO = unsafe { zeroed() };
-    // SAFETY: retained file and aligned writable FileIdInfo output of the documented size.
-    if unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            FileIdInfo,
-            (&mut id as *mut FILE_ID_INFO).cast(),
-            size_of::<FILE_ID_INFO>() as u32,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
+    let id = se_native_path::windows::file::file_id(file)?;
     Ok(FileIdentity {
-        volume: id.VolumeSerialNumber,
-        index: id.FileId.Identifier,
+        volume: id.volume,
+        index: id.index,
     })
 }

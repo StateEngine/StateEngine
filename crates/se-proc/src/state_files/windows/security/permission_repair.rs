@@ -61,7 +61,7 @@ pub(super) fn require_existing_access(file: &File, path: &Path, directory: bool)
         };
         // SAFETY: native mapping reads a retained mapping and updates one mask.
         unsafe { MapGenericMask(&mut mask, &mapping) };
-        for (slot, expected) in [user.sid(), system.0].into_iter().enumerate() {
+        for (slot, expected) in [user.sid(), system.as_ptr()].into_iter().enumerate() {
             if equal(principal, expected) {
                 if flags & INHERIT_ONLY_ACE == 0 {
                     current[slot] |= mask;

@@ -54,31 +54,9 @@ pub(super) fn key(file: &File, metadata: &std::fs::Metadata) -> IpcNativeResult<
     };
     #[cfg(windows)]
     let identity = {
-        use std::{mem::size_of, os::windows::io::AsRawHandle};
-        use windows_sys::Win32::Storage::FileSystem::*;
-        let mut id = FILE_ID_INFO {
-            VolumeSerialNumber: 0,
-            FileId: FILE_ID_128 {
-                Identifier: [0; 16],
-            },
-        };
-        // SAFETY: retained file handle, aligned initialized FILE_ID_INFO output and exact byte size.
-        if unsafe {
-            GetFileInformationByHandleEx(
-                file.as_raw_handle(),
-                FileIdInfo,
-                (&mut id as *mut FILE_ID_INFO).cast(),
-                size_of::<FILE_ID_INFO>() as u32,
-            )
-        } == 0
-        {
-            return Err(last("read executable cache file identity"));
-        }
-        [
-            id.VolumeSerialNumber.to_be_bytes().as_slice(),
-            &id.FileId.Identifier,
-        ]
-        .concat()
+        let id = se_native_path::windows::file::file_id(file)
+            .map_err(|e| error("read executable cache file identity", e))?;
+        [id.volume.to_be_bytes().as_slice(), &id.index].concat()
     };
     #[cfg(unix)]
     let changed = {

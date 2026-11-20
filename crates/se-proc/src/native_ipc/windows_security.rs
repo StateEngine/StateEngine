@@ -36,14 +36,18 @@ pub(super) fn descriptor() -> IpcNativeResult<Allocation> {
     {
         return Err(last("create owner-only IPC descriptor"));
     }
-    Ok(Allocation(raw))
+    // SAFETY: the native API returned a unique LocalFree allocation.
+    Ok(unsafe { Allocation::from_raw(raw) })
 }
 pub(super) fn verify(handle: HANDLE) -> IpcNativeResult<()> {
-    let descriptor = crate::windows_native::acl::SecurityDescriptor::query(
-        handle,
-        SE_FILE_OBJECT,
-        OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-    )
+    // SAFETY: the caller retains the native handle throughout this query.
+    let descriptor = unsafe {
+        crate::windows_native::acl::SecurityDescriptor::query(
+            handle,
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+        )
+    }
     .map_err(|e| error("read IPC pipe protection", e))?;
     let current = current_sid()?;
     let control = descriptor
@@ -64,7 +68,7 @@ pub(super) fn verify(handle: HANDLE) -> IpcNativeResult<()> {
             "protected current-user IPC DACL required",
         )
     })?;
-    if dacl.len() == 0 {
+    if dacl.is_empty() {
         return Err(refuse(
             IpcNativeErrorCode::UnsafeEndpoint,
             "IPC DACL has no owner grant",
@@ -96,7 +100,8 @@ pub(super) fn verify(handle: HANDLE) -> IpcNativeResult<()> {
 /// Diagnostic only; a named owner read grants no pipe/client authority. ACLs
 /// can refuse READ_CONTROL, in which case the caller retains that exact cause.
 pub(super) fn named_owner(name: &[u16]) -> IpcNativeResult<String> {
-    let descriptor = crate::windows_native::acl::SecurityDescriptor::named_owner(name)
+    // SAFETY: the pipe-name adapter passes its NUL-terminated UTF-16 buffer.
+    let descriptor = unsafe { crate::windows_native::acl::SecurityDescriptor::named_owner(name) }
         .map_err(|e| error("read existing pipe owner SID", e))?;
     sid_text(descriptor.owner)
 }

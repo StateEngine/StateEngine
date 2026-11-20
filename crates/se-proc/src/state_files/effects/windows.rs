@@ -54,7 +54,7 @@ fn open_shared_with_layout(
     };
     let attributes = descriptor.as_ref().map(|d| SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: d.0,
+        lpSecurityDescriptor: d.as_ptr(),
         bInheritHandle: 0,
     });
     // SAFETY: retained terminated pathname, optional native security descriptor
