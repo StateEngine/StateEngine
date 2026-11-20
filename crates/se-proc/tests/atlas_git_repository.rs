@@ -594,3 +594,139 @@ fn real_commit_reads_ignore_repository_config_and_refuse_alternate_object_roots(
     assert!(!f.0.join("control").exists());
     Ok(())
 }
+
+#[test]
+fn valid_commit_with_no_changed_paths_has_no_truncation_note() -> Check {
+    let _serial = SERIAL.lock().map_err(|_| "lock")?;
+    let fixture = Fixture::new()?;
+    let tree = fixture.make_tree(&["module.rs".into()])?;
+    let old = fixture.make_commit(&tree, None, "Add the module")?;
+    let head = fixture.make_commit(&tree, Some(&old), "Empty marker commit")?;
+    fs::write(fixture.0.join("git/HEAD"), format!("{head}\n"))?;
+    let reader = fixture.reader()?;
+    let window = reader.window(&head, 2, Instant::now() + Duration::from_secs(30))?;
+    reader.close()?;
+    assert_eq!(window.commits.len(), 2);
+    assert_eq!(window.commits[0].oid, head);
+    assert!(window.commits[0].paths.is_empty());
+    assert_eq!(window.commits[0].paths_note, None);
+    assert_eq!(window.commits[0].allowed_paths, None);
+    assert_eq!(window.commits[1].paths, ["module.rs"]);
+    assert_eq!(window.limit, HistoryLimit::Complete);
+    Ok(())
+}
+
+fn capped_file_names(prefix: &str, count: usize) -> Vec<String> {
+    (0..count)
+        .map(|index| {
+            let lead = format!("{prefix}{index:03}-");
+            format!("{lead}{}", "x".repeat(255 - lead.len()))
+        })
+        .collect()
+}
+
+#[test]
+fn exact_stdout_limit_uses_only_the_separate_window_budget() -> Check {
+    let _serial = SERIAL.lock().map_err(|_| "lock")?;
+    let fixture = Fixture::new()?;
+    let paths = capped_file_names("module-", 256);
+    assert_eq!(
+        paths.iter().map(|path| path.len() + 1).sum::<usize>(),
+        65_536
+    );
+    let tree = fixture.make_tree(&paths)?;
+    let head = fixture.make_commit(&tree, None, "Complete records at the cap")?;
+    fs::write(fixture.0.join("git/HEAD"), format!("{head}\n"))?;
+    let reader = fixture.reader()?;
+    let window = reader.window(&head, 1, Instant::now() + Duration::from_secs(30))?;
+    reader.close()?;
+    let commit = &window.commits[0];
+    // The complete stdout is exactly at its limit. Its retained memory cost
+    // still exceeds the independent history-window budget after allocation.
+    assert!(commit.paths.is_empty());
+    assert_eq!(commit.allowed_paths, Some(256));
+    let note = commit
+        .paths_note
+        .as_deref()
+        .ok_or("missing history window note")?;
+    assert!(
+        note.contains("history window") && note.ends_with("paths omitted"),
+        "{note}"
+    );
+    assert_eq!(window.limit, HistoryLimit::Complete);
+    Ok(())
+}
+
+#[test]
+fn partial_changed_path_at_byte_limit_proves_no_allowed_record() -> Check {
+    let _serial = SERIAL.lock().map_err(|_| "lock")?;
+    let fixture = Fixture::new()?;
+    let denied = capped_file_names("id_", 255);
+    let leaf = "x".repeat(255);
+    let nested = fixture.make_tree(std::slice::from_ref(&leaf))?;
+    let blob = fixture.hash_blob(b"content\n")?;
+    let mut tree_listing = String::new();
+    for path in &denied {
+        tree_listing.push_str(&format!("100644 blob {blob}\t{path}\n"));
+    }
+    tree_listing.push_str(&format!("040000 tree {nested}\tzoom-folder\n"));
+    let mut command = fixture.command();
+    command
+        .arg("--git-dir")
+        .arg(fixture.0.join("git"))
+        .arg("mktree")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped());
+    let mut child = command.spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or("git stdin absent")?
+        .write_all(tree_listing.as_bytes())?;
+    let tree = child.wait_with_output()?;
+    assert!(tree.status.success());
+    let head = fixture.make_commit(
+        String::from_utf8(tree.stdout)?.trim(),
+        None,
+        "Partial record",
+    )?;
+    fs::write(fixture.0.join("git/HEAD"), format!("{head}\n"))?;
+    let complete_prefix = denied.iter().map(|path| path.len() + 1).sum::<usize>();
+    assert!(complete_prefix < 65_536);
+    assert!(complete_prefix + "zoom-folder/".len() + leaf.len() + 1 > 65_536);
+    let reader = fixture.reader()?;
+    let window = reader.window(&head, 1, Instant::now() + Duration::from_secs(30))?;
+    reader.close()?;
+    let commit = &window.commits[0];
+    assert_eq!(commit.allowed_paths, Some(0));
+    let note = commit
+        .paths_note
+        .as_deref()
+        .ok_or("missing byte-cap note")?;
+    assert!(
+        note.contains("bounded Git read") && note.ends_with("entry withheld for size"),
+        "{note}"
+    );
+    assert!(commit.paths.is_empty());
+    assert_eq!(window.limit, HistoryLimit::Complete);
+    Ok(())
+}
+
+#[test]
+fn final_nul_is_a_separator_and_does_not_add_a_changed_path() -> Check {
+    let _serial = SERIAL.lock().map_err(|_| "lock")?;
+    let fixture = Fixture::new()?;
+    let paths = vec!["first.rs".to_owned(), "second file.rs".to_owned()];
+    let tree = fixture.make_tree(&paths)?;
+    let head = fixture.make_commit(&tree, None, "Complete changed paths")?;
+    fs::write(fixture.0.join("git/HEAD"), format!("{head}\n"))?;
+    let reader = fixture.reader()?;
+    let window = reader.window(&head, 1, Instant::now() + Duration::from_secs(30))?;
+    reader.close()?;
+    let commit = &window.commits[0];
+    assert_eq!(commit.paths, paths);
+    assert_eq!(commit.paths_note, None);
+    assert_eq!(commit.allowed_paths, None);
+    assert_eq!(window.limit, HistoryLimit::Complete);
+    Ok(())
+}
