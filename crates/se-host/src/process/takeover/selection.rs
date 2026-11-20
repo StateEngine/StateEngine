@@ -4,11 +4,9 @@ use se_store::{ProcessIdentityRecord, ProjectionRecord};
 use se_types::{Detail, Read, SeError, details};
 
 pub(super) fn process_identity(record: &ProjectionRecord) -> Result<&ProcessIdentityRecord> {
-    match &record.current.body {
-        EventBody::ProcessRegistered { identity, .. }
-        | EventBody::ProcessTransition { identity, .. } => Ok(identity),
-        _ => Err(error("takeover selection", "wrong process record kind")),
-    }
+    record
+        .process_identity()
+        .ok_or_else(|| error("takeover selection", "wrong process record kind"))
 }
 
 fn sessions(plan: &LaunchPlan) -> Vec<se_types::SessionId> {
