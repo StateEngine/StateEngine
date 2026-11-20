@@ -33,6 +33,12 @@ pub trait SourceScan<'a> {
     fn open(&mut self, path: &RelativePath) -> AtlasResult<Option<Box<dyn SourceFile + 'a>>>;
     fn finish(self: Box<Self>) -> AtlasResult<()>;
 }
+pub trait LiveSource: AtlasSource {
+    fn open_stream(&self, path: &RelativePath) -> AtlasResult<Option<Box<dyn SourceFile + '_>>>;
+    fn open_scan(&self) -> AtlasResult<Box<dyn SourceScan<'_> + '_>> {
+        Ok(Box::new(StreamScan(self)))
+    }
+}
 struct DefaultScan<'a, A>(&'a A);
 impl<'a, A: SourceAccess> SourceScan<'a> for DefaultScan<'a, A> {
     fn open(&mut self, path: &RelativePath) -> AtlasResult<Option<Box<dyn SourceFile + 'a>>> {
@@ -40,6 +46,23 @@ impl<'a, A: SourceAccess> SourceScan<'a> for DefaultScan<'a, A> {
     }
     fn finish(self: Box<Self>) -> AtlasResult<()> {
         Ok(())
+    }
+}
+struct StreamScan<'a, S: ?Sized>(&'a S);
+impl<'a, S: LiveSource + ?Sized> SourceScan<'a> for StreamScan<'a, S> {
+    fn open(&mut self, path: &RelativePath) -> AtlasResult<Option<Box<dyn SourceFile + 'a>>> {
+        self.0.open_stream(path)
+    }
+    fn finish(self: Box<Self>) -> AtlasResult<()> {
+        Ok(())
+    }
+}
+impl<A: SourceAccess> LiveSource for RegisteredSource<A> {
+    fn open_stream(&self, path: &RelativePath) -> AtlasResult<Option<Box<dyn SourceFile + '_>>> {
+        self.open(path)
+    }
+    fn open_scan(&self) -> AtlasResult<Box<dyn SourceScan<'_> + '_>> {
+        RegisteredSource::open_scan(self)
     }
 }
 struct RegisteredScan<'a, A> {

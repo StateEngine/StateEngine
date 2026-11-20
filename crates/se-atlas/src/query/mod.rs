@@ -73,38 +73,7 @@ pub trait RecordReader {
         query: Option<&QueryText>,
     ) -> AtlasResult<Read<HitBody>>;
 }
-pub trait LiveSource: crate::lifecycle::AtlasSource {
-    fn open_stream(
-        &self,
-        path: &RelativePath,
-    ) -> AtlasResult<Option<Box<dyn crate::source::SourceFile + '_>>>;
-    fn open_scan(&self) -> AtlasResult<Box<dyn crate::source::SourceScan<'_> + '_>> {
-        Ok(Box::new(StreamScan(self)))
-    }
-}
-struct StreamScan<'a, S: ?Sized>(&'a S);
-impl<'a, S: LiveSource + ?Sized> crate::source::SourceScan<'a> for StreamScan<'a, S> {
-    fn open(
-        &mut self,
-        path: &RelativePath,
-    ) -> AtlasResult<Option<Box<dyn crate::source::SourceFile + 'a>>> {
-        self.0.open_stream(path)
-    }
-    fn finish(self: Box<Self>) -> AtlasResult<()> {
-        Ok(())
-    }
-}
-impl<A: crate::source::SourceAccess> LiveSource for crate::source::RegisteredSource<A> {
-    fn open_stream(
-        &self,
-        path: &RelativePath,
-    ) -> AtlasResult<Option<Box<dyn crate::source::SourceFile + '_>>> {
-        self.open(path)
-    }
-    fn open_scan(&self) -> AtlasResult<Box<dyn crate::source::SourceScan<'_> + '_>> {
-        crate::source::RegisteredSource::open_scan(self)
-    }
-}
+pub use crate::source::LiveSource;
 pub struct ReaderContext<'a> {
     pub memory: Option<MemoryBudget>,
     pub viewer: AtlasPrincipal,
