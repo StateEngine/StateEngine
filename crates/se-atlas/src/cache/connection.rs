@@ -13,6 +13,7 @@ use std::{
 };
 #[path = "query_arena.rs"]
 mod query_arena;
+use query_arena::Reservation;
 #[path = "statement.rs"]
 mod statement;
 pub use statement::{BudgetStatement, SqlView};
@@ -29,8 +30,8 @@ const STATEMENT_BYTES: usize = 16_384;
 pub enum ConnectionRole {
     HostReader,
     /// A synchronous foreground query queues before opening SQLite and before
-    /// creating its short execution deadline. It owns the shared result arena
-    /// through connection close, including WAL startup and teardown.
+    /// creating its short execution deadline. It opens and closes inside the
+    /// shared arena; its queries read their own WAL snapshot outside it.
     QueryReader,
     HostWriter,
     /// The native owner already integrity-checked this exact epoch at activation
@@ -53,6 +54,10 @@ impl ConnectionRole {
             self,
             Self::HostWriter | Self::MaintenanceWriter | Self::CandidateWriter | Self::ColdWriter
         )
+    }
+    /// Opens and closes inside the arena, and works outside it in between.
+    fn opens_in_arena(self) -> bool {
+        matches!(self, Self::QueryReader | Self::MaintenanceWriter)
     }
 }
 /// Native SQL/allocator qualification, not an estimate or request-supplied flag.
@@ -166,13 +171,22 @@ pub struct CacheConnection<'a> {
     pin: DatabasePin,
     identity: CacheIdentity,
     role: ConnectionRole,
-    arena: Option<query_arena::Reservation>,
+    arena: Option<Reservation>,
     _slot: Slot,
+    until: Instant, // The latest caller budget; closing waits for the arena no longer.
 }
 impl Drop for CacheConnection<'_> {
     fn drop(&mut self) {
         if self.role == ConnectionRole::ColdWriter {
             self.files.release_cold_observations();
+        }
+        // Close in the arena if free within the last budget, else one try; `db` closes
+        // first. Missing it is safe: the host sets NO_CKPT_ON_CLOSE on these roles
+        // (native_sql::retain_wal), so this close never checkpoints the WAL.
+        if self.role.opens_in_arena() {
+            let reader = self.role == ConnectionRole::QueryReader;
+            let free = Reservation::acquire(reader, self.until).ok();
+            self.arena = free.or_else(|| Reservation::try_now(reader));
         }
     }
 }
@@ -188,20 +202,14 @@ impl<'a> CacheConnection<'a> {
             return Ok(None);
         };
         let slot = Slot::take(role, deadline)?;
-        // The native work/query adapters close their handles before returning.
-        // Include open and close in the same arena: WAL startup/checkpoint locks
-        // can otherwise race even when SQL transactions are serialized.
-        let arena = if matches!(
-            role,
-            ConnectionRole::QueryReader | ConnectionRole::MaintenanceWriter
-        ) {
-            Some(query_arena::Reservation::acquire(
-                role == ConnectionRole::QueryReader,
-                deadline,
-            )?)
-        } else {
-            None
-        };
+        // Native adapters open and close inside the arena (WAL startup and
+        // checkpoint locks race otherwise). Queries then read their snapshot
+        // outside it; the maintenance writer takes it per transaction.
+        let reader = role == ConnectionRole::QueryReader;
+        let _opening = role
+            .opens_in_arena()
+            .then(|| Reservation::acquire(reader, deadline));
+        let _opening = _opening.transpose()?;
         files.validate_database(&pin)?;
         let mut db = open(&pin, role, deadline)?;
         files.configure_connection_role(&mut db, role)?;
@@ -226,8 +234,9 @@ impl<'a> CacheConnection<'a> {
             pin,
             identity: id,
             role,
-            arena,
+            arena: None,
             _slot: slot,
+            until: deadline,
         }))
     }
     /// Only an exclusive runtime/cache writer may reserve a fresh epoch. No
@@ -295,6 +304,7 @@ impl<'a> CacheConnection<'a> {
             role,
             arena: None,
             _slot: slot,
+            until: deadline,
         })
     }
     pub fn validate(&mut self, deadline: Instant) -> AtlasResult<()> {
@@ -336,19 +346,16 @@ impl<'a> CacheConnection<'a> {
         deadline: Instant,
         work: impl FnOnce(&SqlView<'_>) -> AtlasResult<T>,
     ) -> AtlasResult<T> {
+        self.until = deadline;
         let _arena = if self.arena.is_none()
             && matches!(
                 self.role,
                 ConnectionRole::HostReader
-                    | ConnectionRole::QueryReader
                     | ConnectionRole::HostWriter
                     | ConnectionRole::MaintenanceWriter
             ) {
-            Some(query_arena::Reservation::acquire(
-                matches!(
-                    self.role,
-                    ConnectionRole::HostReader | ConnectionRole::QueryReader
-                ),
+            Some(Reservation::acquire(
+                self.role == ConnectionRole::HostReader,
                 deadline,
             )?)
         } else {
@@ -361,7 +368,10 @@ impl<'a> CacheConnection<'a> {
                 // One renewal quantum can commit several transactions on the
                 // same connection. Reclaim earlier commits before refusing the
                 // next one; pinned readers still have to pass the size check.
-                self.checkpoint(deadline)?;
+                if !self.checkpoint_held(deadline)? {
+                    // A query snapshot outlasted the busy wait: yield; the next admission retries.
+                    return Err(stage_timeout("WAL checkpoint behind a query", 0));
+                }
                 wal = self.files.wal_bytes(&self.pin)?;
             }
             if growth > WAL_STOP || wal.checked_add(growth).is_none_or(|v| v > WAL_STOP) {
@@ -432,7 +442,13 @@ impl<'a> CacheConnection<'a> {
     }
     /// Event/commit/drain driven only. External pinned snapshots keep writes
     /// suspended; no timer or forced reader expiry is introduced.
+    /// TRUNCATE checkpoint at 4 MB of WAL, inside the arena. An open query snapshot
+    /// makes it return `false` after the 25 ms busy wait; the next write retries.
     pub fn checkpoint(&mut self, deadline: Instant) -> AtlasResult<bool> {
+        let _arena = Reservation::acquire(false, deadline)?;
+        self.checkpoint_held(deadline)
+    }
+    fn checkpoint_held(&mut self, deadline: Instant) -> AtlasResult<bool> {
         if !self.role.writable() {
             return Err(cache_error("reader cannot checkpoint"));
         }
@@ -665,18 +681,14 @@ fn finite<T>(
     stage: &str,
     work: impl FnOnce(&Connection, u64) -> AtlasResult<T>,
 ) -> AtlasResult<T> {
-    if crate::clock::now() >= deadline {
-        return Err(stage_timeout(stage, 0));
-    }
     let remaining = deadline.saturating_duration_since(crate::clock::now());
     if remaining.is_zero() {
         return Err(stage_timeout(stage, 0));
     }
-    let budget_ms = u64::try_from(remaining.as_millis())
-        .unwrap_or(u64::MAX)
-        .saturating_add(u64::from(
-            !remaining.subsec_nanos().is_multiple_of(1_000_000),
-        ));
+    // A busy wait (a reader's snapshot, a checkpoint) ends within this budget.
+    db.busy_timeout(remaining.min(Duration::from_millis(25)))
+        .map_err(cache_error)?;
+    let budget_ms = ceil_ms(remaining);
     db.progress_handler(1000, Some(move || crate::clock::now() >= deadline))
         .map_err(cache_error)?;
     let result = work(db, budget_ms);
@@ -705,18 +717,17 @@ pub(crate) fn stage_timeout(stage: &str, budget_ms: u64) -> se_types::SeError {
 
 /// Report a bounded SQL phase using its actual allowance and elapsed time.
 pub fn timeout_phase(phase: &str, budget: Duration, elapsed: Duration) -> se_types::SeError {
-    let millis = |duration: Duration| {
-        u64::try_from(duration.as_millis())
-            .unwrap_or(u64::MAX)
-            .saturating_add(u64::from(
-                !duration.subsec_nanos().is_multiple_of(1_000_000),
-            ))
-    };
     se_types::SeError::new(se_types::Detail::DeadlineExceeded(
         se_types::details::DeadlineExceeded {
-            op: format!("Atlas SQL {phase} (elapsed {} ms)", millis(elapsed)),
-            deadline_ms: millis(budget),
+            op: format!("Atlas SQL {phase} (elapsed {} ms)", ceil_ms(elapsed)),
+            deadline_ms: ceil_ms(budget),
         },
+    ))
+}
+fn ceil_ms(duration: Duration) -> u64 {
+    let whole = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+    whole.saturating_add(u64::from(
+        !duration.subsec_nanos().is_multiple_of(1_000_000),
     ))
 }
 
