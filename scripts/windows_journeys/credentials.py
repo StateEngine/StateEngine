@@ -27,15 +27,19 @@ def present(path):
         return False
 
 
-def plain(path):
+def unlinked_metadata(path):
     path = Path(path)
-    require(path.is_absolute(), 'Credential seed path must be absolute')
-    for parent in [path, *path.parents]:
-        info = parent.lstat()
+    require(path.is_absolute(), 'Credential path must be absolute')
+    entry = path.lstat()
+    for info in (entry, *(parent.lstat() for parent in path.parents)):
         require(not stat.S_ISLNK(info.st_mode)
-                and not getattr(info, 'st_file_attributes', 0) & 0x400,
+                and not getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT,
                 'Credential paths must contain no links or reparse points')
-    info = path.stat()
+    return entry
+
+
+def plain(path):
+    info = unlinked_metadata(path)
     require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size <= 65536,
             'Credential seed must be one bounded private file')
     if os.name == 'posix':
@@ -221,14 +225,14 @@ class Credentials:
                 credential = {**credential, 'tokens': {**credential['tokens'], 'refresh_token': ''}}
             target = directory / 'auth.json'
             descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            self.target = target
             with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
-                if sys.platform == 'darwin':
-                    require_private_acl(stream.fileno())
+                created = os.fstat(stream.fileno())
+                self.target = (target, created)
+                require(created.st_ino and os.path.samestat(created, plain(target)),
+                        'Private credential copy identity is unproven')
+                require(not os.path.samestat(created, self.identity),
+                        'Private credential copy shares the seed identity')
                 json.dump(credential, stream)
-            info = plain(self.target)
-            require((info.st_dev, info.st_ino) != (self.identity.st_dev, self.identity.st_ino),
-                    'Private credential copy shares the seed identity')
         if self.provider == 'claude':
             config = directory / '.claude.json'
             value = json.loads(config.read_text()) if config.exists() else {}
@@ -239,13 +243,18 @@ class Credentials:
             temporary.replace(config)
 
     def close(self):
-        if self.target is not None and present(self.target):
-            plain(self.target)
-            self.target.unlink()
+        target = None
+        if self.target is not None:
+            target, created = self.target
+            if present(target):
+                # Unlink the file we created even if its access checks failed.
+                require(created.st_ino and os.path.samestat(created, unlinked_metadata(target)),
+                        'Private credential copy identity changed before cleanup')
+                target.unlink()
         current = plain(self.path)
         require((current.st_dev, current.st_ino) == (self.identity.st_dev, self.identity.st_ino)
                 and digest(self.path) == self.sha256, 'Private seed was changed during the run')
         return dict(seed_identity_unchanged=True, seed_bytes_unchanged=True,
-                    private_copy_absent=self.target is None or not present(self.target),
+                    private_copy_absent=target is None or not present(target),
                     refresh_tokens_copied=False,
                     delivery='environment' if self.provider == 'claude' else 'private-file')

@@ -44,6 +44,31 @@ class NativeJourneyCredentials(unittest.TestCase):
             self.credentials.close()
         self.assertFalse(self.copy.exists())
 
+    @unittest.skipUnless(os.name == 'posix', 'File modes are observed on Unix')
+    def test_invalid_copy_mode_refuses_before_writing_and_still_closes(self):
+        previous = os.umask(0o400)
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'Credential file must be owner-only'):
+                self.credentials.install(self.home, self.environment)
+        finally:
+            os.umask(previous)
+        size = self.copy.stat().st_size
+        self.credentials.close()
+        self.assertEqual(size, 0)
+        self.assertFalse(self.copy.exists())
+
+    def test_cleanup_refuses_a_replacement_at_the_owned_path(self):
+        self.credentials.install(self.home, self.environment)
+        replacement = self.copy.with_name('replacement.json')
+        original = b'replacement synthetic fixture file\n'
+        fd = os.open(replacement, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(original)
+        replacement.replace(self.copy)
+        with self.assertRaisesRegex(RuntimeError, 'Private credential copy identity changed'):
+            self.credentials.close()
+        self.assertEqual(self.copy.read_bytes(), original)
+
     def test_pre_init_failure_closes_the_owned_copy_without_a_process_census(self):
         def fail_before_init():
             self.credentials.install(self.home, self.environment)
