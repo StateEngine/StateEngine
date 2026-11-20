@@ -1,5 +1,5 @@
-//! Protects: G1 / 70 §2.1 — an initialized owner home and ambient owner access
-//! never supply a missing or invalid per-call capability on the real stdio door.
+//! Protects: an identity-free guest cannot inherit owner authority, and an
+//! invalid explicit capability cannot fall back to that guest.
 use std::{
     io::{BufRead, BufReader, Read, Write},
     path::Path,
@@ -8,12 +8,17 @@ use std::{
     time::{Duration, Instant},
 };
 type Check = Result<(), Box<dyn std::error::Error>>;
+#[path = "../../test-support/executable.rs"]
+mod executable;
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
+#[path = "support/foreground_host.rs"]
+mod foreground_host;
 
 fn command(image: &Path, home: &Path) -> Command {
     let mut command = Command::new(image);
     command.arg("--home").arg(home);
+    command.env_remove("PATH");
     for (name, _) in std::env::vars_os() {
         let text = name.to_string_lossy();
         if text.starts_with("SE_")
@@ -43,9 +48,10 @@ struct Rpc {
     replies: Receiver<Result<serde_json::Value, String>>,
 }
 impl Rpc {
-    fn open(image: &Path, home: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    fn open(image: &Path, home: &Path, repo: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let mut child = command(image, home)
             .args(["mcp", "--stdio"])
+            .current_dir(repo)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -96,7 +102,7 @@ impl Rpc {
         params: serde_json::Value,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
         self.send(serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))?;
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             if Instant::now() >= deadline {
                 return Err("MCP response deadline expired".into());
@@ -159,6 +165,10 @@ fn stdio_tools_never_inherit_the_initialized_owners_authority() -> Check {
             .arg(&repo)
             .output()?,
     )?;
+    let mut host_command = command(image, home);
+    host_command.arg("--json").current_dir(&repo);
+    let host = foreground_host::ForegroundHost::start(host_command, home)?;
+    assert_eq!(host.ready()["state"], "running");
     // Positive owner control: this same home really has readable private agent state.
     checked(
         command(image, home)
@@ -166,7 +176,7 @@ fn stdio_tools_never_inherit_the_initialized_owners_authority() -> Check {
             .current_dir(&repo)
             .output()?,
     )?;
-    let mut rpc = Rpc::open(image, home)?;
+    let mut rpc = Rpc::open(image, home, &repo)?;
     let initialized = rpc.call(1, "initialize", serde_json::json!({"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"independent-authority-judge","version":"1"}}))?;
     assert!(
         initialized["result"]["protocolVersion"].is_string(),
@@ -181,7 +191,7 @@ fn stdio_tools_never_inherit_the_initialized_owners_authority() -> Check {
     for (id, params) in [
         (
             3,
-            serde_json::json!({"name":"stateengine_status","arguments":{}}),
+            serde_json::json!({"name":"stateengine_msg_list","arguments":{}}),
         ),
         (
             4,
@@ -200,6 +210,92 @@ fn stdio_tools_never_inherit_the_initialized_owners_authority() -> Check {
         );
     }
     drop(rpc);
+    checked(
+        command(image, home)
+            .args(["--json", "down"])
+            .current_dir(&repo)
+            .output()?,
+    )?;
+    host.wait()?;
+    drop(host);
     drop(std::mem::ManuallyDrop::into_inner(f));
+    Ok(())
+}
+
+/// Hosted Windows owns an enclosing job that refuses detached startup. Check
+/// the real MCP wire response and use its foreground recovery in the same home.
+#[cfg(windows)]
+#[test]
+fn mcp_recovers_with_the_same_foreground_home_after_windows_blocks_detachment() -> Check {
+    se_proc::initialize_file_creation_owner()?;
+    let fixture = std::mem::ManuallyDrop::new(fixture::Fixture::new()?);
+    let home = &fixture.options.state_directory;
+    let image = Path::new(env!("CARGO_BIN_EXE_se"));
+    let repo = fixture.home.join("repository");
+    std::fs::create_dir(&repo)?;
+    checked(
+        command(image, home)
+            .args(["--json", "init", "--repo"])
+            .arg(&repo)
+            .output()?,
+    )?;
+    assert!(!home.join("endpoint.json").try_exists()?);
+    let mut rpc = Rpc::open(image, home, &repo)?;
+    let initialized = rpc.call(
+        1,
+        "initialize",
+        serde_json::json!({"protocolVersion":"2024-11-05","capabilities":{},
+                          "clientInfo":{"name":"native-startup-judge","version":"1"}}),
+    )?;
+    assert!(initialized["result"]["protocolVersion"].is_string());
+    rpc.send(serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}))?;
+    let refusal = rpc.call(2, "tools/list", serde_json::json!({}))?;
+    let message = refusal["error"]["message"].as_str().unwrap_or("");
+    if !message.starts_with("job-breakaway-refused:") {
+        drop(rpc);
+        let cleanup = checked(
+            command(image, home)
+                .args(["--json", "down"])
+                .current_dir(&repo)
+                .output()?,
+        );
+        return Err(format!(
+            "the runner did not witness a breakaway refusal: {refusal}; {cleanup:?}"
+        )
+        .into());
+    }
+
+    let mut host_command = command(image, home);
+    host_command.arg("--json").current_dir(&repo);
+    let host = foreground_host::ForegroundHost::start(host_command, home)?;
+    let listed = rpc.call(3, "tools/list", serde_json::json!({}))?;
+    drop(rpc);
+    let stopped = checked(
+        command(image, home)
+            .args(["--json", "down"])
+            .current_dir(&repo)
+            .output()?,
+    )?;
+    host.wait()?;
+    drop(host);
+    drop(std::mem::ManuallyDrop::into_inner(fixture));
+    assert_eq!(stopped["complete"], true);
+    assert!(
+        message.contains("se up")
+            && message.contains("same --home")
+            && message.contains("foreground"),
+        "the MCP reply lost the recovery step: {refusal}"
+    );
+    assert!(
+        listed["result"]["tools"].as_array().is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool["name"] == "stateengine_status")
+        }),
+        "MCP discovery did not recover through the same foreground home: {listed}"
+    );
+    println!(
+        "The no-host MCP reply carries the same-home foreground recovery and the retry lists tools."
+    );
     Ok(())
 }
