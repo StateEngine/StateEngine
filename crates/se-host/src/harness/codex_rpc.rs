@@ -51,7 +51,6 @@ pub struct CodexHarness {
     io: Arc<dyn ProviderIoPlatform>,
     pool: BlockingPool,
     state_home: PathBuf,
-    #[cfg(unix)]
     socket_root: PathBuf,
     mcp_port: u16,
     configuration: ConfigFile,
@@ -89,13 +88,10 @@ impl CodexHarness {
         mcp_port: u16,
         configuration: ConfigFile,
     ) -> Self {
-        #[cfg(not(unix))]
-        let _ = socket_root;
         Self {
             io,
             pool,
             state_home,
-            #[cfg(unix)]
             socket_root,
             mcp_port,
             configuration,

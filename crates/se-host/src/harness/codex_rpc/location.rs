@@ -31,53 +31,13 @@ impl CodexHarness {
         Ok(())
     }
     pub(super) fn socket(&self, request: &HarnessRequest) -> Result<Option<PathBuf>> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStrExt;
-            let directory = self.directory(&request.identity.session)?;
-            let preferred = directory.join("cx/s");
-            let selected = if preferred.as_os_str().as_bytes().len() < 100 {
-                preferred
-            } else {
-                let launch =
-                    se_proc::session_launch_id(&request.identity.session).map_err(native_error)?;
-                let requested = self
-                    .socket_root
-                    .join(format!(
-                        "se-cx-{}",
-                        launch.as_str().trim_start_matches("lch_")
-                    ))
-                    .join("s");
-                if requested.as_os_str().as_bytes().len() < 100 {
-                    requested
-                } else {
-                    se_proc::native_ipc::UnixSocketPaths::short_provider_root()
-                        .join(format!(
-                            "se-cx-{}",
-                            launch.as_str().trim_start_matches("lch_")
-                        ))
-                        .join("s")
-                }
-            };
-            if !selected.is_absolute() || selected.as_os_str().as_bytes().len() >= 100 {
-                return Err(incompatible(
-                    "no protected Unix socket path fits the provider limit",
-                    "Select a shorter private runtime/temp location.",
-                ));
-            }
-            Ok(Some(selected))
-        }
-        #[cfg(windows)]
-        {
-            let session = &request.identity.session;
-            crate::codex_endpoint::socket_path(self.directory(session)?, &self.state_home, session)
-                .map(Some)
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = request;
-            Ok(None)
-        }
+        let session = &request.identity.session;
+        crate::codex_endpoint::socket_path(
+            self.directory(session)?,
+            &self.socket_root,
+            &self.state_home,
+            session,
+        )
     }
     /// Recovery reads the original protected address, never a newly selected path.
     #[cfg(any(unix, windows))]
