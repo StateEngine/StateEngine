@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 sys.dont_write_bytecode = True
 from mail_cli import Fixture
@@ -130,8 +131,21 @@ def run(image, output):
         image = single
     fixture = Fixture(image, output)
     install_double(fixture)
+    host = None
     try:
-        fixture.ok("up")
+        if os.name == "nt":
+            # Hosted Windows runners may refuse job breakaway, so own the host in
+            # the foreground as the other Windows fixtures do.
+            log = (fixture.root / "host.log").open("wb")
+            host = subprocess.Popen([str(fixture.se), "--json", "--home", str(fixture.home), "up", "--foreground"],
+                                    env=fixture.env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+            deadline = time.monotonic() + 120
+            while fixture.ok("status")["runtime"]["state"] != "running":
+                assert host.poll() is None and time.monotonic() < deadline, (
+                    "foreground host did not start", (fixture.root / "host.log").read_text(errors="replace"))
+                time.sleep(0.5)
+        else:
+            fixture.ok("up")
         fixture.env[ENVIRONMENT] = TOKEN
         try:
             fixture.launch()
@@ -157,6 +171,8 @@ def run(image, output):
         print(f"ok 3 - token absent from data home, call output and {hosts} host environments", flush=True)
     finally:
         fixture.call("down")
+        if host is not None:
+            host.wait(timeout=60)
     assert not files_with_token(fixture), "token appeared during shutdown"
     print("ok 4 - token absent after shutdown", flush=True)
 
