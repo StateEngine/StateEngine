@@ -34,8 +34,7 @@ pub(super) async fn bound(
                         se_types::details::CapabilityInvalid {
                             subject: "guest connection".into(),
                             reason: "the caller has no agent identity".into(),
-                            next_step: "Launch through `se launch` or claim an existing identity."
-                                .into(),
+                            next_step: "Launch an agent through `se launch`.".into(),
                         },
                     ))
                 })?
