@@ -13,8 +13,8 @@ use std::{
 use windows_sys::Win32::{Foundation::*, Security::*, Storage::FileSystem::*};
 
 mod metadata;
+mod relative;
 pub(crate) mod security;
-mod short_cli;
 use security::{Layout, descriptor};
 fn validate_component(value: &std::ffi::OsStr, path: &Path) -> Result<()> {
     let units: Vec<_> = value.encode_wide().collect();
@@ -320,7 +320,7 @@ pub(super) struct Directory {
     identity: Identity,
     resolved_root: PathBuf,
     layout: Layout,
-    short_cli_parent: Option<(File, std::time::Instant)>,
+    retained: Option<RetainedParent>,
 }
 impl Directory {
     pub fn identity(&self, file: &File, path: &Path) -> Result<Identity> {
@@ -353,11 +353,11 @@ impl Directory {
     fn open_with_layout(path: &Path, layout: Layout) -> Result<Self> {
         Self::open_for(path, layout, false)
     }
-    pub fn open_short_cli(path: &Path) -> Result<Self> {
+    pub fn open_retained(path: &Path) -> Result<Self> {
         Self::open_for(path, Layout::State, true)
     }
-    fn open_for(path: &Path, layout: Layout, short_cli: bool) -> Result<Self> {
-        let (file, _, short_cli_parent) = walk_with_parent(path, false, None, layout, short_cli)?;
+    fn open_for(path: &Path, layout: Layout, retain: bool) -> Result<Self> {
+        let (file, _, parent) = walk_with_parent(path, false, None, layout, retain)?;
         let identity = metadata_for(&file, path, true, layout)?;
         let mut buffer = vec![0u16; 32768];
         // SAFETY: retained directory handle, writable UTF-16 buffer and explicit
@@ -385,24 +385,30 @@ impl Directory {
             identity,
             resolved_root,
             layout,
-            short_cli_parent: short_cli_parent.map(|parent| (parent, std::time::Instant::now())),
+            retained: parent.map(RetainedParent::new),
         })
     }
+    pub fn is_retained(&self) -> bool {
+        self.retained.is_some()
+    }
     pub fn check_name(&self, path: &Path) -> Result<()> {
-        if let Some((parent, checked)) = &self.short_cli_parent
-            && checked.elapsed() <= SHORT_CLI_ANCESTRY_AGE
-        {
-            let leaf = path
-                .file_name()
-                .ok_or_else(|| unsafe_path("state root name missing", path))?;
-            match short_cli::open(parent, leaf, path, true) {
-                Ok(found) => return self.same_metadata_root(&found, path),
-                Err(error) if short_cli::retry_by_name(&error) => (),
-                Err(error) => return Err(error),
-            }
+        let Some(retained) = &self.retained else {
+            return self.same_metadata_root(&walk_for(path, false, None, self.layout)?, path);
+        };
+        let leaf = path
+            .file_name()
+            .ok_or_else(|| unsafe_path("state root name missing", path))?;
+        match retained.fresh(|parent| relative::open(parent, leaf, path, true)) {
+            Some(Ok(found)) => return self.same_metadata_root(&found, path),
+            Some(Err(error)) if !relative::retry_by_name(&error) => return Err(error),
+            _ => (),
         }
-        let found = walk_for(path, false, None, self.layout)?;
-        self.same_metadata_root(&found, path)
+        let (found, _, parent) = walk_with_parent(path, false, None, self.layout, true)?;
+        self.same_metadata_root(&found, path)?;
+        if let Some(parent) = parent {
+            retained.refresh(parent);
+        }
+        Ok(())
     }
     fn absolute(&self, path: &Path, root: &Path) -> Result<PathBuf> {
         let relative = path
@@ -547,10 +553,10 @@ impl Directory {
         Ok(file)
     }
     pub fn readback(&self, path: &Path, root: &Path) -> Result<Option<File>> {
-        if self.short_cli_parent.is_some() && path.parent() == Some(root) {
-            match self.readback_short_cli(path) {
+        if self.retained.is_some() && path.parent() == Some(root) {
+            match self.readback_relative(path) {
                 Ok(result) => return Ok(result),
-                Err(error) if short_cli::retry_by_name(&error) => (),
+                Err(error) if relative::retry_by_name(&error) => (),
                 Err(error) => return Err(error),
             }
         }

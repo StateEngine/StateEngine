@@ -64,7 +64,7 @@ fn refused(
 #[test]
 fn a_replaced_root_is_refused_inside_the_short_window() -> Check {
     let home = Home::new()?;
-    let files = NativeStateFiles::open_short_cli(&home.root())?;
+    let files = NativeStateFiles::open_retained(&home.root())?;
     require(files.readback(&home.file())?.is_some(), "first readback")?;
     fs::rename(home.root(), home.0.join("moved"))?;
     fs::create_dir(home.root())?;
@@ -81,7 +81,7 @@ fn a_replaced_root_is_refused_inside_the_short_window() -> Check {
 #[test]
 fn a_loosened_root_is_refused_inside_the_short_window() -> Check {
     let home = Home::new()?;
-    let files = NativeStateFiles::open_short_cli(&home.root())?;
+    let files = NativeStateFiles::open_retained(&home.root())?;
     require(files.readback(&home.file())?.is_some(), "first readback")?;
     mode(&home.root(), 0o755)?;
     refused(files.readback(&home.file()))?;
@@ -91,7 +91,7 @@ fn a_loosened_root_is_refused_inside_the_short_window() -> Check {
 #[test]
 fn an_unsafe_ancestor_is_refused_once_the_short_window_ends() -> Check {
     let home = Home::new()?;
-    let files = NativeStateFiles::open_short_cli(&home.root())?;
+    let files = NativeStateFiles::open_retained(&home.root())?;
     require(files.readback(&home.file())?.is_some(), "first readback")?;
     // A non-sticky world-writable ancestor lets another user swap the root.
     mode(&home.0, 0o777)?;
