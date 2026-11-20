@@ -60,14 +60,14 @@ impl Worker {
             if let Some((owner, target)) = sentinel {
                 // Metadata updates to a retained ancestor do not replace its
                 // directory. Name removal or rename can invalidate its pin.
-                let removed = match action {
+                let invalidates = match action {
                     FILE_ACTION_REMOVED
                     | FILE_ACTION_RENAMED_OLD_NAME
                     | FILE_ACTION_RENAMED_NEW_NAME => true,
                     FILE_ACTION_ADDED | FILE_ACTION_MODIFIED => false,
                     _ => return Err(invalid("unknown Windows ancestor watch action")),
                 };
-                if removed
+                if invalidates
                     && (!target.is_ascii() || !name.is_ascii() || name.eq_ignore_ascii_case(target))
                 {
                     self.invalidate(*owner);
