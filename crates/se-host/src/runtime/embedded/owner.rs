@@ -342,9 +342,11 @@ fn require_process_supervision() -> core::Result<()> {
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     Err(core::SeError::new(core::Detail::FeatureUnavailable(
         core::details::FeatureUnavailable {
-            subject: "embedded host process supervision on macOS".into(),
-            reason: "this build implements hosted process supervision only on Linux and Windows".into(),
-            next_step: "Use se init, se status and direct saved-state operations on macOS; use a Linux or Windows installation for hosted agent work".into(),
+            subject: "embedded host process supervision".into(),
+            reason:
+                "this build implements hosted process supervision only on Linux, macOS and Windows"
+                    .into(),
+            next_step: "Use a Linux, macOS or Windows installation for hosted agent work".into(),
         },
     )))
 }

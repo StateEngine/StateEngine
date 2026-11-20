@@ -10,10 +10,8 @@ lets assistants exchange project messages. The `se` command manages those assist
 
 ## Before you install
 
-The first-agent workflow below is for **Linux x86_64** and **Windows x86_64**.
-**macOS cannot run the background service or launch managed agents in this pre-alpha**;
-those commands refuse. macOS packages support installation and saved-state inspection,
-but are not a working first-agent path. Native macOS qualification is still pending.
+The first-agent workflow below is for **Linux x86_64**, **Windows x86_64** and
+**macOS** (Apple silicon and Intel).
 
 **Release download URL: not published yet; the publishing location is undecided.**
 Until that is settled, obtain the unsigned archive and its checksum from the
@@ -24,8 +22,8 @@ maintainer. There is no public download command to copy here yet. Archive names 
 | --- | --- | --- |
 | Linux, Intel/AMD 64-bit | `x86_64-unknown-linux-gnu` | `.tar.gz` |
 | Windows, Intel/AMD 64-bit | `x86_64-pc-windows-msvc` | `.zip` |
-| macOS, Apple silicon (limited as above) | `aarch64-apple-darwin` | `.tar.gz` |
-| macOS, Intel (limited as above) | `x86_64-apple-darwin` | `.tar.gz` |
+| macOS, Apple silicon | `aarch64-apple-darwin` | `.tar.gz` |
+| macOS, Intel | `x86_64-apple-darwin` | `.tar.gz` |
 
 Install [Git](https://git-scm.com/downloads) and **one** provider before continuing.
 Use the provider's official installation instructions for your OS:
@@ -72,7 +70,7 @@ Expand-Archive -LiteralPath $archive -DestinationPath . -ErrorAction Stop
 Set-Location -LiteralPath ([IO.Path]::GetFileNameWithoutExtension($archive))
 ```
 
-**macOS (installation and saved-state inspection only):**
+**macOS:**
 
 Use `x86_64-apple-darwin` instead of `aarch64-apple-darwin` on Intel Macs.
 
@@ -82,8 +80,8 @@ shasum -a 256 -c "$archive.sha256" && tar -xzf "$archive" && cd "${archive%.tar.
 ```
 
 After a successful check and extraction, run the installer from that extracted
-folder as your normal user. On macOS, `sh ./install.sh` installs the limited
-package; do not continue to the managed-agent steps below.
+folder as your normal user: `sh ./install.sh`, then use the Linux steps below
+to add StateEngine to PATH and verify it.
 
 **Linux, sh/bash/zsh:**
 
@@ -336,10 +334,11 @@ starting over. If capture was disabled, omit `--resume` for a fresh conversation
 ### Named harness descriptors
 
 `se init --harness NAME` selects `claude`, `codex` or `secode` without a
-configuration edit. For an installed, logged-in `qwen-code` or `goose`, init
-detects the executable and package entrypoint and saves the shared protocol
-descriptor automatically. Missing or unreadable installations refuse with
-their actual cause and a native setup link. Init does not install software or
+configuration edit. For an installed, logged-in `qwen-code`, `goose` or
+`hermes`, init detects the installed executable and any package entrypoint,
+then saves the shared protocol descriptor automatically. Missing or
+unreadable installations refuse with their actual cause and a native setup
+link. Init does not install software or
 log into a provider, and saving the descriptor does not establish a successful
 launch. The normal launch still verifies native capabilities and readiness.
 Existing named entries take precedence over catalogue names and keep their
@@ -541,7 +540,10 @@ output schemas, run `se schema OP`, for example `se schema message.send` or
   arguments and key. Remote mail also pins the same target and expected session.
   A committed message is not evidence of delivery, reading or task completion.
 - Direct messages use `to`; floor messages additionally require `work.action`
-  and explicit `work.addressees`. `quiet` leaves mail unread but suppresses its
+  and explicit `work.addressees`. A `question`, `blocker` or `done` message with
+  no recipient goes to the project's current captain (`se captain set`; shown by
+  `se captain show`), and project work is recorded with `se assignment write` and
+  listed with `se assignment list`. `quiet` leaves mail unread but suppresses its
   notification. Listing or resuming does not mark messages read; reading and
   acknowledging do, while dismissal does not.
 - `working_state_set.expect` is the revision just read, or `absent` on first
@@ -564,7 +566,7 @@ Python 3.11+, and rustup with the toolchain pinned in `rust-toolchain.toml`
 (currently Rust 1.97.1, including rust-docs). Use a native machine matching the target:
 Linux needs a C compiler/linker and binutils; Windows needs Visual Studio Build
 Tools with the MSVC C++ workload and Windows SDK; macOS needs Xcode Command Line
-Tools and has the runtime limits stated above. SQLite's C source is bundled.
+Tools. SQLite's C source is bundled.
 The build downloads lockfile-pinned
 Cargo inputs unless `--offline` is selected with an already populated cache.
 
