@@ -343,9 +343,7 @@ fn require_process_supervision() -> core::Result<()> {
     Err(core::SeError::new(core::Detail::FeatureUnavailable(
         core::details::FeatureUnavailable {
             subject: "embedded host process supervision".into(),
-            reason:
-                "this build implements hosted process supervision only on Linux, macOS and Windows"
-                    .into(),
+            reason: "hosted process supervision requires Linux, macOS or Windows".into(),
             next_step: "Use a Linux, macOS or Windows installation for hosted agent work".into(),
         },
     )))
