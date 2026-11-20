@@ -347,6 +347,26 @@ pub struct ConfigKeyMeta {
     pub human_only: bool,
     pub agent_record: bool,
 }
+/// Where a provider's own CLI saves its MCP servers: Codex's home directory, or Claude's
+/// `.claude.json`. `Err` names an explicit directory variable whose directory is missing.
+pub fn provider_config_destination(
+    provider: Provider,
+) -> std::result::Result<Option<std::path::PathBuf>, (&'static str, std::path::PathBuf)> {
+    let (own, leaf, default) = match provider {
+        Provider::Codex => ("CODEX_HOME", "", ".codex"),
+        Provider::Claude => ("CLAUDE_CONFIG_DIR", ".claude.json", ".claude.json"),
+        _ => return Ok(None),
+    };
+    if let Some(dir) = std::env::var_os(own).map(std::path::PathBuf::from) {
+        return if dir.is_dir() {
+            Ok(Some(dir.join(leaf)))
+        } else {
+            Err((own, dir))
+        };
+    }
+    let profile = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" });
+    Ok(profile.map(|profile| std::path::PathBuf::from(profile).join(default)))
+}
 pub fn key_metadata(key: &str) -> Result<ConfigKeyMeta> {
     if let Some((name, field)) = key
         .strip_prefix("agent.")

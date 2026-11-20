@@ -1,5 +1,7 @@
 //! Register the static MCP entry using each harness's own configuration command.
 use crate::adoption::Kind;
+use se_config::config_policy::provider_config_destination;
+use se_proc::home_outlives;
 use se_types::{Result, SeError};
 use std::{path::Path, process::Stdio, time::Duration};
 use tokio::{io::AsyncReadExt, process::Command};
@@ -21,7 +23,12 @@ pub fn configure(
     let mut changed = Vec::new();
     let missing = |kind: Kind| manual(kind, &args, &format!("Install {}, then", kind.label()));
     for kind in Kind::ALL {
-        if alternate_home.is_some_and(|home| !lasting(home, kind)) {
+        // An explicit config directory that is missing is refused by name, as the harness would.
+        let config = provider_config_destination(kind.policy()).map_err(|(own, dir)| {
+            let (shown, label) = (dir.display(), kind.label());
+            failure(&format!("{own} points to {shown}, which does not exist; sign in to {label} first or create it"))
+        })?;
+        if alternate_home.is_some_and(|home| !config.is_some_and(|c| home_outlives(home, &c))) {
             let lead = kind.label().to_owned() + " skipped this temporary home; to add it anyway,";
             changed.push(manual(kind, &args, &lead)?);
             continue;
@@ -55,22 +62,6 @@ pub fn configure(
     Ok(changed)
 }
 
-/// A temp-dir home goes only into a config inside it: physical paths, one missing leaf allowed.
-fn lasting(home: &Path, kind: Kind) -> bool {
-    let real = |path: &Path| match path.canonicalize() {
-        Ok(real) => Some(real),
-        Err(_) => Some(path.parent()?.canonicalize().ok()?.join(path.file_name()?)),
-    };
-    let config = config_root(kind).and_then(|root| real(Path::new(&root)));
-    let paths = real(home).zip(config).zip(real(&std::env::temp_dir()));
-    paths
-        .is_some_and(|((home, config), temp)| !home.starts_with(&temp) || config.starts_with(&temp))
-}
-fn config_root(kind: Kind) -> Option<std::ffi::OsString> {
-    let own = ["CLAUDE_CONFIG_DIR", "CODEX_HOME"][usize::from(kind == Kind::Codex)];
-    let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    std::env::var_os(own).or_else(|| std::env::var_os(home))
-}
 fn manual(kind: Kind, args: &[&str], lead: &str) -> Result<String> {
     let prefix = match kind {
         Kind::Claude => "claude mcp add --scope local stateengine -- se",
@@ -281,7 +272,9 @@ async fn stop(child: &mut tokio::process::Child) -> Result<()> {
 fn refused(kind: Kind, operation: &str, output: &std::process::Output) -> SeError {
     let stderr = String::from_utf8_lossy(&output.stderr);
     if let Some(line) = stderr.lines().find(|line| !line.trim().is_empty()) {
-        eprintln!("{} said: {}", kind.label(), line.trim());
+        let shown = line.trim().chars().filter(|c| !c.is_control());
+        let shown: String = shown.take(200).collect();
+        eprintln!("{} said: {shown}", kind.label());
     }
     let (label, name, status) = (kind.label(), kind.name(), output.status);
     failure(&format!("{label} `{name} {operation}` failed ({status})"))

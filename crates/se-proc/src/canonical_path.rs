@@ -17,6 +17,30 @@ pub fn canonicalize_path(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
     Ok(canonical)
 }
 
+/// Whether `home` may be saved into `destination`: a home under a temp root (TMP, or the
+/// Windows profile's LocalAppData\Temp) only into one under that root. Unresolved: refuse.
+pub fn home_outlives(home: &Path, destination: &Path) -> bool {
+    let (Some(home), Some(destination)) = (physical(home), physical(destination)) else {
+        return false;
+    };
+    #[cfg(windows)]
+    let local = std::env::var_os("LOCALAPPDATA").map(|local| PathBuf::from(local).join("Temp"));
+    #[cfg(not(windows))]
+    let local = None;
+    let roots = std::iter::once(std::env::temp_dir()).chain(local);
+    let mut roots = roots.filter_map(|root| physical(&root));
+    roots.all(|root| !home.starts_with(&root) || destination.starts_with(&root))
+}
+/// Resolved by `std::fs::canonicalize`, or a proven-absent leaf under a resolved parent.
+fn physical(path: &Path) -> Option<PathBuf> {
+    match std::fs::canonicalize(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let parent = std::fs::canonicalize(path.parent()?).ok()?;
+            Some(parent.join(path.file_name()?))
+        }
+        resolved => resolved.ok(),
+    }
+}
 #[cfg(windows)]
 fn plain_candidate(path: &Path) -> Option<PathBuf> {
     use std::{
