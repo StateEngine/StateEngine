@@ -8,6 +8,7 @@
   "se-proc": 41052,
   "se-store": 25485,
   "se-trusted-path": 312,
+  "se-native-path": 327,
   "se-secode-image": 612,
   "se-config": 834,
   "se-fsevents": 428,

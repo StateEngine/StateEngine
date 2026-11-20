@@ -66,8 +66,8 @@ fn unix_resolve(path: &Path) -> io::Result<PathBuf> {
     if !rooted {
         return Ok(path.to_path_buf());
     }
-    // Observe the current native user without changing process credentials.
-    let euid = se_native_path::effective_user_id();
+    // SAFETY: geteuid has no pointers and no process-wide mutation.
+    let euid = unsafe { libc::geteuid() };
     // Real directory components walked so far, relative to the root.
     let mut resolved: Vec<OsString> = Vec::new();
     let mut links_followed = 0;

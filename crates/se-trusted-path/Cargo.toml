@@ -6,9 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[dependencies]
-se-native-path = { path = "../se-native-path" }
-
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

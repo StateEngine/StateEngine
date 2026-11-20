@@ -1714,7 +1714,6 @@ dependencies = [
 name = "se-native-path"
 version = "0.0.1-alpha.1"
 dependencies = [
- "libc",
  "windows-sys 0.61.2",
 ]
 
@@ -1816,7 +1815,6 @@ name = "se-trusted-path"
 version = "0.0.1-alpha.1"
 dependencies = [
  "libc",
- "se-native-path",
  "se-proc",
  "se-types",
 ]
