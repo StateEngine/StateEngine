@@ -1,11 +1,6 @@
-use crate::{error::*, identity, open::SqliteReader, *};
+use crate::{error::*, identity, *};
 use se_types::Read;
 
-pub(crate) fn read(reader: &SqliteReader, hash: [u8; 32]) -> StoreResult<Read<CredentialRecord>> {
-    let phase = reader.read_phase()?;
-    let result = phase.credential(hash);
-    phase.finish(result)
-}
 pub(crate) fn read_at(
     c: &rusqlite::Connection,
     info: &StoreInfo,
@@ -17,7 +12,7 @@ pub(crate) fn read_at(
             "credential lookup store is in maintenance",
         ));
     }
-    let mut q=c.prepare("SELECT c.credential_id,c.project_id,c.session_id,c.purpose,c.expires_at_us,c.activation_deadline_us,c.state,c.revision,s.agent_id FROM credentials c LEFT JOIN sessions s ON s.project_id=c.project_id AND s.session_id=c.session_id WHERE c.secret_sha256=?").map_err(sql)?;
+    let mut q=c.prepare("SELECT c.credential_id,c.project_id,c.session_id,c.purpose,c.expires_at_us,c.activation_deadline_us,c.state,c.revision,s.agent_id,coalesce(s.state='active',0) FROM credentials c LEFT JOIN sessions s ON s.project_id=c.project_id AND s.session_id=c.session_id WHERE c.secret_sha256=?").map_err(sql)?;
     let mut rows = q.query([hash.as_slice()]).map_err(sql)?;
     let value = if let Some(row) = rows.next().map_err(sql)? {
         let project: Vec<u8> = row.get(1).map_err(sql)?;
@@ -63,6 +58,7 @@ pub(crate) fn read_at(
                 expires_at_us: row.get(4).map_err(sql)?,
                 activation_deadline_us: row.get(5).map_err(sql)?,
                 state,
+                session_active: row.get(9).map_err(sql)?,
                 revision: crate::codec::revision(crate::sql_value::value(row, 7).map_err(sql)?)?,
             },
         }
@@ -90,6 +86,7 @@ pub(crate) fn superseded_at(
     }
     c.query_row("SELECT EXISTS(SELECT 1 FROM credentials c JOIN sessions s ON s.project_id=c.project_id AND s.session_id=c.session_id JOIN sessions later ON later.project_id=s.project_id AND later.agent_id=s.agent_id AND later.first_seq>s.first_seq WHERE c.secret_sha256=?)",[hash.as_slice()],|r|r.get(0)).map_err(sql)
 }
+
 /// Whether this credential's agent, in any of its sessions, has a process
 /// whose stop reconciliation could not prove and the owner has not released:
 /// every credential of that agent stays fenced, a successor launch included.

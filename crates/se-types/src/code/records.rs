@@ -64,6 +64,8 @@ pub enum RecordKind {
 pub enum AtlasPrincipal {
     Agent(AgentId),
     Human(HumanId),
+    /// Identity-free access to project-visible records only.
+    Guest,
     /// Attribution only: remote grants do not authorize Atlas queries.
     Remote(crate::remote::RemotePrincipalId),
 }

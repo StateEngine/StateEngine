@@ -136,18 +136,19 @@ pub enum ClientCredential {
     Machine(se_types::Secret),
     Session(se_types::Secret),
     Launch(se_types::Secret),
+    GuestBootstrap(se_types::NativePath),
+    SessionBootstrap(se_types::Secret),
 }
 impl ClientCredential {
     fn for_renewal(&self) -> Result<Self> {
-        let secret = match self {
-            Self::Machine(key) | Self::Session(key) | Self::Launch(key) => {
-                se_types::Secret::new(key.expose().to_vec())?
-            }
-        };
         Ok(match self {
-            Self::Machine(_) => Self::Machine(secret),
-            Self::Session(_) => Self::Session(secret),
-            Self::Launch(_) => Self::Launch(secret),
+            Self::Machine(key) => Self::Machine(se_types::Secret::new(key.expose().to_vec())?),
+            Self::Session(key) => Self::Session(se_types::Secret::new(key.expose().to_vec())?),
+            Self::Launch(key) => Self::Launch(se_types::Secret::new(key.expose().to_vec())?),
+            Self::GuestBootstrap(cwd) => Self::GuestBootstrap(cwd.clone()),
+            Self::SessionBootstrap(key) => {
+                Self::SessionBootstrap(se_types::Secret::new(key.expose().to_vec())?)
+            }
         })
     }
 }
@@ -169,6 +170,7 @@ pub struct BlockingConnection {
     credential: ClientCredential,
     maximum_reply_bytes: std::num::NonZeroU32,
     last_activity: Instant,
+    issued_at: Instant,
     renew_needed: bool,
 }
 impl Deadline {
@@ -239,8 +241,6 @@ fn native_connect(
     Ok(stream)
 }
 impl crate::client::BlockingIpcClient {
-    /// Does not read ambient authority or fall back from a present credential.
-    /// The caller obtains exactly one credential from its protected native path.
     pub fn connect_authenticated(
         endpoint: &crate::EndpointRecord,
         credential: ClientCredential,
@@ -305,6 +305,14 @@ impl crate::client::BlockingIpcClient {
             ClientCredential::Launch(token) => {
                 crate::PresentedAuthority::Launch(se_types::Secret::new(token.expose().to_vec())?)
             }
+            ClientCredential::GuestBootstrap(cwd) => {
+                crate::PresentedAuthority::GuestBootstrap(cwd.clone())
+            }
+            ClientCredential::SessionBootstrap(token) => {
+                crate::PresentedAuthority::SessionBootstrap(se_types::Secret::new(
+                    token.expose().to_vec(),
+                )?)
+            }
         };
         let sent = crate::ClientHello {
             version: se_types::API_VERSION,
@@ -324,6 +332,7 @@ impl crate::client::BlockingIpcClient {
             credential,
             maximum_reply_bytes,
             last_activity,
+            issued_at: last_activity,
             renew_needed: false,
         })
     }
@@ -443,7 +452,7 @@ impl BlockingConnection {
     }
     pub fn exchange_with_progress(
         &mut self,
-        call: crate::IpcEnvelope,
+        mut call: crate::IpcEnvelope,
         options: &ClientOptions,
         progress: &mut ExchangeProgress,
     ) -> Result<crate::OperationOutput> {
@@ -461,12 +470,34 @@ impl BlockingConnection {
             ));
         }
         let deadline = Deadline::from_options(options)?;
-        // Encode/refuse before taking custody of the connection or writing.
-        let frame = wire::encode_call(&call)?;
+        let bound = if let Some(crate::PresentedAuthority::Lease(secret)) = &call.authority {
+            let guest = self.hello.lease.as_ref().ok_or_else(|| {
+                SeError::invalid("guest connection", "the ticket issued to this channel")
+            })?;
+            if secret.expose() != guest.secret.expose() {
+                return Err(SeError::invalid(
+                    "guest credential",
+                    "the ticket issued to this channel",
+                ));
+            }
+            Some((
+                guest.project.clone(),
+                guest.agent.clone(),
+                guest.session.clone(),
+            ))
+        } else {
+            None
+        };
+        // Refuse malformed or oversized calls before reconnecting or sending.
+        let mut frame = wire::encode_call(&call)?;
         // Renew before the first send, allowing the whole write stage before
         // the server's idle expiry. Never retry an incomplete exchange: its
         // operation may already have committed, with or without a reply.
         if self.renew_needed
+            || self.hello.lease.as_ref().is_some_and(|guest| {
+                self.issued_at.elapsed().saturating_add(WRITE_TIMEOUT)
+                    >= Duration::from_millis(guest.lifetime_ms)
+            })
             || (self.stream.is_some()
                 && self.last_activity.elapsed().saturating_add(WRITE_TIMEOUT) >= IDLE_TIMEOUT)
         {
@@ -481,6 +512,25 @@ impl BlockingConnection {
                 options,
                 &deadline,
             )?;
+        }
+        if matches!(call.authority, Some(crate::PresentedAuthority::Lease(_))) {
+            let guest = self.hello.lease.as_ref().ok_or_else(|| {
+                SeError::invalid("guest connection", "a current channel-bound ticket")
+            })?;
+            if Some((&guest.project, &guest.agent, &guest.session))
+                != bound
+                    .as_ref()
+                    .map(|(project, agent, session)| (project, agent, session))
+            {
+                return Err(SeError::invalid(
+                    "guest renewal",
+                    "the original registered project",
+                ));
+            }
+            call.authority = Some(crate::PresentedAuthority::Lease(se_types::Secret::new(
+                guest.secret.expose().to_vec(),
+            )?));
+            frame = wire::encode_call(&call)?;
         }
         let mut stream = self.stream.take().ok_or_else(|| {
             SeError::invalid(

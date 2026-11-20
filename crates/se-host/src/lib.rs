@@ -41,7 +41,10 @@ pub use launch_proofs::{PreparedFirstRequests, PreparedRequestProofs, VerifiedPr
 mod http;
 #[cfg(feature = "listener")]
 pub use http::HttpListener;
+mod connection_hello;
 mod ipc;
+#[cfg(feature = "listener")]
+mod mcp_lease;
 pub use mcp::{McpBackend, McpReply};
 pub mod mcp {
     pub use se_mcp::{McpBackend, McpPrincipal, McpReply, dispatch};
@@ -54,6 +57,8 @@ mod model;
 mod process;
 #[cfg(feature = "listener")]
 mod process_io;
+#[cfg(feature = "listener")]
+pub mod provider_mcp;
 mod runtime;
 #[cfg(feature = "listener")]
 mod startup_timing;

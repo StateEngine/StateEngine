@@ -97,7 +97,7 @@ fn supersede_target<R: Snapshot>(
             "supersedes",
             &format!(
                 "a message you sent; the target was sent by {} — ask that sender to supersede it, or reply to it with your new instruction",
-                scope::actor_id(&record.sender)
+                record.sender.wire().to_owned()
             ),
         ));
     }
@@ -106,7 +106,7 @@ fn supersede_target<R: Snapshot>(
             "supersedes",
             &format!(
                 "a message you sent to the same recipient; the target was sent to {}",
-                scope::actor_id(&record.recipient)
+                record.recipient.wire().to_owned()
             ),
         ));
     }
@@ -153,7 +153,7 @@ fn message_identity<R: Snapshot>(
     if implicit_captain {
         intent["recipient"] = serde_json::json!("captain-default");
     } else if let Some(recipient) = &recipient {
-        intent["recipient"] = serde_json::json!(scope::actor_id(recipient));
+        intent["recipient"] = serde_json::json!(recipient.wire().to_owned());
     } else {
         intent["recipient"] = serde_json::json!("floor");
         intent["work"] = serde_json::json!(input.work);

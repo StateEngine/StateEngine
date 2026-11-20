@@ -33,7 +33,7 @@ pub fn target<R: Snapshot>(
         }
         return match scope::selected_actor(cx, selector)? {
             Actor::Agent(agent) => Ok(agent),
-            Actor::Human(_) | Actor::Remote(_) => {
+            Actor::Human(_) | Actor::Remote(_) | Actor::Guest => {
                 Err(SeError::invalid("launch target", "a saved agent"))
             }
         };
@@ -41,7 +41,7 @@ pub fn target<R: Snapshot>(
     match (selected, &cx.admission.actor) {
         (Some(agent), _) => Ok(agent.clone()),
         (None, Actor::Agent(agent)) => Ok(agent.clone()),
-        (None, Actor::Human(_) | Actor::Remote(_)) => {
+        (None, Actor::Human(_) | Actor::Remote(_) | Actor::Guest) => {
             Err(SeError::invalid("agent selector", "--agent AGENT"))
         }
     }

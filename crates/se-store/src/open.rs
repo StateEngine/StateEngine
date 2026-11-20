@@ -322,7 +322,9 @@ impl ReadStore for SqliteReader {
         crate::owner_guard::read(self, files, budget)
     }
     fn credential(&self, hash: [u8; 32]) -> StoreResult<Read<CredentialRecord>> {
-        crate::credential::read(self, hash)
+        let phase = self.read_phase()?;
+        let result = phase.credential(hash);
+        phase.finish(result)
     }
     fn inspect_backups(&self, b: ReadBudget) -> StoreResult<Page<Read<BackupGeneration>>> {
         SqliteFactory::inspect_backups(

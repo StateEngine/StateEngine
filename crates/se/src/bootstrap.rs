@@ -286,7 +286,7 @@ fn absolute(path: PathBuf, subject: &str) -> Result<PathBuf> {
     Ok(cwd.join(path))
 }
 
-fn default_home() -> Result<PathBuf> {
+pub(crate) fn default_home() -> Result<PathBuf> {
     #[cfg(target_os = "windows")]
     let path = variable("LOCALAPPDATA")?
         .map(PathBuf::from)

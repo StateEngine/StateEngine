@@ -31,15 +31,40 @@ fn scratch() -> Result<Scratch, Box<dyn Error>> {
     Ok(Scratch(path))
 }
 fn provider(root: &Path) -> Result<PathBuf, Box<dyn Error>> {
-    // Installation only asks --version. Any other request is a fixture error,
-    // not a simulated provider session or a claim about capture/mail behavior.
+    // This fixture supports version discovery and the local MCP registration
+    // commands used by setup; it does not simulate a provider session.
     let source = root.join("version.rs");
     fs::write(
         &source,
         r#"fn main() {
-        if std::env::args().nth(1).as_deref() == Some("--version") {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if args == ["--version"] {
             println!("2.1.318 (Claude Code)");
-        } else { std::process::exit(91); }
+            return;
+        }
+        let Some(config) = std::env::var_os("CLAUDE_CONFIG_DIR") else { std::process::exit(91) };
+        let path = std::path::PathBuf::from(config).join("synthetic-mcp-entry");
+        if args == ["mcp", "get", "stateengine"] {
+            match std::fs::read_to_string(path) {
+                Ok(entry) => println!("stateengine:\n  Scope: Local config (private to you in this project)\n  Status: Connected\n  Type: stdio\n  Command: se\n  Args: {entry}\n  Environment:\n"),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    eprintln!("No MCP server named \"stateengine\".");
+                    std::process::exit(1);
+                }
+                Err(_) => std::process::exit(91),
+            }
+            return;
+        }
+        if let [mcp, add, scope, local, name, separator, command, rest @ ..] = args.as_slice()
+            && [mcp.as_str(), add, scope, local, name, separator, command] == ["mcp", "add", "--scope", "local", "stateengine", "--", "se"]
+            && (matches!(rest, [only] if only == "mcp")
+                || matches!(rest, [flag, home, end] if flag == "--home" && std::path::Path::new(home).is_absolute() && end == "mcp"))
+        {
+            use std::io::Write;
+            if let Ok(mut file) = std::fs::OpenOptions::new().write(true).create_new(true).open(path)
+                && file.write_all(rest.join(" ").as_bytes()).is_ok() { return; }
+        }
+        std::process::exit(91);
     }"#,
     )?;
     let binary = root.join(if cfg!(windows) {
@@ -89,7 +114,7 @@ impl Fixture {
     fn call(&self, args: &[&str]) -> Result<Output, Box<dyn Error>> {
         let mut command = Command::new(&self.binary);
         command.env_clear();
-        for key in ["PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"] {
+        for key in ["SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"] {
             if let Some(value) = std::env::var_os(key) {
                 command.env(key, value);
             }
@@ -141,6 +166,11 @@ impl Fixture {
             "--key",
             "synthetic-adopt-init",
         ])?;
+        assert_eq!(
+            fs::read_to_string(self.config.join("synthetic-mcp-entry"))?,
+            format!("--home {} mcp", self.home.display()),
+            "setup did not register the selected home"
+        );
         Ok(())
     }
     fn roundtrip(&self, provider: &Path, before: &str, later_edit: bool) -> Check {

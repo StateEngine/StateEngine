@@ -11,17 +11,12 @@ use se_host::{
 };
 use se_types::{AgentId, ProjectId, Result, Secret};
 use sha2::{Digest, Sha256};
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    sync::{Arc, OnceLock},
-    time::Instant,
-};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
 
 pub struct Backend {
     home: Option<PathBuf>,
     client: Option<crate::ipc::SessionForwarder>,
-    managed: OnceLock<Result<Option<Arc<Secret>>>>,
+    managed_hash: Option<[u8; 32]>,
     /// Bound principal per capability digest. The credential's project and
     /// agent binding is fixed for the credential's life, so one authenticated
     /// identity read serves every later caller-assertion check on the same
@@ -34,7 +29,7 @@ impl Backend {
         Self {
             home,
             client: None,
-            managed: OnceLock::new(),
+            managed_hash: None,
             principals: HashMap::new(),
         }
     }
@@ -57,23 +52,46 @@ impl Backend {
                             "explicit session metadata must contain a bounded capability string",
                         )
                     })?;
-                return metadata_secret(text).map(Arc::new).map(Some);
+                let secret = metadata_secret(text)?;
+                if self
+                    .client
+                    .as_ref()
+                    .is_some_and(crate::ipc::SessionForwarder::is_leased)
+                {
+                    self.client = None;
+                }
+                return Ok(Some(Arc::new(secret)));
             }
         }
         if supplied.is_some() {
+            if self
+                .client
+                .as_ref()
+                .is_some_and(crate::ipc::SessionForwarder::is_leased)
+            {
+                self.client = None;
+            }
             return Ok(supplied);
         }
-        let resolved = self.managed.get_or_init(|| {
-            if std::env::var_os("SE_SESSION").is_none() {
-                return Ok(None);
-            }
-            let home = crate::bootstrap::state_home(self.home.clone())?;
-            crate::bootstrap::session_input(&home).map(|secret| secret.map(Arc::new))
-        });
-        match resolved {
-            Ok(secret) => Ok(secret.as_ref().map(Arc::clone)),
-            Err(error) => Err(error.body.clone().into()),
+        if std::env::var_os("SE_SESSION").is_none() {
+            self.ensure_guest(Instant::now())?;
+            return self
+                .client
+                .as_ref()
+                .and_then(crate::ipc::SessionForwarder::guest_ticket)
+                .map(|ticket| Some(Arc::clone(&ticket.secret)))
+                .ok_or_else(|| invalid_capability("host did not issue a guest ticket"));
         }
+        let home = crate::bootstrap::state_home(self.home.clone())?;
+        let secret = crate::bootstrap::session_input(&home)?
+            .ok_or_else(|| invalid_capability("the launched session handle disappeared"))?;
+        let hash: [u8; 32] = Sha256::digest(secret.expose()).into();
+        if self.managed_hash.is_some_and(|previous| previous != hash) {
+            self.client = None;
+            self.principals.clear();
+        }
+        self.managed_hash = Some(hash);
+        Ok(Some(Arc::new(secret)))
     }
     /// A fresh authenticated read on every call: the contract is liveness, so
     /// this deliberately does not read the principal memo.
@@ -88,9 +106,18 @@ impl Backend {
     /// reads. The memo is sound because the binding is a property of the
     /// credential; the host rechecks the credential on every real exchange.
     fn principal(&mut self, secret: &Secret) -> Result<McpPrincipal> {
-        let mut digest = Sha256::new();
-        digest.update(secret.expose());
-        let key: [u8; 32] = digest.finalize().into();
+        if let Some(ticket) = self
+            .client
+            .as_ref()
+            .and_then(crate::ipc::SessionForwarder::guest_ticket)
+            && ticket.secret.expose() == secret.expose()
+        {
+            return Ok(McpPrincipal {
+                project: ticket.project.clone(),
+                agent: None,
+            });
+        }
+        let key: [u8; 32] = Sha256::digest(secret.expose()).into();
         if let Some(principal) = self.principals.get(&key) {
             return Ok(principal.clone());
         }
@@ -113,7 +140,7 @@ impl Backend {
         };
         let principal = McpPrincipal {
             project: id("/project/id")?.parse::<ProjectId>()?,
-            agent: id("/agent/id")?.parse::<AgentId>()?,
+            agent: Some(id("/agent/id")?.parse::<AgentId>()?),
         };
         self.principals.insert(key, principal.clone());
         Ok(principal)
@@ -125,12 +152,26 @@ impl Backend {
             let home = crate::bootstrap::state_home(self.home.clone())?;
             let files =
                 crate::route::files::Files::open(&home).map_err(|error| store_error(&error))?;
-            let endpoint = scope::require_present(
-                crate::route::execute::endpoint(&files)?,
-                "live runtime endpoint",
-                "Launch this agent through StateEngine or run se up in this data home; MCP never writes directly or uses owner authority.",
-            )?;
             let bound = Deadline::from_options(&options)?;
+            let endpoint = if std::env::var_os("SE_SESSION").is_some() {
+                let cx = crate::bootstrap::Bootstrap::resolve(
+                    self.home.clone(),
+                    None,
+                    false,
+                    true,
+                    &operation,
+                )?;
+                crate::route::autostart::endpoint(&cx, &files, &bound, &mut |message| {
+                    use std::io::Write;
+                    writeln!(std::io::stderr().lock(), "{message}")
+                })?
+            } else {
+                scope::require_present(
+                    crate::route::execute::endpoint(&files)?,
+                    "live runtime endpoint",
+                    "Launch this agent through StateEngine or run se up in this data home; MCP never writes directly or uses owner authority.",
+                )?
+            };
             se_proc::native_ipc::restore_image_cache(
                 &home,
                 endpoint.image_sha256,
@@ -139,24 +180,131 @@ impl Backend {
             .map_err(|error| scope::unreadable("protected executable cache", &error.to_string()))?;
             options.expected_generation = Some(endpoint.generation);
             charge_elapsed(&mut options, started)?;
-            self.client = Some(crate::ipc::SessionForwarder::connect(
-                &endpoint, secret, &options,
-            )?);
+            let connected = match crate::ipc::SessionForwarder::connect(&endpoint, secret, &options)
+            {
+                Err(error)
+                    if expired_session(&error) && std::env::var_os("SE_SESSION").is_some() =>
+                {
+                    options.timeout = crate::route::execute::options().timeout;
+                    charge_elapsed(&mut options, started)?;
+                    crate::ipc::SessionForwarder::connect_renewed(&endpoint, secret, &options)?
+                }
+                other => other?,
+            };
+            self.client = Some(connected);
         }
         // Discovery/authentication consume this call's original budget too.
         options.timeout = crate::route::execute::options().timeout;
         charge_elapsed(&mut options, started)?;
-        let output = self
+        let guest_project = self.client.as_ref().and_then(|client| {
+            client.guest_ticket().and_then(|ticket| {
+                (ticket.secret.expose() == secret.expose()).then(|| ticket.project.clone())
+            })
+        });
+        let first = self
             .client
             .as_mut()
             .ok_or_else(|| se_types::SeError::invalid("MCP IPC", "the retained session channel"))?
-            .forward(secret, operation, &options)?;
+            .forward(secret, operation.clone(), &options);
+        let output = match first {
+            Err(error)
+                if guest_project.is_some()
+                    && operation.meta().effect == se_core::registry::Effect::Read
+                    && error.code() == se_types::Code::IpcUnavailable =>
+            {
+                self.reconnect_guest(guest_project.as_ref(), operation, started)?
+            }
+            Err(error) if expired_session(&error) && std::env::var_os("SE_SESSION").is_some() => {
+                self.client = None;
+                let home = crate::bootstrap::state_home(self.home.clone())?;
+                let files =
+                    crate::route::files::Files::open(&home).map_err(|error| store_error(&error))?;
+                let endpoint = scope::require_present(
+                    crate::route::execute::endpoint(&files)?,
+                    "live runtime endpoint",
+                    "Start the runtime and retry the same operation.",
+                )?;
+                options.timeout = crate::route::execute::options().timeout;
+                charge_elapsed(&mut options, started)?;
+                options.expected_generation = Some(endpoint.generation);
+                let mut client =
+                    crate::ipc::SessionForwarder::connect_renewed(&endpoint, secret, &options)?;
+                options.timeout = crate::route::execute::options().timeout;
+                charge_elapsed(&mut options, started)?;
+                let output = client.forward(secret, operation, &options)?;
+                self.client = Some(client);
+                output
+            }
+            other => other?,
+        };
         // A confirmed write is retained if final formatting later fails; this
         // conversion is infallible for the closed core families in normal use.
         serde_json::to_value(output).map_err(|_| {
             se_types::SeError::invalid("MCP result", "the complete registered core output family")
         })
     }
+
+    fn reconnect_guest(
+        &mut self,
+        project: Option<&ProjectId>,
+        operation: AnyOp,
+        started: Instant,
+    ) -> Result<se_core::ops::AnyOutput> {
+        self.client = None;
+        self.ensure_guest(started)?;
+        let missing = || invalid_capability("host did not issue a replacement guest ticket");
+        let client = self.client.as_mut().ok_or_else(missing)?;
+        let ticket = client.guest_ticket().ok_or_else(missing)?;
+        if Some(&ticket.project) != project {
+            return Err(invalid_capability(
+                "the registered project changed during reconnect",
+            ));
+        }
+        let replacement = Arc::clone(&ticket.secret);
+        let mut options = crate::route::execute::options();
+        charge_elapsed(&mut options, started)?;
+        client.forward(&replacement, operation, &options)
+    }
+
+    fn ensure_guest(&mut self, started: Instant) -> Result<()> {
+        if self
+            .client
+            .as_ref()
+            .and_then(crate::ipc::SessionForwarder::guest_ticket)
+            .is_some()
+        {
+            return Ok(());
+        }
+        let op = AnyOp::ProjectStatus(ProjectStatus::default());
+        let cx = crate::bootstrap::Bootstrap::resolve(self.home.clone(), None, false, true, &op)?;
+        let files =
+            crate::route::files::Files::open(&cx.home).map_err(|error| store_error(&error))?;
+        let mut options = crate::route::execute::options();
+        charge_elapsed(&mut options, started)?;
+        let bound = Deadline::from_options(&options)?;
+        let endpoint = crate::route::autostart::endpoint(&cx, &files, &bound, &mut |message| {
+            use std::io::Write;
+            writeln!(std::io::stderr().lock(), "{message}")
+        })?;
+        se_proc::native_ipc::restore_image_cache(
+            &cx.home,
+            endpoint.image_sha256,
+            &bound.native_bound(),
+        )
+        .map_err(|error| scope::unreadable("protected executable cache", &error.to_string()))?;
+        options.expected_generation = Some(endpoint.generation);
+        options.timeout = crate::route::execute::options().timeout;
+        charge_elapsed(&mut options, started)?;
+        let cwd = se_types::NativePath::from_local(cx.cwd)?;
+        self.client = Some(crate::ipc::SessionForwarder::connect_guest(
+            &endpoint, cwd, &options,
+        )?);
+        Ok(())
+    }
+}
+fn expired_session(error: &se_types::SeError) -> bool {
+    matches!(error.body.detail(), se_types::Detail::CapabilityInvalid(detail)
+        if detail.subject == "presented" && detail.reason == "expired")
 }
 fn charge_elapsed(options: &mut ClientOptions, started: Instant) -> Result<()> {
     options.timeout = options

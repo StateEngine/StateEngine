@@ -415,8 +415,17 @@ impl PendingIpcHandshake {
     /// current core authorization. No external caller can manufacture it.
     pub async fn finish(
         self,
+        admitted: AuthorizedConnection,
+        server_cap: std::num::NonZeroU32,
+    ) -> Result<IpcConnection> {
+        self.finish_with_guest(admitted, server_cap, None).await
+    }
+
+    pub(crate) async fn finish_with_guest(
+        self,
         _admitted: AuthorizedConnection,
         server_cap: std::num::NonZeroU32,
+        guest: Option<crate::ConnectionTicket>,
     ) -> Result<IpcConnection> {
         let HandshakeInput::Call(hello) = self.input else {
             return Err(SeError::invalid("IPC handshake", "an operation hello"));
@@ -438,7 +447,8 @@ impl PendingIpcHandshake {
                 return Err(error);
             }
         };
-        let ready = auth::negotiate_hello(&hello, &self.record, server_cap)?;
+        let mut ready = auth::negotiate_hello(&hello, &self.record, server_cap)?;
+        ready.lease = guest;
         send(
             &self.stream,
             &auth::encode_server_hello(&ready)?,

@@ -199,7 +199,11 @@ impl HostedRouter {
             return Ok(AcceptedPeer::Stop(Box::new(AuthorizedStop { pending })));
         }
         let connection = pending
-            .finish(AuthorizedConnection { _private: () }, self.response_bytes)
+            .finish_with_guest(
+                AuthorizedConnection { _private: () },
+                self.response_bytes,
+                grant.connection_ticket(),
+            )
             .await?;
         Ok(AcceptedPeer::Operation(Box::new(HostedConnection {
             connection,

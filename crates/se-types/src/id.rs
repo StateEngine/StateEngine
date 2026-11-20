@@ -4,6 +4,20 @@ use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, fmt, str::FromStr};
 use uuid::{Builder, Uuid, Variant, Version};
 
+/// Format a nonnegative Unix microsecond timestamp for a wire receipt.
+pub fn format_timestamp(micros: i64) -> Result<String> {
+    let micros = u64::try_from(micros)
+        .map_err(|_| SeError::invalid("recorded_at", "nonnegative Unix microseconds"))?;
+    let value = UnixMicros::new(micros)?.to_string();
+    let value = value.strip_suffix(" UTC").ok_or_else(|| SeError::new(
+        crate::Detail::SourceUnreadable(crate::details::SourceUnreadable {
+            subject: "UTC formatter".into(), reason: "missing UTC suffix".into(),
+            next_step: "Restore access and retry the original request identity; unreadable state is not absent.".into(),
+        }),
+    ))?;
+    Ok(format!("{}Z", value.replacen(' ', "T", 1)))
+}
+
 macro_rules! ids {
     ($($name:ident => $prefix:literal),+ $(,)?) => {
         #[derive(Clone,Copy,Debug,Eq,PartialEq,Hash)]

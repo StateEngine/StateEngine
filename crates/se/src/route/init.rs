@@ -1,5 +1,5 @@
 //! Explicit setup owns absent-store creation and finishes missing durable facts
-//! on retry. No repository file or Git state is changed by ordinary setup.
+//! on retry. Detected harnesses receive the shared project MCP configuration.
 use super::{
     execute,
     files::{DirectLease, Files},
@@ -31,6 +31,13 @@ fn phase_key(key: &IdempotencyKey, phase: &str) -> Result<IdempotencyKey> {
         serde_json::to_vec(key).map_err(|e| scope::unreadable("setup key", &e.to_string()))?,
     ));
     IdempotencyKey::new(format!("init.{phase}.{digest}"))
+}
+fn mcp_setup_error(mut error: SeError) -> SeError {
+    error.body = error.body.with_remedy(se_types::Remedy {
+        text: "Project registration was saved. Resolve the reported MCP configuration issue, then retry se init.".into(),
+        command: None,
+    });
+    error
 }
 fn present<R: ReadStore>(store: &R, admission: &Admission, actor: Actor) -> Result<bool> {
     let mut snap = store
@@ -240,6 +247,20 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
             if let Some(plan) = adoption {
                 super::adoption::install(cx, &repository.path, plan, &mut value)?;
             }
+            // Harness health checks may start the host; release setup custody first.
+            drop(lease);
+            let AnyOutput::ProjectInit(output) = &mut value else {
+                return Err(SeError::invalid(
+                    "setup result",
+                    "the committed project setup output",
+                ));
+            };
+            let alternate_home = (crate::bootstrap::default_home().ok().as_ref() != Some(&cx.home))
+                .then_some(cx.home.as_path());
+            output.value.changed.extend(
+                se_host::provider_mcp::configure(&repository.path, &configuration, alternate_home)
+                    .map_err(mcp_setup_error)?,
+            );
             Ok(value)
         }
         Err(error) => Err(match closed {

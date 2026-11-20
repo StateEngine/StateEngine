@@ -215,7 +215,7 @@ pub fn read<S: Snapshot>(
             by: receipt::actor_ref(cx.read, &cx.admission.actor)?,
             state: CommitState::Committed,
             request_identity: MarkerIdentity::Natural {
-                recipient: scope::actor_id(&cx.admission.actor),
+                recipient: cx.admission.actor.wire().to_owned(),
                 message_id: input.msg_id.clone(),
                 marker: "read".into(),
             },
@@ -375,7 +375,7 @@ pub fn committed<S: Snapshot>(
             CommitState::Committed
         },
         request_identity: MarkerIdentity::Natural {
-            recipient: scope::actor_id(recipient),
+            recipient: recipient.wire().to_owned(),
             message_id: message.clone(),
             marker: tag.into(),
         },

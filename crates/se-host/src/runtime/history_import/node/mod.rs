@@ -248,6 +248,7 @@ fn actor_id(actor: &Actor) -> &str {
         Actor::Human(id) => id.as_str(),
         Actor::Agent(id) => id.as_str(),
         Actor::Remote(id) => id.as_str(),
+        Actor::Guest => "guest",
     }
 }
 

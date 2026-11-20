@@ -12,6 +12,7 @@ use se_host::{
     },
 };
 use se_types::{Detail, Result, SeError, details};
+use sha2::{Digest, Sha256};
 use std::{num::NonZeroU32, time::Instant};
 
 pub fn forward(
@@ -207,8 +208,79 @@ fn invalid(expected: &str) -> SeError {
 pub struct SessionForwarder {
     connection: se_host::client::BlockingConnection,
     request_id: u64,
+    source_hash: Option<[u8; 32]>,
 }
 impl SessionForwarder {
+    pub fn connect_guest(
+        endpoint: &EndpointRecord,
+        cwd: se_types::NativePath,
+        options: &ClientOptions,
+    ) -> Result<Self> {
+        let connection = BlockingIpcClient::connect_authenticated(
+            endpoint,
+            ClientCredential::GuestBootstrap(cwd),
+            NonZeroU32::new(DEFAULT_REPLY_BYTES).ok_or_else(|| invalid("nonzero reply budget"))?,
+            options,
+        )?;
+        if connection.negotiated().lease.is_none() {
+            return Err(invalid("a host-issued guest ticket"));
+        }
+        Ok(Self {
+            connection,
+            request_id: 0,
+            source_hash: None,
+        })
+    }
+
+    pub fn guest_ticket(&self) -> Option<&se_host::ConnectionTicket> {
+        self.connection
+            .negotiated()
+            .lease
+            .as_ref()
+            .filter(|ticket| ticket.agent.is_none())
+    }
+
+    pub fn is_leased(&self) -> bool {
+        self.connection.negotiated().lease.is_some()
+    }
+
+    pub fn connect_renewed(
+        endpoint: &EndpointRecord,
+        secret: &se_types::Secret,
+        options: &ClientOptions,
+    ) -> Result<Self> {
+        let connection = BlockingIpcClient::connect_authenticated(
+            endpoint,
+            ClientCredential::SessionBootstrap(se_types::Secret::new(secret.expose().to_vec())?),
+            NonZeroU32::new(DEFAULT_REPLY_BYTES).ok_or_else(|| invalid("nonzero reply budget"))?,
+            options,
+        )?;
+        if connection
+            .negotiated()
+            .lease
+            .as_ref()
+            .is_none_or(|ticket| ticket.agent.is_none() || ticket.session.is_none())
+        {
+            return Err(invalid("a host-issued session ticket"));
+        }
+        let requested =
+            std::env::var("SE_SESSION").map_err(|_| invalid("the launched session handle"))?;
+        if connection
+            .negotiated()
+            .lease
+            .as_ref()
+            .and_then(|ticket| ticket.session.as_ref())
+            .is_none_or(|session| session.as_str() != requested)
+        {
+            return Err(invalid("the same launched session handle"));
+        }
+        Ok(Self {
+            connection,
+            request_id: 0,
+            source_hash: Some(Sha256::digest(secret.expose()).into()),
+        })
+    }
+
     pub fn connect(
         endpoint: &EndpointRecord,
         secret: &se_types::Secret,
@@ -223,6 +295,7 @@ impl SessionForwarder {
         Ok(Self {
             connection,
             request_id: 0,
+            source_hash: None,
         })
     }
     pub fn forward(
@@ -246,9 +319,24 @@ impl SessionForwarder {
         )?;
         call.request_id = self.request_id;
         call.cli_selections = None;
-        call.authority = Some(se_host::PresentedAuthority::Session(se_types::Secret::new(
-            secret.expose().to_vec(),
-        )?));
+        call.authority = Some(
+            if let Some(ticket) = self.connection.negotiated().lease.as_ref() {
+                if let Some(hash) = self.source_hash {
+                    if <[u8; 32]>::from(Sha256::digest(secret.expose())) != hash {
+                        return Err(invalid("the original renewed session credential"));
+                    }
+                } else if secret.expose() != ticket.secret.expose() {
+                    return Err(invalid("the original guest ticket"));
+                }
+                se_host::PresentedAuthority::Lease(se_types::Secret::new(
+                    ticket.secret.expose().to_vec(),
+                )?)
+            } else {
+                se_host::PresentedAuthority::Session(se_types::Secret::new(
+                    secret.expose().to_vec(),
+                )?)
+            },
+        );
         let mut progress = ExchangeProgress::NotSent;
         let output = self
             .connection

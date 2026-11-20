@@ -26,7 +26,19 @@ pub(super) async fn bound(
         let bound = if role == IdentityRole::CallerProject {
             principal.project.as_str()
         } else {
-            principal.agent.as_str()
+            principal
+                .agent
+                .as_ref()
+                .ok_or_else(|| {
+                    SeError::new(se_types::Detail::CapabilityInvalid(
+                        se_types::details::CapabilityInvalid {
+                            subject: "guest connection".into(),
+                            reason: "the caller has no agent identity".into(),
+                            next_step: "Launch an agent through `se launch`.".into(),
+                        },
+                    ))
+                })?
+                .as_str()
         };
         if requested.as_str() != Some(bound) {
             return Err(SeError::invalid(

@@ -278,7 +278,7 @@ impl LaunchCoordinator {
         let acp = Arc::new(crate::harness::acp::AcpHarness::new(
             io.clone(),
             options.configuration.clone(),
-            options.http_port,
+            options.home.clone(),
         ));
         Ok(Arc::new(Self {
             #[cfg(any(windows, target_os = "macos"))]

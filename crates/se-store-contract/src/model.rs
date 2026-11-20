@@ -52,6 +52,8 @@ pub enum Actor {
     Human(HumanId),
     Agent(AgentId),
     Remote(se_types::remote::RemotePrincipalId),
+    /// An identity-free, project-scoped native reader. Never a roster entry.
+    Guest,
 }
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Scope {
@@ -89,14 +91,40 @@ pub struct Admission {
 pub enum Visibility {
     /// Delegated devices have no authority on the ordinary local read port.
     None,
+    /// Project-scoped, identity-free reads. Private events are excluded.
+    Guest,
     Owner,
     SelfOnly(AgentId),
     SharedProject(AgentId),
+}
+impl Visibility {
+    pub fn project_metadata_is_scoped(&self) -> bool {
+        matches!(self, Self::SelfOnly(_) | Self::Guest)
+    }
 }
 #[derive(Clone, Debug)]
 pub struct ReadScope {
     pub admission: Admission,
     pub visibility: Visibility,
+}
+impl ReadScope {
+    pub fn guest_event_visible(&self, event: &crate::StoredEvent) -> bool {
+        event.header.scope == self.admission.scope
+            && matches!(event.body, crate::EventBody::ProjectCaptainChanged { .. })
+    }
+    /// Guest visibility is valid only for a project without an agent session.
+    pub fn guest_consistent(&self) -> bool {
+        match (
+            &self.admission.actor,
+            &self.admission.scope,
+            &self.admission.session,
+            &self.visibility,
+        ) {
+            (Actor::Guest, Scope::Project(_), None, Visibility::Guest) => true,
+            (Actor::Guest, _, _, _) | (_, _, _, Visibility::Guest) => false,
+            _ => true,
+        }
+    }
 }
 #[derive(Clone, Debug)]
 pub struct StoreOptions {

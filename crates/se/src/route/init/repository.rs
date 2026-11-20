@@ -45,7 +45,7 @@ pub(super) fn observe(cx: &Bootstrap, input: &ProjectInit) -> Result<Repository>
     if canonical_destination(&cx.home)?.starts_with(&path) {
         return Err(SeError::invalid(
             "state home",
-            "a state home outside the registered repository; managed init writes no repository files",
+            "a state home outside the registered repository",
         ));
     }
     if cx.config.value.runtime.listen_port.is_none() {

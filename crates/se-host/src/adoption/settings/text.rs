@@ -179,6 +179,7 @@ fn property(name: &str, value: &Value) -> Result<Vec<u8>> {
     bytes.extend(serde_json::to_vec(value).map_err(|_| malformed())?);
     Ok(bytes)
 }
+
 pub(super) fn apply(before: &[u8], expected: &Value, edits: &[Edit]) -> Result<Vec<u8>> {
     let mut bytes = if before.is_empty() {
         b"{}".to_vec()

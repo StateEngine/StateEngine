@@ -82,8 +82,8 @@ impl Harness {
         let scope = match actor {
             Actor::Human(_) => self.f.scoped(Visibility::Owner),
             Actor::Agent(agent) => self.f.self_scope(agent),
-            Actor::Remote(_) => {
-                return Err("remote actors use the closed grant-filtered port".into());
+            Actor::Remote(_) | Actor::Guest => {
+                return Err("this fixture accepts only owner or agent actors".into());
             }
         };
         Ok(present(SqliteFactory::open_reader(&self.f.options)?)?.snapshot(scope)?)

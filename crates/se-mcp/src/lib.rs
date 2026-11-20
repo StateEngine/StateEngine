@@ -29,7 +29,7 @@ pub enum McpReply {
 #[derive(Clone)]
 pub struct McpPrincipal {
     pub project: se_types::ProjectId,
-    pub agent: se_types::AgentId,
+    pub agent: Option<se_types::AgentId>,
 }
 
 pub trait McpBackend {
@@ -85,7 +85,7 @@ pub trait McpBackend {
             };
             Ok(McpPrincipal {
                 project: id("/principal/project/id")?.parse()?,
-                agent: id("/principal/agent/id")?.parse()?,
+                agent: Some(id("/principal/agent/id")?.parse()?),
             })
         }
     }
@@ -174,7 +174,17 @@ pub async fn dispatch(
                 "session-required: tools need the launched session's capability",
             ));
         }
-        Err(error) => return McpReply::Json(rpc_error(id, SESSION_REQUIRED, &error.to_string())),
+        Err(error) => {
+            let message = if error.code() == se_types::Code::JobBreakawayRefused {
+                match error.body.remedy(&se_types::RenderCx::default()) {
+                    Ok(remedy) => format!("{error}. {}", remedy.text),
+                    Err(_) => error.to_string(),
+                }
+            } else {
+                error.to_string()
+            };
+            return McpReply::Json(rpc_error(id, SESSION_REQUIRED, &message));
+        }
     };
     let response = if method == "tools/list" {
         match backend

@@ -16,7 +16,7 @@ mod mail;
 pub struct AcpHarness {
     io: Arc<dyn ProviderIoPlatform>,
     configuration: ConfigFile,
-    mcp_port: u16,
+    home: std::path::PathBuf,
 }
 pub struct Binding {
     pub session: Arc<Session>,
@@ -32,11 +32,15 @@ fn error(reason: impl std::fmt::Display) -> SeError {
     se_core::scope::unreadable("ACP binding", &reason.to_string())
 }
 impl AcpHarness {
-    pub fn new(io: Arc<dyn ProviderIoPlatform>, configuration: ConfigFile, mcp_port: u16) -> Self {
+    pub fn new(
+        io: Arc<dyn ProviderIoPlatform>,
+        configuration: ConfigFile,
+        home: std::path::PathBuf,
+    ) -> Self {
         Self {
             io,
             configuration,
-            mcp_port,
+            home,
         }
     }
     fn resolved(&self, request: &HarnessRequest) -> Result<ResolvedProfile> {
@@ -167,6 +171,8 @@ impl Harness for AcpHarness {
                 "SE_SESSION".into(),
                 request.identity.session.as_str().into(),
             ));
+            environment.retain(|(name, _)| !name.to_string_lossy().eq_ignore_ascii_case("SE_HOME"));
+            environment.push(("SE_HOME".into(), self.home.as_os_str().to_owned()));
             Ok(ProviderInvocation {
                 executable: request.executable.clone(),
                 arguments,
@@ -225,17 +231,13 @@ impl Harness for AcpHarness {
                 cancellation: cx.cancellation.clone(),
             };
             binding.session.initialize(remaining()).await?;
-            let bearer = String::from_utf8(request.mcp_bearer.expose().to_vec())
-                .map_err(|_| error("MCP capability is not UTF-8"))?;
-            let proof = String::from_utf8(request.launch_credential.expose().to_vec())
-                .map_err(|_| error("launch capability is not UTF-8"))?;
             let servers = vec![json!({
-                "type": "http",
                 "name": "stateengine",
-                "url": format!("http://127.0.0.1:{}/mcp", self.mcp_port),
-                "headers": [
-                    {"name": "Authorization", "value": format!("Bearer {bearer}")},
-                    {"name": "X-StateEngine-Session-Proof", "value": proof}
+                "command": "se",
+                "args": ["mcp"],
+                "env": [
+                    {"name": "SE_SESSION", "value": request.identity.session.as_str()},
+                    {"name": "SE_HOME", "value": self.home.to_str().ok_or_else(|| error("the state home path is not valid UTF-8"))?}
                 ]
             })];
             let replay: Option<(&str, Vec<CapturedMessage>)> = match &request.resume {

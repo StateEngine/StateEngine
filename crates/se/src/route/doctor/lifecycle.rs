@@ -33,6 +33,7 @@ pub(super) fn checks<R: ReadStore>(
             Actor::Agent(agent) => format!("agent {agent}"),
             Actor::Human(human) => format!("owner {human}"),
             Actor::Remote(principal) => format!("remote device {principal}"),
+            Actor::Guest => "invalid guest process".into(),
         };
         let mut row = check(
             &format!("runtime.launch.{}", entry.identity.record),
