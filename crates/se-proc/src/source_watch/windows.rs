@@ -431,6 +431,7 @@ impl Worker {
                     u32::MAX,
                 )
             };
+            let completion_error = (ok == 0).then(io::Error::last_os_error);
             if key == COMMAND && overlap.is_null() {
                 self.commands();
                 continue;
@@ -455,6 +456,13 @@ impl Worker {
                 continue;
             }
             if ok == 0 {
+                if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+                    eprintln!(
+                        "ATLAS_NATIVE_INVALIDATE completion_error={:?} sentinel={}",
+                        completion_error.as_ref().and_then(io::Error::raw_os_error),
+                        item.sentinel.is_some()
+                    );
+                }
                 self.lose();
                 self.invalidate(item.sentinel.as_ref().map_or(id, |(owner, _)| *owner));
                 continue;
@@ -464,7 +472,21 @@ impl Worker {
             {
                 self.lose();
             }
-            if !self.stopping && Self::arm(&mut item).is_ok() {
+            let armed = !self.stopping
+                && match Self::arm(&mut item) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+                            eprintln!(
+                                "ATLAS_NATIVE_INVALIDATE rearm_error={:?} sentinel={}",
+                                error.raw_os_error(),
+                                item.sentinel.is_some()
+                            );
+                        }
+                        false
+                    }
+                };
+            if armed {
                 self.subscriptions.insert(id, item);
             } else if !self.stopping {
                 self.lose();
@@ -690,6 +712,14 @@ impl Worker {
             }
             if let Some((owner, target)) = sentinel {
                 if !target.is_ascii() || !name.is_ascii() || name.eq_ignore_ascii_case(target) {
+                    if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+                        eprintln!(
+                            "ATLAS_NATIVE_INVALIDATE ancestor_event action={action} target_ascii={} name_ascii={} matched={}",
+                            target.is_ascii(),
+                            name.is_ascii(),
+                            name.eq_ignore_ascii_case(target)
+                        );
+                    }
                     self.invalidate(*owner);
                 }
                 if next == 0 {
