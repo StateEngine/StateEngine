@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 
-from harness_matrix.io import digest, require
+from harness_matrix.io import digest, require, verify_provider_home
 from .darwin_acl import require_private_acl
 
 
@@ -207,9 +207,11 @@ class Credentials:
         return ({'ANTHROPIC_API_KEY': key} if key is not None
                 else {'CLAUDE_CODE_OAUTH_TOKEN': credential['oauth_token']})
 
-    def install(self, home):
+    def install(self, home, environment):
         self.ready()
-        directory = Path(home) / ('.claude' if self.provider == 'claude' else '.codex')
+        verify_provider_home(environment, home)
+        config_home = 'CLAUDE_CONFIG_DIR' if self.provider == 'claude' else 'CODEX_HOME'
+        directory = Path(environment[config_home])
         directory.mkdir(mode=0o700, exist_ok=True)
         protect(directory)
         if self.provider == 'codex':
@@ -227,7 +229,7 @@ class Credentials:
             require((info.st_dev, info.st_ino) != (self.identity.st_dev, self.identity.st_ino),
                     'Private credential copy shares the seed identity')
         if self.provider == 'claude':
-            config = Path(home) / '.claude.json'
+            config = directory / '.claude.json'
             value = json.loads(config.read_text()) if config.exists() else {}
             value.update(self.value['native'])
             temporary = config.with_suffix('.json.private')

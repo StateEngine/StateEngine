@@ -164,8 +164,9 @@ class Journeys(Smoke):
         require(digest(config) == self.settings['configuration']['sha256'], 'Native configuration changed')
         self.state.mkdir(exist_ok=True)
         (self.state / 'config.toml').write_bytes(config.read_bytes())
-        # Supply only the provisioned token to the private fixture.
+        # The private provider sign-in precedes init and its MCP registration.
         self.commands.environment.update(self.credentials.environment())
+        self.credentials.install(self.home, self.commands.environment)
         version = self.commands.run(self.settings['version_command'], 'native-provider-version')
         require(version.strip() == self.settings['version_stdout'], 'Native provider version differs')
         self.initialization_attempted = True
@@ -174,7 +175,6 @@ class Journeys(Smoke):
         self.project, self.agent, self.owner = (initialized['profile'][key]
                                                for key in ('project', 'agent_id', 'human_id'))
         self.preserve_work()
-        self.credentials.install(self.home)
         self.start_runtime('J2')
         self.secret, work = str(uuid.uuid4()), str(uuid.uuid4())
         task = f'Remember {self.secret}. Write {work} plus newline to work.txt. Reply {work}.'
