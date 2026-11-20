@@ -230,7 +230,7 @@ fn setup(f: &Fixture) -> Check {
                     session: session.clone(),
                     purpose: "session".into(),
                     secret_sha256: Sha256::digest([17; 32]).into(),
-                    expires_at_us: now + 300_000_000,
+                    expires_at_us: now + 3_600_000_000,
                     activation_deadline_us: now + 60_000_000,
                     expected: Expected::Absent,
                 },
