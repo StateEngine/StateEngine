@@ -70,7 +70,7 @@ mod executable;
 mod state_files;
 pub use source_root::{
     NativeFileRevision, NativeRootDirectory, NativeRootFile, NativeSourceEntry, NativeSourceKind,
-    NativeSourceRoot, observe_file_revision,
+    NativeSourceRoot, NativeSourceScan, observe_file_revision,
 };
 pub use state_files::{
     NativeProfileFiles, NativeStateFiles, PermissionKind, PermissionProtection,

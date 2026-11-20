@@ -37,69 +37,73 @@ pub(super) fn open_relative(root: &File, path: &str) -> io::Result<File> {
 pub(super) fn open_directory(root: &File, path: &str) -> io::Result<File> {
     open_components(root, path, true)
 }
+pub(super) fn open_component(parent: &File, part: &str, is_directory: bool) -> io::Result<File> {
+    if part.ends_with(['.', ' ']) {
+        return Err(invalid("ambiguous Windows source component"));
+    }
+    let mut units: Vec<u16> = part.encode_utf16().collect();
+    if units.is_empty() || units.len() > u16::MAX as usize / 2 {
+        return Err(invalid("bounded Windows source component required"));
+    }
+    let mut name = UNICODE_STRING {
+        Length: (units.len() * 2) as u16,
+        MaximumLength: (units.len() * 2) as u16,
+        Buffer: units.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: parent.as_raw_handle(),
+        ObjectName: &mut name,
+        // Exact spelling avoids aliasing collisions in case-sensitive dirs.
+        Attributes: 0,
+        SecurityDescriptor: ptr::null_mut(),
+        SecurityQualityOfService: ptr::null_mut(),
+    };
+    let mut raw = ptr::null_mut();
+    // SAFETY: POD native completion output initialized for the sync call.
+    let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
+    // SAFETY: one literal component relative to the live directory handle;
+    // no ambient path lookup, no writes, reparse traversal or creation.
+    let code = unsafe {
+        NtCreateFile(
+            &mut raw,
+            GENERIC_READ | SYNCHRONIZE,
+            &attributes,
+            &mut status,
+            ptr::null(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_OPEN,
+            FILE_OPEN_REPARSE_POINT
+                | FILE_SYNCHRONOUS_IO_NONALERT
+                | if is_directory {
+                    FILE_DIRECTORY_FILE
+                } else {
+                    FILE_NON_DIRECTORY_FILE
+                },
+            ptr::null(),
+            0,
+        )
+    };
+    if code < 0 {
+        // SAFETY: status conversion takes no pointer arguments.
+        return Err(io::Error::from_raw_os_error(
+            unsafe { RtlNtStatusToDosError(code) } as i32,
+        ));
+    }
+    let child = owned(raw)?;
+    verify_handle(&child, is_directory)?;
+    Ok(child)
+}
 fn open_components(root: &File, path: &str, last_directory: bool) -> io::Result<File> {
-    let mut directory = root.try_clone()?;
+    let mut held: Option<File> = None;
     let mut components = path.split('/').peekable();
     while let Some(part) = components.next() {
-        if part.ends_with(['.', ' ']) {
-            return Err(invalid("ambiguous Windows source component"));
-        }
-        let mut units: Vec<u16> = part.encode_utf16().collect();
-        if units.is_empty() || units.len() > u16::MAX as usize / 2 {
-            return Err(invalid("bounded Windows source component required"));
-        }
-        let mut name = UNICODE_STRING {
-            Length: (units.len() * 2) as u16,
-            MaximumLength: (units.len() * 2) as u16,
-            Buffer: units.as_mut_ptr(),
-        };
-        let attributes = OBJECT_ATTRIBUTES {
-            Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
-            RootDirectory: directory.as_raw_handle(),
-            ObjectName: &mut name,
-            // Exact spelling avoids aliasing collisions in case-sensitive dirs.
-            Attributes: 0,
-            SecurityDescriptor: ptr::null_mut(),
-            SecurityQualityOfService: ptr::null_mut(),
-        };
         let is_directory = components.peek().is_some() || last_directory;
-        let mut raw = ptr::null_mut();
-        // SAFETY: POD native completion output initialized for the sync call.
-        let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
-        // SAFETY: one literal component relative to the live directory handle;
-        // no ambient path lookup, no writes, reparse traversal or creation.
-        let code = unsafe {
-            NtCreateFile(
-                &mut raw,
-                GENERIC_READ | SYNCHRONIZE,
-                &attributes,
-                &mut status,
-                ptr::null(),
-                0,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                FILE_OPEN,
-                FILE_OPEN_REPARSE_POINT
-                    | FILE_SYNCHRONOUS_IO_NONALERT
-                    | if is_directory {
-                        FILE_DIRECTORY_FILE
-                    } else {
-                        FILE_NON_DIRECTORY_FILE
-                    },
-                ptr::null(),
-                0,
-            )
-        };
-        if code < 0 {
-            // SAFETY: status conversion takes no pointer arguments.
-            return Err(io::Error::from_raw_os_error(
-                unsafe { RtlNtStatusToDosError(code) } as i32,
-            ));
-        }
-        let child = owned(raw)?;
-        revision(&child, is_directory)?;
-        directory = child;
+        let parent = held.as_ref().unwrap_or(root);
+        held = Some(open_component(parent, part, is_directory)?);
     }
-    Ok(directory)
+    held.ok_or_else(|| invalid("bounded slash-separated root-relative source path required"))
 }
 fn owned(raw: HANDLE) -> io::Result<File> {
     if raw.is_null() || raw == INVALID_HANDLE_VALUE {
@@ -108,7 +112,7 @@ fn owned(raw: HANDLE) -> io::Result<File> {
     // SAFETY: the successful native open transferred one uniquely owned handle.
     Ok(unsafe { File::from_raw_handle(raw) })
 }
-pub(super) fn revision(file: &File, directory: bool) -> io::Result<NativeFileRevision> {
+fn verify_handle(file: &File, directory: bool) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
     let info = crate::windows_native::file_information(file)?;
     // SAFETY: immutable native handle query, no retained external pointers.
     if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK
@@ -119,6 +123,10 @@ pub(super) fn revision(file: &File, directory: bool) -> io::Result<NativeFileRev
             "regular non-reparse source file/directory required",
         ));
     }
+    Ok(info)
+}
+pub(super) fn revision(file: &File, directory: bool) -> io::Result<NativeFileRevision> {
+    let info = verify_handle(file, directory)?;
     let id = crate::windows_native::file_id(file)?;
     // SAFETY: all-integer native output initialized before the metadata query.
     let mut basic: FILE_BASIC_INFO = unsafe { zeroed() };
