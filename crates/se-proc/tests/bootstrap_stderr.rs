@@ -4,10 +4,70 @@ mod detachment_venue;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod judge {
     use se_proc::*;
-    use std::time::{Duration, Instant};
+    use std::{
+        path::Path,
+        time::{Duration, Instant},
+    };
     type Result<T = ()> = std::result::Result<T, String>;
     const SECRET_SENTINEL: &str = "fixture-not-a-real-secret-never-dump-frame";
     const REASON: &str = "cold child refused: fixture storage is unavailable";
+    const FLOOD_CHUNKS: usize = 5;
+    const FLOOD_CHUNK_BYTES: usize = 4 * 1024;
+
+    fn flood_marker(chunk: usize) -> String {
+        format!("fixture flood chunk {chunk}\n")
+    }
+
+    fn flood(guard: &mut RuntimeBootstrap, root: &Path) -> Result {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        for chunk in 1..=FLOOD_CHUNKS {
+            let filler = format!("{}\n{}", "x".repeat(FLOOD_CHUNK_BYTES), flood_marker(chunk));
+            guard
+                .report_startup_failure("bounded-overflow", filler.trim_end())
+                .map_err(error)?;
+            let ack = root.join(chunk.to_string());
+            // The parent acknowledges only bytes it has read from this child.
+            // This fills the retained tail while keeping the native channel drained.
+            while !ack.try_exists().map_err(error)? {
+                require(
+                    Instant::now() < deadline,
+                    "parent did not acknowledge flood bytes",
+                )?;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            std::fs::remove_file(ack).map_err(error)?;
+        }
+        Ok(())
+    }
+
+    fn acknowledge_flood(child: &RuntimeChild, root: &Path, deadline: Instant) -> Result {
+        for chunk in 1..=FLOOD_CHUNKS {
+            let marker = flood_marker(chunk);
+            loop {
+                let snapshot = child
+                    .startup_stderr(deadline.min(Instant::now() + Duration::from_millis(25)))
+                    .map_err(error)?;
+                if snapshot.bytes.ends_with(marker.as_bytes()) {
+                    std::fs::File::create_new(root.join(chunk.to_string())).map_err(error)?;
+                    break;
+                }
+                if let Some(failure) = snapshot.failure {
+                    return Err(format!(
+                        "read stderr while awaiting flood chunk {chunk}: {failure:?}"
+                    ));
+                }
+                if snapshot.complete || Instant::now() >= deadline {
+                    return Err(format!(
+                        "flood chunk {chunk} never arrived, retained {} bytes, EOF {}",
+                        snapshot.bytes.len(),
+                        snapshot.complete
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn error(value: impl std::fmt::Debug) -> String {
         format!("{value:?}")
     }
@@ -75,11 +135,8 @@ mod judge {
             return Err("retained uncommitted guard drop returned".into());
         }
         if mode == "flood" {
-            for _ in 0..12 {
-                guard
-                    .report_startup_failure("bounded-overflow", &"x".repeat(8192))
-                    .map_err(error)?;
-            }
+            let root = arguments.get(2).ok_or("missing flood fixture root")?;
+            flood(&mut guard, Path::new(root))?;
         }
         guard
             .report_startup_failure("cold-fixture", REASON)
@@ -161,7 +218,7 @@ mod judge {
                 .map_err(error)?
                 .as_nanos()
         ));
-        if mode == "retained-await" {
+        if matches!(mode, "retained-await" | "flood") {
             std::fs::create_dir(&root).map_err(error)?;
             eprintln!(
                 "bootstrap fixture retained on failed or interrupted closure: {}",
@@ -201,6 +258,7 @@ mod judge {
             use std::os::windows::io::AsRawHandle;
             arguments.push((event.as_raw_handle() as usize).to_string().into());
         }
+        let deadline = Instant::now() + Duration::from_secs(3);
         let spec = RuntimeLaunchSpec {
             machine: machine.clone(),
             startup_nonce: [61; 16],
@@ -209,7 +267,7 @@ mod judge {
             environment: Environment {
                 entries: vec![("JUDGE_NOT_A_CREDENTIAL".into(), SECRET_SENTINEL.into())],
             },
-            deadline: Instant::now() + Duration::from_secs(3),
+            deadline,
         };
         #[cfg(windows)]
         let mut observed_detachment = None;
@@ -283,6 +341,9 @@ mod judge {
                 "incomplete capture exceeded its cap",
             )?;
         }
+        if mode == "flood" {
+            acknowledge_flood(custody.child()?, &root, deadline)?;
+        }
         let witness = custody.wait_exit()?;
         require(
             !matches!(witness.status, ExitStatus::Code(0)),
@@ -355,6 +416,8 @@ mod judge {
                 "parent did not witness cleanup before guard drop",
             )?;
             std::fs::remove_file(root.join("cleanup.witness")).map_err(error)?;
+        }
+        if matches!(mode, "retained-await" | "flood") {
             std::fs::remove_dir(root).map_err(error)?;
         }
         println!("PASS {mode}: exact exited child, bounded EOF stderr and public refusal");
