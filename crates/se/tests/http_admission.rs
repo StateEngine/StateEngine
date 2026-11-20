@@ -1,5 +1,7 @@
 //! Protects: 70 §4.2 / T19 — browser and DNS-rebinding requests cannot enter even
 //! the anonymous HTTP route; an initialized owner's local process gets no TCP authority.
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
@@ -29,6 +31,7 @@ fn command(image: &Path, home: &Path, json: bool) -> Command {
             command.env_remove(name);
         }
     }
+    provider_home::for_state(&mut command, home);
     command
 }
 fn checked(output: Output) -> Result<serde_json::Value, Box<dyn std::error::Error>> {

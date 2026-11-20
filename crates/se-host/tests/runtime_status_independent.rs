@@ -3,6 +3,8 @@
 #![cfg(all(feature = "secode", target_os = "linux"))]
 #[path = "support/shutdown_linked_fixture.rs"]
 mod linked_fixture;
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 use linked_fixture::*;
 use se_host::{
     IpcEnvelope, IpcRequest, RawOperation,
@@ -79,8 +81,8 @@ fn command(image: &Path, home: &Path, args: &[&str]) -> Command {
         .args(args)
         .arg("--json")
         .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("HOME", home.parent().unwrap_or(home));
+        .env("PATH", "/usr/bin:/bin");
+    provider_home::for_state(&mut value, home);
     value
 }
 fn cli(image: &Path, home: &Path, args: &[&str]) -> Check<Value> {

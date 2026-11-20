@@ -14,6 +14,7 @@ import signal
 import subprocess
 import time
 from urllib.parse import urlsplit
+from provider_home import isolate
 
 
 PIN = '48c886300000f098f2c33a4001f2b11375fe7a02'
@@ -63,8 +64,8 @@ def environment(root):
                                   'ANTHROPIC', 'OPENAI', 'CODEX', 'OTEL_'))}
     owner = root / 'owner'
     owner.mkdir()
-    env.update(HOME=str(owner), USERPROFILE=str(owner),
-               XDG_CONFIG_HOME=str(owner / 'config'), XDG_DATA_HOME=str(owner / 'data'))
+    isolate(env, root, owner)
+    env.update(XDG_CONFIG_HOME=str(owner / 'config'), XDG_DATA_HOME=str(owner / 'data'))
     return env
 
 

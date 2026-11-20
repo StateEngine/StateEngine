@@ -9,6 +9,7 @@ import subprocess
 import time
 import uuid
 from judge_records import wait_json
+from provider_home import isolate, run_provider_command
 
 
 def observe(pid):
@@ -56,8 +57,8 @@ class Judge:
         self.home = self.root / "state"
         self.env = {k:v for k,v in os.environ.items()
                     if not k.startswith(("SE_", "STATEENGINE_", "CODEX_", "CLAUDE", "OPENAI"))}
-        self.env.update(HOME=str(self.root / "owner"), USERPROFILE=str(self.root / "owner"),
-                        CODEX_HOME=str(self.root / "codex"), XDG_RUNTIME_DIR=str(self.root / "runtime"),
+        isolate(self.env, self.root, self.root / "owner", codex=self.root / "codex")
+        self.env.update(XDG_RUNTIME_DIR=str(self.root / "runtime"),
                         TMPDIR=str(self.root / "tmp"))
         # Shorten the real provider-control windows at spawn; the engine
         # still runs the same recovery and stop paths against the injected
@@ -93,8 +94,8 @@ class Judge:
 
     def call(self, *args, timeout=100):
         self.calls += 1
-        r = subprocess.run([str(self.args.se.resolve()), "--home", str(self.home), "--json", *args],
-                           env=self.env, cwd=self.root / "repo", stdin=subprocess.DEVNULL,
+        r = run_provider_command(subprocess.run, [str(self.args.se.resolve()), "--home", str(self.home), "--json", *args],
+                           environment=self.env, fixture=self.root, cwd=self.root / "repo", stdin=subprocess.DEVNULL,
                            capture_output=True, timeout=timeout)
         prefix = self.root / f"call-{self.calls:02}"
         prefix.with_suffix(".stdout").write_bytes(r.stdout)

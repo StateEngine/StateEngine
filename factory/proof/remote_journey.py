@@ -8,6 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 import shlex
+import runpy
 import signal
 import time
 import uuid
@@ -15,7 +16,6 @@ import uuid
 from remote_credentials import Credentials, provider_binary
 from remote_process import Command
 from remote_recovery import begin_recovery, finish_recovery, snapshot
-
 
 def sha256(path):
     with Path(path).open("rb") as stream:
@@ -41,6 +41,11 @@ class Journey:
         self.source = directory / "source-home"
         self.workspace = directory / "source-work"
         self.workspace.mkdir()
+        self.provider_fixture = Path(config["provider_fixture"])
+        fixture = runpy.run_path(str(self.provider_fixture))
+        self.verify_provider_home = fixture["verify_provider_home"]
+        self.provider_env = {**env, **fixture["provider_home_environment"](directory / "source-user")}
+        fixture["prepare_provider_home"](self.provider_env, directory)
         self.nonce = uuid.uuid4().hex
         self.remote_root = ".stateengine-remote-proof/" + self.nonce
         self.remote_se = self.remote_root + "/se"
@@ -62,12 +67,13 @@ class Journey:
         self.record["custody"] = snapshot(self)
         save(self.directory / "remote.json", self.record)
 
-    def start(self, argv, data=None, hold_stdin=False):
+    def start(self, argv, data=None, hold_stdin=False, *, environment=None):
         self.commands += 1
-        return Command(argv, self.directory / f"{self.commands:02}-command", self.env, data, hold_stdin)
+        environment = self.env if environment is None else environment
+        return Command(argv, self.directory / f"{self.commands:02}-command", environment, data, hold_stdin)
 
-    def command(self, argv, data=None):
-        process = self.start(argv, data)
+    def command(self, argv, data=None, *, environment=None):
+        process = self.start(argv, data, environment=environment)
         try:
             return process.finish(self.bound(self.config.get("command_timeout_seconds", 120)))
         finally:
@@ -80,7 +86,11 @@ class Journey:
         return remaining
 
     def local(self, *args):
-        return self.command([self.se, "--home", self.source, "--json", *args])
+        argv = [self.se, "--home", self.source, "--json", *args]
+        if args[0] == "init":
+            self.verify_provider_home(self.provider_env, self.directory)
+            return self.command(argv, environment=self.provider_env)
+        return self.command(argv)
 
     def ssh(self, *args):
         return ["ssh", "-T", "-o", "BatchMode=yes", self.config["destination"], *args]
@@ -217,6 +227,7 @@ with (p/'lock').open('a') as f:
                  " && printf '{\"created\":true}\\n'")
         self.command(self.ssh(setup))
         self.transfer(self.se, self.remote_se)
+        self.transfer(self.provider_fixture, self.remote_root + "/provider_fixture.py")
         self.transfer(provider_binary(self.config["surface"], self.config),
                       self.remote_root + "/bin/" + self.config["surface"])
         # A structured native hash readback avoids interpreting a pipeline's exit.

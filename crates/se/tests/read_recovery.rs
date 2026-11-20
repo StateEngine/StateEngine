@@ -4,6 +4,8 @@
 )]
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 #[path = "../src/render/error.rs"]
 mod render_error;
 use fixture::*;
@@ -130,6 +132,7 @@ fn command(image: &Path, home: &Path, json: bool) -> Command {
     ] {
         command.env_remove(name);
     }
+    provider_home::for_state(&mut command, home);
     command
 }
 fn checked(output: Output) -> Result<serde_json::Value, Box<dyn std::error::Error>> {

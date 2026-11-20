@@ -88,7 +88,7 @@ def run(args):
     root_owner = DirectoryOwner(runtime)
     f.env.update(XDG_RUNTIME_DIR=str(runtime), TMPDIR=str(runtime),
                  STOP_ADMISSION_ROOT=str(f.root), STOP_ADMISSION_SE=str(f.se))
-    for name in ["CODEX_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]:
+    for name in ["XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]:
         path = f.root / name.lower()
         path.mkdir()
         f.env[name] = str(path)

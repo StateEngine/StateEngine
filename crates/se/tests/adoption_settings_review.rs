@@ -3,6 +3,8 @@
 
 #[path = "support/installation_claim_guard.rs"]
 mod installation_claim_guard;
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 use std::{
     error::Error,
     ffi::OsString,
@@ -119,10 +121,14 @@ impl Fixture {
                 command.env(key, value);
             }
         }
+        provider_home::isolate_at(
+            &mut command,
+            &self.root,
+            &self.owner,
+            &self.owner.join(".codex"),
+            &self.config,
+        );
         let output = command
-            .env("HOME", &self.owner)
-            .env("USERPROFILE", &self.owner)
-            .env("CLAUDE_CONFIG_DIR", &self.config)
             .env("XDG_CONFIG_HOME", self.owner.join("config"))
             .args(["--json", "--home"])
             .arg(&self.home)

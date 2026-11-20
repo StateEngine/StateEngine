@@ -2,6 +2,8 @@
     dead_code,
     reason = "The real native fixture is shared with store consumers."
 )]
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 use se_store::*;
 use std::{
     path::Path,
@@ -29,6 +31,7 @@ fn command(home: &Path, cwd: &Path, json: bool) -> Command {
     ] {
         command.env_remove(name);
     }
+    provider_home::for_state(&mut command, home);
     command
 }
 fn json(output: Output) -> Result<serde_json::Value, Box<dyn std::error::Error>> {

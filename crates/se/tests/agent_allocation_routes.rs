@@ -2,6 +2,8 @@
     dead_code,
     reason = "Shared native fixture also serves other store consumers."
 )]
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 use se_store::*;
 use se_types::{AgentId, HumanId, IdempotencyKey, ProjectId};
 use std::{
@@ -33,6 +35,7 @@ fn command(image: &Path, home: &Path, root: &Path) -> Command {
     ] {
         command.env_remove(name);
     }
+    provider_home::for_state(&mut command, home);
     command
 }
 fn value(output: Output) -> Result<serde_json::Value, Box<dyn std::error::Error>> {

@@ -11,6 +11,7 @@ import sys
 import time
 import uuid
 from judge_records import wait_json
+from provider_home import isolate, run_provider_command
 
 
 def provider_bootstrap():
@@ -34,7 +35,7 @@ class Fixture:
         (self.root / "owner").mkdir()
         self.env = {k: v for k, v in os.environ.items()
                     if not k.startswith(("SE_", "STATEENGINE_", "CODEX_", "CLAUDE"))}
-        self.env.update(HOME=str(self.root / "owner"), USERPROFILE=str(self.root / "owner"))
+        isolate(self.env, self.root, self.root / "owner")
         self.calls, self.session, self.processes = 0, None, []
         init = self.ok("--key", str(uuid.uuid4()), "init", "--repo", str(self.repo),
                        "--name", "Mail Judge", "--agent", "Recipient", "--provider", "claude",
@@ -68,8 +69,8 @@ std::process::exit(s.code().unwrap_or(1));}'''.replace("PYTHON", json.dumps(sys.
         if recipient:
             assert self.session
             environment["SE_SESSION"] = self.session
-        result = subprocess.run([str(self.se), "--json", "--home", str(self.home), *args],
-                                stdin=subprocess.DEVNULL, env=environment, capture_output=True, timeout=90)
+        result = run_provider_command(subprocess.run, [str(self.se), "--json", "--home", str(self.home), *args],
+                                stdin=subprocess.DEVNULL, environment=environment, fixture=self.root, capture_output=True, timeout=90)
         base = self.log_root / f"call-{self.calls:02}"
         base.with_suffix(".stdout").write_bytes(result.stdout)
         base.with_suffix(".stderr").write_bytes(result.stderr)

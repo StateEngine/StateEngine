@@ -1,6 +1,8 @@
 //! Public CLI boundary: typed store setup is not a provider launch witness.
 //! Managed-host startup and exact process readback require Linux or Windows.
 #![cfg(any(target_os = "linux", windows))]
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 use se_store::*;
 use se_types::{AgentId, LifecycleId};
 use sha2::{Digest, Sha256};
@@ -35,6 +37,7 @@ fn command(image: &Path, f: &Fixture, root: &Path) -> Command {
             command.env_remove(name);
         }
     }
+    provider_home::isolate(&mut command, &f.home);
     command
 }
 fn checked(

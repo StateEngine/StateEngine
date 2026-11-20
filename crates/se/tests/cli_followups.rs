@@ -2,6 +2,8 @@
     dead_code,
     reason = "Shared native fixture supports several public consumers."
 )]
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 use se_store::*;
 use se_types::EventId;
 #[cfg(unix)]
@@ -33,6 +35,7 @@ fn command(home: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_se"));
     command.arg("--json").arg("--home").arg(home);
     clean(&mut command);
+    provider_home::for_state(&mut command, home);
     command
 }
 fn json(output: &Output) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
@@ -613,6 +616,7 @@ fn plain_status_labels_the_owner_unread_scope() -> Check {
     std::fs::create_dir(&repository)?;
     let mut init = Command::new(env!("CARGO_BIN_EXE_se"));
     clean(&mut init);
+    provider_home::for_state(&mut init, home);
     let init = init
         .arg("--home")
         .arg(home)

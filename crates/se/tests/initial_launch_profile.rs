@@ -9,6 +9,8 @@ mod compat;
 mod fixture;
 #[path = "../src/grammar.rs"]
 mod grammar;
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 use fixture::*;
 use se_config::config_policy::*;
 use se_core::ops::AnyOp;
@@ -58,11 +60,8 @@ fn init_policy_matches_its_first_launch_for_both_providers_and_explicit_approval
             ];
             for json in [true, false] {
                 let mut command = Command::new(env!("CARGO_BIN_EXE_se"));
-                command
-                    .args(args)
-                    .env_clear()
-                    .env("HOME", &f.home)
-                    .env("USERPROFILE", &f.home);
+                command.args(args).env_clear();
+                provider_home::isolate(&mut command, &f.home);
                 // Winsock needs the system directory even in an isolated test home.
                 #[cfg(windows)]
                 if let Some(system_root) = std::env::var_os("SystemRoot") {

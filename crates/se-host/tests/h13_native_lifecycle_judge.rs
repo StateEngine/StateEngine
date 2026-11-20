@@ -1,5 +1,7 @@
 //! Public activation and lifecycle fencing with an async protocol fixture; no native queue claim.
 #![cfg(all(feature = "secode", target_os = "linux"))]
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 #[path = "support/shutdown_linked_fixture.rs"]
 mod support;
 use secode_stateengine_api as api;
@@ -166,7 +168,8 @@ fn activated_native_callbacks_are_validated_and_fenced_during_an_inflight_read()
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(root.join("owner"), std::fs::Permissions::from_mode(0o700))?;
     let home = root.join("state");
-    let initialized = Command::new(&image)
+    let mut command = Command::new(&image);
+    command
         .args(["--json", "--home"])
         .arg(&home)
         .args(["init", "--repo"])
@@ -182,10 +185,9 @@ fn activated_native_callbacks_are_validated_and_fenced_during_an_inflight_read()
             "claude-sonnet-5-5",
         ])
         .env_clear()
-        .env("PATH", std::env::var_os("PATH").ok_or("PATH absent")?)
-        .env("HOME", root.join("owner"))
-        .env("USERPROFILE", root.join("owner"))
-        .output()?;
+        .env("PATH", std::env::var_os("PATH").ok_or("PATH absent")?);
+    provider_home::isolate(&mut command, &root);
+    let initialized = command.output()?;
     std::fs::write(root.join("init.stdout"), &initialized.stdout)?;
     std::fs::write(root.join("init.stderr"), &initialized.stderr)?;
     assert!(initialized.status.success(), "native init failed");

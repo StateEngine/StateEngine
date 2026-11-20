@@ -3,6 +3,8 @@
 //! judge and the store witness. Test-specific imports stay in each root.
 #[path = "../../../test-support/directory.rs"]
 mod directory;
+#[path = "../../../test-support/provider_home.rs"]
+mod provider_home;
 use se_store::{
     Admission, EventBody, ReadBudget, ReadScope, Scope, Snapshot, SqliteFactory, SqliteReader,
     SqliteSnapshot, StoreOptions, StoredEvent, StoredText, Visibility,
@@ -41,11 +43,10 @@ pub(super) fn judge_root(_label: &str) -> Result<directory::PrivateDirectory, St
     directory::private_case_directory().map_err(|error| error.to_string())
 }
 /// A clean owner-terminal environment: no session, no provider markers.
-pub(super) fn owner_env(home: &Path) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+fn owner_env(home: &Path) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
     let mut env = Vec::new();
     for name in [
         "PATH",
-        "HOME",
         "USER",
         "LOGNAME",
         "SHELL",
@@ -53,7 +54,6 @@ pub(super) fn owner_env(home: &Path) -> Vec<(std::ffi::OsString, std::ffi::OsStr
         "XDG_RUNTIME_DIR",
         "SYSTEMROOT",
         "WINDIR",
-        "LOCALAPPDATA",
         "TMPDIR",
     ] {
         if let Some(value) = std::env::var_os(name) {
@@ -64,19 +64,25 @@ pub(super) fn owner_env(home: &Path) -> Vec<(std::ffi::OsString, std::ffi::OsStr
     env.push(("SE_HOME".into(), home.as_os_str().to_os_string()));
     env
 }
-fn run_se(helper: &Path, home: &Path, args: &[&str]) -> Result<Output, String> {
+pub(super) fn owner_command(helper: impl AsRef<std::ffi::OsStr>, home: &Path) -> Command {
     let mut command = Command::new(helper);
     command
-        .args(args)
         .env_clear()
         .envs(owner_env(home))
         .stdin(std::process::Stdio::null());
-    command.output().map_err(|e| {
-        format!(
-            "se {} failed to start: {e}",
-            args.first().copied().unwrap_or_default()
-        )
-    })
+    provider_home::for_state(&mut command, home);
+    command
+}
+fn run_se(helper: &Path, home: &Path, args: &[&str]) -> Result<Output, String> {
+    owner_command(helper, home)
+        .args(args)
+        .output()
+        .map_err(|e| {
+            format!(
+                "se {} failed to start: {e}",
+                args.first().copied().unwrap_or_default()
+            )
+        })
 }
 fn run_se_ok(helper: &Path, home: &Path, args: &[&str]) -> Result<String, String> {
     // A concurrent install/uninstall on the shared box holds the installation

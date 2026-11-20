@@ -25,6 +25,9 @@ from uuid import uuid4
 
 from stock_codex_responses import KEY as LOOPBACK_KEY, MODEL as LOOPBACK_MODEL, TASK, LoopbackModel
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "crates/se/tests/judges"))
+from provider_home import isolate, run_provider_command
+
 
 CODEX_VERSION = "0.169.0"
 CODEX_ARCHIVE = f"https://registry.npmjs.org/@openai/codex/-/codex-{CODEX_VERSION}-linux-x64.tgz"
@@ -142,13 +145,13 @@ class Fixture:
         self.repo, self.home, self.bin = (root / name for name in ("repo", "home", "bin"))
         self.login, self.state, self.runtime = self.home / ".codex", root / "se", root / "run"
         self.config, self.auth = self.login / "config.toml", self.login / "auth.json"
-        self.env = {"PATH": str(self.bin), "HOME": str(self.home), "CODEX_HOME": str(self.login),
+        self.env = {"PATH": str(self.bin),
                     "TMPDIR": str(self.runtime), "SHELL": "/bin/bash", "LANG": "C.UTF-8",
                     **{f"XDG_{part.upper()}_HOME": str(root / part)
                        for part in ("cache", "config", "data", "state")}}
 
     def run(self, binary, *words):
-        result = subprocess.run([str(binary), *words], cwd=self.repo, env=self.env,
+        result = run_provider_command(subprocess.run, [str(binary), *words], cwd=self.repo, environment=self.env, fixture=self.root,
                                 stdin=subprocess.DEVNULL, capture_output=True, timeout=45)
         if result.returncode:
             try:
@@ -167,6 +170,7 @@ class Fixture:
         require(git is not None, "Git is required for the fixture repository")
         for directory in (self.root, self.repo, self.home, self.login, self.bin, self.runtime):
             directory.mkdir(mode=0o700)
+        isolate(self.env, self.root, self.home, codex=self.login)
         for name, path in (("se", self.se), ("codex", self.codex), ("git", Path(git).resolve(strict=True))):
             (self.bin / name).symlink_to(path)
         self.run(self.bin / "git", "init", "-q")

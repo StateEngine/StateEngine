@@ -2,6 +2,8 @@
     dead_code,
     reason = "The real native fixture is shared with store consumers."
 )]
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 #[cfg(any(target_os = "linux", windows))]
 use se_types::Read;
 #[cfg(any(target_os = "linux", windows))]
@@ -47,6 +49,7 @@ fn command(image: &Path, home: &Path, json: bool) -> Command {
     ] {
         command.env_remove(name);
     }
+    provider_home::for_state(&mut command, home);
     command
 }
 fn value(output: &Output) -> Result<serde_json::Value, Box<dyn std::error::Error>> {

@@ -1,5 +1,7 @@
 //! Protects: an identity-free guest cannot inherit owner authority, and an
 //! invalid explicit capability cannot fall back to that guest.
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 use std::{
     io::{BufRead, BufReader, Read, Write},
     path::Path,
@@ -29,6 +31,7 @@ fn command(image: &Path, home: &Path) -> Command {
             command.env_remove(name);
         }
     }
+    provider_home::for_state(&mut command, home);
     command
 }
 fn checked(output: Output) -> Result<serde_json::Value, Box<dyn std::error::Error>> {

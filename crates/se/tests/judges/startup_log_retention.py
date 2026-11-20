@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from provider_home import isolate, run_provider_command
 
 
 NAME = re.compile(r"runtime-startup-[0-9a-f]{32}\.log")
@@ -24,8 +25,10 @@ CALLS = []
 
 
 def call(home, *args):
-    child = subprocess.Popen([SE, "--home", str(home), "--json", *args],
-                             env=ENV, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    environment = dict(ENV)
+    isolate(environment, home.parent, home.parent / "owner")
+    child = run_provider_command(subprocess.Popen, [SE, "--home", str(home), "--json", *args],
+                                 environment, home.parent, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     row = dict(argv=child.args, pid=child.pid, exit="in flight")
     CALLS.append(row)
     (ROOT / "calls.json").write_text(json.dumps(CALLS, indent=2))

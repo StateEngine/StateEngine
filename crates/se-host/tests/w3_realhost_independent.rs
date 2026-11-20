@@ -15,7 +15,6 @@ use se_store::{EventBody, Snapshot, StoredEvent, StoredText};
 use secode_stateengine_api as api;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 

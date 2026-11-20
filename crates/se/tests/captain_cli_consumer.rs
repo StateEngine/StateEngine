@@ -2,17 +2,25 @@
 #![cfg(target_os = "linux")]
 #[path = "../../test-support/directory.rs"]
 mod directory;
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 use std::{error::Error, os::unix::fs::PermissionsExt, path::Path, process::Command};
 
 type Check = Result<(), Box<dyn Error>>;
 
 fn run(root: &Path, repo: &Path, args: &[&str]) -> Result<serde_json::Value, Box<dyn Error>> {
     let path = std::env::var_os("PATH").ok_or("PATH unavailable")?;
-    let output = Command::new(env!("CARGO_BIN_EXE_se"))
-        .env_clear()
-        .env("PATH", path)
-        .env("HOME", root.join("owner"))
-        .env("USERPROFILE", root.join("owner"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_se"));
+    command.env_clear().env("PATH", path);
+    let owner = root.join("owner");
+    provider_home::isolate_at(
+        &mut command,
+        root,
+        &owner,
+        &owner.join(".codex"),
+        &owner.join(".claude"),
+    );
+    let output = command
         .env("XDG_RUNTIME_DIR", root.join("runtime"))
         .current_dir(repo)
         .arg("--home")

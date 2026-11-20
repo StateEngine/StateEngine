@@ -1,5 +1,7 @@
 //! The real foreground CLI owns its lifetime and closes after output failure.
 #![cfg(any(target_os = "linux", windows))]
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 use std::{
     error::Error,
     fs,
@@ -71,6 +73,7 @@ impl Fixture {
         if let Some(root) = self.root.as_deref() {
             c.current_dir(root);
         }
+        provider_home::for_state(&mut c, &self.home);
         c
     }
     fn call(&self, args: &[&str]) -> Check<Output> {

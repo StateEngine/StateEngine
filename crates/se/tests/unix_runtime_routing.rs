@@ -1,5 +1,7 @@
 //! The busy-home comparison must use the same explicit XDG selector as bind.
 #![cfg(target_os = "linux")]
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -46,6 +48,7 @@ fn command(image: &Path, home: &Path, json: bool) -> Command {
     // This fixture's explicit platform root is also passed to every repeated
     // CLI call made by the shared exact-instance cleanup helper.
     command.env("XDG_RUNTIME_DIR", socket_root(home));
+    provider_home::for_state(&mut command, home);
     command
 }
 fn checked(output: Output) -> Result<serde_json::Value, Box<dyn std::error::Error>> {

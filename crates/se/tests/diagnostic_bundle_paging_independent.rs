@@ -1,6 +1,8 @@
 //! Public init and status consumers prove paged observations cannot receipt a complete bundle.
 #[path = "../../test-support/directory.rs"]
 mod directory;
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -71,8 +73,6 @@ impl Fixture {
             }
         }
         command
-            .env("HOME", &self.user_home)
-            .env("USERPROFILE", &self.user_home)
             .env("XDG_CONFIG_HOME", self.user_home.join(".config"))
             .env("XDG_STATE_HOME", self.user_home.join(".local/state"))
             .env("XDG_CACHE_HOME", self.user_home.join(".cache"))
@@ -86,6 +86,13 @@ impl Fixture {
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("NO_COLOR", "1")
             .current_dir(&self.root);
+        provider_home::isolate_at(
+            &mut command,
+            &self.root,
+            &self.user_home,
+            &self.user_home.join(".codex"),
+            &self.user_home.join(".claude"),
+        );
         command
     }
 

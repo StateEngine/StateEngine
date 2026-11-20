@@ -2,6 +2,8 @@
 #![cfg(unix)]
 #[path = "../../test-support/directory.rs"]
 mod cleanup_directory;
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt},
@@ -28,6 +30,7 @@ fn command(image: &Path, home: &Path, json: bool) -> Command {
     ] {
         command.env_remove(name);
     }
+    provider_home::for_state(&mut command, home);
     command
 }
 

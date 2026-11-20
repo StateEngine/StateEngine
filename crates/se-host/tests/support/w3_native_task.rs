@@ -52,7 +52,7 @@ fn native_secode_task_captures_the_judge_nonce_through_public_surfaces() -> Resu
     let helper_hash = file_digest(&judge.helper)?;
     std::fs::write(judge.root.join("judge-nonce.txt"), &nonce).map_err(|e| e.to_string())?;
     let python = std::env::var_os("SE_W3_PYTHON").unwrap_or_else(|| "python3".into());
-    let result = Command::new(python)
+    let result = owner_command(python, &judge.home)
         .arg(&driver)
         .args(["--secode-server"])
         .arg(&server)
@@ -72,10 +72,7 @@ fn native_secode_task_captures_the_judge_nonce_through_public_surfaces() -> Resu
             "--nonce",
             &nonce,
         ])
-        .env_clear()
-        .envs(owner_env(&judge.home))
         .current_dir(&repo)
-        .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| format!("native driver launch: {e}"))?;
     std::fs::write(judge.root.join("driver.stdout"), &result.stdout).map_err(|e| e.to_string())?;

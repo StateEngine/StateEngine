@@ -1,5 +1,7 @@
 //! A failed test observation must not orphan the real detached runtime it started.
 #![cfg(target_os = "linux")]
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
 type Check = Result<(), Box<dyn std::error::Error>>;
 #[path = "../../test-support/directory.rs"]
@@ -27,6 +29,7 @@ fn command(image: &Path, home: &Path, json: bool) -> Command {
             command.env_remove(name);
         }
     }
+    provider_home::for_state(&mut command, home);
     command
 }
 fn checked(output: std::process::Output) -> Result<serde_json::Value, Box<dyn std::error::Error>> {

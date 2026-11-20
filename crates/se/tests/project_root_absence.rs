@@ -3,6 +3,8 @@
     dead_code,
     reason = "Shared real store fixture serves other consumers."
 )]
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 use std::{path::Path, process::Command};
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
@@ -26,6 +28,7 @@ fn command(home: &Path, root: &Path, json: bool) -> Command {
     ] {
         command.env_remove(key);
     }
+    provider_home::for_state(&mut command, home);
     command
 }
 

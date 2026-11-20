@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import uuid
+from provider_home import isolate, run_provider_command
 
 
 def snapshot(root):
@@ -57,7 +58,8 @@ class Case:
         self.owner.mkdir(mode=0o700)
         # No ambient accounts, hooks, Git overrides, remote endpoints or capabilities.
         self.env = {k: os.environ[k] for k in ("PATH", "LANG", "LC_ALL", "TERM") if k in os.environ}
-        self.env.update(HOME=str(self.owner), USERPROFILE=str(self.owner),
+        isolate(self.env, self.root, self.owner)
+        self.env.update(
                         GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
                         GIT_OPTIONAL_LOCKS="0", PYTHONDONTWRITEBYTECODE="1")
         for name in ("XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"):
@@ -108,7 +110,7 @@ class Case:
             argv = [sys.executable, str(helper), str(self.image), str(self.home), "30000", *args]
         else:
             argv = [str(self.image), "--home", str(self.home), "--json", *args]
-        result = subprocess.run(argv, cwd=self.repo, env=self.env,
+        result = run_provider_command(subprocess.run, argv, cwd=self.repo, environment=self.env, fixture=self.root,
                                 capture_output=True, timeout=40, input=b"")
         base = self.root / f"{self.calls:02}-{label}"
         base.with_suffix(".stdout").write_bytes(result.stdout)

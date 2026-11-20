@@ -28,7 +28,6 @@ class Journeys(Smoke):
         super().__init__(*args, **kwargs)
         protect(self.home)
         self.credentials = Credentials(self.settings['credential_seed'], self.settings['provider'])
-        self.commands.environment['CODEX_HOME'] = str(self.home / '.codex')
         self.commands.environment['GIT_OPTIONAL_LOCKS'] = '0'
         if sys.platform == 'win32':
             self.commands.terminal_prefix = [sys.executable, '-B', str(Path(__file__).with_name('terminal.py'))]

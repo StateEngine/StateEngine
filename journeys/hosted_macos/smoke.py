@@ -11,6 +11,9 @@ from common import digest, require, save
 from native import Observer, observe
 from package import verify
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
+from harness_matrix.io import prepare_provider_home, provider_home_environment, run_provider_command
+
 
 def terminal_receipt(text):
     rendered = []
@@ -45,10 +48,12 @@ class Smoke:
         self.saved_profile = None
         self.attempted_install = self.attempted_init = False
         self.calls, self.probes, self.errors = [], [], []
-        self.environment = dict(HOME=str(self.home), SHELL='/bin/zsh', PATH='/usr/bin:/bin:/usr/sbin:/sbin',
+        self.environment = dict(provider_home_environment(self.home),
+                                SHELL='/bin/zsh', PATH='/usr/bin:/bin:/usr/sbin:/sbin',
                                 USER=os.environ.get('USER', ''), LOGNAME=os.environ.get('LOGNAME', ''),
                                 TMPDIR=str(self.home / 'tmp'), LANG='en_US.UTF-8', LC_ALL='en_US.UTF-8',
                                 SE_HOME=str(self.state), GIT_CONFIG_GLOBAL=str(self.home / '.gitconfig'), GIT_CONFIG_NOSYSTEM='1')
+        prepare_provider_home(self.environment, self.home)
         self.observer = Observer(self.home)
         self.record = dict(schema='se.macos-account-free/v1', result='running', source=metadata['nightly'],
                            package_metadata_sha256=checksum, archive_sha256=metadata['archive_sha256'],
@@ -71,8 +76,9 @@ class Smoke:
         stderr = self.output / f'{len(self.calls):03}-{label}.stderr'
         try:
             with stdout.open('xb') as out, stderr.open('xb') as err:
-                value = subprocess.run(argv, cwd=self.repo, env=self.environment,
-                                       stdin=subprocess.DEVNULL, stdout=out, stderr=err, timeout=90)
+                value = run_provider_command(subprocess.run, argv, self.environment, self.home,
+                                             cwd=self.repo, stdin=subprocess.DEVNULL,
+                                             stdout=out, stderr=err, timeout=90)
             row.update(exit=value.returncode, seconds=time.monotonic() - started)
             require(stdout.stat().st_size + stderr.stat().st_size <= 2 * 1024**2, 'Command evidence exceeds finite limit; raw files retained')
             require(value.returncode == 0, f'{label} failed: exit {value.returncode}; retained stdout/stderr')

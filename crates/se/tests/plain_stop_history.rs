@@ -7,6 +7,8 @@
 mod capture;
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 #[path = "../src/render/mod.rs"]
 mod render;
 use fixture::*;
@@ -429,9 +431,8 @@ fn plain_status_and_show_explain_the_actual_resume_state() -> Check {
                 .args(args)
                 .current_dir(&repo)
                 .env_clear()
-                .env("HOME", &f.home)
-                .env("USERPROFILE", &f.home)
                 .env("PATH", std::env::var_os("PATH").ok_or("PATH")?);
+            provider_home::isolate(&mut command, &f.home);
             #[cfg(windows)]
             if let Some(root) = std::env::var_os("SystemRoot") {
                 command.env("SystemRoot", root);
