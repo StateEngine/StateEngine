@@ -12,6 +12,15 @@ use std::{
     process::{Command, Output},
 };
 
+#[path = "../../se-store/tests/support/store_fixture.rs"]
+mod store_fixture;
+
+use se_store::{
+    Actor, CommitState, DirectStore, EventBody, Expected, LeaseMode, ReadStore, Root, Scope,
+    SqliteFactory, StoreFactory,
+};
+use se_types::{NativePath, ProjectId};
+
 type Check<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 struct Fixture {
@@ -151,70 +160,97 @@ fn first_project_page(status: &Value) -> Check<BTreeSet<String>> {
     Ok(names)
 }
 
+fn register_projects(fixture: &Fixture) -> Check<BTreeSet<String>> {
+    let name = "paging-000";
+    let repo = fixture.repos.join(name);
+    private_dir(&repo)?;
+    let initialized = json(
+        fixture
+            .se()
+            .args(["init", "--repo"])
+            .arg(&repo)
+            .args([
+                "--name",
+                name,
+                "--agent",
+                "synthetic-agent",
+                "--provider",
+                "codex",
+            ])
+            .current_dir(&repo)
+            .output()?,
+        0,
+        "public init",
+    )?;
+    assert_eq!(initialized["project"]["name"], name);
+    let first: ProjectId = initialized["project"]["id"]
+        .as_str()
+        .ok_or("initialized project ID missing")?
+        .parse()?;
+
+    // Keep real home initialization and seed the remaining projects through
+    // the store. The status page needs 101 registrations under the same owner.
+    let mut seed = store_fixture::Fixture::at(fixture.root.clone(), fixture.home.clone())?;
+    seed.owner = initialized["owner"]["human_id"]
+        .as_str()
+        .ok_or("initialized owner missing")?
+        .parse()?;
+    let info = store_fixture::present(SqliteFactory::open_reader(&seed.options)?)?.info()?;
+    seed.store = info.id;
+    let lease = store_fixture::Lease::acquire(
+        &seed.options.state_directory,
+        LeaseMode::DirectClient,
+        Some(seed.store.clone()),
+    )?;
+    let mut direct = store_fixture::present(SqliteFactory::open_direct(&seed.options, &*lease)?)?;
+    let admission = seed.admission(Scope::Registry, Actor::Human(seed.owner.clone()));
+    let mut names = BTreeSet::from([name.to_owned()]);
+    let mut registered = BTreeSet::from([first]);
+    for range in [1..=50, 51..=100] {
+        let key = format!("paging-projects-from-{}", range.start());
+        let mut projects = Vec::new();
+        for index in range {
+            let name = format!("paging-{index:03}");
+            let root = fixture.repos.join(&name);
+            private_dir(&root)?;
+            let path = NativePath::from_local(se_proc::canonicalize_path(&root)?)?;
+            let canonical_key = serde_json::to_vec(&path)?;
+            let project = ProjectId::from_parts(1_700_000_000_000 + index, [11; 10])?;
+            assert!(registered.insert(project.clone()), "project ID collision");
+            names.insert(name.clone());
+            projects.push(EventBody::ProjectRegistered {
+                project,
+                name,
+                roots: vec![Root {
+                    path,
+                    canonical_key,
+                }],
+                owner: seed.owner.clone(),
+                history_from: None,
+                expected: Expected::Absent,
+            });
+        }
+        let count = projects.len();
+        let receipt = direct.append(
+            seed.batch(
+                admission.clone(),
+                Some(store_fixture::request(&key)?),
+                projects,
+            )?,
+            &*lease,
+        )?;
+        assert_eq!(receipt.state, CommitState::Committed);
+        assert_eq!(receipt.events.len(), count);
+    }
+    direct.close()?;
+    assert_eq!(registered.len(), 101);
+    Ok(names)
+}
+
 #[test]
-#[expect(
-    clippy::cognitive_complexity,
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn a_paged_home_status_remains_observed_but_makes_the_export_incomplete() -> Check {
     let fixture = Fixture::new()?;
-    let mut registered = BTreeSet::new();
-    let mut expected_names = BTreeSet::new();
-    let mut owner = None::<String>;
-    for index in 0..101 {
-        let name = format!("paging-{index:03}");
-        let repo = fixture.repos.join(&name);
-        private_dir(&repo)?;
-        // Empty native repositories need neither commits, identity, hooks nor
-        // provider credentials. Suppress account/global template configuration.
-        let git = fixture
-            .command("git")
-            .args(["init", "--quiet", "--template="])
-            .current_dir(&repo)
-            .output()?;
-        assert!(git.status.success(), "git init {index}: {}", printed(&git));
-        assert!(repo.join(".git").is_dir());
-        let initialized = json(
-            fixture
-                .se()
-                .args(["init", "--repo"])
-                .arg(&repo)
-                .args([
-                    "--name",
-                    &name,
-                    "--agent",
-                    "synthetic-agent",
-                    "--provider",
-                    "codex",
-                ])
-                .current_dir(&repo)
-                .output()?,
-            0,
-            &format!("public init {index}"),
-        )?;
-        assert_eq!(initialized["project"]["name"], name);
-        let id = initialized["project"]["id"]
-            .as_str()
-            .ok_or("initialized project ID missing")?;
-        assert!(
-            registered.insert(id.to_owned()),
-            "init reused an earlier project ID"
-        );
-        let human = initialized["owner"]["human_id"]
-            .as_str()
-            .ok_or("initialized owner missing")?;
-        match &owner {
-            Some(owner) => assert_eq!(
-                human,
-                owner.as_str(),
-                "init changed the shared home's owner"
-            ),
-            None => owner = Some(human.to_owned()),
-        }
-        expected_names.insert(name);
-    }
-    assert_eq!(registered.len(), 101);
+    let expected_names = register_projects(&fixture)?;
 
     // A successful public page is still a partial collection. Witness its
     // source exit and page bounds before judging the export's completeness.
