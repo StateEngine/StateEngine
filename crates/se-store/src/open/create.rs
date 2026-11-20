@@ -18,7 +18,7 @@ impl SqliteFactory {
                 "bootstrap requires measured-absent store and held runtime lease",
             ));
         }
-        let mut reader = SqliteReader::for_options(o)?;
+        let mut reader = SqliteReader::with_slots(o, crate::read_slots::ReadSlots::default())?;
         match lease.files().inspect_metadata(&reader.path)? {
             Read::Absent { .. } => {}
             Read::Present { .. } => {

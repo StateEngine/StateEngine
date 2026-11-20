@@ -14,10 +14,7 @@ use se_core::{
     store_error::store_error,
 };
 use se_host::client::{ClientOptions, lease::ClientCredential};
-use se_store::{
-    DirectStore, LeaseIdentity, LeaseMode, Snapshot, SqliteFactory, StateFiles,
-    StoreFactory, StoreOptions,
-};
+use se_store::{DirectStore, Snapshot, SqliteFactory, StateFiles, StoreFactory, StoreOptions};
 use se_types::{AgentId, EventId, MessageId, Read, Result, SeError, Secret};
 use std::{
     io::Read as _,
@@ -587,7 +584,9 @@ fn dispatch_with_cold_recovery(
         }
         return super::status::finish(cx, &reader, output, &caller.admission);
     }
-    let store_id = snapshot.info().id;
+    let identity = snapshot
+        .info()
+        .direct_lease_identity(caller.admission.generation);
     // End the finite auth/selection pin before stdin, IPC, writer or custody work.
     snapshot.close().map_err(|e| store_error(&e))?;
     se_core::admission::authorize(op.meta(), &caller.admission)?;
@@ -617,11 +616,6 @@ fn dispatch_with_cold_recovery(
             .map_err(|error| retry.attach(error));
     }
     reader.validate_identity().map_err(|e| store_error(&e))?;
-    let identity = LeaseIdentity {
-        store: Some(store_id),
-        generation: caller.admission.generation,
-        mode: LeaseMode::DirectClient,
-    };
     let lease = DirectLease::acquire(&files, &cx.home.join("runtime.lock"), identity)
         .map_err(|e| store_error(&e))?;
     let retry = super::startup_retry::Retry::capture(cx, &caller.admission, &op);

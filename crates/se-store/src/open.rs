@@ -41,9 +41,6 @@ impl SqliteHost {
     }
 }
 impl SqliteReader {
-    fn for_options(o: &StoreOptions) -> StoreResult<Self> {
-        Self::with_slots(o, crate::read_slots::ReadSlots::default())
-    }
     pub(crate) fn with_slots(
         o: &StoreOptions,
         slots: crate::read_slots::ReadSlots,
@@ -83,13 +80,6 @@ impl SqliteReader {
         );
         Ok(())
     }
-    /// Recheck that the named database is still the one this reader opened.
-    /// This observes native identity only; it does not refresh store contents.
-    pub fn validate_identity(&self) -> StoreResult<()> {
-        let named = se_proc::NativeFileIdentity::observe(&self.path)
-            .map_err(|e| self.identity_observation_error(e))?;
-        self.require_identity(named)
-    }
     pub(crate) fn validate_connection(&self, db: &Connection) -> StoreResult<()> {
         #[cfg(unix)]
         let matches = se_proc::NativeFileIdentity::sqlite_path_moved(db).map(|moved| !moved);
@@ -109,7 +99,7 @@ impl SqliteReader {
         }
         self.validate_identity()
     }
-    fn identity_observation_error(&self, error: std::io::Error) -> Box<StoreError> {
+    pub(crate) fn identity_observation_error(&self, error: std::io::Error) -> Box<StoreError> {
         if error.kind() == std::io::ErrorKind::InvalidInput {
             self.identity_changed(format!(
                 "database file is no longer a regular non-link file: {error}"
@@ -118,7 +108,7 @@ impl SqliteReader {
             io(error, &self.path, StoreIoStage::Open)
         }
     }
-    fn require_identity(&self, named: se_proc::NativeFileIdentity) -> StoreResult<()> {
+    pub(crate) fn require_identity(&self, named: se_proc::NativeFileIdentity) -> StoreResult<()> {
         if self.identity != Some(named) {
             return Err(self.identity_changed("database file identity changed"));
         }
