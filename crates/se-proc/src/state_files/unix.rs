@@ -21,7 +21,7 @@ use std::{
 pub(super) struct Directory {
     file: File,
     identity: (u64, u64),
-    short_cli_parent: Option<(File, std::time::Instant)>,
+    retained: Option<RetainedParent>,
 }
 fn name(value: &OsStr, path: &Path) -> Result<CString> {
     CString::new(value.as_bytes()).map_err(|_| unsafe_path("NUL in native path", path))
@@ -291,52 +291,58 @@ impl Directory {
         Ok(Self {
             file,
             identity: (meta.dev(), meta.ino()),
-            short_cli_parent: None,
+            retained: None,
         })
     }
-    pub fn open_short_cli(path: &Path) -> Result<Self> {
+    pub fn open_retained(path: &Path) -> Result<Self> {
         let (file, parent) = walk_with_parent(path, false, true, false, true)?;
         let meta = metadata(&file, path, true)?;
         Ok(Self {
             file,
             identity: (meta.dev(), meta.ino()),
-            short_cli_parent: parent.map(|parent| (parent, std::time::Instant::now())),
+            retained: parent.map(RetainedParent::new),
         })
     }
+    pub fn is_retained(&self) -> bool {
+        self.retained.is_some()
+    }
     pub fn check_name(&self, path: &Path) -> Result<()> {
-        if let Some((parent, checked)) = &self.short_cli_parent
-            && checked.elapsed() <= SHORT_CLI_ANCESTRY_AGE
-        {
-            let leaf = name(
-                path.file_name()
-                    .ok_or_else(|| unsafe_path("state root name missing", path))?,
-                path,
-            )?;
-            // SAFETY: one no-follow name relative to the retained verified parent.
-            let named = owned(
-                unsafe {
-                    libc::openat(
-                        parent.as_raw_fd(),
-                        leaf.as_ptr(),
-                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                    )
-                },
-                "reopen state root",
-                path,
-            )?;
-            let meta = metadata(&named, path, true)?;
-            if (meta.dev(), meta.ino()) != self.identity {
-                return Err(failure(
-                    StateFileErrorCode::SourceChanged,
-                    "held state root was replaced",
-                    path,
-                ));
-            }
-            metadata(&self.file, path, true)?;
-            return Ok(());
+        let Some(retained) = &self.retained else {
+            return self.same_root(&walk(path, false)?, path);
+        };
+        if let Some(checked) = retained.fresh(|parent| self.check_relative(parent, path)) {
+            return checked;
         }
-        let observed = Self::open(path)?;
-        if observed.identity != self.identity {
+        let (found, parent) = walk_with_parent(path, false, true, false, true)?;
+        self.same_root(&found, path)?;
+        if let Some(parent) = parent {
+            retained.refresh(parent);
+        }
+        Ok(())
+    }
+    fn check_relative(&self, parent: &File, path: &Path) -> Result<()> {
+        let leaf = name(
+            path.file_name()
+                .ok_or_else(|| unsafe_path("state root name missing", path))?,
+            path,
+        )?;
+        // SAFETY: one no-follow name relative to the retained verified parent.
+        let named = owned(
+            unsafe {
+                libc::openat(
+                    parent.as_raw_fd(),
+                    leaf.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            },
+            "reopen state root",
+            path,
+        )?;
+        self.same_root(&named, path)
+    }
+    fn same_root(&self, found: &File, path: &Path) -> Result<()> {
+        let meta = metadata(found, path, true)?;
+        if (meta.dev(), meta.ino()) != self.identity {
             return Err(failure(
                 StateFileErrorCode::SourceChanged,
                 "held state root was replaced",

@@ -32,7 +32,7 @@ impl NativeMetadataPin {
         let Some(file) = files.directory.readback(path, &files.root)? else {
             return Ok(None);
         };
-        let files = NativeStateFiles::open(&files.root)?;
+        let files = files.reopen()?;
         #[cfg(windows)]
         let direct_metadata = files.directory.admit_metadata(path, &files.root)?;
         let pin = Self {

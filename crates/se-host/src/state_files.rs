@@ -151,16 +151,20 @@ pub struct Files(pub NativeStateFiles, FilePolicy);
 impl Files {
     /// Open for direct CLI access. Hosts must select `FilePolicy::Host` explicitly.
     pub fn open(path: &Path) -> StoreResult<Self> {
-        Self::open_with_policy(path, FilePolicy::Direct)
-    }
-    /// Open for a bounded CLI operation with a retained verified root parent.
-    pub fn open_short_cli(path: &Path) -> StoreResult<Self> {
-        NativeStateFiles::open_short_cli(path)
+        NativeStateFiles::open(path)
             .map(Self::from_native)
             .map_err(native_error)
     }
+    /// Open for direct access with a retained verified root parent.
+    pub fn open_retained(path: &Path) -> StoreResult<Self> {
+        NativeStateFiles::open_retained(path)
+            .map(Self::from_native)
+            .map_err(native_error)
+    }
+    /// A long-lived holder retains the verified root parent; see
+    /// `NativeStateFiles::open_retained` for how often ancestry is rechecked.
     pub fn open_with_policy(path: &Path, policy: FilePolicy) -> StoreResult<Self> {
-        NativeStateFiles::open(path)
+        NativeStateFiles::open_retained(path)
             .map(|native| Self(native, policy))
             .map_err(native_error)
     }

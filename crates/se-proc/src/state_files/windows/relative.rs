@@ -1,4 +1,4 @@
-//! Handle-relative reads for a bounded CLI request.
+//! Handle-relative reads beneath a retained, recently verified directory.
 use super::*;
 use windows_sys::Wdk::{
     Foundation::OBJECT_ATTRIBUTES,
@@ -83,7 +83,7 @@ pub(super) fn open(
 }
 
 impl Directory {
-    pub(super) fn readback_short_cli(&self, path: &Path) -> Result<Option<File>> {
+    pub(super) fn readback_relative(&self, path: &Path) -> Result<Option<File>> {
         let leaf = path
             .file_name()
             .ok_or_else(|| unsafe_path("state file name missing", path))?;
