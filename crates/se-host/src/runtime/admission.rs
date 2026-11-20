@@ -25,7 +25,7 @@ mod remote;
 /// Whether a still-prepared credential may be used: only for read-only tool
 /// discovery during its launch, never for an operation.
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub(super) enum Pending {
+pub(in crate::runtime::admission) enum Pending {
     Discover,
     Refuse,
     ValidateOnly,
@@ -198,7 +198,7 @@ impl HostedRuntime {
     }
 }
 
-pub(super) fn remote_credential(
+pub(in crate::runtime::admission) fn remote_credential(
     phase: &se_store::ReadPhase,
     secret: &se_types::Secret,
 ) -> Result<(se_store::RecordId, [u8; 32])> {

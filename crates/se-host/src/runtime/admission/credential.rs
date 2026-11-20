@@ -47,7 +47,7 @@ impl AdmissionContext {
     }
 }
 impl AdmissionContext {
-    pub(in crate::runtime) fn session(
+    pub(in crate::runtime::admission) fn session(
         &self,
         phase: &se_store::ReadPhase,
         secret: &se_types::Secret,

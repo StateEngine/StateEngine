@@ -32,7 +32,7 @@ impl AdmissionContext {
         }
         se_types::Secret::new(std::mem::take(&mut *bytes))
     }
-    pub(in crate::runtime) fn owner_peer(
+    pub(in crate::runtime::admission) fn owner_peer(
         &self,
         phase: &mut se_store::ReadPhase,
         peer: &PeerProof,
