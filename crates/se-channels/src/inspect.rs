@@ -3,7 +3,7 @@
 mod cursor;
 mod receipt;
 use super::{service::*, *};
-use crate::client::lease::Deadline;
+use crate::host::{AsChannelDeadline, ChannelDeadline as Deadline};
 use receipt::{output_fact, receipt};
 use se_core::store_error::store_error;
 use se_store::{
@@ -17,8 +17,9 @@ impl Channels {
     pub async fn inspect(
         &self,
         input: InspectChannels,
-        deadline: &Deadline,
+        deadline: &impl AsChannelDeadline,
     ) -> Result<ChannelPage> {
+        let deadline = &deadline.as_channel_deadline();
         if input.receipt.is_some() && input.connection.is_none() {
             return Err(channel_error(ChannelError::InvalidInput));
         }

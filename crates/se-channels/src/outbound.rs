@@ -1,6 +1,6 @@
 //! Durable output attempts. Unknown effects stay unknown and are never retried.
 use super::{service::*, *};
-use crate::client::lease::Deadline;
+use crate::host::ChannelDeadline as Deadline;
 use se_core::store_error::store_error;
 use se_store::{
     Actor, Admission, EventBody, Scope, Snapshot, StoredText,
@@ -307,18 +307,32 @@ impl Channels {
             scope: Scope::Project(state.target.project.clone()),
             actor: Actor::Human(self.owner.clone()),
             session: None,
-            generation: self.context.generation.get(),
+            generation: self.host.generation().get(),
         };
-        self.store
-            .commit(admission, deadline, None, move |_, cx| {
-                Ok(se_store::AtomicBatch {
-                    expected_incarnation: cx.read.info().incarnation,
-                    admission: cx.admission.clone(),
-                    request: Some(request),
-                    events: vec![event(cx, EventBody::ChannelRecorded { change })?],
-                    import_checkpoint: None,
-                })
-            })
+        let operation = request.intent.operation;
+        let key = request.key.clone();
+        let batch = self
+            .host
+            .read_snapshot(
+                admission,
+                deadline,
+                Box::new(move |cx| {
+                    let batch = se_store::AtomicBatch {
+                        expected_incarnation: cx.read.info().incarnation,
+                        admission: cx.admission.clone(),
+                        request: Some(request),
+                        events: vec![event(cx, EventBody::ChannelRecorded { change })?],
+                        import_checkpoint: None,
+                    };
+                    Ok(Box::new(batch) as Box<dyn std::any::Any + Send>)
+                }),
+            )
+            .await?
+            .downcast::<se_store::AtomicBatch>()
+            .map(|boxed| *boxed)
+            .map_err(|_| channel_error(ChannelError::ReceiverNotRunning))?;
+        self.host
+            .submit_batch(batch, operation, key, deadline)
             .await?;
         self.changed.notify_waiters();
         Ok(())

@@ -5,12 +5,24 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::PathBuf,
     process::{Child, Command, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
+type Check<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+fn require(condition: bool, message: &str) -> Check {
+    if condition {
+        Ok(())
+    } else {
+        Err(message.to_owned().into())
+    }
+}
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
-pub(super) struct Fixture {
+pub struct Fixture {
     pub root: PathBuf,
     pub adapter: Arc<Discord>,
     pub token: se_types::Secret,

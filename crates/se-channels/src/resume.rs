@@ -1,6 +1,6 @@
 //! Expiring phone confirmation reuses the existing native launch coordinator.
 use super::{service::*, *};
-use crate::client::lease::Deadline;
+use crate::host::ChannelDeadline as Deadline;
 use se_core::{
     dispatch::Kernel,
     ops::{AgentLaunch, agent_launch::LaunchPlan},
@@ -90,7 +90,7 @@ impl Channels {
         let profile_revision = *profile_revision;
         let selected = state.target.clone();
         self.read(Some(selected.project.clone()), deadline, move |cx| {
-            let kernel = Kernel::new(crate::runtime::start::allocate_facts()?)?
+            let kernel = Kernel::new(super::service::allocate_facts()?)?
                 .with_configuration(configuration.clone())?;
             let plan = se_core::ops::process_plan::launch(
                 &kernel,
@@ -299,14 +299,12 @@ impl Channels {
             return Err(channel_error(ChannelError::RevisionConflict));
         }
         plan.channel_resume = Some((state.id.clone(), action.id.clone()));
-        let coordinator = self
-            .context
-            .custody
-            .get()
-            .ok_or_else(|| channel_error(ChannelError::Unsupported))?;
-        coordinator
-            .execute(
-                se_core::ports::CustodyPlan::Launch(Box::new(plan)),
+        if !self.host.has_custody() {
+            return Err(channel_error(ChannelError::Unsupported));
+        }
+        self.host
+            .execute_launch(
+                Box::new(plan),
                 self.admission(Some(state.target.project.clone()))?,
                 deadline,
             )

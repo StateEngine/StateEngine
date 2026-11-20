@@ -1,54 +1,12 @@
 //! One receiver under the existing host generation and store lease.
 use super::{service::*, *};
-use crate::client::lease::Deadline;
+use crate::host::AsChannelDeadline;
 use se_core::store_error::store_error;
-use se_store::{ReadStore, Snapshot};
+use se_store::Snapshot;
 use se_types::Result;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::watch;
 
-impl crate::HostedRuntime {
-    /// Trusted native Owner ABI, never a tool capability for hosted agents.
-    pub fn channels(&self) -> Result<Arc<Channels>> {
-        if let Some(service) = self.channels.get() {
-            return Ok(service.clone());
-        }
-        let credentials = Arc::new(
-            NativeChannelCredentials::open(
-                &self.state_directory,
-                self.execution
-                    .reader
-                    .info()
-                    .map_err(|e| store_error(&e))?
-                    .id,
-                self.owner.clone(),
-            )
-            .map_err(channel_error)?,
-        );
-        let service = Arc::new(Channels::new(
-            self.execution.clone(),
-            match &self.channel_transport {
-                Some(transport) => vec![transport.clone()],
-                None => vec![
-                    Arc::new(Telegram::new().map_err(channel_error)?),
-                    Arc::new(Discord::new().map_err(channel_error)?),
-                ],
-            },
-            self.configuration.clone(),
-            self.owner.clone(),
-            credentials,
-            self.admission_context().machine_key()?,
-            self.fenced.clone(),
-        )?);
-        if self.channels.set(service.clone()).is_ok() {
-            return Ok(service);
-        }
-        self.channels
-            .get()
-            .cloned()
-            .ok_or_else(|| channel_error(ChannelError::ReceiverNotRunning))
-    }
-}
 struct Receiver {
     stop: watch::Sender<bool>,
     task: tokio::task::JoinHandle<Result<()>>,
@@ -67,7 +25,8 @@ impl Channels {
         }
         Ok(())
     }
-    pub(crate) async fn has_active(&self, deadline: &Deadline) -> Result<bool> {
+    pub async fn has_active(&self, deadline: &impl AsChannelDeadline) -> Result<bool> {
+        let deadline = &deadline.as_channel_deadline();
         self.read(None, deadline, |cx| {
             cx.read
                 .channel_active()
@@ -81,9 +40,9 @@ impl Channels {
         clippy::too_many_lines,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
-    pub(crate) async fn run(
+    pub async fn run<T: Send + Sync + 'static>(
         self: Arc<Self>,
-        mut stopped: watch::Receiver<Option<Deadline>>,
+        mut stopped: watch::Receiver<Option<T>>,
         intervals: ReceiverIntervals,
     ) -> Result<()> {
         self.receiver_running
@@ -274,27 +233,6 @@ impl Channels {
         }
     }
 }
-/// Channels prevent the normal auto-start idle exit. They do not create a
-/// second OS service or install login persistence behind the Owner's back.
-pub(crate) async fn idle(activity: &mut watch::Receiver<u32>, channels: Arc<Channels>) {
-    loop {
-        crate::runtime::serve::idle_expiry(activity).await;
-        let Ok(deadline) = super::service::deadline(Duration::from_secs(5)) else {
-            return;
-        };
-        let changed = channels.changed.notified();
-        tokio::pin!(changed);
-        changed.as_mut().enable();
-        match channels.has_active(&deadline).await {
-            Ok(false) => return,
-            Ok(true) => changed.await,
-            // Unreadable is not idle. Retry a finite point read, preserving the
-            // receiver instead of silently stopping a potentially active channel.
-            Err(_) => tokio::time::sleep(Duration::from_secs(5)).await,
-        }
-    }
-}
-
 fn joined(result: std::result::Result<Result<()>, tokio::task::JoinError>) -> Result<()> {
     result
         .map_err(|error| se_core::scope::unreadable("channel receiver join", &error.to_string()))?

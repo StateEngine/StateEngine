@@ -1,6 +1,6 @@
 //! Key replay precedes changed-head checks and all provider/credential work.
 use super::{service::*, *};
-use crate::client::lease::Deadline;
+use crate::host::AsChannelDeadline;
 use hmac::{Hmac, Mac};
 use se_store::channel::{Change, Connection, Pairing};
 use se_types::{Result, Secret};
@@ -37,8 +37,9 @@ impl Channels {
     pub async fn connect_channel(
         &self,
         input: ConnectChannel,
-        deadline: &Deadline,
+        deadline: &impl AsChannelDeadline,
     ) -> Result<Connected> {
+        let deadline = &deadline.as_channel_deadline();
         let request = intent("channel.connect", input.key.clone(), &input)?;
         let project = input.target.project.clone();
         let receipt = match self
@@ -109,8 +110,9 @@ impl Channels {
     pub async fn confirm_pairing(
         &self,
         input: ConfirmPairing,
-        deadline: &Deadline,
+        deadline: &impl AsChannelDeadline,
     ) -> Result<se_store::CommitReceipt> {
+        let deadline = &deadline.as_channel_deadline();
         let connection = self.connection(input.connection.clone(), deadline).await?;
         let request = intent("channel.pairing.confirm", input.key.clone(), &input)?;
         if let Some(receipt) = self
@@ -133,8 +135,9 @@ impl Channels {
     pub async fn restart_pairing(
         &self,
         input: ChannelControl,
-        deadline: &Deadline,
+        deadline: &impl AsChannelDeadline,
     ) -> Result<PairingTicket> {
+        let deadline = &deadline.as_channel_deadline();
         let connection = self.connection(input.connection.clone(), deadline).await?;
         let request = intent("channel.pairing.restart", input.key.clone(), &input)?;
         let project = connection.target.project.clone();
@@ -181,8 +184,9 @@ impl Channels {
     pub async fn disconnect(
         &self,
         input: ChannelControl,
-        deadline: &Deadline,
+        deadline: &impl AsChannelDeadline,
     ) -> Result<Disconnected> {
+        let deadline = &deadline.as_channel_deadline();
         let gate = self.output_gate(&input.connection)?;
         let _release = tokio::time::timeout(deadline.remaining()?, gate.lock_owned())
             .await
@@ -213,9 +217,7 @@ impl Channels {
         let credential = connection.credential.clone();
         let credentials = self.credentials.clone();
         let removal = self
-            .context
-            .blocking
-            .run_owned(deadline, move || Ok(credentials.forget(&credential)))
+            .blocking(true, deadline, move || Ok(credentials.forget(&credential)))
             .await;
         let credential_removal = match removal {
             Ok(Ok(())) => {

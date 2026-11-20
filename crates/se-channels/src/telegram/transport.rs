@@ -1,6 +1,6 @@
 //! Telegram alone owns numeric offsets and its private polling protocol.
 use super::*;
-use crate::channels::*;
+use crate::*;
 use std::collections::VecDeque;
 
 struct Receiver {

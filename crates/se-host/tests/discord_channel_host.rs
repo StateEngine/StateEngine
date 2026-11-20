@@ -1,8 +1,11 @@
 //! One native host consumer joins the real connector to durable mail and output.
-use super::*;
-use crate::runtime::test_support::fixture as data;
-use crate::{
+#![cfg(target_os = "linux")]
+#[path = "support/wave2_host_fixture.rs"]
+mod support;
+use se_channels::discord_test_fixture::Fixture;
+use se_host::{
     HostKind, HostLimits, HostStart, HostedRuntime,
+    channels::*,
     client::{ClientOptions, lease::Deadline},
 };
 use se_store::{
@@ -12,12 +15,31 @@ use se_store::{
 use se_types::{
     HostEpoch, HostGeneration, IdempotencyKey, MachineId, ProcessFields, ProcessInstance,
 };
+use serde_json::json;
 use std::{
     fs,
     io::Write,
     num::{NonZeroU16, NonZeroU32},
-    sync::atomic::AtomicBool,
+    sync::{Arc, atomic::AtomicBool},
+    time::Duration,
 };
+use support::fixture as data;
+
+type Check<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+fn require(condition: bool, message: &str) -> Check {
+    if condition {
+        Ok(())
+    } else {
+        Err(message.to_owned().into())
+    }
+}
+
+fn runtime() -> Check<tokio::runtime::Runtime> {
+    Ok(tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?)
+}
 
 fn positive(n: u32) -> Check<NonZeroU32> {
     NonZeroU32::new(n).ok_or("zero limit".into())
@@ -90,7 +112,7 @@ async fn inspect(service: &Channels, id: &ChannelId) -> Check<ChannelPage> {
 /// Owner message afterwards, and Saved never manufactures read or wake proof.
 #[test]
 fn discord_wire_review_native_host_saves_only_after_exact_approval() -> Check {
-    let initialized = crate::initialize_host_process()?;
+    let initialized = se_host::initialize_host_process()?;
     let f = data::Fixture::new()?;
     let (direct, lease) = f.direct()?;
     direct.close()?;

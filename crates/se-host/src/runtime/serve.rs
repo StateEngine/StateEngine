@@ -79,6 +79,7 @@ impl HostedRuntime {
             }
             Err(error) => return ended(self, listener, Some(error)),
         };
+        #[cfg(feature = "channels")]
         let channels = match self.channels() {
             Ok(service) => service,
             Err(error) => return ended(self, listener, Some(error)),
@@ -102,10 +103,17 @@ impl HostedRuntime {
         let idle: std::pin::Pin<Box<dyn Future<Output = ()> + Send>> =
             match self.auto_start.then(|| self.activity.take()).flatten() {
                 Some(mut activity) => {
+                    #[cfg(feature = "channels")]
                     let channels = channels.clone();
                     let waits = self.execution.mail_waits.clone();
                     Box::pin(async move {
-                        super::client_activity::idle(waits, &mut activity, channels).await;
+                        super::client_activity::idle(
+                            waits,
+                            &mut activity,
+                            #[cfg(feature = "channels")]
+                            channels,
+                        )
+                        .await;
                     })
                 }
                 None => Box::pin(std::future::pending()),
@@ -125,6 +133,7 @@ impl HostedRuntime {
                 &runtime,
             );
         }
+        #[cfg(feature = "channels")]
         let channel_task = runtime.spawn(channels.run(cancelled.clone(), self.receiver_intervals));
         let mut timers = super::live::Timers::new(
             idle,
@@ -295,6 +304,7 @@ impl HostedRuntime {
         {
             outcome.failure.get_or_insert(error);
         }
+        #[cfg(feature = "channels")]
         match channel_task.await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
@@ -503,6 +513,7 @@ async fn connection(
             connection = exchange.reply_adoption(output, &deadline).await?;
             continue;
         }
+        #[cfg(feature = "channels")]
         if let Some(input) = exchange.take_channels() {
             let output = router.execute_channels(input, &deadline).await;
             let draining = shutdown.borrow().clone();

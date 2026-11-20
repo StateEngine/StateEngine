@@ -13,6 +13,9 @@ mod gateway;
 mod message;
 #[cfg(all(test, target_os = "linux"))]
 mod review;
+#[cfg(all(target_os = "linux", any(test, feature = "test-fixture")))]
+#[path = "discord/review/fixture.rs"]
+pub mod test_fixture;
 use gateway::Receiver;
 
 type Error = ChannelError;

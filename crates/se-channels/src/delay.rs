@@ -1,6 +1,6 @@
 //! One durable, elapsed-time status per original phone message.
 use super::{service::*, *};
-use crate::client::lease::Deadline;
+use crate::host::ChannelDeadline as Deadline;
 use se_core::store_error::store_error;
 use se_store::{
     Snapshot,

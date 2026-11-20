@@ -1,6 +1,5 @@
 //! Receive observation belongs to this host run, never to provider retention.
 //! Restart loses observation history and explicitly exposes that unknown span.
-#[cfg(feature = "listener")]
 use super::ConnectionHealth;
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +26,6 @@ pub enum ReceiveGapReason {
     ReceiverUnavailable,
     ReceiverStopped,
 }
-#[cfg(feature = "listener")]
 impl ReceiveCoverage {
     pub(super) fn unobserved(at: i64) -> Self {
         Self {
@@ -49,13 +47,11 @@ impl ReceiveCoverage {
         self
     }
 }
-#[cfg(feature = "listener")]
 #[derive(Clone)]
 pub(super) struct ReceiverObservation {
     pub health: ConnectionHealth,
     pub coverage: ReceiveCoverage,
 }
-#[cfg(feature = "listener")]
 impl ReceiverObservation {
     pub fn observe(&mut self, health: ConnectionHealth, at: i64) {
         let recovering = !matches!(self.health, ConnectionHealth::Connected { .. });
@@ -83,6 +79,6 @@ impl ReceiverObservation {
     }
 }
 
-#[cfg(all(test, feature = "listener"))]
+#[cfg(test)]
 #[path = "coverage_tests.rs"]
 mod tests;

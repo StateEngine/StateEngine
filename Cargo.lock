@@ -1617,6 +1617,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "se-channels"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "base64",
+ "futures-util",
+ "hmac",
+ "reqwest",
+ "se-config",
+ "se-core",
+ "se-proc",
+ "se-store",
+ "se-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tokio",
+ "tokio-tungstenite",
+ "zeroize",
+]
+
+[[package]]
 name = "se-config"
 version = "0.0.1-alpha.1"
 dependencies = [
@@ -1668,6 +1690,7 @@ dependencies = [
  "rusqlite",
  "se-atlas",
  "se-atlas-cold",
+ "se-channels",
  "se-config",
  "se-core",
  "se-mcp",
