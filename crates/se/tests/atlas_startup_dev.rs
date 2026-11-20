@@ -65,9 +65,9 @@ fn start(f: &Fixture) -> Result<HostStart, Box<dyn std::error::Error>> {
             group_bytes: positive(1048576)?,
         },
         limits: HostLimits {
-            sessions: positive(2)?,
-            active_connections: positive(2)?,
-            preauth_connections: positive(2)?,
+            sessions: positive(16)?,
+            active_connections: positive(16)?,
+            preauth_connections: positive(16)?,
             parked_mail_waits: positive(2)?,
             resident_queue_bytes: positive(1048576)?,
             session_notice_ids: positive(16)?,
@@ -382,7 +382,26 @@ fn write(endpoint: &EndpointRecord) -> Result<(), String> {
 
     Ok(())
 }
+// Probe only: five serial rounds, then eight concurrent clients of three rounds each.
 fn benchmark_queries(endpoint: &EndpointRecord, phase: &str) -> Result<(), String> {
+    for _ in 0..5 {
+        query_round(endpoint, phase)?;
+    }
+    let concurrent = format!("{phase}-c8");
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                for _ in 0..3 {
+                    if let Err(error) = query_round(endpoint, &concurrent) {
+                        println!("ATLAS_QUERY_PHASE {concurrent} round error 0 {error}");
+                    }
+                }
+            });
+        }
+    });
+    Ok(())
+}
+fn query_round(endpoint: &EndpointRecord, phase: &str) -> Result<(), String> {
     let options = client_options();
     let mut connection = client::BlockingIpcClient::connect_authenticated(
         endpoint,
