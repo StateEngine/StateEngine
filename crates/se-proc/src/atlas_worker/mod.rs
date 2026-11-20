@@ -18,6 +18,8 @@ mod cpu;
 pub use cpu::current_cpu_parts_and_thread;
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 pub use cpu::current_cpu_time;
+#[cfg(windows)]
+pub use cpu::probe_process_cpu;
 // The release image maps about 51 MB before its parser/SQL allocations. Keep
 // growth headroom above the observed 64.03 MB admission requirement, including
 // its unchanged 8 MB margin; resident memory remains capped separately at 64 MB.

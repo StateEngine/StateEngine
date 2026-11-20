@@ -54,6 +54,40 @@ pub fn current_cpu_parts_and_thread() -> io::Result<(u64, u64, u32)> {
     }))
 }
 
+#[cfg(windows)]
+pub fn probe_process_cpu(pid: u32) -> io::Result<(u64, u64, u64)> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::{
+        Foundation::FILETIME,
+        System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+    };
+    // SAFETY: a positive process ID selects a query-only native handle.
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if raw.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the successful call transfers one owned handle.
+    let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+    // SAFETY: each output is an initialized native record.
+    let (mut created, mut exited, mut kernel, mut user): (FILETIME, FILETIME, FILETIME, FILETIME) =
+        unsafe { std::mem::zeroed() };
+    // SAFETY: the retained handle and output pointers are valid.
+    if unsafe {
+        GetProcessTimes(
+            process.as_raw_handle(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let ticks = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+    Ok((ticks(created), ticks(user), ticks(kernel)))
+}
+
 #[cfg(target_os = "macos")]
 pub fn current_cpu_time() -> io::Result<Duration> {
     // SAFETY: correctly aligned output for the current process and requested version.

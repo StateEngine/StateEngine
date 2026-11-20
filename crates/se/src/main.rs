@@ -332,6 +332,26 @@ fn main() -> std::process::ExitCode {
     let args: Vec<_> = std::env::args_os().collect();
     let _b10 = ipc_trace::Trace::start(&args, ipc_entered);
     #[cfg(windows)]
+    if args.get(1).is_some_and(|arg| arg == "__cpu-probe") {
+        let observation = args
+            .get(2)
+            .and_then(|value| value.to_str())
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|pid| *pid != 0)
+            .and_then(|pid| se_proc::atlas_worker::probe_process_cpu(pid).ok());
+        return match observation {
+            Some((born, user, kernel)) => {
+                println!(
+                    "{{\"born\":\"{born}\",\"user_ms\":{},\"kernel_ms\":{}}}",
+                    user as f64 / 10_000.0,
+                    kernel as f64 / 10_000.0
+                );
+                std::process::ExitCode::SUCCESS
+            }
+            None => std::process::ExitCode::FAILURE,
+        };
+    }
+    #[cfg(windows)]
     let args = match private_entry::retain_package_parent(args) {
         Ok(args) => args,
         Err(error) => {

@@ -251,11 +251,9 @@ async function messages(project) {
 async function hostCpu(pid) {
   if (process.platform !== 'win32') return null;
   assert(Number.isSafeInteger(pid) && pid > 0);
-  const command = `$p = [System.Diagnostics.Process]::GetProcessById(${pid}); `
-    + `@{ born = $p.StartTime.ToFileTimeUtc().ToString(); user_ms = $p.UserProcessorTime.TotalMilliseconds; `
-    + `kernel_ms = $p.PrivilegedProcessorTime.TotalMilliseconds } | ConvertTo-Json -Compress`;
-  const result = await once('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command]);
-  assert.equal(result.code, 0, result.stderr); assert(!result.failure);
+  const result = await once(binary, ['__cpu-probe', String(pid)]);
+  assert(result.code === 0 && !result.failure,
+    `Native host CPU sample failed: ${JSON.stringify(summarize(result))}`);
   const value = JSON.parse(result.stdout);
   assert(typeof value.born === 'string' && Number.isFinite(value.user_ms) && Number.isFinite(value.kernel_ms));
   return value;
