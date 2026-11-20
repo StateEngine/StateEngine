@@ -61,6 +61,7 @@ impl LaunchCoordinator {
         deadline: &Deadline,
     ) -> Result<Option<Record>> {
         let path = path.to_owned();
+        let directory = self.options.home.join("codex-servers");
         self.store
             .pool
             .run_owned(deadline, move || {
@@ -79,13 +80,19 @@ impl LaunchCoordinator {
                 se_proc::encode_checkpoint(&record.checkpoint).map_err(|e| {
                     refusal(&path, &format!("the record's custody is invalid: {e:?}"))
                 })?;
+                // A record is checked against its own login, never against the
+                // login this process's environment happens to select.
+                let login = record.login.to_local().ok();
                 if record.version != RECORD_VERSION
-                    || record.login.to_local().ok().as_deref()
-                        != Some(crate::codex_capture::existing_home()?.as_path())
+                    || login
+                        .as_deref()
+                        .map(|login| record_path(&directory, login))
+                        .as_deref()
+                        != Some(path.as_path())
                 {
                     return Err(refusal(
                         &path,
-                        "the record names a different version or login",
+                        "the record's version or login does not match its file",
                     ));
                 }
                 Ok(Some(record))
@@ -162,4 +169,46 @@ pub(super) fn refusal(path: &Path, reason: &str) -> se_types::SeError {
         &format!("{reason} ({})", path.display()),
         "Stop every Codex agent, make sure no StateEngine-started Codex app-server is still running, then remove that record and relaunch.",
     )
+}
+
+/// Where the record for one login lives: named by that login's digest.
+pub(super) fn record_path(directory: &Path, login: &Path) -> PathBuf {
+    let name = se_types::hex_lower(&Sha256::digest(login.as_os_str().as_encoded_bytes()));
+    directory.join(format!("{name}.json"))
+}
+
+impl LaunchCoordinator {
+    pub(super) fn codex_record(&self, login: &Path) -> PathBuf {
+        record_path(&self.options.home.join("codex-servers"), login)
+    }
+
+    /// Every record under the state home, whichever login each names.
+    pub(super) async fn codex_records(&self, deadline: &Deadline) -> Result<Vec<PathBuf>> {
+        let directory = self.options.home.join("codex-servers");
+        self.store
+            .pool
+            .run_owned(deadline, move || match std::fs::read_dir(&directory) {
+                Ok(entries) => {
+                    let mut paths = Vec::new();
+                    for entry in entries {
+                        let path = entry
+                            .map_err(|e| {
+                                refusal(&directory, &format!("the records cannot be listed: {e}"))
+                            })?
+                            .path();
+                        if path.extension().is_some_and(|ext| ext == "json") {
+                            paths.push(path);
+                        }
+                    }
+                    paths.sort();
+                    Ok(paths)
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+                Err(e) => Err(refusal(
+                    &directory,
+                    &format!("the records cannot be listed: {e}"),
+                )),
+            })
+            .await
+    }
 }

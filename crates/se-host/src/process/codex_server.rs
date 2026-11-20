@@ -37,7 +37,23 @@ enum Recovered {
 
 #[derive(Default)]
 pub(super) struct CodexServer {
-    slot: tokio::sync::Mutex<Option<Arc<se_proc::OwnedProcess>>>,
+    /// Servers this host holds native custody of, by the login they serve.
+    slot: tokio::sync::Mutex<std::collections::BTreeMap<PathBuf, Arc<se_proc::OwnedProcess>>>,
+}
+
+/// Complete only when nothing remained unresolved; otherwise name each record.
+fn settled(unresolved: Vec<String>) -> Result<()> {
+    if unresolved.is_empty() {
+        return Ok(());
+    }
+    Err(se_core::scope::unreadable(
+        "Codex shared server custody",
+        &format!(
+            "{} shared-server record(s) remain unsettled: {}",
+            unresolved.len(),
+            unresolved.join("; ")
+        ),
+    ))
 }
 
 /// What the server needs from the launch that first asks for it.
@@ -50,14 +66,6 @@ pub(super) struct ServerLaunch {
 }
 
 impl LaunchCoordinator {
-    fn codex_record(&self, login: &Path) -> PathBuf {
-        let name = se_types::hex_lower(&Sha256::digest(login.as_os_str().as_encoded_bytes()));
-        self.options
-            .home
-            .join("codex-servers")
-            .join(format!("{name}.json"))
-    }
-
     /// Make sure the login's shared server is serving before an agent starts.
     pub(super) async fn ensure_codex_server(
         &self,
@@ -80,8 +88,9 @@ impl LaunchCoordinator {
                 // Someone else's server on this login: use it, never stop it.
                 None => return Ok(()),
                 Some(record) => {
-                    if slot.is_none() {
-                        *slot = Some(self.adopt_codex_server(&path, record, deadline).await?);
+                    if !slot.contains_key(&login) {
+                        let owner = self.adopt_codex_server(&path, record, deadline).await?;
+                        slot.insert(login.clone(), owner);
                     }
                     return Ok(());
                 }
@@ -91,7 +100,7 @@ impl LaunchCoordinator {
             // Recorded but not serving: still starting, or gone.
             match self.recover_codex_server(&path, &record, deadline).await? {
                 Recovered::Started(owner) => {
-                    *slot = Some(owner);
+                    slot.insert(login.clone(), owner);
                     return wait_served(&control, deadline).await;
                 }
                 // A start that never reached exec will never serve: end it.
@@ -100,44 +109,61 @@ impl LaunchCoordinator {
                     self.release_witnessed_codex_server(owner, witness, deadline)
                         .await?;
                     remove_record(&path)?;
-                    *slot = None;
+                    slot.remove(&login);
                 }
                 Recovered::Exited => remove_record(&path)?,
             }
         }
         // A server this host started that has since ended: witness its exit and
         // release its scope before starting another.
-        if let Some(previous) = slot.take() {
+        if let Some(previous) = slot.remove(&login) {
             self.release_ended_codex_server(previous, deadline).await?;
         }
         let owner = self
             .start_codex_server(&login, &path, launch, deadline)
             .await?;
-        *slot = Some(owner);
+        slot.insert(login.clone(), owner);
         wait_served(&control, deadline).await
     }
 
-    /// After restart, take back custody of a server a previous host started,
-    /// so it can stop once its agents do.
+    /// After restart, take back custody of every server a previous host
+    /// started, whichever login each serves, so each can stop with its agents.
     pub(super) async fn adopt_recorded_codex_server(&self, deadline: &Deadline) -> Result<()> {
-        let login = crate::codex_capture::existing_home()?;
-        let path = self.codex_record(&login);
         let mut slot =
             crate::runtime::pool::within(deadline, self.codex_server.slot.lock()).await?;
-        let Some(record) = self.read_codex_record(&path, deadline).await? else {
-            return Ok(());
+        let mut unresolved = Vec::new();
+        for path in self.codex_records(deadline).await? {
+            match self.adopt_recorded(&path, deadline).await {
+                Ok(Some((login, owner))) => {
+                    slot.insert(login, owner);
+                }
+                Ok(None) => {}
+                Err(failure) => unresolved.push(failure.body.to_string()),
+            }
+        }
+        settled(unresolved)
+    }
+
+    /// One record: its server re-adopted, or ended and the record removed.
+    async fn adopt_recorded(
+        &self,
+        path: &Path,
+        deadline: &Deadline,
+    ) -> Result<Option<(PathBuf, Arc<se_proc::OwnedProcess>)>> {
+        let Some(record) = self.read_codex_record(path, deadline).await? else {
+            return Ok(None);
         };
-        match self.recover_codex_server(&path, &record, deadline).await? {
-            Recovered::Started(owner) => *slot = Some(owner),
+        let login = record.login.to_local()?;
+        match self.recover_codex_server(path, &record, deadline).await? {
+            Recovered::Started(owner) => Ok(Some((login, owner))),
             Recovered::Unstarted(owner) => {
                 let witness = self.stop_codex_server(&owner, deadline).await?;
                 self.release_witnessed_codex_server(owner, witness, deadline)
                     .await?;
-                remove_record(&path)?;
+                remove_record(path).map(|()| None)
             }
-            Recovered::Exited => remove_record(&path)?,
+            Recovered::Exited => remove_record(path).map(|()| None),
         }
-        Ok(())
     }
 
     /// Re-check after every lifecycle change whether the shared server is idle.
@@ -165,53 +191,76 @@ impl LaunchCoordinator {
         });
     }
 
-    /// Stop the server this host owns once no Codex agent remains.
+    /// Once no Codex agent remains, stop every server this host holds and
+    /// settle every record under the state home, whichever login each names.
+    /// Complete only when every record is settled.
     pub(super) async fn retire_idle_codex_server(&self, deadline: &Deadline) -> Result<()> {
         let mut slot =
             crate::runtime::pool::within(deadline, self.codex_server.slot.lock()).await?;
-        let Some(owner) = slot.clone() else {
-            return Ok(());
-        };
         if self.live_codex_agents()? {
             return Ok(());
         }
-        let login = crate::codex_capture::existing_home()?;
-        let path = self.codex_record(&login);
-        // The server this host started is ours by its retained native custody,
-        // whatever its record now says; stop and release it first.
+        let mut unresolved = Vec::new();
+        // Servers held by native custody are ours whatever their records say.
+        for (login, owner) in std::mem::take(&mut *slot) {
+            if let Err(failure) = self.retire_held(&login, owner, deadline).await {
+                unresolved.push(failure.body.to_string());
+            }
+        }
+        // Every record still present is settled on its own custody.
+        for path in self.codex_records(deadline).await? {
+            if let Err(failure) = self.retire_recorded(&path, deadline).await {
+                unresolved.push(failure.body.to_string());
+            }
+        }
+        settled(unresolved)
+    }
+
+    async fn retire_held(
+        &self,
+        login: &Path,
+        owner: Arc<se_proc::OwnedProcess>,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let path = self.codex_record(login);
         let witness = self.stop_codex_server(&owner, deadline).await?;
         let lifecycle = witness.lifecycle.clone();
         self.release_witnessed_codex_server(owner, witness.clone(), deadline)
             .await?;
-        *slot = None;
-        // Then settle the record. One naming this server is retired; one naming
-        // an earlier server is reconciled on its own custody, never assumed.
         let Some(record) = self.read_codex_record(&path, deadline).await? else {
             return Ok(());
         };
-        if record.checkpoint.lifecycle == lifecycle {
-            let source = checkpoint_source(&record.checkpoint)?;
-            self.save_codex_record(
-                &path,
-                &Record {
-                    checkpoint: self.codex_checkpoint(CheckpointKind::Exit {
-                        source: Box::new(source),
-                        witness,
-                    })?,
-                    ..record
-                },
-                deadline,
-            )
-            .await?;
-            return remove_record(&path);
+        if record.checkpoint.lifecycle != lifecycle {
+            // A record of an earlier server: settled with the others below.
+            return Ok(());
         }
-        match self.recover_codex_server(&path, &record, deadline).await? {
-            Recovered::Exited => remove_record(&path),
-            Recovered::Started(earlier) | Recovered::Unstarted(earlier) => {
-                let witness = self.stop_codex_server(&earlier, deadline).await?;
-                self.release_witnessed_codex_server(earlier, witness, deadline)
+        let source = checkpoint_source(&record.checkpoint)?;
+        self.save_codex_record(
+            &path,
+            &Record {
+                checkpoint: self.codex_checkpoint(CheckpointKind::Exit {
+                    source: Box::new(source),
+                    witness,
+                })?,
+                ..record
+            },
+            deadline,
+        )
+        .await?;
+        remove_record(&path)
+    }
+
+    async fn retire_recorded(&self, path: &Path, deadline: &Deadline) -> Result<()> {
+        let Some(record) = self.read_codex_record(path, deadline).await? else {
+            return Ok(());
+        };
+        match self.recover_codex_server(path, &record, deadline).await? {
+            Recovered::Exited => remove_record(path),
+            Recovered::Started(owner) | Recovered::Unstarted(owner) => {
+                let witness = self.stop_codex_server(&owner, deadline).await?;
+                self.release_witnessed_codex_server(owner, witness, deadline)
                     .await?;
-                remove_record(&path)
+                remove_record(path)
             }
         }
     }
