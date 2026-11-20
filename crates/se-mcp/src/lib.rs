@@ -107,11 +107,9 @@ pub trait McpBackend {
         let _ = metadata;
         Ok(supplied)
     }
-    /// Discovery for a caller that presents no capability, answered without a
-    /// running host: whether Atlas tools are advertised. `None` authenticates.
-    /// A stdio guest answers from its configuration, so a harness checking the
-    /// server never starts a host under its own environment; a tool call does.
-    fn local_discovery(&mut self) -> Option<Result<bool>> {
+    /// The configured Atlas setting, read without a running host, for guest
+    /// discovery; `None` when this backend has no local configuration (HTTP).
+    fn configured_atlas(&mut self) -> Option<Result<bool>> {
         None
     }
 }
@@ -175,13 +173,19 @@ pub async fn dispatch(
         "tools/list" | "tools/call" => (),
         _ => return McpReply::Json(rpc_error(id, -32601, "method not found")),
     }
-    let explicit = params
-        .pointer("/_meta/stateengine.session-capability-v1")
-        .is_some();
+    // A guest (no capability, no launched session) lists tools from its
+    // configuration, so a harness checking this server never starts a host
+    // under its own environment; its first tool call does. Configuration is all
+    // a guest can read: it lists Atlas whenever enabled, although a Windows host
+    // that failed native SQLite qualification hides it. Any _meta that could
+    // carry a capability, malformed or not, is refused as capability() does.
+    let explicit = params.get("_meta").is_some_and(|meta| {
+        !meta.is_object() || meta.get("stateengine.session-capability-v1").is_some()
+    });
+    let guest = capability.is_none() && !explicit && std::env::var_os("SE_SESSION").is_none();
     if method == "tools/list"
-        && capability.is_none()
-        && !explicit
-        && let Some(atlas) = backend.local_discovery()
+        && guest
+        && let Some(atlas) = backend.configured_atlas()
     {
         let response = match atlas.and_then(tools) {
             Ok(result) => success(id, result),
