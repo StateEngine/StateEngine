@@ -347,25 +347,35 @@ pub struct ConfigKeyMeta {
     pub human_only: bool,
     pub agent_record: bool,
 }
-/// Where a provider's own CLI saves its MCP servers: Codex's home directory, or Claude's
-/// `.claude.json`. `Err` names an explicit directory variable whose directory is missing.
-pub fn provider_config_destination(
-    provider: Provider,
-) -> std::result::Result<Option<std::path::PathBuf>, (&'static str, std::path::PathBuf)> {
-    let (own, leaf, default) = match provider {
-        Provider::Codex => ("CODEX_HOME", "", ".codex"),
-        Provider::Claude => ("CLAUDE_CONFIG_DIR", ".claude.json", ".claude.json"),
-        _ => return Ok(None),
+/// Each provider's own config directory variable that is set, made absolute against this
+/// process's directory: providers' commands may run elsewhere, so this one path is both
+/// checked and handed to them.
+pub fn provider_config_dirs() -> Vec<(Provider, &'static str, std::path::PathBuf)> {
+    [
+        (Provider::Codex, "CODEX_HOME"),
+        (Provider::Claude, "CLAUDE_CONFIG_DIR"),
+    ]
+    .into_iter()
+    .filter_map(|(provider, name)| {
+        let dir = std::path::absolute(std::env::var_os(name)?).ok()?;
+        Some((provider, name, dir))
+    })
+    .collect()
+}
+/// Why a provider config directory cannot be used, from its own metadata; `None` when it can.
+pub fn unusable_config_dir(name: &str, dir: &std::path::Path, title: &str) -> Option<String> {
+    let problem = match std::fs::metadata(dir) {
+        Ok(found) if found.is_dir() => return None,
+        Ok(_) => "is not a directory".to_owned(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            format!("does not exist; sign in to {title} first or create it")
+        }
+        Err(e) => format!("cannot be read: {e}"),
     };
-    if let Some(dir) = std::env::var_os(own).map(std::path::PathBuf::from) {
-        return if dir.is_dir() {
-            Ok(Some(dir.join(leaf)))
-        } else {
-            Err((own, dir))
-        };
-    }
-    let profile = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" });
-    Ok(profile.map(|profile| std::path::PathBuf::from(profile).join(default)))
+    Some(format!(
+        "{name} points to {}, which {problem}",
+        dir.display()
+    ))
 }
 pub fn key_metadata(key: &str) -> Result<ConfigKeyMeta> {
     if let Some((name, field)) = key

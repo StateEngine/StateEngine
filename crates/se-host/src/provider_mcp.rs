@@ -1,7 +1,6 @@
 //! Register the static MCP entry using each harness's own configuration command.
 use crate::adoption::Kind;
-use se_config::config_policy::provider_config_destination;
-use se_proc::home_outlives;
+use se_config::config_policy::{provider_config_dirs, unusable_config_dir};
 use se_types::{Result, SeError};
 use std::{path::Path, process::Stdio, time::Duration};
 use tokio::{io::AsyncReadExt, process::Command};
@@ -21,25 +20,14 @@ pub fn configure(
         .transpose()?;
     let args = home.map_or_else(|| vec!["mcp"], |home| vec!["--home", home, "mcp"]);
     let mut changed = Vec::new();
-    let missing = |kind: Kind| manual(kind, &args, &format!("Install {}, then", kind.label()));
     for kind in Kind::ALL {
-        // An explicit config directory that is missing is refused by name, as the harness would.
-        let config = provider_config_destination(kind.policy()).map_err(|(own, dir)| {
-            let (shown, label) = (dir.display(), kind.label());
-            failure(&format!("{own} points to {shown}, which does not exist; sign in to {label} first or create it"))
-        })?;
-        if alternate_home.is_some_and(|home| !config.is_some_and(|c| home_outlives(home, &c))) {
-            let lead = kind.label().to_owned() + " skipped this temporary home; to add it anyway,";
-            changed.push(manual(kind, &args, &lead)?);
-            continue;
-        }
         let command = configuration.provider_command(kind.provider().into());
         let path = Path::new(command);
         if !path.is_absolute()
             && path.components().count() == 1
             && std::env::var_os("PATH").is_none()
         {
-            changed.push(missing(kind)?);
+            changed.push(missing(kind, &args)?);
             continue;
         }
         match crate::resolve_provider_executable(configuration, kind.provider().into(), None, None)
@@ -54,7 +42,7 @@ pub fn configure(
                     se_types::Detail::ProviderCliNotFound(_)
                 ) =>
             {
-                changed.push(missing(kind)?);
+                changed.push(missing(kind, &args)?);
             }
             Err(error) => return Err(error),
         }
@@ -62,7 +50,7 @@ pub fn configure(
     Ok(changed)
 }
 
-fn manual(kind: Kind, args: &[&str], lead: &str) -> Result<String> {
+fn missing(kind: Kind, args: &[&str]) -> Result<String> {
     let prefix = match kind {
         Kind::Claude => "claude mcp add --scope local stateengine -- se",
         Kind::Codex => "codex mcp add stateengine -- se",
@@ -81,7 +69,10 @@ fn manual(kind: Kind, args: &[&str], lead: &str) -> Result<String> {
     } else {
         "run"
     };
-    Ok(format!("{lead} {prompt}: {prefix} {words}"))
+    Ok(format!(
+        "Install {}, then {prompt}: {prefix} {words}",
+        kind.label()
+    ))
 }
 
 pub fn install(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) -> Result<bool> {
@@ -89,6 +80,13 @@ pub fn install(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) -> Re
         .enable_all()
         .build()
         .map_err(|error| failure(&format!("could not start the setup runtime: {error}")))?;
+    for (provider, name, dir) in provider_config_dirs() {
+        let reason =
+            (provider == kind.policy()).then(|| unusable_config_dir(name, &dir, kind.label()));
+        if let Some(reason) = reason.flatten() {
+            return Err(failure(&reason));
+        }
+    }
     runtime.block_on(async {
         if configured(root, executable, kind, entry).await? {
             return Ok(false);
@@ -196,6 +194,12 @@ async fn configured(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) 
 
 async fn run(root: &Path, executable: &Path, args: &[&str]) -> Result<std::process::Output> {
     let mut command = Command::from(se_proc::background_command(executable));
+    // Harness commands run in `root`, so they get the same absolute paths checked above.
+    command.envs(
+        provider_config_dirs()
+            .into_iter()
+            .map(|(_, name, dir)| (name, dir)),
+    );
     command
         .args(args)
         .current_dir(root)
