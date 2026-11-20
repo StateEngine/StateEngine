@@ -6,8 +6,10 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
+from time import monotonic, sleep
 import traceback
 import tomllib
 from uuid import uuid4
@@ -34,6 +36,26 @@ class Fixture(MailFixture):
         updated = config.read_text(encoding="utf-8") + "\n[profiles.revised]\n"
         tomllib.loads(updated)
         config.write_text(updated, encoding="utf-8")
+
+    def start_host(self):
+        self.host_stdout = self.root / "host.stdout"
+        self.host_stderr = self.root / "host.stderr"
+        with self.host_stdout.open("wb") as out, self.host_stderr.open("wb") as err:
+            return subprocess.Popen([*self.prefix, "up", "--foreground"], cwd=self.repo,
+                                    env=self.env, stdin=subprocess.DEVNULL, stdout=out, stderr=err)
+
+    def host_ready(self, host):
+        deadline = monotonic() + 30
+        while monotonic() < deadline:
+            require(host.poll() is None, self.host_stderr.read_text(errors="replace"))
+            try:
+                ready = json.loads(self.host_stdout.read_bytes())
+            except json.JSONDecodeError:
+                sleep(0.05)
+                continue
+            require(ready["state"] == "running" and ready["process"]["pid"] == host.pid, ready)
+            return ready
+        raise RuntimeError("foreground fixture host did not publish readiness")
 
     def attempt(self, force=False, resume=None):
         argv = ["--project", self.project, "--key", uuid4().hex,
@@ -106,8 +128,9 @@ def run_case(case, se, root, evidence):
     fixture = Fixture(se, root)
     with ExitStack() as stack:
         runtime = original_handle = successor = None
+        host = fixture.start_host()
         try:
-            up = fixture.ok("up")
+            up = fixture.host_ready(host)
             runtime, _ = stack.enter_context(process_identity(up["process"]["pid"]))
             seed = None
             if case == "profile_changed":
@@ -120,6 +143,7 @@ def run_case(case, se, root, evidence):
             if (fixture.home / "endpoint.json").exists():
                 down = fixture.ok("down")
                 require(down["complete"] and down["witness"]["state"] == "witnessed", down)
+            require(host.wait(timeout=10) == 0 or runtime is None, "foreground fixture host did not exit cleanly")
             require(all(ready(handle, 10000) for handle in (runtime, original_handle, successor)
                         if handle is not None), "an owned process survived cleanup")
             require(not (fixture.home / "endpoint.json").exists(), "fixture endpoint remains")
@@ -137,7 +161,10 @@ def main():
         receipt = evidence[case] = {"pass": False}
         try:
             with tempfile.TemporaryDirectory(prefix="se-force-") as root:
-                run_case(case, args.se.resolve(strict=True), Path(root) / "case", receipt)
+                # Windows runtime custody requires a regular executable with one link.
+                image = Path(root) / "se.exe"
+                shutil.copyfile(args.se.resolve(strict=True), image)
+                run_case(case, image, Path(root) / "case", receipt)
             receipt["pass"] = True
         except Exception:
             receipt["error"] = traceback.format_exc()
