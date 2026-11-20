@@ -107,6 +107,13 @@ pub trait McpBackend {
         let _ = metadata;
         Ok(supplied)
     }
+    /// Discovery for a caller that presents no capability, answered without a
+    /// running host: whether Atlas tools are advertised. `None` authenticates.
+    /// A stdio guest answers from its configuration, so a harness checking the
+    /// server never starts a host under its own environment; a tool call does.
+    fn local_discovery(&mut self) -> Option<Result<bool>> {
+        None
+    }
 }
 
 pub async fn dispatch(
@@ -167,6 +174,20 @@ pub async fn dispatch(
         "ping" => return McpReply::Json(success(id, json!({}))),
         "tools/list" | "tools/call" => (),
         _ => return McpReply::Json(rpc_error(id, -32601, "method not found")),
+    }
+    let explicit = params
+        .pointer("/_meta/stateengine.session-capability-v1")
+        .is_some();
+    if method == "tools/list"
+        && capability.is_none()
+        && !explicit
+        && let Some(atlas) = backend.local_discovery()
+    {
+        let response = match atlas.and_then(tools) {
+            Ok(result) => success(id, result),
+            Err(error) => rpc_error(id, -32603, &error.to_string()),
+        };
+        return McpReply::Json(budgeted(response, backend.response_limit()));
     }
     let capability = match backend.capability(params.get("_meta"), capability) {
         Ok(Some(capability)) => capability,

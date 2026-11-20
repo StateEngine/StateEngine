@@ -17,11 +17,10 @@ pub struct Backend {
     home: Option<PathBuf>,
     client: Option<crate::ipc::SessionForwarder>,
     managed_hash: Option<[u8; 32]>,
-    /// Bound principal per capability digest. The credential's project and
-    /// agent binding is fixed for the credential's life, so one authenticated
-    /// identity read serves every later caller-assertion check on the same
-    /// capability; a stopped, revoked or restarted session is refused by the
-    /// host admission of the real operation that follows.
+    /// Bound principal per capability digest. A credential's project and agent
+    /// binding is fixed for its life, so one identity read serves every later
+    /// caller-assertion check on that capability; a stopped, revoked or
+    /// restarted session is refused by the host admission of the real operation.
     principals: HashMap<[u8; 32], McpPrincipal>,
 }
 impl Backend {
@@ -355,6 +354,12 @@ impl se_host::McpBackend for Backend {
         supplied: Option<Arc<Secret>>,
     ) -> Result<Option<Arc<Secret>>> {
         Backend::capability(self, metadata, supplied)
+    }
+    fn local_discovery(&mut self) -> Option<Result<bool>> {
+        let op = AnyOp::ProjectStatus(ProjectStatus::default());
+        let cx = || crate::bootstrap::Bootstrap::resolve(self.home.clone(), None, false, true, &op);
+        let guest = std::env::var_os("SE_SESSION").is_none();
+        guest.then(|| cx().map(|c| c.config.value.atlas.enabled))
     }
     async fn check_session(&mut self, capability: Arc<Secret>) -> Result<()> {
         Backend::check_session(self, &capability)
