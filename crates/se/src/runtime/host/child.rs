@@ -3,7 +3,7 @@ use se_types::{HostEpoch, HostGeneration, NativePath, ProcessFields, ProcessInst
 use sha2::{Digest, Sha256 as Hasher};
 use std::{
     num::{NonZeroU16, NonZeroU32},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 pub(super) fn receive(guard: se_proc::RuntimeBootstrap) -> Result<u8> {
@@ -258,7 +258,7 @@ fn serve(
         }
         #[cfg(any(target_os = "linux", windows))]
         host.install_native_atlas(
-            atlas_worker_image(&helper_executable.to_local()?),
+            se_host::atlas_worker::worker_image(&helper_executable.to_local()?),
             se_host::NativeAtlasQualification::default(),
         )?;
         host.configure_auto_start(auto_start)?;
@@ -340,26 +340,6 @@ fn serve(
     );
     result
 }
-/// Fixed companion name of the verified CLI. Both images install together
-/// and share one trust domain, so no lookup or version exchange is needed.
-const ATLAS_WORKER_BINARY: &str = "se-atlas-worker";
-
-/// The cold worker runs only the private entry, so prefer the dedicated
-/// worker image installed beside the verified CLI; absent or uninstalled,
-/// the CLI itself keeps serving as the worker.
-fn atlas_worker_image(cli: &Path) -> PathBuf {
-    let name = if cfg!(windows) {
-        "se-atlas-worker.exe"
-    } else {
-        ATLAS_WORKER_BINARY
-    };
-    let candidate = cli.parent().map(|directory| directory.join(name));
-    match candidate {
-        Some(path) if path.is_file() => path,
-        _ => cli.to_path_buf(),
-    }
-}
-
 fn positive(value: u32) -> Result<NonZeroU32> {
     NonZeroU32::new(value).ok_or_else(|| invalid("a positive native limit"))
 }
@@ -467,100 +447,3 @@ impl std::fmt::Display for ShutdownPending {
     }
 }
 impl std::error::Error for ShutdownPending {}
-
-#[cfg(test)]
-mod worker_image_tests {
-    use super::atlas_worker_image;
-    use se_types::{Result, SeError};
-    use std::path::{Path, PathBuf};
-
-    struct FixtureRoot(PathBuf);
-    impl FixtureRoot {
-        fn new(tag: &str) -> Result<Self> {
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|value| value.as_nanos())
-                .unwrap_or(0);
-            let base = std::env::temp_dir().join(format!(
-                "se-worker-image-{}-{stamp}-{tag}",
-                std::process::id()
-            ));
-            std::fs::create_dir(&base).map_err(|error| {
-                SeError::invalid("worker image test directory", &error.to_string())
-            })?;
-            Ok(Self(base))
-        }
-        fn place(&self, name: &str) -> Result<PathBuf> {
-            let path = self.0.join(name);
-            std::fs::write(&path, "image")
-                .map_err(|error| SeError::invalid("worker image test file", &error.to_string()))?;
-            Ok(path)
-        }
-        fn finish<T>(&self, result: Result<T>) -> Result<T> {
-            match &result {
-                Ok(_) => {
-                    if let Err(error) = std::fs::remove_dir_all(&self.0) {
-                        eprintln!(
-                            "worker image test fixture retained at {}: {error}",
-                            self.0.display()
-                        );
-                    }
-                }
-                Err(_) => eprintln!(
-                    "worker image test fixture retained at {} because the case failed",
-                    self.0.display()
-                ),
-            }
-            result
-        }
-    }
-
-    fn worker_name() -> &'static str {
-        if cfg!(windows) {
-            "se-atlas-worker.exe"
-        } else {
-            super::ATLAS_WORKER_BINARY
-        }
-    }
-
-    #[test]
-    fn worker_image_prefers_the_companion_installed_beside_the_cli() -> Result<()> {
-        let base = FixtureRoot::new("prefers")?;
-        let cli = base.place("se")?;
-        let worker = base.place(worker_name())?;
-        let chosen = atlas_worker_image(&cli);
-        let result = (chosen == worker).then_some(()).ok_or_else(|| {
-            SeError::invalid(
-                "worker image selection",
-                &format!("expected {worker:?}, chose {chosen:?}"),
-            )
-        });
-        base.finish(result)
-    }
-
-    #[test]
-    fn worker_image_falls_back_to_the_cli_when_the_companion_is_absent() -> Result<()> {
-        let base = FixtureRoot::new("falls")?;
-        let cli = base.place("se")?;
-        let chosen = atlas_worker_image(&cli);
-        let result = (chosen == cli).then_some(()).ok_or_else(|| {
-            SeError::invalid(
-                "worker image fallback",
-                &format!("expected {cli:?}, chose {chosen:?}"),
-            )
-        });
-        base.finish(result)
-    }
-
-    #[test]
-    fn worker_image_falls_back_when_the_cli_has_no_parent_directory() -> Result<()> {
-        let bare = Path::new("se");
-        let chosen = atlas_worker_image(bare);
-        (chosen == *bare).then_some(()).ok_or_else(|| {
-            SeError::invalid(
-                "worker image fallback",
-                &format!("expected {bare:?}, chose {chosen:?}"),
-            )
-        })
-    }
-}
