@@ -236,11 +236,22 @@ impl AcceptedIpcStream {
             send_refusal(&stream, &auth::encode_hello_refusal(&envelope)?, &deadline).await?;
             return Err(error);
         };
+        let ipc_start = std::env::var_os("IPC_CONNECT_TRACE")
+            .and_then(|_| se_proc::monotonic_micros().ok())
+            .unwrap_or_default();
+        let clock = || {
+            if ipc_start == 0 {
+                0
+            } else {
+                se_proc::monotonic_micros().unwrap_or_default()
+            }
+        };
         let permit = bounded(&deadline, self.blocking.clone().acquire_owned())
             .await?
             .map_err(|_| {
                 SeError::invalid("IPC native admission", "an open bounded blocking pool")
             })?;
+        let ipc_permit = clock();
         let observed = Arc::clone(&stream);
         let native_bound = deadline.native_bound();
         let proof = bounded(
@@ -267,6 +278,7 @@ impl AcceptedIpcStream {
                 "a successfully joined native peer check",
             )
         })??;
+        let ipc_proof = clock();
         let challenge = auth::OwnerChallenge::begin(&self.record, auth::ProofDomain::Owner)?;
         send(
             &stream,
@@ -274,6 +286,13 @@ impl AcceptedIpcStream {
             &deadline,
         )
         .await?;
+        if ipc_start != 0 {
+            eprintln!(
+                "IPC_PREAUTH {} {ipc_start} {ipc_permit} {ipc_proof} {}",
+                proof.native().pid(),
+                clock()
+            );
+        }
         let bytes = receive(&stream, &deadline, wire::MAX_ENDPOINT_BYTES).await?;
         let input = crate::client::hello::decode(bytes.as_bytes())?;
         let mut challenge = challenge;

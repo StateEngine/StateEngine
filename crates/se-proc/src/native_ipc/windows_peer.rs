@@ -73,7 +73,18 @@ pub(super) fn shared_mapped_image(expected: &ProcessInstance) -> Option<File> {
 }
 
 pub(super) fn observe(pid: u32, bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
+    let ipc_start = std::env::var_os("IPC_CONNECT_TRACE")
+        .and_then(|_| crate::monotonic_micros().ok())
+        .unwrap_or_default();
+    let clock = || {
+        if ipc_start == 0 {
+            0
+        } else {
+            crate::monotonic_micros().unwrap_or_default()
+        }
+    };
     let (process, sid, creation_filetime) = process_identity(pid)?;
+    let ipc_identity = clock();
     let mut image = vec![0; 32768];
     let mut length = image.len() as u32;
     // SAFETY: retained bounded UTF-16 output buffer and native process pin.
@@ -85,10 +96,12 @@ pub(super) fn observe(pid: u32, bound: &IpcIoBound) -> IpcNativeResult<NativeIpc
     }
     image.truncate(length as usize);
     let image = PathBuf::from(std::ffi::OsString::from_wide(&image));
+    let ipc_hash = clock();
     let image_sha256 = hash_image(
         File::open(&image).map_err(|e| error("pin IPC peer executable", e))?,
         bound,
     )?;
+    let ipc_image = clock();
     // SAFETY: the query/synchronize process handle is retained above. Native
     // signalled state distinguishes exit code 259 from a live process.
     match unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } {
@@ -100,6 +113,12 @@ pub(super) fn observe(pid: u32, bound: &IpcIoBound) -> IpcNativeResult<NativeIpc
             ));
         }
         _ => return Err(last("reobserve IPC peer liveness")),
+    }
+    if ipc_start != 0 {
+        eprintln!(
+            "IPC_PEER {pid} {ipc_start} {ipc_identity} {ipc_hash} {ipc_image} {}",
+            clock()
+        );
     }
     Ok(NativeIpcPeer {
         principal: IpcPrincipal::Windows { sid },

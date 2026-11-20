@@ -207,6 +207,7 @@ fn native_connect(
     stop: bool,
 ) -> Result<NativeStream> {
     deadline.remaining()?;
+    let ipc_start = ipc_connect_stamp().unwrap_or_default();
     #[cfg(unix)]
     let stream = match &endpoint.address {
         crate::IpcEndpoint::UnixSocket(path) => {
@@ -223,6 +224,7 @@ fn native_connect(
         }
         _ => return Err(SeError::invalid("IPC endpoint", "a local Windows pipe")),
     };
+    let ipc_opened = ipc_connect_clock(ipc_start);
     if stop {
         se_proc::native_ipc::verify_ipc_stop_server(
             stream.channel(),
@@ -238,7 +240,25 @@ fn native_connect(
         )?;
     }
     deadline.remaining()?;
+    if ipc_start != 0 {
+        eprintln!(
+            "IPC_NATIVE {ipc_start} {ipc_opened} {}",
+            ipc_connect_clock(ipc_start)
+        );
+    }
     Ok(stream)
+}
+
+fn ipc_connect_stamp() -> Option<u64> {
+    std::env::var_os("IPC_CONNECT_TRACE").and_then(|_| se_proc::monotonic_micros().ok())
+}
+
+fn ipc_connect_clock(enabled: u64) -> u64 {
+    if enabled == 0 {
+        0
+    } else {
+        se_proc::monotonic_micros().unwrap_or_default()
+    }
 }
 impl crate::client::BlockingIpcClient {
     pub fn connect_authenticated(
@@ -261,6 +281,7 @@ impl crate::client::BlockingIpcClient {
         // Start before the handshake: the server cannot begin its idle clock
         // earlier, even if this process is paused while receiving its reply.
         let last_activity = Instant::now();
+        let ipc_start = ipc_connect_stamp().unwrap_or_default();
         budget.remaining()?;
         if matches!(&credential, ClientCredential::Machine(_)) {
             // Cold local file I/O belongs to the caller's original request
@@ -269,8 +290,10 @@ impl crate::client::BlockingIpcClient {
             se_proc::native_ipc::observe_ipc_self_bounded(&budget.native_bound())
                 .map_err(native_error)?;
         }
+        let ipc_warm = ipc_connect_clock(ipc_start);
         let deadline = budget.stage(HELLO_TIMEOUT)?;
         let mut stream = native_connect(endpoint, &deadline, false)?;
+        let ipc_native = ipc_connect_clock(ipc_start);
         let bytes = wire::read_payload_bounded(&mut stream, wire::MAX_ENDPOINT_BYTES, &deadline)?;
         let challenge = auth::decode_challenge(bytes.as_bytes(), endpoint)?;
         if challenge.version != se_types::API_VERSION {
@@ -285,6 +308,7 @@ impl crate::client::BlockingIpcClient {
                 },
             )));
         }
+        let ipc_challenge = ipc_connect_clock(ipc_start);
         let authority = match &credential {
             ClientCredential::Machine(key) => {
                 let peer = se_proc::native_ipc::observe_ipc_self_bounded(&deadline.native_bound())
@@ -314,6 +338,7 @@ impl crate::client::BlockingIpcClient {
                 )?)
             }
         };
+        let ipc_authority = ipc_connect_clock(ipc_start);
         let sent = crate::ClientHello {
             version: se_types::API_VERSION,
             expected_generation: options.expected_generation,
@@ -322,9 +347,16 @@ impl crate::client::BlockingIpcClient {
         };
         deadline.remaining()?;
         wire::write_frame_bounded(&mut stream, &auth::encode_client_hello(&sent)?, &deadline)?;
+        let ipc_hello_sent = ipc_connect_clock(ipc_start);
         let bytes = wire::read_payload_bounded(&mut stream, wire::MAX_ENDPOINT_BYTES, &deadline)?;
         let hello = auth::decode_server_hello(bytes.as_bytes(), &sent, &challenge)?;
         deadline.remaining()?;
+        if ipc_start != 0 {
+            let ipc_hello = ipc_connect_clock(ipc_start);
+            eprintln!(
+                "IPC_CONNECT {ipc_start} {ipc_warm} {ipc_native} {ipc_challenge} {ipc_authority} {ipc_hello_sent} {ipc_hello}"
+            );
+        }
         Ok(BlockingConnection {
             stream: Some(stream),
             hello,
