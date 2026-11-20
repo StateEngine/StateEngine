@@ -93,22 +93,30 @@ struct Fixture {
     root: PathBuf,
     owner: PathBuf,
     config: PathBuf,
+    state_config: PathBuf,
     home: PathBuf,
     repo: PathBuf,
 }
 impl Fixture {
-    fn new(root: PathBuf, binary: &Path) -> Result<Self, Box<dyn Error>> {
+    fn new(root: PathBuf, binary: &Path, provider: &Path) -> Result<Self, Box<dyn Error>> {
         let owner = root.join("owner");
         let config = owner.join("claude");
         let home = root.join("state");
         let repo = root.join("repo");
         fs::create_dir_all(&config)?;
         fs::create_dir(&repo)?;
+        let state_config = root.join("state-engine.toml");
+        let provider = provider.to_str().ok_or("non-UTF8 fixture path")?;
+        fs::write(
+            &state_config,
+            format!("version = 1\n[providers.claude]\ncommand = {provider:?}\n"),
+        )?;
         Ok(Self {
             binary: binary.to_owned(),
             root,
             owner,
             config,
+            state_config,
             home,
             repo,
         })
@@ -130,6 +138,7 @@ impl Fixture {
         );
         let output = command
             .env("XDG_CONFIG_HOME", self.owner.join("config"))
+            .env("SE_CONFIG", &self.state_config)
             .args(["--json", "--home"])
             .arg(&self.home)
             .args(args)
@@ -143,27 +152,21 @@ impl Fixture {
         );
         Ok(output)
     }
-    fn install(&self, provider: &Path, before: &str) -> Check {
+    fn install(&self, before: &str, check_plain_init: bool) -> Check {
         fs::write(self.config.join("settings.json"), before)?;
-        self.call(&[
-            "init",
-            "--provider",
-            "claude",
-            "--key",
-            "synthetic-plain-init",
-        ])?;
-        assert_eq!(
-            fs::read(self.config.join("settings.json"))?,
-            before.as_bytes()
-        );
-        let path = self.home.join("config.toml");
-        let config = fs::read_to_string(&path)?;
-        let selected = format!(
-            "[providers.claude]\ncommand = {:?}",
-            provider.to_str().ok_or("non-UTF8 fixture path")?
-        );
-        assert_eq!(config.matches("[providers.claude]").count(), 1);
-        fs::write(path, config.replacen("[providers.claude]", &selected, 1))?;
+        if check_plain_init {
+            self.call(&[
+                "init",
+                "--provider",
+                "claude",
+                "--key",
+                "synthetic-plain-init",
+            ])?;
+            assert_eq!(
+                fs::read(self.config.join("settings.json"))?,
+                before.as_bytes()
+            );
+        }
         self.call(&[
             "init",
             "--adopt",
@@ -179,8 +182,8 @@ impl Fixture {
         );
         Ok(())
     }
-    fn roundtrip(&self, provider: &Path, before: &str, later_edit: bool) -> Check {
-        self.install(provider, before)?;
+    fn roundtrip(&self, before: &str, check_plain_init: bool, later_edit: bool) -> Check {
+        self.install(before, check_plain_init)?;
         let path = self.config.join("settings.json");
         let installed = fs::read(&path)?;
         self.call(&[
@@ -236,8 +239,8 @@ fn public_adoption_preserves_settings_bytes_and_later_user_edits() -> Check {
         "{\"model\":\"synthetic-model\",\"env\":{\"SYNTHETIC\":\"before\"}}\n",
     ];
     for (index, before) in cases.iter().enumerate() {
-        let fixture = Fixture::new(root.0.join(index.to_string()), &binary)?;
-        fixture.roundtrip(&provider, before, index == cases.len() - 1)?;
+        let fixture = Fixture::new(root.0.join(index.to_string()), &binary, &provider)?;
+        fixture.roundtrip(before, index == 0, index == cases.len() - 1)?;
     }
     Ok(())
 }
