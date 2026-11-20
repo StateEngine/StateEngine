@@ -30,7 +30,9 @@ pub(crate) fn body(
         },
         "runtime.owner" | "runtime.handover" | "backup.recorded" | "turn.erased"
         | "message.erased" | "erasure.requested" | "erasure.completed" | "recovery.recorded" => {
-            super::maintenance::body(c, seq, kind)?
+            se_store_codec::maintenance::decode(kind, &facts(c, seq)?, &mut |field| {
+                stored_text(c, seq, field)
+            })?
         }
         "import.started" | "import.progress" | "import.finished" | "import.unreadable"
         | "legacy.retained" | "alias.imported" => crate::import::decode(c, seq, kind)?,
@@ -282,7 +284,7 @@ pub(crate) fn body(
                     reason: stored_text(c, seq, "reason")?,
                 },
                 "cursor.recorded" => CursorRecorded {
-                    cursor: Box::new(crate::apply::cursor::decode(
+                    cursor: Box::new(se_store_codec::cursor::decode(
                         v.get("cursor")
                             .ok_or_else(|| invalid("stored cursor record missing"))?,
                     )?),

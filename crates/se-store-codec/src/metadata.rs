@@ -13,7 +13,7 @@ fn notification(mut facts: Value, quiet: bool) -> Value {
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
-pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
+pub fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
     use EventBody::*;
     Ok(match body {
         ChannelRecorded { change } => ("channel.recorded", json!({"change":change})),
@@ -407,7 +407,7 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
         ),
         CursorRecorded { cursor } => (
             "cursor.recorded",
-            json!({"cursor": crate::apply::cursor::metadata(cursor)?}),
+            json!({"cursor": crate::cursor::metadata(cursor)?}),
         ),
         CursorAcknowledged {
             cursor,
@@ -484,6 +484,6 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
         | MessageErased { .. }
         | ErasureRequested { .. }
         | ErasureCompleted { .. }
-        | RecoveryRecorded { .. } => super::maintenance::metadata(body)?,
+        | RecoveryRecorded { .. } => crate::maintenance::metadata(body)?,
     })
 }

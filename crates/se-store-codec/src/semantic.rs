@@ -1,7 +1,7 @@
 //! One semantic descriptor derived from the closed event metadata codec.
 //! Owning text is added only for comparison, never copied into aux_data.
 use super::*;
-pub(crate) fn descriptor<T, S: Serialize>(
+pub fn descriptor<T, S: Serialize>(
     body: &EventBody<T>,
     text: impl Fn(&T) -> StoreResult<S>,
 ) -> StoreResult<String> {

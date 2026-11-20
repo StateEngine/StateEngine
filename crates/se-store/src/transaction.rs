@@ -596,7 +596,7 @@ fn security<T>(b: &EventBody<T>) -> bool {
             | RecoveryRecorded { .. }
     )
 }
-pub(crate) use crate::codec::semantic::descriptor;
+pub(crate) use se_store_codec::descriptor;
 fn text_fingerprint(text: &str) -> serde_json::Value {
     serde_json::json!({"bytes":text.len(),"sha256":se_types::hex_lower(&Sha256::digest(text.as_bytes()))})
 }

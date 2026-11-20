@@ -6,6 +6,7 @@ members = [
     "crates/se-harness-registry",
     "crates/se-store",
     "crates/se-store-contract",
+    "crates/se-store-codec",
     "crates/se-config",
     "crates/se-core",
     "crates/se-proc",

@@ -1,32 +1,17 @@
 mod body;
-mod metadata;
 mod retired_decision;
 pub(crate) use body::body;
-pub(crate) use metadata::metadata;
+pub(crate) use se_store_codec::{encode, field, metadata};
 pub(crate) mod capture;
 pub(crate) mod event;
-mod maintenance;
 #[cfg(test)]
 mod materialized_text_review;
 pub(crate) mod process;
-pub(crate) mod semantic;
 pub(crate) mod session;
 // Closed wave-1 metadata codec; text lives only in its typed payload column.
 use crate::{error::*, identity::*, *};
 use rusqlite::Connection;
-use serde::{Serialize, de::DeserializeOwned};
-use serde_json::{Value, json};
-pub(crate) fn encode<T: Serialize>(v: &T) -> StoreResult<String> {
-    serde_json::to_string(v).map_err(invalid)
-}
-pub(crate) fn field<T: DeserializeOwned>(v: &Value, k: &str) -> StoreResult<T> {
-    serde_json::from_value(
-        v.get(k)
-            .cloned()
-            .ok_or_else(|| invalid(format!("missing stored field {k}")))?,
-    )
-    .map_err(invalid)
-}
+use serde_json::Value;
 pub(crate) fn aux(c: &Connection, seq: i64, v: Value) -> StoreResult<()> {
     c.execute(
         "INSERT INTO aux_data(event_seq,facts) VALUES(?,?)",
