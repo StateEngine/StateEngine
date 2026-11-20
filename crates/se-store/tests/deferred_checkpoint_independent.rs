@@ -3,6 +3,7 @@
 use rusqlite::{Connection, OpenFlags};
 use se_store::*;
 use std::{
+    future::Future,
     io::Write,
     path::Path,
     time::{Duration, Instant},
@@ -12,7 +13,7 @@ mod fixture;
 use fixture::*;
 #[path = "support/host_fixture.rs"]
 mod native_host;
-use native_host::{host, options, wait};
+use native_host::{host, options, wait, wait_until};
 #[cfg(target_os = "linux")]
 #[path = "support/deferred_checkpoint_crash.rs"]
 mod crash;
@@ -134,14 +135,42 @@ fn direct_receipt_defers_soft_maintenance_without_hiding_commit() -> Check {
 /// and after the reader releases the original operation commits again with the
 /// live WAL back under the cutoff.
 #[test]
+fn pressure_blocks_growth_and_retries_after_reader_releases() -> Check {
+    let f = Fixture::new_case()?;
+    let (host, lease) = host(&f)?;
+    let mut writer = host.start_writer(options(256)?, lease)?;
+    // Keep time for the explicit drain inside the CI case's 120-second limit.
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let observed = observe_pressure(&f, &mut writer, deadline);
+    // All SQLite observers have closed before the writer drain begins.
+    let drained = pressure_wait(
+        writer.drain(Duration::from_secs(10)),
+        Instant::now() + Duration::from_secs(20),
+        "writer drain",
+    )
+    .and_then(|report| report.map(drop).map_err(Into::into));
+    if let Err(error) = &drained {
+        eprintln!("pressure fixture shutdown: {error}");
+    }
+    f._root
+        .as_ref()
+        .ok_or("missing pressure fixture owner")?
+        .finish(observed.and(drained))
+}
+
+fn pressure_wait<F: Future>(
+    future: F,
+    deadline: Instant,
+    stage: impl std::fmt::Display,
+) -> Result<F::Output, Box<dyn std::error::Error>> {
+    wait_until(future, deadline).map_err(|error| format!("{stage}: {error}").into())
+}
+
 #[expect(
     clippy::too_many_lines,
-    reason = "pre-existing at the guardrail rebaseline onto current main; delete this expect when the lint is fixed"
+    reason = "One sustained WAL cutoff, refusal, and recovery observation sequence."
 )]
-fn pressure_blocks_growth_and_retries_after_reader_releases() -> Check {
-    let f = Fixture::new()?;
-    let (host, lease) = host(&f)?;
-    let mut writer = host.start_writer(options(256)?, lease.clone())?;
+fn observe_pressure(f: &Fixture, writer: &mut SqliteWriter, deadline: Instant) -> Check {
     let client = writer.client();
     let path = f.options.state_directory.join("state.db");
     let pinned = observer(&path)?;
@@ -153,7 +182,11 @@ fn pressure_blocks_growth_and_retries_after_reader_releases() -> Check {
     let mut crossed = false;
     for n in 0..128 {
         let key = format!("pressure-{n}");
-        let receipt = wait(client.submit(payload(&f, &key)?)?)??;
+        let receipt = pressure_wait(
+            client.submit(payload(f, &key)?)?,
+            deadline,
+            format_args!("pressure load batch {}", n + 1),
+        )??;
         assert_eq!(receipt.state, CommitState::Committed);
         let after = wal(&outside)?.2;
         largest_group_growth = largest_group_growth.max(after.saturating_sub(before));
@@ -183,10 +216,14 @@ fn pressure_blocks_growth_and_retries_after_reader_releases() -> Check {
         "more than one committed group grew past the cutoff"
     );
     let head: i64 = outside.query_row("SELECT max(seq) FROM events", [], |r| r.get(0))?;
-    for _ in 0..2 {
-        let refused = wait(client.submit(payload(&f, "pressure-retry")?)?)?
-            .err()
-            .ok_or("pressure admitted another group")?;
+    for refusal in 1..=2 {
+        let refused = pressure_wait(
+            client.submit(payload(f, "pressure-retry")?)?,
+            deadline,
+            format_args!("pressure refusal {refusal}"),
+        )?
+        .err()
+        .ok_or("pressure admitted another group")?;
         assert_eq!(refused.code, StoreErrorCode::Busy);
         assert!(refused.cause.contains("64 MiB"));
         assert_eq!(wal(&outside)?.2, before, "refused append grew live WAL");
@@ -205,9 +242,13 @@ fn pressure_blocks_growth_and_retries_after_reader_releases() -> Check {
             [8; 10],
         )?),
     };
-    let refused = wait(client.atlas_resume(mutation.clone())?)?
-        .err()
-        .ok_or("auxiliary cursor writer bypassed pressure")?;
+    let refused = pressure_wait(
+        client.atlas_resume(mutation.clone())?,
+        deadline,
+        "Atlas cursor refusal at the cutoff",
+    )?
+    .err()
+    .ok_or("auxiliary cursor writer bypassed pressure")?;
     assert_eq!(refused.code, StoreErrorCode::Busy);
     assert_eq!(wal(&outside)?.2, before);
     assert_eq!(
@@ -225,17 +266,20 @@ fn pressure_blocks_growth_and_retries_after_reader_releases() -> Check {
     // lands; a store that stays past the cutoff after the reader released
     // is a regression, so the deadline fails loudly instead of looping on
     // a stuck store.
-    let deadline = Instant::now() + Duration::from_secs(60);
     let mut attempts = 0usize;
     let retry = loop {
+        if Instant::now() >= deadline {
+            return Err("pressure retry still refused after the reader released".into());
+        }
         attempts += 1;
-        match wait(client.submit(payload(&f, "pressure-retry")?)?)? {
+        match pressure_wait(
+            client.submit(payload(f, "pressure-retry")?)?,
+            deadline,
+            format_args!("pressure retry {attempts} after reader release"),
+        )? {
             Ok(receipt) if receipt.state == CommitState::Committed => break receipt,
             Ok(_) => return Err("pressure retry returned a non-committed state".into()),
             Err(error) if error.code == StoreErrorCode::Busy && error.cause.contains("64 MiB") => {
-                if Instant::now() >= deadline {
-                    return Err("pressure retry still refused after the reader released".into());
-                }
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(error) => return Err(error.into()),
@@ -250,7 +294,11 @@ fn pressure_blocks_growth_and_retries_after_reader_releases() -> Check {
     }
     matches_receipt(&outside, "pressure-retry", &retry)?;
     assert!(matches!(
-        wait(client.atlas_resume(mutation)?)??,
+        pressure_wait(
+            client.atlas_resume(mutation)?,
+            deadline,
+            "Atlas cursor recovery"
+        )??,
         se_store::atlas_resume::AtlasResumeWrite::EpochSet
     ));
     healthy(&outside)?;
@@ -259,8 +307,11 @@ fn pressure_blocks_growth_and_retries_after_reader_releases() -> Check {
         commits.len(),
         HARD
     );
-    wait(writer.flush(Duration::from_secs(4))?)??;
-    drop(wait(writer.drain(Duration::from_secs(4)))??);
+    pressure_wait(
+        writer.flush(Duration::from_secs(10))?,
+        deadline,
+        "pressure flush",
+    )??;
     Ok(())
 }
 
