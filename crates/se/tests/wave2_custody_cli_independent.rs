@@ -36,8 +36,7 @@ mod native;
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct Case {
-    // Preserve failed fixture inputs and CLI output; successful cases remove them.
-    f: std::mem::ManuallyDrop<Fixture>,
+    f: Fixture,
     child: native::Child,
     session: SessionId,
     identity: ProcessIdentityRecord,
@@ -53,13 +52,8 @@ impl Case {
     )]
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         installation_account::require()?;
-        se_proc::initialize_file_creation_owner()?;
-        let mut f = std::mem::ManuallyDrop::new(Fixture::new()?);
+        let mut f = Fixture::new_case()?;
         se_proc::NativeStateFiles::create(&f.home.join("user-home"))?;
-        println!(
-            "custody CLI fixture retained on failure: {}",
-            f.home.display()
-        );
         let repo = f.home.join("repository");
         std::fs::create_dir(&repo)?;
         std::fs::write(repo.join("user-work.txt"), b"retained user work")?;
@@ -287,8 +281,12 @@ impl Case {
     }
     fn done(mut self) -> Check {
         self.child.finish()?;
-        // ManuallyDrop is only used to retain failures, and is taken exactly once.
-        drop(std::mem::ManuallyDrop::into_inner(self.f));
+        assert!(self.writer.is_none(), "fixture writer must be drained");
+        self.f
+            ._root
+            .take()
+            .ok_or("custody CLI fixture has no root owner")?
+            .close()?;
         Ok(())
     }
 }
