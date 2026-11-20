@@ -184,10 +184,21 @@ impl<'a> CacheConnection<'a> {
         profile: &SqlProfile,
         deadline: Instant,
     ) -> AtlasResult<Option<Self>> {
+        let trace = role == ConnectionRole::QueryReader
+            && std::env::var_os("SE_ATLAS_PHASE_TRACE").is_none_or(|value| value != "0");
+        let mut mark = std::time::Instant::now();
+        let mut laps: Vec<(&str, u128)> = Vec::new();
+        let mut lap = |name: &'static str| {
+            let now = std::time::Instant::now();
+            laps.push((name, now.duration_since(mark).as_micros()));
+            mark = now;
+        };
         let Some(pin) = files.pin_database(&id.epoch)? else {
             return Ok(None);
         };
+        lap("pin");
         let slot = Slot::take(role, deadline)?;
+        lap("slot");
         // The native work/query adapters close their handles before returning.
         // Include open and close in the same arena: WAL startup/checkpoint locks
         // can otherwise race even when SQL transactions are serialized.
@@ -202,10 +213,15 @@ impl<'a> CacheConnection<'a> {
         } else {
             None
         };
+        lap("arena");
         files.validate_database(&pin)?;
+        lap("validate");
         let mut db = open(&pin, role, deadline)?;
+        lap("sqlite_open");
         files.configure_connection_role(&mut db, role)?;
+        lap("role");
         configure_limits(&db, role, profile)?;
+        lap("limits");
         finite(&mut db, deadline, "open validation", |db, _| {
             schema::validate(db, &id)?;
             if role.writable() && role != ConnectionRole::MaintenanceWriter {
@@ -213,13 +229,20 @@ impl<'a> CacheConnection<'a> {
             }
             Ok(())
         })?;
+        lap("schema");
         configure_access(&db, role)?;
+        lap("access");
         if role == ConnectionRole::CandidateReader {
             finite(&mut db, deadline, "candidate integrity", |db, _| {
                 schema::validate_integrity(db)
             })?;
         }
         files.validate_database(&pin)?;
+        lap("revalidate");
+        if trace {
+            let text: Vec<String> = laps.iter().map(|(n, us)| format!("{n}={us}")).collect();
+            eprintln!("ATLAS_HOST_PHASE connection {}", text.join(" "));
+        }
         Ok(Some(Self {
             db,
             files,
