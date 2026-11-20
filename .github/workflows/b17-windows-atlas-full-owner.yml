@@ -1,7 +1,7 @@
 name: Windows Atlas full owner measurement
 on:
   push:
-    branches: [probe/windows-atlas-reader-20261120]
+    branches: [probe/windows-provider-mcp-run-20261120]
 permissions:
   contents: read
 jobs:
