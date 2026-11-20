@@ -275,21 +275,21 @@ impl StoreFactory for SqliteFactory {
         crate::backup::inventory(options, budget)
     }
     fn recovery_receipt(
-        _: &StoreOptions,
-        _: &RequestIdentity,
-        _: &Admission,
+        options: &StoreOptions,
+        request: &RequestIdentity,
+        admission: &Admission,
     ) -> StoreResult<Read<RestoreReceipt>> {
-        later("restore receipt")
+        crate::restore::receipt(options, request, admission)
     }
     fn restore_backup(
-        _: &StoreOptions,
-        _: BackupGeneration,
-        _: &RequestIdentity,
-        _: StoreId,
-        _: &Admission,
-        _: &dyn RuntimeLease,
+        options: &StoreOptions,
+        backup: BackupGeneration,
+        request: &RequestIdentity,
+        target: StoreId,
+        admission: &Admission,
+        lease: &dyn RuntimeLease,
     ) -> StoreResult<RestoreOutcome<Self::Host>> {
-        later("backup restore")
+        crate::restore::restore(options, backup, request, target, admission, lease)
     }
 }
 impl ReadStore for SqliteReader {
