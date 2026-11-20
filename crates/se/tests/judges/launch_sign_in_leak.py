@@ -50,7 +50,57 @@ def files_with_token(fixture):
     return found
 
 
+def windows_environment(pid):
+    """Read another process's environment block from its PEB (x64 layout)."""
+    import ctypes
+    from ctypes import wintypes as w
+    kernel, ntdll = ctypes.WinDLL("kernel32", use_last_error=True), ctypes.WinDLL("ntdll")
+    kernel.OpenProcess.restype = w.HANDLE
+    kernel.ReadProcessMemory.argtypes = [w.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
+    handle = kernel.OpenProcess(0x0400 | 0x0010, False, pid)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        info = (ctypes.c_void_p * 6)()
+        status = ntdll.NtQueryInformationProcess(w.HANDLE(handle), 0, info, ctypes.sizeof(info), None)
+        assert status == 0, f"NtQueryInformationProcess {status:#x}"
+        def read(address, size):
+            buffer = ctypes.create_string_buffer(size)
+            ok = kernel.ReadProcessMemory(handle, ctypes.c_void_p(address), buffer, size, None)
+            if not ok:
+                raise ctypes.WinError(ctypes.get_last_error())
+            return buffer.raw
+        peb = info[1]
+        parameters = int.from_bytes(read(peb + 0x20, 8), "little")
+        environment = int.from_bytes(read(parameters + 0x80, 8), "little")
+        size = int.from_bytes(read(parameters + 0x3F0, 8), "little")
+        return read(environment, size).decode("utf-16-le", errors="replace").split("\0")
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def windows_host_environments_with_token(fixture):
+    query = ("Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq '"
+             + str(fixture.se).replace("'", "''") + "' } | ForEach-Object { $_.ProcessId }")
+    listed = subprocess.run(["powershell", "-NoProfile", "-Command", query],
+                            capture_output=True, text=True, check=True, timeout=60)
+    owner = str(fixture.root / "owner").lower()
+    seen, leaked = 0, []
+    for pid in (int(line) for line in listed.stdout.split() if line.strip().isdecimal()):
+        try:
+            environment = windows_environment(pid)
+        except OSError:
+            continue
+        if any(owner in entry.lower() for entry in environment):
+            seen += 1
+            if any(TOKEN in entry for entry in environment):
+                leaked.append(str(pid))
+    return seen, leaked
+
+
 def host_environments_with_token(fixture):
+    if os.name == "nt":
+        return windows_host_environments_with_token(fixture)
     owner = f"HOME={fixture.root / 'owner'}".encode()
     seen, leaked = 0, []
     for entry in Path("/proc").iterdir():
