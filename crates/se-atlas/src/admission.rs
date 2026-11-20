@@ -43,8 +43,23 @@ impl Slot {
                         timeout_phase("reader slot admission", budget, started.elapsed())
                     });
                 }
+                let mut wait = remaining;
+                if role != ConnectionRole::QueryReader {
+                    // An idle retained query reader yields the slot; a busy one
+                    // finishes its query first, which signals nobody, so poll.
+                    // Its close takes READER_WAIT, so release it meanwhile.
+                    drop(guard);
+                    crate::reader::release_if_idle();
+                    guard = READER_WAIT
+                        .lock()
+                        .map_err(|_| cache_error("Atlas reader slot lock poisoned"))?;
+                    if SLOTS.load(Ordering::Acquire) & bit == 0 {
+                        break;
+                    }
+                    wait = remaining.min(std::time::Duration::from_millis(10));
+                }
                 guard = READER_READY
-                    .wait_timeout(guard, remaining)
+                    .wait_timeout(guard, wait)
                     .map_err(|_| cache_error("Atlas reader slot wait poisoned"))?
                     .0;
             }

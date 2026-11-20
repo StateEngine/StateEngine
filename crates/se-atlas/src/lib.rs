@@ -16,6 +16,7 @@ pub mod history;
 pub mod parse;
 pub mod query;
 pub mod rank;
+pub mod reader;
 pub mod records;
 pub mod render;
 pub mod scope;

@@ -64,7 +64,7 @@ pub trait GrowthReservation {}
 pub type DatabaseFileIdentity = ([u8; 16], [u8; 16]);
 /// Metadata custody may use a retained handle or a no-open native observation.
 /// Its drop must preserve every SQLite connection's process-wide file locks.
-pub trait DatabaseFile {
+pub trait DatabaseFile: Send {
     fn metadata(&self) -> std::io::Result<std::fs::Metadata>;
     fn identity(&self) -> std::io::Result<DatabaseFileIdentity>;
 }

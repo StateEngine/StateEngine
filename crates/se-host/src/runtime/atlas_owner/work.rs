@@ -493,6 +493,7 @@ impl State {
         Ok(())
     }
     fn close_root(&mut self, id: RootId) -> Result<()> {
+        se_atlas::reader::release();
         let publication = self
             .roots
             .iter()
