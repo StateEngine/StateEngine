@@ -128,6 +128,9 @@ pub struct ProtectedStateStaging {
     pub path: PathBuf,
     pub file: File,
 }
+// Long-running requests fall back to fresh ancestry checks; only the brief
+// initial CLI window may rely on the retained verified parent.
+const SHORT_CLI_ANCESTRY_AGE: std::time::Duration = std::time::Duration::from_secs(1);
 pub struct NativeStateFiles {
     root: PathBuf,
     directory: os::Directory,
@@ -155,6 +158,16 @@ impl NativeStateFiles {
     /// unreadable, unsafe and replaced roots are failures, never a new directory.
     pub fn open(root: &Path) -> Result<Self> {
         let directory = os::Directory::open(root)?;
+        Ok(Self {
+            root: root.to_owned(),
+            directory,
+        })
+    }
+    /// Retains the verified parent for one short CLI operation. Ancestors are
+    /// verified on open; subsequent checks revalidate the named root and its
+    /// protection relative to that retained parent.
+    pub fn open_short_cli(root: &Path) -> Result<Self> {
+        let directory = os::Directory::open_short_cli(root)?;
         Ok(Self {
             root: root.to_owned(),
             directory,

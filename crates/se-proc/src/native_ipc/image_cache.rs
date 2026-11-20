@@ -192,6 +192,23 @@ pub fn restore_cli_image_cache(
 ) -> IpcNativeResult<ImageCacheRead> {
     restore(root, NAME, expected, Some(peer), bound)
 }
+/// Reuse a caller's verified state root for a local CLI image hint.
+pub fn restore_cli_image_cache_with_files(
+    files: &NativeStateFiles,
+    expected: Sha256,
+    peer: &ProcessInstance,
+    bound: &IpcIoBound,
+) -> IpcNativeResult<ImageCacheRead> {
+    restore_from_files(files, NAME, expected, Some(peer), bound)
+}
+/// Reuse a caller's verified state root for an image hint.
+pub fn restore_image_cache_with_files(
+    files: &NativeStateFiles,
+    expected: Sha256,
+    bound: &IpcIoBound,
+) -> IpcNativeResult<ImageCacheRead> {
+    restore_from_files(files, NAME, expected, None, bound)
+}
 /// Restore only the separate uploaded-image hint. A changed native file key
 /// misses exactly as for the host hint; callers must still authenticate IPC.
 pub fn restore_remote_image_cache(
@@ -213,7 +230,19 @@ fn restore(
         .map_err(|e| error("restore executable cache deadline", e))?;
     let files = NativeStateFiles::open(root)
         .map_err(|e| error("pin executable cache home", std::io::Error::other(e)))?;
-    let Some(bytes) = read(&files, name)? else {
+    restore_from_files(&files, name, expected, peer, bound)
+}
+fn restore_from_files(
+    files: &NativeStateFiles,
+    name: &str,
+    expected: Sha256,
+    peer: Option<&ProcessInstance>,
+    bound: &IpcIoBound,
+) -> IpcNativeResult<ImageCacheRead> {
+    bound
+        .remaining()
+        .map_err(|e| error("restore executable cache deadline", e))?;
+    let Some(bytes) = read(files, name)? else {
         return Ok(ImageCacheRead::Absent);
     };
     let entry: Entry = serde_json::from_slice(&bytes).map_err(|e| {

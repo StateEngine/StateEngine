@@ -69,13 +69,8 @@ fn forward_once<R: se_store::ReadStore>(
         bound
     };
     crate::ipc_trace::stamp(crate::ipc_trace::Point::RestoreStart);
-    execute::restore_forward_image(
-        &cx.home,
-        &target,
-        cx.session.is_none(),
-        &bound.native_bound(),
-    )
-    .map_err(|error| {
+    restore_forward_image_with_files(files, &target, cx.session.is_none(), &bound.native_bound())
+        .map_err(|error| {
         scope::unreadable("protected executable cache", &error.to_string()).with_cause(error)
     })?;
     crate::ipc_trace::stamp(crate::ipc_trace::Point::RestoreEnd);
@@ -176,7 +171,7 @@ impl StatusRequest {
     /// so the worker holds no shared state the local path needs.
     pub(super) fn run(self) -> Result<AnyOutput> {
         let bound = Deadline::from_options(&self.options)?;
-        execute::restore_forward_image(
+        restore_forward_image(
             &self.home,
             &self.endpoint,
             matches!(&self.credential, ClientCredential::Machine(_)),
@@ -269,4 +264,40 @@ pub fn forward<R: se_store::ReadStore>(
         selections,
         diagnostic,
     )
+}
+
+pub(super) fn restore_forward_image_with_files(
+    files: &Files,
+    endpoint: &se_host::EndpointRecord,
+    owner: bool,
+    bound: &se_proc::native_ipc::IpcIoBound,
+) -> se_proc::native_ipc::IpcNativeResult<se_proc::native_ipc::ImageCacheRead> {
+    if owner {
+        se_proc::native_ipc::restore_cli_image_cache_with_files(
+            &files.0,
+            endpoint.image_sha256,
+            &endpoint.epoch.owner,
+            bound,
+        )
+    } else {
+        se_proc::native_ipc::restore_image_cache_with_files(&files.0, endpoint.image_sha256, bound)
+    }
+}
+
+pub(super) fn restore_forward_image(
+    home: &std::path::Path,
+    endpoint: &se_host::EndpointRecord,
+    owner: bool,
+    bound: &se_proc::native_ipc::IpcIoBound,
+) -> se_proc::native_ipc::IpcNativeResult<se_proc::native_ipc::ImageCacheRead> {
+    if owner {
+        se_proc::native_ipc::restore_cli_image_cache(
+            home,
+            endpoint.image_sha256,
+            &endpoint.epoch.owner,
+            bound,
+        )
+    } else {
+        se_proc::native_ipc::restore_image_cache(home, endpoint.image_sha256, bound)
+    }
 }
