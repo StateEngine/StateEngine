@@ -1,11 +1,12 @@
 """Check stock Codex registration and managed launch on Linux x64.
 
-Run with a built se executable and CI_OPENAI_API_KEY and CI_CODEX_MODEL from
-the nightly-providers environment. This test installs its pinned clients in a
-disposable directory and publishes only a bounded summary.
+Run with a built se executable. Use --loopback for PRs or provide
+CI_OPENAI_API_KEY and CI_CODEX_MODEL from nightly-providers for the live run.
+This test installs its pinned clients and publishes only a bounded summary.
 """
 
 import argparse
+from contextlib import nullcontext
 from hashlib import file_digest
 import json
 import os
@@ -21,6 +22,8 @@ from time import monotonic, sleep
 import tomllib
 from urllib.request import urlopen
 from uuid import uuid4
+
+from stock_codex_responses import KEY as LOOPBACK_KEY, MODEL as LOOPBACK_MODEL, TASK, LoopbackModel
 
 
 CODEX_VERSION = "0.169.0"
@@ -159,7 +162,7 @@ class Fixture:
     def cli(self, *words):
         return json.loads(self.run(self.se, "--json", "--home", str(self.state), *words))
 
-    def prepare(self, key, model):
+    def prepare(self, key, model, loopback_url):
         git = shutil.which("git")
         require(git is not None, "Git is required for the fixture repository")
         for directory in (self.root, self.repo, self.home, self.login, self.bin, self.runtime):
@@ -169,7 +172,7 @@ class Fixture:
         self.run(self.bin / "git", "init", "-q")
         # Stock workspace-write launches can save project trust. Preload that
         # setting so the byte check measures changes to MCP registration.
-        self.config.write_text(f"""model = {json.dumps(model)}
+        config = f"""model = {json.dumps(model)}
 cli_auth_credentials_store = "file"
 sandbox_mode = "read-only"
 approval_policy = "never"
@@ -179,7 +182,21 @@ apps = false
 
 [projects.{json.dumps(str(self.repo))}]
 trust_level = "trusted"
-""", encoding="utf-8")
+"""
+        if loopback_url is not None:
+            config = 'model_provider = "fixture"\n' + config + f"""
+[model_providers.fixture]
+name = "Stock Codex smoke fixture"
+base_url = {json.dumps(loopback_url)}
+wire_api = "responses"
+requires_openai_auth = true
+supports_websockets = false
+request_max_retries = 0
+stream_max_retries = 0
+"""
+            self.env.update(HTTP_PROXY="http://127.0.0.1:9", HTTPS_PROXY="http://127.0.0.1:9",
+                            ALL_PROXY="http://127.0.0.1:9", NO_PROXY="127.0.0.1,localhost")
+        self.config.write_text(config, encoding="utf-8")
         descriptor = os.open(self.auth, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump({"auth_mode": "apikey", "OPENAI_API_KEY": key}, stream)
@@ -203,7 +220,7 @@ trust_level = "trusted"
         if case == "existing":
             require(before == saved, "se init rewrote the existing Codex registration")
         receipt["stage"] = "managed launch"
-        launch = self.cli("launch", "Worker", "--detach", "--task", "Reply with Ready. Do not use tools.")
+        launch = self.cli("launch", "Worker", "--detach", "--task", TASK)
         require(launch["state"] == "running", "The managed launch did not reach running")
         socket = self.login / "app-server-control/app-server-control.sock"
         thread = launch["conversation_id"]
@@ -233,11 +250,11 @@ trust_level = "trusted"
                     "The private runtime did not stop completely")
 
 
-def check_case(fixture, case, key, model, connect):
+def check_case(fixture, case, key, model, connect, loopback_url):
     started = monotonic()
     receipt = {"passed": False, "stage": "fixture setup"}
     try:
-        fixture.prepare(key, model)
+        fixture.prepare(key, model, loopback_url)
         fixture.exercise(case, model, connect, receipt)
         receipt.update(passed=True, stage="complete")
     except Exception as failure:
@@ -256,22 +273,33 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--se", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True, help="Path for the bounded JSON receipt")
+    parser.add_argument("--loopback", action="store_true", help="Run with a private model server and a synthetic key")
     args = parser.parse_args()
-    report = {"stock_codex": CODEX_VERSION, "cases": {}}
+    report = {"stock_codex": CODEX_VERSION, "model_mode": "loopback" if args.loopback else "live", "cases": {}}
     started = monotonic()
     try:
         require(sys.platform == "linux" and platform.machine() == "x86_64", "This stock pin is for Linux x64")
-        key, model = os.environ.get("CI_OPENAI_API_KEY"), os.environ.get("CI_CODEX_MODEL", "")
-        require(key and key.strip() == key, "The dedicated nightly Codex API key is absent or invalid")
-        require(re.fullmatch(r"[A-Za-z0-9._:/+-]{1,128}", model) and key not in model,
-                "The dedicated nightly Codex model is absent or invalid")
+        if args.loopback:
+            key, model = LOOPBACK_KEY, LOOPBACK_MODEL
+        else:
+            key, model = os.environ.get("CI_OPENAI_API_KEY"), os.environ.get("CI_CODEX_MODEL", "")
+            require(key and key.strip() == key, "The dedicated nightly Codex API key is absent or invalid")
+            require(re.fullmatch(r"[A-Za-z0-9._:/+-]{1,128}", model) and key not in model,
+                    "The dedicated nightly Codex model is absent or invalid")
         se = args.se.resolve(strict=True)
         with tempfile.TemporaryDirectory(prefix="se-codex-", dir="/tmp") as temp:
             root = Path(temp)
             codex, connect = install(root)
             report["install_seconds"] = round(monotonic() - started, 2)
-            for name in ("fresh", "existing", "collision"):
-                report["cases"][name] = check_case(Fixture(root / name, se, codex), name, key, model, connect)
+            with LoopbackModel() if args.loopback else nullcontext() as mock:
+                url = mock.url if mock is not None else None
+                for name in ("fresh", "existing", "collision"):
+                    report["cases"][name] = check_case(Fixture(root / name, se, codex), name, key, model, connect, url)
+                if mock is not None:
+                    with mock.lock:
+                        report["model_requests_verified"] = mock.accepted
+                        require(mock.accepted == 3 and mock.rejected == 0,
+                                "The loopback service did not verify three authenticated model requests")
     except Exception as failure:
         report["failure"] = str(failure) if isinstance(failure, WitnessFailure) else type(failure).__name__
     report["seconds"] = round(monotonic() - started, 2)
