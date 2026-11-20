@@ -61,9 +61,8 @@ fn discord_identify_spacing_first_waits_nothing() -> Check {
     Ok(())
 }
 
-/// Through the real receiver loop: the first connection reaches Identify without
-/// the old fixed delay, and a fresh Identify after a refused replay is still
-/// spaced one concurrency window from the first attempt.
+/// An expired replay is explicit and the receiver identifies afresh. The first
+/// Identify is prompt, while the next still observes the concurrency window.
 #[test]
 fn discord_wire_review_identify_first_is_prompt_and_later_is_spaced() -> Check {
     let f = Fixture::new("expired")?;
@@ -89,10 +88,22 @@ fn discord_wire_review_identify_first_is_prompt_and_later_is_spaced() -> Check {
         drop(receiver);
         let mut fresh = f.adapter.clone().receiver(Some(cursor))?;
         let checkpoint = next(fresh.as_mut(), &f.token).await?;
+        require(
+            matches!(checkpoint.content, IncomingContent::Unsupported),
+            "fresh READY was not preserved as a checkpoint",
+        )?;
         fresh.ack(&checkpoint.cursor)?;
         require(
             started.elapsed() >= Duration::from_millis(4800),
             "the second fresh Identify was not spaced from the first",
+        )?;
+        require(
+            f.events()?
+                .iter()
+                .filter(|event| event["kind"] == "gateway_auth" && event["op"] == 2)
+                .count()
+                == 2,
+            "invalid replay session was retried forever",
         )?;
         Ok(())
     }))
@@ -410,49 +421,6 @@ fn discord_wire_review_control_traffic_does_not_extend_retries() -> Check {
     });
     if outcome.is_err() {
         f.report("discord_wire_review_control_traffic_does_not_extend_retries");
-    }
-    f.finish(outcome)
-}
-
-/// An expired resume session is explicit and invalidated, so the subsequent
-/// attempt identifies afresh instead of retrying an impossible replay forever.
-#[test]
-fn discord_wire_review_expired_replay_is_visible() -> Check {
-    let f = Fixture::new("expired")?;
-    let outcome = runtime()?.block_on(async {
-        let mut receiver = ready(&f).await?;
-        let first = next(receiver.as_mut(), &f.token).await?;
-        receiver.ack(&first.cursor)?;
-        let cursor = first.cursor;
-        drop(receiver);
-        let mut receiver = f.adapter.clone().receiver(Some(cursor.clone()))?;
-        require(
-            matches!(
-                tokio::time::timeout(Duration::from_secs(15), receiver.next(&f.token)).await?,
-                Err(Error::ReplayUnavailable)
-            ),
-            "expired replay was collapsed to absence",
-        )?;
-        drop(receiver);
-        let mut fresh = f.adapter.clone().receiver(Some(cursor))?;
-        let checkpoint = next(fresh.as_mut(), &f.token).await?;
-        require(
-            matches!(checkpoint.content, IncomingContent::Unsupported),
-            "fresh READY was not preserved as a checkpoint",
-        )?;
-        fresh.ack(&checkpoint.cursor)?;
-        require(
-            f.events()?
-                .iter()
-                .filter(|e| e["kind"] == "gateway_auth" && e["op"] == 2)
-                .count()
-                == 2,
-            "invalid replay session was retried forever",
-        )?;
-        Ok(())
-    });
-    if outcome.is_err() {
-        f.report("discord_wire_review_expired_replay_is_visible");
     }
     f.finish(outcome)
 }
