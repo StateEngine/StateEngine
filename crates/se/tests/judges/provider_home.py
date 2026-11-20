@@ -15,4 +15,3 @@ def isolate(environment, fixture, home, *, codex=None, claude=None):
                        CODEX_HOME=str(codex or home / ".codex"),
                        CLAUDE_CONFIG_DIR=str(claude or home / ".claude"))
     prepare_provider_home(environment, fixture)
-
