@@ -191,7 +191,19 @@ pub(super) fn read(
             ));
         }
         if !closed[0] {
-            closed[0] = drain(&mut stdout, &mut out, OUTPUT_BYTES)?;
+            match drain(&mut stdout, &mut out, OUTPUT_BYTES) {
+                Ok(is_closed) => closed[0] = is_closed,
+                Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::OutOfMemory,
+                        BoundedPrefix {
+                            message: error.to_string(),
+                            bytes: out,
+                        },
+                    ));
+                }
+                Err(error) => return Err(error),
+            }
         }
         if !closed[1] {
             closed[1] = drain(&mut stderr, &mut err, STDERR_BYTES)?;

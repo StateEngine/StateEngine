@@ -305,8 +305,12 @@ fn oversized_commit_degrades_only_itself_and_keeps_the_window() -> Check {
         window.commits[0]
             .paths_note
             .as_deref()
-            .is_some_and(|n| n.contains("bounded Git read")),
-        "the degradation must say so: {:?}",
+            .is_some_and(|n| n.contains("256-path or 1024-byte bound"))
+            && window.commits[0]
+                .paths_note
+                .as_deref()
+                .is_some_and(|n| n.ends_with("paths omitted")),
+        "the capped read proves its allowed prefix: {:?}",
         window.commits[0].paths_note
     );
     assert_eq!(window.commits[1].subject, "Small commit");
@@ -316,8 +320,8 @@ fn oversized_commit_degrades_only_itself_and_keeps_the_window() -> Check {
     );
     assert_eq!(
         window.commits[0].allowed_paths,
-        Some(0),
-        "the window reader proves no allowed path"
+        Some(256),
+        "the window reader proves the 256 allowed paths it parsed"
     );
     assert!(window.commits[1].paths_note.is_none());
     assert_eq!(window.commits[1].allowed_paths, None);
@@ -400,6 +404,89 @@ fn oversized_denied_first_commit_is_withheld_for_size() -> Check {
             .as_deref()
             .is_some_and(|n| n.ends_with("commit entry withheld for size")),
         "no proven allowed path withholds the entry, and the note says so: {:?}",
+        commit.paths_note
+    );
+    assert_eq!(
+        commit.allowed_paths,
+        Some(0),
+        "denied paths are not evidence of an allowed path"
+    );
+    reader.close()?;
+    Ok(())
+}
+#[test]
+fn byte_capped_changed_paths_keep_the_proven_allowed_prefix() -> Check {
+    let _serial = SERIAL.lock().map_err(|_| "lock")?;
+    let f = Fixture::new()?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let small = f.make_tree(&["one.rs".to_owned(), "two.rs".to_owned()])?;
+    // 200 allowed paths of 499 bytes each: 100000 path bytes exceed the
+    // 65536-byte read cap, so the reader returns its bounded prefix of 122
+    // to 131 complete records, every one clearing the denial policy.
+    let wide: Vec<String> = (0..200)
+        .map(|i| format!("generated-module-{i:04}-{}", "x".repeat(477)))
+        .collect();
+    let tree = f.make_tree(&wide)?;
+    let old = f.make_commit(&small, None, "Small commit")?;
+    let head = f.make_commit(&tree, Some(&old), "Capped allowed commit")?;
+    fs::write(f.0.join("git/HEAD"), format!("{head}\n"))?;
+    let reader = f.reader()?;
+    let window = reader.window(&head, 2, deadline)?;
+    assert_eq!(window.commits.len(), 2);
+    let commit = &window.commits[0];
+    assert_eq!(commit.subject, "Capped allowed commit");
+    assert!(
+        commit.paths.is_empty(),
+        "a capped commit retains no raw path list"
+    );
+    assert!(
+        commit
+            .paths_note
+            .as_deref()
+            .is_some_and(|n| n.contains("bounded Git read") && n.ends_with("paths omitted")),
+        "the capped read keeps the entry and says so: {:?}",
+        commit.paths_note
+    );
+    assert!(
+        (100..=256).contains(&commit.allowed_paths.unwrap_or(0)),
+        "the prefix proves its complete allowed records: {:?}",
+        commit.allowed_paths
+    );
+    reader.close()?;
+    Ok(())
+}
+#[test]
+fn byte_capped_changed_paths_withhold_the_entry_when_the_prefix_is_denied() -> Check {
+    let _serial = SERIAL.lock().map_err(|_| "lock")?;
+    let f = Fixture::new()?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let small = f.make_tree(&["one.rs".to_owned(), "two.rs".to_owned()])?;
+    // 200 denied paths (id_ prefix) of 495 bytes each: 99200 path bytes
+    // exceed the 65536-byte read cap; the bounded prefix proves only denied
+    // records, so the entry is withheld for size.
+    let wide: Vec<String> = (0..200)
+        .map(|i| format!("id_generated-{i:04}-{}", "x".repeat(477)))
+        .collect();
+    let tree = f.make_tree(&wide)?;
+    let old = f.make_commit(&small, None, "Small commit")?;
+    let head = f.make_commit(&tree, Some(&old), "Capped denied commit")?;
+    fs::write(f.0.join("git/HEAD"), format!("{head}\n"))?;
+    let reader = f.reader()?;
+    let window = reader.window(&head, 2, deadline)?;
+    assert_eq!(window.commits.len(), 2);
+    let commit = &window.commits[0];
+    assert_eq!(commit.subject, "Capped denied commit");
+    assert!(commit.paths.is_empty(), "a withheld entry retains no paths");
+    assert!(
+        commit
+            .paths_note
+            .as_deref()
+            .is_some_and(|n| n.contains("bounded Git read"))
+            && commit
+                .paths_note
+                .as_deref()
+                .is_some_and(|n| n.ends_with("commit entry withheld for size")),
+        "a denied prefix withholds the entry, and the note says so: {:?}",
         commit.paths_note
     );
     assert_eq!(

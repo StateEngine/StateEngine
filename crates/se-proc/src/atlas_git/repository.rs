@@ -178,7 +178,17 @@ impl GitRepository {
             ) {
                 Ok(bytes) => Some(bytes),
                 Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
-                    degrade(&mut commit, REASON_CHANGED_OVERFLOW);
+                    // The retained stdout prefix proves the complete path
+                    // records read before the cap; the trailing partial
+                    // record is dropped, and the shared denial check decides.
+                    let prefix = match error.downcast::<BoundedPrefix>() {
+                        Ok(bounded) => bounded.bytes,
+                        Err(_) => Vec::new(),
+                    };
+                    parse_changed_paths(&mut commit, &complete_records(&prefix));
+                    if commit.allowed_paths.is_none() {
+                        degrade(&mut commit, REASON_CHANGED_OVERFLOW);
+                    }
                     None
                 }
                 Err(error) => return Err(error),
@@ -189,25 +199,7 @@ impl GitRepository {
                         "Git changed paths lack the complete native terminator",
                     ));
                 }
-                for raw in bytes
-                    .strip_suffix(&[0])
-                    .unwrap_or(&[])
-                    .split(|b| *b == 0)
-                    .filter(|_| !bytes.is_empty())
-                {
-                    let path = match std::str::from_utf8(raw) {
-                        Ok(path) => path,
-                        Err(_) => {
-                            degrade(&mut commit, REASON_PATH_ENCODING);
-                            break;
-                        }
-                    };
-                    if path.is_empty() || path.len() > 1024 || commit.paths.len() == 256 {
-                        degrade(&mut commit, REASON_PATH_BOUND);
-                        break;
-                    }
-                    commit.paths.push(path.into());
-                }
+                parse_changed_paths(&mut commit, &complete_records(&bytes));
             }
             let mut cost = commit_cost(&commit);
             if cost > WINDOW_BYTES {
@@ -230,6 +222,34 @@ impl GitRepository {
         #[cfg(target_os = "linux")]
         let _reaped = crate::atlas_worker::lease::Lease::acquire()?;
         self.control.close()
+    }
+}
+/// Complete NUL-terminated records within a bounded prefix; the trailing
+/// partial record after the last terminator is not trusted.
+fn complete_records(bytes: &[u8]) -> Vec<&[u8]> {
+    let cut = bytes.iter().rposition(|b| *b == 0).map_or(0, |i| i + 1);
+    bytes[..cut]
+        .strip_suffix(&[0])
+        .unwrap_or(&[])
+        .split(|b| *b == 0)
+        .collect()
+}
+/// Parse changed paths under the 256-path and 1024-byte bounds; the first
+/// violation degrades the commit, keeping the records already proven.
+fn parse_changed_paths(commit: &mut GitCommit, records: &[&[u8]]) {
+    for raw in records {
+        let path = match std::str::from_utf8(raw) {
+            Ok(path) => path,
+            Err(_) => {
+                degrade(commit, REASON_PATH_ENCODING);
+                return;
+            }
+        };
+        if path.is_empty() || path.len() > 1024 || commit.paths.len() == 256 {
+            degrade(commit, REASON_PATH_BOUND);
+            return;
+        }
+        commit.paths.push(path.into());
     }
 }
 /// A degraded commit keeps its bounded metadata and names the omission. The
