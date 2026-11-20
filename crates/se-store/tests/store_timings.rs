@@ -6,7 +6,7 @@ use fixture::*;
 #[path = "support/host_fixture.rs"]
 mod native_host;
 use native_host::*;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 fn timed(receipt: &CommitReceipt) -> Result<&WriteTimings, Box<dyn std::error::Error>> {
     receipt
         .write_timings
@@ -174,51 +174,104 @@ fn group_promotion_and_replay_attempt_timings_keep_distinct_durability() -> Chec
 /// Protects: E3 timing — every completion owns its measurements beyond the retired sample's old capacity.
 #[test]
 fn every_receipt_keeps_timings_past_the_former_sample_capacity() -> Check {
-    let f = Fixture::new()?;
-    // Seed and close before timing the writer. Each measured mark still
-    // commits once, without retaining its setup writes in the writer's WAL.
-    let messages = {
+    const RECEIPTS: usize = 1026;
+    const LOAD_BUDGET: Duration = Duration::from_secs(75);
+    const DRAIN_DEADLINE: Duration = Duration::from_secs(10);
+    const DRAIN_BUDGET: Duration = Duration::from_secs(20);
+    let f = Fixture::new_case()?;
+    let admission = f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.a.clone()));
+    let messages = (0..RECEIPTS)
+        .map(|_| message())
+        .collect::<Result<Vec<_>, _>>()?;
+    // Seed self-notes in batches before opening the writer. Each recipient
+    // mark still commits separately and gets its own completion.
+    {
         let (mut direct, lease) = f.direct()?;
-        let mut messages = Vec::new();
-        for n in 0..1026 {
-            let id = message()?;
+        for (index, chunk) in messages.chunks(64).enumerate() {
+            let notes = chunk
+                .iter()
+                .cloned()
+                .map(|message| EventBody::MessageSent {
+                    quiet: false,
+                    message,
+                    recipient: Actor::Agent(f.a.clone()),
+                    kind: "finding".into(),
+                    body: InputText::Inline("timing seed".into()),
+                    refs: vec![],
+                    reply_to: None,
+                })
+                .collect();
             direct.append(
-                f.send(
-                    Actor::Agent(f.a.clone()),
-                    // Self-note seed: 1026 messages in one window would
-                    // exceed the per-recipient rate cap toward any one
-                    // recipient, and a note to the sender is exempt.
-                    Actor::Agent(f.a.clone()),
-                    id.clone(),
-                    "timing seed",
-                    &format!("timed-{n}"),
+                f.batch(
+                    admission.clone(),
+                    Some(request(&format!("timing-seed-{index}"))?),
+                    notes,
                 )?,
                 &*lease,
             )?;
-            messages.push(id);
         }
         direct.close()?;
-        messages
-    };
+    }
     let (host, lease) = host_from_existing(&f)?;
     let owner = host.start_writer(options(256)?, lease)?;
     let client = owner.client();
-    for id in messages {
-        let receipt = wait(client.submit(f.batch(
-            f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.a.clone())),
-            None,
-            vec![EventBody::MessageRead {
-                message: id,
-                recipient: Actor::Agent(f.a.clone()),
-            }],
-        )?)?)??;
-        assert_eq!(receipt.state, CommitState::Committed);
-        assert_eq!(timed(&receipt)?.request_key, receipt.request_key);
-        assert!(timed(&receipt)?.group_requests >= 1);
-        assert_eq!(timed(&receipt)?.durability, CommitDurability::Normal);
+    // Check all receipts under one workload deadline, leaving time for setup
+    // and drain inside nextest's 120-second termination window.
+    let started = Instant::now();
+    let deadline = started + LOAD_BUDGET;
+    let observed = (|| -> Check {
+        let mut slowest = Duration::ZERO;
+        for (index, message) in messages.into_iter().enumerate() {
+            let batch = f.batch(
+                admission.clone(),
+                None,
+                vec![EventBody::MessageRead {
+                    message,
+                    recipient: Actor::Agent(f.a.clone()),
+                }],
+            )?;
+            let event = batch.events[0].header.event.clone();
+            let submitted = Instant::now();
+            let receipt = wait_until(client.submit(batch)?, deadline).map_err(|error| {
+                format!(
+                    "receipt {}/{RECEIPTS} after {:?}: {error}",
+                    index + 1,
+                    started.elapsed()
+                )
+            })??;
+            slowest = slowest.max(submitted.elapsed());
+            let timing = timed(&receipt)?;
+            if receipt.primary_event != event
+                || receipt.state != CommitState::Committed
+                || timing.request_key != receipt.request_key
+                || timing.group_requests == 0
+                || timing.durability != CommitDurability::Normal
+            {
+                return Err(format!(
+                    "receipt {}/{RECEIPTS} did not carry its own committed Normal timing",
+                    index + 1
+                )
+                .into());
+            }
+        }
+        eprintln!(
+            "{RECEIPTS} receipts in {:?}; slowest {:?}",
+            started.elapsed(),
+            slowest
+        );
+        Ok(())
+    })();
+    // Sealing by Drop does not join the writer. Always wait for drain before
+    // allowing fixture cleanup, and retain the directory on any failure.
+    let drained = wait_until(owner.drain(DRAIN_DEADLINE), Instant::now() + DRAIN_BUDGET)
+        .and_then(|report| report.map(drop).map_err(Into::into));
+    if let Err(error) = &drained {
+        eprintln!("timing fixture writer drain failed: {error}");
     }
-    drop(wait(owner.drain(Duration::from_secs(2)))??);
-    Ok(())
+    f._root
+        .as_ref()
+        .ok_or("missing timing fixture owner")?
+        .finish(observed.and(drained))
 }
 
 /// Protects: E3 timing — direct writes never manufacture host worker measurements.
