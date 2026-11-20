@@ -76,10 +76,13 @@ pub fn codex_fit(effective: &Value, overrides: &mut Value) -> Result<()> {
     if servers.contains_key(SERVER) {
         overrides[format!("mcp_servers.{SERVER}.enabled")] = Value::Bool(false);
     }
-    let name = std::iter::once(CODEX_AGENT_SERVER.to_owned())
-        .chain((2..=9).map(|n| format!("{CODEX_AGENT_SERVER}-{n}")))
-        .find(|name| !servers.contains_key(name))
-        .ok_or_else(|| invalid("a free stateengine-agent server name (tried 1 to 9)"))?;
+    // At most one more name than the table holds, so a free one always exists.
+    let mut name = CODEX_AGENT_SERVER.to_owned();
+    let mut number = 1;
+    while servers.contains_key(&name) {
+        number += 1;
+        name = format!("{CODEX_AGENT_SERVER}-{number}");
+    }
     if name != CODEX_AGENT_SERVER {
         let object = overrides
             .as_object_mut()
