@@ -8,9 +8,9 @@ use serde_json::{Value, json};
 /// The name `se init` registers for sessions run outside StateEngine. Claude
 /// agents use it too: their launch ignores every other registration.
 pub const SERVER: &str = "stateengine";
-/// The host's per-thread server for Codex agents. Codex merges thread
-/// overrides into the login's entry of the same name, and a URL cannot join
-/// that entry's command, so the agent's server has a name of its own.
+/// The host's per-thread server for Codex agents, unless the user's config
+/// already uses that name. Codex merges thread overrides into a login entry of
+/// the same name, and a URL cannot join that entry's command.
 pub const CODEX_AGENT_SERVER: &str = "stateengine-agent";
 
 fn route(port: u16) -> String {
@@ -56,25 +56,38 @@ pub fn codex_agent_server(port: u16, bearer: &Secret, proof: &Secret) -> Result<
     ))
 }
 
-/// Given Codex's effective configuration for the thread's directory, the
-/// override that switches off the login's own registration for this thread,
-/// so the agent sees exactly one StateEngine server. The user's config is not
-/// edited, and sessions outside StateEngine still use that registration.
-pub fn codex_login_server_off(effective: &Value) -> Result<Option<(String, Value)>> {
+/// Given Codex's effective configuration for the thread's directory, fit the
+/// thread's overrides into it without touching the user's config: switch off
+/// the login's own `stateengine` registration for this thread, and move the
+/// host's server to the first managed name the configuration does not use, so
+/// the agent sees exactly one StateEngine server and every user server stays.
+pub fn codex_fit(effective: &Value, overrides: &mut Value) -> Result<()> {
+    let invalid = |expected| SeError::invalid("Codex effective configuration", expected);
     let config = effective
         .get("config")
         .and_then(Value::as_object)
-        .ok_or_else(|| SeError::invalid("Codex effective configuration", "a config object"))?;
-    match config.get("mcp_servers") {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Object(servers)) if servers.contains_key(SERVER) => Ok(Some((
-            format!("mcp_servers.{SERVER}.enabled"),
-            Value::Bool(false),
-        ))),
-        Some(Value::Object(_)) => Ok(None),
-        Some(_) => Err(SeError::invalid(
-            "Codex effective configuration",
-            "mcp_servers as a table",
-        )),
+        .ok_or_else(|| invalid("a config object"))?;
+    let empty = serde_json::Map::new();
+    let servers = match config.get("mcp_servers") {
+        None | Some(Value::Null) => &empty,
+        Some(Value::Object(servers)) => servers,
+        Some(_) => return Err(invalid("mcp_servers as a table")),
+    };
+    if servers.contains_key(SERVER) {
+        overrides[format!("mcp_servers.{SERVER}.enabled")] = Value::Bool(false);
     }
+    let name = std::iter::once(CODEX_AGENT_SERVER.to_owned())
+        .chain((2..=9).map(|n| format!("{CODEX_AGENT_SERVER}-{n}")))
+        .find(|name| !servers.contains_key(name))
+        .ok_or_else(|| invalid("a free stateengine-agent server name (tried 1 to 9)"))?;
+    if name != CODEX_AGENT_SERVER {
+        let object = overrides
+            .as_object_mut()
+            .ok_or_else(|| invalid("thread overrides as an object"))?;
+        let entry = object
+            .remove(&format!("mcp_servers.{CODEX_AGENT_SERVER}"))
+            .ok_or_else(|| invalid("the host's server entry in the thread overrides"))?;
+        object.insert(format!("mcp_servers.{name}"), entry);
+    }
+    Ok(())
 }

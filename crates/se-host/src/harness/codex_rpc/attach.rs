@@ -127,16 +127,12 @@ impl CodexHarness {
         let resolved = self.resolved(request)?;
         let plan = self.plan(request, &resolved, socket);
         let (method, mut params) = self.thread(&plan)?;
-        // The login's own registration for sessions outside StateEngine is
-        // switched off for this thread, which has the host's server instead.
+        // The thread's StateEngine server must not meet the user's own servers:
+        // the login's registration is switched off, and the host's takes a free name.
         let read = json!({"cwd": params["cwd"].clone()});
         match binding.request_classified("config/read", read, cx).await {
-            Ok(effective) => {
-                if let Some((key, off)) = se_mcp::client::codex_login_server_off(&effective)? {
-                    params["config"][key] = off;
-                }
-            }
-            // Older Codex cannot report its configuration; nothing to switch off then.
+            Ok(effective) => se_mcp::client::codex_fit(&effective, &mut params["config"])?,
+            // Older Codex cannot report its configuration; keep the default name.
             Err(failure) if failure.code == Some(-32601) => {}
             Err(failure) => return Err(failure.error),
         }
