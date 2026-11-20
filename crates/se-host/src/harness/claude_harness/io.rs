@@ -129,6 +129,21 @@ pub(super) async fn plugin(
     }
 }
 
+const SIGNED_OUT: &str = "you are signed out";
+/// A launch no terminal started can only use the host's sign-in: say so, and name
+/// the step that carries one.
+pub(super) fn without_terminal(error: SeError, no_terminal: bool) -> SeError {
+    match error.body.detail() {
+        se_types::Detail::LaunchFailed(detail) if no_terminal && detail.reason == SIGNED_OUT => {
+            SeError::new(se_types::Detail::LaunchFailed(se_types::details::LaunchFailed {
+                subject: "Claude Code".into(),
+                reason: "the StateEngine host was started without a Claude sign-in, and no terminal launched this agent".into(),
+                next_step: "Run se launch <agent> from a terminal that is signed in to Claude Code".into(),
+            }))
+        }
+        _ => error,
+    }
+}
 fn authentication_status(bytes: &[u8], code: Option<i32>) -> Result<()> {
     #[derive(serde::Deserialize)]
     struct Status {
@@ -146,7 +161,7 @@ fn authentication_status(bytes: &[u8], code: Option<i32>) -> Result<()> {
         (false, Some(0 | 1)) => Err(SeError::new(se_types::Detail::LaunchFailed(
             se_types::details::LaunchFailed {
                 subject: "Claude Code".into(),
-                reason: "you are signed out".into(),
+                reason: SIGNED_OUT.into(),
                 next_step: "Sign in to Claude Code with: claude auth login".into(),
             },
         ))),

@@ -135,7 +135,9 @@ impl LaunchCoordinator {
                 .lock()
                 .map_err(|_| error("process request retry", "poisoned task slot"))?
                 .take();
-            let job = (control.execute)(deadline.retained());
+            // The job runs on its own task: carry the launching terminal's sign-in.
+            let sign_in = crate::launch_sign_in::current();
+            let job = crate::launch_sign_in::scope(sign_in, (control.execute)(deadline.retained()));
             let task = self.store.pool.handle().spawn(async move {
                 if let Some(previous) = previous
                     && let Err(failure) = previous.await

@@ -298,6 +298,7 @@ fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Ch
         launch_credential: Secret::new(vec![17; 32])?,
         mcp_bearer: Secret::new(vec![19; 32])?,
         key: IdempotencyKey::new("independent-idle-close")?,
+        sign_in: None,
     };
     let conversation = se_host::claude_conversation(&request)?;
     let lifecycle = LifecycleId::from_parts(1_700_000_000_000, nonce[..10].try_into()?)?;

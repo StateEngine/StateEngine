@@ -44,6 +44,10 @@ pub use http::HttpListener;
 mod connection_hello;
 mod ipc;
 #[cfg(feature = "listener")]
+mod launch_sign_in;
+#[cfg(feature = "listener")]
+pub use launch_sign_in::SignIn;
+#[cfg(feature = "listener")]
 mod mcp_lease;
 pub use mcp::{McpBackend, McpReply};
 pub mod mcp {

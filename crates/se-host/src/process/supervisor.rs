@@ -221,11 +221,13 @@ impl LaunchCoordinator {
         if new {
             let coordinator = self.clone();
             let owned = job.clone();
+            let sign_in = crate::launch_sign_in::current(); // `None` for a host restore.
             let task = self.store.pool.handle().spawn(async move {
                 let completed = crate::runtime::tasks::caught(async {
                 let deadline = retained_deadline;
                 let mut state = owned.state.lock().await;
-                let started = crate::runtime::tasks::caught(coordinator.start(&mut state, &deadline), false).await
+                let start = crate::launch_sign_in::scope(sign_in, coordinator.start(&mut state, &deadline));
+                let started = crate::runtime::tasks::caught(start, false).await
                     .unwrap_or_else(|()| Err(error("launch session task", "panicked with its original key and partial custody retained; reconcile before retry")));
                 let mut timing = state.startup_timing.take();
                 match started {

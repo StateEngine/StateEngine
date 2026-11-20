@@ -546,7 +546,10 @@ async fn connection(
                     output = router.execute_call(call, &deadline) => output,
                 }
             }
-            Ok(call) => router.execute_call(call, &deadline).await,
+            Ok(call) => {
+                let sign_in = exchange.sign_in.take();
+                crate::launch_sign_in::scope(sign_in, router.execute_call(call, &deadline)).await
+            }
             Err(error) => Err(error),
         };
         // An expired execution clock may already carry the known-commit error.

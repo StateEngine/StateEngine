@@ -190,6 +190,7 @@ impl LaunchCoordinator {
             launch_credential: pin,
             mcp_bearer: bearer,
             key: plan.input.idempotency_key.clone(),
+            sign_in: crate::launch_sign_in::current(),
         };
         let mut configuration = harness
             .configuration(&request, call(self.store.generation, deadline)?)
