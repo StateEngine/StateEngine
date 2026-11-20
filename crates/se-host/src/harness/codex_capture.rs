@@ -289,7 +289,10 @@ fn windows_comparison(path: &str) -> String {
             .to_owned()
     }
 }
-pub fn existing_home() -> Result<PathBuf> {
+/// The only read of the host environment on the Codex path: which login a new
+/// launch (or first setup) uses. After launch, every reader takes the login
+/// recorded for that agent instead (`CodexHarness::agent_login`).
+pub fn launch_login() -> Result<PathBuf> {
     if let Some(home) = std::env::var_os("CODEX_HOME") {
         return Ok(PathBuf::from(home));
     }

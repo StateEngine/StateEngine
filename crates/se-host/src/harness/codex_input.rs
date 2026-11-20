@@ -467,7 +467,6 @@ pub fn provider_environment() -> Vec<(OsString, OsString)> {
         "XDG_CACHE_HOME",
         "XDG_STATE_HOME",
         "XDG_RUNTIME_DIR",
-        "CODEX_HOME",
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "SystemRoot",

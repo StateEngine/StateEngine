@@ -126,42 +126,71 @@ impl LaunchCoordinator {
             },
         });
         if row.provider == se_types::Provider::Codex {
-            row.codex_login = Some(codex_login());
+            row.codex_login = Some(match &row.session.session_id {
+                Some(session) => self.recorded_codex_login(session),
+                None => Read::Absent {
+                    checked: "This agent has no launched Codex session".into(),
+                },
+            });
         }
     }
 }
 
-/// The login the shared Codex app-server reads now. Only its folder and account
-/// identifier leave the file; tokens are never parsed into the view.
-fn codex_login() -> Read<se_core::ops::CodexLoginView> {
-    let read = || -> Result<Read<se_core::ops::CodexLoginView>> {
-        let home = crate::codex_capture::existing_home()?;
-        let path = home.join("auth.json");
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Read::Absent {
-                    checked: format!("Codex is not signed in at {}", home.display()),
-                });
-            }
-            Err(e) => return Err(error("Codex login", e)),
+impl LaunchCoordinator {
+    /// The login recorded for this agent at launch, and the account it is
+    /// signed in to now. Only the folder and account identifier leave the file.
+    fn recorded_codex_login(
+        &self,
+        session: &se_types::SessionId,
+    ) -> Read<se_core::ops::CodexLoginView> {
+        let read = || -> Result<Read<se_core::ops::CodexLoginView>> {
+            let home = match self.codex.agent_login(session)? {
+                Read::Present { value } => value,
+                Read::Absent { checked } => return Ok(Read::Absent { checked }),
+                Read::Unknown { what } => return Ok(Read::Unknown { what }),
+                Read::Unreadable {
+                    source,
+                    reason,
+                    error,
+                } => {
+                    return Ok(Read::Unreadable {
+                        source,
+                        reason,
+                        error,
+                    });
+                }
+            };
+            codex_account(&home)
         };
-        let value: serde_json::Value =
-            serde_json::from_slice(&bytes).map_err(|e| error("Codex login", e))?;
-        let account = value
-            .pointer("/tokens/account_id")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
-        Ok(Read::Present {
-            value: se_core::ops::CodexLoginView {
-                home: home.display().to_string(),
-                account,
-            },
+        read().unwrap_or_else(|failure| Read::Unreadable {
+            source: "Codex login".into(),
+            reason: failure.to_string(),
+            error: Some(Box::new(failure.body)),
         })
+    }
+}
+
+fn codex_account(home: &std::path::Path) -> Result<Read<se_core::ops::CodexLoginView>> {
+    let path = home.join("auth.json");
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Read::Absent {
+                checked: format!("Codex is not signed in at {}", home.display()),
+            });
+        }
+        Err(e) => return Err(error("Codex login", e)),
     };
-    read().unwrap_or_else(|failure| Read::Unreadable {
-        source: "Codex login".into(),
-        reason: failure.to_string(),
-        error: Some(Box::new(failure.body)),
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| error("Codex login", e))?;
+    let account = value
+        .pointer("/tokens/account_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    Ok(Read::Present {
+        value: se_core::ops::CodexLoginView {
+            home: home.display().to_string(),
+            account,
+        },
     })
 }

@@ -42,12 +42,18 @@ impl CodexHarness {
                 SeError::invalid("Codex attach", "an actual successful executable probe")
             })?;
         let socket = self.socket(request)?;
+        let login = se_core::scope::require_present(
+            self.agent_login(&request.identity.session)?,
+            "Codex login record",
+            "Relaunch the agent; its launch did not record a Codex login.",
+        )?;
         let binding = self
             .connect(
                 transport,
                 socket.as_deref(),
                 request.mode == se_proc::LaunchMode::Window,
                 None,
+                &login,
                 &cx,
             )
             .await?;

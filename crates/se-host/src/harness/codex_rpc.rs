@@ -45,6 +45,8 @@ pub(crate) struct ServerSettings {
     pub windows_sandbox: Option<&'static str>,
 }
 
+const LOGIN_RECORD: &str = "codex-login.json";
+
 pub struct CodexHarness {
     io: Arc<dyn ProviderIoPlatform>,
     pool: BlockingPool,
@@ -69,6 +71,8 @@ pub struct Binding {
     state: Mutex<state::State>,
     pub(crate) completion: state::Completion,
     rollout: Mutex<Option<NativePath>>,
+    /// The Codex login recorded for this agent at launch.
+    pub(crate) login: PathBuf,
     initial: tokio::sync::Mutex<Option<Value>>,
     input: tokio::sync::Mutex<()>,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -104,8 +108,14 @@ impl CodexHarness {
     }
     /// The environment and Windows sandbox selection the login's shared
     /// app-server starts with: what a private Codex process used to receive.
-    pub(crate) fn server_settings(&self, request: &HarnessRequest) -> Result<ServerSettings> {
-        let environment = input::provider_environment();
+    pub(crate) fn server_settings(
+        &self,
+        request: &HarnessRequest,
+        login: &Path,
+    ) -> Result<ServerSettings> {
+        let mut environment = input::provider_environment();
+        // The login is given explicitly; the server never inherits the host's.
+        environment.push(("CODEX_HOME".into(), login.as_os_str().to_owned()));
         #[cfg(windows)]
         let environment = windows_shell::apply(
             environment,
@@ -131,6 +141,33 @@ impl CodexHarness {
         Ok(ServerSettings {
             environment,
             windows_sandbox,
+        })
+    }
+    /// The login recorded for this agent at launch: the one source of an
+    /// agent's login after it starts.
+    pub(crate) fn agent_login(&self, session: &se_types::SessionId) -> Result<Read<PathBuf>> {
+        let path = self.directory(session)?.join(LOGIN_RECORD);
+        let Some(mut file) = se_proc::OwnedFile::open(&path).map_err(native_error)? else {
+            return Ok(Read::Absent {
+                checked: format!("no Codex login is recorded at {}", path.display()),
+            });
+        };
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Recorded {
+            session: se_types::SessionId,
+            login: NativePath,
+        }
+        let recorded: Recorded = serde_json::from_slice(&file.read(8192).map_err(native_error)?)
+            .map_err(|e| se_core::scope::unreadable("Codex login record", &e.to_string()))?;
+        if &recorded.session != session {
+            return Err(SeError::invalid(
+                "Codex login record",
+                "the exact recorded session",
+            ));
+        }
+        Ok(Read::Present {
+            value: recorded.login.to_local()?,
         })
     }
     /// Agents run as forwarders to their login's shared app-server.
@@ -332,7 +369,7 @@ impl Harness for CodexHarness {
             "Restore the exact provider-reported persistent thread path.",
         )?
         .to_local()?;
-        crate::codex_capture::location(&path, &crate::codex_capture::existing_home()?).map(Some)
+        crate::codex_capture::location(&path, &bound(binding)?.login).map(Some)
     }
     fn materialize_transcript<'a>(
         &'a self,
@@ -376,15 +413,24 @@ impl Harness for CodexHarness {
             let plan = json!({"session":request.identity.session,"socket":socket.as_ref().map(|path| NativePath::from_local(path.clone())).transpose()?});
             let bytes = serde_json::to_vec(&plan)
                 .map_err(|e| se_core::scope::unreadable("Codex launch plan", &e.to_string()))?;
+            // The login this agent uses is chosen here, once, and recorded for
+            // the agent's whole life; later readers never consult the host.
+            let login = json!({"session":request.identity.session,"login":NativePath::from_local(crate::codex_capture::launch_login()?)?});
+            let login = serde_json::to_vec(&login)
+                .map_err(|e| se_core::scope::unreadable("Codex login record", &e.to_string()))?;
+            let directory = self.directory(&request.identity.session)?;
             Ok(ConfigPlan {
                 edits: vec![],
-                ephemeral_files: vec![OwnedLaunchFile {
-                    path: NativePath::from_local(
-                        self.directory(&request.identity.session)?
-                            .join("codex-plan.json"),
-                    )?,
-                    contents: se_types::Secret::new(bytes)?,
-                }],
+                ephemeral_files: vec![
+                    OwnedLaunchFile {
+                        path: NativePath::from_local(directory.join("codex-plan.json"))?,
+                        contents: se_types::Secret::new(bytes)?,
+                    },
+                    OwnedLaunchFile {
+                        path: NativePath::from_local(directory.join(LOGIN_RECORD))?,
+                        contents: se_types::Secret::new(login)?,
+                    },
+                ],
             })
         })
     }
@@ -421,7 +467,7 @@ impl Harness for CodexHarness {
                     )
                 })?,
             };
-            let control = input::control_socket(&crate::codex_capture::existing_home()?);
+            let control = input::control_socket(&crate::codex_capture::launch_login()?);
             input::forwarder_invocation(
                 &self.plan(request, &resolved, socket.as_deref()),
                 &forwarder,
@@ -589,7 +635,7 @@ impl crate::adoption::Adapter for Adoption {
     #[cfg(any(target_os = "linux", windows))]
     fn prepare(&self, command: &std::path::Path) -> Result<crate::adoption::ProviderSetup> {
         let executable = crate::adoption::codex::native_executable(command)?;
-        let home = crate::codex_capture::existing_home()?;
+        let home = crate::codex_capture::launch_login()?;
         crate::adoption::settings::prepare(
             &home,
             &home.join(crate::adoption::Kind::Codex.settings()),

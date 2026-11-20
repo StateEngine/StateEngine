@@ -198,7 +198,9 @@ impl LaunchCoordinator {
         // package environment and any alias supervisor belong to the login's
         // shared server instead.
         let codex_server = if provider == se_types::Provider::Codex {
-            let settings = self.codex.server_settings(&request)?;
+            // A new launch is the one place the login is chosen from the host.
+            let login = crate::codex_capture::launch_login()?;
+            let settings = self.codex.server_settings(&request, &login)?;
             let windows_sandbox = settings.windows_sandbox;
             let mut server = crate::ProviderInvocation {
                 executable: request.executable.clone(),
@@ -222,12 +224,15 @@ impl LaunchCoordinator {
                     })
                     .await?;
             }
-            Some(super::codex_server::ServerLaunch {
-                executable: server.executable.to_local()?,
-                prefix: server.arguments,
-                environment: server.environment.entries,
-                windows_sandbox,
-            })
+            Some((
+                login,
+                super::codex_server::ServerLaunch {
+                    executable: server.executable.to_local()?,
+                    prefix: server.arguments,
+                    environment: server.environment.entries,
+                    windows_sandbox,
+                },
+            ))
         } else {
             #[cfg(unix)]
             {
@@ -241,8 +246,8 @@ impl LaunchCoordinator {
             }
             None
         };
-        if let Some(server) = codex_server {
-            self.ensure_codex_server(server, deadline).await?;
+        if let Some((login, server)) = codex_server {
+            self.ensure_codex_server(login, server, deadline).await?;
         }
         if mode == se_proc::LaunchMode::Window && cfg!(target_os = "linux") {
             invocation

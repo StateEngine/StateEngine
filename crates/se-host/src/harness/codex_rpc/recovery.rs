@@ -31,12 +31,18 @@ impl CodexHarness {
                 .pool
                 .run_owned(&deadline, move || Self::retained_socket(&record, &session))
                 .await?;
+            let login = se_core::scope::require_present(
+                self.agent_login(&identity.session)?,
+                "Codex login record",
+                "Stop and resume this agent; its launch did not record a Codex login.",
+            )?;
             let binding = self
                 .connect(
                     ProviderTransport::console(),
                     Some(&socket),
                     attended,
                     Some(conversation.clone()),
+                    &login,
                     &context(cx.generation, deadline.remaining()?),
                 )
                 .await?;

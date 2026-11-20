@@ -83,7 +83,7 @@ pub fn selection(request: &crate::HarnessRequest) -> Result<Option<Implementatio
         return Ok(None);
     }
     Ok(Some(
-        user_choice(&crate::codex_capture::existing_home()?)?.unwrap_or(Implementation::DEFAULT),
+        user_choice(&crate::codex_capture::launch_login()?)?.unwrap_or(Implementation::DEFAULT),
     ))
 }
 

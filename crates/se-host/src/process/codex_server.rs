@@ -41,6 +41,15 @@ pub(super) struct CodexServer {
     slot: tokio::sync::Mutex<std::collections::BTreeMap<PathBuf, Arc<se_proc::OwnedProcess>>>,
 }
 
+/// Every shared-server diagnostic names the login it concerns.
+fn for_login(failure: se_types::SeError, login: &Path) -> se_types::SeError {
+    se_core::scope::unreadable(
+        "Codex shared server",
+        &format!("login {}: {}", login.display(), failure.body),
+    )
+    .with_cause(failure)
+}
+
 /// Complete only when nothing remained unresolved; otherwise name each record.
 fn settled(unresolved: Vec<String>) -> Result<()> {
     if unresolved.is_empty() {
@@ -69,10 +78,10 @@ impl LaunchCoordinator {
     /// Make sure the login's shared server is serving before an agent starts.
     pub(super) async fn ensure_codex_server(
         &self,
+        login: PathBuf,
         launch: ServerLaunch,
         deadline: &Deadline,
     ) -> Result<()> {
-        let login = crate::codex_capture::existing_home()?;
         let control = crate::harness::codex_input::control_socket(&login);
         socket_fits(&control)?;
         let path = self.codex_record(&login);
@@ -154,16 +163,19 @@ impl LaunchCoordinator {
             return Ok(None);
         };
         let login = record.login.to_local()?;
-        match self.recover_codex_server(path, &record, deadline).await? {
-            Recovered::Started(owner) => Ok(Some((login, owner))),
-            Recovered::Unstarted(owner) => {
-                let witness = self.stop_codex_server(&owner, deadline).await?;
-                self.release_witnessed_codex_server(owner, witness, deadline)
-                    .await?;
-                remove_record(path).map(|()| None)
+        let settled = async {
+            match self.recover_codex_server(path, &record, deadline).await? {
+                Recovered::Started(owner) => Ok(Some((login.clone(), owner))),
+                Recovered::Unstarted(owner) => {
+                    let witness = self.stop_codex_server(&owner, deadline).await?;
+                    self.release_witnessed_codex_server(owner, witness, deadline)
+                        .await?;
+                    remove_record(path).map(|()| None)
+                }
+                Recovered::Exited => remove_record(path).map(|()| None),
             }
-            Recovered::Exited => remove_record(path).map(|()| None),
-        }
+        };
+        settled.await.map_err(|failure| for_login(failure, &login))
     }
 
     /// Re-check after every lifecycle change whether the shared server is idle.
@@ -204,7 +216,7 @@ impl LaunchCoordinator {
         // Servers held by native custody are ours whatever their records say.
         for (login, owner) in std::mem::take(&mut *slot) {
             if let Err(failure) = self.retire_held(&login, owner, deadline).await {
-                unresolved.push(failure.body.to_string());
+                unresolved.push(for_login(failure, &login).body.to_string());
             }
         }
         // Every record still present is settled on its own custody.
@@ -254,15 +266,19 @@ impl LaunchCoordinator {
         let Some(record) = self.read_codex_record(path, deadline).await? else {
             return Ok(());
         };
-        match self.recover_codex_server(path, &record, deadline).await? {
-            Recovered::Exited => remove_record(path),
-            Recovered::Started(owner) | Recovered::Unstarted(owner) => {
-                let witness = self.stop_codex_server(&owner, deadline).await?;
-                self.release_witnessed_codex_server(owner, witness, deadline)
-                    .await?;
-                remove_record(path)
+        let login = record.login.to_local()?;
+        let settled = async {
+            match self.recover_codex_server(path, &record, deadline).await? {
+                Recovered::Exited => remove_record(path),
+                Recovered::Started(owner) | Recovered::Unstarted(owner) => {
+                    let witness = self.stop_codex_server(&owner, deadline).await?;
+                    self.release_witnessed_codex_server(owner, witness, deadline)
+                        .await?;
+                    remove_record(path)
+                }
             }
-        }
+        };
+        settled.await.map_err(|failure| for_login(failure, &login))
     }
 
     async fn release_witnessed_codex_server(
