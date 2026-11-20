@@ -1,14 +1,16 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT / 'scripts'), str(ROOT / 'crates/se/tests/judges')]
-from provider_home import KEYS, isolate, run_provider_command, verify
+from provider_home import KEYS, isolate, provider_home_environment, run_provider_command, verify
 
 
 class ProviderHomeTests(unittest.TestCase):
@@ -28,6 +30,39 @@ class ProviderHomeTests(unittest.TestCase):
                             invalid[key] = bad
                         with self.assertRaises(RuntimeError):
                             run_provider_command(self.fail, ["never spawn"], invalid, fixture)
+
+    def test_default_provider_directories_refuse_without_overrides(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            profile = Path(scratch) / 'profile'
+            with patch.dict(os.environ, {'HOME': str(profile), 'USERPROFILE': str(profile)}, clear=True):
+                for name in ('.codex', '.claude', 'AppData/Local', 'AppData/Roaming'):
+                    fixture = profile / name
+                    fixture.mkdir(parents=True)
+                    environment = provider_home_environment(fixture)
+                    with self.subTest(name=name), self.assertRaises(RuntimeError):
+                        run_provider_command(self.fail, ['never spawn'], environment, fixture)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'The scheduled SSH proof runs on Linux')
+    def test_flat_scheduled_runner_loads_the_pinned_provider_fixture(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            flat = Path(scratch)
+            for module in (ROOT / 'factory/proof').glob('*.py'):
+                shutil.copyfile(module, flat / module.name)
+            program = """
+from pathlib import Path
+import os
+import sys
+from remote_journey import Journey
+root = Path.cwd()
+judge = Journey({'provider_fixture': sys.argv[1]}, sys.executable, root / 'fixture',
+                {'PATH': os.defpath}, 'synthetic')
+assert Path(judge.provider_env['CODEX_HOME']).is_dir()
+assert Path(judge.provider_env['LOCALAPPDATA']).is_dir()
+"""
+            result = subprocess.run([sys.executable, '-B', '-c', program,
+                                     ROOT / 'scripts/harness_matrix/io.py'],
+                                    cwd=flat, capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_native_launcher_confines_child_and_preserves_exit_code(self):
         launcher = ROOT / 'crates/se/tests/judges/provider_home.py'

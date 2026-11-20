@@ -50,9 +50,20 @@ def prepare_provider_home(environment, home):
 
 
 def verify_provider_home(environment, home):
-    root, account = Path(home).resolve(strict=True), Path.home().resolve()
-    require(root.is_dir() and not account.is_relative_to(root),
-            'The provider fixture must have a private account home')
+    root = Path(home).resolve(strict=True)
+    require(root.is_dir(), 'The provider fixture must have a private account home')
+    homes = {Path.home(), *(Path(os.environ[key]) for key in ('HOME', 'USERPROFILE')
+                            if os.environ.get(key))}
+    for home in homes:
+        account = home.resolve()
+        require(not account.is_relative_to(root), 'The fixture contains the account home')
+        for name in ('.codex', '.claude'):
+            default = (account / name).resolve()
+            require(not root.is_relative_to(default) and not default.is_relative_to(root),
+                    'The fixture overlaps an account provider directory')
+        for name in ('AppData/Roaming', 'AppData/Local'):
+            require(not (account / name).resolve().is_relative_to(root),
+                    'The fixture contains the account application data')
     for key, names in PROVIDER_HOME_FILES.items():
         value = environment.get(key)
         path = Path(value) if value else None
@@ -61,7 +72,7 @@ def verify_provider_home(environment, home):
         resolved = path.resolve()
         inherited = os.environ.get(key)
         real = Path(inherited).resolve() if inherited else None
-        require(resolved.is_relative_to(root) and resolved != account,
+        require(resolved.is_relative_to(root),
                 key + ' escapes the provider fixture')
         require(real is None or not real.is_relative_to(root),
                 key + ' points into the real account')

@@ -4,6 +4,7 @@
 )]
 #[path = "../../test-support/provider_home.rs"]
 mod provider_home;
+#[cfg(any(target_os = "linux", windows))]
 use se_types::Read;
 #[cfg(any(target_os = "linux", windows))]
 use sha2::{Digest, Sha256};

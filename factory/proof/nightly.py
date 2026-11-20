@@ -161,9 +161,11 @@ def invoke_remote(config, run, directory, executable, env, invocation, deadline)
     checkpoint(Path(config["state"]), directory, run, config)
     if not isinstance(config.get("remote", {}), dict):
         raise RuntimeError("remote configuration must be an object naming its SSH destination")
+    scripts = Path(run["product"]["worktree"]) / "scripts"
     settings = {**config.get("remote", {}), "auth_home": config["auth_home"],
                 "automation_tokens": config.get("automation_tokens", {}),
-                "account_check": str(Path(run["product"]["worktree"]) / "scripts/ci/installation_account.py")}
+                "account_check": str(scripts / "ci/installation_account.py"),
+                "provider_fixture": str(scripts / "harness_matrix/io.py")}
     settings.setdefault("surface", "claude")
     result = Journey(settings, executable, directory / invocation["output"], env,
                      run["product"]["commit"], deadline).run()

@@ -67,6 +67,7 @@ pub fn assert_isolated(command: &Command, fixture: &Path) -> io::Result<()> {
     if !fixture.is_absolute() || !root.is_dir() {
         return Err(outside("fixture root", fixture));
     }
+    assert_account_defaults_are_outside(&root)?;
     for (key, files) in [
         ("HOME", &[".claude.json"][..]),
         ("USERPROFILE", &[".claude.json"]),
@@ -94,32 +95,67 @@ pub fn assert_isolated(command: &Command, fixture: &Path) -> io::Result<()> {
             relative
                 .components()
                 .all(|component| matches!(component, Component::Normal(_)))
-        }) || !resolved_parent(path)?.starts_with(&root)
+        }) || !resolved_path(path)?.starts_with(&root)
         {
             return Err(outside(key, path));
         }
         for file in files {
             let file = path.join(file);
-            if !resolved_parent(&file)?.starts_with(&root) {
+            if !resolved_path(&file)?.starts_with(&root) {
                 return Err(outside(key, &file));
             }
         }
-        if env::var_os(key).is_some_and(|inherited| {
-            let inherited = PathBuf::from(inherited);
-            let account = inherited.canonicalize().unwrap_or(inherited);
-            account.starts_with(&root)
+        if let Some(inherited) = env::var_os(key)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+        {
+            let account = resolved_path(&inherited)?;
+            if account.starts_with(&root)
                 || (matches!(key, "CODEX_HOME" | "CLAUDE_CONFIG_DIR") && root.starts_with(&account))
-        }) {
-            return Err(outside(key, path));
+            {
+                return Err(outside(key, path));
+            }
         }
     }
     Ok(())
 }
 
-fn resolved_parent(path: &Path) -> io::Result<PathBuf> {
+fn assert_account_defaults_are_outside(root: &Path) -> io::Result<()> {
+    for home in [
+        env::home_dir(),
+        env::var_os("HOME").map(PathBuf::from),
+        env::var_os("USERPROFILE").map(PathBuf::from),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|home| home.is_absolute())
+    {
+        let account = resolved_path(&home)?;
+        if account.starts_with(root) {
+            return Err(outside("account home", root));
+        }
+        for provider in [".codex", ".claude"] {
+            let actual = resolved_path(&account.join(provider))?;
+            if root.starts_with(&actual) || actual.starts_with(root) {
+                return Err(outside("account provider directory", root));
+            }
+        }
+        for application_data in ["AppData/Roaming", "AppData/Local"] {
+            if resolved_path(&account.join(application_data))?.starts_with(root) {
+                return Err(outside("account application data", root));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn resolved_path(path: &Path) -> io::Result<PathBuf> {
     for candidate in path.ancestors() {
         match fs::symlink_metadata(candidate) {
-            Ok(_) => return candidate.canonicalize(),
+            Ok(_) => {
+                let suffix = path.strip_prefix(candidate).map_err(io::Error::other)?;
+                return Ok(candidate.canonicalize()?.join(suffix));
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }

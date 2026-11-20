@@ -8,19 +8,14 @@ import hashlib
 import json
 from pathlib import Path
 import shlex
+import runpy
 import signal
-import sys
 import time
 import uuid
 
 from remote_credentials import Credentials, provider_binary
 from remote_process import Command
 from remote_recovery import begin_recovery, finish_recovery, snapshot
-
-SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
-sys.path.insert(0, str(SCRIPTS))
-from harness_matrix.io import prepare_provider_home, provider_home_environment, verify_provider_home
-
 
 def sha256(path):
     with Path(path).open("rb") as stream:
@@ -46,8 +41,11 @@ class Journey:
         self.source = directory / "source-home"
         self.workspace = directory / "source-work"
         self.workspace.mkdir()
-        self.provider_env = {**env, **provider_home_environment(directory / "source-user")}
-        prepare_provider_home(self.provider_env, directory)
+        self.provider_fixture = Path(config["provider_fixture"])
+        fixture = runpy.run_path(str(self.provider_fixture))
+        self.verify_provider_home = fixture["verify_provider_home"]
+        self.provider_env = {**env, **fixture["provider_home_environment"](directory / "source-user")}
+        fixture["prepare_provider_home"](self.provider_env, directory)
         self.nonce = uuid.uuid4().hex
         self.remote_root = ".stateengine-remote-proof/" + self.nonce
         self.remote_se = self.remote_root + "/se"
@@ -90,7 +88,7 @@ class Journey:
     def local(self, *args):
         argv = [self.se, "--home", self.source, "--json", *args]
         if args[0] == "init":
-            verify_provider_home(self.provider_env, self.directory)
+            self.verify_provider_home(self.provider_env, self.directory)
             return self.command(argv, environment=self.provider_env)
         return self.command(argv)
 
@@ -229,7 +227,7 @@ with (p/'lock').open('a') as f:
                  " && printf '{\"created\":true}\\n'")
         self.command(self.ssh(setup))
         self.transfer(self.se, self.remote_se)
-        self.transfer(SCRIPTS / "harness_matrix/io.py", self.remote_root + "/provider_fixture.py")
+        self.transfer(self.provider_fixture, self.remote_root + "/provider_fixture.py")
         self.transfer(provider_binary(self.config["surface"], self.config),
                       self.remote_root + "/bin/" + self.config["surface"])
         # A structured native hash readback avoids interpreting a pipeline's exit.

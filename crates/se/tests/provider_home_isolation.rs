@@ -61,3 +61,50 @@ fn a_provider_home_cannot_resolve_through_a_link_outside_the_fixture() -> Check 
     assert!(refused.is_err());
     Ok(())
 }
+
+#[test]
+fn default_provider_directories_cannot_be_used_as_fixtures() -> Check {
+    const PROFILE: &str = "SE_TEST_SYNTHETIC_ACCOUNT";
+    if let Some(path) = std::env::var_os(PROFILE) {
+        let profile = std::path::PathBuf::from(path);
+        for directory in [".codex", ".claude", "AppData/Roaming", "AppData/Local"] {
+            let fixture = profile.join(directory);
+            std::fs::create_dir_all(&fixture)?;
+            let mut command = Command::new("unused");
+            command.envs(
+                [
+                    "HOME",
+                    "USERPROFILE",
+                    "APPDATA",
+                    "LOCALAPPDATA",
+                    "CODEX_HOME",
+                    "CLAUDE_CONFIG_DIR",
+                ]
+                .map(|key| (key, &fixture)),
+            );
+            let result = provider_home::assert_isolated(&command, &fixture);
+            assert!(
+                result.is_err(),
+                "accepted the account's default {directory}"
+            );
+        }
+        return Ok(());
+    }
+    se_proc::initialize_file_creation_owner()?;
+    let profile = directory::private_directory()?;
+    let output = Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "default_provider_directories_cannot_be_used_as_fixtures",
+        ])
+        .env(PROFILE, profile.as_ref())
+        .env("HOME", profile.as_ref())
+        .env("USERPROFILE", profile.as_ref())
+        .env_remove("CODEX_HOME")
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("APPDATA")
+        .env_remove("LOCALAPPDATA")
+        .output()?;
+    assert!(output.status.success(), "{output:?}");
+    Ok(())
+}
