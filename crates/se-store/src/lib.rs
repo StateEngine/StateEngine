@@ -13,6 +13,7 @@ mod codec;
 mod completion;
 mod creator;
 mod credential;
+mod erasure;
 mod event;
 pub mod import;
 mod inventory;

@@ -5,6 +5,7 @@ mod control;
 mod doctor;
 pub mod error;
 mod event;
+mod forget;
 mod guide;
 #[cfg(feature = "import")]
 mod import;
@@ -102,6 +103,9 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             (HumanKind::Schema, AnyOutput::MetaSchema(value)) => read::schema(&value.value, out)?,
             #[cfg(feature = "import")]
             (HumanKind::Import, AnyOutput::ImportNode(value)) => import::output(&value.value, out)?,
+            (HumanKind::Erasure, AnyOutput::StoreForget(value)) => {
+                forget::output(&value.value, out)?
+            }
             (HumanKind::Init, AnyOutput::ProjectInit(value)) => write::init(&value.value, out)?,
             (HumanKind::ProjectMove, AnyOutput::ProjectMove(value)) => {
                 write::move_output(&value.value, out)?

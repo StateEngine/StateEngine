@@ -26,6 +26,7 @@ pub enum CustodyPlan {
     Initialize(ProjectInit),
     #[cfg(feature = "import")]
     ImportNode(crate::ops::ImportNode),
+    Forget(crate::ops::StoreForget),
     /// A read-only native observation, followed by core status construction.
     ObserveStatus(ProjectStatus),
     RuntimeUp(RuntimeUp),

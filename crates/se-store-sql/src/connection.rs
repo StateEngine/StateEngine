@@ -90,18 +90,19 @@ pub fn configure(
             }
             c.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA wal_autocheckpoint=0; PRAGMA journal_size_limit=4194304;").map_err(sql)?;
         }
-        for (name, arity) in [
-            ("se_erase_operation_allowed", 1),
-            ("se_erase_body_allowed", 2),
-        ] {
-            c.create_scalar_function(
-                name,
-                arity,
-                FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_INNOCUOUS,
-                |_| Ok(0i64),
-            )
-            .map_err(sql)?;
-        }
+        // History triggers allow an erasure only for the exact row the writer
+        // thread's current erasure permit names; every other call answers no.
+        let flags = FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_INNOCUOUS;
+        c.create_scalar_function("se_erase_operation_allowed", 1, flags, |f| {
+            let id: Vec<u8> = f.get(0)?;
+            Ok(i64::from(crate::erase_permit::operation_allowed(&id)))
+        })
+        .map_err(sql)?;
+        c.create_scalar_function("se_erase_body_allowed", 2, flags, |f| {
+            let (seq, field): (i64, String) = (f.get(0)?, f.get(1)?);
+            Ok(i64::from(crate::erase_permit::body_allowed(seq, &field)))
+        })
+        .map_err(sql)?;
         for (name, expected) in [
             ("foreign_keys", 1i64),
             ("trusted_schema", 0),

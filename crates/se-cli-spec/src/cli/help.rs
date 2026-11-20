@@ -38,6 +38,7 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
         "meta.schema" => "Show registered operation input and output schemas",
         #[cfg(feature = "import")]
         "store.import_node" => "Import retained history without changing its source files",
+        "store.forget" => "Permanently erase message or captured-turn bodies you name",
         "project.init" => "Register this folder and save your first agent",
         "diagnostic.bundle" => "Save a private redacted diagnostic file to share for support",
         "doctor.inspect" => "Check this installation and name exact supported repairs",

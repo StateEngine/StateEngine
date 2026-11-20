@@ -544,6 +544,7 @@ impl Kernel {
             }
             #[cfg(feature = "import")]
             AnyOp::ImportNode(input) => OpStep::Custody(CustodyPlan::ImportNode(input)),
+            AnyOp::StoreForget(input) => OpStep::Custody(CustodyPlan::Forget(input)),
             AnyOp::ProjectStatus(input) => OpStep::Custody(CustodyPlan::ObserveStatus(input)),
             AnyOp::RuntimeUp(input) => OpStep::Custody(CustodyPlan::RuntimeUp(input)),
             AnyOp::RuntimeDown(input) => OpStep::Custody(CustodyPlan::RuntimeDown(input)),

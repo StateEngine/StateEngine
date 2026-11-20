@@ -6,6 +6,7 @@ pub(crate) use channel::capacity as channel_capacity;
 pub(crate) mod credential;
 pub(crate) mod cursor;
 pub(crate) mod effect;
+pub(crate) mod erasure;
 mod mail;
 mod mail_rate;
 mod message;
@@ -667,6 +668,36 @@ pub(crate) fn apply(
         | ImportUnreadable { .. }
         | LegacyRetained { .. }
         | AliasImported { .. }) => crate::import::apply(c, header, b, seq, revision, facts)?,
+        ErasureRequested {
+            erasure,
+            targets,
+            residuals,
+        } => {
+            erasure::requested(c, seq, &erasure, &targets, &residuals)?;
+            codec::aux(c, seq, facts)?;
+        }
+        TurnErased {
+            target,
+            erasure,
+            original_bytes,
+            ..
+        } => {
+            erasure::body(c, &s, &target, &erasure, original_bytes, "turn")?;
+            codec::aux(c, seq, facts)?;
+        }
+        MessageErased {
+            target,
+            erasure,
+            original_bytes,
+            ..
+        } => {
+            erasure::body(c, &s, &target, &erasure, original_bytes, "message")?;
+            codec::aux(c, seq, facts)?;
+        }
+        ErasureCompleted { erasure, .. } => {
+            erasure::completed(c, seq, &erasure)?;
+            codec::aux(c, seq, facts)?;
+        }
         _ => return later("projection"),
     }
     Ok(())

@@ -261,11 +261,11 @@ impl StoreFactory for SqliteFactory {
         crate::backup::run(options, &*lease, context, deadline)
     }
     fn erasure_plan(
-        _: &StoreOptions,
-        _: Vec<EraseTarget>,
-        _: &dyn RuntimeLease,
+        options: &StoreOptions,
+        targets: Vec<EraseTarget>,
+        lease: &dyn RuntimeLease,
     ) -> StoreResult<ErasurePlan> {
-        later("erasure planning")
+        crate::erasure::plan(options, targets, lease)
     }
     fn inspect_backups(
         _: &StoreOptions,
@@ -510,11 +510,11 @@ impl HostStore for SqliteHost {
     }
     fn erase(
         &mut self,
-        _: ErasurePlan,
-        _: ErasureApproval,
-        _: &dyn RuntimeLease,
+        plan: ErasurePlan,
+        approval: ErasureApproval,
+        lease: &dyn RuntimeLease,
     ) -> StoreResult<ErasureReport> {
-        later("body erasure")
+        crate::erasure::erase(self, plan, approval, lease)
     }
     fn close_clean(
         mut self,

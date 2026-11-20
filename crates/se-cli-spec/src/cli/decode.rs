@@ -367,6 +367,16 @@ pub fn from_matches_with_key(
             target_agent_id: None,
             owner_agent: Some(required(m, "agent")?),
         }),
+        "store.forget" => AnyOp::StoreForget(StoreForget {
+            events: m
+                .get_many::<String>("event")
+                .into_iter()
+                .flatten()
+                .map(|v| v.parse())
+                .collect::<Result<Vec<_>>>()?,
+            yes: flag(m, "yes"),
+            idempotency_key: key()?,
+        }),
         "project.remove" => AnyOp::ProjectRemove(ProjectRemove {
             all: flag(m, "all"),
             keep_integrations: flag(m, "keep-integrations"),
