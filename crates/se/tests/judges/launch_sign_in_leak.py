@@ -120,6 +120,14 @@ def host_environments_with_token(fixture):
 
 
 def run(image, output):
+    if os.name == "nt":
+        # Cargo hard-links its outputs on Windows; the runtime pins only a
+        # single-link file, so launch a private copy as an installed image is.
+        import shutil
+        single = output.parent / "image" / image.name
+        single.parent.mkdir()
+        shutil.copyfile(image, single)
+        image = single
     fixture = Fixture(image, output)
     install_double(fixture)
     try:
