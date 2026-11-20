@@ -247,37 +247,18 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
             if let Some(plan) = adoption {
                 super::adoption::install(cx, &repository.path, plan, &mut value)?;
             }
-            for kind in se_host::adoption::Kind::ALL {
-                match se_host::resolve_provider_executable(
-                    &configuration,
-                    kind.provider().into(),
-                    None,
-                    None,
-                ) {
-                    Ok(_) => {
-                        if se_host::adoption::settings::mcp::install(&repository.path, kind)
-                            .map_err(mcp_setup_error)?
-                        {
-                            let AnyOutput::ProjectInit(output) = &mut value else {
-                                return Err(SeError::invalid(
-                                    "setup result",
-                                    "the committed project setup output",
-                                ));
-                            };
-                            output
-                                .value
-                                .changed
-                                .push(format!("configured {} project MCP", kind.label()));
-                        }
-                    }
-                    Err(error)
-                        if matches!(
-                            error.body.detail(),
-                            se_types::Detail::ProviderCliNotFound(_)
-                        ) => {}
-                    Err(error) => return Err(mcp_setup_error(error)),
-                }
-            }
+            // Harness health checks may start the host; release setup custody first.
+            drop(lease);
+            let AnyOutput::ProjectInit(output) = &mut value else {
+                return Err(SeError::invalid(
+                    "setup result",
+                    "the committed project setup output",
+                ));
+            };
+            output.value.changed.extend(
+                se_host::provider_mcp::configure(&repository.path, &configuration)
+                    .map_err(mcp_setup_error)?,
+            );
             Ok(value)
         }
         Err(error) => Err(match closed {

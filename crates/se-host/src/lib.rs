@@ -57,6 +57,8 @@ mod model;
 mod process;
 #[cfg(feature = "listener")]
 mod process_io;
+#[cfg(feature = "listener")]
+pub mod provider_mcp;
 mod runtime;
 #[cfg(feature = "listener")]
 mod startup_timing;

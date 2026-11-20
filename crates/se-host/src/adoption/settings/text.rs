@@ -180,33 +180,6 @@ fn property(name: &str, value: &Value) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-pub(super) fn add_mcp(before: &[u8], expected: &Value) -> Result<Vec<u8>> {
-    let mut bytes = if before.is_empty() {
-        b"{}".to_vec()
-    } else {
-        before.to_vec()
-    };
-    let root = root(&bytes)?;
-    let entry = json!({"command":"se", "args":["mcp"]});
-    if let Some(servers) = member(&bytes, root.clone(), "mcpServers")? {
-        append(&mut bytes, servers, true, &property("stateengine", &entry)?)?;
-    } else {
-        append(
-            &mut bytes,
-            root,
-            true,
-            &property("mcpServers", &json!({"stateengine":entry}))?,
-        )?;
-    }
-    let actual: Value = serde_json::from_slice(&bytes).map_err(|_| malformed())?;
-    if &actual != expected {
-        return Err(malformed());
-    }
-    if before.is_empty() {
-        bytes.push(b'\n');
-    }
-    Ok(bytes)
-}
 pub(super) fn apply(before: &[u8], expected: &Value, edits: &[Edit]) -> Result<Vec<u8>> {
     let mut bytes = if before.is_empty() {
         b"{}".to_vec()
