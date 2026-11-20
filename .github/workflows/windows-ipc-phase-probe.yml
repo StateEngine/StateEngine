@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - name: Node version
         shell: bash
         run: node --version
@@ -22,7 +22,7 @@ jobs:
           cargo build --release --locked -p se
           mkdir -p "$RUNNER_TEMP/bin"
           cp target/release/se.exe "$RUNNER_TEMP/bin/se-probe.exe"
-          git worktree add -q "$RUNNER_TEMP/parent" HEAD~1
+          git worktree add -q "$RUNNER_TEMP/parent" 1c8069180bfc2018cefd8dec92eb42506a2ffab6
           (cd "$RUNNER_TEMP/parent" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" cargo build --release --locked -p se)
           cp target/release/se.exe "$RUNNER_TEMP/bin/se-parent.exe"
       - name: Measure parent
