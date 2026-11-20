@@ -34,3 +34,6 @@ pub struct AtomicBatch {
     pub events: Vec<NewEvent>,
     pub import_checkpoint: Option<ImportCheckpoint>,
 }
+#[cfg(all(test, any(target_os = "linux", windows)))]
+#[path = "event_tests.rs"]
+mod tests;

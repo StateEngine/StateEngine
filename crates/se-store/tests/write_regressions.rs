@@ -1,110 +1,21 @@
+#![cfg(any(target_os = "linux", windows))]
 //! Author regression tests through the real canonical writer and native file port.
-use crate::*;
-#[path = "../tests/support/store_fixture.rs"]
+use se_store::*;
+#[path = "support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
-#[path = "../tests/support/host_fixture.rs"]
+#[path = "support/host_fixture.rs"]
 #[allow(
     dead_code,
     reason = "These regressions reuse the native epoch helper only."
 )]
 mod native;
 use sha2::{Digest, Sha256};
-use std::{
-    fs,
-    io::Cursor,
-    path::Path,
-    sync::{Arc, Mutex},
-};
+use std::{fs, io::Cursor, sync::Arc};
 
-struct StagingFiles {
-    native: se_proc::NativeStateFiles,
-    created: Mutex<Option<fs::Metadata>>,
-}
-fn file_error(e: se_proc::StateFileError) -> Box<StoreError> {
-    crate::error::fail(StoreErrorCode::Unreadable, e.to_string())
-}
-impl StateFiles for StagingFiles {
-    fn prepare_directory(&self, path: &Path) -> StoreResult<()> {
-        self.native.prepare_directory(path).map_err(file_error)
-    }
-    fn retire_empty_staging(&self, staged: ProtectedStaging) -> StoreResult<std::fs::File> {
-        self.native
-            .retire_empty_staging(se_proc::ProtectedStateStaging {
-                path: staged.path,
-                file: staged.file,
-            })
-            .map_err(file_error)
-    }
-    fn create_staging(&self, path: &Path) -> StoreResult<ProtectedStaging> {
-        let staged = self.native.create_staging(path).map_err(file_error)?;
-        *self
-            .created
-            .lock()
-            .map_err(|_| crate::error::invalid("metadata lock"))? = Some(
-            staged
-                .file
-                .metadata()
-                .map_err(|e| crate::error::invalid(e.to_string()))?,
-        );
-        Ok(ProtectedStaging {
-            path: staged.path,
-            file: staged.file,
-        })
-    }
-    fn inspect_metadata(&self, path: &Path) -> StoreResult<se_types::Read<std::fs::Metadata>> {
-        Ok(
-            match self.native.inspect_metadata(path).map_err(file_error)? {
-                Some(value) => se_types::Read::Present { value },
-                None => se_types::Read::Absent {
-                    checked: format!("native metadata absence at {}", path.display()),
-                },
-            },
-        )
-    }
-    fn readback(&self, path: &Path) -> StoreResult<se_types::Read<fs::File>> {
-        Ok(match self.native.readback(path).map_err(file_error)? {
-            Some(value) => se_types::Read::Present { value },
-            None => se_types::Read::Absent {
-                checked: "native file absent".into(),
-            },
-        })
-    }
-    fn publish_no_replace(&self, from: &Path, to: &Path) -> StoreResult<()> {
-        self.native.publish_no_replace(from, to).map_err(file_error)
-    }
-    fn remove_owned(&self, path: &Path, digest: [u8; 32]) -> StoreResult<()> {
-        let owned = se_proc::OwnedFile::open(path)
-            .map_err(file_error)?
-            .ok_or_else(|| crate::error::invalid("staging file absent before retirement"))?;
-        owned.remove(digest).map_err(file_error)?;
-        assert!(self.native.readback(path).map_err(file_error)?.is_none());
-        Ok(())
-    }
-}
-struct StagingLease {
-    held: Arc<Lease>,
-    files: StagingFiles,
-}
-impl StagingLease {
-    fn new(f: &Fixture, held: Arc<Lease>) -> Result<Self, Box<dyn std::error::Error>> {
-        Ok(Self {
-            held,
-            files: StagingFiles {
-                native: se_proc::NativeStateFiles::open(&f.options.state_directory)?,
-                created: Mutex::new(None),
-            },
-        })
-    }
-}
-impl RuntimeLease for StagingLease {
-    fn identity(&self) -> StoreResult<LeaseIdentity> {
-        self.held.identity()
-    }
-    fn files(&self) -> &dyn StateFiles {
-        &self.files
-    }
-}
+#[path = "support/staging_lease.rs"]
+mod staging;
+use staging::StagingLease;
 
 #[test]
 fn caller_key_replays_original_receipt_after_a_later_head() -> Check {
@@ -425,25 +336,6 @@ fn staged_working_state_materializes_through_the_real_writer() -> Check {
         matches!(state.current.body, EventBody::WorkingStateSet { text: StoredText::Present(ref text), .. } if text == body)
     );
     read.close()?;
-    store.close()?;
-    Ok(())
-}
-
-#[test]
-fn apply_side_text_view_refuses_an_unmaterialized_handle() -> Check {
-    let f = Fixture::new()?;
-    let (store, lease) = f.direct()?;
-    let lease = StagingLease::new(&f, lease)?;
-    let staged = store.stage_text(&mut Cursor::new(b"staged handle"), 64, &lease)?;
-    let error = InputText::Staged(staged)
-        .as_materialized()
-        .err()
-        .ok_or("unmaterialized handle passed the apply-side view")?;
-    assert_eq!(error.code, StoreErrorCode::EventInvalid);
-    assert_eq!(
-        InputText::Inline("already materialized".into()).as_materialized()?,
-        "already materialized"
-    );
     store.close()?;
     Ok(())
 }
