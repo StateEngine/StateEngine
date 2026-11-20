@@ -247,6 +247,31 @@ fn register_projects(fixture: &Fixture) -> Check<BTreeSet<String>> {
     Ok(names)
 }
 
+fn read_bundle(fixture: &Fixture, receipt: &Value) -> Check<Value> {
+    let path = PathBuf::from(
+        receipt["path"]
+            .as_str()
+            .ok_or("bundle receipt path missing")?,
+    );
+    assert!(path.is_absolute());
+    assert_eq!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some("bundle.json")
+    );
+    let parent = path.parent().ok_or("bundle directory missing")?;
+    assert_ne!(parent, fixture.temp);
+    assert_eq!(
+        fs::canonicalize(parent.parent().ok_or("bundle temp parent missing")?)?,
+        fs::canonicalize(&fixture.temp)?
+    );
+    assert!(fs::symlink_metadata(&path)?.is_file());
+    let bytes = fs::read(&path)?;
+    assert_eq!(receipt["bytes"].as_u64(), Some(bytes.len() as u64));
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    assert_eq!(receipt["sha256"].as_str(), Some(digest.as_str()));
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
 #[test]
 fn a_paged_home_status_remains_observed_but_makes_the_export_incomplete() -> Check {
     let fixture = Fixture::new()?;
@@ -272,28 +297,7 @@ fn a_paged_home_status_remains_observed_but_makes_the_export_incomplete() -> Che
         receipt["complete"], false,
         "a source continuation is not complete collection"
     );
-    let path = PathBuf::from(
-        receipt["path"]
-            .as_str()
-            .ok_or("bundle receipt path missing")?,
-    );
-    assert!(path.is_absolute());
-    assert_eq!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some("bundle.json")
-    );
-    let parent = path.parent().ok_or("bundle directory missing")?;
-    assert_ne!(parent, fixture.temp);
-    assert_eq!(
-        fs::canonicalize(parent.parent().ok_or("bundle temp parent missing")?)?,
-        fs::canonicalize(&fixture.temp)?
-    );
-    assert!(fs::symlink_metadata(&path)?.is_file());
-    let bytes = fs::read(&path)?;
-    assert_eq!(receipt["bytes"].as_u64(), Some(bytes.len() as u64));
-    let digest = format!("{:x}", Sha256::digest(&bytes));
-    assert_eq!(receipt["sha256"].as_str(), Some(digest.as_str()));
-    let bundle: Value = serde_json::from_slice(&bytes)?;
+    let bundle = read_bundle(&fixture, &receipt)?;
     assert_eq!(bundle["schema"], "se.diagnostic-bundle-file/v1");
     assert_eq!(bundle["complete"], false);
     assert_eq!(
