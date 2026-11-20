@@ -391,6 +391,7 @@ fn cold_unix_tracked(
         let mut current = (**record).clone();
         current.host = runtime.inner.config.instance;
         current.owner = runtime.inner.owner.clone();
+        current.macos_boot_session = runtime.inner.macos_boot_session.clone();
         current.generation = generation;
         s.phase = current.state;
         s.record = Some(current);

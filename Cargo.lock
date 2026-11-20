@@ -1641,6 +1641,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "se-custody"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-types",
+ "serde",
+]
+
+[[package]]
 name = "se-fsevents"
 version = "0.0.1-alpha.1"
 
@@ -1723,6 +1731,7 @@ version = "0.0.1-alpha.1"
 dependencies = [
  "libc",
  "rusqlite",
+ "se-custody",
  "se-fsevents",
  "se-native-path",
  "se-types",

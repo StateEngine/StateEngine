@@ -79,7 +79,7 @@ impl SecurityStore {
         })?;
         facts
             .into_iter()
-            .map(|facts| observe(facts, deadline))
+            .map(|facts| observe(facts, deadline, self.home.as_deref()))
             .collect()
     }
 }
@@ -87,7 +87,11 @@ impl SecurityStore {
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
-fn observe(facts: TargetFacts, deadline: Instant) -> Result<RemoteAgentView> {
+fn observe(
+    facts: TargetFacts,
+    deadline: Instant,
+    home: Option<&std::path::Path>,
+) -> Result<RemoteAgentView> {
     if Instant::now() >= deadline {
         return Err(scope::unreadable(
             "remote metadata",
@@ -160,6 +164,12 @@ fn observe(facts: TargetFacts, deadline: Instant) -> Result<RemoteAgentView> {
         );
         session.state = "unknown".into();
     }
+    let recorded_exit = match &facts.process {
+        Read::Present { value } => {
+            crate::agent_observation::RecordedExit::from_event(&value.current.body)
+        }
+        _ => crate::agent_observation::RecordedExit::Other,
+    };
     let process = match facts.process {
         Read::Present { value: head } => match session.session_id.clone() {
             Some(id) => {
@@ -240,8 +250,14 @@ fn observe(facts: TargetFacts, deadline: Instant) -> Result<RemoteAgentView> {
         facts.target.project.clone(),
         row.clone(),
         process,
+        recorded_exit,
         recorded_session,
     );
+    let plan = if let Some(home) = home {
+        plan.with_command_home(home)
+    } else {
+        plan
+    };
     crate::observe_agent(plan, deadline)?.apply(&mut row)?;
     let status = if recovering || row.session.state == "recovery-pending" {
         Read::Present {
@@ -288,7 +304,7 @@ impl SecurityStore {
         })?;
         facts
             .into_iter()
-            .map(|facts| observe(facts, deadline))
+            .map(|facts| observe(facts, deadline, self.home.as_deref()))
             .collect()
     }
 }

@@ -43,10 +43,62 @@ pub struct NativeRuntimeIdentity {
     pub process: ProcessIdentity,
     pub boot_id: se_types::BootId,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeBootRelation {
+    Same,
+    Different,
+    Unverifiable,
+}
+impl NativeRuntimeIdentity {
+    /// Legacy macOS leases recorded a mutable boot timestamp. A mismatch in
+    /// that older format cannot establish that the host has exited.
+    pub fn boot_relation(&self, recorded: &se_types::BootId) -> RuntimeBootRelation {
+        if &self.boot_id == recorded {
+            return RuntimeBootRelation::Same;
+        }
+        if let BootIdentity::MacOs {
+            seconds,
+            microseconds,
+        } = &self.process.boot
+            && recorded.as_str().starts_with("macos-")
+        {
+            return if recorded.as_str() == format!("macos-{seconds}-{microseconds}") {
+                RuntimeBootRelation::Same
+            } else {
+                RuntimeBootRelation::Unverifiable
+            };
+        }
+        // Older Windows records name only the boot entry, which every boot of
+        // this install shares. Windows process identity is the absolute
+        // creation clock, which each caller checks next, so the entry alone
+        // keeps a host started by an older release reachable after an upgrade.
+        if let Some(entry) = crate::RebootBoot::legacy_windows_entry(recorded) {
+            return if crate::RebootBoot::windows_entry(&self.boot_id) == Some(entry) {
+                RuntimeBootRelation::Same
+            } else {
+                RuntimeBootRelation::Unverifiable
+            };
+        }
+        match (
+            crate::RebootBoot::parse(&self.boot_id),
+            crate::RebootBoot::parse(recorded),
+        ) {
+            (Some(current), Some(previous))
+                if std::mem::discriminant(&current) == std::mem::discriminant(&previous) =>
+            {
+                RuntimeBootRelation::Different
+            }
+            _ => RuntimeBootRelation::Unverifiable,
+        }
+    }
+}
 pub fn current_runtime_identity(machine: MachineId) -> ProcResult<NativeRuntimeIdentity> {
     let process = current_process_identity(machine)?;
-    let boot_id = os::boot_id()?;
+    let boot_id = runtime_boot_identity()?;
     Ok(NativeRuntimeIdentity { process, boot_id })
+}
+pub(crate) fn runtime_boot_identity() -> ProcResult<se_types::BootId> {
+    os::boot_id()
 }
 fn check(deadline: Instant) -> ProcResult<()> {
     if Instant::now() >= deadline {

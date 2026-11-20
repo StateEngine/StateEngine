@@ -356,11 +356,29 @@ pub(super) fn boot_id() -> ProcResult<se_types::BootId> {
         return Err(input("runtime boot", "native boot identifier is zero"));
     }
     let tail: String = se_types::hex_lower(&id.data4);
+    // The boot environment GUID names the boot entry and survives a restart,
+    // so the kernel's per-boot sequence number is what tells two boots apart.
     se_types::BootId::new(format!(
-        "windows:{:08x}-{:04x}-{:04x}-{tail}",
-        id.data1, id.data2, id.data3
+        "windows:{:08x}-{:04x}-{:04x}-{tail}:{}",
+        id.data1,
+        id.data2,
+        id.data3,
+        boot_sequence()
     ))
     .map_err(|e| input("runtime boot", &e.to_string()))
+}
+
+/// The kernel's boot sequence number, which it advances on every boot.
+fn boot_sequence() -> u32 {
+    use windows_sys::Wdk::System::SystemServices::KUSER_SHARED_DATA;
+    // The kernel maps its shared user data read-only at this fixed address in
+    // every user-mode process.
+    const SHARED_USER_DATA: usize = 0x7ffe_0000;
+    let field = SHARED_USER_DATA + std::mem::offset_of!(KUSER_SHARED_DATA, BootId);
+    // SAFETY: the shared user data page is mapped, aligned and readable for the
+    // whole process lifetime; BootId is a naturally aligned u32 the kernel only
+    // writes during boot, read volatile because the kernel owns the page.
+    unsafe { ptr::read_volatile(field as *const u32) }
 }
 
 pub(super) fn initial_identity(

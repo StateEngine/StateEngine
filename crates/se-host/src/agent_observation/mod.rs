@@ -12,12 +12,18 @@ mod plan;
 pub use plan::prepare_agent_observation;
 pub(crate) use plan::resume_source;
 
+pub(crate) enum RecordedExit {
+    Other,
+    Reboot,
+}
+
 pub struct AgentObservationPlan {
     project: ProjectId,
     command_home: Option<std::path::PathBuf>,
     identity: Option<crate::SessionIdentity>,
     row: AgentRow,
     process: Read<ProcessIdentityRecord>,
+    recorded_exit: RecordedExit,
     capture: Read<SourceEvidence>,
     control_failure: Option<String>,
     status_attention: bool,
@@ -35,6 +41,7 @@ impl AgentObservationPlan {
         project: ProjectId,
         row: AgentRow,
         process: Read<ProcessIdentityRecord>,
+        recorded_exit: RecordedExit,
         session: Option<&se_store::ProjectionRecord>,
     ) -> Self {
         let identity = row
@@ -52,6 +59,7 @@ impl AgentObservationPlan {
             identity,
             row,
             process,
+            recorded_exit,
             capture: Read::Absent {
                 checked: "remote list does not request private transcript custody".into(),
             },
@@ -252,6 +260,7 @@ fn bound(deadline: Instant) -> Result<()> {
 // finite page's continuation remain available to both hosted and CLI readers.
 fn degrade(row: &mut AgentRow, error: &SeError) {
     row.session.state = "unknown".into();
+    row.session.end_reason = None;
     row.session.process = None;
     row.session.observed_at = None;
     row.session.liveness = Read::Unreadable {

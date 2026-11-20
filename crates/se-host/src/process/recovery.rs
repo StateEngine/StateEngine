@@ -113,22 +113,8 @@ impl LaunchCoordinator {
                 &retained.identity.custody.record,
             )
             .map_err(|e| error("startup native checkpoint", e));
-            let outcome = match decoded.and_then(|value| recovery_source(value, &retained)) {
-                Ok(source) => {
-                    let native = self.native.clone();
-                    let generation = self.options.epoch.generation;
-                    self.store
-                        .pool
-                        .run_owned(deadline, move || {
-                            let plan = native
-                                .plan_recovery(source)
-                                .map_err(|e| error("native recovery plan", e))?;
-                            native
-                                .recover(plan, generation)
-                                .map_err(|e| error("native custody recovery", e))
-                        })
-                        .await
-                }
+            let outcome = match decoded {
+                Ok(checkpoint) => self.observe_recovery(checkpoint, &retained, deadline).await,
                 Err(error) => Err(error),
             };
             // A committed exit is terminal. A failed or contradictory new probe
@@ -304,7 +290,7 @@ impl LaunchCoordinator {
                 Ok(RecoveryOutcome::Exited(witness)) => {
                     work.native_already_reconciled = true;
                     work.last_witness = Some((*witness).clone());
-                    work.stop_method = Some("native-reconciliation".into());
+                    work.stop_method = Some(recovery_method(&witness).into());
                     // Trusted capture opens at listener publication. Keep the
                     // exited lifecycle until its monitor can capture the tail;
                     // startup must not retire it behind the readiness fence.
@@ -353,6 +339,55 @@ impl LaunchCoordinator {
         }
         Ok(report)
     }
+    pub(super) async fn observe_recovery(
+        &self,
+        checkpoint: se_proc::Checkpoint,
+        retained: &OwnerGuardProcess,
+        deadline: &Deadline,
+    ) -> Result<RecoveryOutcome> {
+        let recorded_exit = match (retained.state, &checkpoint.checkpoint) {
+            (ProcessState::Exited, CheckpointKind::Exit { witness, .. }) => Some(witness.clone()),
+            _ => None,
+        };
+        let source = recovery_source(&checkpoint, retained)?;
+        let instance = match &retained.identity.instance {
+            se_store::RecordedIdentity::Present(instance) => Some(instance.clone()),
+            _ => None,
+        };
+        let machine = self.owner.machine.clone();
+        let native = self.native.clone();
+        let generation = self.options.epoch.generation;
+        self.store
+            .pool
+            .run_owned(deadline, move || {
+                if let Some(instance) = instance {
+                    let current = se_proc::observe_reboot_boot(machine)
+                        .map_err(|e| error("native reboot identity", e))?;
+                    match se_proc::prove_reboot(&checkpoint, &instance, &current) {
+                        se_proc::RebootProof::Proven(proof) => {
+                            if let Some(witness) = recorded_exit {
+                                return Ok(RecoveryOutcome::Exited(Box::new(witness)));
+                            }
+                            let witness = native
+                                .witness_reboot(&proof)
+                                .map_err(|e| error("native reboot witness", e))?;
+                            return Ok(RecoveryOutcome::Exited(Box::new(witness)));
+                        }
+                        se_proc::RebootProof::NotProven => {}
+                        se_proc::RebootProof::Unreadable(reason) => {
+                            return Err(error("reboot proof", reason));
+                        }
+                    }
+                }
+                let plan = native
+                    .plan_recovery(source)
+                    .map_err(|e| error("native recovery plan", e))?;
+                native
+                    .recover(plan, generation)
+                    .map_err(|e| error("native custody recovery", e))
+            })
+            .await
+    }
     fn retain_orphan(&self, lifecycle: &se_types::LifecycleId) -> Result<()> {
         let mut orphans = self
             .orphans
@@ -400,6 +435,10 @@ impl LaunchCoordinator {
         let key = format!("recovered/{}", work.meta.lifecycle);
         let wake = work.wake.clone();
         let job = Arc::new(Job {
+            ended_by_reboot: work
+                .last_witness
+                .as_ref()
+                .is_some_and(se_proc::StopWitness::ended_by_reboot),
             fault: std::sync::Mutex::new(work.recover_provider.then(|| {
                 format!(
                     "Restoring {:?} provider control for agent {} ({}) in its original session {}",
@@ -443,8 +482,15 @@ impl LaunchCoordinator {
         Ok(job)
     }
 }
-pub(super) fn recovery_source(
-    checkpoint: se_proc::Checkpoint,
+pub(super) fn recovery_method(witness: &se_proc::StopWitness) -> &'static str {
+    if witness.ended_by_reboot() {
+        process_commit::ENDED_BY_REBOOT
+    } else {
+        "native-reconciliation"
+    }
+}
+fn recovery_source(
+    checkpoint: &se_proc::Checkpoint,
     retained: &OwnerGuardProcess,
 ) -> Result<RecoverySource> {
     if checkpoint.lifecycle != retained.identity.record
@@ -456,16 +502,16 @@ pub(super) fn recovery_source(
             "principal/session/lifecycle differs from protected index",
         ));
     }
-    Ok(match checkpoint.checkpoint {
-        CheckpointKind::Reservation(v) => RecoverySource::Reservation(Box::new(v)),
-        CheckpointKind::Scope(v) => RecoverySource::Prepared(Box::new(v)),
-        CheckpointKind::Root(v) => RecoverySource::RootPrepared(Box::new(v)),
-        CheckpointKind::Process(v) => RecoverySource::Record(Box::new(v)),
-        CheckpointKind::Exit { source, .. } => match *source {
-            CheckpointSource::Reservation(v) => RecoverySource::Reservation(Box::new(v)),
-            CheckpointSource::Scope(v) => RecoverySource::Prepared(Box::new(v)),
-            CheckpointSource::Root(v) => RecoverySource::RootPrepared(Box::new(v)),
-            CheckpointSource::Process(v) => RecoverySource::Record(Box::new(v)),
+    Ok(match &checkpoint.checkpoint {
+        CheckpointKind::Reservation(v) => RecoverySource::Reservation(Box::new(v.clone())),
+        CheckpointKind::Scope(v) => RecoverySource::Prepared(Box::new(v.clone())),
+        CheckpointKind::Root(v) => RecoverySource::RootPrepared(Box::new(v.clone())),
+        CheckpointKind::Process(v) => RecoverySource::Record(Box::new(v.clone())),
+        CheckpointKind::Exit { source, .. } => match source.as_ref() {
+            CheckpointSource::Reservation(v) => RecoverySource::Reservation(Box::new(v.clone())),
+            CheckpointSource::Scope(v) => RecoverySource::Prepared(Box::new(v.clone())),
+            CheckpointSource::Root(v) => RecoverySource::RootPrepared(Box::new(v.clone())),
+            CheckpointSource::Process(v) => RecoverySource::Record(Box::new(v.clone())),
         },
         _ => {
             return Err(error(

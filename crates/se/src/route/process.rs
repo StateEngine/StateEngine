@@ -13,10 +13,10 @@ pub fn observe(endpoint: &EndpointRecord, bound: &Deadline) -> Result<ProcessVie
     bound.remaining()?;
     let fields = endpoint.epoch.owner.fields();
     let boot = se_proc::current_runtime_identity(fields.machine.clone()).map_err(native)?;
-    if boot.boot_id != fields.boot {
+    if boot.boot_relation(&fields.boot) != se_proc::RuntimeBootRelation::Same {
         return Err(scope::unreadable(
             "host birth identity",
-            "the recorded host belongs to a different native boot",
+            "the recorded host boot does not match or cannot be compared",
         ));
     }
     let live =
@@ -114,14 +114,32 @@ impl std::fmt::Display for NativeObservationError {
 impl std::error::Error for NativeObservationError {}
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-pub(super) fn witness_exit(instance: &se_types::ProcessInstance, bound: &Deadline) -> Result<()> {
+pub(super) fn witness_exit(
+    files: &super::files::Files,
+    instance: &se_types::ProcessInstance,
+    bound: &Deadline,
+) -> Result<()> {
     let expected = instance.fields();
+    let machine = super::identity::require_machine(files)?;
+    if machine != expected.machine {
+        return Err(scope::unreadable(
+            "remove host exit",
+            "the recorded host belongs to a different machine",
+        ));
+    }
     loop {
         bound.remaining()?;
         let native = se_proc::current_runtime_identity(expected.machine.clone())
             .map_err(|e| scope::unreadable("remove host exit", &format!("{e:?}")))?;
-        if native.boot_id != expected.boot {
-            return Ok(());
+        match native.boot_relation(&expected.boot) {
+            se_proc::RuntimeBootRelation::Same => {}
+            se_proc::RuntimeBootRelation::Different => return Ok(()),
+            se_proc::RuntimeBootRelation::Unverifiable => {
+                return Err(scope::unreadable(
+                    "remove host exit",
+                    "the recorded boot cannot be compared to the current boot",
+                ));
+            }
         }
         let observed = se_proc::read_process_until(
             expected.machine.clone(),
@@ -161,7 +179,11 @@ pub(super) fn witness_exit(instance: &se_types::ProcessInstance, bound: &Deadlin
     }
 }
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-pub(super) fn witness_exit(_instance: &se_types::ProcessInstance, _bound: &Deadline) -> Result<()> {
+pub(super) fn witness_exit(
+    _files: &super::files::Files,
+    _instance: &se_types::ProcessInstance,
+    _bound: &Deadline,
+) -> Result<()> {
     Err(scope::unreadable(
         "remove host exit",
         "native host exit observation is unavailable on this platform",

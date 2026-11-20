@@ -37,6 +37,11 @@ mod error;
 mod file_identity;
 pub use file_identity::NativeFileIdentity;
 mod identity;
+mod reboot_proof;
+pub use reboot_proof::{
+    ObservedBoot, RebootBoot, RebootProof, VerifiedReboot, match_recorded_root,
+    observe_reboot_boot, prove_reboot,
+};
 mod launch;
 mod native_error;
 #[cfg(windows)]
@@ -107,8 +112,8 @@ mod bootstrap;
 mod bootstrap_protocol;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use bootstrap::{
-    NativeRuntimeIdentity, RuntimeAdmission, RuntimeBootstrap, RuntimeStartupStderr,
-    current_process_identity, current_runtime_identity,
+    NativeRuntimeIdentity, RuntimeAdmission, RuntimeBootRelation, RuntimeBootstrap,
+    RuntimeStartupStderr, current_process_identity, current_runtime_identity,
 };
 #[cfg(target_os = "linux")]
 mod linux_native;

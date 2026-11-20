@@ -51,7 +51,11 @@ impl LaunchCoordinator {
         if work.meta.provider == se_store::Provider::SeCode {
             self.settle_secode(work, &witness, deadline).await?;
         }
-        if work.native_already_reconciled && !work.session_retired && !work.secode_service_lost {
+        if work.native_already_reconciled
+            && !witness.ended_by_reboot()
+            && !work.session_retired
+            && !work.secode_service_lost
+        {
             self.flush_capture(work, deadline).await.map_err(|failure| {
                 let repair = se_core::ops::AgentCommand::stop_in_home(
                     &work.meta.agent.id,
@@ -121,11 +125,11 @@ impl LaunchCoordinator {
                     se_proc::RootWitness::Identified { expected, .. } => Some(expected),
                     _ => None,
                 };
-                let argv = match &retained.instance {
+                let (argv, boot) = match &retained.instance {
                     se_store::RecordedIdentity::Present(value) => {
-                        *value.fields().argv_sha256.as_bytes()
+                        (*value.fields().argv_sha256.as_bytes(), &value.fields().boot)
                     }
-                    _ => [0; 32],
+                    _ => ([0; 32], &self.options.epoch.owner.fields().boot),
                 };
                 let identity = native_record::identity_meta(
                     &work.meta,
@@ -135,12 +139,16 @@ impl LaunchCoordinator {
                     },
                     root.map(|root| (root, argv)),
                     Some(witness.guarantee),
-                    &self.options.epoch.owner.fields().boot,
+                    boot,
                 )?;
                 let event = self
                     .change(
                         work,
-                        "exited",
+                        if witness.ended_by_reboot() {
+                            process_commit::ENDED_BY_REBOOT
+                        } else {
+                            "exited"
+                        },
                         identity,
                         (from, ProcessState::Exited),
                         deadline,
@@ -152,8 +160,12 @@ impl LaunchCoordinator {
             }
         }
         if !work.session_retired {
-            self.retire_session(work, "native scope exit witnessed", deadline)
-                .await?;
+            let reason = if witness.ended_by_reboot() {
+                process_commit::ENDED_BY_REBOOT
+            } else {
+                "native scope exit witnessed"
+            };
+            self.retire_session(work, reason, deadline).await?;
         } else if work.capture_failure.is_some()
             && let Err(error) = self.flush_capture(work, deadline).await
             && work.capture_failure.is_none()

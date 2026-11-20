@@ -33,7 +33,7 @@ fn unreadable_project_root_does_not_hide_other_projects() -> fixture::Check {
         &*lease,
     )?;
     let admission = f.admission(Scope::Registry, Actor::Human(f.owner.clone()));
-    let rows = page(&store, &admission)?;
+    let rows = page(&store, &admission, &f.home)?;
     assert_eq!(rows.items().len(), 2);
     let broken = rows
         .items()

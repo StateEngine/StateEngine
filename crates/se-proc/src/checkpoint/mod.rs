@@ -1,11 +1,10 @@
 //! Version-1 native-custody codec (§20). Data can be decoded, never converted
 //! into an owned native handle. Store and host bind these facts to their indices.
 use crate::*;
+pub(crate) use se_custody::checkpoint::{decimal, native_path};
 use se_types::{AgentId, EventId, HumanId, Read, SessionId};
 use serde::{Deserialize, Serialize};
 use std::{io, path::PathBuf};
-pub(crate) mod decimal;
-pub(crate) mod native_path;
 mod validation;
 pub(crate) mod optional_native_path {
     use super::*;
@@ -137,6 +136,9 @@ impl Checkpoint {
             )),
         }
     }
+}
+pub(crate) fn validate(value: &Checkpoint) -> Result<(), CheckpointError> {
+    validation::checkpoint(value)
 }
 pub fn decode_checkpoint(format_version: u16, bytes: &[u8]) -> Result<Checkpoint, CheckpointError> {
     if format_version != 1 || bytes.is_empty() || bytes.len() > LIMIT {
