@@ -8,7 +8,7 @@ import sys
 import time
 import uuid
 
-from .io import Commands, digest, require, save
+from .io import Commands, digest, prepare_provider_home, require, save
 from .inputs import home_path
 
 PHASES = ('Launch', 'Work', 'Mail', 'Resume')
@@ -59,6 +59,8 @@ class Smoke:
                                           'PROCESSOR_ARCHITEW6432', 'LANG', 'LC_ALL')
                        or key in settings.get('environment', [])}
         environment.update(HOME=str(self.home), USERPROFILE=str(self.home), SE_HOME=str(self.state),
+                           CODEX_HOME=str(self.home / '.codex'),
+                           CLAUDE_CONFIG_DIR=str(self.home / '.claude'),
                            PATH=str(binary.parent) + os.pathsep + inherited.get('PATH', ''),
                            XDG_CONFIG_HOME=str(self.home / '.config'),
                            XDG_STATE_HOME=str(self.home / '.local/state'),
@@ -72,6 +74,7 @@ class Smoke:
         (self.home / 'tmp').mkdir()
         for name, relative in settings.get('home_environment', {}).items():
             environment[name] = str(self.home / home_path(relative))
+        prepare_provider_home(environment, self.home)
         self.commands = Commands(output, self.home, self.repository, environment,
                                  settings.get('terminal_prefix', []), baseline_rows=baseline_rows)
         self.record = dict(harness=entry['id'], driver=entry['driver'], platform=sys.platform, state='running', result='NOT RUN',

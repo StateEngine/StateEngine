@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from provider_home import isolate, verify
 
 
 def state_home(path):
@@ -49,7 +50,8 @@ class Fixture:
         for key in ['PATH', 'SystemRoot', 'WINDIR', 'COMSPEC', 'SYSTEMDRIVE', 'PATHEXT']:
             if key in os.environ:
                 self.environment[key] = os.environ[key]
-        self.environment.update(HOME=str(self.user), USERPROFILE=str(self.user),
+        isolate(self.environment, self.root, self.user)
+        self.environment.update(
             APPDATA=str(self.user / 'AppData/Roaming'),
             LOCALAPPDATA=str(self.user / 'AppData/Local'),
             XDG_CONFIG_HOME=str(self.user / '.config'),
@@ -74,6 +76,7 @@ class Fixture:
             self.forbidden.append(marker)
 
     def cli(self, *arguments):
+        verify(self.environment, self.root)
         result = subprocess.run([self.executable, '--home', str(self.home), '--json', *arguments],
             cwd=self.repo, env=self.environment, text=True, capture_output=True, timeout=30)
         self.serial += 1

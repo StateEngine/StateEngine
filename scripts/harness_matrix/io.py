@@ -21,6 +21,38 @@ def require(condition, reason):
         raise RuntimeError(reason)
 
 
+PROVIDER_HOME_FILES = {
+    'HOME': ('.claude.json',),
+    'USERPROFILE': ('.claude.json',),
+    'CODEX_HOME': ('config.toml', 'auth.json'),
+    'CLAUDE_CONFIG_DIR': ('.claude.json', 'settings.json', '.credentials.json'),
+}
+
+
+def prepare_provider_home(environment, home):
+    verify_provider_home(environment, home)
+    for key in PROVIDER_HOME_FILES:
+        Path(environment[key]).mkdir(mode=0o700, parents=True, exist_ok=True)
+
+
+def verify_provider_home(environment, home):
+    root, account = Path(home).resolve(strict=True), Path.home().resolve()
+    require(root.is_dir() and root != account, 'The provider fixture must have a private account home')
+    for key, names in PROVIDER_HOME_FILES.items():
+        value = environment.get(key)
+        path = Path(value) if value else None
+        require(path is not None and path.is_absolute() and '..' not in path.parts,
+                key + ' must be set to a private fixture path')
+        resolved = path.resolve()
+        inherited = os.environ.get(key)
+        require(resolved.is_relative_to(root) and resolved != account
+                and (not inherited or resolved != Path(inherited).resolve()),
+                key + ' escapes the provider fixture')
+        for name in names:
+            require((path / name).resolve().is_relative_to(root),
+                    key + ' contains a settings file outside the provider fixture')
+
+
 def digest(path):
     with Path(path).open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -170,6 +202,7 @@ class Commands:
                 stderr_file=prefix.name + '.stderr'))
 
     def run(self, argv, label, terminal=False, timeout=180):
+        verify_provider_home(self.environment, self.home)
         argv = list(map(str, argv))
         actual = argv
         if terminal:

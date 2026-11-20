@@ -1,4 +1,6 @@
 //! Execute the actual CLI; uninstall receives a real PTY, never injected admission.
+#[path = "../../../test-support/provider_home.rs"]
+mod provider_home;
 use super::*;
 use crate::executable::ExecutableCommand;
 use std::{
@@ -11,8 +13,6 @@ fn command(image: &Path, f: &Fixture) -> Command {
     command
         .args(["--json", "--home"])
         .arg(&f.options.state_directory)
-        .env("HOME", f.home.join("user-home"))
-        .env("USERPROFILE", f.home.join("user-home"))
         .current_dir(f.home.join("repository"));
     for (name, _) in std::env::vars_os() {
         let key = name.to_string_lossy();
@@ -24,6 +24,7 @@ fn command(image: &Path, f: &Fixture) -> Command {
             command.env_remove(name);
         }
     }
+    provider_home::isolate(&mut command, &f.home);
     command
 }
 pub fn printed(output: &Output) -> String {

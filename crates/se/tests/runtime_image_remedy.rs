@@ -2,6 +2,8 @@
 #![cfg(windows)]
 #[path = "../../test-support/directory.rs"]
 mod cleanup_directory;
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 use std::{
     error::Error,
     fs,
@@ -28,6 +30,7 @@ fn command(image: &Path, home: &Path, root: &Path, json: bool) -> Command {
     ] {
         command.env_remove(key);
     }
+    provider_home::for_state(&mut command, home);
     command
 }
 fn value(output: Output) -> Check<serde_json::Value> {

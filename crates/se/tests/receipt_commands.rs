@@ -9,6 +9,8 @@ mod compat;
 mod fixture;
 #[path = "../src/grammar.rs"]
 mod grammar;
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 
 use se_core::ops::{AgentCommand, AnyOp};
 use se_types::{AgentId, ProjectId};
@@ -101,6 +103,7 @@ fn public_status_list_and_show_keep_the_selected_installation() -> Check {
         ] {
             command.env_remove(name);
         }
+        provider_home::isolate(&mut command, &fixture.home);
         let output = command.output()?;
         assert!(
             output.status.success(),

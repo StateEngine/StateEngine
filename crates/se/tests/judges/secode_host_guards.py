@@ -14,6 +14,7 @@ import time
 import uuid
 
 from secode_external import PIN, capabilities, environment, image_hash, package
+from provider_home import verify
 
 
 def native_probe(root, value, *, policy=None):
@@ -141,6 +142,7 @@ class Fixture:
         self.ok('up')
 
     def call(self, *args):
+        verify(self.env, self.root)
         self.calls += 1
         result = subprocess.run([str(self.se), '--json', '--home', str(self.home), *args],
                                 cwd=self.repo, env=self.env, stdin=subprocess.DEVNULL,

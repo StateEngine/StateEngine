@@ -3,6 +3,8 @@
     reason = "The real native fixture is shared with store consumers."
 )]
 #[cfg(any(target_os = "linux", windows))]
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 use se_types::Read;
 #[cfg(any(target_os = "linux", windows))]
 use sha2::{Digest, Sha256};
@@ -47,6 +49,7 @@ fn command(image: &Path, home: &Path, json: bool) -> Command {
     ] {
         command.env_remove(name);
     }
+    provider_home::for_state(&mut command, home);
     command
 }
 fn value(output: &Output) -> Result<serde_json::Value, Box<dyn std::error::Error>> {

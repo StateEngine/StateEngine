@@ -4,6 +4,8 @@
 mod cleanup_directory;
 #[path = "../../se-proc/tests/support/detachment_venue.rs"]
 mod detachment_venue;
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 use std::{
     error::Error,
     fs,
@@ -74,6 +76,7 @@ impl Fixture {
             .arg(&self.home)
             .arg("--json")
             .current_dir(&self.root);
+        provider_home::isolate(&mut command, &self.root);
         command
     }
     fn ok(&self, args: &[&str]) -> Result<serde_json::Value> {

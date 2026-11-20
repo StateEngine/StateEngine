@@ -2,6 +2,8 @@
     dead_code,
     reason = "The native store fixture is shared with other consumers."
 )]
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 use se_store::*;
 use se_types::{AgentId, HumanId, IdempotencyKey, ProjectId};
 use std::{path::Path, process::Command};
@@ -32,6 +34,7 @@ fn call(
     ] {
         command.env_remove(name);
     }
+    provider_home::for_state(&mut command, home);
     let output = command.output()?;
     assert!(
         output.status.success(),

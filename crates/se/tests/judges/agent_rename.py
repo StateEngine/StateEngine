@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import uuid
+from provider_home import isolate, verify
 
 
 def check(se, root, hosted):
@@ -16,11 +17,12 @@ def check(se, root, hosted):
     repo.mkdir()
     environment = {k: v for k, v in os.environ.items()
                    if not k.startswith(('SE_', 'STATEENGINE_', 'CLAUDE', 'CODEX_'))}
-    environment.update(HOME=str(owner), USERPROFILE=str(owner))
+    isolate(environment, root, owner)
     calls = 0
 
     def call(*args, success=True):
         nonlocal calls
+        verify(environment, root)
         calls += 1
         result = subprocess.run([str(se), '--home', str(home), '--json', *args],
                                 cwd=repo, env=environment, stdin=subprocess.DEVNULL,
