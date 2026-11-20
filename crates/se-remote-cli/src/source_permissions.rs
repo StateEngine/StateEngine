@@ -107,7 +107,6 @@ pub(super) fn review_at<H: OwnerCommands>(
                         change: change.take(),
                     }
                 }),
-                &mut |_| Ok(()),
             )
             .map_err(io::Error::other)?;
         let contacts: Vec<se_store::remote::SourceContact> =

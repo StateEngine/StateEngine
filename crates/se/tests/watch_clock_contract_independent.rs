@@ -1,9 +1,8 @@
 //! Terminal timing remains explicitly unqualified when clocks cannot bound drift.
 use se_core::ops::RemoteWatchOutput;
+use se_remote_cli::client::measure;
 use serde_json::{Value, json};
 use std::{error::Error, time::Instant};
-#[path = "../src/remote/measure.rs"]
-mod measure;
 type Check<T = ()> = Result<T, Box<dyn Error>>;
 fn page(age: Option<u64>, released: Option<u64>) -> Check<RemoteWatchOutput> {
     Ok(serde_json::from_value(json!({

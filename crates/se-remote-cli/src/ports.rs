@@ -7,9 +7,10 @@ use std::{
     ffi::OsString,
     io::{self, Write},
     path::PathBuf,
+    sync::{Arc, atomic::AtomicBool},
 };
 
-pub trait OwnerCommands {
+pub trait OwnerCommands: Sync {
     type Context;
     fn resolve_owner(
         &self,
@@ -17,11 +18,19 @@ pub trait OwnerCommands {
         no_color: bool,
         json: bool,
     ) -> Result<Self::Context>;
+    fn owner_args(&self, context: &Self::Context) -> (PathBuf, bool, bool);
     fn execute_owner(
         &self,
         context: &Self::Context,
         input: Input,
-        progress: &mut dyn FnMut(se_host::remote::ssh::ImageProgress) -> Result<()>,
+    ) -> Result<se_host::OperationOutput>;
+    fn execute_owner_with_cancel(
+        &self,
+        home: PathBuf,
+        no_color: bool,
+        json: bool,
+        input: Input,
+        cancelled: Arc<AtomicBool>,
     ) -> Result<se_host::OperationOutput>;
 }
 

@@ -7,9 +7,9 @@ use std::{
     ffi::OsString,
     io::{self, Write},
     path::PathBuf,
+    sync::{Arc, atomic::AtomicBool},
 };
 struct Host;
-mod pair;
 
 impl se_remote_cli::OwnerCommands for Host {
     type Context = crate::bootstrap::Bootstrap;
@@ -21,13 +21,27 @@ impl se_remote_cli::OwnerCommands for Host {
     ) -> Result<Self::Context> {
         crate::bootstrap::Bootstrap::resolve_remote_owner(home, no_color, json)
     }
+    fn owner_args(&self, context: &Self::Context) -> (PathBuf, bool, bool) {
+        (context.home.clone(), context.no_color, context.json)
+    }
     fn execute_owner(
         &self,
         context: &Self::Context,
         input: Input,
-        progress: &mut dyn FnMut(se_host::remote::ssh::ImageProgress) -> Result<()>,
     ) -> Result<se_host::OperationOutput> {
-        pair::execute(context, input, progress)
+        crate::route::remote_owner::execute(context, input)
+    }
+    fn execute_owner_with_cancel(
+        &self,
+        home: PathBuf,
+        no_color: bool,
+        json: bool,
+        input: Input,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<se_host::OperationOutput> {
+        let context =
+            crate::bootstrap::Bootstrap::resolve_remote_owner(Some(home), no_color, json)?;
+        crate::route::remote_owner::execute_with_cancel(&context, input, cancelled)
     }
 }
 impl se_remote_cli::Presentation for Host {
