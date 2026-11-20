@@ -12,6 +12,7 @@ pub mod client;
 pub mod presentation;
 mod resume;
 pub mod wire;
+pub use presentation::presented;
 
 /// Protocol revisions spoken here, newest first. An unknown requested
 /// revision is answered with the newest, as the MCP lifecycle prescribes.

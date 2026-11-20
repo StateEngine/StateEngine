@@ -4,6 +4,8 @@
 //! only the JSON presented through the MCP server and the CLI takes the
 //! compact form, so a reply stays byte-for-byte compatible with the host.
 
+use se_core::ops::AnyOutput;
+use serde::{Serialize, Serializer};
 use serde_json::Value;
 
 /// Sorted field names that carry one of this crate's byte-array IDs.
@@ -62,4 +64,43 @@ fn hex_if_id_bytes(bytes: &[Value]) -> Option<String> {
         *slot = byte.as_u64().and_then(|value| u8::try_from(value).ok())?;
     }
     Some(se_types::hex_lower(&raw[..len]))
+}
+
+/// One presented output: either verbatim, or with its Atlas byte-array IDs
+/// compacted to hex. Only the presentation changes; the wire form behind it
+/// is untouched.
+pub enum Presented<'a> {
+    Direct(&'a AnyOutput),
+    Compacted(&'a AnyOutput),
+}
+/// Chooses the presentation for an output. The Atlas read families and the
+/// resume reply carry byte-array IDs, so their presented JSON takes the
+/// compact form; every other family is presented verbatim.
+pub fn presented(value: &AnyOutput) -> Presented<'_> {
+    if matches!(
+        value,
+        AnyOutput::AtlasFind(_)
+            | AnyOutput::AtlasRefs(_)
+            | AnyOutput::AtlasImpact(_)
+            | AnyOutput::AtlasChanges(_)
+            | AnyOutput::AtlasOutline(_)
+            | AnyOutput::Resume(_)
+    ) {
+        Presented::Compacted(value)
+    } else {
+        Presented::Direct(value)
+    }
+}
+impl Serialize for Presented<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Direct(value) => value.serialize(serializer),
+            Self::Compacted(value) => {
+                let mut presented =
+                    serde_json::to_value(value).map_err(serde::ser::Error::custom)?;
+                compact_ids(&mut presented);
+                presented.serialize(serializer)
+            }
+        }
+    }
 }
