@@ -1,0 +1,22 @@
+name: windows-signin-leak-probe
+on:
+  push:
+    branches: [probe/windows-signin-leak-20261120]
+permissions:
+  contents: read
+jobs:
+  leak:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Toolchain
+        shell: bash
+        run: |
+          rustup show
+          python --version
+      - name: Leak test on Windows
+        shell: bash
+        env:
+          CARGO_TERM_COLOR: never
+        run: cargo test --locked -p se --test launch_sign_in_leak_review -- --nocapture
