@@ -35,7 +35,7 @@ pub use checkpoint::{
 pub use command::background_command;
 mod error;
 mod file_identity;
-pub use file_identity::NativeFileIdentity;
+pub use file_identity::{ExactRemoval, NativeFileIdentity};
 mod identity;
 mod launch;
 mod native_error;

@@ -133,24 +133,21 @@ mod windows {
                     .parent()
                     .ok_or_else(|| failure("missing launch directory"))?
                     .join(PIN);
-                let pinned = read_pin(&pin_path, &value.session)?;
-                match std::fs::symlink_metadata(socket) {
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(failure(&e.to_string())),
-                    Ok(_) => {
-                        if Some(leaf(socket)?) != pinned {
-                            return Err(failure(
-                                "the socket leaf is not the pinned endpoint; it is preserved",
-                            ));
-                        }
-                        std::fs::remove_file(socket).map_err(|e| failure(&e.to_string()))?;
+                // Each removal compares and disposes through one handle.
+                match read_pin(&pin_path, &value.session)? {
+                    Some(pinned) => {
+                        NativeFileIdentity::from_bytes(pinned)
+                            .remove_local_socket(socket)
+                            .map_err(|e| failure(&format!("socket leaf: {e}")))?;
                     }
+                    None if std::fs::symlink_metadata(socket).is_ok() => {
+                        return Err(failure("the socket leaf was never pinned; it is preserved"));
+                    }
+                    None => {}
                 }
-                match se_proc::remove_empty_directory(parent).map_err(native_error)? {
-                    se_proc::DirectoryRemoval::Removed
-                    | se_proc::DirectoryRemoval::AlreadyAbsent => {}
-                    _ => return Err(failure("the exact directory remains nonempty")),
-                }
+                NativeFileIdentity::from_bytes(value.directory)
+                    .remove_directory(parent)
+                    .map_err(|e| failure(&format!("private listen directory: {e}")))?;
                 if let Some(mut file) = se_proc::OwnedFile::open(&pin_path).map_err(native_error)? {
                     let digest: [u8; 32] =
                         Sha256::digest(file.read(8192).map_err(native_error)?).into();

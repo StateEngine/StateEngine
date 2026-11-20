@@ -49,6 +49,38 @@ impl NativeFileIdentity {
     pub fn observe_local_socket(path: &Path) -> io::Result<Self> {
         Self::observe_kind(path, Kind::LocalSocket)
     }
+    /// Remove an empty directory only while its name still holds `self`. On
+    /// Windows the identity check and the removal use one handle.
+    pub fn remove_directory(&self, path: &Path) -> io::Result<ExactRemoval> {
+        self.remove_kind(path, Kind::Directory)
+    }
+    /// Remove a local socket only while its name still holds `self`. On
+    /// Windows the identity and reparse-tag checks and the removal use one handle.
+    pub fn remove_local_socket(&self, path: &Path) -> io::Result<ExactRemoval> {
+        self.remove_kind(path, Kind::LocalSocket)
+    }
+    fn remove_kind(&self, path: &Path, kind: Kind) -> io::Result<ExactRemoval> {
+        #[cfg(unix)]
+        {
+            // Unix has no remove-by-descriptor; this compares and then unlinks.
+            let observed = match Self::observe_kind(path, kind) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(ExactRemoval::Absent),
+                other => other?,
+            };
+            if &observed != self {
+                return Err(replaced());
+            }
+            match kind {
+                Kind::Directory => std::fs::remove_dir(path)?,
+                Kind::LocalSocket => std::fs::remove_file(path)?,
+            }
+            Ok(ExactRemoval::Removed)
+        }
+        #[cfg(windows)]
+        {
+            windows::remove(path, kind, self)
+        }
+    }
     /// A stable form for records: volume then file, 16 bytes each.
     pub fn to_bytes(&self) -> [u8; 32] {
         let mut bytes = [0; 32];
@@ -103,6 +135,20 @@ impl NativeFileIdentity {
     }
 }
 
+/// What an exact removal found at the name.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExactRemoval {
+    Removed,
+    Absent,
+}
+
+fn replaced() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "the name now holds another object; it is preserved",
+    )
+}
+
 #[derive(Clone, Copy)]
 enum Kind {
     Directory,
@@ -119,7 +165,7 @@ impl Kind {
 
 #[cfg(windows)]
 mod windows {
-    use super::{Kind, NativeFileIdentity};
+    use super::{ExactRemoval, Kind, NativeFileIdentity};
     use std::{
         fs::OpenOptions,
         io,
@@ -129,20 +175,48 @@ mod windows {
     };
     use windows_sys::Win32::{
         Storage::FileSystem::{
-            FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
-            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
-            FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-            FileAttributeTagInfo, FileIdInfo, GetFileInformationByHandleEx,
+            DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+            FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_ID_INFO, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, FileAttributeTagInfo, FileIdInfo, GetFileInformationByHandleEx,
         },
         System::SystemServices::IO_REPARSE_TAG_AF_UNIX,
     };
 
-    pub(super) fn observe(path: &Path, kind: Kind) -> io::Result<NativeFileIdentity> {
-        let file = OpenOptions::new()
-            .access_mode(FILE_READ_ATTRIBUTES)
+    fn open(path: &Path, access: u32) -> io::Result<std::fs::File> {
+        OpenOptions::new()
+            .access_mode(access)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
-            .open(path)?;
+            .open(path)
+    }
+
+    pub(super) fn observe(path: &Path, kind: Kind) -> io::Result<NativeFileIdentity> {
+        identify(&open(path, FILE_READ_ATTRIBUTES)?, kind)
+    }
+
+    /// Check and dispose through one DELETE-capable handle, so the object
+    /// removed is the object compared.
+    pub(super) fn remove(
+        path: &Path,
+        kind: Kind,
+        expected: &NativeFileIdentity,
+    ) -> io::Result<ExactRemoval> {
+        let file = match open(path, FILE_READ_ATTRIBUTES | DELETE) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(ExactRemoval::Absent),
+            other => other?,
+        };
+        if &identify(&file, kind)? != expected {
+            return Err(super::replaced());
+        }
+        crate::state_files::windows::effects::dispose(&file, path).map_err(|e| {
+            e.source
+                .unwrap_or_else(|| io::Error::other("native removal failed"))
+        })?;
+        Ok(ExactRemoval::Removed)
+    }
+
+    fn identify(file: &std::fs::File, kind: Kind) -> io::Result<NativeFileIdentity> {
         // SAFETY: POD output initialized before its exact sized query on the
         // retained handle.
         let mut tag: FILE_ATTRIBUTE_TAG_INFO = unsafe { zeroed() };

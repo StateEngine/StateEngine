@@ -132,15 +132,12 @@ fn pipe_socket(path: &Path, control: PathBuf) -> io::Result<()> {
     let reason = server_gone
         .recv()
         .unwrap_or_else(|_| io::Error::other("the private socket stopped accepting"));
-    match se_proc::NativeFileIdentity::observe_local_socket(path) {
-        Ok(current) if current == bound => {
-            let _ = std::fs::remove_file(path);
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        _ => eprintln!(
-            "codex forwarder: {} is no longer the endpoint it bound; it is preserved",
+    // Remove only the endpoint this forwarder bound; anything else is kept.
+    if let Err(error) = bound.remove_local_socket(path) {
+        eprintln!(
+            "codex forwarder: {} was not removed: {error}",
             path.display()
-        ),
+        );
     }
     Err(reason)
 }
