@@ -178,14 +178,14 @@ def strip_binary(path, target, sysroot, cargo_artifact):
 
     if target.endswith("linux-gnu"):
         symbols = path.parent / "symbols" / (path.name + ".debug")
-        symbols.parent.mkdir()
+        symbols.parent.mkdir(exist_ok=True)
         objcopy("--only-keep-debug", path, symbols)
         retained.append(symbols.relative_to(path.parent).as_posix())
     elif windows:
         pdb = Path(cargo_artifact).with_suffix(".pdb")
         if pdb.is_file():
             symbols = path.parent / "symbols" / pdb.name
-            symbols.parent.mkdir()
+            symbols.parent.mkdir(exist_ok=True)
             shutil.copyfile(pdb, symbols)
             retained.append(symbols.relative_to(path.parent).as_posix())
     objcopy("--strip-all", path)
