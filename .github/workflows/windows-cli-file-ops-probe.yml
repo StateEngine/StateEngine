@@ -1,7 +1,7 @@
-name: windows-cli-cpu-probe
+name: windows-cli-file-ops-probe
 on:
   push:
-    branches: [probe/windows-cli-cpu-states-20261120]
+    branches: [probe/windows-cli-file-ops-20261120]
 permissions:
   contents: read
 defaults:
@@ -45,9 +45,10 @@ jobs:
         run: |
           python -I scripts/windows_cli_startup_observer/analyze.py "$RUNNER_TEMP/out/etw" > "$RUNNER_TEMP/out/analysis.json" 2>&1 || true
           python -I scripts/windows_cli_startup_observer/analyze_cpu.py "$RUNNER_TEMP/out/etw" > "$RUNNER_TEMP/out/analysis-cpu.json" 2>&1 || true
+          python -I scripts/windows_cli_startup_observer/analyze_file_ops.py "$RUNNER_TEMP/out/etw" > "$RUNNER_TEMP/out/analysis-file-ops.json" 2>&1 || true
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: ${{ always() }}
         with:
-          name: windows-cli-cpu
+          name: windows-cli-file-ops
           path: ${{ runner.temp }}/out
           retention-days: 7
