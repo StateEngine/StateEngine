@@ -61,16 +61,15 @@ fn lasting(home: &Path, kind: Kind) -> bool {
         Ok(real) => Some(real),
         Err(_) => Some(path.parent()?.canonicalize().ok()?.join(path.file_name()?)),
     };
-    let config = config_root(kind).and_then(|root| real(&root));
+    let config = config_root(kind).and_then(|root| real(Path::new(&root)));
     let paths = real(home).zip(config).zip(real(&std::env::temp_dir()));
     paths
         .is_some_and(|((home, config), temp)| !home.starts_with(&temp) || config.starts_with(&temp))
 }
-fn config_root(kind: Kind) -> Option<std::path::PathBuf> {
+fn config_root(kind: Kind) -> Option<std::ffi::OsString> {
     let own = ["CLAUDE_CONFIG_DIR", "CODEX_HOME"][usize::from(kind == Kind::Codex)];
     let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    let found = std::env::var_os(own).or_else(|| std::env::var_os(home));
-    found.map(Into::into)
+    std::env::var_os(own).or_else(|| std::env::var_os(home))
 }
 fn manual(kind: Kind, args: &[&str], lead: &str) -> Result<String> {
     let prefix = match kind {
