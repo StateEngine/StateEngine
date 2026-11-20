@@ -14,10 +14,8 @@ mod count;
 mod count_cache;
 #[path = "state_status.rs"]
 mod status;
-use count::{CountRead, observe_count};
-// Re-exported for the moved observation modules, which are also compiled
-// standalone by the git_observation test.
 pub(super) use super::pipe;
+use count::{CountRead, observe_count};
 use se_core::{ops::GitView, scope};
 #[cfg(any(windows, target_os = "macos"))]
 use se_repository as library;
