@@ -1,22 +1,17 @@
 //! Clap consumes the operation catalogue; no filesystem or ambient configuration is read here.
-use super::*;
 mod remote;
-use crate::registry::{CliExposure, Scope};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use remote::command as remote_command;
 pub use remote::parse_remote_target;
+use se_core::ops::*;
+use se_core::registry::{CliExposure, Scope, Selector};
 use se_types::{Cursor, Detail, IdempotencyKey, Result, SeError, details};
 use std::path::PathBuf;
 
-mod agent_command;
 mod atlas;
-pub use agent_command::AgentCommand;
 mod decode;
 mod help;
-mod reopen;
-mod selections;
 pub use decode::{from_matches, from_matches_with_key};
-pub use selections::CliSelections;
 
 #[derive(Clone, Debug, Default)]
 pub struct CommonArgs {
@@ -134,47 +129,11 @@ fn deepest(mut matches: &ArgMatches) -> (Vec<String>, &ArgMatches) {
     }
     (path, matches)
 }
-/// Keep an option name while discarding both equals and attached-short values.
-/// A non-option positional word remains the caller's ordinary diagnostic.
-pub fn diagnostic_word(word: &str) -> &str {
-    if !word.starts_with('-') {
-        return word;
-    }
-    let option = word.split('=').next().unwrap_or(word);
-    if option.starts_with("--") {
-        return option;
-    }
-    option
-        .char_indices()
-        .nth(2)
-        .map_or(option, |(end, _)| &option[..end])
-}
 fn unknown(command: &str) -> SeError {
     SeError::new(Detail::UsageUnknownCommand(details::UsageUnknownCommand {
         got: diagnostic_word(command).into(),
         suggestion: None,
     }))
-}
-fn unknown_flag(flag: &str, command: &str, reason: &str) -> SeError {
-    SeError::new(Detail::UsageUnknownFlag(details::UsageUnknownFlag {
-        flag: diagnostic_word(flag).into(),
-        command: command_name(command),
-        reason: reason.into(),
-    }))
-}
-
-/// Public CLI spelling for diagnostics, derived from the live catalogue.
-pub(crate) fn command_name(operation: &str) -> String {
-    CATALOGUE
-        .iter()
-        .find(|meta| meta.name == operation)
-        .and_then(|meta| match meta.cli {
-            CliExposure::Leaf { path, .. } if !path.is_empty() => {
-                Some(format!("se {}", path.join(" ")))
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| "se".into())
 }
 
 pub fn cli_command() -> Command {
@@ -459,7 +418,7 @@ fn input_command(name: &str, c: Command) -> Command {
         c
     }
 }
-pub fn selected_meta(matches: &ArgMatches) -> Result<&'static crate::registry::OpMeta> {
+pub fn selected_meta(matches: &ArgMatches) -> Result<&'static se_core::registry::OpMeta> {
     let (path, m) = deepest(matches);
     if flag(m, "version") {
         return Ok(&MetaVersion::META);
@@ -473,7 +432,7 @@ pub fn selected_meta(matches: &ArgMatches) -> Result<&'static crate::registry::O
     if path.len() == 1 && path[0] == "atlas" {
         return Ok(&MetaHelp::META);
     }
-    let same_path = |meta: &crate::registry::OpMeta| {
+    let same_path = |meta: &se_core::registry::OpMeta| {
         matches!(meta.cli,
         CliExposure::Leaf {path: registered, ..} if registered.iter().copied().eq(path.iter().map(String::as_str)))
     };

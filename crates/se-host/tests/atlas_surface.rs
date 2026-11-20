@@ -1,4 +1,5 @@
 //! Public catalogue, CLI and MCP presentation checks; not a live-owner witness.
+use se_cli_spec::{cli_command, from_matches};
 use se_core::{ops::*, registry::Feature};
 use se_host::{McpBackend, McpReply};
 use se_types::{Result, Secret, code::*};

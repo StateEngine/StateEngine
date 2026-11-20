@@ -10,7 +10,7 @@ publish.workspace = true
 default = ["channels"]
 rebind-fixture = []
 remote = ["se-host/remote", "se-remote-cli/remote"]
-import = ["se-host/import", "se-core/import"]
+import = ["se-host/import", "se-core/import", "se-cli-spec/import"]
 channels = ["se-host/channels"]
 
 [dependencies]
@@ -19,6 +19,7 @@ se-remote-cli = { path = "../se-remote-cli" }
 se-host = { path = "../se-host", default-features = false, features = ["runtime", "listener"] }
 se-store = { path = "../se-store" }
 se-core = { path = "../se-core" }
+se-cli-spec = { path = "../se-cli-spec" }
 se-mcp = { path = "../se-mcp" }
 se-types = { path = "../se-types" }
 se-proc = { path = "../se-proc" }

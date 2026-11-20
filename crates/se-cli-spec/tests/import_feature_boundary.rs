@@ -8,7 +8,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[test]
 fn command_selection_requires_the_explicit_feature() -> TestResult {
-    let matches = ops::cli_command().try_get_matches_from([
+    let matches = se_cli_spec::cli_command().try_get_matches_from([
         "se",
         "--key",
         KEY,
@@ -17,7 +17,7 @@ fn command_selection_requires_the_explicit_feature() -> TestResult {
         "retained-history",
     ]);
     if cfg!(feature = "import") {
-        let operation = ops::from_matches(&matches?)?;
+        let operation = se_cli_spec::from_matches(&matches?)?;
         assert_eq!(operation.meta().name, IMPORT);
         operation.validate()?;
         assert!(operation.idempotency_key().is_some());
@@ -54,7 +54,7 @@ fn catalogue_schema_and_generated_help_agree_on_import_availability() -> TestRes
     assert_eq!(ops::schema_catalogue(Some(IMPORT)).is_ok(), enabled);
     let catalogue = ops::schema_catalogue(None)?;
     assert_eq!(catalogue.ops.iter().any(|row| row.name == IMPORT), enabled);
-    let mut command = ops::cli_command();
+    let mut command = se_cli_spec::cli_command();
     command.build();
     assert_eq!(command.find_subcommand("import").is_some(), enabled);
     // Import remains an owner-only command rather than a model-facing tool.
@@ -94,8 +94,11 @@ fn import_receipts_follow_the_same_wire_feature_boundary() -> TestResult {
 
 #[test]
 fn ordinary_commands_and_schemas_remain_available() -> TestResult {
-    let matches = ops::cli_command().try_get_matches_from(["se", "status"])?;
-    assert_eq!(ops::from_matches(&matches)?.meta().name, "project.status");
+    let matches = se_cli_spec::cli_command().try_get_matches_from(["se", "status"])?;
+    assert_eq!(
+        se_cli_spec::from_matches(&matches)?.meta().name,
+        "project.status"
+    );
     assert!(ops::schemas("project.status").is_some());
     assert!(ops::schema_catalogue(Some("project.status")).is_ok());
     Ok(())

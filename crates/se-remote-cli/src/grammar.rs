@@ -22,7 +22,7 @@ fn leaf(name: &'static str, about: &'static str) -> Command {
         .disable_help_subcommand(true)
 }
 pub(super) fn command() -> Command {
-    se_core::ops::cli_command().mut_subcommand("remote", |command| {
+    se_cli_spec::cli_command().mut_subcommand("remote", |command| {
         command
             .subcommand(
                 leaf(

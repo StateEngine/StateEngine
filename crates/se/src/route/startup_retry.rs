@@ -1,7 +1,8 @@
 //! A startup timeout precedes submission. Retain the parsed invocation and key
 //! instead of asking the user to invent a new launch or a new request identity.
 use crate::bootstrap::Bootstrap;
-use se_core::ops::{AgentCommand, AnyOp, CommonArgs};
+use se_cli_spec::CommonArgs;
+use se_core::ops::{AgentCommand, AnyOp};
 use se_types::{Argv, Cmd, Code, OperationCommand, Remedy, SeError};
 use std::ffi::OsString;
 

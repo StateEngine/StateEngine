@@ -1560,6 +1560,7 @@ dependencies = [
  "regex",
  "rusqlite",
  "se-atlas",
+ "se-cli-spec",
  "se-config",
  "se-core",
  "se-host",
@@ -1639,6 +1640,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "se-cli-spec"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "clap",
+ "se-config",
+ "se-core",
+ "se-store",
+ "se-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "se-config"
 version = "0.0.1-alpha.1"
 dependencies = [
@@ -1652,7 +1666,6 @@ dependencies = [
 name = "se-core"
 version = "0.0.1-alpha.1"
 dependencies = [
- "clap",
  "schemars",
  "se-config",
  "se-store",
@@ -1691,6 +1704,7 @@ dependencies = [
  "se-atlas",
  "se-atlas-cold",
  "se-channels",
+ "se-cli-spec",
  "se-config",
  "se-core",
  "se-mcp",
@@ -1776,6 +1790,7 @@ name = "se-remote-cli"
 version = "0.0.1-alpha.1"
 dependencies = [
  "clap",
+ "se-cli-spec",
  "se-core",
  "se-host",
  "se-proc",

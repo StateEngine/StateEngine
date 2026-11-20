@@ -3,7 +3,8 @@
 mod commands;
 mod compact;
 mod cursor;
-pub(crate) use cursor::{resume_since, validate_resume_since};
+pub use cursor::resume_since;
+pub(crate) use cursor::validate_resume_since;
 mod identity;
 pub(crate) mod packet;
 mod read;

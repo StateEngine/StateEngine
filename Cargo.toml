@@ -9,6 +9,7 @@ members = [
     "crates/se-store-codec",
     "crates/se-config",
     "crates/se-core",
+    "crates/se-cli-spec",
     "crates/se-proc",
     "crates/se-trusted-path",
     "crates/se-native-path",

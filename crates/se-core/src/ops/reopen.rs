@@ -1,5 +1,6 @@
 //! Resume context stays read-only; owner recovery names the existing launch path.
 use super::*;
+use se_types::{Detail, Result, SeError, details};
 
 pub(super) fn refuse<R: se_store::Snapshot>(
     cx: &mut crate::commit::Cx<'_, R>,

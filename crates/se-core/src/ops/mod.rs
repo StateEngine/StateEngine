@@ -42,12 +42,12 @@ pub mod agent_config;
 pub mod agent_config_receipt;
 mod agent_session;
 pub use agent_session::{process_from_record, unobserved_session};
-pub use cli::parse_remote_target;
+mod agent_command;
 pub mod agent_status;
-mod cli;
+mod cli_selections;
 pub mod config_listing;
-pub(crate) use cli::command_name;
 pub mod diagnostic_bundle;
+mod reopen;
 pub use diagnostic_bundle::{DiagnosticBundle, DiagnosticBundleOutput};
 pub mod doctor;
 pub use doctor::{Diagnosis, DoctorInspect, DoctorRepair, RepairOutput};
@@ -90,10 +90,8 @@ pub mod receipt;
 pub mod status;
 pub use crate::commit::{MessageSend, WorkingStateSet};
 use crate::registry::*;
-pub use cli::{
-    AgentCommand, CliSelections, CommonArgs, cli_command, diagnostic_word, from_matches,
-    from_matches_with_key, selected_meta,
-};
+pub use agent_command::AgentCommand;
+pub use cli_selections::{CliSelections, command_name, diagnostic_word, unknown_flag};
 pub use event::{EventOutput, EventRead, HistoryEvent};
 pub use hook::{HookClaude, HookEvent, HookResult};
 pub use inputs::*;

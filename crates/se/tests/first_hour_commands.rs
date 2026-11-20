@@ -1,5 +1,6 @@
 //! Malformed resume positions have the same actionable domain error at both ingresses.
-use se_core::ops::{cli_command, decode_tool, from_matches};
+use se_cli_spec::{cli_command, from_matches};
+use se_core::ops::decode_tool;
 use se_types::{Code, RenderCx};
 
 #[test]

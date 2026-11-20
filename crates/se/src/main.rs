@@ -21,7 +21,8 @@ mod repository;
 mod route;
 mod runtime;
 
-use se_core::ops::{AnyOp, AnyOutput, metadata_output};
+use se_cli_spec::metadata_output;
+use se_core::ops::{AnyOp, AnyOutput};
 use se_types::RenderCx;
 use std::{
     ffi::OsString,
