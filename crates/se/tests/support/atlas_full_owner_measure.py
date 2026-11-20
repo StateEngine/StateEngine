@@ -15,8 +15,11 @@ print('npm-install', r.returncode, flush=True)
 keep = ('PATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'OS', 'SYSTEMDRIVE', 'PROGRAMDATA',
         'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROCESSOR_ARCHITECTURE', 'PROCESSOR_ARCHITEW6432', 'LANG', 'LC_ALL')
 root = Path(tempfile.mkdtemp(prefix='se-init-probe-'))
-for provider in ('claude', 'codex'):
-    home = root / provider
+terminal = workspace / 'scripts/windows_journeys/terminal.py'
+print('terminal', terminal, terminal.exists(), flush=True)
+for provider, wrapped in [(p, w) for w in (False, True) for p in ('claude', 'codex')]:
+    home = root / f'{provider}-{"conpty" if wrapped else "pipes"}'
+
     for d in ['AppData/Roaming', 'AppData/Local/StateEngine/bin', '.config', '.local/state', '.local/share',
               '.cache', 'tmp', 'repository', '.codex']:
         (home / d).mkdir(parents=True, exist_ok=True)
@@ -33,10 +36,12 @@ for provider in ('claude', 'codex'):
     (home / '.gitconfig').write_text('[user]\n\tname = Probe\n\temail = probe@example.invalid\n')
     subprocess.run(['git', 'init', '-q', str(home / 'repository')], env=env, check=False)
     exe = str(home / 'AppData/Local/StateEngine/bin/se.exe')
-    r = subprocess.run([exe, 'init', '--repo', str(home / 'repository'), '--agent', 'main', '--provider', provider,
-                        '--home', str(home / 'state'), '--json', '--no-color'],
-                       cwd=home, env=env, capture_output=True, timeout=300)
-    print('SE_INIT', json.dumps({'provider': provider, 'exit': r.returncode,
+    argv = [exe, 'init', '--repo', str(home / 'repository'), '--agent', 'main', '--provider', provider,
+            '--home', str(home / 'state'), '--json', '--no-color']
+    if wrapped:
+        argv = [sys.executable, '-B', str(terminal), *argv]
+    r = subprocess.run(argv, cwd=home / 'repository', env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=300)
+    print('SE_INIT', json.dumps({'provider': provider, 'conpty': wrapped, 'exit': r.returncode,
           'stdout': r.stdout.decode('utf-8', 'replace')[-3000:], 'stderr': r.stderr.decode('utf-8', 'replace')[-2000:]}), flush=True)
 claude = next(Path(npm).parent.rglob('claude-code/bin/claude.exe'), None)
 if claude:
