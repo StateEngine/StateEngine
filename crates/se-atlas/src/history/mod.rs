@@ -1,10 +1,8 @@
 //! Bounded Git metadata feed. Git authors never imply current-content authorship.
-mod apply;
 use crate::{
     errors::{AtlasResult, cache_error},
     model::*,
 };
-pub use apply::{apply, ingest};
 use se_types::{ProjectId, code::AtlasText};
 /// A source reconciliation does not fill an intentionally bounded Git seed.
 /// Both hosted status and query readers retain that independent limitation.
@@ -70,7 +68,7 @@ pub struct HistoryReceipt {
     pub generation: Generation,
     pub replay: bool,
 }
-pub(super) fn object(value: &str) -> AtlasResult<Vec<u8>> {
+pub fn object(value: &str) -> AtlasResult<Vec<u8>> {
     if !matches!(value.len(), 40 | 64)
         || !value
             .bytes()

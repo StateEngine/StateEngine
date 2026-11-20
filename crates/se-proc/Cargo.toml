@@ -55,10 +55,4 @@ harness = false
 name = "linux_process_facts"
 harness = false
 
-[[test]]
-name = "atlas_worker_failure"
-harness = false
 
-[[test]]
-name = "atlas_git_failure"
-harness = false

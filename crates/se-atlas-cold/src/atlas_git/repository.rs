@@ -1,6 +1,6 @@
 //! Registered metadata custody and bounded first-parent commit windows.
 use super::*;
-use crate::source_root::NativeSourceRoot;
+use se_proc::NativeSourceRoot;
 use std::{io::Read, path::PathBuf};
 pub const WINDOW_BYTES: usize = 65_536;
 pub const MAX_COMMITS: u16 = 128;
@@ -209,7 +209,7 @@ impl GitRepository {
         // A read error may have terminated a child in Drop. A poisoned lease
         // means exact reap failed; callers must not treat that as source-only success.
         #[cfg(target_os = "linux")]
-        let _reaped = crate::atlas_worker::lease::Lease::acquire()?;
+        let _reaped = se_proc::atlas_worker::lease::Lease::acquire()?;
         self.control.close()
     }
 }

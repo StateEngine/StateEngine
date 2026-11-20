@@ -1,10 +1,13 @@
 //! Atomic cache-only ingestion; denied paths are discarded before derivation.
-use super::*;
-use crate::{
+use rusqlite::{OptionalExtension, params};
+use se_atlas::{
     cache::connection::{CacheConnection, SqlView},
+    errors::{AtlasResult, cache_error},
+    history::{Commit, HistoryBound, HistoryFeed, HistoryReceipt, object},
+    model::Generation,
     policy::built_in_denied,
 };
-use rusqlite::{OptionalExtension, params};
+use se_types::code::AtlasText;
 use std::time::Instant;
 
 pub fn ingest(

@@ -27,13 +27,13 @@ use se_atlas::{errors::AtlasResult, lifecycle::*, model::*, source::RegisteredSo
 use se_types::{SeError, code::AtlasText};
 use std::time::{Duration, Instant};
 pub const EXTRACTOR: &str = "atlas-semantic-2";
-pub(crate) fn failure(reason: impl std::fmt::Display) -> SeError {
+pub fn failure(reason: impl std::fmt::Display) -> SeError {
     SeError::invalid("Atlas cold index", &reason.to_string())
 }
-pub(crate) fn sql_deadline() -> Instant {
+pub fn sql_deadline() -> Instant {
     Instant::now() + Duration::from_secs(5)
 }
-pub(crate) fn empty_coverage() -> Coverage {
+pub fn empty_coverage() -> Coverage {
     Coverage {
         discovered_files: 0,
         indexed_files: 0,
@@ -64,7 +64,7 @@ pub(crate) fn parse_budget() -> ParseBudget {
     }
 }
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
-pub(crate) fn parser_memory_guard() -> AtlasResult<()> {
+pub fn parser_memory_guard() -> AtlasResult<()> {
     cpu::check()?;
     let (used, measurement) = se_proc::atlas_worker::memory_usage().map_err(failure)?;
     // Reserve space for cancellation, fallible extraction, SQL and a native
@@ -93,17 +93,15 @@ pub(crate) fn parser_memory_guard() -> AtlasResult<()> {
 }
 
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
-pub fn private_entry() -> AtlasResult<u8> {
-    let (mut channel, bytes) = se_proc::atlas_worker::WorkerChannel::receive().map_err(failure)?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(failure)?;
-    if value.get("parse_only").is_some() {
-        return crate::atlas_parse::run_child(&mut channel, &bytes);
-    }
-    let request: protocol::Request = serde_json::from_slice(&bytes).map_err(failure)?;
+pub fn private_entry_with(
+    channel: &mut se_proc::atlas_worker::WorkerChannel,
+    bytes: &[u8],
+) -> AtlasResult<u8> {
+    let request: protocol::Request = serde_json::from_slice(bytes).map_err(failure)?;
     let job = request.job;
     let result = run_child(&request, |reply| {
-        let bytes = serde_json::to_vec(&reply).map_err(failure)?;
-        channel.send(&bytes).map_err(failure)?;
+        let frame = serde_json::to_vec(&reply).map_err(failure)?;
+        channel.send(&frame).map_err(failure)?;
         if matches!(
             reply,
             protocol::Reply::Working {

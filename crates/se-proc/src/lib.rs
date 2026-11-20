@@ -21,7 +21,6 @@ pub use windows_package::process_has_package_identity;
 pub mod advisory_lock;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod allocator;
-pub mod atlas_git;
 pub mod atlas_worker;
 mod canonical_path;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -161,9 +160,11 @@ pub use birth_time::{ProcessBirthTime, observe_process_birth};
 mod windows_policy_fixture;
 
 mod session_pin;
+mod sqlite_path;
 pub use session_pin::{
     SessionPinRemoval, publish_session_pin, read_session_pin, remove_session_pin, session_launch_id,
 };
+pub use sqlite_path::sqlite_path;
 
 #[cfg(target_os = "linux")]
 mod self_resources;

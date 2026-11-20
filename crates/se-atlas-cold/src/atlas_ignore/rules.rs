@@ -9,7 +9,7 @@ struct Rule {
     directory: bool,
     anchored: bool,
 }
-pub(crate) struct Rules {
+pub struct Rules {
     rules: Vec<Rule>,
     used: usize,
 }
@@ -32,7 +32,7 @@ impl Rules {
         self.rules.truncate(mark.0);
         self.used = mark.1;
     }
-    pub(crate) fn load(
+    pub fn load(
         source: &Source,
         policy: &IgnorePolicy,
         parent: &str,
@@ -165,7 +165,7 @@ impl Rules {
         self.used += cost;
         Ok(())
     }
-    pub(crate) fn eligible(
+    pub fn eligible(
         &self,
         path: &str,
         directory: bool,

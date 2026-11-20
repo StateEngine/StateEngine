@@ -103,7 +103,7 @@ pub struct NativeRootFile<'a> {
 }
 impl NativeSourceRoot {
     /// Derive an independently retained root through this registered handle.
-    pub(crate) fn subroot(&self, path: &str) -> io::Result<Self> {
+    pub fn subroot(&self, path: &str) -> io::Result<Self> {
         validate(path)?;
         let pin = self
             .open_directory(path)?
@@ -118,7 +118,7 @@ impl NativeSourceRoot {
         Ok(root)
     }
     #[cfg(target_os = "linux")]
-    pub(crate) fn directory_handle(&self) -> &File {
+    pub fn directory_handle(&self) -> &File {
         &self.directory
     }
     /// The authorized host supplies the physical root. Ancestors above this

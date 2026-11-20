@@ -1589,6 +1589,7 @@ dependencies = [
  "rusqlite",
  "se-atlas",
  "se-identifiers",
+ "se-proc",
  "se-trusted-path",
  "se-types",
  "serde",
@@ -1598,6 +1599,21 @@ dependencies = [
  "tree-sitter-python",
  "tree-sitter-rust",
  "tree-sitter-typescript",
+]
+
+[[package]]
+name = "se-atlas-cold"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "ignore",
+ "libc",
+ "rusqlite",
+ "se-atlas",
+ "se-proc",
+ "se-types",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -1651,6 +1667,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "se-atlas",
+ "se-atlas-cold",
  "se-config",
  "se-core",
  "se-mcp",

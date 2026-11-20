@@ -1,8 +1,8 @@
 //! Parent-side cold history phase. Git reuses the exactly reaped parser's
 //! process reservation; SQL uses the measured host share, not a cold exemption.
 use super::*;
+use crate::atlas_git::{GitRegistration, GitRepository};
 use se_atlas::history::{Commit, HistoryBound, HistoryFeed, HistoryLimit};
-use se_proc::atlas_git::{GitRegistration, GitRepository};
 use std::path::PathBuf;
 
 enum HistoryRead {
@@ -52,7 +52,7 @@ impl Plan {
         .ok_or_else(|| failure("history candidate disappeared"))?;
         match feed {
             HistoryRead::Available(Some(feed)) => Ok((
-                se_atlas::history::ingest(&mut db, &feed, sql_deadline().min(deadline))?.generation,
+                crate::apply::ingest(&mut db, &feed, sql_deadline().min(deadline))?.generation,
                 None,
             )),
             HistoryRead::Unavailable(error) => {
@@ -166,7 +166,7 @@ fn feed(
             .ok_or_else(|| failure("history window disappeared"))?;
         paths -= removed.paths.len();
         window.next = Some(removed.oid);
-        window.limit = se_proc::atlas_git::HistoryLimit::CommitCount;
+        window.limit = crate::atlas_git::HistoryLimit::CommitCount;
     }
     if paths > 32 {
         return Err(failure(
@@ -201,9 +201,9 @@ fn feed(
             oldest,
             next: window.next,
             limit: match window.limit {
-                se_proc::atlas_git::HistoryLimit::Complete => HistoryLimit::Complete,
-                se_proc::atlas_git::HistoryLimit::CommitCount => HistoryLimit::CommitCount,
-                se_proc::atlas_git::HistoryLimit::Bytes => HistoryLimit::Bytes,
+                crate::atlas_git::HistoryLimit::Complete => HistoryLimit::Complete,
+                crate::atlas_git::HistoryLimit::CommitCount => HistoryLimit::CommitCount,
+                crate::atlas_git::HistoryLimit::Bytes => HistoryLimit::Bytes,
             },
         },
         observed_unix_ms: std::time::SystemTime::now()

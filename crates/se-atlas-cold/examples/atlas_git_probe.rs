@@ -1,8 +1,6 @@
 //! Exercise the production bounded reader against registered local metadata.
-use se_proc::{
-    NativeSourceRoot,
-    atlas_git::{GitRegistration, GitRepository},
-};
+use se_atlas_cold::atlas_git::{GitRegistration, GitRepository};
+use se_proc::NativeSourceRoot;
 use std::{
     path::PathBuf,
     time::{Duration, Instant},

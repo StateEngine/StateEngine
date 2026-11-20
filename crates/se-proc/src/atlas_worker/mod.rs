@@ -30,7 +30,7 @@ pub use allocator::{
     release_pages as release_allocator_pages, reusable_arena_bytes, virtual_bytes,
 };
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
-pub(crate) mod lease;
+pub mod lease;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]

@@ -4,7 +4,7 @@ use std::{
     os::{fd::AsRawFd, unix::process::CommandExt},
     process::{Child, Command, Stdio},
 };
-struct Owned(Child, bool, crate::atlas_worker::lease::Lease);
+struct Owned(Child, bool, se_proc::atlas_worker::lease::Lease);
 impl Drop for Owned {
     fn drop(&mut self) {
         if !self.1 {
@@ -74,11 +74,11 @@ pub(super) fn read(
     image: &Path,
     control: &Path,
     objects: &Path,
-    roots: [&crate::NativeSourceRoot; 2],
+    roots: [&se_proc::NativeSourceRoot; 2],
     args: Vec<String>,
     deadline: Instant,
 ) -> io::Result<GitOutput> {
-    let lease = crate::atlas_worker::lease::Lease::acquire()?;
+    let lease = se_proc::atlas_worker::lease::Lease::acquire()?;
     let filesystem = super::filesystem::Filesystem::new(image, roots)?;
     let parent = std::process::id() as libc::pid_t;
     let mut command = Command::new(image);
@@ -133,7 +133,7 @@ pub(super) fn read(
             if libc::getrlimit(libc::RLIMIT_AS, &mut inherited) < 0 {
                 return Err(io::Error::last_os_error());
             }
-            let cap = crate::atlas_worker::MEMORY_BYTES
+            let cap = se_proc::atlas_worker::MEMORY_BYTES
                 .min(inherited.rlim_cur)
                 .min(inherited.rlim_max);
             let limit = libc::rlimit {

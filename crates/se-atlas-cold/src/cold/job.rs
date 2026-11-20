@@ -65,7 +65,7 @@ impl ColdJob {
             deadline,
         )
         .map_err(|error| {
-            crate::atlas_parse::cleanup_error(
+            crate::deadline::cleanup_error(
                 error,
                 deadline.saturating_duration_since(Instant::now()),
             )
@@ -90,7 +90,7 @@ impl ColdJob {
     pub fn pid(&self) -> u32 {
         self.worker.pid()
     }
-    pub(crate) fn discovered_files(&self) -> u64 {
+    pub fn discovered_files(&self) -> u64 {
         self.discovered
     }
     pub fn parse_deadline(&self) -> Option<Instant> {
@@ -125,7 +125,7 @@ impl ColdJob {
         let remaining = deadline.saturating_duration_since(Instant::now());
         self.worker
             .cancel_until(deadline)
-            .map_err(|error| crate::atlas_parse::cleanup_error(error, remaining))
+            .map_err(|error| crate::deadline::cleanup_error(error, remaining))
     }
     fn reject(&mut self, reason: &'static str) -> SeError {
         let rejected = failure(reason);
@@ -139,7 +139,7 @@ impl ColdJob {
             error.kind(),
             std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
         ) {
-            crate::atlas_parse::cleanup_error(
+            crate::deadline::cleanup_error(
                 error,
                 self.deadline.saturating_duration_since(Instant::now()),
             )
@@ -185,11 +185,11 @@ impl ColdJob {
             .checked_sub(start)
             .ok_or_else(|| failure("cold worker CPU clock moved backwards"))?;
         let error = if cpu >= Duration::from_millis(250) {
-            Some(crate::atlas_parse::cpu_expired(Duration::from_millis(200)))
+            Some(crate::deadline::cpu_expired(Duration::from_millis(200)))
         } else if Instant::now() >= self.deadline {
-            Some(crate::atlas_parse::stall(Duration::from_secs(900)))
+            Some(crate::deadline::stall(Duration::from_secs(900)))
         } else if Instant::now() >= end {
-            Some(crate::atlas_parse::stall(Duration::from_secs(5)))
+            Some(crate::deadline::stall(Duration::from_secs(5)))
         } else {
             None
         };
@@ -232,7 +232,7 @@ impl ColdJob {
                         self.parse_deadline =
                             Some((Instant::now() + Duration::from_millis(10)).min(end));
                         self.worker.send_control(b"source", end).map_err(|error| {
-                            crate::atlas_parse::cleanup_error(
+                            crate::deadline::cleanup_error(
                                 error,
                                 end.saturating_duration_since(Instant::now()),
                             )
@@ -248,7 +248,7 @@ impl ColdJob {
                         if matches!(phase, protocol::Phase::Resolve | protocol::Phase::Commit) {
                             self.worker.send_control(b"source", self.deadline).map_err(
                                 |error| {
-                                    crate::atlas_parse::cleanup_error(
+                                    crate::deadline::cleanup_error(
                                         error,
                                         self.deadline.saturating_duration_since(Instant::now()),
                                     )
@@ -299,7 +299,7 @@ impl ColdJob {
                     }
                     self.completion = Some(*summary);
                     self.worker.acknowledge_completion().map_err(|error| {
-                        crate::atlas_parse::cleanup_error(error, Duration::from_millis(200))
+                        crate::deadline::cleanup_error(error, Duration::from_millis(200))
                     })?;
                     self.peak_observed_bytes = self.worker.peak_observed_bytes();
                 }

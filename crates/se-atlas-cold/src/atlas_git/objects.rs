@@ -1,7 +1,7 @@
 //! Refuse linked object names; retain directory revisions across the helper read.
 //! Landlock independently prevents foreign reads during namespace races.
 use super::*;
-use crate::{NativeFileRevision, NativeSourceKind, NativeSourceRoot};
+use se_proc::{NativeFileRevision, NativeSourceKind, NativeSourceRoot};
 pub(super) struct Fence(Vec<(String, NativeFileRevision)>);
 impl Fence {
     pub(super) fn open(root: &NativeSourceRoot, deadline: Instant) -> io::Result<Self> {

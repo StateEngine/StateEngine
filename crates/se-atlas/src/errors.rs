@@ -2,7 +2,7 @@ pub use se_types::{ErrorBody as AtlasFailure, SeError as AtlasError};
 
 pub type AtlasResult<T> = Result<T, AtlasError>;
 
-pub(crate) fn cache_error(reason: impl std::fmt::Display) -> AtlasError {
+pub fn cache_error(reason: impl std::fmt::Display) -> AtlasError {
     se_types::SeError::new(se_types::Detail::AtlasUnreadable(
         se_types::details::AtlasUnreadable {
             path: "atlas.db".into(),

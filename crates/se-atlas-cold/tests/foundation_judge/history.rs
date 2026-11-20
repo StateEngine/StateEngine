@@ -37,6 +37,7 @@ impl se_atlas::query::RecordReader for NoRecords {
 )]
 fn history_feed_filters_secrets_before_all_derivations_and_retries_immutably() -> Check {
     use se_atlas::history::*;
+    use se_atlas_cold::apply::ingest;
     let _serial = SERIAL.lock().map_err(|_| "lock")?;
     let (f, s, p) = setup()?;
     let mut db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
@@ -224,6 +225,7 @@ fn history_feed_filters_secrets_before_all_derivations_and_retries_immutably() -
 #[test]
 fn history_cursor_scope_and_quantum_refusals_preserve_the_previous_generation() -> Check {
     use se_atlas::history::*;
+    use se_atlas_cold::apply::ingest;
     let _serial = SERIAL.lock().map_err(|_| "lock")?;
     let (f, s, p) = setup()?;
     let mut db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;

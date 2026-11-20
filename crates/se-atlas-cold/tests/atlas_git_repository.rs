@@ -1,6 +1,7 @@
 //! Registered metadata absence, configuration isolation and no-follow refusals.
 #![cfg(target_os = "linux")]
-use se_proc::{NativeSourceRoot, atlas_git::*};
+use se_atlas_cold::atlas_git::*;
+use se_proc::NativeSourceRoot;
 use std::{
     fs,
     path::{Path, PathBuf},

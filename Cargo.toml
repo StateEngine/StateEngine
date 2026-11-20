@@ -17,6 +17,7 @@ members = [
     "crates/se-remote-cli",
     "crates/se-remote",
     "crates/se-atlas",
+    "crates/se-atlas-cold",
     "crates/se-identifiers",
     "crates/se-repository",
     "crates/se",

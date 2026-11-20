@@ -317,28 +317,7 @@ pub(crate) fn expired() -> SeError {
         deadline_ms: 500,
     }))
 }
-pub(crate) fn cpu_expired(limit: Duration) -> SeError {
-    SeError::new(Detail::DeadlineExceeded(details::DeadlineExceeded {
-        op: "Atlas parse CPU".into(),
-        deadline_ms: limit.as_millis().min(u128::from(u64::MAX)) as u64,
-    }))
-}
-pub(crate) fn cleanup_error(error: std::io::Error, limit: Duration) -> SeError {
-    if matches!(
-        error.kind(),
-        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-    ) {
-        stall(limit).with_cause(error)
-    } else {
-        failure(error)
-    }
-}
-pub(crate) fn stall(limit: Duration) -> SeError {
-    SeError::new(Detail::DeadlineExceeded(details::DeadlineExceeded {
-        op: "Atlas scheduling stall".into(),
-        deadline_ms: limit.as_millis().min(u128::from(u64::MAX)) as u64,
-    }))
-}
+pub(crate) use se_atlas_cold::deadline::{cleanup_error, cpu_expired, stall};
 
 #[cfg(any(target_os = "linux", windows))]
 // A completed cancellation is a finite file refusal, not an endless retry of

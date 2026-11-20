@@ -19,7 +19,7 @@ struct Beneath {
 }
 pub(super) struct Filesystem(File);
 impl Filesystem {
-    pub(super) fn new(image: &Path, roots: [&crate::NativeSourceRoot; 2]) -> io::Result<Self> {
+    pub(super) fn new(image: &Path, roots: [&se_proc::NativeSourceRoot; 2]) -> io::Result<Self> {
         // ABI 1 contains every read/execute right this boundary needs. Refuse
         // unavailable Landlock; never fall back to pathname-only validation.
         let rights: u64 = (1 << 13) - 1;
