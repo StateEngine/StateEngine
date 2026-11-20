@@ -443,9 +443,26 @@ fn query_round(endpoint: &EndpointRecord, phase: &str) -> Result<(), String> {
                     se_types::Read::Present { value } => value.page.items().len().to_string(),
                     other => format!("{other:?}"),
                 };
-                println!("ATLAS_QUERY_PHASE {phase} {kind} ok {elapsed_us} {bytes} {count}");
+                let text = serde_json::to_value(&output.value.answer.data).ok();
+                let stat = |name: &str| {
+                    text.as_ref()
+                        .and_then(|v| v.pointer(&format!("/value/text/{name}")))
+                        .and_then(serde_json::Value::as_u64)
+                        .map_or("-".to_owned(), |n| n.to_string())
+                };
+                let (opens, open_us, read_us, identity_us) = se_host::atlas_source::probe_take();
+                println!(
+                    "ATLAS_QUERY_PHASE {phase} {kind} ok {elapsed_us} {bytes} {count} scanned={} matching={} opens={opens} open_us={open_us} read_us={read_us} identity_us={identity_us}",
+                    stat("scanned_files"),
+                    stat("matching_files")
+                );
             }
-            Err(error) => println!("ATLAS_QUERY_PHASE {phase} {kind} error {elapsed_us} {error}"),
+            Err(error) => {
+                let (opens, open_us, read_us, identity_us) = se_host::atlas_source::probe_take();
+                println!(
+                    "ATLAS_QUERY_PHASE {phase} {kind} error {elapsed_us} {error} opens={opens} open_us={open_us} read_us={read_us} identity_us={identity_us}"
+                )
+            }
         }
     }
     Ok(())

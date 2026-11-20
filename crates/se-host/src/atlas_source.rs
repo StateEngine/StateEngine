@@ -13,6 +13,25 @@ use se_proc::{NativeRootDirectory, NativeRootFile, NativeSourceKind, NativeSourc
 use se_types::{Detail, SeError, code::AtlasText, details};
 use std::io::{self, Read, Seek, SeekFrom};
 
+// Probe only: count and time source opens, reads and identity checks.
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+static OPENS: AtomicU64 = AtomicU64::new(0);
+static OPEN_NS: AtomicU64 = AtomicU64::new(0);
+static READ_NS: AtomicU64 = AtomicU64::new(0);
+static IDENTITY_NS: AtomicU64 = AtomicU64::new(0);
+fn add(counter: &AtomicU64, started: std::time::Instant) {
+    counter.fetch_add(started.elapsed().as_nanos() as u64, Relaxed);
+}
+/// Probe only: (opens, open µs, read µs, identity µs) since the last call.
+pub fn probe_take() -> (u64, u64, u64, u64) {
+    let us = |counter: &AtomicU64| counter.swap(0, Relaxed) / 1000;
+    (
+        OPENS.swap(0, Relaxed),
+        us(&OPEN_NS),
+        us(&READ_NS),
+        us(&IDENTITY_NS),
+    )
+}
 pub struct NativeAtlasSource {
     root: NativeSourceRoot,
     case_mode: CaseMode,
@@ -44,9 +63,11 @@ impl SourceAccess for NativeAtlasSource {
     }
     fn open(&self, path: &RelativePath) -> AtlasResult<Option<Box<dyn SourceFile + '_>>> {
         private_path(path)?;
-        Ok(self
-            .root
-            .open_relative(path.as_str())
+        let started = std::time::Instant::now();
+        OPENS.fetch_add(1, Relaxed);
+        let opened = self.root.open_relative(path.as_str());
+        add(&OPEN_NS, started);
+        Ok(opened
             .map_err(|e| error(path.as_str(), e))?
             .map(|file| Box::new(PinnedSource(file)) as Box<dyn SourceFile>))
     }
@@ -96,7 +117,10 @@ impl SourceDirectory for PinnedDirectory<'_> {
 struct PinnedSource<'a>(NativeRootFile<'a>);
 impl Read for PinnedSource<'_> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        self.0.read(bytes)
+        let started = std::time::Instant::now();
+        let read = self.0.read(bytes);
+        add(&READ_NS, started);
+        read
     }
 }
 impl Seek for PinnedSource<'_> {
@@ -106,7 +130,10 @@ impl Seek for PinnedSource<'_> {
 }
 impl SourceFile for PinnedSource<'_> {
     fn identity(&self) -> AtlasResult<FileIdentity> {
-        let native = self.0.revision().map_err(|e| error("retained source", e))?;
+        let started = std::time::Instant::now();
+        let native = self.0.revision().map_err(|e| error("retained source", e));
+        add(&IDENTITY_NS, started);
+        let native = native?;
         Ok(FileIdentity {
             volume: native.volume,
             file: native.file,
