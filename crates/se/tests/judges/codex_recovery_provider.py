@@ -103,6 +103,11 @@ def connection(stream, number, codex_home, saved):
             method, params = value['method'], value.get('params', {})
             if method == 'initialize':
                 result = {'userAgent':'independent-recovery-double'}
+            elif method == 'windowsSandbox/readiness' and os.name == 'nt':
+                # This fixture models the stock default only when the host
+                # actually selected it for this shared server process.
+                default_selected = 'windows.sandbox="unelevated"' in sys.argv[1:]
+                result = {'status': 'ready' if default_selected else 'notConfigured'}
             elif method == 'thread/resume' and 'config' not in params:
                 thread = params['threadId']
                 with saved['lock']:
