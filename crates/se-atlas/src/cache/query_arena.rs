@@ -44,11 +44,7 @@ impl Reservation {
             waited = true;
             let remaining = wait_deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                if reader {
-                    state.readers -= 1;
-                }
-                READY.notify_all();
-                return Err(expired());
+                break;
             }
             state = READY
                 .wait_timeout(state, remaining)
