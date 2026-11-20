@@ -245,8 +245,7 @@ impl Channels {
                 let OpStep::Commit { mut batch, .. } = kernel.message_send(send, cx)? else {
                     return Err(channel_error(ChannelError::InvalidInput));
                 };
-                let random = se_proc::random_secret()
-                    .map_err(|_| channel_error(ChannelError::CredentialStoreUnavailable))?;
+                let random = se_proc::random_secret().map_err(store_unavailable)?;
                 let receipt = ReceiptId::new(format!(
                     "chr-{}",
                     se_types::hex_lower(&random.expose()[..16])

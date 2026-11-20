@@ -57,7 +57,7 @@ impl Channels {
                             | ChannelError::MessageTooLarge
                     ) =>
                 {
-                    Err(detail.reason)
+                    Err(detail.reason.clone())
                 }
                 _ => return Err(error),
             },

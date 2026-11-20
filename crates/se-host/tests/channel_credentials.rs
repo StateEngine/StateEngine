@@ -67,7 +67,8 @@ fn foreign_scope_and_corrupt_carrier_refuse_without_empty_catalog_or_deletion() 
     drop(orphan.file);
     assert!(matches!(
         vault.catalog(),
-        Err(ChannelError::CredentialScopeMismatch) | Err(ChannelError::CredentialStoreUnavailable)
+        Err(ChannelError::CredentialScopeMismatch)
+            | Err(ChannelError::CredentialStoreUnavailable { .. })
     ));
     Ok(())
 }

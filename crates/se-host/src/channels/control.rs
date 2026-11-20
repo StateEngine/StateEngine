@@ -59,8 +59,7 @@ impl Channels {
                     .await
                     .map_err(channel_error)?;
                 deadline.remaining()?;
-                let random = se_proc::random_secret()
-                    .map_err(|_| channel_error(ChannelError::CredentialStoreUnavailable))?;
+                let random = se_proc::random_secret().map_err(store_unavailable)?;
                 let id = ChannelId::new(format!(
                     "chn-{}",
                     se_types::hex_lower(&random.expose()[..16])
@@ -258,7 +257,7 @@ impl Channels {
     }
     fn challenge(&self, id: &ChannelId, revision: u64) -> Result<Secret> {
         let mut mac = Hmac::<Sha256>::new_from_slice(self.pairing_key.expose())
-            .map_err(|_| channel_error(ChannelError::CredentialStoreUnavailable))?;
+            .map_err(|_| store_unavailable("the pairing key has an unsupported length"))?;
         mac.update(b"StateEngine Telegram pairing v1\0");
         mac.update(id.as_str().as_bytes());
         mac.update(&revision.to_be_bytes());
