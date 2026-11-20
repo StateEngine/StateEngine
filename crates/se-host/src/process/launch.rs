@@ -187,9 +187,20 @@ impl LaunchCoordinator {
             mcp_bearer: bearer,
             key: plan.input.idempotency_key.clone(),
         };
-        let configuration = harness
+        let mut configuration = harness
             .configuration(&request, call(self.store.generation, deadline)?)
             .await?;
+        // A new launch is the one place a Codex agent's login is chosen; it is
+        // recorded for the agent's life and every later reader uses the record.
+        let codex_login = if provider == se_types::Provider::Codex {
+            let login = super::codex_server::launch_login()?;
+            configuration
+                .ephemeral_files
+                .push(self.codex.login_record(&request.identity.session, &login)?);
+            Some(login)
+        } else {
+            None
+        };
         let mut invocation = harness
             .invocation(&request, call(self.store.generation, deadline)?)
             .await?;
@@ -198,8 +209,12 @@ impl LaunchCoordinator {
         // package environment and any alias supervisor belong to the login's
         // shared server instead.
         let codex_server = if provider == se_types::Provider::Codex {
-            // A new launch is the one place the login is chosen from the host.
-            let login = crate::codex_capture::launch_login()?;
+            let login = codex_login
+                .clone()
+                .ok_or_else(|| error("Codex launch", "the login chosen for this launch"))?;
+            invocation
+                .arguments
+                .push(crate::harness::codex_input::control_socket(&login).into_os_string());
             let settings = self.codex.server_settings(&request, &login)?;
             let windows_sandbox = settings.windows_sandbox;
             let mut server = crate::ProviderInvocation {

@@ -6,7 +6,7 @@ mod attended;
 mod capture;
 mod catch_up;
 mod codex_capture;
-mod codex_server;
+pub(crate) mod codex_server;
 mod cold_stop;
 mod control;
 mod dispatch;

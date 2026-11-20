@@ -133,7 +133,7 @@ impl CodexHarness {
         )?;
         #[cfg(windows)]
         let windows_sandbox =
-            windows_sandbox::selection(request)?.map(windows_sandbox::Implementation::key);
+            windows_sandbox::selection(request, login)?.map(windows_sandbox::Implementation::key);
         #[cfg(not(windows))]
         let windows_sandbox = {
             let _ = request;
@@ -142,6 +142,22 @@ impl CodexHarness {
         Ok(ServerSettings {
             environment,
             windows_sandbox,
+        })
+    }
+    /// The record of the login a launch chose, kept for the agent's whole life.
+    pub(crate) fn login_record(
+        &self,
+        session: &se_types::SessionId,
+        login: &Path,
+    ) -> Result<OwnedLaunchFile> {
+        let bytes = serde_json::to_vec(&json!({
+            "session": session,
+            "login": NativePath::from_local(login.to_owned())?,
+        }))
+        .map_err(|e| se_core::scope::unreadable("Codex login record", &e.to_string()))?;
+        Ok(OwnedLaunchFile {
+            path: NativePath::from_local(self.directory(session)?.join(LOGIN_RECORD))?,
+            contents: se_types::Secret::new(bytes)?,
         })
     }
     /// The login recorded for this agent at launch: the one source of an
@@ -414,24 +430,15 @@ impl Harness for CodexHarness {
             let plan = json!({"session":request.identity.session,"socket":socket.as_ref().map(|path| NativePath::from_local(path.clone())).transpose()?});
             let bytes = serde_json::to_vec(&plan)
                 .map_err(|e| se_core::scope::unreadable("Codex launch plan", &e.to_string()))?;
-            // The login this agent uses is chosen here, once, and recorded for
-            // the agent's whole life; later readers never consult the host.
-            let login = json!({"session":request.identity.session,"login":NativePath::from_local(crate::codex_capture::launch_login()?)?});
-            let login = serde_json::to_vec(&login)
-                .map_err(|e| se_core::scope::unreadable("Codex login record", &e.to_string()))?;
-            let directory = self.directory(&request.identity.session)?;
             Ok(ConfigPlan {
                 edits: vec![],
-                ephemeral_files: vec![
-                    OwnedLaunchFile {
-                        path: NativePath::from_local(directory.join("codex-plan.json"))?,
-                        contents: se_types::Secret::new(bytes)?,
-                    },
-                    OwnedLaunchFile {
-                        path: NativePath::from_local(directory.join(LOGIN_RECORD))?,
-                        contents: se_types::Secret::new(login)?,
-                    },
-                ],
+                ephemeral_files: vec![OwnedLaunchFile {
+                    path: NativePath::from_local(
+                        self.directory(&request.identity.session)?
+                            .join("codex-plan.json"),
+                    )?,
+                    contents: se_types::Secret::new(bytes)?,
+                }],
             })
         })
     }
@@ -468,11 +475,11 @@ impl Harness for CodexHarness {
                     )
                 })?,
             };
-            let control = input::control_socket(&crate::codex_capture::launch_login()?);
+            // The launch path appends the login's control socket, which only it
+            // may choose.
             input::forwarder_invocation(
                 &self.plan(request, &resolved, socket.as_deref()),
                 &forwarder,
-                &control,
                 environment,
             )
         })
@@ -636,7 +643,7 @@ impl crate::adoption::Adapter for Adoption {
     #[cfg(any(target_os = "linux", windows))]
     fn prepare(&self, command: &std::path::Path) -> Result<crate::adoption::ProviderSetup> {
         let executable = crate::adoption::codex::native_executable(command)?;
-        let home = crate::codex_capture::launch_login()?;
+        let home = crate::process::codex_server::setup_codex_login()?;
         crate::adoption::settings::prepare(
             &home,
             &home.join(crate::adoption::Kind::Codex.settings()),

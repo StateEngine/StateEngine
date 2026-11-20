@@ -82,7 +82,7 @@ impl CodexHarness {
                 .await?;
             binding.notify("initialized", json!({}), &cx).await?;
             #[cfg(windows)]
-            let named = windows_sandbox::selection(request)?;
+            let named = windows_sandbox::selection(request, &login)?;
             #[cfg(windows)]
             self.confirm_windows_sandbox(&binding, named, &cx).await?;
             timing.advance(Phase::Thread);

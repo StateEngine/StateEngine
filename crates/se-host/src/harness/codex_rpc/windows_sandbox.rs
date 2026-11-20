@@ -75,16 +75,17 @@ impl Readiness {
 /// the default. Only a workspace-write launch names one, because a read-only
 /// launch writes nothing and needs no sandbox.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub fn selection(request: &crate::HarnessRequest) -> Result<Option<Implementation>> {
+pub fn selection(
+    request: &crate::HarnessRequest,
+    login: &std::path::Path,
+) -> Result<Option<Implementation>> {
     if !matches!(
         request.policy.writes,
         se_proc::WritePolicy::Workspace { .. }
     ) {
         return Ok(None);
     }
-    Ok(Some(
-        user_choice(&crate::codex_capture::launch_login()?)?.unwrap_or(Implementation::DEFAULT),
-    ))
+    Ok(Some(user_choice(login)?.unwrap_or(Implementation::DEFAULT)))
 }
 
 /// The `windows.sandbox` the user set in their own Codex file, if any. The host

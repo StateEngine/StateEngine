@@ -418,7 +418,6 @@ pub fn control_socket(codex_home: &std::path::Path) -> std::path::PathBuf {
 pub fn forwarder_invocation(
     launch: &CodexLaunch<'_>,
     forwarder: &std::path::Path,
-    control: &std::path::Path,
     mut environment: Vec<(OsString, OsString)>,
 ) -> Result<ProviderInvocation> {
     validate(launch)?;
@@ -441,11 +440,7 @@ pub fn forwarder_invocation(
     ));
     Ok(ProviderInvocation {
         executable: NativePath::from_local(forwarder.to_owned())?,
-        arguments: vec![
-            crate::codex_forward::ENTRY.into(),
-            downstream,
-            control.as_os_str().to_owned(),
-        ],
+        arguments: vec![crate::codex_forward::ENTRY.into(), downstream],
         environment: se_proc::Environment {
             entries: environment,
         },

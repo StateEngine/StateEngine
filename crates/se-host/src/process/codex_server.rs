@@ -41,6 +41,30 @@ pub(super) struct CodexServer {
     slot: tokio::sync::Mutex<std::collections::BTreeMap<PathBuf, Arc<se_proc::OwnedProcess>>>,
 }
 
+/// The only read of the host environment on the Codex path. It is private to
+/// this module so that nothing after a launch can consult the host for a login.
+fn host_codex_home() -> Result<PathBuf> {
+    if let Some(home) = std::env::var_os("CODEX_HOME") {
+        return Ok(PathBuf::from(home));
+    }
+    let home =
+        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).ok_or_else(|| {
+            se_types::SeError::invalid("Codex login", "the normal user home or explicit CODEX_HOME")
+        })?;
+    Ok(PathBuf::from(home).join(".codex"))
+}
+
+/// The login a new launch uses. Visible only to the launch path; every later
+/// reader takes the login recorded for that agent.
+pub(super) fn launch_login() -> Result<PathBuf> {
+    host_codex_home()
+}
+
+/// The login first setup prepares (provider adoption). Never an agent's login.
+pub(crate) fn setup_codex_login() -> Result<PathBuf> {
+    host_codex_home()
+}
+
 /// Every shared-server diagnostic names the login it concerns.
 fn for_login(failure: se_types::SeError, login: &Path) -> se_types::SeError {
     se_core::scope::unreadable(
