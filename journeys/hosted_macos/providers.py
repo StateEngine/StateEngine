@@ -8,6 +8,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 
 from common import binding, digest, require
 from package import verify
@@ -23,9 +24,20 @@ from windows_nightly_providers import (KEYS, PROVIDERS, clean_environment, failu
                                        prepared, provision, require_safe_output)
 
 
+# A macOS local socket address holds 103 path bytes; Codex keeps its control
+# socket under CODEX_HOME, so the fixture home must stay short.
+SOCKET_PATH_LIMIT = 103
+
+
 class MacJourneys(Journeys):
-    def __init__(self, output, package, entry, settings, inherited, release):
-        super().__init__(output, package, entry, settings, inherited, release=release)
+    def __init__(self, output, package, entry, settings, inherited, release, home):
+        super().__init__(output, package, entry, settings, inherited, release=release, home=home)
+        if self.settings['provider'] == 'codex':
+            control = (Path(self.commands.environment['CODEX_HOME']).resolve()
+                       / 'app-server-control/app-server-control.sock')
+            length = len(os.fsencode(control))
+            require(length <= SOCKET_PATH_LIMIT, f'Codex control socket path is {length} bytes, '
+                    f'over the {SOCKET_PATH_LIMIT} a macOS local socket allows: {control}')
         self.login_path = inherited['PATH']
         self.commands.environment.update(SHELL='/bin/zsh', LANG='en_US.UTF-8', LC_ALL='en_US.UTF-8',
                                          USER=inherited.get('USER', ''), LOGNAME=inherited.get('LOGNAME', ''))
@@ -90,7 +102,9 @@ def real_run(args, output, nightly):
     settings, observed = preflight(entry)
     journey = output / 'journey'
     journey.mkdir(mode=0o700)
-    runner = MacJourneys(journey, package, entry, settings, environment, release)
+    # Evidence stays under the output; the provider home lives in a short private folder.
+    short = Path(tempfile.mkdtemp(prefix='se-', dir='/tmp')).resolve(strict=True)
+    runner = MacJourneys(journey, package, entry, settings, environment, release, short / 'home')
     runner.record.update(nightly=nightly, package_metadata_sha256=args.package_sha256,
                          inputs=observed)
     try:
@@ -98,6 +112,8 @@ def real_run(args, output, nightly):
     except (InterruptedRun, KeyboardInterrupt):
         result = runner.record
         result.update(result='INCOMPLETE', interrupted=True)
+    if not present(short / 'home'):
+        short.rmdir()
     if result['result'] == 'PASS':
         closure = result.get('credential_closure')
         if not (isinstance(closure, dict) and closure.get('private_copy_absent') is True
