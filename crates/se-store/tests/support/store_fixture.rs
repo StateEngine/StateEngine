@@ -296,8 +296,16 @@ pub struct Fixture {
 }
 impl Fixture {
     pub fn new() -> Result<Self, Box<dyn Error>> {
+        Self::with_owned_directory(directory::private_directory)
+    }
+    pub fn new_case() -> Result<Self, Box<dyn Error>> {
+        Self::with_owned_directory(directory::private_case_directory)
+    }
+    fn with_owned_directory(
+        create_directory: fn() -> Result<directory::PrivateDirectory, Box<dyn Error>>,
+    ) -> Result<Self, Box<dyn Error>> {
         se_proc::initialize_file_creation_owner()?;
-        let directory = directory::private_directory()?;
+        let directory = create_directory()?;
         let home = directory.to_path_buf();
         Self::with_home(home, Some(directory))
     }

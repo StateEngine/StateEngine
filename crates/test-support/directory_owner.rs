@@ -78,6 +78,27 @@ impl PrivateDirectory {
         eprintln!("retained fixture root {}: {reason}", self.path.display());
         self.retained = true;
     }
+    /// Report cleanup errors when a completed test explicitly closes its sandbox.
+    #[allow(dead_code)]
+    pub fn close(mut self) -> std::io::Result<()> {
+        self.retained = true;
+        self.remove().map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!(
+                    "fixture cleanup refused or failed at original root {}: {error}",
+                    self.path.display()
+                ),
+            )
+        })
+    }
+    fn remove(&self) -> std::io::Result<()> {
+        self.binding
+            .as_ref()
+            .map_err(|error| std::io::Error::other(error.to_string()))?
+            .check()?;
+        std::fs::remove_dir_all(&self.path)
+    }
     /// Move this owned tree and rebind its new name to the same native root.
     #[allow(dead_code)]
     pub fn rename_to(&mut self, destination: PathBuf) -> std::io::Result<()> {
@@ -130,14 +151,7 @@ impl Drop for PrivateDirectory {
             );
             return;
         }
-        let result = (|| {
-            self.binding
-                .as_ref()
-                .map_err(|e| std::io::Error::other(e.to_string()))?
-                .check()?;
-            std::fs::remove_dir_all(&self.path)
-        })();
-        if let Err(error) = result {
+        if let Err(error) = self.remove() {
             eprintln!(
                 "fixture cleanup refused or failed at original root {}: {error}",
                 self.path.display()
