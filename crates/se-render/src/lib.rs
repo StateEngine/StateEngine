@@ -208,6 +208,9 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             (HumanKind::HistoryPage, AnyOutput::HistoryList(value)) => {
                 event::page(&value.value, out)?
             }
+            (HumanKind::SearchPage, AnyOutput::HistorySearch(value)) => {
+                event::search_page(&value.value, out)?
+            }
             (HumanKind::Event, AnyOutput::EventRead(value)) => event::output(&value.value, out)?,
             (_, AnyOutput::MessageRead(value)) => {
                 writeln!(

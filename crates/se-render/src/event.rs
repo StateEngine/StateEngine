@@ -217,3 +217,34 @@ pub(super) fn page(value: &se_core::ops::HistoryPage, out: &mut impl Write) -> i
     writeln!(out, "Use --json for full event details.")?;
     Ok(())
 }
+
+pub(super) fn search_page(
+    value: &se_core::ops::SearchPage,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    for hit in value.page.items() {
+        let suffix = if hit.body_complete { "" } else { " (snippet)" };
+        writeln!(out, "{} rev {}{suffix}", hit.event_id, hit.revision)?;
+        writeln!(out, "  {}", hit.snippet)?;
+    }
+    if value.page.items().is_empty() {
+        writeln!(out, "No matches in this search page.")?;
+    }
+    if value.erased > 0 {
+        writeln!(out, "Omitted {} erased candidate(s).", value.erased)?;
+    }
+    if let Some(cursor) = value.page.next() {
+        writeln!(out, "Continue the same search with --cursor {cursor}")?;
+    }
+    if !value.page.window().complete() {
+        writeln!(
+            out,
+            "This search page is incomplete; its JSON window describes the remaining omissions."
+        )?;
+    }
+    writeln!(
+        out,
+        "Use se history --event ID to read a full event, or --json for structured hits."
+    )?;
+    Ok(())
+}
