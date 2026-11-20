@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-default = ["runtime", "listener"]
+default = ["runtime", "listener", "channels"]
 import = ["se-core/import"]
 runtime = ["dep:tokio"]
 listener = ["runtime", "se-remote/listener", "se-atlas-cold/listener", "dep:reqwest", "tokio/macros", "tokio/net", "tokio/io-util", "tokio/time", "tokio/sync", "tokio/process", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio-tungstenite", "dep:futures-util", "dep:base64", "dep:se-secode-image"]
