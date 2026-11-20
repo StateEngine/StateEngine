@@ -87,3 +87,36 @@ fn malformed_and_oversized_tokens_never_create_credential_references() -> Check 
     assert!(vault.catalog()?.credentials.is_empty());
     Ok(())
 }
+
+#[test]
+fn catalog_refuses_owned_noncanonical_revision_names() -> Check {
+    use std::io::Write;
+
+    let home = Home::new()?;
+    let vault = home.vault()?;
+    let reference = vault.provision(&mut &DUMMY[..])?;
+    assert_eq!(vault.catalog()?.credentials, vec![reference.clone()]);
+
+    let files = se_proc::NativeStateFiles::open(&home.0.join("channel-credentials"))?;
+    let alias = files.root().join(format!(
+        "channel-{}-{}-{}-r0{}",
+        reference.store, reference.owner, reference.id, reference.revision
+    ));
+    let mut staging = files.create_staging(files.root())?;
+    staging.file.write_all(&DUMMY[..DUMMY.len() - 1])?;
+    staging.file.sync_all()?;
+    drop(staging.file);
+    files.publish_no_replace(&staging.path, &alias)?;
+    assert!(files.list_owned(files.root())?.contains(&alias));
+
+    assert!(matches!(
+        vault.catalog(),
+        Err(ChannelError::CredentialStoreUnavailable)
+    ));
+    assert!(vault.resolve(&reference).is_ok());
+    let mut invalid_name = se_proc::OwnedFile::open(&alias)?.ok_or("noncanonical fixture lost")?;
+    let digest = invalid_name.sha256()?;
+    invalid_name.remove(digest)?;
+    assert_eq!(vault.catalog()?.credentials, vec![reference]);
+    Ok(())
+}
