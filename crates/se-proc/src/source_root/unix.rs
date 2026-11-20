@@ -65,6 +65,11 @@ fn owned(fd: libc::c_int) -> io::Result<File> {
     // SAFETY: successful native open transferred this uniquely owned fd.
     Ok(unsafe { File::from_raw_fd(fd) })
 }
+pub(super) fn same_object(a: &File, b: &File) -> io::Result<bool> {
+    let ma = a.metadata()?;
+    let mb = b.metadata()?;
+    Ok(ma.dev() == mb.dev() && ma.ino() == mb.ino())
+}
 pub(super) fn revision(file: &File, directory: bool) -> io::Result<NativeFileRevision> {
     let m = file.metadata()?;
     if (directory && !m.is_dir()) || (!directory && !m.is_file()) {

@@ -122,7 +122,10 @@ impl<'a> NativeSourceScan<'a> {
             .zip(dir_parts.iter())
             .take_while(|((held, _), want)| held.as_str() == **want)
             .count();
-        self.dirs.truncate(common);
+        if common < self.dirs.len() {
+            self.verify_cached()?;
+            self.dirs.truncate(common);
+        }
         for &part in &dir_parts[common..] {
             let parent = self
                 .dirs
@@ -158,8 +161,31 @@ impl<'a> NativeSourceScan<'a> {
             file,
         }))
     }
+    fn verify_cached(&self) -> io::Result<()> {
+        if self.dirs.is_empty() {
+            return Ok(());
+        }
+        let mut held: Option<File> = None;
+        for (part, cached) in &self.dirs {
+            let parent = held.as_ref().unwrap_or(&self.root.directory);
+            let fresh = match os::open_component(parent, part, true) {
+                Ok(dir) => dir,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    return Err(changed("source directory changed during scan"));
+                }
+                Err(e) => return Err(e),
+            };
+            if !os::same_object(&fresh, cached)? {
+                return Err(changed("source directory changed during scan"));
+            }
+            held = Some(fresh);
+        }
+        Ok(())
+    }
     pub fn finish(self) -> io::Result<()> {
+        let verified = self.verify_cached();
         drop(self.dirs);
+        verified?;
         self.root.check()
     }
 }

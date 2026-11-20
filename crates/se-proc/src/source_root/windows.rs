@@ -125,6 +125,11 @@ fn verify_handle(file: &File, directory: bool) -> io::Result<BY_HANDLE_FILE_INFO
     }
     Ok(info)
 }
+pub(super) fn same_object(a: &File, b: &File) -> io::Result<bool> {
+    let ia = crate::windows_native::file_id(a)?;
+    let ib = crate::windows_native::file_id(b)?;
+    Ok(ia.volume == ib.volume && ia.index == ib.index)
+}
 pub(super) fn revision(file: &File, directory: bool) -> io::Result<NativeFileRevision> {
     let info = verify_handle(file, directory)?;
     let id = crate::windows_native::file_id(file)?;
