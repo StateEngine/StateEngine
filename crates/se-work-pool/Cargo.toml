@@ -1,0 +1,16 @@
+[package]
+name = "se-work-pool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+se-config = { path = "../se-config" }
+se-core = { path = "../se-core" }
+se-types = { path = "../se-types" }
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+
+[lints]
+workspace = true

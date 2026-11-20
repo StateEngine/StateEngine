@@ -1,11 +1,8 @@
 //! Wire values grouped by product family; operation envelopes stay public here.
 mod acp;
 pub use acp::*;
+pub use se_observation::*;
 pub use se_types::{ActorRef, CommitState, Named, Writer};
-mod host_phases;
-pub use host_phases::*;
-mod diagnostics;
-pub use diagnostics::*;
 mod schema;
 pub use schema::*;
 mod init;

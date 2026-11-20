@@ -9,7 +9,7 @@ mod capture;
 mod fixture;
 #[path = "../../test-support/provider_home.rs"]
 mod provider_home;
-#[path = "../src/render/mod.rs"]
+#[path = "../../se-render/src/lib.rs"]
 mod render;
 use fixture::*;
 use se_store::*;

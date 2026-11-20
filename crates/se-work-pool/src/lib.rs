@@ -1,7 +1,7 @@
 //! Bounded finite work on the supplied executor. Normal capacities share work;
 //! capacity one keeps the original foreground/maintenance split. Both keep
 //! maintenance at one actual job and preserve foreground progress.
-use crate::client::lease::Deadline;
+
 use se_types::{Result, SeError};
 use std::{future::Future, sync::Arc, time::Duration};
 use tokio::{
@@ -9,6 +9,11 @@ use tokio::{
     sync::Semaphore,
     time::{Instant, timeout_at},
 };
+
+/// A caller retains its own absolute time and cancellation bound.
+pub trait WorkDeadline {
+    fn remaining(&self) -> Result<Duration>;
+}
 
 #[derive(Clone)]
 pub struct BlockingPool {
@@ -24,7 +29,7 @@ pub enum BlockingClass {
     Background,
 }
 impl BlockingPool {
-    pub(crate) fn handle(&self) -> Handle {
+    pub fn handle(&self) -> Handle {
         self.runtime.clone()
     }
     pub fn new(runtime: Handle) -> Self {
@@ -48,7 +53,7 @@ impl BlockingPool {
             class_override: None,
         }
     }
-    pub(crate) fn background_handle(&self) -> Self {
+    pub fn background_handle(&self) -> Self {
         Self {
             class_override: Some(BlockingClass::Background),
             ..self.clone()
@@ -59,7 +64,12 @@ impl BlockingPool {
     pub fn foreground_admission(&self) -> Arc<Semaphore> {
         Arc::clone(&self.slots)
     }
-    pub async fn run<T, F>(&self, class: BlockingClass, deadline: &Deadline, work: F) -> Result<T>
+    pub async fn run<T, F>(
+        &self,
+        class: BlockingClass,
+        deadline: &impl WorkDeadline,
+        work: F,
+    ) -> Result<T>
     where
         T: Send + 'static,
         F: FnOnce() -> Result<T> + Send + 'static,
@@ -75,7 +85,11 @@ impl BlockingPool {
     /// Join that finite work even when native IO outlives the admission clock;
     /// losing the result would strand already-committed pending work.
     #[cfg(any(target_os = "linux", windows))]
-    pub(crate) async fn run_background_owned<T, F>(&self, deadline: &Deadline, work: F) -> Result<T>
+    pub async fn run_background_owned<T, F>(
+        &self,
+        deadline: &impl WorkDeadline,
+        work: F,
+    ) -> Result<T>
     where
         T: Send + 'static,
         F: FnOnce() -> Result<T> + Send + 'static,
@@ -88,7 +102,7 @@ impl BlockingPool {
     async fn start<T, F>(
         &self,
         class: BlockingClass,
-        deadline: &Deadline,
+        deadline: &impl WorkDeadline,
         work: F,
     ) -> Result<tokio::task::JoinHandle<Result<T>>>
     where
@@ -128,7 +142,7 @@ impl BlockingPool {
     /// Resource-producing/closing jobs must return their custody even if the
     /// caller's clock expires during native work. Admission is deadline-bound;
     /// the finite native job is joined, never detached with an owned result.
-    pub(crate) async fn run_owned<T, F>(&self, deadline: &Deadline, work: F) -> Result<T>
+    pub async fn run_owned<T, F>(&self, deadline: &impl WorkDeadline, work: F) -> Result<T>
     where
         T: Send + 'static,
         F: FnOnce() -> Result<T> + Send + 'static,
@@ -136,9 +150,9 @@ impl BlockingPool {
         let permit = self.admit_owned(deadline).await?;
         self.run_admitted_owned(permit, work).await
     }
-    pub(crate) async fn admit_owned(
+    pub async fn admit_owned(
         &self,
-        deadline: &Deadline,
+        deadline: &impl WorkDeadline,
     ) -> Result<tokio::sync::OwnedSemaphorePermit> {
         let permit = within(deadline, Arc::clone(&self.slots).acquire_owned())
             .await?
@@ -146,7 +160,7 @@ impl BlockingPool {
         deadline.remaining()?;
         Ok(permit)
     }
-    pub(crate) async fn run_admitted_owned<T, F>(
+    pub async fn run_admitted_owned<T, F>(
         &self,
         permit: tokio::sync::OwnedSemaphorePermit,
         work: F,
@@ -166,7 +180,7 @@ impl BlockingPool {
     /// Called after fencing admission and joining connection tasks. Acquire in
     /// maintenance's gate-then-shared order, so queued maintenance cannot deadlock
     /// against shutdown. Holding every shared permit also joins timed-out jobs.
-    pub async fn quiesce(&self, deadline: &Deadline) -> Result<()> {
+    pub async fn quiesce(&self, deadline: &impl WorkDeadline) -> Result<()> {
         let maintenance = within(deadline, Arc::clone(&self.background).acquire_owned())
             .await?
             .map_err(|_| pool_error("maintenance admission closed"))?;
@@ -182,7 +196,7 @@ impl BlockingPool {
 }
 /// Cancellation is observed while awaiting a queue slot or finite job. Dropping
 /// a JoinHandle never frees its occupied permit or cancels native work.
-pub(crate) async fn within<T>(deadline: &Deadline, future: impl Future<Output = T>) -> Result<T> {
+pub async fn within<T>(deadline: &impl WorkDeadline, future: impl Future<Output = T>) -> Result<T> {
     let mut future = std::pin::pin!(future);
     loop {
         let remaining = deadline.remaining()?;

@@ -23,7 +23,7 @@ fn id<'a>(value: &'a Value, name: &str) -> Result<&'a str> {
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
-pub(crate) fn item(item: &Value, turn: &str, native: bool) -> Result<Option<Completed>> {
+pub fn item(item: &Value, turn: &str, native: bool) -> Result<Option<Completed>> {
     let item_id = id(item, "id")?;
     let kind = item
         .get("type")

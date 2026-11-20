@@ -1,4 +1,6 @@
 //! glibc's process-wide free-page reclaim, without changing allocation policy.
+#![cfg(all(target_os = "linux", target_env = "gnu"))]
+pub mod maintenance;
 
 /// Release unused heap pages across all glibc arenas. This is thread-safe and
 /// leaves live allocations valid. False means glibc released no pages, not an

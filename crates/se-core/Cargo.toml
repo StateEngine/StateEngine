@@ -13,6 +13,7 @@ import = []
 se-config = { path = "../se-config" }
 se-types = { path = "../se-types" }
 se-store = { path = "../se-store" }
+se-observation = { path = "../se-observation" }
 serde.workspace = true
 schemars.workspace = true
 serde_json.workspace = true
