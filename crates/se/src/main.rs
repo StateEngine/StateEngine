@@ -359,10 +359,10 @@ fn main() -> std::process::ExitCode {
     }
     if args
         .get(1)
-        .is_some_and(|arg| arg == se_host::codex_forward::ENTRY)
+        .is_some_and(|arg| arg == se_local_socket::forward::ENTRY)
     {
         // Stdout may be the forwarded channel, so a failure is reported on stderr only.
-        return match se_host::codex_forward::private_entry(&args) {
+        return match se_local_socket::forward::private_entry(&args) {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(error) => {
                 let _ = writeln!(io::stderr(), "codex forwarder: {error}");

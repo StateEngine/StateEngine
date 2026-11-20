@@ -39,7 +39,7 @@ mod windows_security;
 #[cfg(unix)]
 pub use unix::{NativeUnixEndpoint, NativeUnixSocketCleanup, NativeUnixStream, UnixSocketPaths};
 #[cfg(windows)]
-pub use windows::{NativePipeReservation, NativePipeStream, socket_ready};
+pub use windows::{NativePipeReservation, NativePipeStream};
 #[cfg(unix)]
 pub type BorrowedIpc<'a> = std::os::fd::BorrowedFd<'a>;
 #[cfg(windows)]

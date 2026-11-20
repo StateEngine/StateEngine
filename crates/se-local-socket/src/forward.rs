@@ -71,7 +71,7 @@ fn pipe_socket(path: &Path, control: PathBuf) -> io::Result<()> {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
     // What this forwarder bound, so its exit removes only that endpoint.
-    let bound = se_proc::NativeFileIdentity::observe_local_socket(path)?;
+    let bound = crate::identity::ObjectId::local_socket(path)?;
     let (ended, server_gone) = std::sync::mpsc::channel::<io::Error>();
     std::thread::Builder::new()
         .name("se-codex-forward-accept".into())

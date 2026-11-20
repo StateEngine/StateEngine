@@ -23,6 +23,7 @@ se-core = { path = "../se-core" }
 se-mcp = { path = "../se-mcp" }
 se-store = { path = "../se-store" }
 se-proc = { path = "../se-proc" }
+se-local-socket = { path = "../se-local-socket" }
 se-repository = { path = "../se-repository" }
 se-atlas = { path = "../se-atlas" }
 se-secode-image = { path = "../se-secode-image", optional = true }

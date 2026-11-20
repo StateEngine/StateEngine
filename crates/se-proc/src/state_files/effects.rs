@@ -154,6 +154,12 @@ impl OwnedFile {
 pub fn remove_empty_directory(path: &Path) -> Result<DirectoryRemoval> {
     os::remove_empty_directory(path)
 }
+/// Remove the object behind a handle opened with DELETE access, so the object
+/// removed is exactly the one the caller checked through that handle.
+#[cfg(windows)]
+pub fn remove_held(file: &File, path: &Path) -> Result<()> {
+    os::dispose(file, path)
+}
 
 pub(crate) fn changed(operation: &'static str, path: &Path) -> super::StateFileError {
     failure(StateFileErrorCode::SourceChanged, operation, path)

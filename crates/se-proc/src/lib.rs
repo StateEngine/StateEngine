@@ -35,7 +35,7 @@ pub use checkpoint::{
 pub use command::background_command;
 mod error;
 mod file_identity;
-pub use file_identity::{ExactRemoval, NativeFileIdentity};
+pub use file_identity::NativeFileIdentity;
 mod identity;
 mod launch;
 mod native_error;
@@ -136,6 +136,8 @@ pub use creation_owner::{FileOwnerError, FileOwnerInitialization, initialize_fil
 
 pub use executable::{NativeExecutableCreation, NativeExecutableInvocation, NativeExecutablePin};
 pub use state_files::NativeMetadataPin;
+#[cfg(windows)]
+pub use state_files::effects::remove_held;
 pub use state_files::effects::{
     CreatedDirectoryCleanup, DirectoryRemoval, NativeDirectoryCreation, NativeInstallationClaim,
     OwnedFile, installation_claim_path, remove_empty_directory, scan_recovery, scan_temporary,
