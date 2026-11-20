@@ -17,6 +17,9 @@ mod interrupt;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "host/launch.rs"]
 mod launch;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[path = "host/spawner.rs"]
+pub(crate) mod spawner;
 #[cfg(windows)]
 #[path = "host/stack.rs"]
 mod stack;
@@ -32,17 +35,23 @@ use se_types::{Result, SeError};
 use std::ffi::OsString;
 /// Authenticated private-frame policy, never selected from an environment flag.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StartupOrigin {
     Explicit,
     Automatic,
+    Spawner(se_proc::ProcessIdentity),
 }
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl StartupOrigin {
-    fn frame(self) -> &'static str {
+    fn frame(&self) -> Result<String> {
         match self {
-            Self::Explicit => "explicit",
-            Self::Automatic => "automatic",
+            Self::Explicit => Ok("explicit".into()),
+            Self::Automatic => Ok("automatic".into()),
+            Self::Spawner(identity) => serde_json::to_string(identity)
+                .map(|identity| format!("spawner:{identity}"))
+                .map_err(|error| {
+                    se_core::scope::unreadable("spawner bootstrap", &error.to_string())
+                }),
         }
     }
 }

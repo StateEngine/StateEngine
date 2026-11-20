@@ -6,7 +6,7 @@
 mod fixture;
 #[path = "../../test-support/provider_home.rs"]
 mod provider_home;
-#[path = "../src/render/error.rs"]
+#[path = "../../se-render/src/error.rs"]
 mod render_error;
 use fixture::*;
 use se_core::scope;

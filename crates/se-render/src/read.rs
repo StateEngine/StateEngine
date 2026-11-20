@@ -81,6 +81,45 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
             process.pid, process.started_at
         )?;
     }
+    if let Some(spawner) = &value.runtime.spawner {
+        writeln!(
+            out,
+            "  Bound to spawner PID {} (birth {}, {})",
+            spawner.pid, spawner.birth, spawner.state
+        )?;
+    }
+    if let Some(cleanup) = &value.runtime.spawner_cleanup {
+        writeln!(
+            out,
+            "Spawner cleanup for generation {}: {}",
+            cleanup.generation,
+            if cleanup.complete {
+                "complete"
+            } else {
+                "incomplete"
+            }
+        )?;
+        for session in &cleanup.sessions {
+            writeln!(
+                out,
+                "  {} / {} / {}: {}",
+                session.project,
+                session.agent,
+                session.session,
+                if session.stopped {
+                    "stopped"
+                } else {
+                    "unproved"
+                }
+            )?;
+            if let Some(reason) = &session.reason {
+                writeln!(out, "    {reason}")?;
+            }
+        }
+        for pending in &cleanup.pending {
+            writeln!(out, "  Pending: {pending}")?;
+        }
+    }
     if let Some(agents) = &value.agents {
         for agent in agents.items() {
             writeln!(

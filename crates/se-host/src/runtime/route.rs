@@ -60,6 +60,7 @@ pub struct AdmittedExchange {
     /// An owner terminal's launch sign-in, scoped around this call's execution.
     pub(super) sign_in: Option<crate::launch_sign_in::SignIn>,
     pub(super) channels: Option<crate::channels::ChannelRequest>,
+    spawner: Option<Result<OperationOutput>>,
     pub(super) adopted: Option<crate::adoption::NativeCall>,
     #[cfg(feature = "remote")]
     owner: Option<crate::remote::OwnerCall>,
@@ -75,6 +76,7 @@ pub struct HostedRouter {
     pub(crate) sources: TranscriptBindings,
     pub(crate) context: AdmissionContext,
     pub(crate) channels: std::sync::Arc<crate::channels::Channels>,
+    pub(super) spawner: Option<std::sync::Arc<super::spawner::Spawner>>,
     response_bytes: std::num::NonZeroU32,
     pub(crate) fenced: std::sync::Arc<std::sync::atomic::AtomicBool>,
     http_port: std::sync::Arc<std::sync::OnceLock<u16>>,
@@ -92,6 +94,7 @@ impl HostedRuntime {
             sources: self.sources.clone(),
             context: self.admission_context(),
             channels: self.channels()?,
+            spawner: self.spawner.clone(),
             response_bytes: self.response_bytes,
             fenced: std::sync::Arc::clone(&self.fenced),
             http_port: std::sync::Arc::clone(&self.http_port),
@@ -253,7 +256,9 @@ impl HostedRouter {
         let context = self.context.clone();
         let execution = self.execution.clone();
         let request_deadline = deadline.clone();
+        let claim_deadline = deadline.clone();
         let fenced = std::sync::Arc::clone(&self.fenced);
+        let spawner = self.spawner.clone();
         let (mut exchange, span) =
             timings::blocking(&self.execution.blocking, Mode::Owned, deadline, move || {
                 let call = if fenced.load(std::sync::atomic::Ordering::Acquire) {
@@ -274,6 +279,7 @@ impl HostedRouter {
                 #[cfg(feature = "remote")]
                 let mut owner = None;
                 let mut adopted = None;
+                let mut spawner_result = None;
                 let (call, channels) = match call {
                     Ok(RouteChoice::Adopt(call)) => {
                         adopted = Some(*call);
@@ -285,6 +291,29 @@ impl HostedRouter {
                         (None, None)
                     }
                     Ok(RouteChoice::Channels(input)) => (None, Some(*input)),
+                    Ok(RouteChoice::Spawner(identity)) => {
+                        spawner_result = Some(match spawner {
+                            Some(spawner)
+                                if spawner.reclaim((*identity).clone(), Instant::now()) =>
+                            {
+                                Ok(OperationOutput {
+                                    schema: "se.runtime-reclaim/1".into(),
+                                    value: serde_json::json!({"state":"claimed"}),
+                                    window: None,
+                                })
+                            }
+                            Some(_) => Err(SeError::invalid(
+                                "spawner reclaim",
+                                "the existing bound owner or a claim within its reclaim window",
+                            )),
+                            None => Err(super::spawner::unbound_refusal(
+                                &context,
+                                &execution,
+                                &claim_deadline,
+                            )),
+                        });
+                        (None, None)
+                    }
                     Ok(RouteChoice::Core(call)) => (Some(Ok(*call)), None),
                     Err(error) => (Some(Err(error)), None),
                 };
@@ -294,6 +323,7 @@ impl HostedRouter {
                     call,
                     sign_in: None,
                     channels,
+                    spawner: spawner_result,
                     adopted,
                     #[cfg(feature = "remote")]
                     owner,
@@ -309,156 +339,11 @@ impl HostedRouter {
         Ok(exchange)
     }
 }
-impl AdmittedExchange {
-    pub(super) async fn wait_for_peer_close(&self) -> Result<()> {
-        self.connection.connection.wait_for_peer_close().await
-    }
+mod exchange;
 
-    #[cfg(feature = "remote")]
-    pub(crate) fn take_owner_call(&mut self) -> Option<crate::remote::OwnerCall> {
-        self.owner.take()
-    }
-    #[cfg(feature = "remote")]
-    pub(crate) async fn reply_owner(
-        mut self,
-        result: Result<OperationOutput>,
-        deadline: &Deadline,
-    ) -> Result<HostedConnection> {
-        let result = match result {
-            Ok(value) => IpcResult::Output(Box::new(value)),
-            Err(error) => IpcResult::Error(envelope(&error)?),
-        };
-        let mut response = IpcResponse {
-            version: se_types::API_VERSION,
-            request_id: self.request_id,
-            generation: self.connection.connection.negotiated().generation,
-            result,
-        };
-        if let Err(error) = crate::client::wire::encode_response(
-            &response,
-            self.connection
-                .connection
-                .negotiated()
-                .maximum_reply_bytes
-                .get() as usize,
-        ) {
-            response.result = IpcResult::Error(envelope(&error)?);
-        }
-        self.connection
-            .connection
-            .reply(&response, deadline)
-            .await?;
-        Ok(self.connection)
-    }
-    pub fn take_call(&mut self) -> Result<RoutedCall> {
-        self.call
-            .take()
-            .ok_or_else(|| SeError::invalid("admitted exchange", "one owned call consumer"))?
-    }
-
-    /// The original id/API/G are taken from the admitted exchange. A complete
-    /// response is budgeted and written once; an incomplete write consumes it.
-    pub async fn reply(
-        self,
-        output: Result<ExecutedCall>,
-        deadline: &Deadline,
-    ) -> Result<HostedConnection> {
-        self.reply_with_error(output, deadline, None).await
-    }
-    pub(crate) async fn reply_draining(
-        self,
-        output: Result<ExecutedCall>,
-        deadline: &Deadline,
-    ) -> Result<HostedConnection> {
-        match deadline.remaining() {
-            Ok(_) => self.reply(output, deadline).await,
-            Err(expired) => {
-                // Report known finish facts using the existing finite transport
-                // cleanup allowance; neither execution nor storage is renewed.
-                self.reply_with_error(output, &super::shutdown::cleanup_deadline()?, Some(expired))
-                    .await
-            }
-        }
-    }
-    async fn reply_with_error(
-        self,
-        output: Result<ExecutedCall>,
-        deadline: &Deadline,
-        unavailable: Option<SeError>,
-    ) -> Result<HostedConnection> {
-        // An execution error already carries its authoritative outcome. Only a
-        // completed output needs conversion when the shutdown budget expired.
-        let unavailable = output.as_ref().ok().and(unavailable);
-        let mut connection = self.connection;
-        let committed = output
-            .as_ref()
-            .ok()
-            .and_then(|completed| completed.committed.clone());
-        let capture_keys = output
-            .as_ref()
-            .ok()
-            .map(|completed| completed.capture_keys.clone())
-            .unwrap_or_default();
-        let capture_events: Vec<_> = output
-            .as_ref()
-            .ok()
-            .into_iter()
-            .flat_map(|completed| &completed.capture_commits)
-            .map(|commit| commit.event_id.clone())
-            .collect();
-        let result = match output {
-            Ok(mut completed) => {
-                completed.host_phases.admission = self.admission;
-                completed.host_phases.admitted_to_encode_us =
-                    Some(timings::micros(self.admitted_at.elapsed()));
-                encode_executed(completed).map(|o| IpcResult::Output(Box::new(o)))
-            }
-            Err(error) => envelope(&error).map(IpcResult::Error),
-        };
-        let response_error = |error: SeError| {
-            let error = committed
-                .as_ref()
-                .map_or(error.body.clone().into(), |known| {
-                    known.response_error(error)
-                });
-            if !capture_events.is_empty() {
-                SeError::new(se_types::Detail::CaptureIncomplete(
-                    se_types::details::CaptureIncomplete {
-                        committed_events: capture_events.clone(),
-                        natural_keys: capture_keys.clone(),
-                        reason: error.to_string(),
-                    },
-                ))
-                .with_cause(error)
-            } else {
-                error
-            }
-        };
-        let result = match (result, unavailable) {
-            (_, Some(expired)) => IpcResult::Error(envelope(&response_error(expired))?),
-            (Ok(result), None) => result,
-            (Err(error), None) => IpcResult::Error(envelope(&response_error(error))?),
-        };
-        let mut response = IpcResponse {
-            version: se_types::API_VERSION,
-            request_id: self.request_id,
-            generation: connection.connection.negotiated().generation,
-            result,
-        };
-        // Encode/validate before consuming the channel. A known commit whose
-        // output exceeds its negotiated budget still receives a typed key error.
-        if let Err(error) = crate::client::wire::encode_response(
-            &response,
-            connection.connection.negotiated().maximum_reply_bytes.get() as usize,
-        ) {
-            response.result = IpcResult::Error(envelope(&response_error(error))?);
-        }
-        connection.connection.reply(&response, deadline).await?;
-        Ok(connection)
-    }
-}
 enum RouteChoice {
     Adopt(Box<crate::adoption::NativeCall>),
+    Spawner(Box<se_proc::ProcessIdentity>),
     #[cfg(feature = "remote")]
     Owner(Box<crate::remote::OwnerCall>),
     Core(Box<RoutedCall>),
@@ -548,6 +433,22 @@ fn route(
     };
     let (raw, hook) = match wire.request {
         IpcRequest::Adopt(input) => return scoped.adopt(input),
+        IpcRequest::Spawner(identity) => {
+            if scoped.cli_selections || scoped.presence.is_some() {
+                return Err(SeError::invalid(
+                    "spawner reclaim",
+                    "no unrelated selectors or presence claims",
+                ));
+            }
+            context.channel_owner(
+                connection.connection.peer(),
+                connection.connection.connection_authority(),
+                wire.authority.as_ref(),
+                &connection.grant,
+            )?;
+            super::spawner::verify_peer(&identity, connection.connection.peer(), deadline.at())?;
+            return Ok(RouteChoice::Spawner(Box::new(identity)));
+        }
         #[cfg(feature = "remote")]
         IpcRequest::RemoteOwner(input) => return scoped.owner(*input),
         IpcRequest::Channels(input) => return scoped.channels(input),

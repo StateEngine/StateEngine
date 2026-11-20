@@ -8,6 +8,7 @@ use tokio::sync::watch;
 pub(super) type Timer = Pin<Box<dyn Future<Output = ()> + Send>>;
 pub(super) enum Tick {
     Idle,
+    Spawner,
     CatchUp,
     OwnershipFault,
 }
@@ -15,22 +16,31 @@ pub(super) struct Timers {
     pub idle: Timer,
     pub catch_up: Timer,
     pub fault: Timer,
+    pub spawner: Timer,
 }
 impl Timers {
     pub(super) fn new(
         idle: Timer,
         activity: Option<watch::Receiver<u32>>,
         fault: Arc<super::tasks::OwnershipFault>,
+        spawner: Option<Arc<super::spawner::Spawner>>,
     ) -> Self {
         Self {
             idle,
             catch_up: timer(activity),
             fault: Box::pin(async move { fault.wait().await }),
+            spawner: match spawner {
+                Some(spawner) => Box::pin(spawner.wait()),
+                None => Box::pin(std::future::pending()),
+            },
         }
     }
     pub(super) fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Tick> {
         if self.fault.as_mut().poll(cx).is_ready() {
             return Poll::Ready(Tick::OwnershipFault);
+        }
+        if self.spawner.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Tick::Spawner);
         }
         if self.idle.as_mut().poll(cx).is_ready() {
             return Poll::Ready(Tick::Idle);

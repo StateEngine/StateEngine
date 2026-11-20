@@ -2,17 +2,17 @@
     dead_code,
     reason = "The actual human renderer shares other CLI renderers."
 )]
-#[path = "../src/render/acp.rs"]
+#[path = "../../se-render/src/acp.rs"]
 mod acp;
 #[path = "../../test-support/directory.rs"]
 mod cleanup_directory;
-#[path = "../src/render/labels.rs"]
+#[path = "../../se-render/src/labels.rs"]
 mod labels;
-#[path = "../src/render/read.rs"]
+#[path = "../../se-render/src/read.rs"]
 mod read;
-#[path = "../src/render/write.rs"]
+#[path = "../../se-render/src/write.rs"]
 mod render_write;
-#[path = "../src/render/transcript.rs"]
+#[path = "../../se-render/src/transcript.rs"]
 mod transcript;
 use se_core::ops::{AnyOutput, installation::*, outputs::*};
 use se_proc::{NativeStateFiles, OwnedFile};

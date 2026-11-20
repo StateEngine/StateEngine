@@ -12,9 +12,11 @@ pub struct LaunchCoordinator {
 pub use crate::process::LaunchCoordinator;
 
 #[cfg(all(feature = "listener", target_os = "linux", target_env = "gnu"))]
-mod memory;
+use se_native_memory::maintenance as memory;
 #[cfg(feature = "listener")]
-pub(crate) mod pool;
+pub(crate) use se_work_pool as pool;
+#[cfg(feature = "listener")]
+pub(crate) mod spawner;
 #[cfg(feature = "listener")]
 pub use pool::*;
 #[cfg(feature = "listener")]

@@ -1566,6 +1566,7 @@ dependencies = [
  "se-mcp",
  "se-proc",
  "se-remote-cli",
+ "se-render",
  "se-repository",
  "se-store",
  "se-types",
@@ -1617,6 +1618,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "se-codex-capture"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-core",
+ "se-proc",
+ "se-store",
+ "se-types",
+ "serde_json",
+]
+
+[[package]]
 name = "se-config"
 version = "0.0.1-alpha.1"
 dependencies = [
@@ -1633,6 +1645,7 @@ dependencies = [
  "clap",
  "schemars",
  "se-config",
+ "se-observation",
  "se-store",
  "se-types",
  "serde",
@@ -1668,15 +1681,18 @@ dependencies = [
  "rusqlite",
  "se-atlas",
  "se-atlas-cold",
+ "se-codex-capture",
  "se-config",
  "se-core",
  "se-mcp",
+ "se-native-memory",
  "se-proc",
  "se-remote",
  "se-repository",
  "se-secode-image",
  "se-store",
  "se-types",
+ "se-work-pool",
  "secode-stateengine-api",
  "serde",
  "serde_json",
@@ -1711,10 +1727,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "se-native-memory"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "libc",
+ "tokio",
+]
+
+[[package]]
 name = "se-native-path"
 version = "0.0.1-alpha.1"
 dependencies = [
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "se-observation"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "schemars",
+ "se-store",
+ "se-types",
+ "serde",
 ]
 
 [[package]]
@@ -1724,6 +1758,7 @@ dependencies = [
  "libc",
  "rusqlite",
  "se-fsevents",
+ "se-native-memory",
  "se-native-path",
  "se-types",
  "serde",
@@ -1764,6 +1799,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "se-render"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-config",
+ "se-core",
+ "se-host",
+ "se-mcp",
+ "se-store",
+ "se-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "se-repository"
 version = "0.0.1-alpha.1"
 dependencies = [
@@ -1790,6 +1839,7 @@ dependencies = [
  "rusqlite",
  "se-proc",
  "se-store-contract",
+ "se-store-sql",
  "se-trusted-path",
  "se-types",
  "serde",
@@ -1808,6 +1858,14 @@ dependencies = [
  "serde_json",
  "sha2",
  "uuid",
+]
+
+[[package]]
+name = "se-store-sql"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "rusqlite",
+ "se-store-contract",
 ]
 
 [[package]]
@@ -1831,6 +1889,16 @@ dependencies = [
  "url",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "se-work-pool"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-config",
+ "se-core",
+ "se-types",
+ "tokio",
 ]
 
 [[package]]

@@ -53,10 +53,17 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
     if tag != "host" {
         return Err(invalid("the private host frame discriminator"));
     }
-    let auto_start = if origin == "automatic" {
-        true
+    let (auto_start, spawner) = if origin == "automatic" {
+        (true, None)
     } else if origin == "explicit" {
-        false
+        (false, None)
+    } else if let Some(encoded) = origin
+        .to_str()
+        .and_then(|value| value.strip_prefix("spawner:"))
+    {
+        let identity = serde_json::from_str(encoded)
+            .map_err(|_| invalid("the authenticated native spawner identity"))?;
+        (false, Some(identity))
     } else {
         return Err(invalid(
             "an explicit or automatic authenticated startup origin",
@@ -73,6 +80,12 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
             "the initialized protected machine identity matching the native bootstrap",
         ));
     }
+    if spawner
+        .as_ref()
+        .is_some_and(|identity: &se_proc::ProcessIdentity| identity.machine != persisted)
+    {
+        return Err(invalid("the spawner's initialized machine identity"));
+    }
     let instance = decode_instance(instance)?;
     let generation = HostGeneration::new(
         generation
@@ -86,6 +99,7 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
         persisted,
         generation,
         auto_start,
+        spawner,
         #[cfg(unix)]
         se_proc::native_ipc::UnixSocketPaths {
             runtime_directory: (!runtime_directory.is_empty())
@@ -116,6 +130,7 @@ pub(crate) fn foreground(
         machine,
         generation,
         false,
+        None,
         #[cfg(unix)]
         crate::config::unix_socket_paths()?,
         None,
@@ -138,6 +153,7 @@ fn serve(
     machine: se_types::MachineId,
     generation: HostGeneration,
     auto_start: bool,
+    spawner: Option<se_proc::ProcessIdentity>,
     #[cfg(unix)] socket_paths: se_proc::native_ipc::UnixSocketPaths,
     instance: Option<se_proc::HostInstanceId>,
     guard: &mut Option<se_proc::RuntimeBootstrap>,
@@ -259,6 +275,9 @@ fn serve(
         #[cfg(any(target_os = "linux", windows))]
         host.install_native_atlas(helper_executable.to_local()?,se_host::NativeAtlasQualification::default())?;
         host.configure_auto_start(auto_start)?;
+        if let Some(identity) = spawner {
+            host.bind_spawner(identity, &bound).await?;
+        }
         #[cfg(unix)]
         host.configure_unix_socket_paths(socket_paths)?;
         let (_coordinator, reconciliation) = se_host::LaunchCoordinator::install(

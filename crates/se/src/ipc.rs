@@ -102,7 +102,10 @@ pub(crate) fn exchange_output(
             .key
             .as_ref()
             .map(|key| (operation.name.clone(), key.clone())),
-        IpcRequest::Hook(_) | IpcRequest::Channels(_) | IpcRequest::Adopt(_) => None,
+        IpcRequest::Hook(_)
+        | IpcRequest::Channels(_)
+        | IpcRequest::Adopt(_)
+        | IpcRequest::Spawner(_) => None,
         #[cfg(feature = "remote")]
         IpcRequest::RemoteOwner(input) => input
             .key()
@@ -194,6 +197,7 @@ fn call_operation(call: &IpcEnvelope) -> &str {
         IpcRequest::Hook(_) => "hook.claude",
         IpcRequest::Channels(_) => "native.channels",
         IpcRequest::Adopt(_) => "native.adopt",
+        IpcRequest::Spawner(_) => "native.spawner",
         #[cfg(feature = "remote")]
         IpcRequest::RemoteOwner(_) => "remote authority control",
     }

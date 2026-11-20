@@ -19,12 +19,10 @@ mod windows_package;
 pub use windows_package::process_has_package_identity;
 #[cfg(unix)]
 pub mod advisory_lock;
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-mod allocator;
 pub mod atlas_worker;
 mod canonical_path;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-pub use allocator::{reclaim_unused_allocator_pages, release_read_only_mapped_pages};
+pub use se_native_memory::{reclaim_unused_allocator_pages, release_read_only_mapped_pages};
 mod checkpoint;
 mod command;
 pub use canonical_path::canonicalize_path;
@@ -126,7 +124,7 @@ mod windows_native;
 #[cfg(windows)]
 pub use platform::observe_prepared_scope_exit;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-pub use runtime::{read_process, read_process_until};
+pub use runtime::{read_direct_parent_until, read_process, read_process_until};
 #[cfg(target_os = "macos")]
 mod macos_process;
 #[cfg(target_os = "macos")]

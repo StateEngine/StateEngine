@@ -154,6 +154,8 @@ fn page_limit() -> u16 {
 pub struct RuntimeUp {
     #[serde(default)]
     pub foreground: bool,
+    #[serde(default)]
+    pub spawner: Option<String>,
     pub idempotency_key: IdempotencyKey,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

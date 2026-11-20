@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 se-native-path = { path = "../se-native-path" }
 se-types = { path = "../se-types" }
+se-native-memory = { path = "../se-native-memory" }
 sha2.workspace = true
 zeroize.workspace = true
 serde.workspace = true

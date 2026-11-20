@@ -22,16 +22,16 @@ const IDLE_QUIESCENCE: Duration = Duration::from_secs(1);
 const PASS_MAX_DEFER: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Default)]
-pub(super) struct MemoryReclaim(Arc<Notify>);
+pub struct MemoryReclaim(Arc<Notify>);
 
-pub(super) struct CompletedWork<'a>(&'a MemoryReclaim);
+pub struct CompletedWork<'a>(&'a MemoryReclaim);
 
 impl MemoryReclaim {
-    pub(super) fn after_work(&self) -> CompletedWork<'_> {
+    pub fn after_work(&self) -> CompletedWork<'_> {
         CompletedWork(self)
     }
 
-    pub(super) fn completed(&self) {
+    pub fn completed(&self) {
         self.0.notify_one();
     }
 
@@ -85,7 +85,7 @@ impl Drop for CompletedWork<'_> {
     }
 }
 
-pub(super) async fn while_serving(
+pub async fn while_serving(
     mut stop: Pin<Box<dyn Future<Output = ()> + Send>>,
     memory: Option<MemoryReclaim>,
 ) {
@@ -97,7 +97,7 @@ pub(super) async fn while_serving(
                         || {
                             // Best effort: false is a normal no-pages-released
                             // result.
-                            se_proc::reclaim_unused_allocator_pages();
+                            crate::reclaim_unused_allocator_pages();
                         },
                         || {
                             // Demand-paged code pages stay resident until
@@ -105,7 +105,7 @@ pub(super) async fn while_serving(
                             // cannot wait for that on a loaded box. A smaps
                             // read failure leaves the pages resident; the
                             // next pass retries.
-                            let _ = se_proc::release_read_only_mapped_pages();
+                            let _ = crate::release_read_only_mapped_pages();
                         },
                     )
                     .await;

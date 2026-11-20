@@ -421,6 +421,7 @@ pub fn from_matches_with_key(
         }
         "runtime.up" => AnyOp::RuntimeUp(RuntimeUp {
             foreground: flag(m, "foreground"),
+            spawner: text(m, "spawner"),
             idempotency_key: key()?,
         }),
         "runtime.down" => AnyOp::RuntimeDown(RuntimeDown {

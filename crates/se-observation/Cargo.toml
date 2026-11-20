@@ -1,0 +1,16 @@
+[package]
+name = "se-observation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+se-types = { path = "../se-types" }
+se-store = { path = "../se-store" }
+
+[lints]
+workspace = true

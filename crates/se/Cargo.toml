@@ -9,7 +9,7 @@ publish.workspace = true
 [features]
 rebind-fixture = []
 remote = ["se-host/remote", "dep:se-remote-cli", "se-remote-cli/remote"]
-import = ["se-host/import", "se-core/import"]
+import = ["se-host/import", "se-core/import", "se-render/import"]
 
 [dependencies]
 se-config = { path = "../se-config" }
@@ -21,6 +21,7 @@ se-mcp = { path = "../se-mcp" }
 se-types = { path = "../se-types" }
 se-proc = { path = "../se-proc" }
 se-repository = { path = "../se-repository" }
+se-render = { path = "../se-render" }
 serde.workspace = true
 serde_json.workspace = true
 toml = "0.9.11"

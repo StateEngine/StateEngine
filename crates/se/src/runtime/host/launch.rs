@@ -115,7 +115,7 @@ fn start_recorded(
             se_types::hex_lower(&instance.0).into(),
             generation.get().to_string().into(),
             configuration.as_os_str().into(),
-            origin.frame().into(),
+            origin.frame()?.into(),
         ];
         #[cfg(unix)]
         let arguments = {

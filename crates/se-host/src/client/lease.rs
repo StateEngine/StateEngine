@@ -24,6 +24,11 @@ pub struct Deadline {
     budget: Duration,
     cancelled: Arc<AtomicBool>,
 }
+impl se_work_pool::WorkDeadline for Deadline {
+    fn remaining(&self) -> Result<Duration> {
+        Deadline::remaining(self)
+    }
+}
 impl Deadline {
     pub fn from_options(options: &ClientOptions) -> Result<Self> {
         let timeout = options.timeout.min(CALL_TIMEOUT);
