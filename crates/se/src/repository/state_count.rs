@@ -1,4 +1,3 @@
-//! The bounded `git rev-list --count` history walk and its whole-pipe reads.
 use super::{COUNT_RETAIN, STDERR_RETAIN, bounded_exit, configured, stderr_tail};
 use se_core::scope;
 use se_types::Result;

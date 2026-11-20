@@ -1,6 +1,3 @@
-//! The bounded `git status --porcelain=v2 --branch` observation: header facts
-//! and the dirty fact, settled at the first entry so a large working tree is
-//! never buffered.
 use super::{STDERR_RETAIN, STDERR_TAIL, bounded_exit, configured, observe_blocking};
 use se_core::scope;
 use se_repository as library;
