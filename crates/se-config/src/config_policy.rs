@@ -347,6 +347,39 @@ pub struct ConfigKeyMeta {
     pub human_only: bool,
     pub agent_record: bool,
 }
+/// Each provider's own config directory variable that is set, made absolute against this
+/// process's directory: providers' commands may run elsewhere, so this one path is both
+/// checked and handed to them. A value that cannot be made absolute is a named refusal.
+pub fn provider_config_dirs()
+-> std::result::Result<Vec<(Provider, &'static str, std::path::PathBuf)>, String> {
+    let mut dirs = Vec::new();
+    for (provider, name) in [
+        (Provider::Codex, "CODEX_HOME"),
+        (Provider::Claude, "CLAUDE_CONFIG_DIR"),
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            let dir = std::path::absolute(&value)
+                .map_err(|e| format!("{name} cannot be resolved: {e}"))?;
+            dirs.push((provider, name, dir));
+        }
+    }
+    Ok(dirs)
+}
+/// Why a provider config directory cannot be used, from its own metadata; `None` when it can.
+pub fn unusable_config_dir(name: &str, dir: &std::path::Path, title: &str) -> Option<String> {
+    let problem = match std::fs::metadata(dir) {
+        Ok(found) if found.is_dir() => return None,
+        Ok(_) => "is not a directory".to_owned(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            format!("does not exist; sign in to {title} first or create it")
+        }
+        Err(e) => format!("cannot be read: {e}"),
+    };
+    Some(format!(
+        "{name} points to {}, which {problem}",
+        dir.display()
+    ))
+}
 pub fn key_metadata(key: &str) -> Result<ConfigKeyMeta> {
     if let Some((name, field)) = key
         .strip_prefix("agent.")

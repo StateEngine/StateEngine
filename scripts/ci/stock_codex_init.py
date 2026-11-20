@@ -1,4 +1,4 @@
-"""Check stock Codex registration and managed launch on Linux x64.
+"""Check stock provider setup and Codex managed launch on Linux x64.
 
 Run with a built se executable. Use --loopback for PRs or provide
 CI_OPENAI_API_KEY and CI_CODEX_MODEL from nightly-providers for the live run.
@@ -32,6 +32,10 @@ from provider_home import isolate, run_provider_command
 CODEX_VERSION = "0.169.0"
 CODEX_ARCHIVE = f"https://registry.npmjs.org/@openai/codex/-/codex-{CODEX_VERSION}-linux-x64.tgz"
 CODEX_SHA = "89801b4b97faba562eb80fe0a833159ac79399be674022f4b1a0ccab1d153faa"
+CLAUDE_VERSION = "2.1.326"
+CLAUDE_ARCHIVE = ("https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/"
+                  f"claude-code-linux-x64-{CLAUDE_VERSION}.tgz")
+CLAUDE_SHA = "113a6b58f9ee5a94b8bb841252070f60ff5f295b3d28c7f40b480a5b54f5579b"
 WEBSOCKETS_WHEEL = ("https://files.pythonhosted.org/packages/fa/a8/"
                     "5b41e0da817d64113292ab1f8247140aac61cbf6cfd085d6a0fa77f4984f/"
                     "websockets-15.0.1-py3-none-any.whl")
@@ -39,6 +43,11 @@ WEBSOCKETS_SHA = "f7a866fbc1e97b5c617ee4116daaa09b722101d4a3c170c787450ba409f973
 COLLISION_NAMES = ("stateengine-agent", "stateengine-agent-2")
 TOOLS = {"stateengine_whoami", "stateengine_help", "stateengine_resume"}
 CONNECTOR = Path(__file__).resolve().parent / "fixtures/stock_codex_connector.py"
+LOOPBACK_NETWORK = {"HTTP_PROXY": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9",
+                    "ALL_PROXY": "http://127.0.0.1:9", "NO_PROXY": "127.0.0.1,localhost"}
+CONFIG_PATHS = {"codex": "CODEX_HOME", "claude": "CLAUDE_CONFIG_DIR"}
+REFUSALS = {"missing": ("does not exist",), "not-directory": ("not a directory",),
+            "unreadable": ("unreadable", "permission denied", "could not read", "cannot read")}
 
 
 class WitnessFailure(Exception):
@@ -67,6 +76,16 @@ def install(root):
     sys.path.insert(0, str(wheel))
     from websockets.sync.client import unix_connect
     return codex, unix_connect
+
+
+def install_claude(root):
+    archive = download(CLAUDE_ARCHIVE, root / "claude.tgz", CLAUDE_SHA)
+    with tarfile.open(archive, mode="r|gz") as package:
+        executable = package.next()
+        require(executable is not None and executable.name == "package/claude" and executable.isfile(),
+                "The pinned archive did not begin with the Claude executable")
+        package.extract(executable, root / "claude", filter="data")
+    return root / "claude/package/claude"
 
 
 class AppServer:
@@ -150,9 +169,13 @@ class Fixture:
                     **{f"XDG_{part.upper()}_HOME": str(root / part)
                        for part in ("cache", "config", "data", "state")}}
 
+    def spawn(self, binary, *words):
+        return run_provider_command(subprocess.run, [str(binary), *words], cwd=self.repo,
+                                    environment=self.env, fixture=self.root, stdin=subprocess.DEVNULL,
+                                    capture_output=True, timeout=45)
+
     def run(self, binary, *words):
-        result = run_provider_command(subprocess.run, [str(binary), *words], cwd=self.repo, environment=self.env, fixture=self.root,
-                                stdin=subprocess.DEVNULL, capture_output=True, timeout=45)
+        result = self.spawn(binary, *words)
         if result.returncode:
             try:
                 code = json.loads(result.stdout).get("code", "")
@@ -165,15 +188,18 @@ class Fixture:
     def cli(self, *words):
         return json.loads(self.run(self.se, "--json", "--home", str(self.state), *words))
 
-    def prepare(self, key, model, loopback_url):
+    def prepare_repository(self, provider, executable):
         git = shutil.which("git")
         require(git is not None, "Git is required for the fixture repository")
         for directory in (self.root, self.repo, self.home, self.login, self.bin, self.runtime):
             directory.mkdir(mode=0o700)
         isolate(self.env, self.root, self.home, codex=self.login)
-        for name, path in (("se", self.se), ("codex", self.codex), ("git", Path(git).resolve(strict=True))):
+        for name, path in (("se", self.se), (provider, executable), ("git", Path(git).resolve(strict=True))):
             (self.bin / name).symlink_to(path)
         self.run(self.bin / "git", "init", "-q")
+
+    def prepare(self, key, model, loopback_url):
+        self.prepare_repository("codex", self.codex)
         # Stock workspace-write launches can save project trust. Preload that
         # setting so the byte check measures changes to MCP registration.
         config = f"""model = {json.dumps(model)}
@@ -198,8 +224,7 @@ supports_websockets = false
 request_max_retries = 0
 stream_max_retries = 0
 """
-            self.env.update(HTTP_PROXY="http://127.0.0.1:9", HTTPS_PROXY="http://127.0.0.1:9",
-                            ALL_PROXY="http://127.0.0.1:9", NO_PROXY="127.0.0.1,localhost")
+            self.env.update(LOOPBACK_NETWORK)
         self.config.write_text(config, encoding="utf-8")
         descriptor = os.open(self.auth, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
@@ -273,6 +298,68 @@ def check_case(fixture, case, key, model, connect, loopback_url):
     return receipt
 
 
+def profile_snapshot(profile):
+    snapshot = {}
+    for path in profile.rglob("*"):
+        relative = path.relative_to(profile)
+        if path.is_symlink():
+            snapshot[relative] = ("link", path.readlink())
+        elif path.is_dir():
+            snapshot[relative] = ("directory", None)
+        else:
+            require(path.is_file(), "The provider profile gained a special file")
+            with path.open("rb") as stream:
+                snapshot[relative] = ("file", file_digest(stream, "sha256").hexdigest())
+    return snapshot
+
+
+def check_config_refusal(fixture, provider, executable, problem):
+    receipt = {"passed": False}
+    try:
+        fixture.env.update(LOOPBACK_NETWORK)
+        fixture.prepare_repository(provider, executable)
+        version = fixture.run(executable, "--version").decode().strip()
+        expected = f"codex-cli {CODEX_VERSION}" if provider == "codex" else f"{CLAUDE_VERSION} (Claude Code)"
+        require(version == expected, "The harness did not report its pinned version")
+        key = CONFIG_PATHS[provider]
+        parent = fixture.home / "selected"
+        parent.mkdir(mode=0o700)
+        target = parent / "config"
+        if problem == "not-directory":
+            target.write_bytes(b"existing private file\n")
+        if problem == "unreadable":
+            target.mkdir(mode=0o700)
+        before = profile_snapshot(fixture.home)
+        fixture.env[key] = str(target)
+        try:
+            if problem == "unreadable":
+                parent.chmod(0)
+                try:
+                    target.stat()
+                except PermissionError:
+                    pass
+                else:
+                    raise WitnessFailure("The OS did not deny access to the fixture path")
+            result = fixture.spawn(fixture.se, "--json", "--home", str(fixture.state), "init", "--repo",
+                                   str(fixture.repo), "--agent", "Worker", "--provider", provider)
+        finally:
+            if problem == "unreadable":
+                parent.chmod(0o700)
+        receipt["profile_unchanged"] = before == profile_snapshot(fixture.home)
+        message = json.loads(result.stdout).get("message", "")
+        outcome = message.replace(str(target), "").lower()
+        receipt.update(refused=result.returncode > 0, directory_named=key in message and str(target) in message,
+                       outcome_identified=any(reason in outcome for reason in REFUSALS[problem]))
+        require(receipt["refused"], "Init did not refuse the invalid provider config path")
+        require(receipt["directory_named"], "The refusal did not name the configured directory")
+        require(receipt["outcome_identified"], "The refusal did not describe the path outcome")
+        require(receipt["profile_unchanged"], "Init changed the private provider profile")
+        receipt["passed"] = True
+    except Exception as failure:
+        receipt["failure"] = str(failure) if isinstance(failure, WitnessFailure) else type(failure).__name__
+    return receipt
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--se", type=Path, required=True)
@@ -294,7 +381,15 @@ def main():
         with tempfile.TemporaryDirectory(prefix="se-codex-", dir="/tmp") as temp:
             root = Path(temp)
             codex, connect = install(root)
+            if args.loopback:
+                claude = install_claude(root)
             report["install_seconds"] = round(monotonic() - started, 2)
+            if args.loopback:
+                refusals = report["configuration_refusals"] = {}
+                for provider, executable in (("codex", codex), ("claude", claude)):
+                    for problem in REFUSALS:
+                        fixture = Fixture(root / f"config-{len(refusals)}", se, codex)
+                        refusals[f"{provider}-{problem}"] = check_config_refusal(fixture, provider, executable, problem)
             with LoopbackModel() if args.loopback else nullcontext() as mock:
                 url = mock.url if mock is not None else None
                 for name in ("fresh", "existing", "collision"):
@@ -309,6 +404,9 @@ def main():
     report["seconds"] = round(monotonic() - started, 2)
     report["passed"] = ("failure" not in report and len(report["cases"]) == 3
                         and all(case["passed"] for case in report["cases"].values()))
+    if args.loopback:
+        refusals = report.get("configuration_refusals", {})
+        report["passed"] &= len(refusals) == 6 and all(row["passed"] for row in refusals.values())
     encoded = json.dumps(report, indent=2) + "\n"
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(encoded, encoding="utf-8")
