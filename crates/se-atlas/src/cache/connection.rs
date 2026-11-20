@@ -1,6 +1,5 @@
 //! One writer/reader globally, finite transactions and a separately qualified SQL share.
 use super::*;
-use crate::admission::{Reservation, Slot};
 use crate::errors::{cache_error, capacity};
 use rusqlite::{Connection, OpenFlags, Statement, StatementStatus, limits::Limit};
 use std::{
@@ -8,9 +7,17 @@ use std::{
     ops::Deref,
     time::{Duration, Instant},
 };
+#[path = "query_arena.rs"]
+mod query_arena;
+use query_arena::Reservation;
 #[path = "statement.rs"]
 mod statement;
 pub use statement::{BudgetStatement, SqlView};
+mod handle;
+mod slot;
+pub use handle::Detached;
+use handle::{ColdRelease, Db};
+use slot::Slot;
 pub type NativeSqlConnection = rusqlite::Connection;
 const PAGE_BYTES: u64 = 4096;
 const WAL_STOP: u64 = 8_000_000;
@@ -99,43 +106,6 @@ impl SqlProfile {
         }
     }
 }
-/// The SQLite handle. A role that opened inside the arena closes inside it if it is
-/// free within the latest caller budget (else one try): `closing` is taken in Drop and
-/// released after `connection` closes. Missing it is safe: the host sets
-/// NO_CKPT_ON_CLOSE on these roles (native_sql::retain_wal), so no close checkpoints.
-struct Db {
-    connection: Connection,
-    arena_reader: Option<bool>,
-    until: Instant,
-    closing: Option<Reservation>,
-}
-impl Drop for Db {
-    fn drop(&mut self) {
-        if let Some(reader) = self.arena_reader {
-            let free = Reservation::acquire(reader, self.until).ok();
-            self.closing = free.or_else(|| Reservation::try_now(reader));
-        }
-    }
-}
-impl Deref for Db {
-    type Target = Connection;
-    fn deref(&self) -> &Connection {
-        &self.connection
-    }
-}
-impl std::ops::DerefMut for Db {
-    fn deref_mut(&mut self) -> &mut Connection {
-        &mut self.connection
-    }
-}
-/// A cold writer releases its native accounting guards before SQLite closes, so this
-/// is the connection's first field.
-struct ColdRelease<'a>(&'a dyn CacheFiles);
-impl Drop for ColdRelease<'_> {
-    fn drop(&mut self) {
-        self.0.release_cold_observations();
-    }
-}
 pub struct CacheConnection<'a> {
     _cold: Option<ColdRelease<'a>>,
     db: Db,
@@ -147,18 +117,6 @@ pub struct CacheConnection<'a> {
     /// A reattached reader whose epoch its caller just confirmed: its read
     /// transactions skip revalidating the pinned file.
     current: bool,
-}
-/// A query reader's open connection without its cache files, kept between queries.
-pub struct Detached {
-    db: Db,
-    pin: DatabasePin,
-    identity: CacheIdentity,
-    slot: Slot,
-}
-impl Detached {
-    pub fn identity(&self) -> &CacheIdentity {
-        &self.identity
-    }
 }
 impl<'a> CacheConnection<'a> {
     pub fn open(
@@ -200,14 +158,7 @@ impl<'a> CacheConnection<'a> {
         files.validate_database(&pin)?;
         Ok(Some(Self {
             _cold: (role == ConnectionRole::ColdWriter).then_some(ColdRelease(files)),
-            db: Db {
-                connection: db,
-                arena_reader: role
-                    .opens_in_arena()
-                    .then_some(role == ConnectionRole::QueryReader),
-                until: deadline,
-                closing: None,
-            },
+            db: Db::new(db, role, deadline),
             files,
             pin,
             identity: id,
@@ -275,12 +226,7 @@ impl<'a> CacheConnection<'a> {
         };
         Ok(Self {
             _cold: (role == ConnectionRole::ColdWriter).then_some(ColdRelease(files)),
-            db: Db {
-                connection: db,
-                arena_reader: None,
-                until: deadline,
-                closing: None,
-            },
+            db: Db::new(db, role, deadline),
             files,
             pin,
             identity: seed.identity.clone(),
@@ -298,49 +244,6 @@ impl<'a> CacheConnection<'a> {
     pub fn identity(&self) -> &CacheIdentity {
         &self.identity
     }
-    /// Keep a query reader open without its cache files.
-    pub fn detach(self) -> AtlasResult<Detached> {
-        if self.role != ConnectionRole::QueryReader {
-            return Err(cache_error(
-                "only a query reader stays open between queries",
-            ));
-        }
-        let CacheConnection {
-            db,
-            pin,
-            identity,
-            _slot,
-            ..
-        } = self;
-        Ok(Detached {
-            db,
-            pin,
-            identity,
-            slot: _slot,
-        })
-    }
-    /// Reattach a kept query reader whose epoch the caller has just confirmed is
-    /// still current: its reads skip revalidating the pinned file until it changes.
-    pub fn attach(detached: Detached, files: &'a dyn CacheFiles) -> Self {
-        let Detached {
-            db,
-            pin,
-            identity,
-            slot,
-        } = detached;
-        Self {
-            _cold: None,
-            db,
-            files,
-            pin,
-            identity,
-            role: ConnectionRole::QueryReader,
-            _slot: slot,
-            current: true,
-        }
-    }
-    /// A finite snapshot ends at response completion, including error paths.
-    /// Output allocations belong to the host's single 98304-byte query arena.
     pub fn read<T>(
         &mut self,
         deadline: Instant,

@@ -9,7 +9,6 @@ pub mod model;
 pub mod native_sql;
 pub mod queries;
 
-mod admission;
 pub mod cache;
 pub mod clock;
 pub mod history;
