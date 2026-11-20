@@ -80,7 +80,7 @@ def check_case(entry, payload_directory, physical, should_attach, inputs):
         if len(added) != 1:
             raise RuntimeError(f"expected one newly attached agent; saw {len(added)}")
         adopted = current[next(iter(added))]
-        if conversation not in json.dumps(adopted["conversation"]):
+        if adopted["conversation"]["id"] != conversation:
             raise RuntimeError(("the attached agent lost its provider conversation", adopted["conversation"]))
         stdout, stderr = run([*command, "end"], entry, environment, payload)
         if stdout or stderr:

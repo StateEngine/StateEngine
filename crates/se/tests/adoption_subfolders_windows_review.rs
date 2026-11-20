@@ -20,16 +20,6 @@ use std::{
 
 type Check<T = ()> = Result<T, Box<dyn Error>>;
 
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        if let Err(error) = fs::remove_dir_all(&self.0) {
-            eprintln!("cannot remove owned adoption fixture: {error}");
-        }
-    }
-}
-
 fn command(image: &Path, home: &Path, owner: &Path, cwd: &Path) -> Command {
     let mut command = Command::new(image);
     for (name, _) in std::env::vars_os() {
@@ -90,13 +80,13 @@ fn register(home: &Path, root: &Path, config: &Path, python: &Path, project: Pro
 #[test]
 fn adoption_accepts_windows_subfolder_aliases_but_refuses_nested_git() -> Check {
     se_proc::initialize_file_creation_owner()?;
-    let scratch = Scratch(directory::private_directory()?);
-    let image = scratch.0.join("se.exe");
+    let scratch = directory::private_directory()?;
+    let image = scratch.join("se.exe");
     fs::copy(env!("CARGO_BIN_EXE_se"), &image)?;
-    let owner = scratch.0.join("owner");
+    let owner = scratch.join("owner");
     let config = owner.join("claude");
-    let home = scratch.0.join("state");
-    let root = scratch.0.join("Registered Worktree With Spaces");
+    let home = scratch.join("state");
+    let root = scratch.join("Registered Worktree With Spaces");
     let child = root.join("Task Inputs With Spaces");
     let nested = child.join("Nested Project With Spaces");
     fs::create_dir_all(&config)?;
