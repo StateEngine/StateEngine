@@ -20,7 +20,7 @@ pub fn working_agent(
     op: &str,
 ) -> Result<AgentId> {
     match (&admission.actor, owner_agent) {
-        (Actor::Remote(_), _) => Err(SeError::invalid(
+        (Actor::Remote(_) | Actor::Guest, _) => Err(SeError::invalid(
             "local operation",
             "local human or agent authority",
         )),
@@ -188,19 +188,20 @@ pub fn actor_selector<R: Snapshot>(read: &mut R, selector: &str) -> Result<Actor
                 "the finite principal read was incomplete",
             ));
         }
-        matches.sort_by_key(actor_id);
+        matches.sort_by_key(|actor| actor.wire().to_owned());
         matches.dedup();
         return match matches.as_slice() {
             [actor] => Ok(actor.clone()),
-            [] => Err(unknown(
+            [] => Err(target_unknown(
                 selector,
+                "not present in the admitted project snapshot",
                 "Select an existing principal in this project, using its exact agent ID or registered name.",
             )),
             actors => Err(SeError::new(Detail::SelectorAmbiguous(
                 details::SelectorAmbiguous {
                     kind: "principal".into(),
                     selector: selector.into(),
-                    matches: actors.iter().map(actor_id).collect(),
+                    matches: actors.iter().map(|actor| actor.wire().to_owned()).collect(),
                 },
             ))),
         };
@@ -210,45 +211,29 @@ pub fn actor_selector<R: Snapshot>(read: &mut R, selector: &str) -> Result<Actor
         "the bounded lookup exceeded 6400 principals; use an exact agent ID",
     ))
 }
-pub fn actor_id(actor: &Actor) -> String {
-    match actor {
-        Actor::Human(id) => id.to_string(),
-        Actor::Agent(id) => id.to_string(),
-        Actor::Remote(id) => id.to_string(),
-    }
-}
 /// The reader supplies recovery for its own source. This helper can run after
 /// a commit, so no read failure implies that the preceding write was undone.
 pub fn require_present<T>(read: Read<T>, subject: &str, next_step: &str) -> Result<T> {
-    match read {
-        Read::Present { value } => Ok(value),
-        Read::Absent { checked } => Err(SeError::new(Detail::TargetUnknown(
-            details::TargetUnknown {
-                subject: subject.into(),
-                reason: format!("not present; checked {checked}"),
-                next_step: next_step.into(),
-            },
-        ))),
-        Read::Unreadable { source, reason, .. } => Err(SeError::new(Detail::SourceUnreadable(
-            details::SourceUnreadable {
-                subject: source,
-                reason,
-                next_step: next_step.into(),
-            },
-        ))),
-        Read::Unknown { what } => Err(SeError::new(Detail::TargetUnknown(
-            details::TargetUnknown {
-                subject: subject.into(),
-                reason: what,
-                next_step: next_step.into(),
-            },
-        ))),
-    }
+    let reason = match read {
+        Read::Present { value } => return Ok(value),
+        Read::Absent { checked } => format!("not present; checked {checked}"),
+        Read::Unknown { what } => what,
+        Read::Unreadable { source, reason, .. } => {
+            return Err(SeError::new(Detail::SourceUnreadable(
+                details::SourceUnreadable {
+                    subject: source,
+                    reason,
+                    next_step: next_step.into(),
+                },
+            )));
+        }
+    };
+    Err(target_unknown(subject, &reason, next_step))
 }
-pub fn unknown(subject: &str, next_step: &str) -> SeError {
+fn target_unknown(subject: &str, reason: &str, next_step: &str) -> SeError {
     SeError::new(Detail::TargetUnknown(details::TargetUnknown {
         subject: subject.into(),
-        reason: "not present in the admitted project snapshot".into(),
+        reason: reason.into(),
         next_step: next_step.into(),
     }))
 }

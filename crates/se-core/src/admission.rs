@@ -1,5 +1,5 @@
 //! Checks verified adapter observations. DTOs never supply actor or terminal authority.
-use crate::registry::{Auth, OpMeta, Scope as OpScope};
+use crate::registry::{Auth, Effect, Feature, OpMeta, Scope as OpScope};
 use se_store::{Actor, Admission, Scope};
 use se_types::{Detail, Result, SeError, details};
 
@@ -13,6 +13,21 @@ pub enum HumanTerminal {
 /// Check principal, session and scope binding. Kernel::plan separately applies
 /// the operation's presence policy to the verified HumanTerminal observation.
 pub fn authorize(meta: &OpMeta, admission: &Admission) -> Result<()> {
+    if matches!(admission.actor, Actor::Guest)
+        && !(meta.effect == Effect::Read
+            && (meta.anonymous
+                || (meta.feature == Feature::Atlas && meta.auth == Auth::Either)
+                || matches!(
+                    meta.name,
+                    "project.status" | "captain.show" | "history.event_read"
+                )))
+    {
+        return Err(SeError::new(Detail::SessionRequired(
+            details::SessionRequired {
+                op: meta.name.into(),
+            },
+        )));
+    }
     if matches!(admission.actor, Actor::Remote(_)) {
         return Err(SeError::invalid(
             "delegated authority",
@@ -38,6 +53,7 @@ pub fn authorize(meta: &OpMeta, admission: &Admission) -> Result<()> {
     }
     match (&admission.actor, &admission.scope, &admission.session) {
         (Actor::Agent(_), Scope::Project(_), Some(_)) => (),
+        (Actor::Guest, Scope::Project(_), None) => (),
         (Actor::Human(_), _, None) => (),
         _ => return Err(SeError::new(Detail::CapabilityInvalid(details::CapabilityInvalid {subject:"admitted principal".into(),reason:"actor, project scope and session binding disagree".into(),next_step:"Reconnect with the launched session credential; owner commands require a verified owner terminal.".into()}))),
     }
@@ -77,6 +93,7 @@ pub fn read_scope(admission: &Admission) -> se_store::ReadScope {
         Actor::Human(_) => se_store::Visibility::Owner,
         Actor::Agent(agent) => se_store::Visibility::SelfOnly(agent.clone()),
         Actor::Remote(_) => se_store::Visibility::None,
+        Actor::Guest => se_store::Visibility::Guest,
     };
     se_store::ReadScope {
         admission: admission.clone(),

@@ -110,9 +110,26 @@ pub struct ClientHello {
     pub authority: PresentedAuthority,
 }
 pub enum PresentedAuthority {
-    OwnerProof { nonce: [u8; 32], mac: Secret },
+    OwnerProof {
+        nonce: [u8; 32],
+        mac: Secret,
+    },
     Session(Secret),
     Launch(Secret),
+    /// Request an identity-free connection scoped to the native caller's cwd.
+    GuestBootstrap(se_types::NativePath),
+    /// Renew the original session after expiry using its native process custody.
+    SessionBootstrap(Secret),
+    /// A short-lived ticket issued for this native connection.
+    Lease(Secret),
+}
+#[derive(Clone, Debug)]
+pub struct ConnectionTicket {
+    pub project: se_types::ProjectId,
+    pub agent: Option<se_types::AgentId>,
+    pub session: Option<se_types::SessionId>,
+    pub secret: std::sync::Arc<Secret>,
+    pub lifetime_ms: u64,
 }
 #[derive(Clone, Debug)]
 pub struct ServerHello {
@@ -120,6 +137,7 @@ pub struct ServerHello {
     pub epoch: HostEpoch,
     pub generation: Generation,
     pub maximum_reply_bytes: NonZeroU32,
+    pub lease: Option<ConnectionTicket>,
 }
 pub struct AuthorizedConnection {
     pub(crate) _private: (),

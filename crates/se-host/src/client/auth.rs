@@ -2,6 +2,7 @@
 //! session/launch revocation and operation admission stay in the runtime.
 use super::endpoint::VersionWire;
 use super::wire::{MAX_ENDPOINT_BYTES, MAX_FRAME_BYTES, decode_json, encode_frame, encode_json};
+pub use crate::connection_hello::{decode_server_hello, encode_server_hello};
 use crate::{EndpointRecord, ServerChallenge};
 use hmac::{Hmac, Mac};
 use se_types::{Result, SeError, Secret};
@@ -82,15 +83,6 @@ pub fn encode_client_hello(hello: &crate::ClientHello) -> Result<super::wire::Wi
     )
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReadyWire {
-    version: VersionWire,
-    #[serde(deserialize_with = "super::endpoint::deserialize_epoch")]
-    epoch: se_types::HostEpoch,
-    generation: se_types::Generation,
-    maximum_reply_bytes: NonZeroU32,
-}
 /// Negotiation alone confers no authority; runtime admission validates the
 /// presented credential and rechecks revocation/scope for every request.
 pub fn negotiate_hello(
@@ -126,27 +118,8 @@ pub fn negotiate_hello(
         epoch: endpoint.epoch.clone(),
         generation: endpoint.generation,
         maximum_reply_bytes,
+        lease: None,
     })
-}
-pub fn encode_server_hello(hello: &crate::ServerHello) -> Result<super::wire::WireBytes> {
-    if hello.maximum_reply_bytes.get() as usize > MAX_FRAME_BYTES {
-        return Err(refused("reply cap exceeds 1 MiB"));
-    }
-    encode_frame(
-        &ReadyWire {
-            version: hello.version.into(),
-            epoch: hello.epoch.clone(),
-            generation: hello.generation,
-            maximum_reply_bytes: hello.maximum_reply_bytes,
-        },
-        MAX_ENDPOINT_BYTES,
-    )
-}
-#[derive(Deserialize)]
-#[serde(untagged, deny_unknown_fields)]
-enum ReadyReply {
-    Ready(ReadyWire),
-    Refused { error: se_types::ErrorEnvelope },
 }
 #[derive(Serialize)]
 struct HelloRefusal<'a> {
@@ -155,35 +128,6 @@ struct HelloRefusal<'a> {
 pub fn encode_hello_refusal(error: &se_types::ErrorEnvelope) -> Result<super::wire::WireBytes> {
     encode_frame(&HelloRefusal { error }, MAX_ENDPOINT_BYTES)
 }
-pub fn decode_server_hello(
-    bytes: &[u8],
-    sent: &crate::ClientHello,
-    challenge: &ServerChallenge,
-) -> Result<crate::ServerHello> {
-    let wire = match decode_json::<ReadyReply>(bytes, MAX_ENDPOINT_BYTES)? {
-        ReadyReply::Ready(wire) => wire,
-        ReadyReply::Refused { error } => return Err(error.body().clone().into()),
-    };
-    if se_types::ApiVersion::from(wire.version) != sent.version
-        || wire.epoch != challenge.epoch
-        || wire.maximum_reply_bytes > sent.maximum_reply_bytes
-        || wire.maximum_reply_bytes.get() as usize > MAX_FRAME_BYTES
-        || sent
-            .expected_generation
-            .is_some_and(|generation| generation != wire.generation)
-    {
-        return Err(refused(
-            "server hello differs from the channel challenge or request bounds",
-        ));
-    }
-    Ok(crate::ServerHello {
-        version: wire.version.into(),
-        epoch: wire.epoch,
-        generation: wire.generation,
-        maximum_reply_bytes: wire.maximum_reply_bytes,
-    })
-}
-
 #[derive(Clone, Copy)]
 pub enum ProofDomain {
     Owner,
@@ -198,7 +142,7 @@ impl ProofDomain {
     }
 }
 
-fn refused(reason: &str) -> SeError {
+pub(crate) fn refused(reason: &str) -> SeError {
     SeError::new(se_types::Detail::CapabilityInvalid(
         se_types::details::CapabilityInvalid {
             subject: "local IPC proof".into(),
@@ -401,6 +345,9 @@ pub(crate) enum AuthorityRef<'a> {
     },
     Session(#[serde(serialize_with = "secret_bytes::serialize")] &'a se_types::Secret),
     Launch(#[serde(serialize_with = "secret_bytes::serialize")] &'a se_types::Secret),
+    GuestBootstrap(&'a se_types::NativePath),
+    SessionBootstrap(#[serde(serialize_with = "secret_bytes::serialize")] &'a se_types::Secret),
+    Lease(#[serde(serialize_with = "secret_bytes::serialize")] &'a se_types::Secret),
 }
 impl<'a> From<&'a crate::PresentedAuthority> for AuthorityRef<'a> {
     fn from(authority: &'a crate::PresentedAuthority) -> Self {
@@ -408,6 +355,9 @@ impl<'a> From<&'a crate::PresentedAuthority> for AuthorityRef<'a> {
             crate::PresentedAuthority::OwnerProof { nonce, mac } => Self::OwnerProof { nonce, mac },
             crate::PresentedAuthority::Session(token) => Self::Session(token),
             crate::PresentedAuthority::Launch(token) => Self::Launch(token),
+            crate::PresentedAuthority::GuestBootstrap(cwd) => Self::GuestBootstrap(cwd),
+            crate::PresentedAuthority::SessionBootstrap(token) => Self::SessionBootstrap(token),
+            crate::PresentedAuthority::Lease(token) => Self::Lease(token),
         }
     }
 }
@@ -438,6 +388,9 @@ pub(crate) enum AuthorityWire {
     },
     Session(ProtectedSecret),
     Launch(ProtectedSecret),
+    GuestBootstrap(se_types::NativePath),
+    SessionBootstrap(ProtectedSecret),
+    Lease(ProtectedSecret),
 }
 impl From<AuthorityWire> for crate::PresentedAuthority {
     fn from(authority: AuthorityWire) -> Self {
@@ -445,6 +398,9 @@ impl From<AuthorityWire> for crate::PresentedAuthority {
             AuthorityWire::OwnerProof { nonce, mac } => Self::OwnerProof { nonce, mac },
             AuthorityWire::Session(token) => Self::Session(token.0),
             AuthorityWire::Launch(token) => Self::Launch(token.0),
+            AuthorityWire::GuestBootstrap(cwd) => Self::GuestBootstrap(cwd),
+            AuthorityWire::SessionBootstrap(token) => Self::SessionBootstrap(token.0),
+            AuthorityWire::Lease(token) => Self::Lease(token.0),
         }
     }
 }

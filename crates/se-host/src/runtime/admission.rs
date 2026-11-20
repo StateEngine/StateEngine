@@ -39,7 +39,7 @@ enum Pending {
 }
 const RELAUNCH: &str = "relaunch the agent with `se launch AGENT`";
 /// Purpose of the pin capability (`sec1.`) CLI, hooks and IPC present.
-const SESSION_CAPABILITY: &str = "session";
+pub(crate) const SESSION_CAPABILITY: &str = "session";
 #[derive(Clone)]
 pub(crate) struct AdmissionContext {
     pub reads: se_store::ReadPhasePool,
@@ -48,6 +48,7 @@ pub(crate) struct AdmissionContext {
     pub lease: Weak<HostLease>,
     pub owner: se_types::HumanId,
     pub generation: se_types::Generation,
+    pub image_sha256: se_types::Sha256,
     pub state_directory: std::path::PathBuf,
     pub configuration: Option<se_config::config_policy::ConfigFile>,
     /// Exact selected configuration file; absent when the embedded caller
@@ -60,6 +61,12 @@ pub(crate) struct AdmissionContext {
 /// call detect machine-key replacement without retaining another secret copy.
 pub(crate) struct ConnectionGrant {
     pub owner_key: Option<Sha256>,
+    pub(crate) guest: Option<crate::mcp_lease::LeaseGrant>,
+}
+impl ConnectionGrant {
+    pub(crate) fn connection_ticket(&self) -> Option<crate::ConnectionTicket> {
+        self.guest.as_ref().map(|guest| guest.ticket.clone())
+    }
 }
 pub(crate) struct OperationMetadata {
     pub selections: Option<serde_json::Value>,
@@ -105,7 +112,7 @@ impl AdmissionContext {
         Ok(credential)
     }
 
-    fn lease(&self) -> Result<Arc<HostLease>> {
+    pub(crate) fn lease(&self) -> Result<Arc<HostLease>> {
         self.lease.upgrade().ok_or_else(|| {
             SeError::new(se_types::Detail::RuntimeNotRunning(
                 se_types::details::RuntimeNotRunning {
@@ -116,6 +123,20 @@ impl AdmissionContext {
         })
     }
     pub fn handshake(&self, pending: &mut PendingIpcHandshake) -> Result<ConnectionGrant> {
+        if let HandshakeInput::Call(crate::ClientHello {
+            authority: PresentedAuthority::GuestBootstrap(cwd),
+            ..
+        }) = pending.input()
+        {
+            return self.guest_handshake(pending.peer(), cwd);
+        }
+        if let HandshakeInput::Call(crate::ClientHello {
+            authority: PresentedAuthority::SessionBootstrap(secret),
+            ..
+        }) = pending.input()
+        {
+            return self.session_handshake(pending.peer(), secret);
+        }
         let mut phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let result = (|| {
             self.check_generation(&phase)?;
@@ -126,8 +147,17 @@ impl AdmissionContext {
                     }
                     PresentedAuthority::Session(secret) => {
                         self.session(&phase, secret)?;
-                        Ok(ConnectionGrant { owner_key: None })
+                        Ok(ConnectionGrant {
+                            owner_key: None,
+                            guest: None,
+                        })
                     }
+                    PresentedAuthority::GuestBootstrap(_)
+                    | PresentedAuthority::SessionBootstrap(_)
+                    | PresentedAuthority::Lease(_) => Err(SeError::invalid(
+                        "guest credential",
+                        "the native bootstrap connection that issued it",
+                    )),
                     PresentedAuthority::Launch(_) => Err(SeError::invalid(
                         "launch credential",
                         "the dedicated prepared launch-activation route",
@@ -152,6 +182,7 @@ impl AdmissionContext {
         pending.verify_owner_mac(&key)?;
         Ok(ConnectionGrant {
             owner_key: Some(Sha256::from_bytes(Hasher::digest(key.expose()).into())),
+            guest: None,
         })
     }
     /// One native caller check shared by ordinary operations and the closed
@@ -166,6 +197,12 @@ impl AdmissionContext {
         presence: Option<&crate::client::presence::OwnerPresence>,
     ) -> Result<(Admission, HumanTerminal)> {
         Ok(match override_authority {
+            Some(PresentedAuthority::Lease(secret)) => (
+                self.lease_caller(phase, peer, connection, grant, secret)?,
+                HumanTerminal::Refused {
+                    reason: "a leased connection cannot become an owner terminal".into(),
+                },
+            ),
             Some(PresentedAuthority::Session(secret)) => (
                 self.session(phase, secret)?,
                 HumanTerminal::Refused {
@@ -226,6 +263,14 @@ impl AdmissionContext {
                     return Err(SeError::invalid(
                         "launch authority",
                         "the dedicated activation route",
+                    ));
+                }
+                PresentedAuthority::GuestBootstrap(_)
+                | PresentedAuthority::SessionBootstrap(_)
+                | PresentedAuthority::Lease(_) => {
+                    return Err(SeError::invalid(
+                        "guest connection",
+                        "its current channel-bound guest ticket",
                     ));
                 }
             },
@@ -369,9 +414,10 @@ impl AdmissionContext {
             self.check_generation(&phase)?;
             let admission = self.credential(&phase, secret, crate::MCP_BEARER_PURPOSE)?;
             match (admission.scope, admission.actor) {
-                (Scope::Project(project), Actor::Agent(agent)) => {
-                    Ok(crate::mcp::McpPrincipal { project, agent })
-                }
+                (Scope::Project(project), Actor::Agent(agent)) => Ok(crate::mcp::McpPrincipal {
+                    project,
+                    agent: Some(agent),
+                }),
                 _ => Err(SeError::invalid(
                     "MCP caller",
                     "an authenticated agent in its bound project",
@@ -672,7 +718,7 @@ impl AdmissionContext {
         Ok(())
     }
 
-    fn check_generation(&self, phase: &se_store::ReadPhase) -> Result<()> {
+    pub(crate) fn check_generation(&self, phase: &se_store::ReadPhase) -> Result<()> {
         match phase.runtime_owner().map_err(|e| store_error(&e))? {
             Read::Present { value } if value.generation == self.generation => Ok(()),
             _ => Err(SeError::invalid(
@@ -692,6 +738,7 @@ impl HostedRuntime {
             lease: Arc::downgrade(&self.lease),
             owner: self.owner.clone(),
             generation: self.generation(),
+            image_sha256: self.image_sha256,
             state_directory: self.state_directory.clone(),
         }
     }

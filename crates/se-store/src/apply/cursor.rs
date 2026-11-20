@@ -369,7 +369,7 @@ fn permitted(
     a: &[u8],
 ) -> StoreResult<()> {
     let ok = match &h.actor {
-        Actor::Remote(_) => false,
+        Actor::Remote(_) | Actor::Guest => false,
         Actor::Agent(actor) => actor == agent,
         Actor::Human(human) => {
             let owner: Option<Vec<u8>> = c

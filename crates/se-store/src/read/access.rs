@@ -84,6 +84,7 @@ impl SqliteSnapshot {
                 ));
             }
             Visibility::Owner | Visibility::SharedProject(_) => true,
+            Visibility::Guest => self.scope.guest_event_visible(e),
             Visibility::SelfOnly(a) => {
                 let who = Actor::Agent(a.clone());
                 if e.header.actor == who {
@@ -169,8 +170,7 @@ impl SqliteSnapshot {
     pub(super) fn project_metadata(&self, seq: i64) -> StoreResult<StoredEvent> {
         // Project registration is registry-scoped; the closed native launch
         // pin still needs this exact project's metadata to plan its saved launch.
-        if !matches!(self.scope.visibility, Visibility::SelfOnly(_))
-            && self.remote_launch_grant.is_none()
+        if !self.scope.visibility.project_metadata_is_scoped() && self.remote_launch_grant.is_none()
         {
             return self.record(seq);
         }

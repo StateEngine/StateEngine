@@ -4,18 +4,10 @@ use crate::{commit, scope, store_error::store_error};
 use se_store::{
     Actor, CommitReceipt, EventBody, Snapshot, StoredEvent, StoredText, WriterModeValue,
 };
-use se_types::{AgentId, IdempotencyKey, Read, Result, SeError, UnixMicros};
+pub use se_types::format_timestamp as timestamp;
+use se_types::{AgentId, IdempotencyKey, Read, Result};
 use sha2::{Digest, Sha256};
 
-pub fn timestamp(micros: i64) -> Result<String> {
-    let micros = u64::try_from(micros)
-        .map_err(|_| SeError::invalid("recorded_at", "nonnegative Unix microseconds"))?;
-    let value = UnixMicros::new(micros)?.to_string();
-    let value = value
-        .strip_suffix(" UTC")
-        .ok_or_else(|| scope::unreadable("UTC formatter", "missing UTC suffix"))?;
-    Ok(format!("{}Z", value.replacen(' ', "T", 1)))
-}
 /// Imported user history reports its original time. Commit receipts continue
 /// to report the separately retained native recording time.
 pub(crate) fn event_time(event: &StoredEvent) -> i64 {
@@ -73,13 +65,13 @@ pub fn actor_ref<R: Snapshot>(read: &mut R, actor: &Actor) -> Result<ActorRef> {
         }
     };
     Ok(ActorRef {
-        kind: match actor {
-            Actor::Human(_) => "owner",
-            Actor::Agent(_) => "agent",
-            Actor::Remote(_) => "remote",
+        kind: if matches!(actor, Actor::Human(_)) {
+            "owner"
+        } else {
+            actor.kind()
         }
         .into(),
-        id: scope::actor_id(actor),
+        id: actor.wire().to_owned(),
         name,
     })
 }

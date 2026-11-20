@@ -29,7 +29,7 @@ pub enum McpReply {
 #[derive(Clone)]
 pub struct McpPrincipal {
     pub project: se_types::ProjectId,
-    pub agent: se_types::AgentId,
+    pub agent: Option<se_types::AgentId>,
 }
 
 pub trait McpBackend {
@@ -85,7 +85,7 @@ pub trait McpBackend {
             };
             Ok(McpPrincipal {
                 project: id("/principal/project/id")?.parse()?,
-                agent: id("/principal/agent/id")?.parse()?,
+                agent: Some(id("/principal/agent/id")?.parse()?),
             })
         }
     }

@@ -29,6 +29,7 @@ impl Actor {
             Self::Human(x) => x.as_str(),
             Self::Agent(x) => x.as_str(),
             Self::Remote(x) => x.as_str(),
+            Self::Guest => "guest",
         }
     }
     #[doc(hidden)]
@@ -37,6 +38,7 @@ impl Actor {
             Self::Human(_) => "human",
             Self::Agent(_) => "agent",
             Self::Remote(_) => "remote",
+            Self::Guest => "guest",
         }
     }
 }

@@ -66,10 +66,11 @@ impl SqliteSnapshot {
     pub(crate) fn from_phase(phase: ReadPhase, scope: ReadScope) -> StoreResult<Self> {
         if matches!(scope.admission.actor, Actor::Remote(_))
             || matches!(scope.visibility, Visibility::None)
+            || !scope.guest_consistent()
         {
             return Err(fail(
                 StoreErrorCode::ScopeMismatch,
-                "delegated clients require the closed grant-filtered remote read port",
+                "local reads require a valid scoped principal; delegated clients require the closed grant-filtered remote read port",
             ));
         }
         if phase.info.state != StoreState::Ready {

@@ -103,6 +103,7 @@ pub struct CredentialRecord {
     pub expires_at_us: i64,
     pub activation_deadline_us: i64,
     pub state: CredentialState,
+    pub session_active: bool,
     pub revision: Revision,
 }
 /// Owner-only head for a credential, including its last restart if rotated.

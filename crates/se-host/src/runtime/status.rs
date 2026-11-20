@@ -75,6 +75,10 @@ fn project<S: Snapshot>(output: &mut StatusOutput, cx: &mut Cx<'_, S>) -> Result
             git: None,
         },
     };
+    if matches!(cx.admission.actor, Actor::Guest) {
+        output.next = guest_next();
+        return Ok(());
+    }
     let unread = cx
         .read
         .message_count(MessageQuery {
@@ -87,7 +91,7 @@ fn project<S: Snapshot>(output: &mut StatusOutput, cx: &mut Cx<'_, S>) -> Result
         })
         .map_err(|e| store_error(&e))?;
     match &cx.admission.actor {
-        Actor::Remote(_) => {
+        Actor::Remote(_) | Actor::Guest => {
             return Err(se_types::SeError::invalid(
                 "local status",
                 "local human or agent authority",
@@ -118,12 +122,24 @@ fn project<S: Snapshot>(output: &mut StatusOutput, cx: &mut Cx<'_, S>) -> Result
         )?
         .page,
     );
-    output.next = NextStep {
+    output.next = agent_next();
+    Ok(())
+}
+
+fn guest_next() -> NextStep {
+    NextStep {
+        text: "Launch an agent to use identity-bound tools.".into(),
+        command: "se launch AGENT".into(),
+        argv: vec!["se".into(), "launch".into(), "AGENT".into()],
+    }
+}
+
+fn agent_next() -> NextStep {
+    NextStep {
         text: "Read this agent's saved state.".into(),
         command: "se agent show main".into(),
         argv: vec!["se".into(), "agent".into(), "show".into(), "main".into()],
-    };
-    Ok(())
+    }
 }
 
 fn error(subject: &str, cause: impl std::fmt::Debug) -> se_types::SeError {

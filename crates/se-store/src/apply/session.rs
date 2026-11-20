@@ -115,11 +115,10 @@ pub(super) fn apply(
             }
             codec::aux(c, seq, serde_json::json!({"surface": surface}))?;
             let a = key(c, "agent", agent.as_str(), &scope, false)?;
-            let owner:Option<Vec<u8>>=c.query_row("SELECT owner_id FROM principals WHERE project_id=? AND principal_id=? AND principal_kind='agent'",rusqlite::params![p,a],|r|r.get(0)).optional().map_err(sql)?;
-            let owner = owner
-                .ok_or_else(|| fail(StoreErrorCode::ReferenceMissing, "session agent absent"))?;
+            let owner:Vec<u8>=c.query_row("SELECT owner_id FROM principals WHERE project_id=? AND principal_id=? AND principal_kind='agent'",rusqlite::params![p,a],|r|r.get(0)).optional().map_err(sql)?.ok_or_else(|| fail(StoreErrorCode::ReferenceMissing, "session agent absent"))?;
             let permitted = match &h.actor {
                 Actor::Remote(_) => authority.remote_launch.is_some(),
+                Actor::Guest => false,
                 Actor::Agent(actor) if *actor == agent => true,
                 Actor::Agent(creator) => {
                     crate::creator::require(c, &p, &scope, creator, &a)?;

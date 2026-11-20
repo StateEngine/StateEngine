@@ -41,7 +41,10 @@ pub use launch_proofs::{PreparedFirstRequests, PreparedRequestProofs, VerifiedPr
 mod http;
 #[cfg(feature = "listener")]
 pub use http::HttpListener;
+mod connection_hello;
 mod ipc;
+#[cfg(feature = "listener")]
+mod mcp_lease;
 pub use mcp::{McpBackend, McpReply};
 pub mod mcp {
     pub use se_mcp::{McpBackend, McpPrincipal, McpReply, dispatch};

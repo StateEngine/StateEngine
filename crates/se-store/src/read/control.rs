@@ -63,7 +63,7 @@ impl SqliteSnapshot {
         };
         match &self.scope.visibility {
             Visibility::None if self.remote_launch_grant.is_some() => (),
-            Visibility::None => {
+            Visibility::None | Visibility::Guest => {
                 return Err(fail(
                     StoreErrorCode::ScopeMismatch,
                     "no local control authority",

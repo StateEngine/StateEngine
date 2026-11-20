@@ -128,6 +128,7 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
         let expected = match viewer {
             AtlasPrincipal::Agent(id) => Actor::Agent(id.clone()),
             AtlasPrincipal::Human(id) => Actor::Human(id.clone()),
+            AtlasPrincipal::Guest => Actor::Guest,
             AtlasPrincipal::Remote(_) => {
                 return Err(SeError::invalid(
                     "Atlas record viewer",
@@ -248,6 +249,7 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
             }
         };
         let principal = match &source.header.actor {
+            Actor::Guest => return Err(scope::unreadable("Atlas record", "guest cannot author")),
             Actor::Agent(id) => AtlasPrincipal::Agent(id.clone()),
             Actor::Human(id) => AtlasPrincipal::Human(id.clone()),
             Actor::Remote(id) => {

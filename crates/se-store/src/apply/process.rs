@@ -208,7 +208,7 @@ pub(super) fn apply(
     })?;
     let permitted = match (&h.actor, &identity.principal) {
         (Actor::Remote(_), Actor::Agent(_)) => authority.remote_launch.is_some(),
-        (Actor::Remote(_), _) | (_, Actor::Remote(_)) => false,
+        (Actor::Remote(_) | Actor::Guest, _) | (_, Actor::Remote(_) | Actor::Guest) => false,
         (Actor::Human(human), _) => key(c, "human", human.as_str(), &[0], false)? == owner,
         (Actor::Agent(_), _) if h.actor == identity.principal => h.session == identity.session,
         (Actor::Agent(creator), Actor::Agent(_)) => {

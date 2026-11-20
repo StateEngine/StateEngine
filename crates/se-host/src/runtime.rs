@@ -39,7 +39,7 @@ pub use recovery::{EndpointRoute, retain_at as retain_endpoint_at, route_endpoin
 #[cfg(feature = "listener")]
 mod activation;
 #[cfg(feature = "listener")]
-mod admission;
+pub(crate) mod admission;
 #[cfg(feature = "listener")]
 pub(crate) use admission::AdmissionContext;
 #[cfg(feature = "listener")]
