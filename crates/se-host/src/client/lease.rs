@@ -13,6 +13,11 @@ use std::{
 mod follow;
 
 pub const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
+/// Bounded cold-handshake warm-up budget for a freshly started client door
+/// connecting to a contended host. Ordinary refusal paths still use HELLO_TIMEOUT.
+pub const COLD_HELLO_BUDGET: Duration = Duration::from_secs(15);
+const COLD_HELLO_ATTEMPTS: usize = 3;
+const COLD_HELLO_PAUSE: Duration = Duration::from_millis(50);
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -201,6 +206,43 @@ pub(crate) fn native_error(cause: se_proc::native_ipc::IpcNativeError) -> SeErro
     }
     error.with_cause(cause)
 }
+fn is_handshake_timeout(error: &SeError) -> bool {
+    use std::error::Error as _;
+    if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(_)) {
+        return true;
+    }
+    let Some(source) = error.source() else {
+        return false;
+    };
+    if let Some(io_error) = source.downcast_ref::<std::io::Error>() {
+        return matches!(
+            io_error.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        );
+    }
+    source
+        .downcast_ref::<se_proc::native_ipc::IpcNativeError>()
+        .is_some_and(|native| native.code == se_proc::native_ipc::IpcNativeErrorCode::TimedOut)
+}
+fn warmup_timeout_error(
+    cause: SeError,
+    attempts: usize,
+    elapsed: Duration,
+    warmup_budget: Duration,
+) -> SeError {
+    SeError::new(se_types::Detail::IpcUnavailable(
+        se_types::details::IpcUnavailable {
+            endpoint: "protected local endpoint".into(),
+            reason: format!(
+                "cold IPC handshake timed out after {attempts} attempt(s) ({}ms elapsed, {}ms/attempt, {}ms warm-up budget): {cause}",
+                elapsed.as_millis(),
+                HELLO_TIMEOUT.as_millis(),
+                warmup_budget.as_millis(),
+            ),
+        },
+    ))
+    .with_cause(cause)
+}
 fn native_connect(
     endpoint: &crate::EndpointRecord,
     deadline: &Deadline,
@@ -249,6 +291,47 @@ impl crate::client::BlockingIpcClient {
     ) -> Result<BlockingConnection> {
         let budget = Deadline::from_options(options)?;
         Self::connect_before(endpoint, credential, maximum_reply_bytes, options, &budget)
+    }
+    /// Cold-start handshake with bounded retry on handshake timeouts only.
+    /// Absent endpoints, auth refusals and cancellations still fail immediately.
+    pub fn connect_cold_authenticated(
+        endpoint: &crate::EndpointRecord,
+        credential: ClientCredential,
+        maximum_reply_bytes: std::num::NonZeroU32,
+        options: &ClientOptions,
+    ) -> Result<BlockingConnection> {
+        let budget = Deadline::from_options(options)?;
+        let warmup = budget.stage(COLD_HELLO_BUDGET)?;
+        let warmup_budget = warmup.budget;
+        let started = Instant::now();
+        let mut attempt = 0usize;
+        loop {
+            attempt += 1;
+            match Self::connect_before(
+                endpoint,
+                credential.for_renewal()?,
+                maximum_reply_bytes,
+                options,
+                &warmup,
+            ) {
+                Ok(connection) => return Ok(connection),
+                Err(error) if !is_handshake_timeout(&error) => return Err(error),
+                Err(error) => {
+                    if attempt < COLD_HELLO_ATTEMPTS
+                        && let Ok(remaining) = warmup.remaining()
+                    {
+                        std::thread::sleep(remaining.min(COLD_HELLO_PAUSE));
+                        continue;
+                    }
+                    return Err(warmup_timeout_error(
+                        error,
+                        attempt,
+                        started.elapsed(),
+                        warmup_budget,
+                    ));
+                }
+            }
+        }
     }
     fn connect_before(
         endpoint: &crate::EndpointRecord,
