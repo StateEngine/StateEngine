@@ -241,7 +241,16 @@ impl AtlasReadPort for Service {
         selected: Option<&RootId>,
         read: &mut AtlasObservedReadCallback<'_>,
     ) -> Result<()> {
+        let trace = std::env::var_os("SE_ATLAS_PHASE_TRACE").is_some();
+        let mut mark = std::time::Instant::now();
+        let mut lap = || {
+            let now = std::time::Instant::now();
+            let spent = now.duration_since(mark).as_micros();
+            mark = now;
+            spent
+        };
         let root = self.reader_root(project, selected)?;
+        let root_us = lap();
         if matches!(
             root.summary.state,
             IndexState::Disabled | IndexState::Closed | IndexState::Draining
@@ -258,6 +267,7 @@ impl AtlasReadPort for Service {
             )
         })?;
         let source = NativeAtlasSource::open(root.registration, CaseMode::Sensitive)?;
+        let source_us = lap();
         let home = source
             .scope
             .registration
@@ -274,6 +284,7 @@ impl AtlasReadPort for Service {
         let cache = NativeAtlasCache::open(home, source.scope.clone())?.ok_or_else(|| {
             se_core::scope::unreadable("Atlas cache", "the published root cache is absent")
         })?;
+        let cache_us = lap();
         let mut current = crate::atlas_queries::open_reader(&cache, &source.scope, profile)?
             .ok_or_else(|| {
                 se_core::scope::unreadable(
@@ -281,8 +292,10 @@ impl AtlasReadPort for Service {
                     "the registered root has no published epoch",
                 )
             })?;
+        let reader_us = lap();
         let observed = self.reader_root(project, Some(&source.scope.registration.root))?;
-        read(
+        let observe_us = lap();
+        let result = read(
             &mut current.connection,
             &source,
             AtlasReadObservation {
@@ -290,7 +303,14 @@ impl AtlasReadPort for Service {
                 epoch_retired: current.epoch_retired,
                 record_feed_current: false,
             },
-        )
+        );
+        let query_us = lap();
+        if trace {
+            eprintln!(
+                "ATLAS_HOST_PHASE reader root={root_us} source={source_us} cache={cache_us} open={reader_us} observe={observe_us} query={query_us}"
+            );
+        }
+        result
     }
 }
 
