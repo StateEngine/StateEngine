@@ -107,6 +107,11 @@ pub trait McpBackend {
         let _ = metadata;
         Ok(supplied)
     }
+    /// The configured Atlas setting, read without a running host, for guest
+    /// discovery; `None` when this backend has no local configuration (HTTP).
+    fn configured_atlas(&mut self) -> Option<Result<bool>> {
+        None
+    }
 }
 
 pub async fn dispatch(
@@ -167,6 +172,26 @@ pub async fn dispatch(
         "ping" => return McpReply::Json(success(id, json!({}))),
         "tools/list" | "tools/call" => (),
         _ => return McpReply::Json(rpc_error(id, -32601, "method not found")),
+    }
+    // A guest (no capability, no launched session) lists tools from its
+    // configuration, so a harness checking this server never starts a host
+    // under its own environment; its first tool call does. Configuration is all
+    // a guest can read: it lists Atlas whenever enabled, although a Windows host
+    // that failed native SQLite qualification hides it. Any _meta that could
+    // carry a capability, malformed or not, is refused as capability() does.
+    let explicit = params.get("_meta").is_some_and(|meta| {
+        !meta.is_object() || meta.get("stateengine.session-capability-v1").is_some()
+    });
+    let guest = capability.is_none() && !explicit && std::env::var_os("SE_SESSION").is_none();
+    if method == "tools/list"
+        && guest
+        && let Some(atlas) = backend.configured_atlas()
+    {
+        let response = match atlas.and_then(tools) {
+            Ok(result) => success(id, result),
+            Err(error) => rpc_error(id, -32603, &error.to_string()),
+        };
+        return McpReply::Json(budgeted(response, backend.response_limit()));
     }
     let capability = match backend.capability(params.get("_meta"), capability) {
         Ok(Some(capability)) => capability,
