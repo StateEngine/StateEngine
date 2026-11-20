@@ -1657,6 +1657,7 @@ dependencies = [
  "se-proc",
  "se-remote",
  "se-repository",
+ "se-secode-image",
  "se-store",
  "se-types",
  "secode-stateengine-api",
@@ -1743,6 +1744,17 @@ version = "0.0.1-alpha.1"
 dependencies = [
  "git2",
  "se-proc",
+ "sha2",
+]
+
+[[package]]
+name = "se-secode-image"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-core",
+ "se-proc",
+ "se-types",
+ "serde_json",
  "sha2",
 ]
 

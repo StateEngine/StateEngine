@@ -105,7 +105,7 @@ impl Images {
         }
         Ok(())
     }
-    pub(crate) fn reusable(&mut self, cli: &Path) -> Result<bool> {
+    pub fn reusable(&mut self, cli: &Path) -> Result<bool> {
         if self.cli_stamp.is_none()
             || self.server_stamp.is_none()
             || se_proc::canonicalize_path(cli).map_err(|e| unreadable("SE Code native image", e))?

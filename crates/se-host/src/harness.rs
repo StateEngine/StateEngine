@@ -76,9 +76,7 @@ pub(crate) mod progress;
 #[cfg(feature = "secode")]
 pub(crate) mod secode;
 #[cfg(feature = "listener")]
-pub mod secode_image;
-#[cfg(all(feature = "listener", test))]
-mod secode_image_fixture;
+pub use se_secode_image as secode_image;
 #[cfg(feature = "listener")]
 pub mod secode_process;
 #[cfg(feature = "listener")]

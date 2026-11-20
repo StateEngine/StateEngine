@@ -11,6 +11,7 @@ members = [
     "crates/se-proc",
     "crates/se-trusted-path",
     "crates/se-fsevents",
+    "crates/se-secode-image",
     "crates/se-host",
     "crates/se-mcp",
     "crates/se-remote-cli",
