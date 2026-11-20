@@ -70,6 +70,8 @@ fn pipe_socket(path: &Path, control: PathBuf) -> io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
+    // What this forwarder bound, so its exit removes only that endpoint.
+    let bound = se_proc::NativeFileIdentity::observe_local_socket(path)?;
     let (ended, server_gone) = std::sync::mpsc::channel::<io::Error>();
     std::thread::Builder::new()
         .name("se-codex-forward-accept".into())
@@ -130,7 +132,16 @@ fn pipe_socket(path: &Path, control: PathBuf) -> io::Result<()> {
     let reason = server_gone
         .recv()
         .unwrap_or_else(|_| io::Error::other("the private socket stopped accepting"));
-    let _ = std::fs::remove_file(path);
+    match se_proc::NativeFileIdentity::observe_local_socket(path) {
+        Ok(current) if current == bound => {
+            let _ = std::fs::remove_file(path);
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        _ => eprintln!(
+            "codex forwarder: {} is no longer the endpoint it bound; it is preserved",
+            path.display()
+        ),
+    }
     Err(reason)
 }
 

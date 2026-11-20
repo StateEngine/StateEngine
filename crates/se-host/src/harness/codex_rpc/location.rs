@@ -4,34 +4,50 @@ use super::*;
 use std::io::Write;
 #[cfg(unix)]
 mod endpoint;
-/// The Windows private endpoint: the forwarder's AF_UNIX socket in the
-/// launch's private directory. Its directory incarnation is the creation time
-/// recorded at launch; a replaced directory is refused, never repaired.
+/// The Windows private endpoint: the forwarder's AF_UNIX socket in a private
+/// per-launch directory. The directory and the socket leaf are pinned by native
+/// object identity (volume and file index) and the leaf by its AF_UNIX reparse
+/// tag; any mismatch is preserved and reported, never repaired or unlinked.
 #[cfg(windows)]
 mod windows {
     use super::*;
-    use std::os::windows::fs::MetadataExt;
+    use se_proc::NativeFileIdentity;
 
-    const REPARSE_POINT: u32 = 0x400;
+    /// The socket leaf's identity, pinned when the host first checks it.
+    pub(super) const PIN: &str = "codex-endpoint.json";
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Pin {
+        session: se_types::SessionId,
+        leaf: [u8; 32],
+    }
 
     fn failure(reason: &str) -> SeError {
         se_core::scope::unreadable("Codex private endpoint custody", reason)
     }
 
-    /// The private directory's incarnation, after its owner-only access is checked.
-    pub(super) fn incarnation(parent: &Path) -> Result<u64> {
+    /// The private directory's identity, after its owner-only access is checked.
+    pub(super) fn directory_identity(parent: &Path) -> Result<[u8; 32]> {
         let _private = se_proc::NativeStateFiles::open(parent).map_err(native_error)?;
-        let created = std::fs::symlink_metadata(parent)
-            .and_then(|metadata| metadata.created())
-            .map_err(|e| failure(&e.to_string()))?;
-        let nanos = created
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| failure(&e.to_string()))?
-            .as_nanos();
-        u64::try_from(nanos).map_err(|_| failure("directory creation time is out of range"))
+        NativeFileIdentity::observe_directory(parent)
+            .map(|identity| identity.to_bytes())
+            .map_err(|e| failure(&e.to_string()))
     }
 
-    fn original(socket: &Path, value: &Record) -> Result<()> {
+    fn read_record(record: &Path, session: &se_types::SessionId) -> Result<Record> {
+        let mut file = se_proc::OwnedFile::open(record)
+            .map_err(native_error)?
+            .ok_or_else(|| failure("original private rendezvous record is absent"))?;
+        let value: Record = serde_json::from_slice(&file.read(8192).map_err(native_error)?)
+            .map_err(|e| failure(&e.to_string()))?;
+        if &value.session != session {
+            return Err(failure("the record names another session"));
+        }
+        Ok(value)
+    }
+
+    fn original_directory(socket: &Path, value: &Record) -> Result<()> {
         if value.socket.to_local()? != socket || socket.file_name().is_none_or(|name| name != "s") {
             return Err(failure(
                 "listen path differs from the original launch record",
@@ -40,54 +56,109 @@ mod windows {
         let parent = socket
             .parent()
             .ok_or_else(|| failure("missing listen parent"))?;
-        if incarnation(parent)? != value.created {
+        if directory_identity(parent)? != value.directory {
             return Err(failure("original private listen directory was replaced"));
         }
         Ok(())
     }
 
-    /// Before any session secret is sent: the recorded directory, and a socket leaf.
-    pub(super) fn check(socket: &Path, record: &Path, session: &se_types::SessionId) -> Result<()> {
-        let mut file = se_proc::OwnedFile::open(record)
-            .map_err(native_error)?
-            .ok_or_else(|| failure("original private rendezvous record is absent"))?;
-        let value: Record = serde_json::from_slice(&file.read(8192).map_err(native_error)?)
-            .map_err(|e| failure(&e.to_string()))?;
-        drop(file);
-        if &value.session != session {
-            return Err(failure("the record names another session"));
-        }
-        original(socket, &value)?;
-        let leaf = std::fs::symlink_metadata(socket).map_err(|e| failure(&e.to_string()))?;
-        if leaf.is_dir() || leaf.file_attributes() & REPARSE_POINT == 0 {
-            return Err(failure("listen leaf is not a local socket"));
-        }
-        Ok(())
+    fn leaf(socket: &Path) -> Result<[u8; 32]> {
+        NativeFileIdentity::observe_local_socket(socket)
+            .map(|identity| identity.to_bytes())
+            .map_err(|e| failure(&format!("listen leaf is not the local socket: {e}")))
     }
 
-    /// After native exit: remove only the recorded socket leaf and its directory.
-    pub(super) fn retire(socket: &Path, value: &Record) -> Result<()> {
+    fn read_pin(path: &Path, session: &se_types::SessionId) -> Result<Option<[u8; 32]>> {
+        let Some(mut file) = se_proc::OwnedFile::open(path).map_err(native_error)? else {
+            return Ok(None);
+        };
+        let pin: Pin = serde_json::from_slice(&file.read(8192).map_err(native_error)?)
+            .map_err(|e| failure(&e.to_string()))?;
+        if &pin.session != session {
+            return Err(failure("the endpoint pin names another session"));
+        }
+        Ok(Some(pin.leaf))
+    }
+
+    /// Before any session secret is sent: the recorded directory, and the
+    /// socket leaf, pinned the first time and compared on every later check.
+    pub(super) fn check(socket: &Path, record: &Path, session: &se_types::SessionId) -> Result<()> {
+        let value = read_record(record, session)?;
+        original_directory(socket, &value)?;
+        let observed = leaf(socket)?;
+        let pin = record
+            .parent()
+            .ok_or_else(|| failure("missing launch directory"))?
+            .join(PIN);
+        match read_pin(&pin, session)? {
+            Some(pinned) if pinned == observed => Ok(()),
+            Some(_) => Err(failure("the socket leaf was replaced since it was pinned")),
+            None => {
+                let bytes = serde_json::to_vec(&Pin {
+                    session: session.clone(),
+                    leaf: observed,
+                })
+                .map_err(|e| failure(&e.to_string()))?;
+                let parent = pin
+                    .parent()
+                    .ok_or_else(|| failure("missing launch directory"))?;
+                let files = se_proc::NativeStateFiles::open(parent).map_err(native_error)?;
+                let mut staged = files.create_staging(parent).map_err(native_error)?;
+                use std::io::Write;
+                staged
+                    .file
+                    .write_all(&bytes)
+                    .and_then(|()| staged.file.sync_all())
+                    .map_err(|e| failure(&e.to_string()))?;
+                drop(staged.file);
+                files
+                    .publish_no_replace(&staged.path, &pin)
+                    .map_err(native_error)
+            }
+        }
+    }
+
+    /// After native exit: remove only the pinned leaf and its exact directory;
+    /// anything that changed is preserved and reported.
+    pub(super) fn retire(socket: &Path, record: &Path, value: &Record) -> Result<()> {
         let parent = socket
             .parent()
             .ok_or_else(|| failure("missing listen parent"))?;
         match std::fs::symlink_metadata(parent) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(failure(&e.to_string())),
-            Ok(_) => {}
-        }
-        original(socket, value)?;
-        match std::fs::symlink_metadata(socket) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(failure(&e.to_string())),
-            Ok(leaf) if leaf.is_dir() || leaf.file_attributes() & REPARSE_POINT == 0 => {
-                return Err(failure("listen leaf is not a local socket; preserve it"));
+            Ok(_) => {
+                original_directory(socket, value)?;
+                let pin_path = record
+                    .parent()
+                    .ok_or_else(|| failure("missing launch directory"))?
+                    .join(PIN);
+                let pinned = read_pin(&pin_path, &value.session)?;
+                match std::fs::symlink_metadata(socket) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(failure(&e.to_string())),
+                    Ok(_) => {
+                        if Some(leaf(socket)?) != pinned {
+                            return Err(failure(
+                                "the socket leaf is not the pinned endpoint; it is preserved",
+                            ));
+                        }
+                        std::fs::remove_file(socket).map_err(|e| failure(&e.to_string()))?;
+                    }
+                }
+                match se_proc::remove_empty_directory(parent).map_err(native_error)? {
+                    se_proc::DirectoryRemoval::Removed
+                    | se_proc::DirectoryRemoval::AlreadyAbsent => {}
+                    _ => return Err(failure("the exact directory remains nonempty")),
+                }
+                if let Some(mut file) = se_proc::OwnedFile::open(&pin_path).map_err(native_error)? {
+                    let digest: [u8; 32] =
+                        Sha256::digest(file.read(8192).map_err(native_error)?).into();
+                    file.remove(digest).map_err(native_error)?;
+                }
             }
-            Ok(_) => std::fs::remove_file(socket).map_err(|e| failure(&e.to_string()))?,
         }
-        match se_proc::remove_empty_directory(parent).map_err(native_error)? {
-            se_proc::DirectoryRemoval::Removed | se_proc::DirectoryRemoval::AlreadyAbsent => Ok(()),
-            _ => Err(failure("the exact directory remains nonempty")),
-        }
+        Ok(())
     }
 }
 
@@ -100,9 +171,9 @@ struct Record {
     device: u64,
     #[cfg(unix)]
     inode: u64,
-    /// The private directory's creation time, its incarnation on Windows.
+    /// The private directory's native identity on Windows.
     #[cfg(windows)]
-    created: u64,
+    directory: [u8; 32],
 }
 impl CodexHarness {
     pub(super) fn validate_socket(
@@ -157,14 +228,25 @@ impl CodexHarness {
             }
             Ok(Some(selected))
         }
-        // The forwarder listens in the launch's own private directory.
+        // The forwarder listens in a private per-launch directory: the launch's
+        // own when its path fits a local socket address, otherwise a short one
+        // under the data home named by the launch.
         #[cfg(windows)]
         {
-            let selected = self
+            const LIMIT: usize = 107;
+            let preferred = self
                 .directory(&request.identity.session)?
                 .join("cx")
                 .join("s");
-            if selected.as_os_str().as_encoded_bytes().len() >= 100 {
+            let selected = if preferred.as_os_str().as_encoded_bytes().len() <= LIMIT {
+                preferred
+            } else {
+                let launch =
+                    se_proc::session_launch_id(&request.identity.session).map_err(native_error)?;
+                let name = se_types::hex_lower(&Sha256::digest(launch.as_str().as_bytes()));
+                self.state_home.join("cx").join(&name[..16]).join("s")
+            };
+            if selected.as_os_str().as_encoded_bytes().len() > LIMIT {
                 return Err(incompatible(
                     "the private local socket path is longer than Windows allows",
                     "Move the StateEngine data home to a shorter folder and relaunch.",
@@ -227,6 +309,14 @@ impl CodexHarness {
                     Some(se_proc::NativeStateFiles::create(&root).map_err(native_error)?)
                 } else { None }
             };
+            #[cfg(windows)]
+            let _short_root = match parent.parent() {
+                // The short fallback lives under the data home's own `cx` root.
+                Some(root) if root.file_name().is_some_and(|name| name == "cx") => {
+                    Some(se_proc::NativeStateFiles::create(root).map_err(native_error)?)
+                }
+                _ => None,
+            };
             match std::fs::symlink_metadata(parent) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
                 Ok(_) => return Err(incompatible("the rendezvous directory already exists", "Reconcile its original launch; a new launch never reuses or repairs it.")),
@@ -236,8 +326,8 @@ impl CodexHarness {
             #[cfg(unix)]
             let (device, inode) = { use std::os::unix::fs::MetadataExt; let metadata = std::fs::symlink_metadata(parent).map_err(|e| se_core::scope::unreadable("Codex socket directory identity", &e.to_string()))?; (metadata.dev(), metadata.ino()) };
             #[cfg(windows)]
-            let created = windows::incarnation(parent)?;
-            let value = Record { session, socket: NativePath::from_local(socket)?, #[cfg(unix)] device, #[cfg(unix)] inode, #[cfg(windows)] created };
+            let directory_identity = windows::directory_identity(parent)?;
+            let value = Record { session, socket: NativePath::from_local(socket)?, #[cfg(unix)] device, #[cfg(unix)] inode, #[cfg(windows)] directory: directory_identity };
             let bytes = serde_json::to_vec(&value).map_err(|e| se_core::scope::unreadable("Codex runtime record", &e.to_string()))?;
             let parent = record.parent().ok_or_else(|| SeError::invalid("Codex runtime record", "a protected launch directory"))?;
             let files = se_proc::NativeStateFiles::open(parent).map_err(native_error)?;
@@ -356,7 +446,7 @@ impl CodexHarness {
             }
         }
         #[cfg(windows)]
-        windows::retire(&socket, &value)?;
+        windows::retire(&socket, &path, &value)?;
         #[cfg(not(any(unix, windows)))]
         let _ = socket;
         se_proc::OwnedFile::open(&path)
