@@ -49,6 +49,20 @@ impl NativeRenewal {
                 || c.reconcile != reconcile
                 || c.subtree != subtree
         }) {
+            if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+                let hint = match &work.hint {
+                    SourceHint::ColdSnapshot => "cold",
+                    SourceHint::FileChanged(_) => "file_changed",
+                    SourceHint::FileRemoved(_) => "file_removed",
+                    SourceHint::DirectoryChanged(_) => "directory_changed",
+                    SourceHint::Rename { .. } => "rename",
+                    SourceHint::Reconcile(_) => "reconcile",
+                };
+                eprintln!(
+                    "ATLAS_RENEWAL_NEW serial={} hint={hint} full_reconcile={full_reconcile}",
+                    work.serial
+                );
+            }
             let retained_last = connection.read(deadline, |sql| {
                 sql.prepare("SELECT coalesce(max(id),0) FROM files")?
                     .query_row([], |r| r.get::<_, i64>(0))
@@ -460,10 +474,12 @@ impl NativeRenewal {
         let complete = match result {
             Ok(complete) => complete,
             Err(error) => {
+                report_progress(&cycle, Some(&error));
                 self.cycle = Some(cycle);
                 return Err(error);
             }
         };
+        report_progress(&cycle, None);
         let summary = summary::get(
             connection,
             &self.roots[index],
@@ -514,6 +530,37 @@ impl NativeRenewal {
             complete,
         })
     }
+}
+fn report_progress(cycle: &Cycle, error: Option<&SeError>) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    if std::env::var_os("ATLAS_FULL_REPOSITORY").is_none() {
+        return;
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let previous = LAST.load(Ordering::Relaxed);
+    if now.saturating_sub(previous) < 10
+        || LAST
+            .compare_exchange(previous, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+    {
+        return;
+    }
+    let phase = match cycle.phase {
+        Phase::Retained => "retained",
+        Phase::Directories => "directories",
+        Phase::Files => "files",
+        Phase::Watches => "watches",
+        Phase::Repairs => "repairs",
+        Phase::Coverage => "coverage",
+        Phase::Done => "done",
+    };
+    eprintln!(
+        "ATLAS_RENEWAL_PROGRESS serial={} phase={phase} after={} last={} dirs={} files={} error={error:?}",
+        cycle.serial, cycle.after, cycle.retained_last, cycle.directories, cycle.files
+    );
 }
 fn entry_path(root: &mut Root, spelling: String) -> Option<RelativePath> {
     let path_reason = if spelling.len() > 4096 {
