@@ -84,13 +84,10 @@ pub fn parser_memory_guard() -> AtlasResult<()> {
     #[cfg(any(windows, target_os = "macos"))]
     let ceiling = se_proc::atlas_worker::MEMORY_BYTES;
     if requested > ceiling {
-        // The dedicated worker maps about 18.5 MiB before parser/SQL work; the
-        // CLI covering for it means the companion is missing or unusable, and
-        // the actionable refusal names the companion instead of memory pressure.
         if cli_covering_for_companion() {
             return Err(SeError::new(se_types::Detail::AtlasWorkerMissing(
                 se_types::details::AtlasWorkerMissing {
-                    binary: crate::atlas_worker::worker_binary_name().into(),
+                    binary: se_proc::atlas_worker::worker_binary_name().into(),
                     requested,
                     available: ceiling,
                 },
@@ -109,8 +106,7 @@ pub fn parser_memory_guard() -> AtlasResult<()> {
     Ok(())
 }
 
-/// The running image is the verified CLI itself when its name, not the fixed
-/// companion name, is the current executable.
+/// True when the running image is the verified CLI, not the named companion.
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 fn cli_covering_for_companion() -> bool {
     std::env::current_exe().is_ok_and(|executable| {

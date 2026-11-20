@@ -10,6 +10,15 @@ use std::{
 #[cfg(any(windows, target_os = "macos", test))]
 mod stderr;
 pub const ENTRY: &str = "--stateengine-private-atlas-cold";
+/// Fixed companion name of the verified CLI. Both images install together and
+/// share one trust domain, so no lookup or version exchange is needed.
+pub fn worker_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "se-atlas-worker.exe"
+    } else {
+        "se-atlas-worker"
+    }
+}
 pub const FRAME_BYTES: usize = 65536;
 pub const MEMORY_BYTES: u64 = 64_000_000;
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]

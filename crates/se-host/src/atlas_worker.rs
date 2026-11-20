@@ -31,18 +31,8 @@ pub fn private_dispatch(args: &[OsString]) -> se_types::Result<u8> {
         ))
     }
 }
-/// Fixed companion name of the verified CLI. Both images install together
-/// and share one trust domain, so no lookup or version exchange is needed.
-const ATLAS_WORKER_BINARY: &str = "se-atlas-worker";
-
 /// The companion's fixed name on the current platform.
-pub fn worker_binary_name() -> &'static str {
-    if cfg!(windows) {
-        "se-atlas-worker.exe"
-    } else {
-        ATLAS_WORKER_BINARY
-    }
-}
+pub use se_proc::atlas_worker::worker_binary_name;
 
 /// The cold worker runs only the private entry, so prefer the dedicated
 /// worker image installed beside the verified CLI; absent or uninstalled,
@@ -142,11 +132,7 @@ mod worker_image_tests {
     }
 
     fn worker_name() -> &'static str {
-        if cfg!(windows) {
-            "se-atlas-worker.exe"
-        } else {
-            super::ATLAS_WORKER_BINARY
-        }
+        super::worker_binary_name()
     }
 
     #[test]
