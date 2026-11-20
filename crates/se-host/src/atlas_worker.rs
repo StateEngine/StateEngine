@@ -64,14 +64,7 @@ pub fn worker_main() -> ExitCode {
     // The CLI entry performs the same initialization before worker dispatch;
     // the worker creates cache files, so its default owner must match.
     if let Err(error) = se_proc::initialize_file_creation_owner() {
-        let failure = SeError::new(
-            se_types::Detail::SourceUnreadable(se_types::details::SourceUnreadable {
-                subject: "process default file owner".into(),
-                reason: error.to_string(),
-                next_step: "Restore access to the current process token and retry the command; no store or configuration file has been opened".into(),
-            }),
-        )
-        .with_cause(error);
+        let failure = se_proc::file_owner_error(error);
         let _ = writeln!(io::stderr(), "{failure}");
         return ExitCode::from(failure.class().exit_code());
     }

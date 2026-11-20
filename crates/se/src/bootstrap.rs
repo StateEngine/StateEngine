@@ -11,13 +11,9 @@ use std::{
 /// Windows fixes only the default owner for newly created files; existing
 /// ownership remains a strict readback requirement. Unix does no work here.
 pub fn initialize_file_owner() -> Result<()> {
-    se_proc::initialize_file_creation_owner().map(|_| ()).map_err(|error| {
-        SeError::new(Detail::SourceUnreadable(details::SourceUnreadable {
-            subject: "process default file owner".into(),
-            reason: error.to_string(),
-            next_step: "Restore access to the current process token and retry the command; no store or configuration file has been opened".into(),
-        })).with_cause(error)
-    })
+    se_proc::initialize_file_creation_owner()
+        .map(|_| ())
+        .map_err(se_proc::file_owner_error)
 }
 
 #[derive(Debug)]
