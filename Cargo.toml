@@ -9,6 +9,7 @@ members = [
     "crates/se-config",
     "crates/se-core",
     "crates/se-proc",
+    "crates/se-trusted-path",
     "crates/se-fsevents",
     "crates/se-host",
     "crates/se-mcp",

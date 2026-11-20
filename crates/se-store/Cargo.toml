@@ -10,6 +10,7 @@ publish.workspace = true
 se-store-contract = { path = "../se-store-contract" }
 se-proc = { path = "../se-proc" }
 se-types = { path = "../se-types" }
+se-trusted-path = { path = "../se-trusted-path" }
 rusqlite = { version = "0.41", features = ["bundled", "functions", "hooks", "backup"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -18,9 +19,6 @@ uuid.workspace = true
 
 [build-dependencies]
 rusqlite = { version = "0.41", features = ["bundled"] }
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
 
 [lints.rust]
 unsafe_code = "allow"

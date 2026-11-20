@@ -6,10 +6,11 @@
  "crates": {
   "se-host": 103317,
   "se-proc": 41276,
-  "se-store": 25799,
+  "se-store": 25485,
+  "se-trusted-path": 312,
   "se-core": 24310,
   "se": 24128,
-  "se-atlas": 16803,
+  "se-atlas": 16453,
   "se-types": 5427
  },
  "directories": {

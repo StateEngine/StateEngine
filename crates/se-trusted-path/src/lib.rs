@@ -14,9 +14,8 @@
 //! Windows is exempt: the verbatim form already drops NOFOLLOW under the
 //! caller's pin, and the walk rule is a Unix one.
 //!
-//! Mirror module: the identical rule lives in crates/se-atlas/src/
-//! trusted_path.rs. Both files cover the SQLite open seam for trusted link
-//! ancestors; a divergence between them is a safety defect, not style.
+//! The single home of this rule for every SQLite open seam (se-store and
+//! se-atlas); there is no second copy to keep in step.
 #[cfg(unix)]
 use std::{collections::VecDeque, ffi::OsString, os::unix::fs::MetadataExt, path::Component};
 use std::{
@@ -34,7 +33,7 @@ const MAX_LINK_DEPTH: usize = 40;
 /// only when root- or current-user-owned, and the returned path resolves
 /// every such link. A foreign-owned link refuses with the state-files walk's
 /// own verdict.
-pub(crate) fn resolve(path: &Path) -> io::Result<PathBuf> {
+pub fn resolve(path: &Path) -> io::Result<PathBuf> {
     #[cfg(unix)]
     {
         unix_resolve(path)

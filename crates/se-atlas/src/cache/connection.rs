@@ -551,14 +551,14 @@ fn open(pin: &DatabasePin, role: ConnectionRole, deadline: Instant) -> AtlasResu
     let target = se_types::sqlite_path(&pin.path);
     // The verbatim exception is decided before ancestor resolution: only the
     // verbatim prefix cannot honour NOFOLLOW, and a Unix path resolved by
-    // trusted_path keeps the guard on the database name itself.
+    // se_trusted_path keeps the guard on the database name itself.
     let verbatim = target != pin.path;
     // SQLite's NOFOLLOW refuses a symlinked ancestor outright (extended code
     // 1550), which breaks the ordinary macOS temp directory under /var. The
     // state-files walk admits only root- or current-user-owned link
     // ancestors; resolve that same rule here and hand SQLite the resolved
     // path, leaving NOFOLLOW to own the database name itself.
-    let target = crate::trusted_path::resolve(&target).map_err(cache_error)?;
+    let target = se_trusted_path::resolve(&target).map_err(cache_error)?;
     // SQLite's NOFOLLOW refuses a verbatim path it cannot resolve with its own
     // walk; the retained pin already names the exact file, so the flag is
     // dropped only for the verbatim form.

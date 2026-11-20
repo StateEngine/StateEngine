@@ -36,7 +36,6 @@ mod sql_value;
 mod staging;
 mod transaction;
 mod transcript;
-mod trusted_path;
 #[cfg(all(test, any(target_os = "linux", windows)))]
 mod write_tests;
 mod writer;
