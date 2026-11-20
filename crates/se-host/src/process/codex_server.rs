@@ -54,13 +54,13 @@ fn host_codex_home() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".codex"))
 }
 
-/// The login a new launch uses. Only the launch path can present its token;
-/// every later reader takes the login recorded for that agent.
+/// Only a new launch chooses its login; later readers use the recorded login.
 pub(super) fn launch_login(_: &super::launch::NewLaunch) -> Result<PathBuf> {
     host_codex_home()
 }
 
 /// The login first setup (provider adoption) prepares. Never an agent's login.
+#[cfg(any(target_os = "linux", windows))]
 pub(crate) fn setup_codex_login(_: &crate::codex_rpc::FirstSetup) -> Result<PathBuf> {
     host_codex_home()
 }

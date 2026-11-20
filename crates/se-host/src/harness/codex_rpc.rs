@@ -639,13 +639,13 @@ impl AdapterBinding for Arc<Binding> {
 
 pub(crate) struct Adoption;
 pub(crate) static ADOPTION: Adoption = Adoption;
+#[cfg(any(target_os = "linux", windows))]
 pub(crate) use first_setup::FirstSetup;
-/// Provider adoption (first setup), the only code that can present
-/// `FirstSetup` and so the only setup path that reads the host's login.
+/// Only provider first setup can present `FirstSetup` to read the host login.
 mod first_setup {
     use super::*;
-    /// Proof that first setup is choosing the login to prepare. Its private
-    /// field means only this module can make one.
+    /// Only this module can construct proof of first setup.
+    #[cfg(any(target_os = "linux", windows))]
     pub(crate) struct FirstSetup(());
     impl crate::adoption::Adapter for Adoption {
         #[cfg(any(target_os = "linux", windows))]
