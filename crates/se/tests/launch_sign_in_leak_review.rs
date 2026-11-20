@@ -6,7 +6,8 @@ mod directory;
 /// Protects: the token reaches one launch's child, the next launch without it is
 /// refused as signed out, and no file, output or host environment retains it.
 #[test]
-fn terminal_sign_in_serves_one_launch_and_leaves_no_trace() -> Result<(), Box<dyn std::error::Error>> {
+fn terminal_sign_in_serves_one_launch_and_leaves_no_trace() -> Result<(), Box<dyn std::error::Error>>
+{
     let parent = directory::private_directory()?;
     let root = parent.join("output");
     let output = std::process::Command::new("python3")

@@ -137,8 +137,8 @@ pub(super) fn without_terminal(error: SeError, no_terminal: bool) -> SeError {
         se_types::Detail::LaunchFailed(detail) if no_terminal && detail.reason == SIGNED_OUT => {
             SeError::new(se_types::Detail::LaunchFailed(se_types::details::LaunchFailed {
                 subject: "Claude Code".into(),
-                reason: "the StateEngine host was started without a Claude sign-in, and no terminal launched this agent".into(),
-                next_step: "Run se launch <agent> from a terminal that is signed in to Claude Code".into(),
+                reason: "Claude Code reported the StateEngine host's own sign-in as signed out (it may be missing, expired or revoked), and no terminal launched this agent".into(),
+                next_step: "Run se launch <agent> from a terminal with CLAUDE_CODE_OAUTH_TOKEN (for example from claude setup-token) or ANTHROPIC_API_KEY set".into(),
             }))
         }
         _ => error,
