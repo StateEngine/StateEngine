@@ -1,49 +1,14 @@
 use super::*;
 use std::{error::Error, os::unix::ffi::OsStrExt, os::unix::fs::symlink};
-// A std-only fixture root: se-atlas deliberately has no se-proc
-// dependency, so the custody-backed shared helper is out of reach;
-// the plain temp root follows the foundation_judge pattern.
-struct TempRoot(std::path::PathBuf);
-impl std::ops::Deref for TempRoot {
-    type Target = std::path::Path;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-impl TempRoot {
-    fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let dir = std::env::temp_dir().join(format!(
-            "se-atlas-tp-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos()
-        ));
-        std::fs::create_dir(&dir)?;
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-        Ok(Self(dir))
-    }
-    fn finish(
-        self,
-        result: Result<(), Box<dyn std::error::Error>>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let _ = std::fs::remove_dir_all(&self.0);
-        result
-    }
-}
-impl Drop for TempRoot {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-fn case() -> Result<TempRoot, Box<dyn Error>> {
-    TempRoot::new()
+#[path = "../../test-support/directory.rs"]
+mod directory;
+fn case() -> Result<directory::PrivateDirectory, Box<dyn Error>> {
+    directory::private_case_directory()
 }
 // The temp parent may itself sit under a symlinked ancestor (macOS /var);
 // build expected paths from the canonical root so the assertions hold
 // wherever the parent is aliased.
-fn canonical(root: &TempRoot) -> Result<std::path::PathBuf, Box<dyn Error>> {
+fn canonical(root: &directory::PrivateDirectory) -> Result<std::path::PathBuf, Box<dyn Error>> {
     Ok(root.canonicalize()?)
 }
 #[test]

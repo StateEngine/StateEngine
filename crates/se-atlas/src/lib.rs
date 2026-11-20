@@ -20,7 +20,6 @@ pub mod render;
 pub mod scope;
 pub mod source;
 pub mod text;
-mod trusted_path;
 
 pub mod resolve;
 

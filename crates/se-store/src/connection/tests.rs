@@ -6,7 +6,7 @@ use rusqlite::OpenFlags;
 use std::{error::Error, os::unix::fs::symlink};
 // A std-only fixture root: the seam test needs no state-file custody, and the
 // shared directory helper is already a module of this crate through the
-// trusted_path tests.
+// se-trusted-path tests.
 struct TempRoot(std::path::PathBuf);
 impl std::ops::Deref for TempRoot {
     type Target = std::path::Path;

@@ -1586,10 +1586,10 @@ dependencies = [
  "grep-matcher",
  "grep-regex",
  "grep-searcher",
- "libc",
  "rusqlite",
  "se-atlas",
  "se-identifiers",
+ "se-trusted-path",
  "se-types",
  "serde",
  "serde_json",
@@ -1750,10 +1750,10 @@ dependencies = [
 name = "se-store"
 version = "0.0.1-alpha.1"
 dependencies = [
- "libc",
  "rusqlite",
  "se-proc",
  "se-store-contract",
+ "se-trusted-path",
  "se-types",
  "serde",
  "serde_json",
@@ -1771,6 +1771,15 @@ dependencies = [
  "serde_json",
  "sha2",
  "uuid",
+]
+
+[[package]]
+name = "se-trusted-path"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "libc",
+ "se-proc",
+ "se-types",
 ]
 
 [[package]]

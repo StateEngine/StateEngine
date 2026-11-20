@@ -36,15 +36,15 @@ pub(crate) fn open(path: &Path, flags: OpenFlags) -> StoreResult<Connection> {
     let target = se_types::sqlite_path(path);
     // The verbatim exception is decided before ancestor resolution: only the
     // verbatim prefix cannot honour NOFOLLOW, and a Unix path resolved by
-    // trusted_path keeps the guard on the database name itself.
+    // se_trusted_path keeps the guard on the database name itself.
     let verbatim = target != path;
     // SQLite's NOFOLLOW refuses a symlinked ancestor outright (extended code
     // 1550), which breaks the ordinary macOS temp directory under /var. The
     // state-files walk admits only root- or current-user-owned link
     // ancestors; resolve that same rule here and hand SQLite the resolved
     // path, leaving NOFOLLOW to own the database name itself.
-    let target = crate::trusted_path::resolve(&target)
-        .map_err(|error| io(error, path, StoreIoStage::Open))?;
+    let target =
+        se_trusted_path::resolve(&target).map_err(|error| io(error, path, StoreIoStage::Open))?;
     // SQLite's NOFOLLOW resolves symlinks by its own walk and refuses a path it
     // cannot resolve. Under a verbatim prefix Win32 does not follow the usual
     // root rules, so the flag is dropped only for that form; the caller's own
