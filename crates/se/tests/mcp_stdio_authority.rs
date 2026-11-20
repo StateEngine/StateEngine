@@ -8,8 +8,12 @@ use std::{
     time::{Duration, Instant},
 };
 type Check = Result<(), Box<dyn std::error::Error>>;
+#[path = "../../test-support/executable.rs"]
+mod executable;
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
+#[path = "support/foreground_host.rs"]
+mod foreground_host;
 
 fn command(image: &Path, home: &Path) -> Command {
     let mut command = Command::new(image);
@@ -161,6 +165,10 @@ fn stdio_tools_never_inherit_the_initialized_owners_authority() -> Check {
             .arg(&repo)
             .output()?,
     )?;
+    let mut host_command = command(image, home);
+    host_command.arg("--json").current_dir(&repo);
+    let host = foreground_host::ForegroundHost::start(host_command, home)?;
+    assert_eq!(host.ready()["state"], "running");
     // Positive owner control: this same home really has readable private agent state.
     checked(
         command(image, home)
@@ -208,6 +216,8 @@ fn stdio_tools_never_inherit_the_initialized_owners_authority() -> Check {
             .current_dir(&repo)
             .output()?,
     )?;
+    host.wait()?;
+    drop(host);
     drop(std::mem::ManuallyDrop::into_inner(f));
     Ok(())
 }

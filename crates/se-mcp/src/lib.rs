@@ -174,7 +174,17 @@ pub async fn dispatch(
                 "session-required: tools need the launched session's capability",
             ));
         }
-        Err(error) => return McpReply::Json(rpc_error(id, SESSION_REQUIRED, &error.to_string())),
+        Err(error) => {
+            let message = if error.code() == se_types::Code::JobBreakawayRefused {
+                match error.body.remedy(&se_types::RenderCx::default()) {
+                    Ok(remedy) => format!("{error}. {}", remedy.text),
+                    Err(_) => error.to_string(),
+                }
+            } else {
+                error.to_string()
+            };
+            return McpReply::Json(rpc_error(id, SESSION_REQUIRED, &message));
+        }
     };
     let response = if method == "tools/list" {
         match backend
