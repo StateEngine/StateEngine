@@ -56,14 +56,21 @@ def rust_bypasses(source):
 
 def python_bypasses(source):
     for call in ast.walk(ast.parse(source)):
-        if not isinstance(call, ast.Call) or not call.args:
+        if not isinstance(call, ast.Call):
             continue
         function = ast.unparse(call.func)
         if function not in {"subprocess.run", "subprocess.call", "subprocess.Popen",
                             "subprocess.check_call", "subprocess.check_output",
                             "asyncio.create_subprocess_exec"}:
             continue
-        argv = call.args if function == "asyncio.create_subprocess_exec" else call.args[0]
+        if function == "asyncio.create_subprocess_exec":
+            argv = call.args
+        elif call.args:
+            argv = call.args[0]
+        else:
+            argv = next((keyword.value for keyword in call.keywords if keyword.arg == "args"), None)
+            if argv is None:
+                continue
         if isinstance(argv, ast.Constant) and isinstance(argv.value, str):
             try:
                 words = shlex.split(argv.value)
@@ -91,7 +98,8 @@ def powershell_bypasses(source):
     for lineno, line in enumerate(source.splitlines(), 1):
         if line.lstrip().startswith("#"):
             continue
-        if re.search(r"(?i)\b(?:Start-Process|Invoke-Expression)\b|&\s*[^({\s]+", line):
+        direct = r"^\s*(?:\$[\w:]+\s*=\s*)?(?:se|codex|claude)(?:\.exe)?\s+"
+        if re.search(r"(?i)\b(?:Start-Process|Invoke-Expression)\b|&\s*[^({\s]+", line) or re.match(direct, line, re.I):
             if re.search(r"(?i)\b(?:init|--adopt)\b|\bmcp\s+add\b", line):
                 if not re.search(r"(?i)\bgit(?:\.exe)?\s+init\b", line):
                     yield f"line {lineno}"
@@ -132,13 +140,15 @@ fn git() {
 subprocess.run([image, "--json", "init"])
 subprocess.Popen([codex, "mcp", "add", "test"])
 subprocess.run(["git", "init"])
+subprocess.run(args=[image, "init"])
 run_provider_command(subprocess.run, [image, "init"], env, root)
-""")), ["line 2", "line 3"])
+""")), ["line 2", "line 3", "line 5"])
         self.assertEqual(list(powershell_bypasses("""
 & $script:Binary --home $root init
 Start-Process $binary -ArgumentList @('init')
+$initialized = se.exe --home $root init
 Invoke-ProviderFixture -Words @('init')
-""")), ["line 2", "line 3"])
+""")), ["line 2", "line 3", "line 4"])
 
     def test_repository_has_no_direct_unchecked_init_spawn(self):
         candidates = [*ROOT.glob("crates/*/tests"), ROOT / "scripts/ci",
