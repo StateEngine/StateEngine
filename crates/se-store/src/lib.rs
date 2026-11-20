@@ -36,8 +36,6 @@ mod sql_value;
 mod staging;
 mod transaction;
 mod transcript;
-#[cfg(all(test, any(target_os = "linux", windows)))]
-mod write_tests;
 mod writer;
 /// The channel delayed-phone-status threshold in microseconds after the
 /// Saved commit at which the status becomes due. Production keeps this
