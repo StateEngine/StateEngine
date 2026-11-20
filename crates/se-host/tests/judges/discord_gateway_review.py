@@ -149,7 +149,12 @@ class Provider:
         stream = handler.connection
         self.sockets.append(stream)
         link.enter("hello")
-        self.frame(stream, {"op": 10, "d": {"heartbeat_interval": 200}})
+        # Heartbeat cases need a short interval. The burst case tests queue
+        # overflow and replay, not heartbeats: a 200 ms interval there let a
+        # CPU-starved fake miss three acknowledgements and end the test as an
+        # outage, so it announces an interval it cannot miss.
+        interval = 5000 if self.mode == "burst" else 200
+        self.frame(stream, {"op": 10, "d": {"heartbeat_interval": interval}})
         link.enter("first client frame")
         opcode, raw = self.read_frame(stream)
         assert opcode == 1, "first client frame was not text"
