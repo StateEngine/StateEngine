@@ -139,6 +139,17 @@ pub struct StoreInfo {
     pub head: Option<StorePosition>,
     pub state: StoreState,
 }
+impl StoreInfo {
+    /// Form a direct lease request from this observation. The lease and the
+    /// opened store must still validate identity and readiness before use.
+    pub fn direct_lease_identity(&self, generation: u64) -> LeaseIdentity {
+        LeaseIdentity {
+            store: Some(self.id.clone()),
+            generation,
+            mode: LeaseMode::DirectClient,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StoreState {
     Ready,

@@ -45,6 +45,15 @@ use se_types::{
 };
 use se_types::{LifecycleId, SessionId};
 use std::{marker::PhantomData, rc::Rc, time::Instant};
+impl SqliteReader {
+    /// Recheck that the named database is still the one this reader opened.
+    /// This observes native identity only; it does not refresh store contents.
+    pub fn validate_identity(&self) -> StoreResult<()> {
+        let named = se_proc::NativeFileIdentity::observe(&self.path)
+            .map_err(|e| self.identity_observation_error(e))?;
+        self.require_identity(named)
+    }
+}
 // SQLite closes and rolls back on implicit drop. Only an explicit successful
 // close may return a connection to its host pool.
 pub struct SqliteSnapshot {

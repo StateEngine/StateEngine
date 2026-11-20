@@ -14,8 +14,8 @@ use se_core::{
     store_error::{store_error, write_error},
 };
 use se_store::{
-    DirectStore, EventBody, LeaseIdentity, LeaseMode, ReadStore, Snapshot, SqliteFactory,
-    SqliteReader, StoreFactory, StoreOptions,
+    DirectStore, EventBody, ReadStore, Snapshot, SqliteFactory, SqliteReader, StoreFactory,
+    StoreOptions,
 };
 use se_types::{EventId, NativePath, Read, Result, SeError, details};
 use std::{
@@ -190,11 +190,10 @@ pub(super) fn execute(
         path: to_path,
         canonical_key,
     };
-    let identity = LeaseIdentity {
-        store: Some(reader.info().map_err(|e| store_error(&e))?.id),
-        generation: caller.admission.generation,
-        mode: LeaseMode::DirectClient,
-    };
+    let identity = reader
+        .info()
+        .map_err(|e| store_error(&e))?
+        .direct_lease_identity(caller.admission.generation);
     let lease =
         match DirectLease::acquire(
             Files::open(&cx.home).map_err(|e| store_error(&e))?,
