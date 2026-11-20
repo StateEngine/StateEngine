@@ -183,6 +183,7 @@ def run(image, output):
             print(f"# {len(locked)} files held open by the running host are read after shutdown", flush=True)
         hosts, leaked = host_environments_with_token(fixture)
         assert not leaked, ("host process environment holds the token", leaked)
+        assert hosts > 0, "no running host environment was inspected"
         print(f"ok 3 - token absent from data home, call output and {hosts} host environments", flush=True)
     finally:
         fixture.call("down")
