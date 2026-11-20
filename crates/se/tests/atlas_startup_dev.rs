@@ -385,12 +385,8 @@ fn write(endpoint: &EndpointRecord) -> Result<(), String> {
 // Probe only: interleave reader settings (cache pages, temp store) over five rounds.
 fn benchmark_queries(endpoint: &EndpointRecord, phase: &str) -> Result<(), String> {
     for _ in 0..5 {
-        for (cache, temp) in [("16", "1"), ("488", "1"), ("16", "2"), ("488", "2")] {
-            // SAFETY: probe only; the host reads these when it opens a query reader.
-            unsafe {
-                std::env::set_var("SE_ATLAS_PROBE_CACHE", cache);
-                std::env::set_var("SE_ATLAS_PROBE_TEMP", temp);
-            }
+        for (cache, temp) in [(16, 1), (488, 1), (16, 2), (488, 2)] {
+            se_atlas::cache::connection::probe_set(cache, temp);
             query_round(endpoint, &format!("{phase}-c{cache}-t{temp}"))?;
         }
     }

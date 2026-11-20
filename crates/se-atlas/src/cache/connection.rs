@@ -640,22 +640,20 @@ fn configure_limits(
     }
     Ok(())
 }
-/// Probe only: SE_ATLAS_PROBE_CACHE (pages) and SE_ATLAS_PROBE_TEMP (1 file, 2 memory)
-/// for the query reader.
+static PROBE_CACHE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(16);
+static PROBE_TEMP: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
+/// Probe only: the query reader's cache pages and temp store (1 file, 2 memory).
+pub fn probe_set(cache: i64, temp: i64) {
+    PROBE_CACHE.store(cache, std::sync::atomic::Ordering::Relaxed);
+    PROBE_TEMP.store(temp, std::sync::atomic::Ordering::Relaxed);
+}
 fn probe_settings(role: ConnectionRole) -> (i64, i64) {
     if role != ConnectionRole::QueryReader {
         return (16, 1);
     }
-    let read = |name: &str, default: i64| {
-        std::env::var(name)
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(default)
-    };
-    (
-        read("SE_ATLAS_PROBE_CACHE", 16),
-        read("SE_ATLAS_PROBE_TEMP", 1),
-    )
+    let load =
+        |value: &std::sync::atomic::AtomicI64| value.load(std::sync::atomic::Ordering::Relaxed);
+    (load(&PROBE_CACHE), load(&PROBE_TEMP))
 }
 fn configure_access(db: &Connection, role: ConnectionRole) -> AtlasResult<()> {
     if role.writable() {
