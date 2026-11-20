@@ -389,6 +389,7 @@ fn write(endpoint: &EndpointRecord) -> Result<(), String> {
         .into_iter()
         .enumerate()
         {
+            let started = Instant::now();
             let answer = connection.exchange(IpcEnvelope {
                 version: connection.negotiated().version,
                 request_id: 100 + offset as u64,
@@ -402,6 +403,7 @@ fn write(endpoint: &EndpointRecord) -> Result<(), String> {
                     key: None,
                 }),
             }, &options).map_err(|error| error.to_string())?;
+            let elapsed_us = started.elapsed().as_micros();
             let bytes = serde_json::to_vec(&answer.value)
                 .map_err(|error| error.to_string())?
                 .len();
@@ -424,7 +426,7 @@ fn write(endpoint: &EndpointRecord) -> Result<(), String> {
             if kind == "path" && count == 0 {
                 return Err("benchmark path query returned no hits".into());
             }
-            println!("ATLAS_BENCH_QUERY {kind} {bytes} {count}");
+            println!("ATLAS_BENCH_QUERY {kind} {bytes} {count} {elapsed_us}");
         }
     }
     Ok(())
