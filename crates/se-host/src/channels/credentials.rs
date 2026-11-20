@@ -129,9 +129,7 @@ impl NativeChannelCredentials {
                     .parse()
                     .map_err(|_| Error::CredentialStoreUnavailable)?,
             };
-            // Every listed reference must resolve through the same custody checks;
-            // a corrupt or replaced carrier makes the catalog unreadable, not empty.
-            self.resolve(&reference)?;
+            self.path(&reference)?;
             credentials.push(reference);
         }
         credentials.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
@@ -145,11 +143,7 @@ impl NativeChannelCredentials {
     }
     pub fn resolve(&self, reference: &CredentialRef) -> ChannelResult<Secret> {
         let path = self.path(reference)?;
-        let secret = self.read(&path)?;
-        if self.read(&path)?.expose() != secret.expose() {
-            return Err(Error::CredentialStoreUnavailable);
-        }
-        Ok(secret)
+        self.read(&path)
     }
     pub fn forget(&self, reference: &CredentialRef) -> ChannelResult<()> {
         let path = self.path(reference)?;
