@@ -269,10 +269,10 @@ impl StoreFactory for SqliteFactory {
         crate::erasure::plan(options, targets, lease)
     }
     fn inspect_backups(
-        _: &StoreOptions,
-        _: ReadBudget,
+        options: &StoreOptions,
+        budget: ReadBudget,
     ) -> StoreResult<Page<Read<BackupGeneration>>> {
-        later("backup inventory")
+        crate::backup::inventory(options, budget)
     }
     fn recovery_receipt(
         _: &StoreOptions,
