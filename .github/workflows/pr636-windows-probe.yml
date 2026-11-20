@@ -1,0 +1,17 @@
+name: pr636-windows-probe
+on:
+  push:
+    branches: [probe/pr636-windows-20261120]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Native-path and process tests on Windows
+        shell: bash
+        env:
+          CARGO_TERM_COLOR: never
+        run: cargo test --locked -p se-native-path -p se-proc -- --test-threads=4
