@@ -180,16 +180,13 @@ impl Drop for CacheConnection<'_> {
         if self.role == ConnectionRole::ColdWriter {
             self.files.release_cold_observations();
         }
-        // Close inside the arena, within the last budget; `db` (first field) closes first.
+        // Close in the arena if free within the last budget, else one try; `db` closes
+        // first. Missing it is safe: a held arena means another open connection, so
+        // this one is not the file's last and skips SQLite's close checkpoint.
         if self.role.opens_in_arena() {
-            let until = self.until.max(Instant::now() + Duration::from_millis(1));
-            self.arena = Reservation::acquire(self.role == ConnectionRole::QueryReader, until).ok();
-            if self.arena.is_none() {
-                eprintln!(
-                    "Atlas {:?} closed outside the arena: budget ran out",
-                    self.role
-                );
-            }
+            let reader = self.role == ConnectionRole::QueryReader;
+            let free = Reservation::acquire(reader, self.until).ok();
+            self.arena = free.or_else(|| Reservation::try_now(reader));
         }
     }
 }

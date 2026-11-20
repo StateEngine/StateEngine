@@ -32,13 +32,6 @@ impl Reservation {
                 .checked_add(1)
                 .ok_or_else(|| cache_error("Atlas query arena waiter count exhausted"))?;
         }
-        let expired = || {
-            if !reader || budget.is_zero() {
-                stage_timeout("query arena admission", 0)
-            } else {
-                timeout_phase("query arena admission", budget, started.elapsed())
-            }
-        };
         let mut waited = false;
         while state.held || (!reader && state.readers != 0) {
             waited = true;
@@ -56,10 +49,19 @@ impl Reservation {
         }
         if crate::clock::now() >= deadline || (waited && Instant::now() >= wait_deadline) {
             READY.notify_all();
-            return Err(expired());
+            return Err(if !reader || budget.is_zero() {
+                stage_timeout("query arena admission", 0)
+            } else {
+                timeout_phase("query arena admission", budget, started.elapsed())
+            });
         }
         state.held = true;
         Ok(Self)
+    }
+    pub(super) fn try_now(reader: bool) -> Option<Self> {
+        let mut state = STATE.lock().ok()?;
+        (!state.held && (reader || state.readers == 0)).then(|| state.held = true)?;
+        Some(Self)
     }
 }
 impl Drop for Reservation {
