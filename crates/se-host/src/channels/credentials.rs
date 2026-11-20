@@ -129,7 +129,9 @@ impl NativeChannelCredentials {
                     .parse()
                     .map_err(|_| Error::CredentialStoreUnavailable)?,
             };
-            self.path(&reference)?;
+            if self.path(&reference)? != path {
+                return Err(Error::CredentialStoreUnavailable);
+            }
             credentials.push(reference);
         }
         credentials.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
