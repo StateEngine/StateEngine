@@ -1563,6 +1563,7 @@ dependencies = [
  "se-config",
  "se-core",
  "se-host",
+ "se-mcp",
  "se-proc",
  "se-remote-cli",
  "se-repository",
