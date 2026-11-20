@@ -33,6 +33,13 @@ struct Record {
     checkpoint: Checkpoint,
 }
 
+enum Recovered {
+    Started(Arc<se_proc::OwnedProcess>),
+    /// Its scope exists but the server was never allowed to start.
+    Unstarted(Arc<se_proc::OwnedProcess>),
+    Exited,
+}
+
 #[derive(Default)]
 pub(super) struct CodexServer {
     slot: tokio::sync::Mutex<Option<Arc<se_proc::OwnedProcess>>>,
@@ -68,6 +75,10 @@ impl LaunchCoordinator {
         let path = self.codex_record(&login);
         let mut slot =
             crate::runtime::pool::within(deadline, self.codex_server.slot.lock()).await?;
+        // Starting the shared server is not bounded by the one launch that asked
+        // for it: a first start on a fresh login can outlast that launch's
+        // deadline, and the server must still finish starting for the next one.
+        let deadline = &Deadline::idle()?.stage(READY)?;
         let record = self.read_codex_record(&path, deadline).await?;
         if served(&control).await? {
             match record {
@@ -84,11 +95,19 @@ impl LaunchCoordinator {
         if let Some(record) = record {
             // Recorded but not serving: still starting, or gone.
             match self.recover_codex_server(&path, &record, deadline).await? {
-                Some(owner) => {
+                Recovered::Started(owner) => {
                     *slot = Some(owner);
                     return wait_served(&control, deadline).await;
                 }
-                None => remove_record(&path)?,
+                // A start that never reached exec will never serve: end it.
+                Recovered::Unstarted(owner) => {
+                    let witness = self.stop_codex_server(&owner, deadline).await?;
+                    self.release_witnessed_codex_server(owner, witness, deadline)
+                        .await?;
+                    remove_record(&path)?;
+                    *slot = None;
+                }
+                Recovered::Exited => remove_record(&path)?,
             }
         }
         // A server this host started that has since ended: witness its exit and
@@ -114,8 +133,14 @@ impl LaunchCoordinator {
             return Ok(());
         };
         match self.recover_codex_server(&path, &record, deadline).await? {
-            Some(owner) => *slot = Some(owner),
-            None => remove_record(&path)?,
+            Recovered::Started(owner) => *slot = Some(owner),
+            Recovered::Unstarted(owner) => {
+                let witness = self.stop_codex_server(&owner, deadline).await?;
+                self.release_witnessed_codex_server(owner, witness, deadline)
+                    .await?;
+                remove_record(&path)?;
+            }
+            Recovered::Exited => remove_record(&path)?,
         }
         Ok(())
     }
@@ -157,29 +182,51 @@ impl LaunchCoordinator {
         }
         let login = crate::codex_capture::existing_home()?;
         let path = self.codex_record(&login);
-        let record = self
-            .read_codex_record(&path, deadline)
-            .await?
-            .ok_or_else(|| {
-                refusal(
-                    &path,
-                    "the record of the server this host started is missing",
-                )
-            })?;
+        // The server this host started is ours by its retained native custody,
+        // whatever its record now says; stop and release it first.
         let witness = self.stop_codex_server(&owner, deadline).await?;
-        let source = checkpoint_source(&record.checkpoint)?;
-        self.save_codex_record(
-            &path,
-            &Record {
-                checkpoint: self.codex_checkpoint(CheckpointKind::Exit {
-                    source: Box::new(source),
-                    witness: witness.clone(),
-                })?,
-                ..record
-            },
-            deadline,
-        )
-        .await?;
+        let lifecycle = witness.lifecycle.clone();
+        self.release_witnessed_codex_server(owner, witness.clone(), deadline)
+            .await?;
+        *slot = None;
+        // Then settle the record. One naming this server is retired; one naming
+        // an earlier server is reconciled on its own custody, never assumed.
+        let Some(record) = self.read_codex_record(&path, deadline).await? else {
+            return Ok(());
+        };
+        if record.checkpoint.lifecycle == lifecycle {
+            let source = checkpoint_source(&record.checkpoint)?;
+            self.save_codex_record(
+                &path,
+                &Record {
+                    checkpoint: self.codex_checkpoint(CheckpointKind::Exit {
+                        source: Box::new(source),
+                        witness,
+                    })?,
+                    ..record
+                },
+                deadline,
+            )
+            .await?;
+            return remove_record(&path);
+        }
+        match self.recover_codex_server(&path, &record, deadline).await? {
+            Recovered::Exited => remove_record(&path),
+            Recovered::Started(earlier) | Recovered::Unstarted(earlier) => {
+                let witness = self.stop_codex_server(&earlier, deadline).await?;
+                self.release_witnessed_codex_server(earlier, witness, deadline)
+                    .await?;
+                remove_record(&path)
+            }
+        }
+    }
+
+    async fn release_witnessed_codex_server(
+        &self,
+        owner: Arc<se_proc::OwnedProcess>,
+        witness: se_proc::StopWitness,
+        deadline: &Deadline,
+    ) -> Result<()> {
         let native = self.native.clone();
         self.store
             .pool
@@ -188,10 +235,7 @@ impl LaunchCoordinator {
                     .release(&owner, &witness)
                     .map_err(|e| error("Codex shared server release", e))
             })
-            .await?;
-        remove_record(&path)?;
-        *slot = None;
-        Ok(())
+            .await
     }
 
     async fn release_ended_codex_server(
@@ -237,29 +281,28 @@ impl LaunchCoordinator {
         record: Record,
         deadline: &Deadline,
     ) -> Result<Arc<se_proc::OwnedProcess>> {
-        self.recover_codex_server(path, &record, deadline)
-            .await?
-            .ok_or_else(|| {
-                refusal(
-                    path,
-                    "the recorded server has exited but another process serves its socket",
-                )
-            })
+        match self.recover_codex_server(path, &record, deadline).await? {
+            Recovered::Started(owner) => Ok(owner),
+            _ => Err(refusal(
+                path,
+                "the recorded server is not the one serving its socket",
+            )),
+        }
     }
 
-    /// Re-adopt the recorded scope. `None` means it has exited.
+    /// Re-adopt the recorded scope.
     async fn recover_codex_server(
         &self,
         path: &Path,
         record: &Record,
         deadline: &Deadline,
-    ) -> Result<Option<Arc<se_proc::OwnedProcess>>> {
+    ) -> Result<Recovered> {
         let source = match &record.checkpoint.checkpoint {
             CheckpointKind::Reservation(v) => RecoverySource::Reservation(Box::new(v.clone())),
             CheckpointKind::Scope(v) => RecoverySource::Prepared(Box::new(v.clone())),
             CheckpointKind::Root(v) => RecoverySource::RootPrepared(Box::new(v.clone())),
             CheckpointKind::Process(v) => RecoverySource::Record(Box::new(v.clone())),
-            _ => return Ok(None),
+            _ => return Ok(Recovered::Exited),
         };
         let native = self.native.clone();
         let generation = self.options.epoch.generation;
@@ -290,10 +333,12 @@ impl LaunchCoordinator {
                     deadline,
                 )
                 .await?;
-                Ok(Some(Arc::new(process)))
+                Ok(Recovered::Started(Arc::new(process)))
             }
-            RecoveryOutcome::PendingScope { process, .. } => Ok(Some(Arc::new(process))),
-            RecoveryOutcome::Exited(_) => Ok(None),
+            RecoveryOutcome::PendingScope { process, .. } => {
+                Ok(Recovered::Unstarted(Arc::new(process)))
+            }
+            RecoveryOutcome::Exited(_) => Ok(Recovered::Exited),
             _ => Err(refusal(
                 path,
                 "the recorded server's process cannot be proved to be the one this host started",
@@ -720,6 +765,16 @@ fn socket_fits(control: &Path) -> Result<()> {
 
 /// Whether the login's control socket accepts a connection right now.
 async fn served(control: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(control) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => {
+            return Err(se_core::scope::unreadable(
+                "Codex control socket",
+                &e.to_string(),
+            ));
+        }
+        Ok(_) => {}
+    }
     #[cfg(unix)]
     let attempt = tokio::net::UnixStream::connect(control).await.map(drop);
     #[cfg(windows)]
@@ -731,11 +786,12 @@ async fn served(control: &Path) -> Result<bool> {
     };
     match attempt {
         Ok(()) => Ok(true),
+        // A socket file nobody listens on: refused, or on Windows WSAENETDOWN.
         Err(e)
             if matches!(
                 e.kind(),
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-            ) =>
+            ) || (cfg!(windows) && e.raw_os_error() == Some(10050)) =>
         {
             Ok(false)
         }
