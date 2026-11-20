@@ -115,6 +115,7 @@ impl CodexHarness {
     ) -> Result<ServerSettings> {
         let mut environment = input::provider_environment();
         // The login is given explicitly; the server never inherits the host's.
+        environment.retain(|(name, _)| !name.eq_ignore_ascii_case("CODEX_HOME"));
         environment.push(("CODEX_HOME".into(), login.as_os_str().to_owned()));
         #[cfg(windows)]
         let environment = windows_shell::apply(

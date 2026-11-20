@@ -428,7 +428,10 @@ pub fn forwarder_invocation(
     };
     environment.retain(|(name, _)| {
         let name = name.to_string_lossy().to_ascii_uppercase();
-        name != "SE_SESSION" && !name.starts_with("STATEENGINE_") && !name.starts_with("SECODE_")
+        name != "SE_SESSION"
+            && name != "CODEX_HOME"
+            && !name.starts_with("STATEENGINE_")
+            && !name.starts_with("SECODE_")
     });
     // The public session handle, as before; the agent's tool shells receive it
     // through their thread, because they run under the shared server.
@@ -467,6 +470,7 @@ pub fn provider_environment() -> Vec<(OsString, OsString)> {
         "XDG_CACHE_HOME",
         "XDG_STATE_HOME",
         "XDG_RUNTIME_DIR",
+        "CODEX_HOME",
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "SystemRoot",
