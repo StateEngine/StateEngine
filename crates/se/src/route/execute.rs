@@ -66,6 +66,7 @@ fn forwarding_options(cx: &Bootstrap, endpoint: &se_host::EndpointRecord) -> Res
     let mut options = options();
     let started = std::time::Instant::now();
     let bound = se_host::client::lease::Deadline::from_options(&options)?;
+    crate::ipc_trace::stamp(crate::ipc_trace::Point::RestoreStart);
     restore_forward_image(
         &cx.home,
         endpoint,
@@ -73,6 +74,7 @@ fn forwarding_options(cx: &Bootstrap, endpoint: &se_host::EndpointRecord) -> Res
         &bound.native_bound(),
     )
     .map_err(|error| scope::unreadable("protected executable cache", &error.to_string()))?;
+    crate::ipc_trace::stamp(crate::ipc_trace::Point::RestoreEnd);
     options.timeout = options.timeout.saturating_sub(started.elapsed());
     Ok(options)
 }
@@ -403,6 +405,7 @@ fn dispatch_with_cold_recovery(
             }
             setup::Setup::Present(reader) => reader,
         };
+    crate::ipc_trace::stamp(crate::ipc_trace::Point::PhaseOpened);
     // The host verifier admits a prepared launch's first fixed hook after C3.
     // End this finite read pin before stdin or forwarding; ordinary operations
     // still require active-session admission below.
@@ -418,6 +421,7 @@ fn dispatch_with_cold_recovery(
         None
     };
     let mut caller = admit::observe(cx, &mut phase, &files)?;
+    crate::ipc_trace::stamp(crate::ipc_trace::Point::CallerObserved);
     let mut snapshot = phase
         .into_snapshot(se_core::admission::read_scope(&caller.admission))
         .map_err(|e| store_error(&e))?;
@@ -427,6 +431,7 @@ fn dispatch_with_cold_recovery(
             .select_project(project.clone())
             .map_err(|e| store_error(&e))?;
     }
+    crate::ipc_trace::stamp(crate::ipc_trace::Point::ProjectSelected);
     let mut selections = cx.selections.clone();
     if let se_store::Scope::Project(project) = &caller.admission.scope {
         selections.project = Some(project.clone());

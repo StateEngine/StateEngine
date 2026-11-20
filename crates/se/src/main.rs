@@ -10,6 +10,7 @@ mod hook;
 mod installation_error;
 mod installer;
 mod ipc;
+mod ipc_trace;
 mod mcp;
 mod mcp_stdio;
 mod private_entry;
@@ -152,6 +153,7 @@ pub fn run(
             });
         }
     };
+    ipc_trace::stamp(ipc_trace::Point::Bootstrap);
     context.selections = common.selections;
     context.retry_invocation = Some(retry_invocation);
     // Remote structured stderr is reserved for keyed status/error records.
@@ -326,7 +328,9 @@ fn finish(result: se_types::Result<u8>, args: &[OsString]) -> std::process::Exit
 }
 
 fn main() -> std::process::ExitCode {
+    let ipc_entered = se_proc::monotonic_micros().ok();
     let args: Vec<_> = std::env::args_os().collect();
+    let _b10 = ipc_trace::Trace::start(&args, ipc_entered);
     #[cfg(windows)]
     let args = match private_entry::retain_package_parent(args) {
         Ok(args) => args,
@@ -342,6 +346,7 @@ fn main() -> std::process::ExitCode {
     if let Err(error) = bootstrap::initialize_file_owner() {
         return finish(Err(error), &args);
     }
+    ipc_trace::stamp(ipc_trace::Point::FileOwner);
     #[cfg(windows)]
     if args
         .get(1)

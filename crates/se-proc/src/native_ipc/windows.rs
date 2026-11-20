@@ -183,6 +183,11 @@ impl NativePipeStream {
     }
     pub fn connect(name: &OsStr, bound: IpcIoBound) -> IpcNativeResult<Self> {
         let name = wide(name)?;
+        let ipc_start = std::env::var_os("IPC_CONNECT_TRACE")
+            .and_then(|_| crate::monotonic_micros().ok())
+            .unwrap_or_default();
+        let mut ipc_retries = 0_u32;
+        let mut ipc_wait_us = 0_u64;
         loop {
             let remaining = bound
                 .remaining()
@@ -203,7 +208,18 @@ impl NativePipeStream {
             };
             if raw != INVALID_HANDLE_VALUE {
                 let handle = owned(raw, "open IPC pipe")?;
+                let ipc_opened = if ipc_start == 0 {
+                    0
+                } else {
+                    crate::monotonic_micros().unwrap_or_default()
+                };
                 security::verify(handle.as_raw_handle())?;
+                if ipc_start != 0 {
+                    let checked = crate::monotonic_micros().unwrap_or_default();
+                    eprintln!(
+                        "IPC_PIPE {ipc_start} {ipc_opened} {checked} {ipc_retries} {ipc_wait_us}"
+                    );
+                }
                 let stream = Self { handle, bound };
                 return Ok(stream);
             }
@@ -218,6 +234,11 @@ impl NativePipeStream {
             }
             let milliseconds = remaining.as_millis().clamp(1, 10) as u32;
             // SAFETY: retained NUL-terminated pipe name and bounded native wait; no ownership transfers.
+            let ipc_waiting = if ipc_start == 0 {
+                0
+            } else {
+                crate::monotonic_micros().unwrap_or_default()
+            };
             if unsafe { WaitNamedPipeW(name.as_ptr(), milliseconds) } == 0 {
                 // SAFETY: reads the error of the immediately preceding native call on this thread.
                 // SAFETY: reads this thread's immediately preceding native operation error.
@@ -228,6 +249,12 @@ impl NativePipeStream {
                         io::Error::from_raw_os_error(code as i32),
                     ));
                 }
+            }
+            if ipc_waiting != 0 {
+                ipc_retries += 1;
+                ipc_wait_us += crate::monotonic_micros()
+                    .unwrap_or_default()
+                    .saturating_sub(ipc_waiting);
             }
         }
     }
