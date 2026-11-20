@@ -10,7 +10,7 @@ use std::error::Error;
 type Check = Result<(), Box<dyn Error>>;
 
 fn byte_array(bytes: &[u8]) -> Value {
-    Value::Array(bytes.iter().map(Value::from).collect())
+    Value::Array(bytes.iter().map(|b| Value::from(*b)).collect())
 }
 
 /// Protects: C1 - every ID serializes as the bare byte array exactly as on
