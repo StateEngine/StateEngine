@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 
-from harness_matrix.io import digest, require
+from harness_matrix.io import digest, require, verify_provider_home
 from .darwin_acl import require_private_acl
 
 
@@ -27,15 +27,19 @@ def present(path):
         return False
 
 
-def plain(path):
+def unlinked_metadata(path):
     path = Path(path)
-    require(path.is_absolute(), 'Credential seed path must be absolute')
-    for parent in [path, *path.parents]:
-        info = parent.lstat()
+    require(path.is_absolute(), 'Credential path must be absolute')
+    entry = path.lstat()
+    for info in (entry, *(parent.lstat() for parent in path.parents)):
         require(not stat.S_ISLNK(info.st_mode)
-                and not getattr(info, 'st_file_attributes', 0) & 0x400,
+                and not getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT,
                 'Credential paths must contain no links or reparse points')
-    info = path.stat()
+    return entry
+
+
+def plain(path):
+    info = unlinked_metadata(path)
     require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size <= 65536,
             'Credential seed must be one bounded private file')
     if os.name == 'posix':
@@ -207,27 +211,30 @@ class Credentials:
         return ({'ANTHROPIC_API_KEY': key} if key is not None
                 else {'CLAUDE_CODE_OAUTH_TOKEN': credential['oauth_token']})
 
-    def install(self, home):
+    def install(self, home, environment):
         self.ready()
-        directory = Path(home) / ('.claude' if self.provider == 'claude' else '.codex')
+        verify_provider_home(environment, home)
+        config_home = 'CLAUDE_CONFIG_DIR' if self.provider == 'claude' else 'CODEX_HOME'
+        directory = Path(environment[config_home])
         directory.mkdir(mode=0o700, exist_ok=True)
         protect(directory)
         if self.provider == 'codex':
-            self.target = directory / 'auth.json'
             # Native TokenData requires a string field, even without renewal authority.
             credential = self.value['credential']
             if isinstance(credential.get('tokens'), dict):
                 credential = {**credential, 'tokens': {**credential['tokens'], 'refresh_token': ''}}
-            descriptor = os.open(self.target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            target = directory / 'auth.json'
+            descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
-                if sys.platform == 'darwin':
-                    require_private_acl(stream.fileno())
+                created = os.fstat(stream.fileno())
+                self.target = (target, created)
+                require(created.st_ino and os.path.samestat(created, plain(target)),
+                        'Private credential copy identity is unproven')
+                require(not os.path.samestat(created, self.identity),
+                        'Private credential copy shares the seed identity')
                 json.dump(credential, stream)
-            info = plain(self.target)
-            require((info.st_dev, info.st_ino) != (self.identity.st_dev, self.identity.st_ino),
-                    'Private credential copy shares the seed identity')
         if self.provider == 'claude':
-            config = Path(home) / '.claude.json'
+            config = directory / '.claude.json'
             value = json.loads(config.read_text()) if config.exists() else {}
             value.update(self.value['native'])
             temporary = config.with_suffix('.json.private')
@@ -236,13 +243,18 @@ class Credentials:
             temporary.replace(config)
 
     def close(self):
+        target = None
+        if self.target is not None:
+            target, created = self.target
+            if present(target):
+                # Unlink the file we created even if its access checks failed.
+                require(created.st_ino and os.path.samestat(created, unlinked_metadata(target)),
+                        'Private credential copy identity changed before cleanup')
+                target.unlink()
         current = plain(self.path)
         require((current.st_dev, current.st_ino) == (self.identity.st_dev, self.identity.st_ino)
                 and digest(self.path) == self.sha256, 'Private seed was changed during the run')
-        if self.target is not None and present(self.target):
-            plain(self.target)
-            self.target.unlink()
         return dict(seed_identity_unchanged=True, seed_bytes_unchanged=True,
-                    private_copy_absent=self.target is None or not present(self.target),
+                    private_copy_absent=target is None or not present(target),
                     refresh_tokens_copied=False,
                     delivery='environment' if self.provider == 'claude' else 'private-file')
