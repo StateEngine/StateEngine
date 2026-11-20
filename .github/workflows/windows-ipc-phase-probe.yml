@@ -1,0 +1,42 @@
+name: windows-ipc-phase-probe
+on:
+  push:
+    branches: [probe/windows-ipc-phase-20261120]
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build probe and parent release binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p se
+          mkdir -p "$RUNNER_TEMP/bin"
+          cp target/release/se.exe "$RUNNER_TEMP/bin/se-probe.exe"
+          git worktree add -q "$RUNNER_TEMP/parent" HEAD~1
+          (cd "$RUNNER_TEMP/parent" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" cargo build --release --locked -p se)
+          cp target/release/se.exe "$RUNNER_TEMP/bin/se-parent.exe"
+      - name: Measure parent
+        shell: bash
+        run: node scripts/windows_ipc_phase_measure.mjs "$RUNNER_TEMP/bin/se-parent.exe" "$RUNNER_TEMP/out-parent" 200
+      - name: Measure probe with trace
+        if: always()
+        shell: bash
+        run: node scripts/windows_ipc_phase_measure.mjs "$RUNNER_TEMP/bin/se-probe.exe" "$RUNNER_TEMP/out-probe" 200 trace
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-ipc-phase
+          path: |
+            ${{ runner.temp }}/out-parent
+            ${{ runner.temp }}/out-probe
+          retention-days: 7
