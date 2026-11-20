@@ -84,7 +84,7 @@ pub enum PermissionProfile {
     WorkspaceWrite,
     NamedFullBypass,
 }
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Profile {
     #[serde(default, skip_serializing_if = "se_types::ProviderSettings::is_empty")]
     pub provider_settings: se_types::ProviderSettings,

@@ -1,5 +1,6 @@
 //! Shared store value contracts; database custody and execution remain in the store.
 pub mod assignment;
+mod attended_setup;
 pub mod channel;
 #[doc(hidden)]
 pub mod error;
@@ -11,6 +12,7 @@ mod model;
 mod query;
 pub mod remote;
 mod timings;
+pub use attended_setup::*;
 pub use error::{StoreDetail, StoreError, StoreErrorCode, StoreIoStage, StoreResult};
 pub use event::*;
 pub use model::*;
@@ -20,7 +22,7 @@ pub use timings::*;
 /// Value types re-exported by the store without exposing implementation modules.
 pub mod values {
     pub use crate::{
-        StoreDetail, StoreError, StoreErrorCode, StoreIoStage, StoreResult, event::*, model::*,
-        query::*, timings::*,
+        StoreDetail, StoreError, StoreErrorCode, StoreIoStage, StoreResult, attended_setup::*,
+        event::*, model::*, query::*, timings::*,
     };
 }

@@ -151,6 +151,16 @@ pub struct ProjectionRecord {
     pub original: Option<Box<StoredEvent>>,
     pub current: StoredEvent,
 }
+impl ProjectionRecord {
+    /// Return the process identity carried by a native lifecycle event.
+    pub fn process_identity(&self) -> Option<&ProcessIdentityRecord> {
+        match &self.current.body {
+            EventBody::ProcessRegistered { identity, .. }
+            | EventBody::ProcessTransition { identity, .. } => Some(identity),
+            _ => None,
+        }
+    }
+}
 /// A cursor as issued, its head revision, and the acknowledgment that marked
 /// it read, if any. Issuance alone is never acknowledgment.
 #[derive(Clone, Debug)]
