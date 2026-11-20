@@ -349,18 +349,21 @@ pub struct ConfigKeyMeta {
 }
 /// Each provider's own config directory variable that is set, made absolute against this
 /// process's directory: providers' commands may run elsewhere, so this one path is both
-/// checked and handed to them.
-pub fn provider_config_dirs() -> Vec<(Provider, &'static str, std::path::PathBuf)> {
-    [
+/// checked and handed to them. A value that cannot be made absolute is a named refusal.
+pub fn provider_config_dirs()
+-> std::result::Result<Vec<(Provider, &'static str, std::path::PathBuf)>, String> {
+    let mut dirs = Vec::new();
+    for (provider, name) in [
         (Provider::Codex, "CODEX_HOME"),
         (Provider::Claude, "CLAUDE_CONFIG_DIR"),
-    ]
-    .into_iter()
-    .filter_map(|(provider, name)| {
-        let dir = std::path::absolute(std::env::var_os(name)?).ok()?;
-        Some((provider, name, dir))
-    })
-    .collect()
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            let dir = std::path::absolute(&value)
+                .map_err(|e| format!("{name} cannot be resolved: {e}"))?;
+            dirs.push((provider, name, dir));
+        }
+    }
+    Ok(dirs)
 }
 /// Why a provider config directory cannot be used, from its own metadata; `None` when it can.
 pub fn unusable_config_dir(name: &str, dir: &std::path::Path, title: &str) -> Option<String> {

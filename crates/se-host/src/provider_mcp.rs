@@ -1,6 +1,6 @@
 //! Register the static MCP entry using each harness's own configuration command.
 use crate::adoption::Kind;
-use se_config::config_policy::{provider_config_dirs, unusable_config_dir};
+use se_config::config_policy::{Provider, provider_config_dirs, unusable_config_dir};
 use se_types::{Result, SeError};
 use std::{path::Path, process::Stdio, time::Duration};
 use tokio::{io::AsyncReadExt, process::Command};
@@ -80,15 +80,23 @@ pub fn install(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) -> Re
         .enable_all()
         .build()
         .map_err(|error| failure(&format!("could not start the setup runtime: {error}")))?;
-    for (provider, name, dir) in provider_config_dirs() {
+    // Resolved once: the same checked bindings go to listing, registration and readback.
+    let config = provider_config_dirs().map_err(|reason| failure(&reason))?;
+    for (provider, name, dir) in &config {
         let reason =
-            (provider == kind.policy()).then(|| unusable_config_dir(name, &dir, kind.label()));
+            (*provider == kind.policy()).then(|| unusable_config_dir(name, dir, kind.label()));
         if let Some(reason) = reason.flatten() {
             return Err(failure(&reason));
         }
     }
+    let setup = Setup {
+        root,
+        executable,
+        kind,
+        config: &config,
+    };
     runtime.block_on(async {
-        if configured(root, executable, kind, entry).await? {
+        if configured(setup, entry).await? {
             return Ok(false);
         }
         let mut args: Vec<&str> = match kind {
@@ -96,21 +104,30 @@ pub fn install(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) -> Re
             Kind::Codex => vec!["mcp", "add", "stateengine", "--", "se"],
         };
         args.extend_from_slice(entry);
-        let output = run(root, executable, &args).await?;
+        let output = run(setup, &args).await?;
         if !output.status.success() {
             return Err(refused(kind, "mcp add", &output));
         }
-        if !configured(root, executable, kind, entry).await? {
+        if !configured(setup, entry).await? {
             return Err(failure("the harness did not confirm the saved MCP entry"));
         }
         Ok(true)
     })
 }
 
-async fn configured(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) -> Result<bool> {
+/// One harness's setup commands: where they run, and the bindings `install` checked.
+#[derive(Clone, Copy)]
+struct Setup<'a> {
+    root: &'a Path,
+    executable: &'a Path,
+    kind: Kind,
+    config: &'a [(Provider, &'static str, std::path::PathBuf)],
+}
+async fn configured(setup: Setup<'_>, entry: &[&str]) -> Result<bool> {
+    let kind = setup.kind;
     match kind {
         Kind::Claude => {
-            let output = run(root, executable, &["mcp", "get", "stateengine"]).await?;
+            let output = run(setup, &["mcp", "get", "stateengine"]).await?;
             if !output.status.success() {
                 if output
                     .stderr
@@ -160,7 +177,7 @@ async fn configured(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) 
             }
         }
         Kind::Codex => {
-            let output = run(root, executable, &["mcp", "list", "--json"]).await?;
+            let output = run(setup, &["mcp", "list", "--json"]).await?;
             if !output.status.success() {
                 return Err(refused(kind, "mcp list", &output));
             }
@@ -192,17 +209,13 @@ async fn configured(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) 
     }
 }
 
-async fn run(root: &Path, executable: &Path, args: &[&str]) -> Result<std::process::Output> {
-    let mut command = Command::from(se_proc::background_command(executable));
-    // Harness commands run in `root`, so they get the same absolute paths checked above.
-    command.envs(
-        provider_config_dirs()
-            .into_iter()
-            .map(|(_, name, dir)| (name, dir)),
-    );
+async fn run(setup: Setup<'_>, args: &[&str]) -> Result<std::process::Output> {
+    let mut command = Command::from(se_proc::background_command(setup.executable));
+    // Harness commands run in `root`, so they get the absolute paths `install` checked.
+    command.envs(setup.config.iter().map(|(_, name, dir)| (name, dir)));
     command
         .args(args)
-        .current_dir(root)
+        .current_dir(setup.root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
