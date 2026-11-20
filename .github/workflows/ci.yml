@@ -523,12 +523,21 @@ jobs:
           cargo nextest run --target "$target" -p se-host -p se-remote --features remote --locked --profile ci -E "$filter"
       - name: Judge authenticated runtime status
         run: python3 scripts/ci/runtime_status.py
+      # A real stock Codex launch after se init, against a loopback model: no secret needed.
+      - name: Judge stock Codex after se init
+        run: |
+          target="$(rustc --print host-tuple)"
+          cargo build --target "$target" -p se --bin se --locked
+          mkdir -p ci-reports/stock-codex-init
+          python3 -B scripts/ci/stock_codex_init.py --loopback --se "target/$target/debug/se" --output ci-reports/stock-codex-init/receipt.json
       - name: Retain runtime status judge evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: runtime-status-judge
-          path: ci-reports/runtime-status
+          path: |
+            ci-reports/runtime-status
+            ci-reports/stock-codex-init
           retention-days: 3
           if-no-files-found: warn
 

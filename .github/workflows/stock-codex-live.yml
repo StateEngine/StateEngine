@@ -1,0 +1,39 @@
+name: Stock Codex live journey
+'on':
+  schedule:
+    - cron: '41 4 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: stock-codex-live
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  live:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: nightly-providers
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Build se
+        run: cargo build -p se --bin se --locked
+      - name: Judge stock Codex after se init against the live API
+        env:
+          CI_OPENAI_API_KEY: ${{ secrets.CI_OPENAI_API_KEY }}
+          CI_CODEX_MODEL: ${{ vars.CI_CODEX_MODEL }}
+        run: |
+          mkdir -p ci-reports/stock-codex-init
+          python3 -B scripts/ci/stock_codex_init.py --se target/debug/se --output ci-reports/stock-codex-init/live.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ always() }}
+        with:
+          name: stock-codex-live
+          path: ci-reports/stock-codex-init
+          retention-days: 7
+          if-no-files-found: warn
