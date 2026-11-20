@@ -10,6 +10,10 @@ use se_types::{Body, Result};
 use sha2::{Digest, Sha256};
 
 pub(super) use super::owned::Work;
+/// Proof that a new launch is choosing a Codex login. Its private field means
+/// only this file can make one, so no later reader can consult the host.
+pub(super) struct NewLaunch(());
+
 impl LaunchCoordinator {
     #[expect(
         clippy::cognitive_complexity,
@@ -193,7 +197,7 @@ impl LaunchCoordinator {
         // A new launch is the one place a Codex agent's login is chosen; it is
         // recorded for the agent's life and every later reader uses the record.
         let codex_login = if provider == se_types::Provider::Codex {
-            let login = super::codex_server::launch_login()?;
+            let login = super::codex_server::launch_login(&NewLaunch(()))?;
             configuration
                 .ephemeral_files
                 .push(self.codex.login_record(&request.identity.session, &login)?);

@@ -639,11 +639,21 @@ impl AdapterBinding for Arc<Binding> {
 
 pub(crate) struct Adoption;
 pub(crate) static ADOPTION: Adoption = Adoption;
+pub(crate) use first_setup::FirstSetup;
+mod first_setup {
+    /// Proof that first setup (provider adoption) is choosing the login to
+    /// prepare. Its private field means only this module can make one.
+    pub(crate) struct FirstSetup(());
+    #[cfg(any(target_os = "linux", windows))]
+    pub(super) fn login() -> se_types::Result<std::path::PathBuf> {
+        crate::process::codex_server::setup_codex_login(&FirstSetup(()))
+    }
+}
 impl crate::adoption::Adapter for Adoption {
     #[cfg(any(target_os = "linux", windows))]
     fn prepare(&self, command: &std::path::Path) -> Result<crate::adoption::ProviderSetup> {
         let executable = crate::adoption::codex::native_executable(command)?;
-        let home = crate::process::codex_server::setup_codex_login()?;
+        let home = first_setup::login()?;
         crate::adoption::settings::prepare(
             &home,
             &home.join(crate::adoption::Kind::Codex.settings()),
