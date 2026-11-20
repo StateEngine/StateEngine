@@ -1,0 +1,54 @@
+name: windows-cli-startup-probe
+on:
+  push:
+    branches: [probe/windows-cli-startup-20261120]
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  measure:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Build product, minimal and observer
+        run: |
+          set -euo pipefail
+          node --version; dotnet --list-sdks
+          obs=scripts/windows_cli_startup_observer
+          mkdir -p "$RUNNER_TEMP/bin" "$RUNNER_TEMP/out" "$RUNNER_TEMP/etw-temp"
+          cargo build --release --locked -p se --bin se
+          cp target/release/se.exe "$RUNNER_TEMP/bin/product.exe"
+          rustc --edition 2024 -C opt-level=3 "$obs/minimal.rs" -o "$RUNNER_TEMP/bin/minimal.exe"
+          dotnet restore "$obs/SyncTrace.csproj" --locked-mode
+          dotnet build "$obs/SyncTrace.csproj" -c Release --no-restore -o "$RUNNER_TEMP/observer"
+      - name: Executable layout
+        run: |
+          obs=scripts/windows_cli_startup_observer
+          node "$obs/pe_info.mjs" "$RUNNER_TEMP/bin/product.exe" "$RUNNER_TEMP/out/pe-product.json"
+          node "$obs/pe_info.mjs" "$RUNNER_TEMP/bin/minimal.exe" "$RUNNER_TEMP/out/pe-minimal.json"
+      - name: Drivers without tracing
+        if: ${{ always() }}
+        run: |
+          obs=scripts/windows_cli_startup_observer
+          node scripts/windows_ipc_phase_measure.mjs "$RUNNER_TEMP/bin/product.exe" "$RUNNER_TEMP/out/plain-product" 200
+          node "$obs/minimal.mjs" "$RUNNER_TEMP/bin/minimal.exe" "$RUNNER_TEMP/out/plain-minimal" 200
+      - name: Traced startup and shutdown
+        if: ${{ always() }}
+        run: |
+          obs=scripts/windows_cli_startup_observer
+          "$RUNNER_TEMP/observer/SyncTrace.exe" "$(command -v node)" scripts/windows_ipc_phase_measure.mjs "$RUNNER_TEMP/bin/product.exe" "$obs/minimal.mjs" "$RUNNER_TEMP/bin/minimal.exe" "$RUNNER_TEMP/out/etw" "$RUNNER_TEMP/etw-temp"
+      - name: Analyze
+        if: ${{ always() }}
+        run: python scripts/windows_cli_startup_observer/analyze.py "$RUNNER_TEMP/out" > "$RUNNER_TEMP/out/analysis.txt" 2>&1 || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ always() }}
+        with:
+          name: windows-cli-startup
+          path: ${{ runner.temp }}/out
+          retention-days: 7
