@@ -7,6 +7,7 @@ impl LaunchCoordinator {
         admission: Admission,
         deadline: &Deadline,
         stopped: Stopped,
+        fallback: Option<se_types::Read<se_types::ProviderSessionId>>,
     ) -> Result<AnyOutput> {
         let mut reports = stopped.lock().await;
         let mut failures = Vec::new();
@@ -80,20 +81,9 @@ impl LaunchCoordinator {
             })
             .await
             .map_err(|failure| successor_failure(&report, failure))?;
-        if report.new_conversation {
-            next.start_new_conversation("Forced relaunch preserved the previous history and starts a new conversation because the previous service was forcibly retired or final capture remained unavailable.".into());
-        }
-        self.preflight_relaunch(&mut next, &admission, deadline)
-            .await
+        next.prepare_replacement(&plan, fallback, report.new_conversation)
             .map_err(|failure| successor_failure(&report, failure))?;
-        // This is continuation of the already admitted self launch,
-        // scoped to its newly allocated session, never owner authority.
-        // Old credentials remain revoked; no later request can reuse them.
-        let mut successor_admission = admission;
-        if matches!(&successor_admission.actor, se_store::Actor::Agent(agent) if agent == &next.agent.id)
-        {
-            successor_admission.session = Some(next.session.clone());
-        }
+        let successor_admission = next.successor_admission(admission);
         self.launch_prepared(
             next,
             successor_admission,

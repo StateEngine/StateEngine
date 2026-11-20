@@ -58,41 +58,10 @@ fn headless() -> bool {
 fn no_override(value: &bool) -> bool {
     !value
 }
-/// A window that never connected may be replaced by an ordinary launch after
-/// its credentials were revoked. This is not an activated conversation.
-pub const ATTENDED_SETUP_EXPIRED: &str = "attended setup exceeded its activation deadline";
-pub const ATTENDED_RECONNECT_FAILED: &str =
-    "expired attended setup replacement failed before activation";
-pub fn expired_attended_setup(record: &se_store::ProjectionRecord) -> bool {
-    attended_setup_reason(record) == Some(ATTENDED_SETUP_EXPIRED)
-}
-pub fn retryable_attended_setup(record: &se_store::ProjectionRecord) -> bool {
-    matches!(
-        attended_setup_reason(record),
-        Some(ATTENDED_SETUP_EXPIRED | ATTENDED_RECONNECT_FAILED)
-    )
-}
-fn attended_setup_reason(record: &se_store::ProjectionRecord) -> Option<&str> {
-    if record.current.revision.value.get() != 2
-        || !matches!(
-            &record.original.as_deref().unwrap_or(&record.current).body,
-            se_store::EventBody::SessionPrepared {
-                provider: se_store::Provider::Claude,
-                surface: Some(se_store::SessionSurface::Window),
-                ..
-            }
-        )
-    {
-        return None;
-    }
-    match &record.current.body {
-        se_store::EventBody::SessionRevoked {
-            reason: se_store::StoredText::Present(reason),
-            ..
-        } => Some(reason),
-        _ => None,
-    }
-}
+pub use se_store::{
+    ATTENDED_RECONNECT_FAILED, ATTENDED_SETUP_EXPIRED, expired_attended_setup,
+    retryable_attended_setup,
+};
 impl AgentLaunch {
     pub fn fresh(&self) -> bool {
         !se_types::ResumeSelection::requested(self.resume.as_ref())
@@ -131,6 +100,35 @@ impl AgentLaunch {
     }
 }
 impl LaunchPlan {
+    /// Preserve the preflight decision when replanning after a forced stop.
+    pub fn prepare_replacement(
+        &mut self,
+        original: &Self,
+        fallback: Option<Read<ProviderSessionId>>,
+        new_conversation: bool,
+    ) -> Result<()> {
+        if original.profile != self.profile || original.resolved != self.resolved {
+            return Err(se_types::SeError::invalid(
+                "takeover profile",
+                "the saved launch profile changed during takeover; retry with its current profile",
+            ));
+        }
+        if new_conversation {
+            self.start_new_conversation("Forced relaunch preserved the previous history and starts a new conversation because the previous service was forcibly retired or final capture remained unavailable.".into());
+        } else if let Some(Read::Absent { checked }) = fallback {
+            self.start_new_conversation(checked);
+        }
+        Ok(())
+    }
+
+    /// Retain self-launch authority only for the replacement session.
+    pub fn successor_admission(&self, mut admission: se_store::Admission) -> se_store::Admission {
+        if matches!(&admission.actor, se_store::Actor::Agent(agent) if agent == &self.agent.id) {
+            admission.session = Some(self.session.clone());
+        }
+        admission
+    }
+
     pub fn details(&self) -> se_types::LaunchDetails {
         se_types::LaunchDetails {
             provider: match self.profile.provider {

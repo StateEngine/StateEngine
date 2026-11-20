@@ -47,8 +47,11 @@ impl LaunchCoordinator {
         if !plan.input.override_live && !expired_window {
             return Err(self.confirm_relaunch(&plan, &admission, deadline).await);
         }
+        let original_conversation = plan.conversation.clone();
         self.preflight_relaunch(&mut plan, &admission, deadline)
             .await?;
+        let fallback =
+            (plan.conversation != original_conversation).then(|| plan.conversation.clone());
         let key = format!(
             "takeover/{:?}/{:?}/{}",
             admission.scope, admission.actor, plan.input.idempotency_key
@@ -70,12 +73,13 @@ impl LaunchCoordinator {
                 let plan = plan.clone();
                 let admission = admission.clone();
                 let stopped = stopped.clone();
+                let fallback = fallback.clone();
                 async move {
                     let coordinator = coordinator
                         .upgrade()
                         .ok_or_else(|| error("takeover retry", "the original host retired"))?;
                     coordinator
-                        .replace_selected(plan, admission, &deadline, stopped)
+                        .replace_selected(plan, admission, &deadline, stopped, fallback)
                         .await
                 }
             })

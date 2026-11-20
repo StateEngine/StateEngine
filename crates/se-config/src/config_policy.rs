@@ -327,7 +327,7 @@ impl ConfigFile {
         })
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ResolvedProfile {
     pub name: String,
     pub sandbox: EffectiveSandbox,
