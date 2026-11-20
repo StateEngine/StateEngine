@@ -90,6 +90,7 @@ pub mod atlas_runtime;
 pub mod atlas_source;
 #[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
 mod atlas_watch_error;
+pub mod codex_forward;
 mod session;
 pub mod state_files;
 pub use harness::*;

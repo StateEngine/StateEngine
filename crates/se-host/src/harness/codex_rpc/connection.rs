@@ -7,6 +7,7 @@ impl CodexHarness {
         socket: Option<&Path>,
         attended: bool,
         recovery: Option<ProviderSessionId>,
+        login: &Path,
         cx: &CallContext,
     ) -> Result<Arc<Binding>> {
         let draining = recovery.is_none();
@@ -25,6 +26,7 @@ impl CodexHarness {
             }),
             completion: Default::default(),
             rollout: Mutex::new(None),
+            login: login.to_owned(),
             initial: tokio::sync::Mutex::new(None),
             input: tokio::sync::Mutex::new(()),
             tasks: Mutex::new(vec![]),

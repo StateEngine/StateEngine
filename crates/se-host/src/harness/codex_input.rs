@@ -4,7 +4,7 @@ use super::codex_rpc::incompatible;
 use crate::{HarnessRequest, ProviderInvocation};
 use se_config::config_policy::{Approval, EffectiveSandbox, ResolvedProfile};
 use se_proc::{NetworkPolicy, WritePolicy};
-use se_types::{Body, ProviderSessionId, Read, Result, SeError};
+use se_types::{Body, NativePath, ProviderSessionId, Read, Result, SeError};
 use serde_json::{Value, json};
 use std::{ffi::OsString, path::Path};
 
@@ -149,6 +149,20 @@ pub fn thread(launch: &CodexLaunch<'_>) -> Result<(&'static str, Value)> {
     }
     if let Some(effort) = &settings.reasoning_effort {
         config["model_reasoning_effort"] = json!(effort);
+    }
+    // Agents share their login's app-server, so the session a tool shell
+    // reports belongs to the thread, never to the server's own environment.
+    config["shell_environment_policy.set.SE_SESSION"] =
+        json!(launch.request.identity.session.as_str());
+    // Each agent keeps its own private temporary directory for its tools; a
+    // named profile that bypasses the sandbox keeps the owner's own.
+    if let WritePolicy::ReadOnly { scratch } | WritePolicy::Workspace { scratch, .. } =
+        &launch.request.policy.writes
+    {
+        let scratch = path(scratch)?;
+        for name in ["TMPDIR", "TMP", "TEMP"] {
+            config[format!("shell_environment_policy.set.{name}")] = json!(scratch);
+        }
     }
     if let Some(window) = settings.context_window {
         config["model_context_window"] = json!(window);
@@ -384,6 +398,49 @@ pub fn invocation_naming(
     Ok(ProviderInvocation {
         executable: launch.request.executable.clone(),
         arguments,
+        environment: se_proc::Environment {
+            entries: environment,
+        },
+    })
+}
+
+/// Where a login's shared app-server listens: the path the stock server takes
+/// for `--listen unix://` under that login's home.
+pub fn control_socket(codex_home: &std::path::Path) -> std::path::PathBuf {
+    codex_home
+        .join("app-server-control")
+        .join("app-server-control.sock")
+}
+
+/// The agent's own process forwards to its login's shared app-server. On Unix
+/// the host and an attended terminal reach it through the agent's private
+/// socket; elsewhere through its stdio.
+pub fn forwarder_invocation(
+    launch: &CodexLaunch<'_>,
+    forwarder: &std::path::Path,
+    mut environment: Vec<(OsString, OsString)>,
+) -> Result<ProviderInvocation> {
+    validate(launch)?;
+    let downstream: OsString = match launch.socket {
+        Some(socket) => socket.as_os_str().to_owned(),
+        None => crate::codex_forward::STDIO.into(),
+    };
+    environment.retain(|(name, _)| {
+        let name = name.to_string_lossy().to_ascii_uppercase();
+        name != "SE_SESSION"
+            && name != "CODEX_HOME"
+            && !name.starts_with("STATEENGINE_")
+            && !name.starts_with("SECODE_")
+    });
+    // The public session handle, as before; the agent's tool shells receive it
+    // through their thread, because they run under the shared server.
+    environment.push((
+        "SE_SESSION".into(),
+        launch.request.identity.session.as_str().into(),
+    ));
+    Ok(ProviderInvocation {
+        executable: NativePath::from_local(forwarder.to_owned())?,
+        arguments: vec![crate::codex_forward::ENTRY.into(), downstream],
         environment: se_proc::Environment {
             entries: environment,
         },

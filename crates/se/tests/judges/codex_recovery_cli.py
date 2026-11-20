@@ -144,21 +144,31 @@ class Judge:
         if len(runtimes) != 1 or len(providers) != 1:
             raise AssertionError(("fixture identities ambiguous", rows))
         runtime, provider = runtimes[0], providers[0]
+        agent_process = observe(launched["process"]["pid"])
+        if not agent_process or not any(row["pid"] == agent_process["pid"] for row in rows):
+            raise AssertionError("native agent identity absent")
+        shared = agent_process["pid"] != provider["pid"]
+        if shared and "--stateengine-private-codex-forward" not in agent_process["argv"]:
+            raise AssertionError("the distinct agent process is not the provider forwarder")
         ready = wait_json(self.root / "repo/provider-ready.json")
         helper_pid = ready["helper_pid"]
         helper = observe(helper_pid)
         if not helper or not any(row["pid"] == helper_pid for row in rows):
             raise AssertionError("native provider helper identity absent")
         self.identities += [runtime, provider, helper]
+        if shared:
+            self.identities.append(agent_process)
         self.result["before_crash"] = rows
         self.signal(runtime, signal.SIGKILL)
         end = time.monotonic() + 5
         while live(runtime) and time.monotonic() < end:
             time.sleep(0.05)
-        if live(runtime) or not live(provider):
-            raise AssertionError("runtime crash did not leave the exact provider alive")
+        if live(runtime) or not all(live(row) for row in (provider, agent_process)):
+            raise AssertionError("the agent and its provider did not survive the runtime exit")
         if self.args.scenario == "slow":
-            for process in (helper, provider):
+            # Stall the one agent's transport when it has its own forwarding
+            # process. A private provider continues to own its original pair.
+            for process in (agent_process,) if shared else (helper, provider):
                 self.signal(process, signal.SIGSTOP)
                 self.stopped.append(process)
         self.result["after_crash"] = owned_rows(self.root)
@@ -176,7 +186,7 @@ class Judge:
         end = time.monotonic() + (30 if slow else 55)
         self.result["slow_conclusion"] = None
         while time.monotonic() < end:
-            if not live(provider):
+            if not all(live(row) for row in (provider, agent_process)):
                 break
             if slow:
                 session = (self.ok("--project", self.project, "status")
@@ -200,8 +210,8 @@ class Judge:
         self.result["original_provider_alive_after_recovery"] = live(provider)
         self.result["after_recovery"] = owned_rows(self.root)
         if self.args.scenario == "slow":
-            if not live(provider):
-                raise AssertionError("recovery reaped a slow but still-live provider")
+            if not all(live(row) for row in (provider, agent_process)):
+                raise AssertionError("recovery ended a slow but still-live agent or provider")
             if self.result["slow_conclusion"] is None:
                 raise AssertionError(
                     "the engine did not commit the provider-recovery conclusion "
@@ -211,7 +221,7 @@ class Judge:
             self.stopped = []
             self.result["passed"] = True
         else:
-            if not live(provider) or not live(helper):
+            if not all(live(row) for row in (provider, helper, agent_process)):
                 raise AssertionError("recovery stopped the original provider without explicit consent")
             recovered = json.loads((self.root / "repo/provider-reconnect.json").read_text())
             if (recovered["connection"] < 2 or recovered["native_pid"] != provider["pid"]
@@ -227,7 +237,7 @@ class Judge:
                     or b"--force" not in refusal or b"Worker" not in refusal
                     or b"No process was stopped" not in refusal):
                 raise AssertionError(("plain launch did not name the exact force route", refusal.decode()))
-            if not live(provider) or not live(helper):
+            if not all(live(row) for row in (provider, helper, agent_process)):
                 raise AssertionError("plain launch disturbed the original provider")
             retry = self.call("--project", self.project, "--key", "crash-force",
                               "launch", self.agent, "--detach", "--force")
@@ -236,8 +246,10 @@ class Judge:
                 raise AssertionError(("forced relaunch required a hand-run stop", retry.stdout.decode(), retry.stderr.decode()))
             relaunched = json.loads(retry.stdout)
             self.result["relaunch"] = relaunched
-            if relaunched["state"] != "running" or live(provider) or live(helper):
-                raise AssertionError("relaunch did not replace and retire the orphan")
+            if relaunched["state"] != "running" or live(agent_process):
+                raise AssertionError("relaunch did not replace and retire the old agent")
+            if not shared and (live(provider) or live(helper)):
+                raise AssertionError("relaunch left the old private provider scope active")
             takeover = relaunched["takeover"]
             if (takeover["previous_session"] != launched["session_id"]
                     or relaunched["session_id"] == launched["session_id"]
@@ -245,8 +257,9 @@ class Judge:
                     or takeover.get("jobs_remaining") or takeover.get("jobs_unproved")):
                 raise AssertionError(("forced takeover was not completely witnessed", relaunched))
             successor = observe(relaunched["process"]["pid"])
-            if not successor or not live(successor) or successor["image"] != str(self.args.codex.resolve()):
-                raise AssertionError("replacement native provider birth absent")
+            expected_image = self.args.se if shared else self.args.codex
+            if not successor or not live(successor) or successor["image"] != str(expected_image.resolve()):
+                raise AssertionError("replacement native agent birth absent")
             self.identities.append(successor)
             replay = self.ok("--project", self.project, "--key", "crash-force",
                              "launch", self.agent, "--detach", "--force")

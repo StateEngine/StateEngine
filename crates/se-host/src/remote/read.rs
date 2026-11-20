@@ -229,6 +229,7 @@ fn observe(facts: TargetFacts, deadline: Instant) -> Result<RemoteAgentView> {
         secode_binding: None,
         secode_runtime: None,
         acp_runtime: None,
+        codex_login: None,
         harness_policy_notice: None,
     };
     let recorded_session = match &facts.session {

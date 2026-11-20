@@ -10,6 +10,10 @@ use se_types::{Body, Result};
 use sha2::{Digest, Sha256};
 
 pub(super) use super::owned::Work;
+/// Proof that a new launch is choosing a Codex login. Its private field means
+/// only this file can make one, so no later reader can consult the host.
+pub(super) struct NewLaunch(());
+
 impl LaunchCoordinator {
     #[expect(
         clippy::cognitive_complexity,
@@ -187,27 +191,82 @@ impl LaunchCoordinator {
             mcp_bearer: bearer,
             key: plan.input.idempotency_key.clone(),
         };
-        let configuration = harness
+        let mut configuration = harness
             .configuration(&request, call(self.store.generation, deadline)?)
             .await?;
+        // A new launch is the one place a Codex agent's login is chosen; it is
+        // recorded for the agent's life and every later reader uses the record.
+        let codex_login = if provider == se_types::Provider::Codex {
+            let login = super::codex_server::launch_login(&NewLaunch(()))?;
+            configuration
+                .ephemeral_files
+                .push(self.codex.login_record(&request.identity.session, &login)?);
+            Some(login)
+        } else {
+            None
+        };
         let mut invocation = harness
             .invocation(&request, call(self.store.generation, deadline)?)
             .await?;
         super::launch_util::route_temporary_files(&mut invocation.environment, &policy);
-        if let Some(package) = package {
-            package
-                .apply(&mut invocation.environment)
-                .map_err(|cause| error("Codex package environment", cause))?;
-        }
-        #[cfg(unix)]
-        {
-            invocation = self
-                .store
-                .pool
-                .run_owned(deadline, move || {
-                    super::launch_util::stabilize_alias(invocation, alias_parent)
-                })
-                .await?;
+        // A Codex agent's own process is a forwarder; the Codex executable, its
+        // package environment and any alias supervisor belong to the login's
+        // shared server instead.
+        let codex_server = if provider == se_types::Provider::Codex {
+            let login = codex_login
+                .clone()
+                .ok_or_else(|| error("Codex launch", "the login chosen for this launch"))?;
+            invocation
+                .arguments
+                .push(crate::harness::codex_input::control_socket(&login).into_os_string());
+            let settings = self.codex.server_settings(&request, &login)?;
+            let windows_sandbox = settings.windows_sandbox;
+            let mut server = crate::ProviderInvocation {
+                executable: request.executable.clone(),
+                arguments: Vec::new(),
+                environment: se_proc::Environment {
+                    entries: settings.environment,
+                },
+            };
+            if let Some(package) = package {
+                package
+                    .apply(&mut server.environment)
+                    .map_err(|cause| error("Codex package environment", cause))?;
+            }
+            #[cfg(unix)]
+            {
+                server = self
+                    .store
+                    .pool
+                    .run_owned(deadline, move || {
+                        super::launch_util::stabilize_alias(server, alias_parent)
+                    })
+                    .await?;
+            }
+            Some((
+                login,
+                super::codex_server::ServerLaunch {
+                    executable: server.executable.to_local()?,
+                    prefix: server.arguments,
+                    environment: server.environment.entries,
+                    windows_sandbox,
+                },
+            ))
+        } else {
+            #[cfg(unix)]
+            {
+                invocation = self
+                    .store
+                    .pool
+                    .run_owned(deadline, move || {
+                        super::launch_util::stabilize_alias(invocation, alias_parent)
+                    })
+                    .await?;
+            }
+            None
+        };
+        if let Some((login, server)) = codex_server {
+            self.ensure_codex_server(login, server, deadline).await?;
         }
         if mode == se_proc::LaunchMode::Window && cfg!(target_os = "linux") {
             invocation

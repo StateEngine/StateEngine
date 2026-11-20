@@ -252,6 +252,9 @@ fn from_principal<R: Snapshot>(
                 } else {
                     Read::Unknown { what: "Provider turn activity requires the owning runtime; native liveness does not prove a reply. Check provider sign-in and saved history before resubmitting input.".into() }
                 }),
+                codex_login: (provider == se_types::Provider::Codex).then(|| Read::Unknown {
+                    what: "The Codex login is read by the owning runtime".into(),
+                }),
                 acp_runtime: (provider == se_types::Provider::Acp).then(|| if never_launched {
                     Read::Absent { checked: "This agent has no launched protocol session".into() }
                 } else {

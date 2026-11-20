@@ -39,6 +39,14 @@ use std::{
     time::Duration,
 };
 
+/// What the login's shared app-server is started with.
+pub(crate) struct ServerSettings {
+    pub environment: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    pub windows_sandbox: Option<&'static str>,
+}
+
+const LOGIN_RECORD: &str = "codex-login.json";
+
 pub struct CodexHarness {
     io: Arc<dyn ProviderIoPlatform>,
     pool: BlockingPool,
@@ -48,6 +56,8 @@ pub struct CodexHarness {
     mcp_port: u16,
     configuration: ConfigFile,
     atlas_helper: Option<PathBuf>,
+    /// This host's own executable, which runs as each agent's forwarder.
+    forwarder: Option<PathBuf>,
     probed: Mutex<Option<qualification::Qualified>>,
     #[cfg(windows)]
     windows_shell: Mutex<Option<PathBuf>>,
@@ -61,6 +71,8 @@ pub struct Binding {
     state: Mutex<state::State>,
     pub(crate) completion: state::Completion,
     rollout: Mutex<Option<NativePath>>,
+    /// The Codex login recorded for this agent at launch.
+    pub(crate) login: PathBuf,
     initial: tokio::sync::Mutex<Option<Value>>,
     input: tokio::sync::Mutex<()>,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -88,10 +100,97 @@ impl CodexHarness {
             mcp_port,
             configuration,
             atlas_helper: None,
+            forwarder: None,
             probed: Mutex::new(None),
             #[cfg(windows)]
             windows_shell: Mutex::new(None),
         }
+    }
+    /// The environment and Windows sandbox selection the login's shared
+    /// app-server starts with: what a private Codex process used to receive.
+    pub(crate) fn server_settings(
+        &self,
+        request: &HarnessRequest,
+        login: &Path,
+    ) -> Result<ServerSettings> {
+        let mut environment = input::provider_environment();
+        // The login is given explicitly; the server never inherits the host's.
+        environment.retain(|(name, _)| !name.eq_ignore_ascii_case("CODEX_HOME"));
+        environment.push(("CODEX_HOME".into(), login.as_os_str().to_owned()));
+        #[cfg(windows)]
+        let environment = windows_shell::apply(
+            environment,
+            self.windows_shell
+                .lock()
+                .map_err(|_| poisoned())?
+                .as_ref()
+                .ok_or_else(|| {
+                    incompatible(
+                        "unpackaged shell has not been probed",
+                        "Probe the provider before launch.",
+                    )
+                })?,
+        )?;
+        #[cfg(windows)]
+        let windows_sandbox =
+            windows_sandbox::selection(request, login)?.map(windows_sandbox::Implementation::key);
+        #[cfg(not(windows))]
+        let windows_sandbox = {
+            let _ = request;
+            None
+        };
+        Ok(ServerSettings {
+            environment,
+            windows_sandbox,
+        })
+    }
+    /// The record of the login a launch chose, kept for the agent's whole life.
+    pub(crate) fn login_record(
+        &self,
+        session: &se_types::SessionId,
+        login: &Path,
+    ) -> Result<OwnedLaunchFile> {
+        let bytes = serde_json::to_vec(&json!({
+            "session": session,
+            "login": NativePath::from_local(login.to_owned())?,
+        }))
+        .map_err(|e| se_core::scope::unreadable("Codex login record", &e.to_string()))?;
+        Ok(OwnedLaunchFile {
+            path: NativePath::from_local(self.directory(session)?.join(LOGIN_RECORD))?,
+            contents: se_types::Secret::new(bytes)?,
+        })
+    }
+    /// The login recorded for this agent at launch: the one source of an
+    /// agent's login after it starts.
+    pub(crate) fn agent_login(&self, session: &se_types::SessionId) -> Result<Read<PathBuf>> {
+        let path = self.directory(session)?.join(LOGIN_RECORD);
+        let Some(mut file) = se_proc::OwnedFile::open(&path).map_err(native_error)? else {
+            return Ok(Read::Absent {
+                checked: format!("no Codex login is recorded at {}", path.display()),
+            });
+        };
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Recorded {
+            session: se_types::SessionId,
+            login: NativePath,
+        }
+        let recorded: Recorded = serde_json::from_slice(&file.read(8192).map_err(native_error)?)
+            .map_err(|e| se_core::scope::unreadable("Codex login record", &e.to_string()))?;
+        if &recorded.session != session {
+            return Err(SeError::invalid(
+                "Codex login record",
+                "the exact recorded session",
+            ));
+        }
+        Ok(Read::Present {
+            value: recorded.login.to_local()?,
+        })
+    }
+    /// Agents run as forwarders to their login's shared app-server.
+    pub fn with_forwarder(mut self, executable: PathBuf) -> Self {
+        self.forwarder = Some(executable);
+        self
     }
     pub fn with_atlas_helper(mut self, executable: PathBuf) -> Self {
         if self.configuration.atlas.enabled && self.configuration.atlas.hooks {
@@ -287,7 +386,7 @@ impl Harness for CodexHarness {
             "Restore the exact provider-reported persistent thread path.",
         )?
         .to_local()?;
-        crate::codex_capture::location(&path, &crate::codex_capture::existing_home()?).map(Some)
+        crate::codex_capture::location(&path, &bound(binding)?.login).map(Some)
     }
     fn materialize_transcript<'a>(
         &'a self,
@@ -366,16 +465,23 @@ impl Harness for CodexHarness {
                         )
                     })?,
             )?;
-            #[cfg(windows)]
-            let named = windows_sandbox::selection(request)?;
-            #[cfg(not(windows))]
-            let named: Option<windows_sandbox::Implementation> = None;
-            let invocation = input::invocation_naming(
+            // The host is the se executable, which also runs as each forwarder.
+            let forwarder = match &self.forwarder {
+                Some(path) => path.clone(),
+                None => std::env::current_exe().map_err(|e| {
+                    incompatible(
+                        &format!("this host cannot name its own executable: {e}"),
+                        "Restart StateEngine from its installed executable.",
+                    )
+                })?,
+            };
+            // The launch path appends the login's control socket, which only it
+            // may choose.
+            input::forwarder_invocation(
                 &self.plan(request, &resolved, socket.as_deref()),
+                &forwarder,
                 environment,
-                named.map(windows_sandbox::Implementation::key),
-            )?;
-            Ok(invocation)
+            )
         })
     }
     fn attach<'a>(
@@ -533,38 +639,48 @@ impl AdapterBinding for Arc<Binding> {
 
 pub(crate) struct Adoption;
 pub(crate) static ADOPTION: Adoption = Adoption;
-impl crate::adoption::Adapter for Adoption {
-    #[cfg(any(target_os = "linux", windows))]
-    fn prepare(&self, command: &std::path::Path) -> Result<crate::adoption::ProviderSetup> {
-        let executable = crate::adoption::codex::native_executable(command)?;
-        let home = crate::codex_capture::existing_home()?;
-        crate::adoption::settings::prepare(
-            &home,
-            &home.join(crate::adoption::Kind::Codex.settings()),
-        )?;
-        crate::adoption::codex::qualify(&executable)?;
-        Ok(crate::adoption::ProviderSetup {
-            executable,
-            config_home: home,
-        })
-    }
-    #[cfg(any(target_os = "linux", windows))]
-    fn hooks(
-        &self,
-        executable: &std::path::Path,
-        home: &std::path::Path,
-    ) -> Result<Vec<(String, serde_json::Value)>> {
-        crate::adoption::codex::hooks(executable, home)
-    }
-    fn discover(
-        &self,
-        home: &std::path::Path,
-        saved: &mut crate::adoption::Registration,
-        root: &std::path::Path,
-    ) -> Result<()> {
-        crate::adoption::codex::trust(home, saved, root)
-    }
-    fn active(&self, home: &std::path::Path, project: &se_types::ProjectId) -> Result<bool> {
-        crate::adoption::status::witnessed(home, crate::adoption::Kind::Codex, project)
+pub(crate) use first_setup::FirstSetup;
+/// Provider adoption (first setup), the only code that can present
+/// `FirstSetup` and so the only setup path that reads the host's login.
+mod first_setup {
+    use super::*;
+    /// Proof that first setup is choosing the login to prepare. Its private
+    /// field means only this module can make one.
+    pub(crate) struct FirstSetup(());
+    impl crate::adoption::Adapter for Adoption {
+        #[cfg(any(target_os = "linux", windows))]
+        fn prepare(&self, command: &std::path::Path) -> Result<crate::adoption::ProviderSetup> {
+            let executable = crate::adoption::codex::native_executable(command)?;
+            // First setup is the one place that may choose the login to prepare.
+            let home = crate::process::codex_server::setup_codex_login(&FirstSetup(()))?;
+            crate::adoption::settings::prepare(
+                &home,
+                &home.join(crate::adoption::Kind::Codex.settings()),
+            )?;
+            crate::adoption::codex::qualify(&executable)?;
+            Ok(crate::adoption::ProviderSetup {
+                executable,
+                config_home: home,
+            })
+        }
+        #[cfg(any(target_os = "linux", windows))]
+        fn hooks(
+            &self,
+            executable: &std::path::Path,
+            home: &std::path::Path,
+        ) -> Result<Vec<(String, serde_json::Value)>> {
+            crate::adoption::codex::hooks(executable, home)
+        }
+        fn discover(
+            &self,
+            home: &std::path::Path,
+            saved: &mut crate::adoption::Registration,
+            root: &std::path::Path,
+        ) -> Result<()> {
+            crate::adoption::codex::trust(home, saved, root)
+        }
+        fn active(&self, home: &std::path::Path, project: &se_types::ProjectId) -> Result<bool> {
+            crate::adoption::status::witnessed(home, crate::adoption::Kind::Codex, project)
+        }
     }
 }

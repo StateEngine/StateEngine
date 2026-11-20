@@ -56,7 +56,25 @@ pub(super) fn observe<R: ReadStore>(
         }
     }
     bound.remaining()?;
-    if !inventory.processes.is_empty() {
+    // A login's shared Codex server outlives the host by design; its record is
+    // custody too, and a recovery host adopts and stops that server.
+    let shared_codex = files.0.root().join("codex-servers");
+    let shared_codex_recorded = match std::fs::read_dir(&shared_codex) {
+        Ok(entries) => entries
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()
+            .map_err(|error| scope::unreadable("Codex shared server records", &error.to_string()))?
+            .iter()
+            .any(|path| path.extension().is_some_and(|ext| ext == "json")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(scope::unreadable(
+                "Codex shared server records",
+                &error.to_string(),
+            ));
+        }
+    };
+    if !inventory.processes.is_empty() || shared_codex_recorded {
         // Exclusion and the original host's exit were observed. The caller
         // must run normal native reconciliation and stop that recovery host;
         // cleanup debt is neither absent nor an already-down success.

@@ -289,15 +289,6 @@ fn windows_comparison(path: &str) -> String {
             .to_owned()
     }
 }
-pub fn existing_home() -> Result<PathBuf> {
-    if let Some(home) = std::env::var_os("CODEX_HOME") {
-        return Ok(PathBuf::from(home));
-    }
-    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-        .ok_or_else(|| invalid("the normal user home or explicit CODEX_HOME"))?;
-    Ok(PathBuf::from(home).join(".codex"))
-}
-
 pub fn validate_header(
     pin: &mut se_proc::NativeSourcePin,
     conversation: &ProviderSessionId,

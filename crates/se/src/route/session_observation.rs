@@ -112,6 +112,22 @@ pub(super) fn merge_runtime_observation(
                     source: "provider turn observation".into(), reason: error.to_string(), error: Some(Box::new(error.body.clone())),
                 },
             });
+            if row.provider == se_types::Provider::Codex {
+                row.codex_login = Some(match &observed {
+                    Ok(rows) => rows
+                        .iter()
+                        .find(|other| other.id == row.id)
+                        .and_then(|other| other.codex_login.clone())
+                        .unwrap_or_else(|| Read::Unknown {
+                            what: "The owning runtime did not report its Codex login.".into(),
+                        }),
+                    Err(error) => Read::Unreadable {
+                        source: "Codex login".into(),
+                        reason: error.to_string(),
+                        error: Some(Box::new(error.body.clone())),
+                    },
+                });
+            }
             return Ok(());
         }
         if row.provider == se_types::Provider::Acp {

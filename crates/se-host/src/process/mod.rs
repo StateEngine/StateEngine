@@ -6,6 +6,7 @@ mod attended;
 mod capture;
 mod catch_up;
 mod codex_capture;
+pub(crate) mod codex_server;
 mod cold_stop;
 mod control;
 mod dispatch;
@@ -106,6 +107,7 @@ pub struct LaunchCoordinator {
     secode: Arc<crate::harness::secode_process::SecodeHarness>,
     acp: Arc<crate::harness::acp::AcpHarness>,
     secode_services: secode::Services,
+    codex_server: codex_server::CodexServer,
     options: ProcessConfiguration,
     configuration_file: Option<PathBuf>,
     store: store::Store,
@@ -145,6 +147,12 @@ impl LaunchCoordinator {
         let service_failures = coordinator.recover_secode_services(deadline).await?;
         let mut report = coordinator.reconcile(inventory, deadline).await?;
         report.unproved.extend(service_failures);
+        if let Err(failure) = coordinator.adopt_recorded_codex_server(deadline).await {
+            report
+                .unproved
+                .push(format!("Codex shared server custody: {}", failure.body));
+        }
+        coordinator.watch_codex_server();
         Ok((coordinator, report))
     }
     /// Called once, after loopback listener publication selected its actual
@@ -259,6 +267,7 @@ impl LaunchCoordinator {
                 options.http_port,
                 options.configuration.clone(),
             )
+            .with_forwarder(options.helper_executable.to_local()?)
             .with_atlas_helper(options.helper_executable.to_local()?),
         );
         let secode = Arc::new(crate::harness::secode_process::SecodeHarness::new(
@@ -282,6 +291,7 @@ impl LaunchCoordinator {
             secode,
             acp,
             secode_services: secode::Services::default(),
+            codex_server: codex_server::CodexServer::default(),
             // Installation precedes readiness; retain admission without opening a router.
             capability_admission: host_runtime.admission_context(),
             store: store::Store::for_execution(&context),

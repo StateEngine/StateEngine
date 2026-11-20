@@ -359,6 +359,19 @@ fn main() -> std::process::ExitCode {
     }
     if args
         .get(1)
+        .is_some_and(|arg| arg == se_host::codex_forward::ENTRY)
+    {
+        // Stdout may be the forwarded channel, so a failure is reported on stderr only.
+        return match se_host::codex_forward::private_entry(&args) {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(error) => {
+                let _ = writeln!(io::stderr(), "codex forwarder: {error}");
+                std::process::ExitCode::from(1)
+            }
+        };
+    }
+    if args
+        .get(1)
         .is_some_and(|arg| arg == se_proc::atlas_worker::ENTRY)
     {
         #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
