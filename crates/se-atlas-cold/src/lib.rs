@@ -8,3 +8,4 @@ pub mod atlas_source;
 pub mod atlas_watch_error;
 pub mod cold;
 pub mod deadline;
+pub mod quantum;

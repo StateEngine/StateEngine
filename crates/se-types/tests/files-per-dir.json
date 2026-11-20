@@ -96,6 +96,7 @@
   "crates/se-store/src/read/channel": 6,
   "crates/se/src/route/diagnostic_bundle": 5,
   "crates/se/src/route/setup": 5,
+  "crates/se-atlas/src/history": 4,
   "crates/se/src/route/status": 5,
   "crates/se-atlas/src/rank": 5,
   "crates/se-core/src/ops/mail": 5,

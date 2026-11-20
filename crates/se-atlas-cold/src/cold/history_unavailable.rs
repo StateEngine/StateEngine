@@ -12,7 +12,7 @@ impl Plan {
         _: &NativeAtlasCache,
         _: &protocol::Request,
         _: Instant,
-    ) -> AtlasResult<(Generation, Option<se_types::ErrorBody>)> {
+    ) -> AtlasResult<HistorySeed> {
         Err(failure("Git history was not admitted on this platform"))
     }
 }

@@ -24,7 +24,11 @@ use se_atlas::{
     parse::SemanticParser,
 };
 use se_atlas::{errors::AtlasResult, lifecycle::*, model::*, source::RegisteredSource};
-use se_types::{SeError, code::AtlasText};
+use se_types::{
+    ErrorBody, SeError,
+    code::{AtlasText, HistoryCommitNote},
+};
+pub(super) type HistorySeed = (Generation, Option<ErrorBody>, Vec<HistoryCommitNote>);
 use std::time::{Duration, Instant};
 pub const EXTRACTOR: &str = "atlas-semantic-2";
 pub fn failure(reason: impl std::fmt::Display) -> SeError {
@@ -52,6 +56,7 @@ pub fn empty_coverage() -> Coverage {
         watch_limited_activations: 0,
         history_unavailable: None,
         reasons: Vec::new(),
+        history_commit_notes: Vec::new(),
     }
 }
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]

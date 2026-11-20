@@ -154,6 +154,20 @@ fn read_pinned(
 fn invalid(reason: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, reason.to_owned())
 }
+/// The retained stdout prefix when a bounded read exceeds its byte cap, so
+/// the parser can prove the complete path records already read; the trailing
+/// partial record stays out of trust.
+#[derive(Debug)]
+pub(crate) struct BoundedPrefix {
+    pub(crate) bytes: Vec<u8>,
+    message: String,
+}
+impl std::fmt::Display for BoundedPrefix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for BoundedPrefix {}
 mod control;
 #[cfg(target_os = "linux")]
 mod elf;

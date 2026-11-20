@@ -4,7 +4,7 @@ use se_atlas::{
     cache::connection::{CacheConnection, SqlView},
     errors::{AtlasResult, cache_error},
     history::{Commit, HistoryBound, HistoryFeed, HistoryReceipt, object},
-    model::Generation,
+    model::{Coverage, CoverageReason, Generation, IndexState},
     policy::built_in_denied,
 };
 use se_types::code::AtlasText;
@@ -22,6 +22,52 @@ pub fn ingest(
         ));
     }
     cache.write(4_000_000, deadline, |sql| apply(sql, feed))
+}
+/// Publish a fitted window's notes and unavailability into coverage; notes replace, not accumulate.
+pub fn publish_coverage(
+    cache: &mut CacheConnection<'_>,
+    deadline: Instant,
+    notes: &[se_types::code::HistoryCommitNote],
+    unavailable: Option<&se_types::ErrorBody>,
+) -> AtlasResult<()> {
+    if notes.is_empty() && unavailable.is_none() {
+        return Ok(());
+    }
+    cache.write(131072, deadline, |sql| {
+        let saved: String = sql
+            .prepare("SELECT coverage_json FROM meta WHERE singleton=1")?
+            .query_row([], |row| row.get(0))
+            .map_err(cache_error)?;
+        let mut coverage: Coverage = serde_json::from_str(&saved).map_err(cache_error)?;
+        if !notes.is_empty() {
+            coverage.history_commit_notes = notes.to_vec();
+        }
+        if let Some(diagnostic) = unavailable {
+            coverage.history_unavailable = Some(diagnostic.clone());
+            if !coverage
+                .reasons
+                .contains(&CoverageReason::HistoryUnavailable)
+            {
+                coverage.reasons.push(CoverageReason::HistoryUnavailable);
+            }
+        }
+        let coverage = serde_json::to_string(&coverage).map_err(cache_error)?;
+        if let Some(state) = unavailable.map(|_| IndexState::VerificationNeeded {
+            reason: CoverageReason::HistoryUnavailable,
+        }) {
+            sql.prepare("UPDATE meta SET coverage_json=?1,state_json=?2 WHERE singleton=1")?
+                .execute([
+                    coverage,
+                    serde_json::to_string(&state).map_err(cache_error)?,
+                ])
+                .map_err(cache_error)?;
+        } else {
+            sql.prepare("UPDATE meta SET coverage_json=?1 WHERE singleton=1")?
+                .execute([coverage])
+                .map_err(cache_error)?;
+        }
+        Ok(())
+    })
 }
 /// The owner may call this inside its existing contained cold transaction. It
 /// opens no connection, raises no profile, and grants no publication authority.
@@ -96,7 +142,13 @@ pub fn apply(sql: &SqlView<'_>, feed: &HistoryFeed) -> AtlasResult<HistoryReceip
         }
         // No author, subject, touch or mention is derived for secret-only commits.
         // Their traversal position remains explicit without retaining those facts.
-        if paths.is_empty() {
+        if paths.is_empty() && commit.paths_note.is_none() {
+            continue;
+        }
+        // A degraded commit retains its bounded metadata row only on evidence
+        // of an allowed omitted path; the omission note stays in coverage
+        // either way, and it derives no file links.
+        if commit.paths_note.is_some() && commit.allowed_paths.unwrap_or(0) == 0 {
             continue;
         }
         let id = upsert(sql, commit)?;
