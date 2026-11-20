@@ -326,7 +326,7 @@ jobs:
     name: Windows archive
     # Compiles alongside Windows Clippy; the tests below still wait for Clippy to pass.
     needs: [changes, linux-box]
-    if: ${{ always() && !cancelled() && github.event_name != 'push' && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' }}
+    if: ${{ always() && !cancelled() && github.event_name != 'push' && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' }}
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
