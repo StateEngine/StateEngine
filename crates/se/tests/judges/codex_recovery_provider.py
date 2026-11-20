@@ -77,6 +77,7 @@ def discover(params):
 
 def connection(stream, number, codex_home, saved):
     thread = None
+    sandbox_readiness = None
     try:
         request = bytearray()
         while not request.endswith(b'\r\n\r\n'):
@@ -104,10 +105,13 @@ def connection(stream, number, codex_home, saved):
             if method == 'initialize':
                 result = {'userAgent':'independent-recovery-double'}
             elif method == 'windowsSandbox/readiness' and os.name == 'nt':
-                # This fixture models the stock default only when the host
-                # actually selected it for this shared server process.
-                default_selected = 'windows.sandbox="unelevated"' in sys.argv[1:]
-                result = {'status': 'ready' if default_selected else 'notConfigured'}
+                # The synthetic configuration is ready only if the native process
+                # received the exact selected value in its launch arguments.
+                choice = codex_home / 'fixture-sandbox.txt'
+                expected = choice.read_text() if choice.is_file() else 'unelevated'
+                selected = f'windows.sandbox="{expected}"' in sys.argv[1:]
+                sandbox_readiness = expected if selected else None
+                result = {'status': 'ready' if selected else 'notConfigured'}
             elif method == 'thread/resume' and 'config' not in params:
                 thread = params['threadId']
                 with saved['lock']:
@@ -151,6 +155,7 @@ def connection(stream, number, codex_home, saved):
                     saved['threads'][thread] = (result, session)
                 ready = {'helper_pid': os.getpid(), 'native_pid': os.getppid(),
                          'discovery': True, 'thread_id': thread, 'session': session,
+                         'windows_sandbox_readiness': sandbox_readiness,
                          'policy': {k: result[k] for k in ('approvalPolicy', 'sandbox', 'cwd')}}
                 witness(Path(params['cwd']) / 'provider-ready.json', ready)
                 if session is not None:

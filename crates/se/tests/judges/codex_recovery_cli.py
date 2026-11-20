@@ -194,7 +194,7 @@ class Judge:
         if launch["state"] != "running":
             raise AssertionError("the shared-server agent did not start")
         session = launch["session_id"]
-        ready = wait_json(self.root / "codex" / f"ready-{session}.json")
+        ready = wait_json(Path(self.env["CODEX_HOME"]) / f"ready-{session}.json")
         if ready["session"] != session:
             raise AssertionError("the provider received a different session")
         forwarder = observe(launch["process"]["pid"])
@@ -269,6 +269,51 @@ class Judge:
         if record.exists():
             raise AssertionError("the stopped server still has an active custody record")
         self.result["server_ended_after_last_agent"] = True
+        self.result["passed"] = True
+
+    def run_other_home_attach(self):
+        self.setup()
+        first_home = Path(self.env["CODEX_HOME"])
+        second_home = self.root / "next"
+        second_home.mkdir(mode=0o700)
+        homes = ((first_home, "test-account-first", "unelevated"),
+                 (second_home, "test-account-second", "mxc"))
+        for home, account, sandbox in homes:
+            (home / "auth.json").write_text(json.dumps({
+                "auth_mode": "chatgpt", "tokens": {"account_id": account}}))
+            (home / "config.toml").write_text(f'[windows]\nsandbox = "{sandbox}"\n')
+            (home / "fixture-sandbox.txt").write_text(sandbox)
+
+        self.result["attachments"] = []
+        for home, account, sandbox in homes:
+            self.env["CODEX_HOME"] = str(home)
+            host = observe(self.start_host())
+            if host is None:
+                raise AssertionError("the host identity was unavailable")
+            self.identities.append(host)
+            ready, agent, server = self.launch_shared(self.agent)
+            status = self.ok("--project", self.project, "status")
+            row, = (value for value in status["agents"]["items"] if value["id"] == self.agent)
+            if row["session"]["session_id"] != ready["session"]:
+                raise AssertionError("status did not show the attached session")
+            if row["codex_login"] != {"state": "present", "value": {"home": str(home), "account": account}}:
+                raise AssertionError(f"wrong attached login: {row['codex_login']}")
+            if os.name == "nt" and ready.get("windows_sandbox_readiness") != sandbox:
+                raise AssertionError(f"attach did not check the expected Windows sandbox: {ready}")
+            self.result["attachments"].append({"host": host, "session": ready["session"],
+                                                "login": row["codex_login"]["value"],
+                                                "sandbox_readiness": ready.get("windows_sandbox_readiness")})
+            self.stop_shared_agent(self.agent, agent)
+            self.expect_exit(server, "the last stopped agent left its server running")
+            receipt = self.ok("down")
+            if not receipt["complete"] or receipt["witness"]["state"] != "witnessed":
+                raise AssertionError("the foreground host did not stop cleanly")
+            if self.foreground is not None:
+                self.foreground.wait(timeout=15)
+            self.expect_exit(host, "the original foreground host did not exit")
+        first, second = self.result["attachments"]
+        if first["session"] == second["session"] or first["host"] == second["host"]:
+            raise AssertionError("the restart did not produce a distinct session and host")
         self.result["passed"] = True
 
     def run_record(self, stale):
@@ -504,12 +549,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--se", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--scenario", choices=("crash", "slow", "shared", "missing-record", "stale-record"), required=True)
+    parser.add_argument("--scenario", choices=("crash", "slow", "shared", "missing-record", "stale-record", "other-home-attach"), required=True)
     args = parser.parse_args()
     judge = Judge(args)
     try:
         if args.scenario == "shared":
             judge.run_shared()
+        elif args.scenario == "other-home-attach":
+            judge.run_other_home_attach()
         elif args.scenario in ("missing-record", "stale-record"):
             judge.run_record(stale=args.scenario == "stale-record")
         else:

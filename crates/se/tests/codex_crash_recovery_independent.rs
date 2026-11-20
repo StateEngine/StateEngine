@@ -77,3 +77,10 @@ fn shared_server_preserves_the_native_process_when_its_record_names_an_earlier_i
 -> Result<(), Box<dyn std::error::Error>> {
     judge("stale-record")
 }
+
+#[cfg(windows)]
+#[test]
+fn attaches_with_the_selected_login_after_a_host_restart() -> Result<(), Box<dyn std::error::Error>>
+{
+    judge("other-home-attach")
+}
