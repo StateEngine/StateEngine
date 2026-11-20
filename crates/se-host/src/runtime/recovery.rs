@@ -21,13 +21,28 @@ pub fn route_endpoint(
     directory: &Path,
     expected_address: Option<&IpcEndpoint>,
 ) -> Result<EndpointRoute> {
+    validate_address(expected_address)?;
+    let files = NativeStateFiles::open(directory).map_err(native_error)?;
+    route_endpoint_held(&files, expected_address)
+}
+
+fn validate_address(expected_address: Option<&IpcEndpoint>) -> Result<()> {
     if cfg!(unix) && expected_address.is_none() {
         return Err(SeError::invalid(
             "runtime socket route",
             "the selected Unix socket address",
         ));
     }
-    let files = NativeStateFiles::open(directory).map_err(native_error)?;
+    Ok(())
+}
+
+/// Route using a protected state directory already held by the caller.
+pub fn route_endpoint_held(
+    files: &NativeStateFiles,
+    expected_address: Option<&IpcEndpoint>,
+) -> Result<EndpointRoute> {
+    validate_address(expected_address)?;
+    let directory = files.root();
     let lock_path = directory.join("runtime.lock");
     let lock = files
         .readback(&lock_path)
@@ -40,8 +55,8 @@ pub fn route_endpoint(
         })?;
     match lock.try_lock() {
         Ok(()) => {
-            let recovery = match read(&files)? {
-                Some((_, bytes)) => Some(retain(&files, &bytes)?),
+            let recovery = match read(files)? {
+                Some((_, bytes)) => Some(retain(files, &bytes)?),
                 None => None,
             };
             // The native child takes its own exclusive lease. The old record
@@ -50,7 +65,7 @@ pub fn route_endpoint(
             Ok(EndpointRoute::Start { recovery })
         }
         Err(TryLockError::WouldBlock) => {
-            let (record, _) = read(&files)?.ok_or_else(|| {
+            let (record, _) = read(files)?.ok_or_else(|| {
                 busy(
                     directory,
                     "a host or writer holds the lease but no endpoint is published",

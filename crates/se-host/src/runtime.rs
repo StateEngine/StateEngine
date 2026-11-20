@@ -35,7 +35,9 @@ pub use endpoint::{HostedListener, RetainedEndpoint, endpoint_recovery_error};
 #[cfg(feature = "listener")]
 mod recovery;
 #[cfg(feature = "listener")]
-pub use recovery::{EndpointRoute, retain_at as retain_endpoint_at, route_endpoint};
+pub use recovery::{
+    EndpointRoute, retain_at as retain_endpoint_at, route_endpoint, route_endpoint_held,
+};
 #[cfg(feature = "listener")]
 mod activation;
 #[cfg(feature = "listener")]

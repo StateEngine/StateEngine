@@ -82,7 +82,7 @@ pub(super) fn endpoint_with_origin(
                 "the current runtime.lock holder to publish endpoint.json or release its lease; this request has not started a runtime child",
             ));
         }
-        let route = match se_host::route_endpoint(&cx.home, expected) {
+        let route = match se_host::route_endpoint_held(&files.0, expected) {
             Ok(route) => route,
             Err(error) => {
                 // A held lease with no publication is a concurrent bootstrap
