@@ -459,7 +459,7 @@ fn run(
         };
         match command {
             Command::Atlas(request) => atlas::execute(&mut host, &*lease, &shared, request)?,
-            Command::Erase(request) => erase::execute(&mut host, &*lease, &shared, request)?,
+            Command::Erase(request) => erase::execute(&mut host, &*lease, &shared, *request)?,
             Command::Append(first) => {
                 let mut group = vec![first];
                 let mut bytes = group[0].materialized;

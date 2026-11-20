@@ -132,7 +132,20 @@ fn observe_one(
                 format!("event {} has no stored body", target.event.as_str()),
             )
         })?;
-    let residual = match source {
+    let body = Body {
+        target: target.clone(),
+        bytes,
+        turn,
+    };
+    Ok((project, body, residual(source, turn, home)?))
+}
+/// The copy outside the store's custody that a forgotten body leaves behind.
+fn residual(
+    source: Option<Vec<u8>>,
+    turn: bool,
+    home: &std::path::Path,
+) -> StoreResult<Option<ResidualCopy>> {
+    Ok(match source {
         Some(path) => serde_json::from_slice::<Option<NativePath>>(&path)
             .map_err(invalid)?
             .map(|location| ResidualCopy {
@@ -146,16 +159,7 @@ fn observe_one(
             reason: "Atlas drops the message record when it next reads history; freed index pages may hold the text until Atlas compacts its database.".into(),
         }),
         None => None,
-    };
-    Ok((
-        project,
-        Body {
-            target: target.clone(),
-            bytes,
-            turn,
-        },
-        residual,
-    ))
+    })
 }
 fn observe(
     c: &Connection,
@@ -481,6 +485,85 @@ pub(crate) fn options(host: &SqliteHost) -> StoreResult<StoreOptions> {
         busy_timeout: host.reader.timeout,
     })
 }
+/// Commits the request and every body removal as one transaction, with freed
+/// pages zeroed as they are released.
+fn request(
+    host: &mut SqliteHost,
+    info: &StoreInfo,
+    plan: &ErasurePlan,
+    owner: &HumanId,
+    observed: Observed,
+) -> StoreResult<()> {
+    let mut events = vec![(
+        derived_event(&plan.id, "requested", connection::now()?)?,
+        EventBody::ErasureRequested {
+            erasure: plan.id,
+            targets: plan.targets.clone(),
+            residuals: plan.residuals.clone(),
+        },
+    )];
+    for body in observed.bodies {
+        let (target, erasure, original_bytes, by) =
+            (body.target.event, plan.id, body.bytes, owner.clone());
+        let event = derived_event(&plan.id, target.as_str(), connection::now()?)?;
+        let erased = if body.turn {
+            EventBody::TurnErased {
+                target,
+                erasure,
+                original_bytes,
+                by,
+            }
+        } else {
+            EventBody::MessageErased {
+                target,
+                erasure,
+                original_bytes,
+                by,
+            }
+        };
+        events.push((event, erased));
+    }
+    let batch = batch(host, info, &observed.scope, owner, events)?;
+    host.engine
+        .db
+        .execute_batch("PRAGMA secure_delete=ON")
+        .map_err(sql)?;
+    let committed = commit(host, batch);
+    host.engine
+        .db
+        .execute_batch("PRAGMA secure_delete=OFF")
+        .map_err(sql)?;
+    committed.map(|_| ())
+}
+/// Each new backup retires the oldest of at most two, so two fresh copies
+/// replace every generation taken before the erasure.
+fn replace_backups(
+    host: &SqliteHost,
+    lease: &dyn RuntimeLease,
+    options: &StoreOptions,
+    info: &StoreInfo,
+    plan: &ErasurePlan,
+) -> StoreResult<bool> {
+    let mut stale = !plan.owned_generations.is_empty();
+    for _ in 0..2 {
+        if !stale {
+            break;
+        }
+        let timeout = options.busy_timeout.max(Duration::from_secs(60));
+        crate::backup::run(options, lease, host.context.clone(), timeout)?;
+        let deadline = deadline(options.busy_timeout)?;
+        let remaining = crate::backup::generation_ids(
+            lease.files(),
+            &options.state_directory,
+            &info.id,
+            deadline,
+        )?;
+        stale = remaining
+            .iter()
+            .any(|id| plan.owned_generations.contains(id));
+    }
+    Ok(!stale)
+}
 pub(crate) fn erase(
     host: &mut SqliteHost,
     plan: ErasurePlan,
@@ -516,80 +599,10 @@ pub(crate) fn erase(
         // An interrupted erasure resumes its physical cleanup; nothing is re-planned.
         (Some(false), _) => {}
         (None, Err(error)) => return Err(error),
-        (None, Ok(observed)) => {
-            let mut events = vec![(
-                derived_event(&plan.id, "requested", connection::now()?)?,
-                EventBody::ErasureRequested {
-                    erasure: plan.id,
-                    targets: plan.targets.clone(),
-                    residuals: plan.residuals.clone(),
-                },
-            )];
-            for body in observed.bodies {
-                let (target, erasure, original_bytes, by) = (
-                    body.target.event,
-                    plan.id,
-                    body.bytes,
-                    approval.owner.clone(),
-                );
-                let event = derived_event(&plan.id, target.as_str(), connection::now()?)?;
-                events.push((
-                    event,
-                    if body.turn {
-                        EventBody::TurnErased {
-                            target,
-                            erasure,
-                            original_bytes,
-                            by,
-                        }
-                    } else {
-                        EventBody::MessageErased {
-                            target,
-                            erasure,
-                            original_bytes,
-                            by,
-                        }
-                    },
-                ));
-            }
-            let batch = batch(host, &info, &observed.scope, &approval.owner, events)?;
-            host.engine
-                .db
-                .execute_batch("PRAGMA secure_delete=ON")
-                .map_err(sql)?;
-            let committed = commit(host, batch);
-            host.engine
-                .db
-                .execute_batch("PRAGMA secure_delete=OFF")
-                .map_err(sql)?;
-            committed?;
-        }
+        (None, Ok(observed)) => request(host, &info, &plan, &approval.owner, observed)?,
     }
-    let mut cleanup_complete = rewrite(host, lease)?;
-    // Each new backup retires the oldest of at most two, so two fresh copies
-    // replace every generation taken before the erasure.
-    let mut stale = !plan.owned_generations.is_empty();
-    for _ in 0..2 {
-        if !stale {
-            break;
-        }
-        crate::backup::run(
-            &options,
-            lease,
-            host.context.clone(),
-            options.busy_timeout.max(Duration::from_secs(60)),
-        )?;
-        let remaining = crate::backup::generation_ids(
-            lease.files(),
-            &options.state_directory,
-            &info.id,
-            deadline(options.busy_timeout)?,
-        )?;
-        stale = remaining
-            .iter()
-            .any(|id| plan.owned_generations.contains(id));
-    }
-    cleanup_complete &= !stale;
+    let cleanup_complete =
+        rewrite(host, lease)? && replace_backups(host, lease, &options, &info, &plan)?;
     let mut report = ErasureReport {
         erasure: plan.id,
         completed_event: None,

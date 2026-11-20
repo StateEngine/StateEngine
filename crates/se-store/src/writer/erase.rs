@@ -62,9 +62,9 @@ pub(super) fn execute(
     host: &mut SqliteHost,
     lease: &dyn RuntimeLease,
     shared: &Shared,
-    request: Box<EraseRequest>,
+    request: EraseRequest,
 ) -> StoreResult<()> {
-    let result = match *request {
+    let result = match request {
         EraseRequest::Plan(events, reply) => {
             let planned = crate::erasure::options(host)
                 .and_then(|options| crate::erasure::plan_events(&options, events, lease));

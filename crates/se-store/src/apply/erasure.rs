@@ -144,7 +144,10 @@ pub(super) fn body(
         crate::sql_value::sql_params![seq, bytes, erasure_id],
     )
     .map_err(sql)?;
-    // The request fingerprint digests the body; keep the operation, drop the digest.
+    drop_fingerprint(c, operation)
+}
+/// The request fingerprint digests the body; keep the operation, drop the digest.
+fn drop_fingerprint(c: &Connection, operation: Vec<u8>) -> StoreResult<()> {
     let erased: bool = c
         .query_row(
             "SELECT erased FROM operations WHERE operation_id=?",
