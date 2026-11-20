@@ -4,12 +4,14 @@
 use crate::{AgentId, ErrorBody, EventId, ProjectId};
 pub use crate::{AtlasRootId as RootId, IndexEpochId as CacheEpoch};
 use std::time::Duration;
+mod presentation;
 mod resources;
+pub use presentation::compact_ids;
 pub use resources::{GrammarPages, MemoryBudget};
 
-/// Wire form of this module's byte-array IDs: a lowercase hex string on the
-/// wire, never a JSON number array. Persisted caches keep reading because
-/// the decoder also accepts the legacy array form.
+/// Lenient decoder for this module's byte-array IDs. The native wire form
+/// stays the byte array; the decoder also accepts the compact hex string so
+/// an ID from a presented reply round-trips into a request.
 mod id_encoding {
     use std::fmt;
     use std::marker::PhantomData;
@@ -58,11 +60,6 @@ mod id_encoding {
 
 macro_rules! wire_id {
     ($name:ident, $pattern:literal) => {
-        impl serde::Serialize for $name {
-            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                serializer.serialize_str(&crate::hex_lower(&self.0))
-            }
-        }
         impl<'de> serde::Deserialize<'de> for $name {
             fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
                 id_encoding::decode(deserializer).map(Self)
@@ -79,7 +76,7 @@ macro_rules! wire_id {
     };
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
 pub struct AtlasJobId(pub [u8; 16]);
 wire_id!(AtlasJobId, "^[0-9a-f]{32}$");
 #[derive(
@@ -109,13 +106,13 @@ pub struct ChangeId {
     pub generation: Generation,
     pub ordinal: u32,
 }
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
 pub struct FileId(pub [u8; 16]);
 wire_id!(FileId, "^[0-9a-f]{32}$");
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
 pub struct SymbolId(pub [u8; 32]);
 wire_id!(SymbolId, "^[0-9a-f]{64}$");
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
 pub struct ContentHash(pub [u8; 32]);
 wire_id!(ContentHash, "^[0-9a-f]{64}$");
 #[derive(
@@ -556,7 +553,7 @@ pub enum ResumeCodeState {
     Updating,
     BudgetExceeded,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct ResumeOfferId(pub [u8; 16]);
 wire_id!(ResumeOfferId, "^[0-9a-f]{32}$");
 #[derive(

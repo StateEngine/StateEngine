@@ -64,7 +64,21 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
         ));
     }
     if json {
-        serde_json::to_writer(&mut *out, value).map_err(io::Error::other)?;
+        if matches!(
+            value,
+            AnyOutput::AtlasFind(_)
+                | AnyOutput::AtlasRefs(_)
+                | AnyOutput::AtlasImpact(_)
+                | AnyOutput::AtlasChanges(_)
+                | AnyOutput::AtlasOutline(_)
+                | AnyOutput::Resume(_)
+        ) {
+            let mut presented = serde_json::to_value(value).map_err(io::Error::other)?;
+            se_types::code::compact_ids(&mut presented);
+            serde_json::to_writer(&mut *out, &presented).map_err(io::Error::other)?;
+        } else {
+            serde_json::to_writer(&mut *out, value).map_err(io::Error::other)?;
+        }
         writeln!(out)?;
     } else if !quiet
         || value.exit_code() != 0

@@ -1,55 +1,56 @@
-//! Atlas byte-array IDs used to serialize as JSON number arrays, so the
-//! outline reply spent most of its byte budget on IDs and returned only a
-//! few symbols. Their wire form is now a lowercase hex string, and persisted
-//! caches written before the change keep decoding.
-use se_types::code::{AtlasJobId, ContentHash, FileId, ResumeOfferId, SymbolId};
+//! Atlas byte-array IDs keep the byte-array native wire form, so host IPC,
+//! cursor digests and persisted rows stay byte-for-byte compatible with the
+//! base. Only the JSON presented through the MCP server and the CLI takes
+//! the compact hex form, and the decoder also accepts the hex string so an
+//! ID from a presented reply round-trips into a request.
+use se_types::code::{AtlasJobId, ContentHash, FileId, ResumeOfferId, SymbolId, compact_ids};
 use serde_json::{Value, json};
 use std::error::Error;
 
 type Check = Result<(), Box<dyn Error>>;
 
-/// Protects: C1 — every wire ID serializes as a lowercase hex string and
-/// round-trips through exactly that spelling.
+fn byte_array(bytes: &[u8]) -> Value {
+    Value::Array(bytes.iter().map(Value::from).collect())
+}
+
+/// Protects: C1 - every ID serializes as the bare byte array exactly as on
+/// the base, so host IPC, cursor digests and cache rows stay byte-identical.
 #[test]
-fn atlas_ids_serialize_as_lowercase_hex_strings() -> Check {
-    for (value, expected) in [
-        (
-            serde_json::to_value(AtlasJobId([0x01; 16]))?,
-            "01".repeat(16),
-        ),
-        (serde_json::to_value(FileId([0xab; 16]))?, "ab".repeat(16)),
-        (serde_json::to_value(SymbolId([0xcd; 32]))?, "cd".repeat(32)),
-        (
-            serde_json::to_value(ContentHash([0xef; 32]))?,
-            "ef".repeat(32),
-        ),
-        (
-            serde_json::to_value(ResumeOfferId([0x7f; 16]))?,
-            "7f".repeat(16),
-        ),
-    ] {
-        assert_eq!(value, expected);
-    }
-    let decoded: FileId = serde_json::from_value(json!("ab".repeat(16)))?;
-    assert_eq!(decoded, FileId([0xab; 16]));
+fn ids_serialize_as_bare_byte_arrays() -> Check {
+    assert_eq!(
+        serde_json::to_value(AtlasJobId([0x01; 16]))?,
+        byte_array(&[0x01; 16])
+    );
+    assert_eq!(
+        serde_json::to_value(FileId([0xab; 16]))?,
+        byte_array(&[0xab; 16])
+    );
+    assert_eq!(
+        serde_json::to_value(SymbolId([0xcd; 32]))?,
+        byte_array(&[0xcd; 32])
+    );
+    assert_eq!(
+        serde_json::to_value(ContentHash([0xef; 32]))?,
+        byte_array(&[0xef; 32])
+    );
+    assert_eq!(
+        serde_json::to_value(ResumeOfferId([0x7f; 16]))?,
+        byte_array(&[0x7f; 16])
+    );
     Ok(())
 }
 
-/// Protects: C1 — legacy byte arrays from persisted caches still decode, and
-/// either hex letter case names the same bytes.
+/// Protects: C1 - byte arrays and hex strings decode to the same ID, so
+/// persisted rows and presented replies both round-trip.
 #[test]
-fn legacy_byte_arrays_still_deserialize() -> Check {
-    let bytes: [u8; 16] = std::array::from_fn(|index| index as u8);
-    let legacy = Value::Array(bytes.iter().map(|byte| json!(*byte)).collect());
+fn arrays_and_hex_strings_deserialize_to_the_same_id() -> Check {
     assert_eq!(
-        serde_json::from_value::<FileId>(legacy.clone())?,
-        FileId(bytes)
+        serde_json::from_value::<FileId>(byte_array(&[0xab; 16]))?,
+        FileId([0xab; 16])
     );
-    let hash_bytes: [u8; 32] = std::array::from_fn(|index| index as u8);
-    let legacy_hash = Value::Array(hash_bytes.iter().map(|byte| json!(*byte)).collect());
     assert_eq!(
-        serde_json::from_value::<ContentHash>(legacy_hash)?,
-        ContentHash(hash_bytes)
+        serde_json::from_value::<FileId>(json!("ab".repeat(16)))?,
+        FileId([0xab; 16])
     );
     assert_eq!(
         serde_json::from_value::<ContentHash>(json!("AB".repeat(32)))?,
@@ -58,9 +59,9 @@ fn legacy_byte_arrays_still_deserialize() -> Check {
     Ok(())
 }
 
-/// Protects: C1 — wrong lengths, non-hex text and non-byte numbers refuse.
+/// Protects: C1 - wrong lengths, non-hex text and non-byte numbers refuse.
 #[test]
-fn malformed_id_wire_values_refuse() -> Check {
+fn malformed_id_values_refuse() -> Check {
     assert!(serde_json::from_value::<FileId>(json!("ab".repeat(15))).is_err());
     assert!(serde_json::from_value::<FileId>(json!("ab".repeat(17))).is_err());
     assert!(serde_json::from_value::<FileId>(json!("")).is_err());
@@ -74,9 +75,10 @@ fn malformed_id_wire_values_refuse() -> Check {
     Ok(())
 }
 
-/// Protects: C1 — the published schemas document the hex wire form.
+/// Protects: C1 - the published schemas document the compact hex form the
+/// presentation layer produces.
 #[test]
-fn id_schemas_document_the_hex_wire_form() -> Check {
+fn id_schemas_document_the_hex_form() -> Check {
     for (schema, pattern) in [
         (
             serde_json::to_value(schemars::schema_for!(FileId))?,
@@ -90,5 +92,71 @@ fn id_schemas_document_the_hex_wire_form() -> Check {
         assert_eq!(schema["type"], "string");
         assert_eq!(schema["pattern"], pattern);
     }
+    Ok(())
+}
+
+/// Protects: C1 - the compacting walk rewrites only mapped ID fields,
+/// recurses into containers, leaves everything else untouched and is
+/// idempotent on the compact form.
+#[test]
+fn compact_ids_rewrites_mapped_id_fields_only() -> Check {
+    let mut presented = json!({
+        "schema": "atlas.find",
+        "file": byte_array(&[0xab; 16]),
+        "symbol": byte_array(&[0xcd; 32]),
+        "from": byte_array(&[0x01; 16]),
+        "to": byte_array(&[0x02; 32]),
+        "offer": byte_array(&[0x7f; 16]),
+        "job": byte_array(&[0x55; 16]),
+        "content_hash": byte_array(&[0xef; 32]),
+        "observed_hash": Value::Null,
+        "parent": Value::Null,
+        "enclosing": Value::Null,
+        "resolved_target": Value::Null,
+        "id": byte_array(&[0x11; 32]),
+        "previous_hash": byte_array(&[0x22; 32]),
+        "hops": [
+            { "from": byte_array(&[0x33; 32]), "to": byte_array(&[0x44; 32]) }
+        ],
+        "unmapped": byte_array(&[0xab; 16]),
+        "count": 16
+    });
+    compact_ids(&mut presented);
+    assert_eq!(presented["file"], "ab".repeat(16));
+    assert_eq!(presented["symbol"], "cd".repeat(32));
+    assert_eq!(presented["from"], "01".repeat(16));
+    assert_eq!(presented["to"], "02".repeat(32));
+    assert_eq!(presented["offer"], "7f".repeat(16));
+    assert_eq!(presented["job"], "55".repeat(16));
+    assert_eq!(presented["content_hash"], "ef".repeat(32));
+    assert_eq!(presented["id"], "11".repeat(32));
+    assert_eq!(presented["previous_hash"], "22".repeat(32));
+    assert_eq!(presented["hops"][0]["from"], "33".repeat(32));
+    assert_eq!(presented["hops"][0]["to"], "44".repeat(32));
+    assert_eq!(presented["unmapped"], byte_array(&[0xab; 16]));
+    assert_eq!(presented["count"], 16);
+    let compact = presented.clone();
+    compact_ids(&mut presented);
+    assert_eq!(presented, compact);
+    Ok(())
+}
+
+/// Protects: C1 - a selector carrying IDs serializes to the same bytes as
+/// the hand-written base JSON with bare arrays; because cursor digests hash
+/// exactly those bytes, old page links and the text-search ordering suffix
+/// digest identically on the base.
+#[test]
+fn selector_serialization_stays_byte_identical_with_the_base() -> Check {
+    let selector = json!({
+        "kind": "file",
+        "file": serde_json::to_value(FileId([0x5a; 16]))?,
+        "symbol": serde_json::to_value(SymbolId([0x3c; 32]))?
+    });
+    let base = json!({
+        "kind": "file",
+        "file": [0x5a_u8; 16],
+        "symbol": [0x3c_u8; 32]
+    });
+    assert_eq!(serde_json::to_vec(&selector)?, serde_json::to_vec(&base)?);
     Ok(())
 }
