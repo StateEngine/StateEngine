@@ -103,7 +103,10 @@ impl Channels {
             } = &state.pairing
             && let Some(challenge) = text.strip_prefix("/start ")
             && challenge.len() == 64
-            && Sha256::digest(challenge.as_bytes()).as_slice() == digest
+            && bool::from(subtle::ConstantTimeEq::ct_eq(
+                Sha256::digest(challenge.as_bytes()).as_slice(),
+                digest.as_slice(),
+            ))
             && *expires_at_us > now()?
         {
             let change = Change::PairingSeen {
