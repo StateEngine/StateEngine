@@ -1,11 +1,7 @@
 //! Register the static MCP entry using each harness's own configuration command.
 use crate::adoption::Kind;
 use se_types::{Result, SeError};
-use std::{
-    path::{Path, PathBuf},
-    process::Stdio,
-    time::Duration,
-};
+use std::{path::Path, process::Stdio, time::Duration};
 use tokio::{io::AsyncReadExt, process::Command};
 
 const LIMIT: u64 = 65_536;
@@ -25,12 +21,8 @@ pub fn configure(
     let mut changed = Vec::new();
     let temporary = alternate_home.is_some_and(under_temp);
     for kind in Kind::ALL {
-        // A home under the temp directory never goes into a config that outlives it.
         if temporary && !config_root(kind).is_some_and(|root| under_temp(&root)) {
-            let lead = format!(
-                "{} was not given this temporary home's MCP entry; to add it anyway,",
-                kind.label()
-            );
+            let lead = kind.label().to_owned() + " skipped this temporary home; to add it anyway,";
             changed.push(manual(kind, &args, &lead)?);
             continue;
         }
@@ -40,11 +32,7 @@ pub fn configure(
             && path.components().count() == 1
             && std::env::var_os("PATH").is_none()
         {
-            changed.push(manual(
-                kind,
-                &args,
-                &format!("Install {}, then", kind.label()),
-            )?);
+            changed.push(missing(kind, &args)?);
             continue;
         }
         match crate::resolve_provider_executable(configuration, kind.provider().into(), None, None)
@@ -59,11 +47,7 @@ pub fn configure(
                     se_types::Detail::ProviderCliNotFound(_)
                 ) =>
             {
-                changed.push(manual(
-                    kind,
-                    &args,
-                    &format!("Install {}, then", kind.label()),
-                )?);
+                changed.push(missing(kind, &args)?);
             }
             Err(error) => return Err(error),
         }
@@ -71,21 +55,20 @@ pub fn configure(
     Ok(changed)
 }
 
-/// Under the system temporary directory, compared after resolving links.
+/// Under the temp directory (links resolved): never saved into a config that outlives it.
 fn under_temp(path: &Path) -> bool {
     let real = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     real(path).starts_with(real(&std::env::temp_dir()))
 }
 /// Where the provider keeps the configuration its `mcp add` writes.
-fn config_root(kind: Kind) -> Option<PathBuf> {
-    let own = match kind {
-        Kind::Codex => "CODEX_HOME",
-        Kind::Claude => "CLAUDE_CONFIG_DIR",
-    };
+fn config_root(kind: Kind) -> Option<std::path::PathBuf> {
+    let own = ["CLAUDE_CONFIG_DIR", "CODEX_HOME"][usize::from(kind == Kind::Codex)];
     let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    std::env::var_os(own)
-        .or_else(|| std::env::var_os(home))
-        .map(PathBuf::from)
+    let found = std::env::var_os(own).or_else(|| std::env::var_os(home));
+    found.map(Into::into)
+}
+fn missing(kind: Kind, args: &[&str]) -> Result<String> {
+    manual(kind, args, &format!("Install {}, then", kind.label()))
 }
 fn manual(kind: Kind, args: &[&str], lead: &str) -> Result<String> {
     let prefix = match kind {
@@ -293,27 +276,15 @@ async fn stop(child: &mut tokio::process::Child) -> Result<()> {
     Ok(())
 }
 
-/// The harness refused a setup command: name the command, its exit and the
-/// harness's own first stderr line, so the next step is the harness's, not a guess.
+/// A refused setup command, named with its exit and the harness's first stderr line.
 fn refused(kind: Kind, args: &[&str], output: &std::process::Output) -> SeError {
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let said = stderr.lines().find(|line| !line.trim().is_empty());
-    let said: String = said
-        .unwrap_or("(no stderr)")
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(240)
-        .collect();
-    let exit = output
-        .status
-        .code()
-        .map_or_else(|| "without a code".into(), |code| code.to_string());
-    failure(&format!(
-        "{} `{} {}` exited {exit}: {said}",
-        kind.label(),
-        kind.name(),
-        args.join(" ")
-    ))
+    let line = stderr.lines().find(|line| !line.trim().is_empty());
+    let said = line.unwrap_or("(no stderr)");
+    let said: String = said.chars().filter(|c| !c.is_control()).take(240).collect();
+    let (label, name, args) = (kind.label(), kind.name(), args.join(" "));
+    let reason = format!("{label} `{name} {args}` failed ({}): {said}", output.status);
+    failure(&reason)
 }
 fn failure(reason: &str) -> SeError {
     SeError::invalid("MCP setup", reason)
