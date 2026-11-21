@@ -36,6 +36,7 @@ se-channels = { path = "../se-channels", optional = true }
 se-core = { path = "../se-core" }
 se-mcp = { path = "../se-mcp" }
 se-proc = { path = "../se-proc" }
+se-local-socket = { path = "../se-local-socket" }
 se-remote = { path = "../se-remote", optional = true }
 se-repository = { path = "../se-repository" }
 se-store = { path = "../se-store" }

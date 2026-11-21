@@ -24,55 +24,23 @@ impl CodexHarness {
         {
             endpoint::prepare(socket, record, session)?;
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        crate::codex_endpoint::check(socket, record, session)?;
+        #[cfg(not(any(unix, windows)))]
         let _ = (socket, record, session);
         Ok(())
     }
     pub(super) fn socket(&self, request: &HarnessRequest) -> Result<Option<PathBuf>> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStrExt;
-            let directory = self.directory(&request.identity.session)?;
-            let preferred = directory.join("cx/s");
-            let selected = if preferred.as_os_str().as_bytes().len() < 100 {
-                preferred
-            } else {
-                let launch =
-                    se_proc::session_launch_id(&request.identity.session).map_err(native_error)?;
-                let requested = self
-                    .socket_root
-                    .join(format!(
-                        "se-cx-{}",
-                        launch.as_str().trim_start_matches("lch_")
-                    ))
-                    .join("s");
-                if requested.as_os_str().as_bytes().len() < 100 {
-                    requested
-                } else {
-                    se_proc::native_ipc::UnixSocketPaths::short_provider_root()
-                        .join(format!(
-                            "se-cx-{}",
-                            launch.as_str().trim_start_matches("lch_")
-                        ))
-                        .join("s")
-                }
-            };
-            if !selected.is_absolute() || selected.as_os_str().as_bytes().len() >= 100 {
-                return Err(incompatible(
-                    "no protected Unix socket path fits the provider limit",
-                    "Select a shorter private runtime/temp location.",
-                ));
-            }
-            Ok(Some(selected))
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = request;
-            Ok(None)
-        }
+        let session = &request.identity.session;
+        crate::codex_endpoint::socket_path(
+            self.directory(session)?,
+            &self.socket_root,
+            &self.state_home,
+            session,
+        )
     }
     /// Recovery reads the original protected address, never a newly selected path.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(super) fn retained_socket(record: &Path, session: &se_types::SessionId) -> Result<PathBuf> {
         let mut file = se_proc::OwnedFile::open(record)
             .map_err(native_error)?
@@ -92,7 +60,10 @@ impl CodexHarness {
             ));
         }
         let socket = value.socket.to_local()?;
+        #[cfg(unix)]
         endpoint::recover(&socket, record, session)?;
+        #[cfg(windows)]
+        crate::codex_endpoint::check(&socket, record, session)?;
         Ok(socket)
     }
     pub async fn prepare_socket(&self, request: &HarnessRequest, cx: &CallContext) -> Result<()> {
@@ -113,12 +84,16 @@ impl CodexHarness {
                     Some(se_proc::NativeStateFiles::create(&root).map_err(native_error)?)
                 } else { None }
             };
+            #[cfg(windows)]
+            let _short_root = crate::codex_endpoint::hold_short_root(parent)?;
             match std::fs::symlink_metadata(parent) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
                 Ok(_) => return Err(incompatible("the rendezvous directory already exists", "Reconcile its original launch; a new launch never reuses or repairs it.")),
                 Err(e) => return Err(se_core::scope::unreadable("Codex rendezvous directory", &e.to_string())),
             }
             let directory = se_proc::NativeStateFiles::create(parent).map_err(native_error)?;
+            #[cfg(windows)]
+            crate::codex_endpoint::record(&socket, &record, &session)?;
             #[cfg(unix)]
             let (device, inode) = { use std::os::unix::fs::MetadataExt; let metadata = std::fs::symlink_metadata(parent).map_err(|e| se_core::scope::unreadable("Codex socket directory identity", &e.to_string()))?; (metadata.dev(), metadata.ino()) };
             let value = Record { session, socket: NativePath::from_local(socket)?, #[cfg(unix)] device, #[cfg(unix)] inode };
@@ -158,7 +133,9 @@ impl CodexHarness {
         let socket = value.socket.to_local()?;
         #[cfg(unix)]
         retire_endpoint(&socket, &path, &value)?;
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        crate::codex_endpoint::retire(&socket, &path, session)?;
+        #[cfg(not(any(unix, windows)))]
         let _ = socket;
         se_proc::OwnedFile::open(&path)
             .map_err(native_error)?

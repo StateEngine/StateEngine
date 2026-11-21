@@ -3,7 +3,8 @@
 pub mod acp;
 #[cfg(feature = "listener")]
 pub mod child_io;
-pub mod codex_forward;
+#[cfg(feature = "listener")]
+mod codex_endpoint;
 pub mod deadline;
 pub mod harness;
 pub mod json_wire;
