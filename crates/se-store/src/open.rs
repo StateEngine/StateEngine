@@ -149,7 +149,7 @@ impl SqliteFactory {
                     reader.validate_connection(db)
                 })?;
                 let info = connection::info_at(&db, &reader.path)?;
-                let identity = connection::validate_lease(&info, lease, LeaseMode::Host)?;
+                let identity = crate::open::validate_lease(&info, lease, LeaseMode::Host)?;
                 let context = BackupContext::bound(
                     &info,
                     identity.generation,
@@ -204,7 +204,7 @@ impl StoreFactory for SqliteFactory {
                     reader.validate_connection(db)
                 })?;
                 let info = connection::info_at(&db, &reader.path)?;
-                let identity = connection::validate_lease(&info, lease, LeaseMode::DirectClient)?;
+                let identity = crate::open::validate_lease(&info, lease, LeaseMode::DirectClient)?;
                 let reader_path = reader.path.clone();
                 Ok(Read::Present {
                     value: SqliteDirect {
@@ -394,7 +394,7 @@ impl DirectStore for SqliteDirect {
     ) -> StoreResult<CommitReceipt> {
         self.engine
             .reopen(&self.reader.path, self.reader.timeout, lease)?;
-        let identity = connection::validate_lease(
+        let identity = crate::open::validate_lease(
             &connection::info(&self.engine.db)?,
             lease,
             LeaseMode::DirectClient,
@@ -451,7 +451,7 @@ impl HostStore for SqliteHost {
     ) -> StoreResult<CommitReceipt> {
         self.engine
             .reopen(&self.reader.path, self.reader.timeout, lease)?;
-        connection::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
+        crate::open::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
         if b.events.len() != 1
             || !matches!(b.events[0].body, EventBody::RuntimeOwnerEstablished { .. })
         {
@@ -470,7 +470,7 @@ impl HostStore for SqliteHost {
     ) -> StoreResult<FirstBindingReceipt> {
         self.engine
             .reopen(&self.reader.path, self.reader.timeout, lease)?;
-        connection::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
+        crate::open::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
         self.engine.first_binding(binding)
     }
     fn checkpoint(
@@ -478,7 +478,7 @@ impl HostStore for SqliteHost {
         mode: CheckpointMode,
         lease: &dyn RuntimeLease,
     ) -> StoreResult<CheckpointReport> {
-        connection::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
+        crate::open::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
         let gate = self.engine.checkpoints.gate.clone();
         let _permit = gate.acquire(self.engine.timeout)?;
         let report = self
@@ -525,7 +525,7 @@ impl HostStore for SqliteHost {
         self.engine.require_resolved()?;
         self.engine
             .reopen(&self.reader.path, self.reader.timeout, lease)?;
-        connection::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
+        crate::open::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
         if deadline.is_zero() {
             return Err(fail(
                 StoreErrorCode::BackupFailed,
@@ -572,4 +572,14 @@ impl HostStore for SqliteHost {
         }
         Ok(report)
     }
+}
+/// The held runtime lease must name this store, in the mode the opening needs.
+pub(crate) fn validate_lease(
+    info: &StoreInfo,
+    lease: &dyn RuntimeLease,
+    mode: LeaseMode,
+) -> StoreResult<LeaseIdentity> {
+    let identity = lease.identity()?;
+    connection::validate_lease_state(&info.id, info.state, &identity, mode)?;
+    Ok(identity)
 }

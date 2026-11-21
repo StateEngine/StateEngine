@@ -190,7 +190,7 @@ pub(crate) fn start(
     options: WriterOptions,
     lease: Arc<dyn RuntimeLease>,
 ) -> StoreResult<SqliteWriter> {
-    let identity = connection::validate_lease(
+    let identity = crate::open::validate_lease(
         &connection::info(&host.engine.db)?,
         &*lease,
         LeaseMode::Host,
@@ -492,7 +492,7 @@ fn run(
                     .engine
                     .reopen(&host.reader.path, host.reader.timeout, &*lease)
                     .and_then(|_| connection::info(&host.engine.db))
-                    .and_then(|i| connection::validate_lease(&i, &*lease, LeaseMode::Host))
+                    .and_then(|i| crate::open::validate_lease(&i, &*lease, LeaseMode::Host))
                     .and_then(|_| host.engine.group(batches, false));
                 shared
                     .admission

@@ -1,7 +1,7 @@
 //! Checked signed SQLite boundaries for unsigned domain counters.
 use crate::{StoreResult, error::*};
 use rusqlite::{Row, types::Value};
-pub(crate) trait Param {
+pub trait Param {
     fn sql_value(&self) -> StoreResult<Value>;
 }
 macro_rules! signed {($($t:ty),*)=>{$(impl Param for $t {fn sql_value(&self)->StoreResult<Value>{Ok(Value::Integer(i64::from(*self)))}})*}}
@@ -51,12 +51,14 @@ impl<T: Param> Param for Option<T> {
         }
     }
 }
-pub(crate) fn param<T: Param + ?Sized>(v: &T) -> StoreResult<Value> {
+pub fn param<T: Param + ?Sized>(v: &T) -> StoreResult<Value> {
     v.sql_value()
 }
-macro_rules! sql_params {($($v:expr),* $(,)?)=>{rusqlite::params![$(crate::sql_value::param(&$v)?),*]}}
-pub(crate) use sql_params;
-pub(crate) trait ReadValue: Sized {
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __sql_params {($($v:expr),* $(,)?)=>{rusqlite::params![$($crate::sql_value::param(&$v)?),*]}}
+pub use __sql_params as sql_params;
+pub trait ReadValue: Sized {
     fn read(row: &Row<'_>, index: usize) -> rusqlite::Result<Self>;
 }
 macro_rules! read_native {($($t:ty),*)=>{$(impl ReadValue for $t{fn read(row:&Row<'_>,index:usize)->rusqlite::Result<Self>{row.get(index)}})*}}
@@ -76,6 +78,11 @@ impl<T: ReadValue> ReadValue for Option<T> {
         }
     }
 }
-pub(crate) fn value<T: ReadValue>(row: &Row<'_>, index: usize) -> rusqlite::Result<T> {
+pub fn value<T: ReadValue>(row: &Row<'_>, index: usize) -> rusqlite::Result<T> {
     T::read(row, index)
+}
+impl<const MAX: usize> Param for se_store_contract::channel::Opaque<MAX> {
+    fn sql_value(&self) -> StoreResult<Value> {
+        Ok(Value::Text(self.as_str().to_owned()))
+    }
 }

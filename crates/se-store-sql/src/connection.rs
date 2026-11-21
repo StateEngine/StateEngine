@@ -1,15 +1,15 @@
 use crate::{error::*, identity, *};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, functions::FunctionFlags};
 use std::{path::Path, time::Duration};
-pub(crate) const APP: u32 = 0x53454e47;
-pub(crate) const SCHEMA: u32 = 16;
+pub const APP: u32 = 0x53454e47;
+pub const SCHEMA: u32 = 16;
 /// Oldest schema still served: 002 only adds indexes, so the same SQL reads
 /// schema 1 correctly while its host migrates it.
-pub(crate) const MIN_SCHEMA: u32 = 1;
-pub(crate) fn connect(path: &Path, writable: bool, timeout: Duration) -> StoreResult<Connection> {
+pub const MIN_SCHEMA: u32 = 1;
+pub fn connect(path: &Path, writable: bool, timeout: Duration) -> StoreResult<Connection> {
     connect_checked(path, writable, timeout, |_| Ok(()))
 }
-pub(crate) fn connect_checked(
+pub fn connect_checked(
     path: &Path,
     writable: bool,
     timeout: Duration,
@@ -28,7 +28,7 @@ pub(crate) fn connect_checked(
     configure(&c, path, writable, timeout)?;
     Ok(c)
 }
-pub(crate) fn open(path: &Path, flags: OpenFlags) -> StoreResult<Connection> {
+pub fn open(path: &Path, flags: OpenFlags) -> StoreResult<Connection> {
     // SQLite appends `-wal`/`-shm` to the name it is given and opens them with
     // its own Win32 calls, so an ordinary drive path is capped at MAX_PATH
     // there. The verbatim form keeps every sidecar reachable; the file opened
@@ -58,14 +58,14 @@ pub(crate) fn open(path: &Path, flags: OpenFlags) -> StoreResult<Connection> {
     Connection::open_with_flags(&target, effective)
         .map_err(|error| sqlite_context(error, path, StoreIoStage::Open))
 }
-pub(crate) fn begin_snapshot(c: &Connection, path: &Path) -> StoreResult<()> {
+pub fn begin_snapshot(c: &Connection, path: &Path) -> StoreResult<()> {
     c.execute_batch("BEGIN")
         .map_err(|error| sqlite_context(error, path, StoreIoStage::BeginSnapshot))
 }
-pub(crate) fn info_at(c: &Connection, path: &Path) -> StoreResult<StoreInfo> {
+pub fn info_at(c: &Connection, path: &Path) -> StoreResult<StoreInfo> {
     info(c).map_err(|error| context(error, path, StoreIoStage::HeaderReadback))
 }
-pub(crate) fn configure(
+pub fn configure(
     c: &Connection,
     path: &Path,
     writable: bool,
@@ -127,7 +127,7 @@ pub(crate) fn configure(
 /// Store header without the head scan: schema gate, id, incarnation and
 /// state. The background checkpoint task validates its lease through this
 /// instead of paying for the latest event position on every tick.
-pub(crate) fn header(c: &Connection) -> StoreResult<(u32, StoreId, u64, StoreState)> {
+pub fn header(c: &Connection) -> StoreResult<(u32, StoreId, u64, StoreState)> {
     let app: u32 = c
         .query_row("PRAGMA application_id", [], |r| {
             crate::sql_value::value(r, 0)
@@ -176,7 +176,7 @@ pub(crate) fn header(c: &Connection) -> StoreResult<(u32, StoreId, u64, StoreSta
     };
     Ok((version, id, inc, state))
 }
-pub(crate) fn info(c: &Connection) -> StoreResult<StoreInfo> {
+pub fn info(c: &Connection) -> StoreResult<StoreInfo> {
     let (version, id, inc, state) = header(c)?;
     let last: Option<u64> = c
         .query_row(
@@ -197,22 +197,13 @@ pub(crate) fn info(c: &Connection) -> StoreResult<StoreInfo> {
     })
 }
 /// Lease-facing header: the store identity and state, without the head scan.
-pub(crate) fn lease_state(c: &Connection) -> StoreResult<(StoreId, StoreState)> {
+pub fn lease_state(c: &Connection) -> StoreResult<(StoreId, StoreState)> {
     let (_version, id, _inc, state) = header(c)?;
     Ok((id, state))
 }
-pub(crate) fn validate_lease(
-    info: &StoreInfo,
-    lease: &dyn RuntimeLease,
-    mode: LeaseMode,
-) -> StoreResult<LeaseIdentity> {
-    let identity = lease.identity()?;
-    validate_lease_state(&info.id, info.state, &identity, mode)?;
-    Ok(identity)
-}
 /// The lease gate without a full StoreInfo: for connections that must not
 /// pay for the head scan (the background checkpoint task, once per tick).
-pub(crate) fn validate_lease_state(
+pub fn validate_lease_state(
     store: &StoreId,
     state: StoreState,
     identity: &LeaseIdentity,
@@ -236,7 +227,7 @@ pub(crate) fn validate_lease_state(
     }
     Ok(())
 }
-pub(crate) fn symbol(c: &Connection, value: &[u8]) -> StoreResult<i64> {
+pub fn symbol(c: &Connection, value: &[u8]) -> StoreResult<i64> {
     c.execute(
         "INSERT INTO symbols(value) VALUES(?) ON CONFLICT(value) DO NOTHING",
         [value],
@@ -247,7 +238,7 @@ pub(crate) fn symbol(c: &Connection, value: &[u8]) -> StoreResult<i64> {
     })
     .map_err(sql)
 }
-pub(crate) fn payload(c: &Connection, seq: i64, field: &str, text: &str) -> StoreResult<i64> {
+pub fn payload(c: &Connection, seq: i64, field: &str, text: &str) -> StoreResult<i64> {
     use sha2::{Digest, Sha256};
     c.execute(
         "INSERT INTO payloads(event_seq,field,encoding,content,sha256) VALUES(?,?,'utf8',?,?)",
@@ -261,7 +252,7 @@ pub(crate) fn payload(c: &Connection, seq: i64, field: &str, text: &str) -> Stor
     .map_err(sql)?;
     Ok(c.last_insert_rowid())
 }
-pub(crate) fn project_id(c: &Connection, scope: &Scope, insert: bool) -> StoreResult<Vec<u8>> {
+pub fn project_id(c: &Connection, scope: &Scope, insert: bool) -> StoreResult<Vec<u8>> {
     identity::key(
         c,
         "project",
@@ -270,7 +261,7 @@ pub(crate) fn project_id(c: &Connection, scope: &Scope, insert: bool) -> StoreRe
         insert,
     )
 }
-pub(crate) fn now() -> StoreResult<i64> {
+pub fn now() -> StoreResult<i64> {
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(invalid)?;
@@ -278,7 +269,7 @@ pub(crate) fn now() -> StoreResult<i64> {
 }
 
 /// The only two trusted projection names; no caller controls SQL identifiers.
-pub(crate) fn mail_table(c: &Connection) -> StoreResult<&'static str> {
+pub fn mail_table(c: &Connection) -> StoreResult<&'static str> {
     Ok(if info(c)?.schema_version >= 3 {
         "message_deliveries"
     } else {

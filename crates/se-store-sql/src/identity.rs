@@ -2,7 +2,7 @@ use crate::{error::*, *};
 use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use uuid::{Uuid, Variant, Version};
-pub(crate) fn project(scope: &Scope) -> StoreResult<se_types::ProjectId> {
+pub fn project(scope: &Scope) -> StoreResult<se_types::ProjectId> {
     match scope {
         Scope::Project(x) => Ok(x.clone()),
         Scope::Registry => Err(fail(
@@ -11,7 +11,7 @@ pub(crate) fn project(scope: &Scope) -> StoreResult<se_types::ProjectId> {
         )),
     }
 }
-pub(crate) fn canonical(wire: &str) -> Option<Vec<u8>> {
+pub fn canonical(wire: &str) -> Option<Vec<u8>> {
     let (prefix, suffix) = wire.split_once('_')?;
     if !matches!(
         prefix,
@@ -37,7 +37,7 @@ pub(crate) fn canonical(wire: &str) -> Option<Vec<u8>> {
     (id.get_version() == Some(Version::SortRand) && id.get_variant() == Variant::RFC4122)
         .then(|| id.as_bytes().to_vec())
 }
-pub(crate) fn key(
+pub fn key(
     db: &Connection,
     kind: &str,
     wire: &str,
@@ -72,7 +72,7 @@ pub(crate) fn key(
     }
     Ok(bytes)
 }
-pub(crate) fn scope_key(db: &Connection, scope: &Scope, insert: bool) -> StoreResult<Vec<u8>> {
+pub fn scope_key(db: &Connection, scope: &Scope, insert: bool) -> StoreResult<Vec<u8>> {
     match scope {
         Scope::Registry => Ok(vec![0]),
         Scope::Project(p) => {
@@ -82,7 +82,7 @@ pub(crate) fn scope_key(db: &Connection, scope: &Scope, insert: bool) -> StoreRe
         }
     }
 }
-pub(crate) fn wire(db: &Connection, kind: &str, bytes: &[u8], scope: &[u8]) -> StoreResult<String> {
+pub fn wire(db: &Connection, kind: &str, bytes: &[u8], scope: &[u8]) -> StoreResult<String> {
     let bytes: [u8; 16] = bytes
         .try_into()
         .map_err(|_| invalid("invalid stored UUID length"))?;
@@ -110,7 +110,7 @@ pub(crate) fn wire(db: &Connection, kind: &str, bytes: &[u8], scope: &[u8]) -> S
     )
     .map_err(sql)
 }
-pub(crate) fn actor(db: &Connection, bytes: &[u8], scope: &[u8]) -> StoreResult<Actor> {
+pub fn actor(db: &Connection, bytes: &[u8], scope: &[u8]) -> StoreResult<Actor> {
     if scope.len() == 17 && scope[0] == 1 {
         let kind: Option<String> = db
             .prepare_cached(
@@ -184,7 +184,7 @@ pub(crate) fn actor(db: &Connection, bytes: &[u8], scope: &[u8]) -> StoreResult<
 
 /// A contextual decoder for source-registered custom agent spellings. This
 /// capability is never ambient serde and requires retained import provenance.
-pub(crate) struct StoredLegacyRegistry<'a> {
+pub struct StoredLegacyRegistry<'a> {
     pub db: &'a Connection,
     pub scope: &'a [u8],
 }
@@ -196,11 +196,7 @@ impl se_types::LegacyIdRegistry for StoredLegacyRegistry<'_> {
         self.db.query_row("SELECT EXISTS(SELECT 1 FROM identities i JOIN legacy_ids l ON l.typed_id=i.storage_key JOIN events e ON e.seq=l.imported_seq WHERE i.kind='agent' AND i.scope_key=? AND i.wire_id=? AND i.encoding='registered-exception' AND e.project_id=? AND e.door='import')",rusqlite::params![self.scope,text,self.scope.get(1..).unwrap_or(&[])],|r|r.get(0)).map_err(|e|se_types::SeError::invalid("source-scoped legacy agent",&e.to_string()))
     }
 }
-pub(crate) fn decode_agent(
-    c: &Connection,
-    text: String,
-    scope: &[u8],
-) -> StoreResult<se_types::AgentId> {
+pub fn decode_agent(c: &Connection, text: String, scope: &[u8]) -> StoreResult<se_types::AgentId> {
     match se_types::AgentId::from_legacy(text.clone()) {
         Ok(id) => Ok(id),
         Err(_) => {
@@ -209,11 +205,7 @@ pub(crate) fn decode_agent(
         }
     }
 }
-pub(crate) fn actor_value(
-    c: &Connection,
-    v: &serde_json::Value,
-    scope: &[u8],
-) -> StoreResult<Actor> {
+pub fn actor_value(c: &Connection, v: &serde_json::Value, scope: &[u8]) -> StoreResult<Actor> {
     if let Some(text) = v.get("Agent").and_then(serde_json::Value::as_str) {
         return Ok(Actor::Agent(decode_agent(c, text.into(), scope)?));
     }
@@ -243,14 +235,14 @@ impl se_types::LegacyIdRegistry for RegisteredIds<'_> {
             .map_err(|error| se_types::SeError::invalid("stored identity registry", &error.to_string()))
     }
 }
-pub(crate) fn registered_ids<'a>(
+pub fn registered_ids<'a>(
     db: &'a Connection,
     scope: &'a [u8],
 ) -> impl se_types::LegacyIdRegistry + 'a {
     RegisteredIds { db, scope }
 }
 /// Recover a project only through its exact registry storage key and spelling.
-pub(crate) fn project_from_key(db: &Connection, key: &[u8]) -> StoreResult<se_types::ProjectId> {
+pub fn project_from_key(db: &Connection, key: &[u8]) -> StoreResult<se_types::ProjectId> {
     se_types::ProjectId::from_registered_legacy(
         wire(db, "project", key, &[0])?,
         &registered_ids(db, &[0]),

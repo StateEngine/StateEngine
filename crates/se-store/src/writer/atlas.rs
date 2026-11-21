@@ -64,7 +64,7 @@ pub(super) fn execute(
         .engine
         .reopen(&host.reader.path, host.reader.timeout, lease)
         .and_then(|_| connection::info(&host.engine.db))
-        .and_then(|info| connection::validate_lease(&info, lease, LeaseMode::Host))
+        .and_then(|info| crate::open::validate_lease(&info, lease, LeaseMode::Host))
         .and_then(|identity| {
             if identity.generation != host.engine.identity.generation {
                 return Err(fail(

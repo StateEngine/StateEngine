@@ -380,7 +380,7 @@ pub(crate) fn run(
     (|| {
         let source = reader.connect()?;
         let pre = connection::info_at(&source, &reader.path)?;
-        let identity = connection::validate_lease(&pre, lease, LeaseMode::Host)?;
+        let identity = crate::open::validate_lease(&pre, lease, LeaseMode::Host)?;
         let pin = context.pin(&pre, &identity, &reader.path)?;
         let mut allocated_stage = None;
         let result = (|| {

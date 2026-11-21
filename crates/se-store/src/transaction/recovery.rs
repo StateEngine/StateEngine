@@ -111,7 +111,7 @@ impl Engine {
         let checked = (|| {
             connection::begin_snapshot(&self.db, path)?;
             let info = connection::info_at(&self.db, path)?;
-            let identity = connection::validate_lease(&info, lease, self.identity.mode)?;
+            let identity = crate::open::validate_lease(&info, lease, self.identity.mode)?;
             if identity.store != self.identity.store
                 || identity.generation != self.identity.generation
                 || identity.mode != self.identity.mode

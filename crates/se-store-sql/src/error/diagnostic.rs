@@ -2,11 +2,7 @@
 use super::*;
 use std::path::Path;
 
-pub(crate) fn context(
-    mut error: Box<StoreError>,
-    path: &Path,
-    stage: StoreIoStage,
-) -> Box<StoreError> {
+pub fn context(mut error: Box<StoreError>, path: &Path, stage: StoreIoStage) -> Box<StoreError> {
     if matches!(error.detail, StoreDetail::Io { .. }) {
         return error;
     }
@@ -26,14 +22,10 @@ pub(crate) fn context(
     );
     error
 }
-pub(crate) fn sqlite_context(
-    error: rusqlite::Error,
-    path: &Path,
-    stage: StoreIoStage,
-) -> Box<StoreError> {
+pub fn sqlite_context(error: rusqlite::Error, path: &Path, stage: StoreIoStage) -> Box<StoreError> {
     context(sql(error), path, stage)
 }
-pub(crate) fn io(error: std::io::Error, path: &Path, stage: StoreIoStage) -> Box<StoreError> {
+pub fn io(error: std::io::Error, path: &Path, stage: StoreIoStage) -> Box<StoreError> {
     let native_os_code = error.raw_os_error();
     let mut error = fail(StoreErrorCode::Unreadable, error.to_string());
     attach(&mut error, path, stage, None, native_os_code);

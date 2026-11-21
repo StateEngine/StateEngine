@@ -1865,6 +1865,7 @@ dependencies = [
  "se-proc",
  "se-store-codec",
  "se-store-contract",
+ "se-store-sql",
  "se-trusted-path",
  "se-types",
  "serde",
@@ -1891,6 +1892,20 @@ dependencies = [
  "rusqlite",
  "se-types",
  "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
+
+[[package]]
+name = "se-store-sql"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "rusqlite",
+ "se-proc",
+ "se-store-contract",
+ "se-trusted-path",
+ "se-types",
  "serde_json",
  "sha2",
  "uuid",
