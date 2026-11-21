@@ -238,6 +238,15 @@ fn run(
         });
     }
     let running = matches!(execute::endpoint(&files)?, Read::Present { .. });
+    if running && live.is_none() {
+        // Without a readable store there is no census of live sessions, and the
+        // ordinary stop needs one too.
+        return Ok(RestoreResult {
+            outcome: "refused".into(),
+            reason: Some("A StateEngine host is running, but the live store cannot be read, so restore cannot check for live agent sessions. Stop it with `se down`; if that also fails, close the StateEngine host process. Then run restore again.".into()),
+            ..planned
+        });
+    }
     if !input.yes {
         if running {
             planned.reason = Some("The idle StateEngine host will be stopped first.".into());
@@ -310,23 +319,33 @@ fn restore(
     // Re-observe custody under the exclusive lock: an agent that started after
     // the plan still blocks.
     let generated_at = receipt::timestamp(execute::now_us()?)?;
-    if let Ok(setup::Setup::Present(reader)) = setup::inspect(&cx.home, generated_at) {
-        let blocking = agents(&reader, &owner::inventory(&reader, files)?, owner);
-        if !blocking.is_empty() {
-            return Ok(RestoreResult {
-                outcome: "refused".into(),
-                blocking_agents: blocking,
-                reason: Some(
-                    "An agent session started before the restore; nothing was restored.".into(),
-                ),
-                ..planned
-            });
+    let mut unchecked = None;
+    match setup::inspect(&cx.home, generated_at) {
+        Ok(setup::Setup::Present(reader)) => {
+            let blocking = agents(&reader, &owner::inventory(&reader, files)?, owner);
+            if !blocking.is_empty() {
+                return Ok(RestoreResult {
+                    outcome: "refused".into(),
+                    blocking_agents: blocking,
+                    reason: Some(
+                        "An agent session started before the restore; nothing was restored.".into(),
+                    ),
+                    ..planned
+                });
+            }
+        }
+        Ok(setup::Setup::Absent(_)) => (),
+        Err(_) => {
+            unchecked = Some("The live store could not be read, so live agent sessions could not be checked; no StateEngine host held this home.".to_string());
         }
     }
     let outcome =
         SqliteFactory::restore_backup(options, backup, request, target, &admission(owner), &lease)
             .map_err(|e| store_error(&e))?;
     let receipt = outcome.receipt.original_receipt;
+    // An orderly host close takes a fresh backup, which would retire one of the
+    // generations the owner may still want. The recovery fact is already
+    // durable in the WAL, which the next open checkpoints.
     drop(outcome.host);
     let preserved = serde_json::from_str::<serde_json::Value>(&receipt)
         .ok()
@@ -335,6 +354,7 @@ fn restore(
         outcome: "restored".into(),
         preserved,
         receipt: Some(receipt),
+        reason: unchecked,
         ..planned
     })
 }

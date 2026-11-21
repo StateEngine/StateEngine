@@ -296,7 +296,13 @@ pub(crate) fn restore(
         deadline,
     )?;
     let (_, backup_incarnation, _) = backup.through.storage_parts();
-    let source_incarnation = preserved.info.as_ref().map_or(0, |i| i.incarnation);
+    // An unreadable source cannot say its incarnation. The current time in
+    // seconds then stands in: it exceeds any incarnation an earlier restore
+    // assigned, so a second restore from the same backup never reuses one.
+    let source_incarnation = match &preserved.info {
+        Some(info) => info.incarnation,
+        None => u64::try_from(connection::now()? / 1_000_000).map_err(invalid)?,
+    };
     let target_incarnation = backup_incarnation.max(source_incarnation) + 1;
     rebind(&restored, &target, target_incarnation)?;
     let mut host = match SqliteFactory::open_host(options, lease)? {
