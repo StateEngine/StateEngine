@@ -27,10 +27,6 @@ pub(crate) fn endpoint(
     )
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn endpoint_with_origin(
     cx: &Bootstrap,
     files: &Files,
@@ -39,94 +35,32 @@ pub(super) fn endpoint_with_origin(
     origin: StartupOrigin,
     endpoint_recovery: &mut Option<se_core::ops::EndpointRecovery>,
 ) -> Result<se_host::EndpointRecord> {
-    #[cfg(unix)]
-    let expected = se_host::IpcEndpoint::UnixSocket(se_types::NativePath::from_local(
-        crate::config::unix_socket_paths()?
-            .expected_path(&cx.home)
-            .map_err(|error| {
-                se_core::scope::unreadable("expected runtime socket", &error.to_string())
-                    .with_cause(error)
-            })?,
-    )?);
-    #[cfg(unix)]
-    let expected = Some(&expected);
-    #[cfg(windows)]
-    let expected = None;
-    let configuration = match &cx.config.origin {
-        Origin::File(path) => path.clone(),
-        Origin::BuiltIn => cx.home.join("config.toml"),
-    };
+    let expected = endpoint_expected(&cx.home)?;
+    let expected = expected.as_ref();
+    let configuration = endpoint_configuration(cx);
     let started = std::time::Instant::now();
     let mut failure: Option<Box<StartupFailure>> = None;
     let mut abort_requested = false;
     loop {
         if let Err(error) = bound.remaining() {
-            let pending = SeError::new(se_types::Detail::RuntimeStartPending(
-                se_types::details::RuntimeStartPending {
-                    waited_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
-                },
-            ))
-            .with_cause(error);
-            if let Some(failed) = failure {
-                // Its public refusal already names the failed native phase and
-                // startup log. Retaining it only as an internal cause hides both.
-                let original = SeError {
-                    body: failed.error.body.clone(),
-                    cause: None,
-                };
-                return Err(retain(original, Some(failed)));
-            }
-            return Err(crate::runtime::host::startup_log::pending(
-                &cx.home,
-                pending,
-                "the current runtime.lock holder to publish endpoint.json or release its lease; this request has not started a runtime child",
-            ));
+            return Err(endpoint_deadline_exceeded(cx, started, error, failure));
         }
         let route = match se_host::route_endpoint(&cx.home, expected) {
             Ok(route) => route,
-            Err(error) => {
-                // A held lease with no publication is a concurrent bootstrap
-                // or writer. A malformed/mismatched present record still refuses.
-                let unpublished = if error.code() == se_types::Code::StateConflict {
-                    match execute::endpoint(files) {
-                        Ok(Read::Absent { .. }) => true,
-                        Ok(_) => false,
-                        Err(read_error) => return Err(retain(read_error, failure)),
-                    }
-                } else {
-                    false
-                };
-                if unpublished {
+            Err(error) => match endpoint_route_error(files, error, &mut failure) {
+                Some(error) => return Err(error),
+                None => {
                     pause(bound);
                     continue;
                 }
-                return Err(retain(error, failure));
-            }
+            },
         };
         match route {
             se_host::EndpointRoute::Live(endpoint) => {
-                if failure
-                    .as_ref()
-                    .and_then(|failed| failed.child.as_ref())
-                    .and_then(|child| child.identity())
-                    .is_some_and(|identity| {
-                        identity.pid.0 == endpoint.epoch.owner.fields().pid.get()
-                    })
+                if let Some(endpoint) =
+                    endpoint_live_settled(&mut failure, &mut abort_requested, endpoint, bound)?
                 {
-                    // Our own published-but-unconfirmed owner is not a winning
-                    // competitor. Keep its exact child/commit state for recovery.
-                    if let Some(failed) = failure {
-                        let error = SeError {
-                            body: failed.error.body.clone(),
-                            cause: None,
-                        };
-                        return Err(retain(error, Some(failed)));
-                    }
-                }
-                match settle(&mut failure, &mut abort_requested) {
-                    Ok(true) => return Ok(endpoint),
-                    Ok(false) => pause(bound),
-                    Err(error) => return Err(retain(error, failure)),
+                    return Ok(endpoint);
                 }
             }
             se_host::EndpointRoute::Start { recovery } => {
@@ -143,18 +77,7 @@ pub(super) fn endpoint_with_origin(
                     return Err(retain(error, Some(failed)));
                 }
                 let machine = super::identity::require_machine(files)?;
-                let attempt = match origin {
-                    StartupOrigin::Explicit => {
-                        crate::runtime::host::start(&cx.home, &configuration, machine, bound)
-                    }
-                    StartupOrigin::Automatic => crate::runtime::host::start_with_origin(
-                        &cx.home,
-                        &configuration,
-                        machine,
-                        origin,
-                        bound,
-                    ),
-                };
+                let attempt = endpoint_start(&cx.home, &configuration, machine, origin, bound);
                 match attempt {
                     Ok(started) => {
                         report_started(
@@ -170,6 +93,121 @@ pub(super) fn endpoint_with_origin(
                     Err(failed) => failure = Some(failed),
                 }
             }
+        }
+    }
+}
+#[cfg(unix)]
+fn endpoint_expected(home: &std::path::Path) -> Result<Option<se_host::IpcEndpoint>> {
+    let expected = se_host::IpcEndpoint::UnixSocket(se_types::NativePath::from_local(
+        crate::config::unix_socket_paths()?
+            .expected_path(home)
+            .map_err(|error| {
+                se_core::scope::unreadable("expected runtime socket", &error.to_string())
+                    .with_cause(error)
+            })?,
+    )?);
+    Ok(Some(expected))
+}
+#[cfg(windows)]
+fn endpoint_expected(_home: &std::path::Path) -> Result<Option<se_host::IpcEndpoint>> {
+    Ok(None)
+}
+fn endpoint_configuration(cx: &Bootstrap) -> std::path::PathBuf {
+    match &cx.config.origin {
+        Origin::File(path) => path.clone(),
+        Origin::BuiltIn => cx.home.join("config.toml"),
+    }
+}
+fn endpoint_deadline_exceeded(
+    cx: &Bootstrap,
+    started: std::time::Instant,
+    error: SeError,
+    failure: Option<Box<StartupFailure>>,
+) -> SeError {
+    let pending = SeError::new(se_types::Detail::RuntimeStartPending(
+        se_types::details::RuntimeStartPending {
+            waited_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+        },
+    ))
+    .with_cause(error);
+    if let Some(failed) = failure {
+        // Its public refusal already names the failed native phase and
+        // startup log. Retaining it only as an internal cause hides both.
+        let original = SeError {
+            body: failed.error.body.clone(),
+            cause: None,
+        };
+        return retain(original, Some(failed));
+    }
+    crate::runtime::host::startup_log::pending(
+        &cx.home,
+        pending,
+        "the current runtime.lock holder to publish endpoint.json or release its lease; this request has not started a runtime child",
+    )
+}
+fn endpoint_route_error(
+    files: &Files,
+    error: SeError,
+    failure: &mut Option<Box<StartupFailure>>,
+) -> Option<SeError> {
+    // A held lease with no publication is a concurrent bootstrap
+    // or writer. A malformed/mismatched present record still refuses.
+    let unpublished = if error.code() == se_types::Code::StateConflict {
+        match execute::endpoint(files) {
+            Ok(Read::Absent { .. }) => true,
+            Ok(_) => false,
+            Err(read_error) => return Some(retain(read_error, failure.take())),
+        }
+    } else {
+        false
+    };
+    if unpublished {
+        return None;
+    }
+    Some(retain(error, failure.take()))
+}
+fn endpoint_live_settled(
+    failure: &mut Option<Box<StartupFailure>>,
+    abort_requested: &mut bool,
+    endpoint: se_host::EndpointRecord,
+    bound: &Deadline,
+) -> Result<Option<se_host::EndpointRecord>> {
+    if failure
+        .as_ref()
+        .and_then(|failed| failed.child.as_ref())
+        .and_then(|child| child.identity())
+        .is_some_and(|identity| identity.pid.0 == endpoint.epoch.owner.fields().pid.get())
+    {
+        // Our own published-but-unconfirmed owner is not a winning
+        // competitor. Keep its exact child/commit state for recovery.
+        if let Some(failed) = failure.take() {
+            let error = SeError {
+                body: failed.error.body.clone(),
+                cause: None,
+            };
+            return Err(retain(error, Some(failed)));
+        }
+    }
+    match settle(failure, abort_requested) {
+        Ok(true) => Ok(Some(endpoint)),
+        Ok(false) => {
+            pause(bound);
+            Ok(None)
+        }
+        Err(error) => Err(retain(error, failure.take())),
+    }
+}
+fn endpoint_start(
+    home: &std::path::Path,
+    configuration: &std::path::Path,
+    machine: se_types::MachineId,
+    origin: StartupOrigin,
+    bound: &Deadline,
+) -> std::result::Result<crate::runtime::host::StartedHost, Box<StartupFailure>> {
+    match origin {
+        StartupOrigin::Explicit => crate::runtime::host::start(home, configuration, machine, bound),
+        StartupOrigin::Automatic => {
+            crate::runtime::host::start_with_origin(home, configuration, machine, origin, bound)
         }
     }
 }
