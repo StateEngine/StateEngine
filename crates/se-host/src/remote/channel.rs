@@ -58,7 +58,7 @@ pub(super) async fn open(
     Ok(socket)
 }
 async fn authorize_forwarded(
-    socket: &mut Socket,
+    mut socket: &mut Socket,
     route: &RemoteRoute,
     device: &MachineSession,
     signer: Arc<dyn CredentialSource>,

@@ -174,12 +174,12 @@ fn identity(principal: ProjectionRecord, profile: Read<ProjectionRecord>) -> Res
     })
 }
 fn session_view(
-    session: &Read<ProjectionRecord>,
+    record: &Read<ProjectionRecord>,
     target_agent: &AgentId,
 ) -> Result<se_core::ops::SessionView> {
     let mut session = se_core::ops::unobserved_session();
     session.state = "never-launched".into();
-    if let Read::Present { value: head } = session {
+    if let Read::Present { value: head } = record {
         let first = head.original.as_deref().unwrap_or(&head.current);
         let EventBody::SessionPrepared {
             session: id, agent, ..

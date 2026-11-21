@@ -138,7 +138,7 @@ fn seal_receipt(
         se_store::remote::position_payload(&receipt.first).map_err(|e| store_error(&e))?;
     let position = service.cursors.sealed_receipt(&payload, &associated)?;
     let commit = se_types::Commit {
-        event_id: receipt.primary_event,
+        event_id: receipt.primary_event.clone(),
         position,
         idempotency_key: binding.key,
         value: original.message,
