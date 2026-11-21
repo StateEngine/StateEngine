@@ -1619,6 +1619,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "se-atlas-host"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-atlas",
+ "se-atlas-cold",
+ "se-config",
+ "se-core",
+ "se-mcp",
+ "se-proc",
+ "se-store",
+ "se-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
 name = "se-channels"
 version = "0.0.1-alpha.1"
 dependencies = [
@@ -1704,6 +1722,7 @@ dependencies = [
  "rusqlite",
  "se-atlas",
  "se-atlas-cold",
+ "se-atlas-host",
  "se-channels",
  "se-cli-spec",
  "se-config",

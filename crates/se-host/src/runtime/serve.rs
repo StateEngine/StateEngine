@@ -129,7 +129,11 @@ impl HostedRuntime {
             let context = self.execution.clone();
             let stopped = cancelled.clone();
             tasks.spawn_on(
-                async move { Ok(ConnectionEnd::Atlas(service.run(context, stopped).await)) },
+                async move {
+                    Ok(ConnectionEnd::Atlas(
+                        super::atlas_owner::run(service, context, stopped).await,
+                    ))
+                },
                 &runtime,
             );
         }
@@ -387,7 +391,8 @@ impl HostedRuntime {
         if let (Some(service), Some(bound)) = (
             outcome.runtime.atlas_owner.clone(),
             outcome.runtime.shutdown_deadline.as_ref(),
-        ) && let Err(error) = service.close(&outcome.runtime.execution, bound).await
+        ) && let Err(error) =
+            super::atlas_owner::close(service, &outcome.runtime.execution, bound).await
         {
             outcome.failure.get_or_insert(error);
         }

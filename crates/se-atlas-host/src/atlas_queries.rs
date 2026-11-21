@@ -169,7 +169,7 @@ pub use se_mcp::compact;
 /// Execute inside the existing admitted core read phase, lending the owner's
 /// cache/source for the duration. No read lease or borrowed handle survives.
 #[cfg(feature = "listener")]
-pub(crate) fn owner_read<R: Snapshot>(
+pub fn owner_read<R: Snapshot>(
     owner: &crate::atlas_runtime::read_port::AtlasOwnerPort,
     ticket: Option<crate::atlas_runtime::record_fence::RecordFeedTicket>,
     request: &se_core::ops::AtlasRead,

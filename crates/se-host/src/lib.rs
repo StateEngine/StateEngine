@@ -80,24 +80,12 @@ pub use process_io::UnixProviderIo;
 #[cfg(all(windows, feature = "listener"))]
 pub use process_io::WindowsProviderIo;
 pub use se_atlas_cold::atlas_cache;
-pub mod atlas_cold;
-#[cfg(feature = "listener")]
-mod atlas_continuity;
-#[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
-mod atlas_git_watch;
-pub mod atlas_hooks;
-#[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
-use se_atlas_cold::atlas_ignore;
-#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
-mod atlas_parse;
-pub mod atlas_queries;
-pub mod atlas_records;
-#[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
-pub mod atlas_renewal;
-pub mod atlas_runtime;
 pub use se_atlas_cold::atlas_source;
+#[cfg(feature = "listener")]
+use se_atlas_host::atlas_continuity;
 #[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
-use se_atlas_cold::atlas_watch_error;
+pub use se_atlas_host::atlas_renewal;
+pub use se_atlas_host::{atlas_cold, atlas_hooks, atlas_queries, atlas_records, atlas_runtime};
 pub mod codex_forward;
 mod session;
 pub mod state_files;

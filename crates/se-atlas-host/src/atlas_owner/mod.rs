@@ -5,10 +5,10 @@ mod read;
 mod records;
 mod roots;
 mod work;
-use super::{ExecutionContext, HostedRuntime, executor};
 use crate::atlas_renewal::{NativeRenewal, drive_events, drive_quantum};
 use crate::atlas_runtime::project_work::{ProjectWork, Ticket};
 use crate::atlas_runtime::{NativeController, NativeRuntime, read_port::*};
+use crate::host::AtlasHost;
 use se_atlas::{cache::connection::SqlProfile, lifecycle::*, model::*, parse::ParserProfile};
 use se_core::store_error::store_error;
 use se_store::{Actor, Admission, Scope, Snapshot};
@@ -33,7 +33,7 @@ pub struct NativeAtlasQualification {
     pub sql: Option<SqlProfile>,
     pub parsers: Vec<ParserProfile>,
 }
-pub(super) struct Service {
+pub struct Service {
     #[cfg(windows)]
     source_signal: Arc<tokio::sync::Notify>,
     state: Mutex<State>,
@@ -92,41 +92,20 @@ struct Plan {
     #[cfg(target_os = "linux")]
     fds: Vec<(OwnedFd, Wake)>,
 }
-impl HostedRuntime {
-    /// Standalone installation, before listen. The service
-    /// begins only in serve, after readiness has been published.
-    pub fn install_native_atlas(
-        &mut self,
+impl Service {
+    pub fn new(
+        state_directory: &std::path::Path,
         image: PathBuf,
+        owner: HumanId,
+        enabled: bool,
         qualification: NativeAtlasQualification,
-    ) -> Result<()> {
-        if self.kind != crate::HostKind::Standalone
-            || self.phase != crate::HostPhase::Prepared
-            || self.atlas_owner.is_some()
-        {
-            return Err(SeError::invalid(
-                "Atlas owner",
-                "one standalone installation before listener publication; embedded hosts do not run Atlas",
-            ));
-        }
-        let enabled = self
-            .configuration
-            .as_ref()
-            .ok_or_else(|| {
-                SeError::invalid(
-                    "Atlas configuration",
-                    "resolved host configuration before Atlas installation",
-                )
-            })?
-            .atlas
-            .enabled;
+        interests: Arc<crate::atlas_runtime::record_fence::RecordFeedFence>,
+    ) -> Result<Arc<Self>> {
         let qualification = qualification.with_native_sql()?;
         let unqualified = cfg!(windows) && enabled && qualification.sql.is_none();
         let enabled = enabled && !unqualified;
-        let home = self.state_directory.join("atlas");
-        let work = Arc::new(ProjectWork::new(
-            self.state_directory.join("atlas-projects"),
-        ));
+        let home = state_directory.join("atlas");
+        let work = Arc::new(ProjectWork::new(state_directory.join("atlas-projects")));
         let memory = qualification.memory();
         let profile = qualification.sql.clone();
         let renewal = NativeRenewal::new(qualification.parsers)?;
@@ -138,7 +117,7 @@ impl HostedRuntime {
             renewal,
             qualification.sql,
         )?);
-        let service = Arc::new(Service {
+        Ok(Arc::new(Self {
             #[cfg(windows)]
             source_signal,
             state: Mutex::new(State {
@@ -157,17 +136,14 @@ impl HostedRuntime {
             }),
             readers: Mutex::new(read::Catalogue::default()),
             profile,
-            owner: self.owner.clone(),
+            owner,
             memory,
             enabled,
             unqualified,
-            interests: self.execution.atlas.records.clone(),
+            interests,
             work,
             home,
-        });
-        self.install_atlas_read_port(service.clone())?;
-        self.atlas_owner = Some(service);
-        Ok(())
+        }))
     }
 }
 fn busy() -> SeError {
@@ -177,10 +153,10 @@ fn busy() -> SeError {
     )
 }
 impl Service {
-    pub(super) async fn run(
+    pub async fn run<T: Send + Sync + 'static>(
         self: Arc<Self>,
-        context: ExecutionContext,
-        mut stopped: watch::Receiver<Option<crate::client::lease::Deadline>>,
+        host: Arc<dyn AtlasHost>,
+        mut stopped: watch::Receiver<Option<T>>,
     ) -> Result<()> {
         let mut wake = Wake::Core;
         loop {
@@ -188,26 +164,33 @@ impl Service {
                 break;
             }
             let service = self.clone();
-            let job = context.clone();
-            let deadline = deadline(Duration::from_secs(5))?;
-            let work = context
-                .blocking
-                .run_background_owned(&deadline, move || {
-                    let mut state = service.state.lock().map_err(|_| busy())?;
-                    service.publish_readers(&state, true)?;
-                    let result = state.work(&job, &service.owner, wake);
-                    service.publish_readers(&state, false)?;
-                    // Keep live progress in memory. Only a settled pass needs
-                    // durable metadata for readers of a later cold root.
-                    let pending = result
-                        .as_ref()
-                        .is_ok_and(|plan| plan.ready || plan.delay.is_some());
-                    if !pending {
-                        service.persist_readers()?;
-                    }
-                    result
-                })
-                .await;
+            let job = host.clone();
+            let work = host
+                .run_background_owned(
+                    Duration::from_secs(5),
+                    Box::new(move || {
+                        let mut state = service.state.lock().map_err(|_| busy())?;
+                        service.publish_readers(&state, true)?;
+                        let result = state.work(job.as_ref(), &service.owner, wake);
+                        service.publish_readers(&state, false)?;
+                        // Keep live progress in memory. Only a settled pass needs
+                        // durable metadata for readers of a later cold root.
+                        let pending = result
+                            .as_ref()
+                            .is_ok_and(|plan| plan.ready || plan.delay.is_some());
+                        if !pending {
+                            service.persist_readers()?;
+                        }
+                        Ok(Box::new(result?) as Box<dyn std::any::Any + Send>)
+                    }),
+                )
+                .await
+                .and_then(|value| {
+                    value
+                        .downcast::<Plan>()
+                        .map(|boxed| *boxed)
+                        .map_err(|_| busy())
+                });
             let plan = match work {
                 Ok(plan) => plan,
                 Err(error) => {
@@ -231,7 +214,7 @@ impl Service {
             }
             let event = {
                 let stopped = stopped.changed();
-                let core = context.atlas.records.changed();
+                let core = host.records().changed();
                 #[cfg(windows)]
                 let listen_sources = plan.listen_sources;
                 let ready = wait(plan);
@@ -273,24 +256,46 @@ impl Service {
         }
         Ok(())
     }
-    pub(super) async fn close(
-        self: Arc<Self>,
-        context: &ExecutionContext,
-        bound: &crate::client::lease::Deadline,
-    ) -> Result<()> {
-        let close_bound = bound.clone();
-        context.blocking.run_owned(bound,move || {
-            self.readers.lock().map_err(|_| read::poisoned())?.clear();
-            let mut state=self.state.lock().map_err(|_|busy())?;
-            let roots:Vec<_>=state.roots.iter().map(|r|r.registration.root.clone()).collect();
-            for root in roots {
-                match state.controller.close(root,CloseReason::HostDrain,close_bound.remaining()?)? {
-                    CloseResult::Closed=>(),
-                    _=>return Err(SeError::invalid("Atlas shutdown", "native child and watch close must complete before the owner releases custody")),
+    pub async fn close(self: Arc<Self>, host: &dyn AtlasHost, remaining: Duration) -> Result<()> {
+        let close_at = Instant::now() + remaining;
+        host.run_owned(
+            remaining,
+            Box::new(move || {
+                self.readers.lock().map_err(|_| read::poisoned())?.clear();
+                let mut state = self.state.lock().map_err(|_| busy())?;
+                let roots: Vec<_> = state
+                    .roots
+                    .iter()
+                    .map(|r| r.registration.root.clone())
+                    .collect();
+                for root in roots {
+                    let left = close_at
+                        .checked_duration_since(Instant::now())
+                        .filter(|d| !d.is_zero())
+                        .ok_or_else(|| {
+                            SeError::new(se_types::Detail::DeadlineExceeded(
+                                se_types::details::DeadlineExceeded {
+                                    op: "local IPC".into(),
+                                    deadline_ms: remaining.as_millis().min(u128::from(u64::MAX))
+                                        as u64,
+                                },
+                            ))
+                        })?;
+                    match state.controller.close(root, CloseReason::HostDrain, left)? {
+                        CloseResult::Closed => (),
+                        _ => {
+                            return Err(SeError::invalid(
+                                "Atlas shutdown",
+                                "native child and watch close must complete before the owner releases custody",
+                            ));
+                        }
+                    }
                 }
-            }
-            Ok(())
-        }).await
+                Ok(Box::new(()) as Box<dyn std::any::Any + Send>)
+            }),
+        )
+        .await?;
+        Ok(())
     }
 }
 #[cfg(target_os = "linux")]
@@ -355,18 +360,18 @@ async fn wait(plan: Plan) -> Result<Wake> {
     }
     Ok(Wake::Scheduled)
 }
-fn deadline(timeout: Duration) -> Result<crate::client::lease::Deadline> {
-    crate::client::lease::Deadline::from_options(&crate::client::ClientOptions {
-        expected_generation: None,
-        timeout,
-        cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-    })
+fn close_read<T>(result: Result<T>, closed: se_store::StoreResult<()>) -> Result<T> {
+    match (result, closed) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(error)) => Err(store_error(&error)),
+        (Err(original), Err(error)) => Err(original.with_cause(error)),
+    }
 }
-fn admission(context: &ExecutionContext, owner: &HumanId, scope: Scope) -> Admission {
+fn admission(host: &dyn AtlasHost, owner: &HumanId, scope: Scope) -> Admission {
     Admission {
         scope,
         actor: Actor::Human(owner.clone()),
         session: None,
-        generation: context.generation.get(),
+        generation: host.generation().get(),
     }
 }

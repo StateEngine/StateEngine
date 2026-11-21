@@ -19,7 +19,7 @@ mod close;
 mod connections;
 #[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
 pub(crate) use connections::PollEventsFailure;
-#[cfg(all(feature = "runtime", any(target_os = "linux", windows)))]
+#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
 pub(crate) mod project_work;
 pub mod read_port;
 pub mod record_fence;
