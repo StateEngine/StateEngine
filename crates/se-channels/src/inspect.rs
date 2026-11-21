@@ -7,8 +7,8 @@ use crate::host::{AsChannelDeadline, ChannelDeadline as Deadline};
 use receipt::{output_fact, receipt};
 use se_core::store_error::store_error;
 use se_store::{
-    Snapshot,
-    channel::{Connection, Pairing},
+    Snapshot, SqliteSnapshot,
+    channel::{Connection, Pairing, SavedUpdate},
 };
 use se_types::{Read, Result};
 use std::{sync::atomic::Ordering, time::Duration};
@@ -59,10 +59,18 @@ impl Channels {
             tokio::select! {_=&mut notified=>{},_=tokio::time::sleep(wait)=>{}}
         }
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
+    fn health_state(
+        &self,
+    ) -> Result<(
+        std::collections::HashMap<ChannelId, super::coverage::ReceiverObservation>,
+        u64,
+    )> {
+        let health = self
+            .health
+            .lock()
+            .map_err(|_| channel_error(ChannelError::ReceiverNotRunning))?;
+        Ok((health.clone(), self.health_version.load(Ordering::Acquire)))
+    }
     async fn inspect_page(
         &self,
         input: &InspectChannels,
@@ -70,13 +78,7 @@ impl Channels {
         deadline: &Deadline,
     ) -> Result<(ChannelPage, cursor::Cursor)> {
         let at = now()?;
-        let (health, health_version) = {
-            let health = self
-                .health
-                .lock()
-                .map_err(|_| channel_error(ChannelError::ReceiverNotRunning))?;
-            (health.clone(), self.health_version.load(Ordering::Acquire))
-        };
+        let (health, health_version) = self.health_state()?;
         let running = self.receiver_running.load(Ordering::Acquire);
         let service_key = self.pairing_key.clone();
         let selected = input.connection.clone();
@@ -110,127 +112,37 @@ impl Channels {
                 head: version.head,
                 health: health_version,
             };
-            let connection = match &selected {
-                Some(id) => Some(se_core::scope::require_present(
-                    cx.read
-                        .channel_connection(id)
-                        .map_err(|e| store_error(&e))?,
-                    "channel",
-                    "Inspect the Owner's connections.",
-                )?),
-                None => None,
-            };
+            let connection = selected_connection(cx.read, &selected)?;
             if let Some(connection) = &connection {
-                let failures = cx
-                    .read
-                    .channel_recent_rejections(&connection.id)
-                    .map_err(|e| store_error(&e))?;
-                page.recent_rejections = Some(RejectionWindow {
-                    more: failures.more,
-                    items: failures
-                        .items
-                        .into_iter()
-                        .map(|row| {
-                            Ok(InputRejection {
-                                update: row.update,
-                                reason: row.reason,
-                                at_us: row.at_us,
-                                delivery: output_fact(
-                                    &row.output_state,
-                                    row.provider_message,
-                                    row.output_at_us,
-                                    row.failure,
-                                )?,
-                            })
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                });
+                page.recent_rejections = recent_rejections(cx.read, connection)?;
                 page.connections
                     .push(snapshot(connection, at, running, &health));
-                let saved = if let Some(id) = &receipt_id {
-                    let value = se_core::scope::require_present(
-                        cx.read
-                            .channel_receipt(&connection.id, id)
-                            .map_err(|e| store_error(&e))?,
-                        "saved phone receipt",
-                        "Inspect the original connection and receipt ID.",
-                    )?;
-                    se_store::channel::ChannelRows {
-                        items: vec![value],
-                        after: 0,
-                        omitted: 0,
-                    }
-                } else {
-                    cx.read
-                        .channel_saved(&connection.id, before)
-                        .map_err(|e| store_error(&e))?
-                };
+                let saved = saved_rows(cx.read, connection, &receipt_id, before)?;
                 page.omitted = saved.omitted;
-                let total = saved.items.len();
-                for (index, saved) in saved.items.into_iter().enumerate() {
-                    if receipt_id.as_ref().is_some_and(|id| *id != saved.receipt) {
-                        continue;
-                    }
-                    let ordinal = saved.ordinal;
-                    let receipt = receipt(cx.read, connection, saved, at)?;
-                    page.receipts.push(receipt);
-                    if serde_json::to_vec(&page)
-                        .map_err(|_| channel_error(ChannelError::InvalidInput))?
-                        .len()
-                        > 250 * 1024
-                    {
-                        page.receipts.pop();
-                        page.omitted = page.omitted.saturating_add((total - index) as u64);
-                        break;
-                    }
-                    cursor.mail = ordinal;
-                }
+                append_saved_receipts(
+                    cx.read,
+                    &mut page,
+                    &mut cursor,
+                    connection,
+                    saved.items,
+                    &receipt_id,
+                    at,
+                )?;
                 if page.omitted == 0 {
                     cursor.mail = 0;
                 }
             } else {
-                let rows = cx
-                    .read
-                    .channel_connections(after)
-                    .map_err(|e| store_error(&e))?;
-                page.omitted = rows.omitted;
-                cursor.connections = if rows.omitted > 0 { rows.after } else { 0 };
-                page.connections = rows
-                    .items
-                    .iter()
-                    .map(|state| snapshot(state, at, running, &health))
-                    .collect();
+                connection_listing(cx.read, after, &mut page, &mut cursor, at, running, &health)?;
             }
-            page.complete =
-                page.omitted == 0 && page.receipts.iter().all(|r| r.replies_omitted == 0);
-            page.cursor = cursor::encode(
+            seal_page(
+                &mut page,
+                &mut cursor,
+                &version,
                 &service_key,
-                &version.store,
                 &owner,
                 &selected,
                 &receipt_id,
-                &cursor,
             )?;
-            let watch = cursor::Cursor {
-                connections: 0,
-                mail: 0,
-                ..cursor.clone()
-            };
-            page.watch_cursor = cursor::encode(
-                &service_key,
-                &version.store,
-                &owner,
-                &selected,
-                &receipt_id,
-                &watch,
-            )?;
-            if serde_json::to_vec(&page)
-                .map_err(|_| channel_error(ChannelError::InvalidInput))?
-                .len()
-                > 256 * 1024
-            {
-                return Err(channel_error(ChannelError::MessageTooLarge));
-            }
             Ok((page, cursor))
         })
         .await
@@ -315,4 +227,163 @@ fn snapshot(
         },
         observed_at_us: at,
     }
+}
+
+fn selected_connection(
+    read: &mut SqliteSnapshot,
+    selected: &Option<ChannelId>,
+) -> Result<Option<Connection>> {
+    let connection = match selected {
+        Some(id) => Some(se_core::scope::require_present(
+            read.channel_connection(id).map_err(|e| store_error(&e))?,
+            "channel",
+            "Inspect the Owner's connections.",
+        )?),
+        None => None,
+    };
+    Ok(connection)
+}
+fn recent_rejections(
+    read: &mut SqliteSnapshot,
+    connection: &Connection,
+) -> Result<Option<RejectionWindow>> {
+    let failures = read
+        .channel_recent_rejections(&connection.id)
+        .map_err(|e| store_error(&e))?;
+    let window = RejectionWindow {
+        more: failures.more,
+        items: failures
+            .items
+            .into_iter()
+            .map(|row| {
+                Ok(InputRejection {
+                    update: row.update,
+                    reason: row.reason,
+                    at_us: row.at_us,
+                    delivery: output_fact(
+                        &row.output_state,
+                        row.provider_message,
+                        row.output_at_us,
+                        row.failure,
+                    )?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+    };
+    Ok(Some(window))
+}
+fn saved_rows(
+    read: &mut SqliteSnapshot,
+    connection: &Connection,
+    receipt_id: &Option<ReceiptId>,
+    before: u64,
+) -> Result<se_store::channel::ChannelRows<SavedUpdate>> {
+    let rows = if let Some(id) = receipt_id {
+        let value = se_core::scope::require_present(
+            read.channel_receipt(&connection.id, id)
+                .map_err(|e| store_error(&e))?,
+            "saved phone receipt",
+            "Inspect the original connection and receipt ID.",
+        )?;
+        se_store::channel::ChannelRows {
+            items: vec![value],
+            after: 0,
+            omitted: 0,
+        }
+    } else {
+        read.channel_saved(&connection.id, before)
+            .map_err(|e| store_error(&e))?
+    };
+    Ok(rows)
+}
+fn append_saved_receipts(
+    read: &mut SqliteSnapshot,
+    page: &mut ChannelPage,
+    cursor: &mut cursor::Cursor,
+    connection: &Connection,
+    items: Vec<SavedUpdate>,
+    receipt_id: &Option<ReceiptId>,
+    at: i64,
+) -> Result<()> {
+    let total = items.len();
+    for (index, saved) in items.into_iter().enumerate() {
+        if receipt_id.as_ref().is_some_and(|id| *id != saved.receipt) {
+            continue;
+        }
+        let ordinal = saved.ordinal;
+        let receipt = receipt(read, connection, saved, at)?;
+        page.receipts.push(receipt);
+        if serde_json::to_vec(page)
+            .map_err(|_| channel_error(ChannelError::InvalidInput))?
+            .len()
+            > 250 * 1024
+        {
+            page.receipts.pop();
+            page.omitted = page.omitted.saturating_add((total - index) as u64);
+            break;
+        }
+        cursor.mail = ordinal;
+    }
+    Ok(())
+}
+fn connection_listing(
+    read: &mut SqliteSnapshot,
+    after: u64,
+    page: &mut ChannelPage,
+    cursor: &mut cursor::Cursor,
+    at: i64,
+    running: bool,
+    health: &std::collections::HashMap<ChannelId, super::coverage::ReceiverObservation>,
+) -> Result<()> {
+    let rows = read
+        .channel_connections(after)
+        .map_err(|e| store_error(&e))?;
+    page.omitted = rows.omitted;
+    cursor.connections = if rows.omitted > 0 { rows.after } else { 0 };
+    page.connections = rows
+        .items
+        .iter()
+        .map(|state| snapshot(state, at, running, health))
+        .collect();
+    Ok(())
+}
+fn seal_page(
+    page: &mut ChannelPage,
+    cursor: &mut cursor::Cursor,
+    version: &se_store::channel::Version,
+    service_key: &se_types::Secret,
+    owner: &se_types::HumanId,
+    selected: &Option<ChannelId>,
+    receipt_id: &Option<ReceiptId>,
+) -> Result<()> {
+    page.complete = page.omitted == 0 && page.receipts.iter().all(|r| r.replies_omitted == 0);
+    page.cursor = cursor::encode(
+        service_key,
+        &version.store,
+        owner,
+        selected,
+        receipt_id,
+        cursor,
+    )?;
+    let watch = cursor::Cursor {
+        connections: 0,
+        mail: 0,
+        ..cursor.clone()
+    };
+    page.watch_cursor = cursor::encode(
+        service_key,
+        &version.store,
+        owner,
+        selected,
+        receipt_id,
+        &watch,
+    )?;
+    if serde_json::to_vec(page)
+        .map_err(|_| channel_error(ChannelError::InvalidInput))?
+        .len()
+        > 256 * 1024
+    {
+        return Err(channel_error(ChannelError::MessageTooLarge));
+    }
+    Ok(())
 }
