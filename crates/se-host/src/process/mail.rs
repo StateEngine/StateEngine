@@ -21,6 +21,10 @@ pub(super) struct State {
     pub reoffer: bool,
     /// When this agent was last woken for mail, on the monotonic clock.
     pub last_offer: Option<tokio::time::Instant>,
+    /// Since when this agent has been idle, and when the engine last
+    /// considered nudging it, both on the monotonic clock.
+    pub idle_since: Option<tokio::time::Instant>,
+    pub last_nudge: Option<tokio::time::Instant>,
 }
 pub(super) struct Flight {
     pub(super) reservation: core::Reservation,

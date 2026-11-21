@@ -18,6 +18,7 @@ impl LaunchCoordinator {
         loop {
             let mut observation_retry_at = None;
             let mut pace_at = None;
+            let mut nudge_at = None;
             let capability_retry_at;
             let wake = {
                 let mut state = job.state.lock().await;
@@ -192,6 +193,7 @@ impl LaunchCoordinator {
                                 backoff = Duration::from_millis(100);
                             }
                         }
+                        nudge_at = self.nudge(&mut state, &job, &deadline).await;
                         state.wake.clone()
                     }
                     Err(error) => {
@@ -216,6 +218,7 @@ impl LaunchCoordinator {
                 observation_retry_at.or(retry_at),
                 capability_retry_at,
                 paced,
+                nudge_at,
             ]
             .into_iter()
             .flatten()

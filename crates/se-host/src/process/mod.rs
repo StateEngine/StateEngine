@@ -20,6 +20,7 @@ pub(crate) mod launch_util;
 mod mail;
 mod monitor;
 mod native_record;
+mod nudge;
 mod owned;
 mod provider_status;
 #[cfg(unix)]
