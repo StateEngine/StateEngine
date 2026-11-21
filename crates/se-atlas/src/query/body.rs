@@ -2,10 +2,6 @@ use super::*;
 use std::io::{Read as _, SeekFrom};
 /// A stored declaration span is displayed only after the live whole-file hash
 /// agrees. This also covers bodyless declarations without inventing body hashes.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn source(
     env: &QueryEnv<'_>,
     pointer: &mut CodePointer,
@@ -89,6 +85,14 @@ pub(super) fn source(
         pointer.freshness = SnapshotFreshness::Stale;
         return Ok(None);
     }
+    build_hit_body(pointer, revision, (excerpt, cut, start)).map(Some)
+}
+fn build_hit_body(
+    pointer: &CodePointer,
+    revision: ContentHash,
+    slice: (Vec<u8>, bool, u64),
+) -> AtlasResult<HitBody> {
+    let (excerpt, cut, start) = slice;
     let text = match String::from_utf8(excerpt) {
         Ok(text) => text,
         Err(error) if cut && error.utf8_error().error_len().is_none() => {
@@ -135,7 +139,6 @@ pub(super) fn source(
         text,
         !cut,
     )
-    .map(Some)
 }
 pub(super) fn source_error(
     path: &RelativePath,
