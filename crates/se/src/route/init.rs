@@ -6,6 +6,7 @@ use super::{
     first_init, owner, select, setup,
 };
 use crate::bootstrap::Bootstrap;
+use se_config::config_policy::ConfigFile;
 use se_core::{
     admission::read_scope,
     commit::Cx,
@@ -16,7 +17,7 @@ use se_core::{
 };
 use se_store::{
     Actor, Admission, DirectStore, EventBody, LeaseIdentity, LeaseMode, ReadStore, Scope, Snapshot,
-    SqliteDirect, SqliteFactory, StoreFactory, StoreOptions,
+    SqliteDirect, SqliteFactory, StoreFactory, StoreInfo, StoreOptions,
 };
 use se_types::{
     AgentId, HumanId, IdempotencyKey, NativePath, ProjectId, Read, Result, SeError, StoreId,
@@ -76,11 +77,14 @@ fn append(
     }
     Ok(receipt)
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
+fn prepare_input(
+    cx: &Bootstrap,
+    input: &mut ProjectInit,
+) -> Result<(
+    ConfigFile,
+    repository::Repository,
+    Option<super::adoption::Plan>,
+)> {
     if cx.session.is_some() {
         return Err(SeError::new(se_types::Detail::OwnerRequired(
             se_types::details::OwnerRequired {
@@ -88,7 +92,7 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
             },
         )));
     }
-    let configuration = super::harness_setup::prepare(cx, &input)?;
+    let configuration = super::harness_setup::prepare(cx, input)?;
     if input.harness.is_some() {
         let binding = se_core::harness_selection::resolve(
             &configuration,
@@ -104,7 +108,7 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
             "named protocol descriptors launch managed sessions; choose Claude Code or Codex for adoption",
         ));
     }
-    let repository = repository::observe(cx, &input)?;
+    let repository = repository::observe(cx, input)?;
     if input.launch {
         return Err(SeError::new(se_types::Detail::FeatureUnavailable(
             se_types::details::FeatureUnavailable {
@@ -118,8 +122,11 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
     }
     let adoption = input
         .adopt
-        .then(|| super::adoption::prepare(cx, &input))
+        .then(|| super::adoption::prepare(cx, input))
         .transpose()?;
+    Ok((configuration, repository, adoption))
+}
+fn acquire_setup_lease(cx: &Bootstrap) -> Result<DirectLease> {
     // Ordinary setup changes only this state home. Its no-replace publication
     // and direct writer lease coordinate setup without blocking other homes
     // behind an unrelated account-wide install or PATH edit.
@@ -134,24 +141,28 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
     observed.authorize("project.init", observed.os_owner(), false, false)?;
     let files = Files::create(&cx.home).map_err(|e| store_error(&e))?;
     drop(before);
-    let mut lease = DirectLease::acquire_setup(
+    DirectLease::acquire_setup(
         files,
         LeaseIdentity { store: None, generation: 1, mode: LeaseMode::DirectClient },
-    ).map_err(|e| store_error(&e))?.ok_or_else(|| SeError::new(se_types::Detail::StateConflict(
+    )
+    .map_err(|e| store_error(&e))?
+    .ok_or_else(|| SeError::new(se_types::Detail::StateConflict(
         se_types::details::StateConflict {
             subject: "setup writer".into(),
             reason: "another setup, removal, uninstall or runtime holds this home's lease".into(),
             next_step: "Wait for that operation, or run se down with the same --home, then retry se init".into(),
         },
-    )))?;
-    // Preserve strict no-follow staging names under exclusive home custody.
-    let recovered_changes = setup::quarantine(&lease.files)?;
-    // Re-read after exclusion: another setup or removal may have completed
-    // between the preliminary owner check and acquisition of this home.
+    )))
+}
+fn reobserve_after_exclusion(
+    cx: &Bootstrap,
+    lease: &mut DirectLease,
+    quarantined: bool,
+) -> Result<(owner::FileOwner, setup::Setup)> {
     let before = setup::inspect_for_init(
         &cx.home,
         receipt::timestamp(execute::now_us()?)?,
-        !recovered_changes.is_empty(),
+        quarantined,
     )?;
     let files = &lease.files;
     first_init::resumable(files)?;
@@ -164,7 +175,10 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
         setup::Setup::Present(reader) => Some(reader.info().map_err(|e| store_error(&e))?.id),
         setup::Setup::Absent(_) => None,
     };
-    match &before {
+    Ok((observed, before))
+}
+fn establish_identity_and_credentials(files: &Files, before: &setup::Setup) -> Result<()> {
+    match before {
         setup::Setup::Present(reader) => {
             super::identity::require_machine(files)?;
             match super::credential::read(files)? {
@@ -205,19 +219,22 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
             })?;
         }
     }
+    Ok(())
+}
+fn open_setup_store(cx: &Bootstrap, lease: &mut DirectLease) -> Result<(SqliteDirect, StoreInfo)> {
     let options = StoreOptions {
         state_directory: cx.home.clone(),
         busy_timeout: Duration::from_millis(250),
     };
-    let mut store =
-        match SqliteFactory::open_direct(&options, &lease).map_err(|e| store_error(&e))? {
+    let store =
+        match SqliteFactory::open_direct(&options, lease).map_err(|e| store_error(&e))? {
             Read::Present { value } => value,
             Read::Absent { .. } => {
                 let id =
                     StoreId::from_bytes(execute::facts()?.message.canonical_bytes()?.ok_or_else(
                         || SeError::invalid("store identity", "fresh canonical UUID"),
                     )?)?;
-                SqliteFactory::create_direct(&options, &lease, id).map_err(|e| store_error(&e))?
+                SqliteFactory::create_direct(&options, lease, id).map_err(|e| store_error(&e))?
             }
             Read::Unreadable { source, reason, .. } => {
                 return Err(scope::unreadable(&source, &reason));
@@ -226,6 +243,20 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
         };
     let info = store.info().map_err(|e| store_error(&e))?;
     lease.identity.store = Some(info.id.clone());
+    Ok((store, info))
+}
+pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
+    let (configuration, repository, adoption) = prepare_input(cx, &mut input)?;
+    let mut lease = acquire_setup_lease(cx)?;
+    // Preserve strict no-follow staging names under exclusive home custody.
+    let recovered_changes = setup::quarantine(&lease.files)?;
+    // Re-read after exclusion: another setup or removal may have completed
+    // between the preliminary owner check and acquisition of this home.
+    let (observed, before) =
+        reobserve_after_exclusion(cx, &mut lease, !recovered_changes.is_empty())?;
+    establish_identity_and_credentials(&lease.files, &before)?;
+    let (mut store, info) = open_setup_store(cx, &mut lease)?;
+    let files = &lease.files;
     let result = first_init::complete(files, &info).and_then(|()| {
         registration::finish(
             cx,
