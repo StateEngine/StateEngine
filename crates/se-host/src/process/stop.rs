@@ -10,28 +10,14 @@ use super::{
 use crate::client::lease::Deadline;
 use se_core::ops::process_commit;
 use se_proc::{CheckpointKind, CheckpointSource, ProcessRuntime, StopObservation};
-use se_store::{EventBody, ProcessState, Snapshot};
+use se_store::{EventBody, ProcessState, Snapshot, StoredText};
 use se_types::Result;
 use std::time::Duration;
 
 impl LaunchCoordinator {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) async fn cleanup_failed(&self, work: &mut Work, deadline: &Deadline) -> Result<()> {
         if work.reservation_uncertain {
-            let actor = work.admission.actor.clone();
-            let key = work.meta.request.clone();
-            let session = work.meta.session.clone();
-            self.store.read(work.cleanup_admission.clone(), deadline, move |cx| {
-                let receipt = se_core::scope::require_present(cx.read.operation_receipt(actor,key).map_err(|e|se_core::store_error::store_error(&e))?, "uncertain launch reservation", "Retry the original launch key; no native effect can proceed until its FULL outcome is established.")?;
-                let event = se_core::scope::require_present(cx.read.event(receipt.primary_event).map_err(|e|se_core::store_error::store_error(&e))?, "original launch event", "Keep the original request identity for reconciliation.")?;
-                if !matches!(event.body, EventBody::SessionPrepared {session:found,..} if found==session) {
-                    return Err(se_core::scope::unreadable("uncertain launch reservation", "the retained receipt differs from this exact preparation"));
-                }
-                Ok(())
-            }).await?;
+            self.verify_uncertain_reservation(work, deadline).await?;
             work.committed = true;
             work.reservation_uncertain = false;
         }
@@ -43,13 +29,7 @@ impl LaunchCoordinator {
             let witness = self.stop_native(work, deadline).await?;
             return self.finish(work, witness, deadline).await;
         }
-        let agent = work.meta.agent.id.clone();
-        let session = work.meta.session.clone();
-        let actual = self.store.read(work.cleanup_admission.clone(), deadline, move |cx| {
-            let target=se_core::scope::require_present(cx.read.control_target(agent).map_err(|e|se_core::store_error::store_error(&e))?, "failed launch session", "Keep its exact lifecycle for reconciliation.")?;
-            let head = target.sessions.into_iter().chain(match target.latest_session {se_types::Read::Present {value}=>Some(value),_=>None}).find(|s|matches!(&s.current.body, EventBody::SessionPrepared {session:found,..}|EventBody::SessionActivated {session:found,..}|EventBody::SessionEnded {session:found,..}|EventBody::SessionRevoked {session:found,..} if found==&session));
-            head.map(|head|head.current.body).ok_or_else(||se_core::scope::unreadable("failed launch session", "the exact committed preparation is absent"))
-        }).await?;
+        let actual = self.committed_body(work, deadline).await?;
         match actual {
             EventBody::SessionActivated { .. } => {
                 work.active = true;
@@ -63,86 +43,12 @@ impl LaunchCoordinator {
         // Failed preparation loses both capabilities immediately, even when
         // native termination or file cleanup subsequently remains unproved.
         if !work.active && !work.session_retired {
-            let reconnecting = work.plan.as_ref().is_some_and(|plan| {
-                !plan.input.fresh()
-                    && !plan.input.detach
-                    && matches!(&plan.control.latest_session, se_types::Read::Present { value }
-                        if se_core::ops::agent_launch::retryable_attended_setup(value))
-            });
-            let reason = if reconnecting {
-                se_core::ops::agent_launch::ATTENDED_RECONNECT_FAILED
-            } else {
-                "launch preparation failed"
-            };
-            self.retire_session(work, reason, deadline).await?;
+            self.retire_failed_preparation(work, deadline).await?;
         }
-        if work.process.is_none() {
-            let reservation = work.reservation.clone().ok_or_else(|| {
-                se_core::scope::unreadable(
-                    "launch cleanup",
-                    "the durable reservation is unavailable",
-                )
-            })?;
-            let native = self.native.clone();
-            let generation = self.options.epoch.generation;
-            let result = self
-                .store
-                .pool
-                .run_owned(deadline, move || {
-                    let plan = native
-                        .plan_recovery(se_proc::RecoverySource::Reservation(Box::new(reservation)))
-                        .map_err(|e| error("failed preparation recovery", e))?;
-                    native
-                        .recover(plan, generation)
-                        .map_err(|e| error("failed preparation recovery", e))
-                })
-                .await?;
-            match result {
-                se_proc::RecoveryOutcome::Recovered { process, .. }
-                | se_proc::RecoveryOutcome::PendingScope { process, .. } => {
-                    work.process = Some(Arc::new(process))
-                }
-                se_proc::RecoveryOutcome::Exited(witness) => {
-                    work.native_already_reconciled = true;
-                    work.last_witness = Some((*witness).clone());
-                    return self.finish(work, *witness, deadline).await;
-                }
-                _ => {
-                    return Err(se_core::scope::unreadable(
-                        "failed preparation custody",
-                        "native recovery did not return an owned reference; reservation remains retained",
-                    ));
-                }
-            }
+        if let Some(witness) = self.recover_failed_preparation(work, deadline).await? {
+            return self.finish(work, witness, deadline).await;
         }
-        // If exec was genuinely witnessed before provider readiness failed,
-        // record that historical native fact without activating the session.
-        if let Some(record) = work.record.as_ref().filter(|_| work.exec_observed) {
-            let head = self.head(work, deadline).await?;
-            if matches!(
-                head.current.body,
-                EventBody::ProcessTransition {
-                    to: ProcessState::Starting,
-                    ..
-                }
-            ) {
-                let identity = native_record::identity_meta(
-                    &work.meta,
-                    CheckpointKind::Process(record.clone()),
-                    Some((&record.root, record.argv_sha256)),
-                    Some(record.guarantee),
-                    &self.options.epoch.owner.fields().boot,
-                )?;
-                self.change(
-                    work,
-                    "exec-observed-before-readiness-failure",
-                    identity,
-                    (ProcessState::Starting, ProcessState::Running),
-                    deadline,
-                )
-                .await?;
-            }
-        }
+        self.record_exec_observed(work, deadline).await?;
         let witness = self.stop_native(work, deadline).await?;
         self.finish(work, witness, deadline).await
     }
@@ -171,10 +77,6 @@ impl LaunchCoordinator {
             })
             .await
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) async fn stop_native(
         &self,
         work: &mut Work,
@@ -219,90 +121,8 @@ impl LaunchCoordinator {
         // binding durably before any interruption, even with an empty inbox;
         // failed native closure must never reopen external admission.
         self.revoke_credentials(work, deadline).await?;
-        // The FULL transition rechecks the current control grant before even
-        // closing provider stdin. Graceful closure is already a stop effect.
-        if let Some(binding) = &work.binding {
-            let policy = binding.stop_policy();
-            let window = grace_window(&self.options, deadline)?;
-            let graceful = deadline.stage(window)?;
-            match self
-                .harness_for(work.meta.provider)?
-                .graceful_stop(binding, call(self.store.generation, &graceful)?)
-                .await
-            {
-                Ok(interrupt) if interrupt.requested => {
-                    if let Some(signal) = policy.signal {
-                        let owner = work.process.clone().ok_or_else(|| {
-                            error("graceful stop", "owned native reference is absent")
-                        })?;
-                        let native = self.native.clone();
-                        let generation = self.options.epoch.generation;
-                        let at = graceful.at();
-                        let attempt = self
-                            .store
-                            .pool
-                            .run_owned(&graceful, move || {
-                                let prepared = native
-                                    .prepare_stop(&owner, generation, at)
-                                    .map_err(|e| error("graceful stop preparation", e))?;
-                                let dispatched = match signal {
-                                    crate::harness::binding::Signal::Interrupt => {
-                                        native.request_interrupt(prepared)
-                                    }
-                                    #[cfg(target_os = "linux")]
-                                    crate::harness::binding::Signal::Terminate => {
-                                        native.request_termination(prepared)
-                                    }
-                                };
-                                dispatched
-                                    .map_err(|e| error("graceful native signal", e))?
-                                    .dispatch
-                                    .map_err(|e| error("graceful native signal dispatch", e))
-                            })
-                            .await;
-                        if let Err(error) = attempt {
-                            work.stop_failure = Some(error.body);
-                        }
-                    }
-                    work.stop_method = Some("graceful".into());
-                    loop {
-                        // Register before observing: a monitor can otherwise
-                        // consume the single retained nudge between read/wait.
-                        let changed = work.wake.event.notified();
-                        tokio::pin!(changed);
-                        changed.as_mut().enable();
-                        if let StopObservation::Complete(witness) =
-                            self.exit_observation(work, deadline).await?
-                        {
-                            return Ok(*witness);
-                        }
-                        // This read also runs once at the graceful deadline,
-                        // before preparing any force against the provider.
-                        if graceful.remaining().is_err() {
-                            break;
-                        }
-                        let _ = tokio::time::timeout_at(
-                            tokio::time::Instant::from_std(graceful.at()),
-                            changed,
-                        )
-                        .await;
-                    }
-                }
-                Ok(_) => {
-                    if policy.native_window {
-                        work.stop_method = Some("native-window-scope".into());
-                    } else {
-                        work.stop_failure = Some(
-                            se_core::scope::unreadable(
-                                "graceful stop",
-                                "provider did not accept stdin closure",
-                            )
-                            .body,
-                        )
-                    }
-                }
-                Err(failure) => work.stop_failure = Some(failure.body),
-            }
+        if let Some(witness) = self.graceful_stop(work, deadline).await? {
+            return Ok(witness);
         }
         // Queue admission and identity-checked dispatch use the caller's clock.
         // The force interval measures exit after dispatch, not time waiting for
@@ -346,6 +166,222 @@ impl LaunchCoordinator {
         let (ticket, result) = self.stop_observation(attempt.ticket, deadline).await?;
         self.finish_stop_wait(work, ticket, result, dispatch.map(|_| ()), force, deadline)
             .await
+    }
+    async fn verify_uncertain_reservation(
+        &self,
+        work: &mut Work,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let actor = work.admission.actor.clone();
+        let key = work.meta.request.clone();
+        let session = work.meta.session.clone();
+        self.store.read(work.cleanup_admission.clone(), deadline, move |cx| {
+            let receipt = se_core::scope::require_present(cx.read.operation_receipt(actor,key).map_err(|e|se_core::store_error::store_error(&e))?, "uncertain launch reservation", "Retry the original launch key; no native effect can proceed until its FULL outcome is established.")?;
+            let event = se_core::scope::require_present(cx.read.event(receipt.primary_event).map_err(|e|se_core::store_error::store_error(&e))?, "original launch event", "Keep the original request identity for reconciliation.")?;
+            if !matches!(event.body, EventBody::SessionPrepared {session:found,..} if found==session) {
+                return Err(se_core::scope::unreadable("uncertain launch reservation", "the retained receipt differs from this exact preparation"));
+            }
+            Ok(())
+        }).await
+    }
+    async fn committed_body(
+        &self,
+        work: &Work,
+        deadline: &Deadline,
+    ) -> Result<EventBody<StoredText>> {
+        let agent = work.meta.agent.id.clone();
+        let session = work.meta.session.clone();
+        self.store.read(work.cleanup_admission.clone(), deadline, move |cx| {
+            let target=se_core::scope::require_present(cx.read.control_target(agent).map_err(|e|se_core::store_error::store_error(&e))?, "failed launch session", "Keep its exact lifecycle for reconciliation.")?;
+            let head = target.sessions.into_iter().chain(match target.latest_session {se_types::Read::Present {value}=>Some(value),_=>None}).find(|s|matches!(&s.current.body, EventBody::SessionPrepared {session:found,..}|EventBody::SessionActivated {session:found,..}|EventBody::SessionEnded {session:found,..}|EventBody::SessionRevoked {session:found,..} if found==&session));
+            head.map(|head|head.current.body).ok_or_else(||se_core::scope::unreadable("failed launch session", "the exact committed preparation is absent"))
+        }).await
+    }
+    async fn retire_failed_preparation(&self, work: &mut Work, deadline: &Deadline) -> Result<()> {
+        let reconnecting = work.plan.as_ref().is_some_and(|plan| {
+            !plan.input.fresh()
+                && !plan.input.detach
+                && matches!(&plan.control.latest_session, se_types::Read::Present { value }
+                    if se_core::ops::agent_launch::retryable_attended_setup(value))
+        });
+        let reason = if reconnecting {
+            se_core::ops::agent_launch::ATTENDED_RECONNECT_FAILED
+        } else {
+            "launch preparation failed"
+        };
+        self.retire_session(work, reason, deadline).await
+    }
+    async fn recover_failed_preparation(
+        &self,
+        work: &mut Work,
+        deadline: &Deadline,
+    ) -> Result<Option<se_proc::StopWitness>> {
+        if work.process.is_some() {
+            return Ok(None);
+        }
+        let reservation = work.reservation.clone().ok_or_else(|| {
+            se_core::scope::unreadable("launch cleanup", "the durable reservation is unavailable")
+        })?;
+        let native = self.native.clone();
+        let generation = self.options.epoch.generation;
+        let result = self
+            .store
+            .pool
+            .run_owned(deadline, move || {
+                let plan = native
+                    .plan_recovery(se_proc::RecoverySource::Reservation(Box::new(reservation)))
+                    .map_err(|e| error("failed preparation recovery", e))?;
+                native
+                    .recover(plan, generation)
+                    .map_err(|e| error("failed preparation recovery", e))
+            })
+            .await?;
+        match result {
+            se_proc::RecoveryOutcome::Recovered { process, .. }
+            | se_proc::RecoveryOutcome::PendingScope { process, .. } => {
+                work.process = Some(Arc::new(process))
+            }
+            se_proc::RecoveryOutcome::Exited(witness) => {
+                work.native_already_reconciled = true;
+                work.last_witness = Some((*witness).clone());
+                return Ok(Some(*witness));
+            }
+            _ => {
+                return Err(se_core::scope::unreadable(
+                    "failed preparation custody",
+                    "native recovery did not return an owned reference; reservation remains retained",
+                ));
+            }
+        }
+        Ok(None)
+    }
+    async fn record_exec_observed(&self, work: &mut Work, deadline: &Deadline) -> Result<()> {
+        // If exec was genuinely witnessed before provider readiness failed,
+        // record that historical native fact without activating the session.
+        if let Some(record) = work.record.as_ref().filter(|_| work.exec_observed) {
+            let head = self.head(work, deadline).await?;
+            if matches!(
+                head.current.body,
+                EventBody::ProcessTransition {
+                    to: ProcessState::Starting,
+                    ..
+                }
+            ) {
+                let identity = native_record::identity_meta(
+                    &work.meta,
+                    CheckpointKind::Process(record.clone()),
+                    Some((&record.root, record.argv_sha256)),
+                    Some(record.guarantee),
+                    &self.options.epoch.owner.fields().boot,
+                )?;
+                self.change(
+                    work,
+                    "exec-observed-before-readiness-failure",
+                    identity,
+                    (ProcessState::Starting, ProcessState::Running),
+                    deadline,
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+    /// The FULL transition rechecks the current control grant before even
+    /// closing provider stdin. Graceful closure is already a stop effect.
+    async fn graceful_stop(
+        &self,
+        work: &mut Work,
+        deadline: &Deadline,
+    ) -> Result<Option<se_proc::StopWitness>> {
+        let Some(binding) = &work.binding else {
+            return Ok(None);
+        };
+        let policy = binding.stop_policy();
+        let window = grace_window(&self.options, deadline)?;
+        let graceful = deadline.stage(window)?;
+        match self
+            .harness_for(work.meta.provider)?
+            .graceful_stop(binding, call(self.store.generation, &graceful)?)
+            .await
+        {
+            Ok(interrupt) if interrupt.requested => {
+                if let Some(signal) = policy.signal {
+                    let owner = work.process.clone().ok_or_else(|| {
+                        error("graceful stop", "owned native reference is absent")
+                    })?;
+                    let native = self.native.clone();
+                    let generation = self.options.epoch.generation;
+                    let at = graceful.at();
+                    let attempt = self
+                        .store
+                        .pool
+                        .run_owned(&graceful, move || {
+                            let prepared = native
+                                .prepare_stop(&owner, generation, at)
+                                .map_err(|e| error("graceful stop preparation", e))?;
+                            let dispatched = match signal {
+                                crate::harness::binding::Signal::Interrupt => {
+                                    native.request_interrupt(prepared)
+                                }
+                                #[cfg(target_os = "linux")]
+                                crate::harness::binding::Signal::Terminate => {
+                                    native.request_termination(prepared)
+                                }
+                            };
+                            dispatched
+                                .map_err(|e| error("graceful native signal", e))?
+                                .dispatch
+                                .map_err(|e| error("graceful native signal dispatch", e))
+                        })
+                        .await;
+                    if let Err(error) = attempt {
+                        work.stop_failure = Some(error.body);
+                    }
+                }
+                work.stop_method = Some("graceful".into());
+                loop {
+                    // Register before observing: a monitor can otherwise
+                    // consume the single retained nudge between read/wait.
+                    let changed = work.wake.event.notified();
+                    tokio::pin!(changed);
+                    changed.as_mut().enable();
+                    if let StopObservation::Complete(witness) =
+                        self.exit_observation(work, deadline).await?
+                    {
+                        return Ok(Some(*witness));
+                    }
+                    // This read also runs once at the graceful deadline,
+                    // before preparing any force against the provider.
+                    if graceful.remaining().is_err() {
+                        break;
+                    }
+                    let _ = tokio::time::timeout_at(
+                        tokio::time::Instant::from_std(graceful.at()),
+                        changed,
+                    )
+                    .await;
+                }
+                Ok(None)
+            }
+            Ok(_) => {
+                if policy.native_window {
+                    work.stop_method = Some("native-window-scope".into());
+                } else {
+                    work.stop_failure = Some(
+                        se_core::scope::unreadable(
+                            "graceful stop",
+                            "provider did not accept stdin closure",
+                        )
+                        .body,
+                    )
+                }
+                Ok(None)
+            }
+            Err(failure) => {
+                work.stop_failure = Some(failure.body);
+                Ok(None)
+            }
+        }
     }
     async fn stop_observation(
         &self,
