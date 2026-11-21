@@ -89,7 +89,9 @@ pub(crate) fn load_event(c: &Connection, seq: i64, info: &StoreInfo) -> StoreRes
             supersedes: supersedes.map(|v| parse_event(&v)).transpose()?,
         },
         revision: super::revision(rev)?,
-        position: StorePosition::new_internal(info.id.clone(), inc, seq as u64)?,
+        // A surviving event keeps its sequence in the current store life; the
+        // incarnation it was first written in stays in `recorded_incarnation`.
+        position: StorePosition::new_internal(info.id.clone(), info.incarnation, seq as u64)?,
         recorded_at_us: recorded,
         recorded_incarnation: inc,
         writer: WriterMode::from_lease(&writer),
