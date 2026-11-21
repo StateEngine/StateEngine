@@ -5,10 +5,6 @@ use se_types::remote::RemoteVerb;
 /// Produced only after this transaction validates the closed launch batch.
 pub(crate) struct LaunchAuthority(());
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(crate) fn validate_batch(
     c: &Connection,
     batch: &AtomicBatch,
@@ -59,14 +55,32 @@ pub(crate) fn validate_batch(
     if batch.events.len() != 2 {
         return Err(denied());
     }
-    let attr = batch
+    let attr = attributed_record(batch)?;
+    send_grant_matches(c, batch, attr, principal, info, now)?;
+    let sent = sent_message(batch)?;
+    pair_consistent(c, attr, &sent)?;
+    Ok(None)
+}
+
+fn attributed_record(batch: &AtomicBatch) -> StoreResult<&MessageAttribution> {
+    batch
         .events
         .iter()
         .find_map(|e| match &e.body {
             EventBody::RemoteMessageAttributed { record } => Some(record),
             _ => None,
         })
-        .ok_or_else(denied)?;
+        .ok_or_else(denied)
+}
+
+fn send_grant_matches(
+    c: &Connection,
+    batch: &AtomicBatch,
+    attr: &MessageAttribution,
+    principal: &se_types::remote::RemotePrincipalId,
+    info: &StoreInfo,
+    now: i64,
+) -> StoreResult<()> {
     let g = read::grant(c, &attr.grant)?.ok_or_else(denied)?;
     let stamp = &attr.attribution;
     super::admit_source(c, stamp.source.as_ref())?;
@@ -89,7 +103,19 @@ pub(crate) fn validate_batch(
     {
         return Err(denied());
     }
-    let message = batch
+    Ok(())
+}
+
+struct SentMessage<'a> {
+    message: &'a se_types::MessageId,
+    recipient: &'a Actor,
+    body: &'a InputText,
+    refs: &'a Vec<se_types::EventId>,
+    reply_to: &'a Option<se_types::MessageId>,
+}
+
+fn sent_message(batch: &AtomicBatch) -> StoreResult<SentMessage<'_>> {
+    batch
         .events
         .iter()
         .find_map(|e| match &e.body {
@@ -100,22 +126,35 @@ pub(crate) fn validate_batch(
                 refs,
                 reply_to,
                 ..
-            } => Some((message, recipient, body, refs, reply_to)),
+            } => Some(SentMessage {
+                message,
+                recipient,
+                body,
+                refs,
+                reply_to,
+            }),
             _ => None,
         })
-        .ok_or_else(denied)?;
-    if message.0 != &attr.message
-        || message.1 != &Actor::Agent(attr.target.agent.clone())
-        || !message.3.is_empty()
+        .ok_or_else(denied)
+}
+
+fn pair_consistent(
+    c: &Connection,
+    attr: &MessageAttribution,
+    sent: &SentMessage<'_>,
+) -> StoreResult<()> {
+    if sent.message != &attr.message
+        || sent.recipient != &Actor::Agent(attr.target.agent.clone())
+        || !sent.refs.is_empty()
     {
         return Err(denied());
     }
-    match (&attr.expected_session, message.4) {
+    match (&attr.expected_session, sent.reply_to) {
         (Some(_), None) => (),
         (None, Some(original)) => crate::return_mail::validate_incoming_reply(c, attr, original)?,
         _ => return Err(denied()),
     }
-    match message.2 {
+    match sent.body {
         InputText::Inline(body)
             if !body.is_empty() && body.len() <= se_types::MESSAGE_BODY_MAX_BYTES => {}
         _ => return Err(denied()),
@@ -131,8 +170,9 @@ pub(crate) fn validate_batch(
     if !active {
         return Err(denied());
     }
-    Ok(None)
+    Ok(())
 }
+
 /// Only a new send requires the target session still to be active. A retained
 /// keyed outcome remains resolvable after ordinary session completion, after
 /// current grant, source, target, scope and intent checks have succeeded.
