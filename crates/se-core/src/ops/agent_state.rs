@@ -112,6 +112,10 @@ fn derive(row: &AgentRow, now_us: i64) -> Result<AgentStateView> {
             Some("awaiting-provider" | "waiting" | "retrying-authentication") => ("working", phase),
             Some("interrupted" | "failed" | "authentication-required") => ("attention", phase),
             _ if waiting_on.is_some() => ("blocked", None),
+            // An unreadable observation is not an absent one.
+            _ if matches!(row.provider_activity, Some(Read::Unreadable { .. })) => {
+                ("turn-unreadable", None)
+            }
             Some("turn-completed" | "idle") => ("idle", phase),
             // Alive, but no host observed its turns: not claimed idle.
             _ => ("running", None),
@@ -121,8 +125,11 @@ fn derive(row: &AgentRow, now_us: i64) -> Result<AgentStateView> {
     };
     let (since, elapsed) = match (state, &waiting_on, elapsed) {
         ("blocked", Some(question), _) => {
-            let asked = se_types::parse_timestamp(&question.asked_at)?;
-            let seconds = u64::try_from((now_us - asked).max(0) / 1_000_000).ok();
+            // A timestamp that does not parse leaves the elapsed time unknown
+            // rather than failing the whole status read.
+            let seconds = se_types::parse_timestamp(&question.asked_at)
+                .ok()
+                .and_then(|asked| u64::try_from((now_us - asked).max(0) / 1_000_000).ok());
             (Some(question.asked_at.clone()), seconds)
         }
         (_, _, Some((started, seconds))) => (Some(started), Some(seconds)),

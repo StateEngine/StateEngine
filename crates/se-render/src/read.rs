@@ -168,6 +168,7 @@ fn crew_state(state: &se_core::ops::AgentStateView) -> String {
     let label = match state.state.as_str() {
         "attention" => "needs attention",
         "running" => "running (turns not observed)",
+        "turn-unreadable" => "running (turn state unreadable)",
         other => other,
     };
     match state.elapsed_seconds {

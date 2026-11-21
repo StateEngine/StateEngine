@@ -92,7 +92,8 @@ pub struct CodexLoginView {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct AgentStateView {
     /// `working`, `attention`, `blocked`, `idle`, `running` (alive, turn not
-    /// observed), `starting`, `stopping`, `stopped` or `unreachable`.
+    /// observed), `turn-unreadable`, `starting`, `stopping`, `stopped` or
+    /// `unreachable`.
     pub state: String,
     /// When the state began, when StateEngine can say.
     pub since: Option<String>,
