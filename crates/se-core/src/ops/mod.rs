@@ -10,6 +10,7 @@ pub use assignment::{
     AssignmentAction, AssignmentList, AssignmentPage, AssignmentWrite, AssignmentWriteOutput,
 };
 pub mod captain;
+pub mod captain_nudge;
 pub use captain::{
     CaptainClear, CaptainClearOutput, CaptainSet, CaptainSetOutput, CaptainShow, CaptainShowOutput,
 };
