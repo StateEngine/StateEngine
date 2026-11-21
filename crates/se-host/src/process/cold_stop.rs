@@ -8,38 +8,14 @@ use se_store::{
 use se_types::{Read, Result};
 use std::sync::atomic::Ordering;
 impl LaunchCoordinator {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) async fn cold_stop_job(
         self: &Arc<Self>,
         control: &ControlTarget,
         project: &se_types::ProjectId,
         deadline: &Deadline,
     ) -> Result<Option<Arc<Job>>> {
-        let head = match &control.latest_process {
-            Read::Present { value } => value.clone(),
-            Read::Absent { .. } => return Ok(None),
-            Read::Unreadable { reason, .. } => return Err(error("cold stop inventory", reason)),
-            Read::Unknown { what } => return Err(error("cold stop inventory", what)),
-        };
-        let (identity, state) = match &head.current.body {
-            EventBody::ProcessRegistered { identity, initial } => {
-                (identity.as_ref().clone(), *initial)
-            }
-            EventBody::ProcessTransition { identity, to, .. } => (identity.as_ref().clone(), *to),
-            _ => return Err(error("cold stop inventory", "wrong process projection")),
-        };
-        let target = match &identity.principal {
-            Actor::Agent(agent) => agent.clone(),
-            _ => return Err(error("cold stop inventory", "not an agent lifecycle")),
-        };
-        let row = OwnerGuardProcess {
-            project: project.clone(),
-            revision: head.revision,
-            state,
-            identity,
+        let Some((row, target)) = self.cold_stop_inventory(control, project)? else {
+            return Ok(None);
         };
         let admission = Admission {
             scope: Scope::Project(project.clone()),
@@ -52,26 +28,16 @@ impl LaunchCoordinator {
             &row.identity.custody.record,
         )
         .map_err(|e| error("cold stop checkpoint", e))?;
-        let released = match &checkpoint.checkpoint {
-            se_proc::CheckpointKind::Released { release, .. } => Some(release.clone()),
-            se_proc::CheckpointKind::Process(record) => record.ownership_release.clone(),
-            _ => None,
-        };
-        if released.is_none() && state != ProcessState::Exited {
+        let released = released_ownership(&checkpoint);
+        if released.is_none() && row.state != ProcessState::Exited {
             let lifecycle = row.identity.record.clone();
             self.reconcile(vec![row], deadline).await?;
             return self.find_lifecycle_job(project, &target, &lifecycle);
         }
-        let (meta, active, retired, activated) = self
-            .recovery_metadata(&row, admission.clone(), deadline)
+        let mut work = self
+            .assemble_recovered_work(&row, admission, released, deadline)
             .await?;
-        let mut work = Work::recovered(meta, admission);
-        work.active = active;
-        work.activated = activated;
-        work.session_retired = retired;
-        if let Some(release) = released {
-            work.ownership_release = Some(release);
-            work.released = true;
+        if work.released {
             let job = self.retain_recovered(work)?;
             job.settled.store(true, Ordering::Release);
             self.activity
@@ -99,11 +65,78 @@ impl LaunchCoordinator {
                     .map_err(|e| error("cold exit observation", e))
             })
             .await?;
+        self.apply_recovery_outcome(&mut work, outcome, deadline)
+            .await;
+        let complete = work.released;
+        let job = self.retain_recovered(work)?;
+        if complete {
+            job.settled.store(true, Ordering::Release);
+            self.activity
+                .send_modify(|count| *count = count.saturating_sub(1));
+        }
+        Ok(Some(job))
+    }
+    fn cold_stop_inventory(
+        &self,
+        control: &ControlTarget,
+        project: &se_types::ProjectId,
+    ) -> Result<Option<(OwnerGuardProcess, se_types::AgentId)>> {
+        let head = match &control.latest_process {
+            Read::Present { value } => value.clone(),
+            Read::Absent { .. } => return Ok(None),
+            Read::Unreadable { reason, .. } => return Err(error("cold stop inventory", reason)),
+            Read::Unknown { what } => return Err(error("cold stop inventory", what)),
+        };
+        let (identity, state) = match &head.current.body {
+            EventBody::ProcessRegistered { identity, initial } => {
+                (identity.as_ref().clone(), *initial)
+            }
+            EventBody::ProcessTransition { identity, to, .. } => (identity.as_ref().clone(), *to),
+            _ => return Err(error("cold stop inventory", "wrong process projection")),
+        };
+        let target = match &identity.principal {
+            Actor::Agent(agent) => agent.clone(),
+            _ => return Err(error("cold stop inventory", "not an agent lifecycle")),
+        };
+        let row = OwnerGuardProcess {
+            project: project.clone(),
+            revision: head.revision,
+            state,
+            identity,
+        };
+        Ok(Some((row, target)))
+    }
+    async fn assemble_recovered_work(
+        &self,
+        row: &OwnerGuardProcess,
+        admission: Admission,
+        released: Option<se_proc::UnwitnessedRelease>,
+        deadline: &Deadline,
+    ) -> Result<Work> {
+        let (meta, active, retired, activated) = self
+            .recovery_metadata(row, admission.clone(), deadline)
+            .await?;
+        let mut work = Work::recovered(meta, admission);
+        work.active = active;
+        work.activated = activated;
+        work.session_retired = retired;
+        if let Some(release) = released {
+            work.ownership_release = Some(release);
+            work.released = true;
+        }
+        Ok(work)
+    }
+    async fn apply_recovery_outcome(
+        &self,
+        work: &mut Work,
+        outcome: se_proc::RecoveryOutcome,
+        deadline: &Deadline,
+    ) {
         match outcome {
             se_proc::RecoveryOutcome::Exited(witness) => {
                 work.native_already_reconciled = true;
                 work.last_witness = Some((*witness).clone());
-                if let Err(error) = self.finish(&mut work, *witness, deadline).await {
+                if let Err(error) = self.finish(work, *witness, deadline).await {
                     work.cleanup_failure = Some(error.body);
                 }
             }
@@ -112,7 +145,7 @@ impl LaunchCoordinator {
                 // Keep native custody for outside diagnosis, never signal it.
                 work.process = Some(Arc::new(process));
                 work.record = Some(*record);
-                work.cleanup_failure=Some(error("cold exit contradiction","the exact original process is live despite its recorded exit; owner diagnosis is required").body);
+                work.cleanup_failure = Some(error("cold exit contradiction", "the exact original process is live despite its recorded exit; owner diagnosis is required").body);
             }
             se_proc::RecoveryOutcome::Unproved { error: reason, .. } => {
                 work.cleanup_failure = Some(error("cold exit proof", format!("{reason:?}")).body)
@@ -122,13 +155,12 @@ impl LaunchCoordinator {
                     Some(error("cold exit proof", "no current outside exit witness").body)
             }
         }
-        let complete = work.released;
-        let job = self.retain_recovered(work)?;
-        if complete {
-            job.settled.store(true, Ordering::Release);
-            self.activity
-                .send_modify(|count| *count = count.saturating_sub(1));
-        }
-        Ok(Some(job))
+    }
+}
+fn released_ownership(checkpoint: &se_proc::Checkpoint) -> Option<se_proc::UnwitnessedRelease> {
+    match &checkpoint.checkpoint {
+        se_proc::CheckpointKind::Released { release, .. } => Some(release.clone()),
+        se_proc::CheckpointKind::Process(record) => record.ownership_release.clone(),
+        _ => None,
     }
 }
