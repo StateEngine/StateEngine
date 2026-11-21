@@ -21,7 +21,6 @@ mod repository;
 mod route;
 mod runtime;
 
-use se_cli_spec::metadata_output;
 use se_core::ops::{AnyOp, AnyOutput};
 use se_types::RenderCx;
 use std::{
@@ -81,7 +80,7 @@ pub fn run(
     if let Some(output) = remote_owner::help(&operation) {
         return render::output(&output, common.json, common.quiet, &mut stdout);
     }
-    match metadata_output(&operation) {
+    match se_cli_spec::metadata_output(&operation) {
         Ok(Some(output)) => return render::output(&output, common.json, common.quiet, &mut stdout),
         Ok(None) => (),
         Err(error) => {
