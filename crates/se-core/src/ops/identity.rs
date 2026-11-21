@@ -6,7 +6,7 @@ use crate::ops::inputs::Validate;
 use crate::scope;
 use crate::store_error::store_error;
 use schemars::JsonSchema;
-use se_store::{Actor, EventBody, GrantKey, Snapshot};
+use se_store::{Actor, EventBody, GrantKey, ProjectionRecord, Snapshot};
 use se_types::{AgentId, ProjectId, Read, Result, SessionId};
 use serde::{Deserialize, Serialize};
 
@@ -61,10 +61,6 @@ pub struct PrincipalOutput {
     pub binding: PrincipalBinding,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn whoami<R: Snapshot>(_input: IdentityWhoami, cx: &mut Cx<'_, R>) -> Result<PrincipalOutput> {
     admitted(cx)?;
     let project_id = scope::project(cx.admission)?;
@@ -78,109 +74,10 @@ pub fn whoami<R: Snapshot>(_input: IdentityWhoami, cx: &mut Cx<'_, R>) -> Result
         }
     };
 
-    let project = scope::require_present(
-        cx.read
-            .project(project_id.clone())
-            .map_err(|e| store_error(&e))?,
-        "identity project",
-        "Reconnect to the project that admitted this session; its registration is not retained in this snapshot.",
-    )?;
-    let project_name = match &project.current.body {
-        EventBody::ProjectRegistered { name, .. }
-        | EventBody::ProjectUpdated { name, .. }
-        | EventBody::ProjectMoved { name, .. } => name.clone(),
-        _ => {
-            return Err(scope::unreadable(
-                "identity project",
-                "the admitted project projection is not a registration, update or move",
-            ));
-        }
-    };
-
-    let principal = scope::require_present(
-        cx.read
-            .principal(Actor::Agent(agent.clone()))
-            .map_err(|e| store_error(&e))?,
-        "identity agent",
-        "Reconnect to the project that registered this agent; its principal is not retained in this snapshot.",
-    )?;
-    let agent_name = match &principal.current.body {
-        EventBody::PrincipalRegistered { name, .. } | EventBody::PrincipalRenamed { name, .. } => {
-            name.clone()
-        }
-        _ => {
-            return Err(scope::unreadable(
-                "identity agent",
-                "the admitted agent projection is not a principal registration",
-            ));
-        }
-    };
-
-    let session_record = scope::require_present(
-        cx.read
-            .session(session.clone())
-            .map_err(|e| store_error(&e))?,
-        "identity session",
-        "Reconnect with a launched session credential; the admitted session is not retained in this snapshot.",
-    )?;
-    let binding_state = match &session_record.current.body {
-        EventBody::SessionPrepared { .. } => "prepared",
-        EventBody::SessionActivated { .. } => "activated",
-        EventBody::SessionEnded { .. } => "ended",
-        EventBody::SessionRevoked { .. } => "revoked",
-        _ => {
-            return Err(scope::unreadable(
-                "identity session",
-                "the admitted session projection is not a session state",
-            ));
-        }
-    };
-    let source = match session_record.original.as_deref() {
-        Some(original) => match &original.body {
-            EventBody::SessionPrepared {
-                surface: Some(surface),
-                ..
-            } => Read::Present {
-                value: surface.as_str().to_string(),
-            },
-            EventBody::SessionPrepared { .. } => Read::Absent {
-                checked: "the original session preparation records no surface".into(),
-            },
-            _ => Read::Absent {
-                checked: "the original session projection is not a preparation".into(),
-            },
-        },
-        None => Read::Absent {
-            checked: "the original session preparation is not retained".into(),
-        },
-    };
-
-    let grants = match cx
-        .read
-        .grant(
-            Actor::Agent(agent.clone()),
-            GrantKey::AgentCanCreate(agent.clone()),
-        )
-        .map_err(|e| store_error(&e))?
-    {
-        Read::Present { value } => {
-            if matches!(
-                value.current.body,
-                EventBody::GrantRecorded { active: true, .. }
-            ) {
-                vec![format!("agent.{agent}.can-create")]
-            } else {
-                Vec::new()
-            }
-        }
-        Read::Absent { .. } => Vec::new(),
-        Read::Unreadable {
-            source: unreadable_source,
-            reason,
-            ..
-        } => return Err(scope::unreadable(&unreadable_source, &reason)),
-        Read::Unknown { what } => return Err(scope::unreadable("identity grants", &what)),
-    };
+    let project_name = project_name(cx, &project_id)?;
+    let agent_name = agent_name(cx, &agent)?;
+    let (binding_state, source) = session_binding(cx, &session)?;
+    let grants = active_grants(cx, &agent)?;
 
     Ok(PrincipalOutput {
         project: PrincipalProject {
@@ -203,4 +100,114 @@ pub fn whoami<R: Snapshot>(_input: IdentityWhoami, cx: &mut Cx<'_, R>) -> Result
             auth: "session".into(),
         },
     })
+}
+fn project_name<R: Snapshot>(cx: &mut Cx<'_, R>, project_id: &ProjectId) -> Result<String> {
+    let project = scope::require_present(
+        cx.read
+            .project(project_id.clone())
+            .map_err(|e| store_error(&e))?,
+        "identity project",
+        "Reconnect to the project that admitted this session; its registration is not retained in this snapshot.",
+    )?;
+    match &project.current.body {
+        EventBody::ProjectRegistered { name, .. }
+        | EventBody::ProjectUpdated { name, .. }
+        | EventBody::ProjectMoved { name, .. } => Ok(name.clone()),
+        _ => Err(scope::unreadable(
+            "identity project",
+            "the admitted project projection is not a registration, update or move",
+        )),
+    }
+}
+fn agent_name<R: Snapshot>(cx: &mut Cx<'_, R>, agent: &AgentId) -> Result<String> {
+    let principal = scope::require_present(
+        cx.read
+            .principal(Actor::Agent(agent.clone()))
+            .map_err(|e| store_error(&e))?,
+        "identity agent",
+        "Reconnect to the project that registered this agent; its principal is not retained in this snapshot.",
+    )?;
+    match &principal.current.body {
+        EventBody::PrincipalRegistered { name, .. } | EventBody::PrincipalRenamed { name, .. } => {
+            Ok(name.clone())
+        }
+        _ => Err(scope::unreadable(
+            "identity agent",
+            "the admitted agent projection is not a principal registration",
+        )),
+    }
+}
+fn session_binding<R: Snapshot>(
+    cx: &mut Cx<'_, R>,
+    session: &SessionId,
+) -> Result<(&'static str, Read<String>)> {
+    let session_record = scope::require_present(
+        cx.read
+            .session(session.clone())
+            .map_err(|e| store_error(&e))?,
+        "identity session",
+        "Reconnect with a launched session credential; the admitted session is not retained in this snapshot.",
+    )?;
+    let state = match &session_record.current.body {
+        EventBody::SessionPrepared { .. } => "prepared",
+        EventBody::SessionActivated { .. } => "activated",
+        EventBody::SessionEnded { .. } => "ended",
+        EventBody::SessionRevoked { .. } => "revoked",
+        _ => {
+            return Err(scope::unreadable(
+                "identity session",
+                "the admitted session projection is not a session state",
+            ));
+        }
+    };
+    Ok((state, session_source(&session_record)))
+}
+fn session_source(session_record: &ProjectionRecord) -> Read<String> {
+    match session_record.original.as_deref() {
+        Some(original) => match &original.body {
+            EventBody::SessionPrepared {
+                surface: Some(surface),
+                ..
+            } => Read::Present {
+                value: surface.as_str().to_string(),
+            },
+            EventBody::SessionPrepared { .. } => Read::Absent {
+                checked: "the original session preparation records no surface".into(),
+            },
+            _ => Read::Absent {
+                checked: "the original session projection is not a preparation".into(),
+            },
+        },
+        None => Read::Absent {
+            checked: "the original session preparation is not retained".into(),
+        },
+    }
+}
+fn active_grants<R: Snapshot>(cx: &mut Cx<'_, R>, agent: &AgentId) -> Result<Vec<String>> {
+    match cx
+        .read
+        .grant(
+            Actor::Agent(agent.clone()),
+            GrantKey::AgentCanCreate(agent.clone()),
+        )
+        .map_err(|e| store_error(&e))?
+    {
+        Read::Present { value } => {
+            if matches!(
+                value.current.body,
+                EventBody::GrantRecorded { active: true, .. }
+            ) {
+                Ok(vec![format!("agent.{agent}.can-create")])
+            } else {
+                Ok(Vec::new())
+            }
+        }
+        Read::Absent { .. } => Ok(Vec::new()),
+        Read::Unreadable {
+            source: unreadable_source,
+            reason,
+            ..
+        } => Err(scope::unreadable(&unreadable_source, &reason)),
+        Read::Unknown { what } => Err(scope::unreadable("identity grants", &what)),
+    }
 }

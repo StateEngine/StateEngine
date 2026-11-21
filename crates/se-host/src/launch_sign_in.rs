@@ -3,34 +3,11 @@
 //! the core decodes them; it lives for the one awaited call in a task local and is
 //! never logged, persisted, echoed in an error or put in a receipt. A launch no
 //! owner terminal started carries none.
+pub use se_harness::SignIn;
+use se_harness::sign_in::CLAUDE;
 use serde_json::Value;
-use zeroize::Zeroize;
 
 const KEY: &str = "launch_sign_in";
-/// Claude's sign-in variables. Its config location stays the host's, so transcripts
-/// are watched where the provider writes them.
-pub(crate) const CLAUDE: [&str; 2] = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"];
-
-#[derive(Clone, Default)]
-pub struct SignIn(Vec<(String, String)>);
-impl SignIn {
-    pub(crate) fn get(&self, name: &str) -> Option<&str> {
-        self.0
-            .iter()
-            .find(|(key, _)| key == name)
-            .map(|(_, value)| value.as_str())
-    }
-}
-impl std::fmt::Debug for SignIn {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("SignIn([redacted])")
-    }
-}
-impl Drop for SignIn {
-    fn drop(&mut self) {
-        self.0.iter_mut().for_each(|(_, value)| value.zeroize());
-    }
-}
 
 #[cfg(feature = "listener")]
 tokio::task_local! {
@@ -85,7 +62,7 @@ pub(crate) fn take(
     map.into_iter()
         .map(named)
         .collect::<se_types::Result<_>>()
-        .map(|values| Some(SignIn(values)))
+        .map(|values| Some(SignIn::from_pairs(values)))
 }
 
 /// Run one call with its launching terminal's sign-in in scope.

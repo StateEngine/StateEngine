@@ -58,7 +58,9 @@ pub struct ErasureReceipt {
     pub backups_replaced: usize,
     /// Free space the database rewrite and backup replacement need.
     pub required_bytes: u64,
+    /// The copies StateEngine knows of; `unlisted` says what it cannot know.
     pub residuals: Vec<ForgetResidual>,
+    pub unlisted: String,
     /// The retained, content-free audit fact once cleanup is complete.
     pub completed_event: Option<EventId>,
     pub next: Option<ForgetNext>,
@@ -68,6 +70,8 @@ impl ErasureReceipt {
         self.outcome == "forgotten"
     }
 }
+/// What no residual list can cover, stated on every plan and receipt.
+pub const UNLISTED: &str = "Text already shown or relayed elsewhere, such as a phone channel, a remote device or a provider's own records, is not listed and cannot be erased here.";
 /// The command that confirms this exact plan.
 pub fn confirm(input: &StoreForget) -> ForgetNext {
     let mut argv = vec!["se".to_string(), "forget".to_string()];

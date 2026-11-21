@@ -14,9 +14,9 @@ pub use crate::process::LaunchCoordinator;
 #[cfg(all(feature = "listener", target_os = "linux", target_env = "gnu"))]
 mod memory;
 #[cfg(feature = "listener")]
-pub(crate) mod pool;
-#[cfg(feature = "listener")]
 pub use pool::*;
+#[cfg(feature = "listener")]
+pub(crate) use se_harness::pool;
 #[cfg(feature = "listener")]
 mod call;
 #[cfg(feature = "listener")]

@@ -1,0 +1,39 @@
+//! Provider harness adapters, ACP transport, child process I/O, and shared harness contracts.
+#[cfg(feature = "listener")]
+pub mod acp;
+#[cfg(feature = "listener")]
+pub mod child_io;
+pub mod codex_forward;
+pub mod deadline;
+pub mod harness;
+pub mod json_wire;
+#[cfg(feature = "secode")]
+pub mod linked;
+pub mod model;
+#[cfg(feature = "runtime")]
+pub mod pool;
+pub mod ports;
+#[cfg(feature = "listener")]
+pub mod process_io;
+pub mod session;
+pub mod sign_in;
+#[cfg(feature = "listener")]
+pub mod startup_timing;
+#[cfg(test)]
+#[path = "../../test-support/directory.rs"]
+mod test_directory;
+
+pub use deadline::{
+    CALL_TIMEOUT, ClientOptions, Deadline, HELLO_TIMEOUT, IDLE_TIMEOUT, WRITE_TIMEOUT,
+};
+pub use harness::*;
+pub use model::*;
+#[cfg(feature = "runtime")]
+pub use pool::{BlockingClass, BlockingPool};
+pub use ports::{AtlasHookConfigFn, BellRegistry, LivePublisher, LiveTurnRole};
+#[cfg(all(unix, feature = "listener"))]
+pub use process_io::UnixProviderIo;
+#[cfg(all(windows, feature = "listener"))]
+pub use process_io::WindowsProviderIo;
+pub use session::*;
+pub use sign_in::SignIn;
