@@ -179,7 +179,9 @@ fn recipient_transcripts(c: &Connection, seq: i64) -> StoreResult<Vec<ResidualCo
     let mut copies = Vec::new();
     while let Some(row) = rows.next().map_err(sql)? {
         let path: Vec<u8> = row.get(0).map_err(sql)?;
-        if let Some(location) = serde_json::from_slice::<Option<NativePath>>(&path).map_err(invalid)? {
+        if let Some(location) =
+            serde_json::from_slice::<Option<NativePath>>(&path).map_err(invalid)?
+        {
             copies.push(ResidualCopy {
                 custodian: "recipient's provider transcript".into(),
                 location,
