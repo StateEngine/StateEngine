@@ -1,5 +1,5 @@
 //! Native custody tests use invalid dummy credentials, never a real provider token.
-#![cfg(any(target_os = "linux", windows))]
+#![cfg(all(feature = "channels", any(target_os = "linux", windows)))]
 #[path = "../../test-support/directory.rs"]
 mod cleanup_directory;
 use se_host::channels::{ChannelError, NativeChannelCredentials};
