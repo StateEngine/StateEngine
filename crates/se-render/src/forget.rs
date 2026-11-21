@@ -61,6 +61,7 @@ pub(super) fn output(value: &ErasureReceipt, out: &mut impl Write) -> io::Result
             writeln!(out, "    {}", residual.reason)?;
         }
     }
+    writeln!(out, "{}", value.unlisted)?;
     if let Some(next) = &value.next {
         writeln!(out, "{}:", next.text)?;
         writeln!(out, "  {}", next.argv.join(" "))?;

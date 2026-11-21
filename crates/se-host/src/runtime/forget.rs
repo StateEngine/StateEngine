@@ -39,6 +39,7 @@ fn receipt(input: &StoreForget, plan: &ErasurePlan, outcome: &str) -> Result<Era
             .collect(),
         backups_replaced: plan.owned_generations.len(),
         required_bytes: plan.required_bytes,
+        unlisted: se_core::ops::store_forget::UNLISTED.into(),
         residuals: plan
             .residuals
             .iter()
