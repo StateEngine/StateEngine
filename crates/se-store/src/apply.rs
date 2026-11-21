@@ -693,6 +693,14 @@ pub(crate) fn apply(
             crate::erasure::apply::body(c, &s, &target, &erasure, original_bytes, "message")?;
             codec::aux(c, seq, facts)?;
         }
+        RecoveryRecorded { receipt, .. } => {
+            let text = receipt.as_materialized()?;
+            if text.len() > 1024 * 1024 {
+                return Err(invalid("restore receipt exceeds 1 MiB"));
+            }
+            payload(c, seq, "restore-receipt", text)?;
+            codec::aux(c, seq, facts)?;
+        }
         ErasureCompleted { erasure, .. } => {
             crate::erasure::apply::completed(c, seq, &erasure)?;
             codec::aux(c, seq, facts)?;

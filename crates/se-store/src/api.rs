@@ -128,6 +128,12 @@ pub trait StoreFactory {
         admission: &Admission,
         lease: &dyn RuntimeLease,
     ) -> StoreResult<RestoreOutcome<Self::Host>>;
+    /// The owners a backup registers, after verifying it as `restore_backup` does.
+    fn backup_owners(
+        options: &StoreOptions,
+        files: &dyn StateFiles,
+        backup: &BackupGeneration,
+    ) -> StoreResult<Vec<se_types::HumanId>>;
     fn open_reader(options: &StoreOptions) -> StoreResult<Read<Self::Reader>>;
     fn open_direct(
         options: &StoreOptions,

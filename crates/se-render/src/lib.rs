@@ -14,6 +14,7 @@ mod labels;
 mod mail_state_tests;
 mod read;
 mod remote;
+mod restore;
 mod stop;
 mod transcript;
 mod wake;
@@ -109,6 +110,10 @@ fn render_human(value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
         HumanKind::Import => render_import(kind, value, out),
         HumanKind::Erasure => match value {
             AnyOutput::StoreForget(value) => forget::output(&value.value, out),
+            _ => Err(renderer_disagreement()),
+        },
+        HumanKind::Restore => match value {
+            AnyOutput::StoreRestore(value) => restore::output(&value.value, out),
             _ => Err(renderer_disagreement()),
         },
         HumanKind::Init

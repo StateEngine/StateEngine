@@ -314,7 +314,13 @@ pub(crate) fn plan(
         targets: observed.bodies.into_iter().map(|b| b.target).collect(),
         required_bytes,
         owned_generations,
-        residuals: within_cap(observed.residuals)?,
+        residuals: within_cap(
+            observed
+                .residuals
+                .into_iter()
+                .chain(preserved_copies(&options.state_directory)?)
+                .collect(),
+        )?,
     })
 }
 /// The commit names at most `MAX_RESIDUALS` copies; refuse in the plan, with a
@@ -332,6 +338,29 @@ fn within_cap(residuals: Vec<ResidualCopy>) -> StoreResult<Vec<ResidualCopy>> {
         return Err(error);
     }
     Ok(residuals)
+}
+/// Stores a restore replaced are kept whole under `preserved/`; a forget leaves
+/// them as they are, so the folder is named once rather than claimed as erased.
+fn preserved_copies(home: &std::path::Path) -> StoreResult<Option<ResidualCopy>> {
+    let directory = home.join("preserved");
+    let files = match std::fs::read_dir(&directory) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(fail(StoreErrorCode::Unreadable, error.to_string())),
+        Ok(entries) => entries
+            .collect::<std::io::Result<Vec<_>>>()
+            .map_err(|e| fail(StoreErrorCode::Unreadable, e.to_string()))?
+            .len(),
+    };
+    if files == 0 {
+        return Ok(None);
+    }
+    Ok(Some(ResidualCopy {
+        custodian: "stores replaced by a restore".into(),
+        location: NativePath::from_local(directory).map_err(invalid)?,
+        reason: format!(
+            "A restore kept the store it replaced here, unchanged ({files} files); they may still hold this text. Delete them yourself once you no longer need them."
+        ),
+    }))
 }
 /// An interrupted erasure is planned again from its own committed manifest, so
 /// a retry resumes its cleanup instead of failing on bodies it already removed.

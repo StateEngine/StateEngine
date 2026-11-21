@@ -28,6 +28,7 @@ mod read_phase;
 mod read_phase_pool;
 mod read_slots;
 pub mod remote;
+mod restore;
 mod return_mail;
 mod security_receipt;
 mod staging;

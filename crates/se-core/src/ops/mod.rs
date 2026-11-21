@@ -35,11 +35,13 @@ pub mod session_commit;
 pub mod session_reference;
 pub mod stop_plan;
 pub mod store_forget;
+pub mod store_restore;
 pub use agent_launch::{AgentLaunch, LaunchPending, LaunchPendingState, LaunchReply, LaunchResult};
 pub use agent_stop::{AgentStop, StopResult};
 pub use agent_wake::{AgentWake, WakeResult};
 pub use project_remove::{ProjectRemove, RemoveResult};
 pub use store_forget::{ErasureReceipt, StoreForget};
+pub use store_restore::{RestoreResult, StoreRestore};
 pub mod agent_config;
 pub mod agent_config_receipt;
 mod agent_session;
@@ -263,6 +265,7 @@ ops! {
     AgentLaunch => AgentLaunch, LaunchReply, ("agent.launch",leaf(&["launch"]),tool("stateengine_agent_launch","Launch an agent","Start self or your controlled child fresh with StateEngine context; resume:true reopens the latest conversation, resume:session-ID selects one. Same-key retry for pending; force consents to stop existing jobs."),Either,false,Never,Custody,Project,HostAutoStart,"se.launch",Launch,&["J2","J3"]);
     AgentStop => AgentStop, StopResult, ("agent.stop",leaf(&["stop"]),tool("stateengine_agent_stop","Stop an agent","Stop self or your controlled child; returns original-conversation resume command."),Either,false,Never,Custody,ProjectOrAll,HostAutoStart,"se.stop",Stop,&["J3","J5"]);
     AgentWake => AgentWake, WakeResult, ("agent.wake",leaf(&["agent","wake"]),tool("stateengine_agent_wake","Wake an agent","Arm this running agent's pending mail delivery and report the committed offer; never launches a process."),Either,false,Never,Custody,Project,Host,"se.wake",Wake,&["J4"]);
+    StoreRestore => StoreRestore, RestoreResult, ("store.restore",leaf(&["restore"]),no_mcp("Restoring history replaces the store; it needs the verified owner at a human terminal."),Owner,false,Always,Custody,Home,None,"se.restore-result",Restore,&["J3","J5"]);
     StoreForget => StoreForget, ErasureReceipt, ("store.forget",leaf(&["forget"]),no_mcp("Forgetting is irreversible; it needs the verified owner at a human terminal."),Owner,false,Always,Custody,Home,HostAutoStart,"se.erasure-receipt",Erasure,&["J3","J5"]);
     ProjectRemove => ProjectRemove, RemoveResult, ("project.remove",leaf(&["remove"]),no_mcp("Project removal requires the verified owner at a human terminal."),Owner,false,Always,Custody,ProjectOrAll,HostAutoStart,"se.remove",Remove,&["J5"]);
     AgentShow => AgentShow, AgentStatusOutput, ("agent.show",leaf(&["agent","show"]),no_mcp("This owner CLI read inspects saved agent metadata."),Owner,false,Never,Read,Project,None,"se.agent-status",AgentStatus,&["E3","J2"]);
@@ -324,6 +327,7 @@ impl AnyOp {
             Self::AgentStop(v) => Some(&v.idempotency_key),
             Self::ProjectRemove(v) => Some(&v.idempotency_key),
             Self::StoreForget(v) => Some(&v.idempotency_key),
+            Self::StoreRestore(v) => Some(&v.idempotency_key),
             Self::ConfigSet(v) => Some(&v.idempotency_key),
             Self::AssignmentWrite(v) => Some(&v.idempotency_key),
             Self::CaptainSet(v) => Some(&v.idempotency_key),
@@ -410,6 +414,7 @@ impl AnyOutput {
             }
             Self::RuntimeDown(v) if !v.value.complete => 2,
             Self::StoreForget(v) if v.value.outcome == "incomplete" => 2,
+            Self::StoreRestore(v) if v.value.outcome == "refused" => 1,
             Self::RuntimeUp(v) if v.value.state == "pending" => 2,
             Self::EventRead(v) => match &v.value {
                 EventOutput::Present(_) => 0,
