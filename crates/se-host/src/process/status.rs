@@ -46,6 +46,55 @@ impl LaunchCoordinator {
             })
             .await
     }
+    /// An agent caller in a project also sees its peers' summaries, read as
+    /// the owner of that same project; the caller's own read is unchanged.
+    pub(super) fn peer_request(
+        &self,
+        admission: &Admission,
+    ) -> Option<(Admission, se_types::AgentId)> {
+        let (se_store::Actor::Agent(caller), se_store::Scope::Project(_)) =
+            (&admission.actor, &admission.scope)
+        else {
+            return None;
+        };
+        let owner = Admission {
+            scope: admission.scope.clone(),
+            actor: se_store::Actor::Human(self.capability_admission.owner.clone()),
+            session: None,
+            generation: admission.generation,
+        };
+        Some((owner, caller.clone()))
+    }
+    /// Peers' rows observed and settled exactly as the owner would see them,
+    /// then reduced to the summary a peer row holds. The working tree is not
+    /// rescanned for this. A failure is reported as unreadable, never as no peers.
+    pub(super) async fn peer_summaries(
+        self: &Arc<Self>,
+        owner: Admission,
+        caller: &se_types::AgentId,
+        deadline: &Deadline,
+    ) -> Read<Vec<PeerRow>> {
+        let input = ProjectStatus {
+            all: false,
+            fresh: false,
+            watch_only: true,
+        };
+        let observed = match self.status(input, owner, deadline).await {
+            Ok(output) => match self.observe_secode_output(output, deadline).await {
+                Ok(output) => self.observe_provider_output(output),
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        };
+        match observed {
+            Ok(output) => se_core::ops::agent_state::peer_rows(&output, caller),
+            Err(error) => Read::Unreadable {
+                source: "peer summaries".into(),
+                reason: error.to_string(),
+                error: Some(Box::new(error.body)),
+            },
+        }
+    }
     pub(super) fn observe_status(
         &self,
         output: &mut AnyOutput,

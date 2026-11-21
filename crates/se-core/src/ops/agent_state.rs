@@ -198,3 +198,40 @@ pub(crate) fn working_note<R: Snapshot>(
         },
     })
 }
+
+/// Peer summaries from a settled owner status of the same project: every agent
+/// but the caller, reduced to the fields a peer row holds.
+pub fn peer_rows(owner: &AnyOutput, caller: &AgentId) -> Read<Vec<PeerRow>> {
+    let AnyOutput::ProjectStatus(status) = owner else {
+        return Read::Unreadable {
+            source: "peer summaries".into(),
+            reason: "the owner read returned another operation family".into(),
+            error: None,
+        };
+    };
+    let Some(agents) = &status.value.agents else {
+        return Read::Absent {
+            checked: "the owner status listed no agents".into(),
+        };
+    };
+    if agents.next().is_some() {
+        return Read::Unknown {
+            what: "the project has more agents than one status page; peer summaries are not shown partially".into(),
+        };
+    }
+    Read::Present {
+        value: agents
+            .items()
+            .iter()
+            .filter(|row| &row.id != caller)
+            .map(|row| PeerRow {
+                id: row.id.clone(),
+                name: row.name.clone(),
+                role: row.role.clone(),
+                provider: row.provider,
+                state: row.state.clone(),
+                working_note: row.working_note.clone(),
+            })
+            .collect(),
+    }
+}
