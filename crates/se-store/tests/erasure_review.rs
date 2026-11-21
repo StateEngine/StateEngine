@@ -1,7 +1,7 @@
 //! Reviewer judge: forgetting one message removes its bytes from every file the
 //! store owns, keeps the neighbouring message, and refuses a mismatched approval.
 use se_store::*;
-use std::{path::Path, time::Duration, time::Instant};
+use std::time::{Duration, Instant};
 #[path = "support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
@@ -14,7 +14,29 @@ const FORGOTTEN: &str = "forget-me-7f3a9c2e-synthetic-private-text";
 const KEPT: &str = "keep-me-41d8b6aa-synthetic-neighbour-text";
 const BUDGET: Duration = Duration::from_secs(60);
 
-fn files_holding(root: &Path, needle: &[u8]) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+/// Reads one owned file. Windows refuses reads of the lease file and SQLite's
+/// shared-memory index while they are locked (ERROR_LOCK_VIOLATION); neither
+/// holds message text, so only those two may be skipped, and only for that error.
+fn read_owned(path: &std::path::Path) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error)
+            if cfg!(windows)
+                && error.raw_os_error() == Some(33)
+                && path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|name| name == "runtime.lock" || name.ends_with("-shm")) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(format!("{}: {error}", path.display()).into()),
+    }
+}
+fn files_holding(
+    root: &std::path::Path,
+    needle: &[u8],
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut hits = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -23,11 +45,11 @@ fn files_holding(root: &Path, needle: &[u8]) -> Result<Vec<String>, Box<dyn std:
             let kind = entry.file_type()?;
             if kind.is_dir() {
                 stack.push(entry.path());
-            } else if kind.is_file() {
-                let bytes = std::fs::read(entry.path())?;
-                if bytes.windows(needle.len()).any(|w| w == needle) {
-                    hits.push(entry.path().display().to_string());
-                }
+            } else if kind.is_file()
+                && read_owned(&entry.path())?
+                    .is_some_and(|bytes| bytes.windows(needle.len()).any(|w| w == needle))
+            {
+                hits.push(entry.path().display().to_string());
             }
         }
     }
