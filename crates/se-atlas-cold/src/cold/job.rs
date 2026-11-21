@@ -315,7 +315,9 @@ impl ColdJob {
                     }
                     self.completion = Some(*summary);
                     // A lost connection here is a worker failure, not a bare
-                    // socket error; only a timeout is a scheduling stall.
+                    // socket error; only a timeout is a scheduling stall. The
+                    // acknowledgement waits at most 200 ms itself, so that is the
+                    // bound a stall reports, not the job's remaining deadline.
                     self.worker
                         .acknowledge_completion()
                         .map_err(|error| match error.kind() {
