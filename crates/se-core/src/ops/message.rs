@@ -5,7 +5,9 @@ use super::{
     receipt,
 };
 use crate::{commit::Cx, scope, store_error::store_error};
-use se_store::{Actor, MailDirection, MessageQuery, ReadBudget, Snapshot, StoredText};
+use se_store::{
+    Actor, MailDirection, MessageQuery, MessageRecord, ReadBudget, Snapshot, StoredText,
+};
 use se_types::{Detail, Page, PageRequest, Result, SeError, details};
 use std::{num::NonZeroU32, time::Duration};
 
@@ -23,11 +25,6 @@ impl ActorRefs {
     }
 }
 
-#[expect(
-    clippy::cognitive_complexity,
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<MessagePage> {
     input.validate()?;
     scope::project(cx.admission)?;
@@ -84,41 +81,7 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
                 })
         })
         .transpose()?;
-    let mut full_command = vec![
-        "se".into(),
-        "--project".into(),
-        scope::project(cx.admission)?.to_string(),
-        "msg".into(),
-        "list".into(),
-        "--full".into(),
-        "--limit".into(),
-        input.limit.to_string(),
-    ];
-    let to_selector = input.owner_to.as_deref().filter(|_| input.cli_list);
-    for (flag, actor, original) in [
-        ("--to", &to, to_selector),
-        ("--from", &from, input.from.as_deref()),
-    ] {
-        if let Some(actor) = actor {
-            let selector = match actor {
-                Actor::Human(_) => original.unwrap_or("owner").to_owned(),
-                Actor::Agent(_) | Actor::Remote(_) | Actor::Guest => actor.wire().to_owned(),
-            };
-            full_command.extend([flag.into(), selector]);
-        }
-    }
-    if let Some(kind) = &kind {
-        full_command.extend(["--kind".into(), kind.clone()]);
-    }
-    if matches!(input.view, MessageView::All) {
-        full_command.push("--all".into());
-    }
-    if input.newest {
-        full_command.push("--newest".into());
-    }
-    if let Some(cursor) = &input.cursor {
-        full_command.extend(["--cursor".into(), cursor.to_string()]);
-    }
+    let full_command = full_command(&input, cx, &to, &from, &kind)?;
     let query = MessageQuery {
         recipient: to.clone(),
         sender: from.clone(),
@@ -139,138 +102,230 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
         .read
         .message_count(count_query)
         .map_err(|e| store_error(&e))?;
-    let page = cx
-        .read
-        .messages(
-            query,
-            ReadBudget {
-                page: PageRequest {
-                    after: input.cursor,
-                    limit: NonZeroU32::new(u32::from(input.limit))
-                        .ok_or_else(|| SeError::invalid("limit", "positive"))?,
-                    max_bytes: NonZeroU32::new(256 * 1024)
-                        .ok_or_else(|| SeError::invalid("body budget", "positive"))?,
-                },
-                deadline: Duration::from_secs(5),
-            },
-        )
-        .map_err(|e| {
-            let mut error = store_error(&e);
-            if let Detail::CursorInvalid(detail) = error.body.detail() {
-                let mut detail = detail.clone();
-                detail.next_step =
-                    "Remove or replace --cursor, then rerun the same message list (MCP: cursor)."
-                        .into();
-                error.body = se_types::ErrorBody::new(Detail::CursorInvalid(detail));
-            }
-            error
-        })?;
+    let page = fetch_page(cx.read, &input, query)?;
     let window = page.window().clone();
     let next = page.next().cloned();
+    let (items, mut actors) = render_rows(&input, &full_command, cx, page)?;
+    let view = page_view(&input, cx, &to, &from, &mut actors)?;
+    Ok(MessagePage {
+        view,
+        consistency: "live-keyset".into(),
+        page: Page::new(items, window, next)?,
+        unread_total: Some(unread_total),
+    })
+}
+
+fn full_command<R: Snapshot>(
+    input: &MessageList,
+    cx: &Cx<'_, R>,
+    to: &Option<Actor>,
+    from: &Option<Actor>,
+    kind: &Option<String>,
+) -> Result<Vec<String>> {
+    let mut command = vec![
+        "se".into(),
+        "--project".into(),
+        scope::project(cx.admission)?.to_string(),
+        "msg".into(),
+        "list".into(),
+        "--full".into(),
+        "--limit".into(),
+        input.limit.to_string(),
+    ];
+    let to_selector = input.owner_to.as_deref().filter(|_| input.cli_list);
+    for (flag, actor, original) in [
+        ("--to", to, to_selector),
+        ("--from", from, input.from.as_deref()),
+    ] {
+        if let Some(actor) = actor {
+            let selector = match actor {
+                Actor::Human(_) => original.unwrap_or("owner").to_owned(),
+                Actor::Agent(_) | Actor::Remote(_) | Actor::Guest => actor.wire().to_owned(),
+            };
+            command.extend([flag.into(), selector]);
+        }
+    }
+    if let Some(kind) = kind {
+        command.extend(["--kind".into(), kind.clone()]);
+    }
+    if matches!(input.view, MessageView::All) {
+        command.push("--all".into());
+    }
+    if input.newest {
+        command.push("--newest".into());
+    }
+    if let Some(cursor) = &input.cursor {
+        command.extend(["--cursor".into(), cursor.to_string()]);
+    }
+    Ok(command)
+}
+fn fetch_page<R: Snapshot>(
+    read: &mut R,
+    input: &MessageList,
+    query: MessageQuery,
+) -> Result<Page<MessageRecord>> {
+    read.messages(
+        query,
+        ReadBudget {
+            page: PageRequest {
+                after: input.cursor.clone(),
+                limit: NonZeroU32::new(u32::from(input.limit))
+                    .ok_or_else(|| SeError::invalid("limit", "positive"))?,
+                max_bytes: NonZeroU32::new(256 * 1024)
+                    .ok_or_else(|| SeError::invalid("body budget", "positive"))?,
+            },
+            deadline: Duration::from_secs(5),
+        },
+    )
+    .map_err(|e| {
+        let mut error = store_error(&e);
+        if let Detail::CursorInvalid(detail) = error.body.detail() {
+            let mut detail = detail.clone();
+            detail.next_step =
+                "Remove or replace --cursor, then rerun the same message list (MCP: cursor)."
+                    .into();
+            error.body = se_types::ErrorBody::new(Detail::CursorInvalid(detail));
+        }
+        error
+    })
+}
+fn render_rows<R: Snapshot>(
+    input: &MessageList,
+    full_command: &[String],
+    cx: &mut Cx<'_, R>,
+    page: Page<MessageRecord>,
+) -> Result<(Vec<MessageRow>, ActorRefs)> {
     let mut items = Vec::with_capacity(page.items().len());
     let mut actors = ActorRefs::default();
     for record in page.into_items() {
-        let from = if matches!(record.sender, Actor::Remote(_)) {
-            // Remote provenance belongs to each message, not just its sender.
-            receipt::mail_sender_ref(cx.read, &record)?
-        } else {
-            actors.get(cx.read, &record.sender)?
-        };
-        let event = scope::require_present(
-            cx.read
-                .event(record.event.clone())
-                .map_err(|e| store_error(&e))?,
-            "mail sent event",
-            "Read the original message event in the same project, then retry this inbox/list cursor; do not send another message.",
-        )?;
-        let StoredText::Present(body) = record.body else {
-            return Err(scope::unreadable(
-                "message body",
-                "content is erased; it cannot be represented as an empty preview",
-            ));
-        };
-        if !record.body_complete {
-            return Err(scope::unreadable(
-                "message body",
-                "the full-body store read returned a truncated body",
-            ));
-        }
-        let bytes = body.len() as u64;
-        let preview_end = if input.full {
-            body.len()
-        } else {
-            body.char_indices()
-                .nth(usize::from(input.preview_chars.unwrap_or(400)))
-                .map(|(offset, _)| offset)
-                .unwrap_or(body.len())
-        };
-        let complete = preview_end == body.len();
-        let kind = serde_json::from_value(serde_json::Value::String(record.kind))
-            .map_err(|e| scope::unreadable("stored message kind", &e.to_string()))?;
-        let body_command = (!complete).then(|| command_text(&full_command));
-        let body_argv = (!complete).then(|| full_command.clone());
-        let delivery = Delivery {
-            state: if matches!(record.recipient, Actor::Human(_)) {
-                "not-applicable"
-            } else if record.delivered.is_some() {
-                "delivered"
-            } else {
-                "pending"
-            }
-            .into(),
-            at: None,
-        };
-        let disposition = Delivery {
-            state: if record.superseded_by.is_some() {
-                "superseded"
-            } else if record.dismissed.is_some() {
-                "dismissed"
-            } else if record.read.is_some() {
-                "read"
-            } else {
-                "unread"
-            }
-            .into(),
-            at: None,
-        };
-        items.push(MessageRow {
-            channel_reply: channel_reply(cx, &record.message, &record.recipient)?,
-            remote_reply: remote_reply_from(&from, &record.message),
-            id: record.message,
-            event_id: record.event,
-            from,
-            to: if record.work.is_some() {
-                receipt::floor_ref()
-            } else {
-                actors.get(cx.read, &record.recipient)?
-            },
-            for_recipient: if record.work.is_some() {
-                Some(actors.get(cx.read, &record.recipient)?)
-            } else {
-                None
-            },
-            work: record.work,
-            kind,
-            sent_at: receipt::timestamp(if event.header.door == se_store::Door::Import {
-                event.header.occurred_at_us
-            } else {
-                event.recorded_at_us
-            })?,
-            reply_to: record.reply_to,
-            refs: record.refs,
-            delivery,
-            disposition,
-            notification: receipt::notification(cx.read, record.quiet, record.notifications)?,
-            body: MessageBody {
-                text: body[..preview_end].into(),
-                complete,
-                bytes,
-                command: body_command,
-                argv: body_argv,
-            },
-            unreadable: None,
-        });
+        items.push(render_row(input, full_command, cx, &mut actors, record)?);
     }
+    Ok((items, actors))
+}
+fn render_row<R: Snapshot>(
+    input: &MessageList,
+    full_command: &[String],
+    cx: &mut Cx<'_, R>,
+    actors: &mut ActorRefs,
+    record: MessageRecord,
+) -> Result<MessageRow> {
+    let from = if matches!(record.sender, Actor::Remote(_)) {
+        // Remote provenance belongs to each message, not just its sender.
+        receipt::mail_sender_ref(cx.read, &record)?
+    } else {
+        actors.get(cx.read, &record.sender)?
+    };
+    let event = scope::require_present(
+        cx.read
+            .event(record.event.clone())
+            .map_err(|e| store_error(&e))?,
+        "mail sent event",
+        "Read the original message event in the same project, then retry this inbox/list cursor; do not send another message.",
+    )?;
+    let StoredText::Present(body) = record.body else {
+        return Err(scope::unreadable(
+            "message body",
+            "content is erased; it cannot be represented as an empty preview",
+        ));
+    };
+    if !record.body_complete {
+        return Err(scope::unreadable(
+            "message body",
+            "the full-body store read returned a truncated body",
+        ));
+    }
+    let bytes = body.len() as u64;
+    let preview_end = if input.full {
+        body.len()
+    } else {
+        body.char_indices()
+            .nth(usize::from(input.preview_chars.unwrap_or(400)))
+            .map(|(offset, _)| offset)
+            .unwrap_or(body.len())
+    };
+    let complete = preview_end == body.len();
+    let kind = serde_json::from_value(serde_json::Value::String(record.kind))
+        .map_err(|e| scope::unreadable("stored message kind", &e.to_string()))?;
+    let body_command = (!complete).then(|| command_text(full_command));
+    let body_argv = (!complete).then(|| full_command.to_vec());
+    let delivery = Delivery {
+        state: delivery_state(&record.recipient, record.delivered.is_some()).into(),
+        at: None,
+    };
+    let disposition = Delivery {
+        state: disposition_state(
+            record.superseded_by.is_some(),
+            record.dismissed.is_some(),
+            record.read.is_some(),
+        )
+        .into(),
+        at: None,
+    };
+    Ok(MessageRow {
+        channel_reply: channel_reply(cx, &record.message, &record.recipient)?,
+        remote_reply: remote_reply_from(&from, &record.message),
+        id: record.message,
+        event_id: record.event,
+        from,
+        to: if record.work.is_some() {
+            receipt::floor_ref()
+        } else {
+            actors.get(cx.read, &record.recipient)?
+        },
+        for_recipient: if record.work.is_some() {
+            Some(actors.get(cx.read, &record.recipient)?)
+        } else {
+            None
+        },
+        work: record.work,
+        kind,
+        sent_at: receipt::timestamp(if event.header.door == se_store::Door::Import {
+            event.header.occurred_at_us
+        } else {
+            event.recorded_at_us
+        })?,
+        reply_to: record.reply_to,
+        refs: record.refs,
+        delivery,
+        disposition,
+        notification: receipt::notification(cx.read, record.quiet, record.notifications)?,
+        body: MessageBody {
+            text: body[..preview_end].into(),
+            complete,
+            bytes,
+            command: body_command,
+            argv: body_argv,
+        },
+        unreadable: None,
+    })
+}
+fn delivery_state(recipient: &Actor, delivered: bool) -> &'static str {
+    if matches!(recipient, Actor::Human(_)) {
+        "not-applicable"
+    } else if delivered {
+        "delivered"
+    } else {
+        "pending"
+    }
+}
+fn disposition_state(superseded: bool, dismissed: bool, read: bool) -> &'static str {
+    if superseded {
+        "superseded"
+    } else if dismissed {
+        "dismissed"
+    } else if read {
+        "read"
+    } else {
+        "unread"
+    }
+}
+fn page_view<R: Snapshot>(
+    input: &MessageList,
+    cx: &mut Cx<'_, R>,
+    to: &Option<Actor>,
+    from: &Option<Actor>,
+    actors: &mut ActorRefs,
+) -> Result<MessagePageView> {
     let to_ref = to
         .as_ref()
         .map(|actor| actors.get(cx.read, actor))
@@ -279,7 +334,7 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
         .as_ref()
         .map(|actor| actors.get(cx.read, actor))
         .transpose()?;
-    let view = MessagePageView {
+    Ok(MessagePageView {
         op: "list".into(),
         recipient: to_ref.clone(),
         disposition: if matches!(input.view, MessageView::Unread) {
@@ -300,7 +355,7 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
         filter: MessageFilter {
             to: to_ref,
             from: from_ref,
-            kind: input.kind,
+            kind: input.kind.clone(),
         },
         inspection: matches!(cx.admission.actor, Actor::Human(_))
             && to.as_ref().is_some_and(|to| to != &cx.admission.actor),
@@ -311,12 +366,6 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
             "own"
         }
         .into(),
-    };
-    Ok(MessagePage {
-        view,
-        consistency: "live-keyset".into(),
-        page: Page::new(items, window, next)?,
-        unread_total: Some(unread_total),
     })
 }
 fn scope_denied<R: Snapshot>(cx: &Cx<'_, R>, filter: &str) -> SeError {
