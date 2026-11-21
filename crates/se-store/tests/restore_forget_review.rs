@@ -13,6 +13,25 @@ use native_host::{host, options, wait_until};
 const SECRET: &str = "restore-then-forget-5c1e88d0-synthetic-private-text";
 const BUDGET: Duration = Duration::from_secs(60);
 
+/// Reads one owned file. Windows refuses reads of the lease file and SQLite's
+/// shared-memory index while they are locked (ERROR_LOCK_VIOLATION); neither
+/// holds message text, so only those two may be skipped, and only for that error.
+fn read_owned(path: &std::path::Path) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error)
+            if cfg!(windows)
+                && error.raw_os_error() == Some(33)
+                && path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|name| name == "runtime.lock" || name.ends_with("-shm")) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(format!("{}: {error}", path.display()).into()),
+    }
+}
 fn files_holding(
     root: &std::path::Path,
     needle: &[u8],
@@ -26,9 +45,8 @@ fn files_holding(
             if kind.is_dir() {
                 stack.push(entry.path());
             } else if kind.is_file()
-                && std::fs::read(entry.path())?
-                    .windows(needle.len())
-                    .any(|w| w == needle)
+                && read_owned(&entry.path())?
+                    .is_some_and(|bytes| bytes.windows(needle.len()).any(|w| w == needle))
             {
                 hits.push(entry.path().display().to_string());
             }
