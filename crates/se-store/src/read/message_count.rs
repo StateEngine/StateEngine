@@ -49,35 +49,37 @@ impl SqliteSnapshot {
         self.db
             .progress_handler(1000, Some(move || Instant::now() >= deadline))
             .map_err(|error| self.read_sql(error))?;
-        let result = if let Some(own) = own.as_deref() {
-            let sent_visible = from.as_ref().is_none_or(|sender| sender == own);
-            let received_visible = to.as_ref().is_none_or(|recipient| recipient == own);
-            let sent = if sent_visible {
-                self.count_mail(&project, &query, to.as_deref(), Some(own))?
+        let result = (|| {
+            if let Some(own) = own.as_deref() {
+                let sent_visible = from.as_ref().is_none_or(|sender| sender == own);
+                let received_visible = to.as_ref().is_none_or(|recipient| recipient == own);
+                let sent = if sent_visible {
+                    self.count_mail(&project, &query, to.as_deref(), Some(own))?
+                } else {
+                    0
+                };
+                let received = if received_visible {
+                    self.count_mail(&project, &query, Some(own), from.as_deref())?
+                } else {
+                    0
+                };
+                let overlap = if sent_visible && received_visible {
+                    self.count_mail(&project, &query, Some(own), Some(own))?
+                } else {
+                    0
+                };
+                sent.checked_add(received)
+                    .and_then(|n| n.checked_sub(overlap))
+                    .ok_or_else(|| {
+                        fail(
+                            StoreErrorCode::ProjectionInconsistent,
+                            "mail visibility count overflow/overlap",
+                        )
+                    })
             } else {
-                0
-            };
-            let received = if received_visible {
-                self.count_mail(&project, &query, Some(own), from.as_deref())?
-            } else {
-                0
-            };
-            let overlap = if sent_visible && received_visible {
-                self.count_mail(&project, &query, Some(own), Some(own))?
-            } else {
-                0
-            };
-            sent.checked_add(received)
-                .and_then(|n| n.checked_sub(overlap))
-                .ok_or_else(|| {
-                    fail(
-                        StoreErrorCode::ProjectionInconsistent,
-                        "mail visibility count overflow/overlap",
-                    )
-                })
-        } else {
-            self.count_mail(&project, &query, to.as_deref(), from.as_deref())
-        };
+                self.count_mail(&project, &query, to.as_deref(), from.as_deref())
+            }
+        })();
         self.db
             .progress_handler(0, None::<fn() -> bool>)
             .map_err(|error| self.read_sql(error))?;
