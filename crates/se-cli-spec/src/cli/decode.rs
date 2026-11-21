@@ -252,6 +252,27 @@ pub fn from_matches_with_key(
             newest: flag(m, "newest"),
             owner_agent: None,
         }),
+        "history.search" => AnyOp::HistorySearch(HistorySearch {
+            query: required(m, "query")?,
+            session: text(m, "session")
+                .map(|value| {
+                    value
+                        .parse()
+                        .map_err(|_| SeError::invalid("session", "a canonical session ID"))
+                })
+                .transpose()?,
+            kinds: many(m, "kind"),
+            since: text(m, "position")
+                .map(se_core::ops::history::position_cursor)
+                .transpose()?,
+            limit: number(m, "limit")?,
+            byte_budget: required(m, "budget")?
+                .parse()
+                .map_err(|_| SeError::invalid("budget", "1024..1048576 bytes"))?,
+            cursor: text(m, "cursor").map(Cursor::new).transpose()?,
+            newest: flag(m, "newest"),
+            owner_agent: None,
+        }),
         "history.event_read" => AnyOp::EventRead(EventRead {
             event_id: required(m, "event")?,
         }),
