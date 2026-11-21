@@ -365,7 +365,7 @@ pub(super) fn plan(
     let mut read = phase
         .into_snapshot(read_scope(&admission))
         .map_err(|error| store_error(&error))?;
-    let result = {
+    let plan_arm = || {
         let mut cx = Cx {
             read: &mut read,
             admission: &admission,
@@ -383,6 +383,7 @@ pub(super) fn plan(
             HostedInput::Capture(capture) => plan_capture(capture, selections, &mut cx),
         }
     };
+    let result = plan_arm();
     let result = result.and_then(|step| {
         let observations = match &step {
             OpStep::Complete(output) => {
