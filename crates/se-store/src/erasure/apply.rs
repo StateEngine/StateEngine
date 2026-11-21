@@ -35,7 +35,7 @@ pub(crate) fn requested(
     targets: &[EraseTarget],
     residuals: &[ResidualCopy],
 ) -> StoreResult<()> {
-    if targets.is_empty() || targets.len() > 60 || residuals.len() > 64 {
+    if targets.is_empty() || targets.len() > 60 || residuals.len() > super::MAX_RESIDUALS {
         return Err(invalid(
             "erasure needs 1..60 targets and at most 64 residuals",
         ));

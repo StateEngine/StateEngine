@@ -11,6 +11,8 @@ use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
 
 const MAX_TARGETS: usize = 60;
+/// The most copies one erasure manifest names; the plan refuses past it.
+pub(crate) const MAX_RESIDUALS: usize = 64;
 /// A forgettable body, as the plan observed it.
 struct Body {
     target: EraseTarget,
@@ -169,27 +171,49 @@ fn residual(
 /// The recipient agent's recorded provider transcripts written after the message
 /// was sent: the message may have been shown to it there, through its mail
 /// prompt or a read tool result.
-fn recipient_transcripts(c: &Connection, seq: i64) -> StoreResult<Vec<ResidualCopy>> {
+fn recipient_transcripts(c: &Connection, seq: i64) -> StoreResult<Option<ResidualCopy>> {
     let mut q = c
         .prepare(
-            "SELECT DISTINCT s.value FROM message_data m JOIN events e ON e.seq=m.event_seq JOIN turn_data t ON t.project_id=e.project_id AND t.agent_id=m.recipient_id AND t.event_seq>m.event_seq JOIN symbols s ON s.id=t.source_path WHERE m.event_seq=? LIMIT 16",
+            "SELECT DISTINCT s.value FROM message_data m JOIN events e ON e.seq=m.event_seq JOIN turn_data t ON t.project_id=e.project_id AND t.agent_id=m.recipient_id AND t.event_seq>m.event_seq JOIN symbols s ON s.id=t.source_path WHERE m.event_seq=?",
         )
         .map_err(sql)?;
     let mut rows = q.query([seq]).map_err(sql)?;
-    let mut copies = Vec::new();
+    let mut paths = Vec::new();
     while let Some(row) = rows.next().map_err(sql)? {
         let path: Vec<u8> = row.get(0).map_err(sql)?;
         if let Some(location) =
             serde_json::from_slice::<Option<NativePath>>(&path).map_err(invalid)?
         {
-            copies.push(ResidualCopy {
-                custodian: "recipient's provider transcript".into(),
-                location,
-                reason: "The recipient agent's conversation after this message may contain it; StateEngine does not own or edit that file.".into(),
-            });
+            paths.push(location.to_local().map_err(invalid)?);
         }
     }
-    Ok(copies)
+    // One entry per message, however many transcripts: their shared folder.
+    let Some(first) = paths.first() else {
+        return Ok(None);
+    };
+    let (location, reason) = if paths.len() == 1 {
+        (first.clone(), "The recipient agent's conversation after this message may contain it; StateEngine does not own or edit that file.".to_string())
+    } else {
+        let mut shared = first.clone();
+        while !paths.iter().all(|p| p.starts_with(&shared)) && shared.pop() {}
+        let folder = if shared.as_os_str().is_empty() {
+            first.clone()
+        } else {
+            shared
+        };
+        (
+            folder,
+            format!(
+                "The recipient agent's {} transcript files after this message, under this folder, may contain it; StateEngine does not own or edit them.",
+                paths.len()
+            ),
+        )
+    };
+    Ok(Some(ResidualCopy {
+        custodian: "recipient's provider transcripts".into(),
+        location: NativePath::from_local(location).map_err(invalid)?,
+        reason,
+    }))
 }
 fn observe(
     c: &Connection,
@@ -290,36 +314,53 @@ pub(crate) fn plan(
         targets: observed.bodies.into_iter().map(|b| b.target).collect(),
         required_bytes,
         owned_generations,
-        residuals: observed
-            .residuals
-            .into_iter()
-            .chain(preserved_copies(lease.files(), &options.state_directory)?)
-            .collect(),
+        residuals: within_cap(
+            observed
+                .residuals
+                .into_iter()
+                .chain(preserved_copies(&options.state_directory)?)
+                .collect(),
+        )?,
     })
 }
-/// Stores a restore replaced are kept whole under `preserved/`; a forget leaves
-/// them as they are, so each is named rather than claimed as erased.
-fn preserved_copies(
-    files: &dyn StateFiles,
-    home: &std::path::Path,
-) -> StoreResult<Vec<ResidualCopy>> {
-    let directory = home.join("preserved");
-    match std::fs::symlink_metadata(&directory) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(fail(StoreErrorCode::Unreadable, error.to_string())),
-        Ok(_) => (),
+/// The commit names at most `MAX_RESIDUALS` copies; refuse in the plan, with a
+/// step that works, rather than at --yes.
+fn within_cap(residuals: Vec<ResidualCopy>) -> StoreResult<Vec<ResidualCopy>> {
+    if residuals.len() > MAX_RESIDUALS {
+        let mut error = fail(
+            StoreErrorCode::InvalidTransition,
+            format!(
+                "these events leave {} copies to name, more than one forget can record ({MAX_RESIDUALS})",
+                residuals.len()
+            ),
+        );
+        error.remedy.text = "Forget fewer events at a time.".into();
+        return Err(error);
     }
-    files
-        .list_owned(&directory, 64)?
-        .into_iter()
-        .map(|path| {
-            Ok(ResidualCopy {
-                custodian: "store replaced by a restore".into(),
-                location: NativePath::from_local(path).map_err(invalid)?,
-                reason: "A restore kept the store it replaced here, unchanged; it may still hold this text. Delete it yourself once you no longer need it.".into(),
-            })
-        })
-        .collect()
+    Ok(residuals)
+}
+/// Stores a restore replaced are kept whole under `preserved/`; a forget leaves
+/// them as they are, so the folder is named once rather than claimed as erased.
+fn preserved_copies(home: &std::path::Path) -> StoreResult<Option<ResidualCopy>> {
+    let directory = home.join("preserved");
+    let files = match std::fs::read_dir(&directory) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(fail(StoreErrorCode::Unreadable, error.to_string())),
+        Ok(entries) => entries
+            .collect::<std::io::Result<Vec<_>>>()
+            .map_err(|e| fail(StoreErrorCode::Unreadable, e.to_string()))?
+            .len(),
+    };
+    if files == 0 {
+        return Ok(None);
+    }
+    Ok(Some(ResidualCopy {
+        custodian: "stores replaced by a restore".into(),
+        location: NativePath::from_local(directory).map_err(invalid)?,
+        reason: format!(
+            "A restore kept the store it replaced here, unchanged ({files} files); they may still hold this text. Delete them yourself once you no longer need them."
+        ),
+    }))
 }
 /// An interrupted erasure is planned again from its own committed manifest, so
 /// a retry resumes its cleanup instead of failing on bodies it already removed.
