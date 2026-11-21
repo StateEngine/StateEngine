@@ -20,7 +20,7 @@
   "se-remote": 3100,
   "se-repository": 1162,
   "se-store-contract": 2810,
-  "se-store-codec": 991,
+  "se-store-codec": 1400,
   "se-store-sql": 841,
   "se-core": 24310,
   "se-render": 4000,
