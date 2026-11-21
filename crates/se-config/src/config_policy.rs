@@ -40,6 +40,10 @@ pub struct RuntimeConfig {
     /// and the original independent maintenance slot.
     #[serde(default)]
     pub blocking_jobs: Option<u32>,
+    /// Seconds between wakes for mail, 0 (off, the default) through 3600. Mail
+    /// is always delivered; this only paces how often a busy agent is woken.
+    #[serde(default)]
+    pub mail_wake_interval_seconds: Option<u32>,
 }
 impl RuntimeConfig {
     pub fn resolve_blocking_jobs(&self, cores: Option<NonZeroUsize>) -> Result<NonZeroU32> {
@@ -396,7 +400,7 @@ pub fn key_metadata(key: &str) -> Result<ConfigKeyMeta> {
     let parts: Vec<_> = key.split('.').collect();
     let (human_only, agent_record) = match parts.as_slice() {
         ["default_project"] | ["launch", "provider" | "terminal"] | ["atlas", "enabled" | "hooks"] => (false, false),
-        ["runtime", "listen_port" | "blocking_jobs"] | ["capture", "enabled"] => (true, false),
+        ["runtime", "listen_port" | "blocking_jobs" | "mail_wake_interval_seconds"] | ["capture", "enabled"] => (true, false),
         ["providers", "claude" | "codex" | "secode" | "acp", "command" | "model" | "profile"] => (matches!(parts[2], "command" | "profile"), false),
         ["providers", "secode", "seed_profile"] => (true, false),
         ["acp", "arguments" | "environment" | "mode"] => (true, false),

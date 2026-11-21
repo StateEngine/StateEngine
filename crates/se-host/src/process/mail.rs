@@ -19,6 +19,8 @@ pub(super) struct State {
     pub seen: Vec<se_types::MessageId>,
     pub backlog: bool,
     pub reoffer: bool,
+    /// When this agent was last woken for mail, on the monotonic clock.
+    pub last_offer: Option<tokio::time::Instant>,
 }
 pub(super) struct Flight {
     pub(super) reservation: core::Reservation,
@@ -276,6 +278,7 @@ impl LaunchCoordinator {
         let call = launch_util::call(self.store.generation, deadline)?;
         let attempt = id()?;
         let observed_at_us = crate::runtime::start::now_unix_micros()?;
+        work.mail.last_offer = Some(tokio::time::Instant::now());
         work.mail.flight = Some(Flight {
             reservation: reserved,
             text_sha256: Sha256::digest(offer.text.as_str().as_bytes()).into(),

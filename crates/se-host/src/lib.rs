@@ -72,7 +72,9 @@ pub use process::launch_util::resolve_provider as resolve_provider_executable;
     feature = "listener",
     any(target_os = "linux", target_os = "macos", windows)
 ))]
-pub use process::{ProcessConfiguration, ProcessDrain, ProcessOptions, Reconciliation};
+pub use process::{
+    ProcessConfiguration, ProcessDrain, ProcessOptions, Reconciliation, mail_wake_interval,
+};
 #[cfg(all(unix, feature = "listener"))]
 pub use process_io::UnixProviderIo;
 #[cfg(all(windows, feature = "listener"))]

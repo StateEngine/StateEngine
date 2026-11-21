@@ -49,6 +49,7 @@ mod wake;
 mod window;
 #[cfg(target_os = "linux")]
 mod window_join;
+pub use monitor::mail_wake_interval;
 pub use recovery::Reconciliation;
 pub use shutdown::ProcessDrain;
 
