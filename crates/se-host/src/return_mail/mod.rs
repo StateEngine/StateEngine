@@ -164,7 +164,7 @@ async fn read<T: Send + 'static>(
     let generation = context.generation;
     context
         .blocking
-        .run_owned(&session::control::deadline()?, move || {
+        .run_owned(&crate::remote::remote_deadline()?, move || {
             let phase = crate::runtime::executor::checked_pooled_phase(&reads, generation)?;
             let result = work(&phase).map_err(|e| store_error(&e));
             crate::runtime::executor::close_read(result, phase.close())
@@ -182,7 +182,7 @@ async fn background_read<T: Send + 'static>(
         .blocking
         .run(
             crate::runtime::BlockingClass::Background,
-            &session::control::deadline()?,
+            &crate::remote::remote_deadline()?,
             move || {
                 let phase = crate::runtime::executor::checked_pooled_phase(&reads, generation)?;
                 let result = work(&phase).map_err(|e| store_error(&e));

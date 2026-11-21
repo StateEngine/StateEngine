@@ -210,42 +210,55 @@ pub fn uninstall(value: &UninstallOutput, out: &mut impl Write) -> io::Result<()
 pub fn uninstall_deferred(value: &UninstallOutput, out: &mut impl Write) -> io::Result<()> {
     uninstall_report(value, true, out)
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn uninstall_report(
     value: &UninstallOutput,
     deferred: bool,
     out: &mut impl Write,
 ) -> io::Result<()> {
     if let Some(cleanup) = &value.home_cleanup {
-        writeln!(
-            out,
-            "Initialized-home cleanup; executable and PATH retained."
-        )?;
-        match &cleanup.runtime {
-            se_types::Read::Present { value } => runtime_stop(value, out)?,
-            se_types::Read::Absent { checked } => {
-                writeln!(out, "Runtime stop report absent. Checked: {checked}")?
-            }
-            se_types::Read::Unreadable { source, reason, .. } => {
-                writeln!(out, "Runtime stop report unreadable at {source}: {reason}")?
-            }
-            se_types::Read::Unknown { what } => writeln!(out, "Runtime stop not verified: {what}")?,
-        }
-        for file in &cleanup.runtime_files {
-            writeln!(out, "{}: {}", file.path, outcome(file.outcome))?;
-            witness(&file.witness, out)?;
-        }
-        writeln!(out, "{}", cleanup.manual_data_removal)?;
+        home_cleanup_report(cleanup, out)?;
     }
     stops(&value.stops, out)?;
-    for file in &value.install_files {
+    installed_files_report(&value.install_files, out)?;
+    directories_report(&value.directories, out)?;
+    integrations_report(&value.integrations, out)?;
+    for directory in &value.recovery {
+        recovery_directory(directory, out)?;
+    }
+    revocations_report(&value.revocations, out)?;
+    path_report(&value.path, out)?;
+    closing_report(value, deferred, out)
+}
+fn home_cleanup_report(cleanup: &InitializedHomeCleanup, out: &mut impl Write) -> io::Result<()> {
+    writeln!(
+        out,
+        "Initialized-home cleanup; executable and PATH retained."
+    )?;
+    match &cleanup.runtime {
+        se_types::Read::Present { value } => runtime_stop(value, out)?,
+        se_types::Read::Absent { checked } => {
+            writeln!(out, "Runtime stop report absent. Checked: {checked}")?
+        }
+        se_types::Read::Unreadable { source, reason, .. } => {
+            writeln!(out, "Runtime stop report unreadable at {source}: {reason}")?
+        }
+        se_types::Read::Unknown { what } => writeln!(out, "Runtime stop not verified: {what}")?,
+    }
+    for file in &cleanup.runtime_files {
         writeln!(out, "{}: {}", file.path, outcome(file.outcome))?;
         witness(&file.witness, out)?;
     }
-    for directory in &value.directories {
+    writeln!(out, "{}", cleanup.manual_data_removal)
+}
+fn installed_files_report(files: &[FileEffect], out: &mut impl Write) -> io::Result<()> {
+    for file in files {
+        writeln!(out, "{}: {}", file.path, outcome(file.outcome))?;
+        witness(&file.witness, out)?;
+    }
+    Ok(())
+}
+fn directories_report(directories: &[DirectoryEffect], out: &mut impl Write) -> io::Result<()> {
+    for directory in directories {
         let outcome = match directory.outcome {
             DirectoryOutcome::Removed => "removed",
             DirectoryOutcome::AlreadyAbsent => "already absent",
@@ -257,7 +270,10 @@ fn uninstall_report(
         writeln!(out, "{}: {outcome}", directory.path)?;
         witness(&directory.witness, out)?;
     }
-    for integration in &value.integrations {
+    Ok(())
+}
+fn integrations_report(integrations: &[IntegrationEffect], out: &mut impl Write) -> io::Result<()> {
+    for integration in integrations {
         writeln!(
             out,
             "{} ({}): {}",
@@ -267,63 +283,73 @@ fn uninstall_report(
         )?;
         witness(&integration.witness, out)?;
     }
-    for directory in &value.recovery {
-        writeln!(out, "Recovery scan {}:", directory.directory)?;
-        witness(&directory.witness, out)?;
-        match &directory.copies {
-            se_types::Read::Present { value: copies } => {
-                if copies.is_empty() {
-                    writeln!(out, "  No recovery copies found")?;
-                }
-                for copy in copies {
-                    match &copy.restored_to {
-                        Some(target) => writeln!(out, "  {} restored to {}", copy.path, target)?,
-                        None => writeln!(out, "  {} preserved; recovery unresolved", copy.path)?,
-                    }
-                    witness(&copy.witness, out)?;
-                }
+    Ok(())
+}
+fn recovery_directory(directory: &RecoveryDirectoryEffect, out: &mut impl Write) -> io::Result<()> {
+    writeln!(out, "Recovery scan {}:", directory.directory)?;
+    witness(&directory.witness, out)?;
+    match &directory.copies {
+        se_types::Read::Present { value: copies } => {
+            if copies.is_empty() {
+                writeln!(out, "  No recovery copies found")?;
             }
-            se_types::Read::Absent { checked } => writeln!(out, "  Absent: {checked}")?,
-            se_types::Read::Unreadable { source, reason, .. } => {
-                writeln!(out, "  Unreadable {source}: {reason}")?
+            for copy in copies {
+                match &copy.restored_to {
+                    Some(target) => writeln!(out, "  {} restored to {}", copy.path, target)?,
+                    None => writeln!(out, "  {} preserved; recovery unresolved", copy.path)?,
+                }
+                witness(&copy.witness, out)?;
             }
-            se_types::Read::Unknown { what } => writeln!(out, "  Unknown: {what}")?,
         }
-        match &directory.temporary_files {
-            se_types::Read::Present { value: files } => {
-                for file in files {
-                    writeln!(
-                        out,
-                        "  Installer temporary {}: {}",
-                        file.path,
-                        outcome(file.outcome)
-                    )?;
-                    witness(&file.witness, out)?;
-                }
+        se_types::Read::Absent { checked } => writeln!(out, "  Absent: {checked}")?,
+        se_types::Read::Unreadable { source, reason, .. } => {
+            writeln!(out, "  Unreadable {source}: {reason}")?
+        }
+        se_types::Read::Unknown { what } => writeln!(out, "  Unknown: {what}")?,
+    }
+    match &directory.temporary_files {
+        se_types::Read::Present { value: files } => {
+            for file in files {
+                writeln!(
+                    out,
+                    "  Installer temporary {}: {}",
+                    file.path,
+                    outcome(file.outcome)
+                )?;
+                witness(&file.witness, out)?;
             }
-            se_types::Read::Absent { checked } => {
-                writeln!(out, "  Installer temporaries absent: {checked}")?
-            }
-            se_types::Read::Unreadable { source, reason, .. } => {
-                writeln!(out, "  Installer temporaries unreadable {source}: {reason}")?
-            }
-            se_types::Read::Unknown { what } => {
-                writeln!(out, "  Installer temporaries unknown: {what}")?
-            }
+        }
+        se_types::Read::Absent { checked } => {
+            writeln!(out, "  Installer temporaries absent: {checked}")?
+        }
+        se_types::Read::Unreadable { source, reason, .. } => {
+            writeln!(out, "  Installer temporaries unreadable {source}: {reason}")?
+        }
+        se_types::Read::Unknown { what } => {
+            writeln!(out, "  Installer temporaries unknown: {what}")?
         }
     }
-    for revoked in &value.revocations {
+    Ok(())
+}
+fn revocations_report(revocations: &[RevocationEffect], out: &mut impl Write) -> io::Result<()> {
+    for revoked in revocations {
         writeln!(out, "Session {} credential revocation:", revoked.session)?;
         witness(&revoked.witness, out)?;
     }
-    writeln!(out, "PATH ({}):", value.path.scope)?;
-    witness(&value.path.witness, out)?;
-    for entry in &value.path.before_entries {
+    Ok(())
+}
+fn path_report(path: &PathEffect, out: &mut impl Write) -> io::Result<()> {
+    writeln!(out, "PATH ({}):", path.scope)?;
+    witness(&path.witness, out)?;
+    for entry in &path.before_entries {
         writeln!(out, "  Before: {entry}")?;
     }
-    for entry in &value.path.after_entries {
+    for entry in &path.after_entries {
         writeln!(out, "  After: {entry}")?;
     }
+    Ok(())
+}
+fn closing_report(value: &UninstallOutput, deferred: bool, out: &mut impl Write) -> io::Result<()> {
     for issue in &value.issues {
         writeln!(out, "Uninstall result check: {issue}")?;
     }

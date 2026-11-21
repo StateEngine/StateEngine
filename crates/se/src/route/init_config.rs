@@ -8,10 +8,6 @@ use se_store::StateFiles;
 use se_types::{Result, SeError};
 use sha2::{Digest, Sha256};
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn listener_port(
     cx: &Bootstrap,
     files: &Files,
@@ -24,6 +20,31 @@ pub fn listener_port(
     };
     let mut pin = se_proc::OwnedFile::open(&path)
         .map_err(|e| scope::unreadable("setup configuration", &e.to_string()))?;
+    let (observed, prior) = load_observed_config(&mut pin)?;
+    observed_matches_bootstrap(&observed, cx)?;
+    let mut updated = desired.clone();
+    let (port, _reservation) = match observed.runtime.listen_port {
+        Some(port) => (port, None),
+        None => {
+            let (port, reservation) = pick_free_port(cx, owner)?;
+            (port, Some(reservation))
+        }
+    };
+    updated.runtime.listen_port = Some(port);
+    updated.validate()?;
+    if serde_json::to_value(&updated)
+        .map_err(|e| scope::unreadable("configuration identity", &e.to_string()))?
+        == serde_json::to_value(&observed)
+            .map_err(|e| scope::unreadable("configuration identity", &e.to_string()))?
+    {
+        return Ok((port, false));
+    }
+    publish_and_verify(&path, pin, files, prior.as_deref(), &updated)?;
+    Ok((port, true))
+}
+fn load_observed_config(
+    pin: &mut Option<se_proc::OwnedFile>,
+) -> Result<(ConfigFile, Option<Vec<u8>>)> {
     let prior = pin
         .as_mut()
         .map(|p| p.read(1024 * 1024))
@@ -39,7 +60,10 @@ pub fn listener_port(
         None => ConfigFile::default(),
     };
     observed.validate()?;
-    if serde_json::to_value(&observed)
+    Ok((observed, prior))
+}
+fn observed_matches_bootstrap(observed: &ConfigFile, cx: &Bootstrap) -> Result<()> {
+    if serde_json::to_value(observed)
         .map_err(|e| scope::unreadable("configuration identity", &e.to_string()))?
         != serde_json::to_value(&cx.config.value)
             .map_err(|e| scope::unreadable("configuration identity", &e.to_string()))?
@@ -49,60 +73,56 @@ pub fn listener_port(
             "selected configuration changed after bootstrap; retry without overwriting it",
         ));
     }
-    let mut updated = desired.clone();
-    let (port, _reservation) = match observed.runtime.listen_port {
-        Some(port) => (port, None),
-        None => {
-            // Dormant homes owned by the same OS user must not all start their search
-            // at the same port. A later external collision still refuses at bind time.
-            let mut seed = Sha256::new();
-            seed.update(owner.as_bytes());
-            seed.update([0]);
-            seed.update(cx.home.as_os_str().as_encoded_bytes());
-            let hash = seed.finalize();
-            let first = u16::from_le_bytes([hash[0], hash[1]]) % 10000;
-            let mut selected = None;
-            for step in 0..10000u16 {
-                let port = 20000 + (first + step) % 10000;
-                match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)) {
-                    Ok(listener) => {
-                        selected = Some((port, listener));
-                        break;
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => (),
-                    Err(error) => {
-                        return Err(scope::unreadable(
-                            "initial loopback listener port",
-                            &error.to_string(),
-                        ));
-                    }
-                }
+    Ok(())
+}
+fn pick_free_port(cx: &Bootstrap, owner: &str) -> Result<(u16, std::net::TcpListener)> {
+    // Dormant homes owned by the same OS user must not all start their search
+    // at the same port. A later external collision still refuses at bind time.
+    let mut seed = Sha256::new();
+    seed.update(owner.as_bytes());
+    seed.update([0]);
+    seed.update(cx.home.as_os_str().as_encoded_bytes());
+    let hash = seed.finalize();
+    let first = u16::from_le_bytes([hash[0], hash[1]]) % 10000;
+    let mut selected = None;
+    for step in 0..10000u16 {
+        let port = 20000 + (first + step) % 10000;
+        match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)) {
+            Ok(listener) => {
+                selected = Some((port, listener));
+                break;
             }
-            let (port, reservation) = selected.ok_or_else(|| {
-                scope::unreadable(
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => (),
+            Err(error) => {
+                return Err(scope::unreadable(
                     "initial loopback listener port",
-                    "all ports in 20000–29999 are already in use",
-                )
-            })?;
-            (port, Some(reservation))
+                    &error.to_string(),
+                ));
+            }
         }
-    };
-    updated.runtime.listen_port = Some(port);
-    updated.validate()?;
-    if serde_json::to_value(&updated)
-        .map_err(|e| scope::unreadable("configuration identity", &e.to_string()))?
-        == serde_json::to_value(&observed)
-            .map_err(|e| scope::unreadable("configuration identity", &e.to_string()))?
-    {
-        return Ok((port, false));
     }
-    let bytes = toml::to_string_pretty(&updated)
+    let (port, reservation) = selected.ok_or_else(|| {
+        scope::unreadable(
+            "initial loopback listener port",
+            "all ports in 20000–29999 are already in use",
+        )
+    })?;
+    Ok((port, reservation))
+}
+fn publish_and_verify(
+    path: &std::path::Path,
+    pin: Option<se_proc::OwnedFile>,
+    files: &Files,
+    prior: Option<&[u8]>,
+    updated: &ConfigFile,
+) -> Result<()> {
+    let bytes = toml::to_string_pretty(updated)
         .map_err(|e| scope::unreadable("setup configuration encoding", &e.to_string()))?
         .into_bytes();
     match pin {
         Some(pin) => pin
             .replace(
-                Sha256::digest(prior.as_deref().ok_or_else(|| {
+                Sha256::digest(prior.ok_or_else(|| {
                     SeError::invalid("configuration identity", "the retained prior bytes")
                 })?)
                 .into(),
@@ -110,10 +130,10 @@ pub fn listener_port(
             )
             .map_err(|e| scope::unreadable("setup configuration publication", &e.to_string()))?,
         None => files
-            .replace_owned(&path, None, &bytes)
+            .replace_owned(path, None, &bytes)
             .map_err(|e| store_error(&e))?,
     }
-    let mut readback = se_proc::OwnedFile::open(&path)
+    let mut readback = se_proc::OwnedFile::open(path)
         .map_err(|e| scope::unreadable("setup configuration readback", &e.to_string()))?
         .ok_or_else(|| {
             scope::unreadable(
@@ -131,5 +151,5 @@ pub fn listener_port(
             "the independently reopened bytes differ",
         ));
     }
-    Ok((port, true))
+    Ok(())
 }

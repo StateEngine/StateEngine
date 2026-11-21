@@ -1,0 +1,41 @@
+[package]
+name = "se-state-files"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+se-native-path = { path = "../se-native-path" }
+se-types = { path = "../se-types" }
+sha2.workspace = true
+zeroize.workspace = true
+serde.workspace = true
+rusqlite = { version = "0.41", features = ["bundled"] }
+
+# The pinned digest crate gates its aarch64 hardware backend behind this feature.
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+sha2 = { workspace = true, features = ["asm"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_SystemServices", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging", "Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Globalization"] }
+
+[lints.rust]
+unsafe_code = "allow"
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+unreachable = "deny"
+ignore_without_reason = "deny"
+# The structural guardrails the rest of the workspace inherits from the
+# workspace lints, listed here because this crate keeps its own lint table for
+# the FFI overrides above.
+too_many_lines = "warn"
+cognitive_complexity = "warn"
+too_many_arguments = "warn"
+struct_excessive_bools = "warn"

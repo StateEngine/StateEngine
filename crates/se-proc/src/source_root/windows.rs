@@ -131,30 +131,5 @@ pub(super) fn same_object(a: &File, b: &File) -> io::Result<bool> {
     Ok(ia.volume == ib.volume && ia.index == ib.index)
 }
 pub(super) fn revision(file: &File, directory: bool) -> io::Result<NativeFileRevision> {
-    let info = verify_handle(file, directory)?;
-    let id = crate::windows_native::file_id(file)?;
-    // SAFETY: all-integer native output initialized before the metadata query.
-    let mut basic: FILE_BASIC_INFO = unsafe { zeroed() };
-    // SAFETY: retained handle, initialized output and its exact native size.
-    if unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            FileBasicInfo,
-            (&mut basic as *mut FILE_BASIC_INFO).cast(),
-            size_of::<FILE_BASIC_INFO>() as u32,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    let mut volume = [0; 16];
-    volume[..8].copy_from_slice(&id.volume.to_be_bytes());
-    let unix_nanos = |ticks: i64| (i128::from(ticks) - 116_444_736_000_000_000) * 100;
-    Ok(NativeFileRevision {
-        volume,
-        file: id.index,
-        size: (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow),
-        mtime_unix_nanos: unix_nanos(basic.LastWriteTime),
-        ctime_unix_nanos: Some(unix_nanos(basic.ChangeTime)),
-    })
+    se_state_files::observe_file_revision_for(file, directory)
 }

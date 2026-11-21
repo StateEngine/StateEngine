@@ -8,35 +8,57 @@ use se_core::ops::outputs::*;
 use se_types::{OmissionReason, Page, Read};
 use std::io::{self, Write};
 
-#[expect(
-    clippy::cognitive_complexity,
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     if matches!(value.setup.state, SetupState::NotSetUp) {
-        writeln!(out, "StateEngine {} — no project here yet.", value.version)?;
-        writeln!(
-            out,
-            "  An agent ({} or {}) works in a project: a folder StateEngine tracks.",
-            super::labels::provider(se_types::Provider::Claude),
-            super::labels::provider(se_types::Provider::Codex)
-        )?;
-        writeln!(
-            out,
-            "  Start: se init            (registers this folder; your files and Git history stay as they are)"
-        )?;
-        writeln!(
-            out,
-            "  Then:  se status          (inspect the saved project and agent)"
-        )?;
-        return Ok(());
+        return not_set_up(value, out);
     }
+    let healthy_stopped = healthy_stopped_runtime(value);
+    header_lines(value, out)?;
+    project_lines(value, out)?;
+    runtime_lines(value, out)?;
+    agents_section(value, out)?;
+    projects_section(value, out)?;
+    unread_lines(value, out)?;
+    recording_lines(value, healthy_stopped, out)?;
+    atlas_lines(value, out)?;
+    pending_lines(value, healthy_stopped, out)?;
+    next_lines(value, out)
+}
+fn not_set_up(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
+    writeln!(out, "StateEngine {} — no project here yet.", value.version)?;
+    writeln!(
+        out,
+        "  An agent ({} or {}) works in a project: a folder StateEngine tracks.",
+        super::labels::provider(se_types::Provider::Claude),
+        super::labels::provider(se_types::Provider::Codex)
+    )?;
+    writeln!(
+        out,
+        "  Start: se init            (registers this folder; your files and Git history stay as they are)"
+    )?;
+    writeln!(
+        out,
+        "  Then:  se status          (inspect the saved project and agent)"
+    )
+}
+fn healthy_stopped_runtime(value: &StatusOutput) -> bool {
+    value.runtime.state == "stopped"
+        && value.agents.as_ref().is_some_and(|agents| {
+            agents.window().complete()
+                && agents.items().iter().all(|agent| {
+                    matches!(agent.session.state.as_str(), "stopped" | "never-launched")
+                })
+        })
+}
+fn header_lines(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "StateEngine {}", value.version)?;
     writeln!(out, "State home: {}", value.setup.home)?;
     if let Some(reason) = &value.setup.reason {
         writeln!(out, "Setup: {reason}")?;
     }
+    Ok(())
+}
+fn project_lines(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     match &value.project {
         Read::Present { value } => {
             writeln!(out, "Project: {} ({})", value.name, value.root)?;
@@ -50,6 +72,9 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
         }
         Read::Unknown { what } => writeln!(out, "Project unknown: {what}")?,
     }
+    Ok(())
+}
+fn runtime_lines(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "Runtime: {}", value.runtime.state)?;
     if let Some(reason) = &value.runtime.resources_unavailable {
         writeln!(out, "Host resources unavailable: {reason}")?;
@@ -81,6 +106,9 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
             process.pid, process.started_at
         )?;
     }
+    Ok(())
+}
+fn agents_section(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     if let Some(agents) = &value.agents {
         for agent in agents.items() {
             writeln!(
@@ -126,6 +154,9 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
         }
         omissions(agents, out)?;
     }
+    Ok(())
+}
+fn projects_section(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     if let Some(projects) = &value.projects {
         for project in projects.items() {
             writeln!(
@@ -142,6 +173,9 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
         }
         omissions(projects, out)?;
     }
+    Ok(())
+}
+fn unread_lines(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     if value.principal.is_some() {
         writeln!(
             out,
@@ -155,13 +189,13 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
             count(value.inbox.owner_unread)
         )?;
     }
-    let healthy_stopped = value.runtime.state == "stopped"
-        && value.agents.as_ref().is_some_and(|agents| {
-            agents.window().complete()
-                && agents.items().iter().all(|agent| {
-                    matches!(agent.session.state.as_str(), "stopped" | "never-launched")
-                })
-        });
+    Ok(())
+}
+fn recording_lines(
+    value: &StatusOutput,
+    healthy_stopped: bool,
+    out: &mut impl Write,
+) -> io::Result<()> {
     if !healthy_stopped || value.capture.state != "unknown" || value.atlas.state != "not-built" {
         writeln!(
             out,
@@ -182,6 +216,9 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     if let Some(reason) = &value.atlas.reason {
         writeln!(out, "  Atlas: {reason}")?;
     }
+    Ok(())
+}
+fn atlas_lines(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     if let Some(summary) = &value.atlas.summary {
         let c = &summary.coverage;
         if value.atlas.state == "preparing" && summary.epoch.is_none() {
@@ -212,6 +249,13 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
             }
         }
     }
+    Ok(())
+}
+fn pending_lines(
+    value: &StatusOutput,
+    healthy_stopped: bool,
+    out: &mut impl Write,
+) -> io::Result<()> {
     for pending in &value.pending {
         if pending.what == "runtime observation"
             && pending
@@ -228,6 +272,9 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
             writeln!(out, "Pending {}: {}", pending.what, pending.detail)?;
         }
     }
+    Ok(())
+}
+fn next_lines(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     if let Read::Present { value: project } = &value.project
         && let Some(agent) = value.agents.as_ref().and_then(|page| page.items().first())
         && agent.session.state == "never-launched"

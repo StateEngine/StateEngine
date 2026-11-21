@@ -4,16 +4,19 @@ use std::io::{self, Write};
 pub fn resume(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
     resume_at(value, None, out)
 }
-#[expect(
-    clippy::cognitive_complexity,
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn resume_at(
     value: &ResumeOutput,
     home: Option<&std::path::Path>,
     out: &mut impl Write,
 ) -> io::Result<()> {
+    status_header(value, out)?;
+    working_state_section(value, out)?;
+    waiting_section(value, out)?;
+    changed_section(value, out)?;
+    followup_sections(value, out)?;
+    continue_command(value, home, out)
+}
+fn status_header(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
     writeln!(
         out,
         "{}",
@@ -56,7 +59,9 @@ pub(super) fn resume_at(
     writeln!(
         out,
         "This reads saved context only; provider sign-in and task completion are not checked."
-    )?;
+    )
+}
+fn working_state_section(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "\nWhat was I doing?")?;
     match &value.working_state {
         Read::Present { value } => {
@@ -98,6 +103,9 @@ pub(super) fn resume_at(
             writeln!(out, "Working state unreadable at {source}: {reason}")?
         }
     }
+    Ok(())
+}
+fn waiting_section(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "\nWhat's waiting?")?;
     for message in value.unread.items() {
         writeln!(
@@ -112,6 +120,9 @@ pub(super) fn resume_at(
     if value.unread.items().is_empty() && value.unread.window().complete() {
         writeln!(out, "No unread messages in this snapshot.")?;
     }
+    Ok(())
+}
+fn changed_section(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "\nWhat changed?")?;
     if value.since.is_none() {
         writeln!(
@@ -133,7 +144,9 @@ pub(super) fn resume_at(
             "No new captured turns since that cursor; pending work and omissions follow."
         )?;
     }
-    super::transcript::render(&value.transcript, out)?;
+    super::transcript::render(&value.transcript, out)
+}
+fn followup_sections(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
     for turn in &value.recent_turns {
         writeln!(
             out,
@@ -175,7 +188,13 @@ pub(super) fn resume_at(
         out,
         "Context bytes: {} of {}; context complete: {}",
         value.budget.used_bytes, value.budget.limit_bytes, value.complete
-    )?;
+    )
+}
+fn continue_command(
+    value: &ResumeOutput,
+    home: Option<&std::path::Path>,
+    out: &mut impl Write,
+) -> io::Result<()> {
     write!(out, "Continue: se")?;
     if let Some(home) = home {
         let home = home.display().to_string();

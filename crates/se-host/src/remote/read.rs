@@ -8,8 +8,34 @@ use se_store::{EventBody, RecordedIdentity, remote::TargetFacts};
 use se_types::{Read, Result};
 use std::time::Instant;
 
-impl SecurityStore {
-    pub(crate) fn watch_position(
+pub(crate) trait SecurityStoreRead {
+    fn watch_position(
+        &self,
+        request: &view_request::ViewRequest,
+        target: &RemoteTarget,
+    ) -> Result<Option<se_store::StorePosition>>;
+    fn changes(
+        &self,
+        request: &view_request::ViewRequest,
+        target: &RemoteTarget,
+        query: se_store::remote::ChangeRequest<'_>,
+    ) -> Result<se_store::remote::ChangePage>;
+    fn targets(
+        &self,
+        request: &view_request::ViewRequest,
+        deadline: Instant,
+    ) -> Result<Vec<RemoteAgentView>>;
+    fn target_page(
+        &self,
+        request: &view_request::ViewRequest,
+        after: Option<&RemoteTarget>,
+        limit: u16,
+        deadline: Instant,
+    ) -> Result<Vec<RemoteAgentView>>;
+}
+
+impl SecurityStoreRead for SecurityStore {
+    fn watch_position(
         &self,
         request: &view_request::ViewRequest,
         target: &RemoteTarget,
@@ -24,7 +50,7 @@ impl SecurityStore {
         self.read(|phase| request.position(phase, target, now))
     }
 
-    pub(crate) fn changes(
+    fn changes(
         &self,
         request: &view_request::ViewRequest,
         target: &RemoteTarget,
@@ -58,7 +84,7 @@ impl SecurityStore {
                 timed.with_cause(error)
             })
     }
-    pub(crate) fn targets(
+    fn targets(
         &self,
         request: &view_request::ViewRequest,
         deadline: Instant,
@@ -75,6 +101,26 @@ impl SecurityStore {
                 .targets()
                 .iter()
                 .map(|target| request.target(phase, target, request.verb(), now))
+                .collect::<se_store::StoreResult<Vec<_>>>()
+        })?;
+        facts
+            .into_iter()
+            .map(|facts| observe(facts, deadline))
+            .collect()
+    }
+    fn target_page(
+        &self,
+        request: &view_request::ViewRequest,
+        after: Option<&RemoteTarget>,
+        limit: u16,
+        deadline: Instant,
+    ) -> Result<Vec<RemoteAgentView>> {
+        let now = super::session::now()?;
+        let facts = self.read(|phase| {
+            request
+                .page_targets(phase, after, limit, now)?
+                .iter()
+                .map(|target| request.target(phase, target, RemoteVerb::List, now))
                 .collect::<se_store::StoreResult<Vec<_>>>()
         })?;
         facts
@@ -268,27 +314,4 @@ fn observe(facts: TargetFacts, deadline: Instant) -> Result<RemoteAgentView> {
             value: facts.pending,
         },
     })
-}
-
-impl SecurityStore {
-    pub(crate) fn target_page(
-        &self,
-        request: &view_request::ViewRequest,
-        after: Option<&RemoteTarget>,
-        limit: u16,
-        deadline: Instant,
-    ) -> Result<Vec<RemoteAgentView>> {
-        let now = super::session::now()?;
-        let facts = self.read(|phase| {
-            request
-                .page_targets(phase, after, limit, now)?
-                .iter()
-                .map(|target| request.target(phase, target, RemoteVerb::List, now))
-                .collect::<se_store::StoreResult<Vec<_>>>()
-        })?;
-        facts
-            .into_iter()
-            .map(|facts| observe(facts, deadline))
-            .collect()
-    }
 }
