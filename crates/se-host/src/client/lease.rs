@@ -174,7 +174,7 @@ impl crate::client::BlockingIpcClient {
     ) -> Result<BlockingConnection> {
         let budget = Deadline::from_options(options)?;
         let warmup = budget.stage(COLD_HELLO_BUDGET)?;
-        let warmup_budget = warmup.budget;
+        let warmup_budget = warmup.budget();
         let started = Instant::now();
         let mut attempt = 0usize;
         loop {
