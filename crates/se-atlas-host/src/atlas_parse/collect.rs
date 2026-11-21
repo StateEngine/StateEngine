@@ -82,17 +82,8 @@ fn reply(
 /// A lost parse worker, with what is known about it: its exit and the tail of
 /// its stderr, so one lost connection can be diagnosed without a reproduction.
 fn worker_lost(worker: &mut AtlasWorker, reason: impl std::fmt::Display) -> SeError {
-    let exit = match worker.try_reap() {
-        Ok(Some(status)) => format!("worker exited ({status})"),
-        Ok(None) => "worker still running".to_string(),
-        Err(error) => format!("worker exit unreadable: {error}"),
-    };
-    #[cfg(target_os = "linux")]
-    let stderr = worker.stderr_report();
-    #[cfg(windows)]
-    let stderr = worker
-        .failure_diagnostic()
-        .unwrap_or_else(|error| format!("stderr unreadable: {error}"));
+    let exit = se_atlas_cold::worker_report::exit(worker);
+    let stderr = se_atlas_cold::worker_report::stderr(worker);
     failure(format!("{reason}; {exit}; {stderr}"))
 }
 /// A channel error on a live worker: past the deadline a timeout is expiry,

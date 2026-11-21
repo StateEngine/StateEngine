@@ -148,14 +148,8 @@ impl ColdJob {
         }
     }
     fn native_failure(&mut self, reason: impl std::fmt::Display) -> SeError {
-        // What is known about the worker itself, so one lost connection can be
-        // diagnosed without a reproduction. A repeated reap returns the same status.
-        let exit = match self.worker.try_reap() {
-            Ok(Some(status)) => format!("worker exited ({status})"),
-            Ok(None) => "worker still running".to_string(),
-            Err(error) => format!("worker exit unreadable: {error}"),
-        };
-        let stderr = self.stderr_report();
+        let exit = crate::worker_report::exit(&mut self.worker);
+        let stderr = crate::worker_report::stderr(&mut self.worker);
         SeError::new(se_types::Detail::AtlasUnreadable(
             se_types::details::AtlasUnreadable {
                 path: self
@@ -455,18 +449,6 @@ impl ColdJob {
             ));
         }
         Ok(Some(summary))
-    }
-    fn stderr_report(&mut self) -> String {
-        #[cfg(target_os = "linux")]
-        {
-            self.worker.stderr_report()
-        }
-        #[cfg(any(windows, target_os = "macos"))]
-        {
-            self.worker
-                .failure_diagnostic()
-                .unwrap_or_else(|error| format!("stderr unreadable: {error}"))
-        }
     }
 }
 fn metadata(
