@@ -45,6 +45,7 @@ pub use store_restore::{RestoreResult, StoreRestore};
 pub mod agent_config;
 pub mod agent_config_receipt;
 mod agent_session;
+pub mod agent_state;
 pub use agent_session::{process_from_record, unobserved_session};
 mod agent_command;
 pub mod agent_status;

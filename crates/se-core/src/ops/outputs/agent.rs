@@ -69,6 +69,10 @@ pub struct AgentRow {
     pub resume: ResumeCommand,
     pub unread: Option<u64>,
     pub last_activity_at: Option<String>,
+    /// What the agent is doing, derived from observed facts; absent on rows
+    /// no status read has settled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<AgentStateView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secode_binding: Option<Read<super::SecodeBindingView>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -83,12 +87,40 @@ pub struct CodexLoginView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
 }
+/// An agent's state, derived from facts StateEngine observes, never from the
+/// agent's own label.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct AgentStateView {
+    /// `working`, `attention`, `blocked`, `idle`, `running` (alive, turn not
+    /// observed), `turn-unreadable`, `starting`, `stopping`, `stopped` or
+    /// `unreachable`.
+    pub state: String,
+    /// When the state began, when StateEngine can say.
+    pub since: Option<String>,
+    pub elapsed_seconds: Option<u64>,
+    /// The agent's latest question that has no reply yet.
+    pub waiting_on: Option<WaitingOnView>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WaitingOnView {
+    pub message_id: se_types::MessageId,
+    pub to: String,
+    pub asked_at: String,
+    /// The recorded time `asked_at` shows, in Unix microseconds.
+    pub asked_at_us: i64,
+}
 /// A retained provider turn observation, not native liveness or task success.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderActivityView {
     pub activity: String,
     pub detail: String,
     pub quiet_seconds: Option<u64>,
+    /// When this activity began, such as the start of an active turn, and how
+    /// long ago that was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_seconds: Option<u64>,
     pub next_step: Option<String>,
 }
 /// Single-agent readback reuses the status/list row without flattening Read.

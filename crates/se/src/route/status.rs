@@ -434,6 +434,7 @@ pub(super) fn finish<R: ReadStore>(
     mut output: AnyOutput,
     admission: &Admission,
 ) -> Result<AnyOutput> {
+    se_core::ops::agent_state::settle(&mut output, super::execute::now_us()?)?;
     let AnyOutput::ProjectStatus(status) = &mut output else {
         return Ok(output);
     };

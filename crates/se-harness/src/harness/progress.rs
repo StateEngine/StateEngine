@@ -7,6 +7,8 @@ const QUIET_BOUND: Duration = Duration::from_secs(30);
 pub struct Progress {
     phase: Phase,
     last_event: Option<Instant>,
+    /// When the current phase began; events within an active turn keep it.
+    phase_started: Option<Instant>,
 }
 #[derive(Default)]
 enum Phase {
@@ -20,22 +22,27 @@ enum Phase {
     RetryingAuthentication,
 }
 impl Progress {
+    fn enter(&mut self, phase: Phase) {
+        let now = Instant::now();
+        if std::mem::discriminant(&self.phase) != std::mem::discriminant(&phase) {
+            self.phase_started = Some(now);
+        }
+        self.phase = phase;
+        self.last_event = Some(now);
+    }
     pub fn offered(&mut self) {
-        self.phase = Phase::Active;
-        self.last_event = Some(Instant::now());
+        self.enter(Phase::Active);
     }
     pub fn event(&mut self) {
         if matches!(self.phase, Phase::Active | Phase::RetryingAuthentication) {
-            self.phase = Phase::Active;
-            self.last_event = Some(Instant::now());
+            self.enter(Phase::Active);
         }
     }
     pub fn retrying_authentication(&mut self) {
-        self.phase = Phase::RetryingAuthentication;
-        self.last_event = Some(Instant::now());
+        self.enter(Phase::RetryingAuthentication);
     }
     pub fn terminal(&mut self, status: &str, authentication: bool) {
-        self.phase = if authentication {
+        let phase = if authentication {
             Phase::Authentication
         } else {
             match status {
@@ -44,7 +51,7 @@ impl Progress {
                 _ => Phase::Failed,
             }
         };
-        self.last_event = Some(Instant::now());
+        self.enter(phase);
     }
     pub fn view(&self, provider: &str) -> ProviderActivityView {
         let quiet = self.last_event.map(|at| at.elapsed());
@@ -102,6 +109,12 @@ impl Progress {
             activity: activity.into(),
             detail: detail.into(),
             quiet_seconds: quiet.map(|age| age.as_secs()),
+            phase_started_at: self.phase_started.and_then(|at| {
+                let wall = std::time::SystemTime::now().checked_sub(at.elapsed())?;
+                let micros = wall.duration_since(std::time::UNIX_EPOCH).ok()?.as_micros();
+                se_types::format_timestamp(i64::try_from(micros).ok()?).ok()
+            }),
+            phase_seconds: self.phase_started.map(|at| at.elapsed().as_secs()),
             next_step,
         }
     }

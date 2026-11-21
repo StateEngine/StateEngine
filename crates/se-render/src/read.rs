@@ -111,17 +111,24 @@ fn runtime_lines(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
 fn agents_section(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     if let Some(agents) = &value.agents {
         for agent in agents.items() {
+            let state = match &agent.state {
+                Some(state) if agent.session.state != "never-launched" => crew_state(state),
+                _ if agent.session.state == "never-launched" => "not started yet".into(),
+                _ => agent.session.state.clone(),
+            };
             writeln!(
                 out,
-                "  Agent {}: {} — unread messages {}",
+                "  Agent {}: {state} — unread messages {}",
                 agent.name,
-                if agent.session.state == "never-launched" {
-                    "not started yet"
-                } else {
-                    &agent.session.state
-                },
                 count(agent.unread)
             )?;
+            if let Some(question) = agent.state.as_ref().and_then(|s| s.waiting_on.as_ref()) {
+                writeln!(
+                    out,
+                    "    Waiting on {} to answer {} (asked {})",
+                    question.to, question.message_id, question.asked_at
+                )?;
+            }
             if let Some(harness) = &agent.harness {
                 writeln!(out, "    Harness: {harness}")?;
             }
@@ -155,6 +162,21 @@ fn agents_section(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> 
         omissions(agents, out)?;
     }
     Ok(())
+}
+/// "working for 4m", "idle for 2h 5m", or the bare state when its start is unknown.
+fn crew_state(state: &se_core::ops::AgentStateView) -> String {
+    let label = match state.state.as_str() {
+        "attention" => "needs attention",
+        "running" => "running (turns not observed)",
+        "turn-unreadable" => "running (turn state unreadable)",
+        other => other,
+    };
+    match state.elapsed_seconds {
+        Some(s) if s >= 3_600 => format!("{label} for {}h {}m", s / 3_600, s % 3_600 / 60),
+        Some(s) if s >= 60 => format!("{label} for {}m", s / 60),
+        Some(s) => format!("{label} for {s}s"),
+        None => label.into(),
+    }
 }
 fn projects_section(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     if let Some(projects) = &value.projects {
