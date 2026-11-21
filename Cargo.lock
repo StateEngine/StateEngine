@@ -1564,6 +1564,7 @@ dependencies = [
  "se-config",
  "se-core",
  "se-host",
+ "se-local-socket",
  "se-mcp",
  "se-proc",
  "se-remote-cli",
@@ -1712,6 +1713,7 @@ dependencies = [
  "se-channels",
  "se-config",
  "se-core",
+ "se-local-socket",
  "se-mcp",
  "se-proc",
  "se-remote",
@@ -1789,6 +1791,16 @@ dependencies = [
 [[package]]
 name = "se-identifiers"
 version = "0.0.1-alpha.1"
+
+[[package]]
+name = "se-local-socket"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-proc",
+ "tokio",
+ "uds_windows",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "se-mcp"
