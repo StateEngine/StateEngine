@@ -9,10 +9,6 @@ use se_store::{
 use se_types::Result;
 
 impl Channels {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) async fn flush_output(&self, id: ChannelId, deadline: &Deadline) -> Result<()> {
         let gate = self.output_gate(&id)?;
         let _release = tokio::time::timeout(deadline.remaining()?, gate.lock_owned())
@@ -46,22 +42,7 @@ impl Channels {
         let Pairing::Paired { .. } = state.pairing else {
             return Err(channel_error(ChannelError::BindingRevoked));
         };
-        let text = match self.output_text(&state, &output, deadline).await {
-            Ok(text) => Ok(text),
-            Err(error) => match error.body.detail() {
-                se_types::Detail::MessagingChannelRefused(detail)
-                    if matches!(
-                        detail.reason,
-                        ChannelError::ContentErased
-                            | ChannelError::InvalidInput
-                            | ChannelError::MessageTooLarge
-                    ) =>
-                {
-                    Err(detail.reason.clone())
-                }
-                _ => return Err(error),
-            },
-        };
+        let text = self.resolve_output_text(&state, &output, deadline).await?;
         let transport = self.transport(state.connector)?;
         let descriptor = transport.descriptor();
         let mut buttons = if text.is_ok() {
@@ -106,23 +87,7 @@ impl Channels {
             (Err(reason), _) => Err(reason),
             _ => Err(ChannelError::InvalidInput),
         };
-        let outcome = match result {
-            Ok(provider_message) => OutputOutcome::Sent { provider_message },
-            Err(ChannelError::RateLimited {
-                retry_after_seconds,
-            }) if attempt < 8 => OutputOutcome::Retry {
-                after_us: now()?.saturating_add(i64::from(retry_after_seconds) * 1_000_000),
-            },
-            Err(
-                ChannelError::SendOutcomeUnknown
-                | ChannelError::ProviderProtocol
-                | ChannelError::ProviderUnreachable,
-            ) => OutputOutcome::Unknown,
-            Err(error) => {
-                self.unavailable(state.id.clone(), error.code())?;
-                OutputOutcome::Failed { reason: error }
-            }
-        };
+        let outcome = self.output_outcome(&state, result, attempt)?;
         self.finish_output(&state, &output, attempt, outcome, deadline)
             .await
     }
@@ -336,6 +301,53 @@ impl Channels {
             .await?;
         self.changed.notify_waiters();
         Ok(())
+    }
+    async fn resolve_output_text(
+        &self,
+        state: &Connection,
+        output: &Outbound,
+        deadline: &Deadline,
+    ) -> Result<ChannelResult<String>> {
+        match self.output_text(state, output, deadline).await {
+            Ok(text) => Ok(Ok(text)),
+            Err(error) => match error.body.detail() {
+                se_types::Detail::MessagingChannelRefused(detail)
+                    if matches!(
+                        detail.reason,
+                        ChannelError::ContentErased
+                            | ChannelError::InvalidInput
+                            | ChannelError::MessageTooLarge
+                    ) =>
+                {
+                    Ok(Err(detail.reason.clone()))
+                }
+                _ => Err(error),
+            },
+        }
+    }
+    fn output_outcome(
+        &self,
+        state: &Connection,
+        result: ChannelResult<ExternalId>,
+        attempt: u64,
+    ) -> Result<OutputOutcome> {
+        match result {
+            Ok(provider_message) => Ok(OutputOutcome::Sent { provider_message }),
+            Err(ChannelError::RateLimited {
+                retry_after_seconds,
+            }) if attempt < 8 => Ok(OutputOutcome::Retry {
+                after_us: now()?.saturating_add(i64::from(retry_after_seconds) * 1_000_000),
+            }),
+            Err(
+                ChannelError::SendOutcomeUnknown
+                | ChannelError::ProviderProtocol
+                | ChannelError::ProviderUnreachable,
+            ) => Ok(OutputOutcome::Unknown),
+            Err(error) => {
+                self.unavailable(state.id.clone(), error.code())?;
+                Ok(OutputOutcome::Failed { reason: error })
+            }
+        }
     }
 }
 
