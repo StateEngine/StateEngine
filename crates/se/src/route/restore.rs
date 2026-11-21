@@ -5,15 +5,16 @@ use super::{execute, files::DirectLease, files::Files, owner, setup};
 use crate::bootstrap::Bootstrap;
 use se_core::{ops::*, scope, store_error::store_error};
 use se_store::{
-    Actor, Admission, BackupGeneration, IntentDigest, OwnerGuardInventory, ReadStore,
-    RecordIdentity, RequestIdentity, Scope, SqliteFactory, StoreFactory, StoreId, StoreOptions,
-    StorePosition,
+    Actor, Admission, BackupGeneration, EventBody, IntentDigest, OwnerGuardInventory, ReadScope,
+    ReadStore, RecordIdentity, RequestIdentity, Scope, Snapshot, SqliteFactory, SqliteReader,
+    StoreFactory, StoreId, StoreOptions, StorePosition, Visibility,
 };
 use se_types::{HumanId, Read, Result, SeError};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 struct Live {
+    reader: SqliteReader,
     inventory: OwnerGuardInventory,
     head: Option<StorePosition>,
 }
@@ -54,6 +55,7 @@ fn observe_live(
         Ok(setup::Setup::Present(reader)) => Ok(Some(Live {
             inventory: owner::inventory(&reader, files)?,
             head: reader.info().map_err(|e| store_error(&e))?.head,
+            reader,
         })),
         Ok(setup::Setup::Absent(_)) => Ok(None),
         Err(error) => {
@@ -90,13 +92,39 @@ fn newest(options: &StoreOptions) -> Result<Option<BackupGeneration>> {
         })
         .max_by_key(|generation| generation.through.sequence()))
 }
-fn agents(inventory: &OwnerGuardInventory) -> Vec<String> {
+/// Agents with live sessions, by name where the store can still say.
+fn agents(reader: &SqliteReader, inventory: &OwnerGuardInventory, owner: &HumanId) -> Vec<String> {
+    let name = |project: &se_types::ProjectId, actor: &Actor| -> Option<String> {
+        let scope = ReadScope {
+            admission: Admission {
+                scope: Scope::Project(project.clone()),
+                ..admission(owner)
+            },
+            visibility: Visibility::Owner,
+        };
+        let record = reader.snapshot(scope).ok()?.principal(actor.clone()).ok()?;
+        match record {
+            Read::Present { value } => match value.current.body {
+                EventBody::PrincipalRegistered { name, .. }
+                | EventBody::PrincipalRenamed { name, .. } => Some(name.to_string()),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
     let mut names: Vec<String> = inventory
         .processes
         .iter()
-        .map(|process| match &process.identity.principal {
-            Actor::Agent(agent) => agent.to_string(),
-            other => format!("{other:?}"),
+        .map(|process| {
+            let actor = &process.identity.principal;
+            let id = match actor {
+                Actor::Agent(agent) => agent.to_string(),
+                other => format!("{other:?}"),
+            };
+            match name(&process.project, actor) {
+                Some(name) => format!("{name} ({id})"),
+                None => id,
+            }
         })
         .collect();
     names.sort();
@@ -199,7 +227,7 @@ fn run(
     };
     let blocking = live
         .as_ref()
-        .map(|live| agents(&live.inventory))
+        .map(|live| agents(&live.reader, &live.inventory, &owner))
         .unwrap_or_default();
     if !blocking.is_empty() {
         return Ok(RestoreResult {
@@ -276,14 +304,14 @@ fn restore(
         .ok_or_else(|| {
             scope::unreadable(
                 "restore exclusion",
-                "a runtime, setup or writer still holds this home; nothing was restored",
+                "a runtime, setup or writer still holds this home; nothing was restored. Run `se down`, then confirm the restore again",
             )
         })?;
     // Re-observe custody under the exclusive lock: an agent that started after
     // the plan still blocks.
     let generated_at = receipt::timestamp(execute::now_us()?)?;
     if let Ok(setup::Setup::Present(reader)) = setup::inspect(&cx.home, generated_at) {
-        let blocking = agents(&owner::inventory(&reader, files)?);
+        let blocking = agents(&reader, &owner::inventory(&reader, files)?, owner);
         if !blocking.is_empty() {
             return Ok(RestoreResult {
                 outcome: "refused".into(),

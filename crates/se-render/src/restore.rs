@@ -22,6 +22,7 @@ pub(super) fn output(value: &RestoreResult, out: &mut impl Write) -> io::Result<
     };
     match value.events_lost {
         Some(0) => writeln!(out, "No events after the backup {tense} lost.")?,
+        Some(1) => writeln!(out, "1 event recorded after the backup {tense} lost.")?,
         Some(n) => writeln!(out, "{n} events recorded after the backup {tense} lost.")?,
         None if value.backup.is_some() => writeln!(
             out,
