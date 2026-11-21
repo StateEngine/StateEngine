@@ -1,9 +1,5 @@
 use super::*;
 impl SqliteSnapshot {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) fn count_messages(&mut self, query: MessageQuery) -> StoreResult<u64> {
         self.mail_source()?;
         let project = self.project_bytes()?;
@@ -54,44 +50,21 @@ impl SqliteSnapshot {
             .progress_handler(1000, Some(move || Instant::now() >= deadline))
             .map_err(|error| self.read_sql(error))?;
         let result = (|| {
-            let count = |recipient: Option<&[u8]>, sender: Option<&[u8]>| {
-                let h = self
-                    .info
-                    .head
-                    .as_ref()
-                    .map(StorePosition::sequence)
-                    .unwrap_or(0);
-                let (statement, args) = message::mail_sql(
-                    &project,
-                    recipient,
-                    sender,
-                    &query,
-                    h,
-                    0,
-                    "COUNT(DISTINCT d.sent_seq)",
-                    self.info.schema_version,
-                );
-                self.db
-                    .query_row(&statement, rusqlite::params_from_iter(args), |r| {
-                        crate::sql_value::value::<u64>(r, 0)
-                    })
-                    .map_err(|error| self.read_sql(error))
-            };
-            if let Some(own) = &own {
+            if let Some(own) = own.as_deref() {
                 let sent_visible = from.as_ref().is_none_or(|sender| sender == own);
                 let received_visible = to.as_ref().is_none_or(|recipient| recipient == own);
                 let sent = if sent_visible {
-                    count(to.as_deref(), Some(own))?
+                    self.count_mail(&project, &query, to.as_deref(), Some(own))?
                 } else {
                     0
                 };
                 let received = if received_visible {
-                    count(Some(own), from.as_deref())?
+                    self.count_mail(&project, &query, Some(own), from.as_deref())?
                 } else {
                     0
                 };
                 let overlap = if sent_visible && received_visible {
-                    count(Some(own), Some(own))?
+                    self.count_mail(&project, &query, Some(own), Some(own))?
                 } else {
                     0
                 };
@@ -104,12 +77,37 @@ impl SqliteSnapshot {
                         )
                     })
             } else {
-                count(to.as_deref(), from.as_deref())
+                self.count_mail(&project, &query, to.as_deref(), from.as_deref())
             }
         })();
         self.db
             .progress_handler(0, None::<fn() -> bool>)
             .map_err(|error| self.read_sql(error))?;
         result
+    }
+
+    fn count_mail(
+        &self,
+        project: &[u8],
+        query: &MessageQuery,
+        recipient: Option<&[u8]>,
+        sender: Option<&[u8]>,
+    ) -> StoreResult<u64> {
+        let h = self.info.head.as_ref().map_or(0, StorePosition::sequence);
+        let (statement, args) = message::mail_sql(
+            project,
+            recipient,
+            sender,
+            query,
+            h,
+            0,
+            "COUNT(DISTINCT d.sent_seq)",
+            self.info.schema_version,
+        );
+        self.db
+            .query_row(&statement, rusqlite::params_from_iter(args), |r| {
+                crate::sql_value::value::<u64>(r, 0)
+            })
+            .map_err(|error| self.read_sql(error))
     }
 }
