@@ -100,109 +100,18 @@ impl Turn {
             text,
         }
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub fn update(&mut self, update: &Value) -> Result<()> {
         let kind = update
             .get("sessionUpdate")
             .and_then(Value::as_str)
             .ok_or_else(|| failure("ACP update", "variant is absent"))?;
         match kind {
-            "agent_message_chunk" | "user_message_chunk" => {
-                let text = text(update.get("content"))?;
-                if text.is_empty() {
-                    return Ok(());
-                }
-                self.count(text.len())?;
-                if kind == "user_message_chunk" {
-                    self.echo.push_str(text);
-                    if !self.input.starts_with(&self.echo) {
-                        return Err(failure(
-                            "ACP input echo",
-                            "echo differs from original offered text",
-                        ));
-                    }
-                    return Ok(());
-                }
-                let id = update
-                    .get("messageId")
-                    .map(|v| {
-                        v.as_str()
-                            .filter(|s| !s.is_empty() && s.len() <= 512)
-                            .map(str::to_owned)
-                            .ok_or_else(|| failure("ACP message", "invalid message identity"))
-                    })
-                    .transpose()?;
-                let identity = ("assistant".to_owned(), id);
-                if self.last_message.as_ref() == Some(&identity) {
-                    self.messages
-                        .last_mut()
-                        .ok_or_else(|| failure("ACP message", "missing streamed message"))?
-                        .text
-                        .push_str(text);
-                } else {
-                    self.count(
-                        std::mem::size_of::<CapturedMessage>()
-                            + std::mem::size_of::<TurnItem>()
-                            + "assistant".len(),
-                    )?;
-                    self.order.push(TurnItem::Message {
-                        index: self.messages.len(),
-                    });
-                    self.messages.push(CapturedMessage {
-                        role: "assistant".into(),
-                        text: text.into(),
-                    });
-                    self.last_message = Some(identity);
-                }
-            }
+            "agent_message_chunk" | "user_message_chunk" => self.message_chunk(kind, update)?,
             "agent_thought_chunk" => {
                 // Reasoning is not a completed assistant message or a tool result.
                 text(update.get("content"))?;
             }
-            "tool_call" | "tool_call_update" => {
-                let id = update
-                    .get("toolCallId")
-                    .and_then(Value::as_str)
-                    .filter(|v| !v.is_empty() && v.len() <= 512)
-                    .ok_or_else(|| failure("ACP tool", "bounded tool identity required"))?;
-                let status = update.get("status").and_then(Value::as_str);
-                if kind == "tool_call" {
-                    if self.statuses.contains_key(id) {
-                        return Err(failure("ACP tool", "duplicate tool creation"));
-                    }
-                    self.permission_tools.remove(id);
-                    self.statuses
-                        .insert(id.into(), status.unwrap_or("pending").into());
-                } else {
-                    if !self.statuses.contains_key(id) && !self.permission_tools.remove(id) {
-                        return Err(failure("ACP tool", "update has no original tool call"));
-                    }
-                    let original = self
-                        .statuses
-                        .entry(id.into())
-                        .or_insert_with(|| "pending".to_owned());
-                    if let Some(status) = status {
-                        *original = status.into();
-                    }
-                }
-                if status.is_some_and(|s| {
-                    !matches!(s, "pending" | "in_progress" | "completed" | "failed")
-                }) {
-                    return Err(failure("ACP tool", "unknown tool state"));
-                }
-                let bytes = serde_json::to_vec(update)
-                    .map_err(|_| failure("ACP tool", "encoding failed"))?
-                    .len();
-                self.count(bytes)?;
-                self.order.push(TurnItem::Tool {
-                    index: self.tools.len(),
-                });
-                self.tools.push(update.clone());
-                self.last_message = None;
-            }
+            "tool_call" | "tool_call_update" => self.tool_call(kind, update)?,
             "plan"
             | "available_commands_update"
             | "current_mode_update"
@@ -216,6 +125,96 @@ impl Turn {
                 ));
             }
         }
+        Ok(())
+    }
+    fn message_chunk(&mut self, kind: &str, update: &Value) -> Result<()> {
+        let text = text(update.get("content"))?;
+        if text.is_empty() {
+            return Ok(());
+        }
+        self.count(text.len())?;
+        if kind == "user_message_chunk" {
+            self.echo.push_str(text);
+            if !self.input.starts_with(&self.echo) {
+                return Err(failure(
+                    "ACP input echo",
+                    "echo differs from original offered text",
+                ));
+            }
+            return Ok(());
+        }
+        let id = update
+            .get("messageId")
+            .map(|v| {
+                v.as_str()
+                    .filter(|s| !s.is_empty() && s.len() <= 512)
+                    .map(str::to_owned)
+                    .ok_or_else(|| failure("ACP message", "invalid message identity"))
+            })
+            .transpose()?;
+        let identity = ("assistant".to_owned(), id);
+        if self.last_message.as_ref() == Some(&identity) {
+            self.messages
+                .last_mut()
+                .ok_or_else(|| failure("ACP message", "missing streamed message"))?
+                .text
+                .push_str(text);
+        } else {
+            self.count(
+                std::mem::size_of::<CapturedMessage>()
+                    + std::mem::size_of::<TurnItem>()
+                    + "assistant".len(),
+            )?;
+            self.order.push(TurnItem::Message {
+                index: self.messages.len(),
+            });
+            self.messages.push(CapturedMessage {
+                role: "assistant".into(),
+                text: text.into(),
+            });
+            self.last_message = Some(identity);
+        }
+        Ok(())
+    }
+    fn tool_call(&mut self, kind: &str, update: &Value) -> Result<()> {
+        let id = update
+            .get("toolCallId")
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty() && v.len() <= 512)
+            .ok_or_else(|| failure("ACP tool", "bounded tool identity required"))?;
+        let status = update.get("status").and_then(Value::as_str);
+        if kind == "tool_call" {
+            if self.statuses.contains_key(id) {
+                return Err(failure("ACP tool", "duplicate tool creation"));
+            }
+            self.permission_tools.remove(id);
+            self.statuses
+                .insert(id.into(), status.unwrap_or("pending").into());
+        } else {
+            if !self.statuses.contains_key(id) && !self.permission_tools.remove(id) {
+                return Err(failure("ACP tool", "update has no original tool call"));
+            }
+            let original = self
+                .statuses
+                .entry(id.into())
+                .or_insert_with(|| "pending".to_owned());
+            if let Some(status) = status {
+                *original = status.into();
+            }
+        }
+        if status.is_some_and(|s| !matches!(s, "pending" | "in_progress" | "completed" | "failed"))
+        {
+            return Err(failure("ACP tool", "unknown tool state"));
+        }
+        let bytes = serde_json::to_vec(update)
+            .map_err(|_| failure("ACP tool", "encoding failed"))?
+            .len();
+        self.count(bytes)?;
+        self.order.push(TurnItem::Tool {
+            index: self.tools.len(),
+        });
+        self.tools.push(update.clone());
+        self.last_message = None;
         Ok(())
     }
     fn count(&mut self, bytes: usize) -> Result<()> {

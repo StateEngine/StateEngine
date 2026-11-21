@@ -1,14 +1,8 @@
 //! Application authorization stays on SSH; a forwarded socket carries no secret.
-use crate::remote::{LinkSecret, RemoteHello, RemoteHostId, RemoteReady};
+pub use crate::remote::auth::Authorization;
+use crate::remote::{RemoteHostId, RemoteReady};
 use se_types::ErrorBody;
 use serde::{Deserialize, Serialize};
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Authorization {
-    pub channel: [u8; 32],
-    pub hello: RemoteHello,
-    pub credential: LinkSecret,
-}
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthorizationResult {

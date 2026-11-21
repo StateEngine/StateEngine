@@ -4,14 +4,10 @@ use crate::host::ChannelDeadline as Deadline;
 use se_core::store_error::store_error;
 use se_store::{
     EventBody, Snapshot,
-    channel::{ActionId, Change, Connection},
+    channel::{ActionId, Change, Connection, PhoneIdentity, ResumeAction},
 };
-use se_types::{Read, Result};
+use se_types::{AgentId, EventId, ProjectId, Read, Result};
 impl Channels {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) async fn confirm_resume(
         &self,
         state: &Connection,
@@ -29,63 +25,18 @@ impl Channels {
         else {
             return Ok(false);
         };
-        let Some(id) = data.strip_prefix("r:") else {
+        let Some(id) = callback_action(data) else {
             return Ok(false);
         };
-        let Ok(id) = ActionId::new(id) else {
+        let Some(action) = self.offered_action(state, phone, &id, deadline).await? else {
             return Ok(false);
         };
-        let connection = state.id.clone();
-        let selected = id.clone();
-        let action = self
-            .read(Some(state.target.project.clone()), deadline, move |cx| {
-                cx.read
-                    .channel_action(&connection, &selected)
-                    .map_err(|e| store_error(&e))
-            })
-            .await?;
-        let Read::Present { value: action } = action else {
-            return Ok(false);
-        };
-        if action.state != "offered"
-            || action.subject != phone.subject
-            || action.private_chat != phone.private_chat
-            || action.expires_at_us <= now()?
-        {
-            return Ok(false);
-        }
-        if action.binding_revision != state.revision
-            || self.resume_configuration(&state.policy)? != Some(action.target.configuration)
-        {
-            return Ok(false);
-        }
-        let target = state.target.agent.clone();
         let current = self
-            .read(Some(state.target.project.clone()), deadline, move |cx| {
-                let target = se_core::scope::require_present(
-                    cx.read
-                        .control_target(target)
-                        .map_err(|e| store_error(&e))?,
-                    "phone lifecycle target",
-                    "Inspect its saved state natively.",
-                )?;
-                let profile = se_core::scope::require_present(
-                    target.profile.as_ref(),
-                    "phone profile",
-                    "Refresh native approval.",
-                )?;
-                let previous = match &target.latest_session {
-                    Read::Present { value } => Some(value.current.header.event.clone()),
-                    Read::Absent { .. } => None,
-                    _ => return Err(channel_error(ChannelError::Unsupported)),
-                };
-                Ok((
-                    target.principal.revision.value.get(),
-                    profile.revision.value.get(),
-                    previous,
-                    target.sessions.is_empty() && target.processes.is_empty(),
-                ))
-            })
+            .control_target_state(
+                state.target.project.clone(),
+                state.target.agent.clone(),
+                deadline,
+            )
             .await?;
         if current.0 != action.target.principal_revision
             || current.1 != action.target.profile_revision
@@ -105,18 +56,14 @@ impl Channels {
             binding_revision: state.revision,
             update,
             cursor: Some(cursor),
-            disposition: se_store::channel::Disposition::Action { action: id },
+            disposition: se_store::channel::Disposition::Action { action: id.clone() },
         };
-        self.commit(
+        self.commit_resume_confirmed(
             state.target.project.clone(),
-            request.clone(),
+            request,
+            confirm,
+            handled,
             deadline,
-            move |cx| {
-                Ok(vec![
-                    event(cx, EventBody::ChannelRecorded { change: confirm })?,
-                    event(cx, EventBody::ChannelRecorded { change: handled })?,
-                ])
-            },
         )
         .await?;
         if let Some(callback_id) = callback_id {
@@ -124,6 +71,89 @@ impl Channels {
                 .await?;
         }
         Ok(true)
+    }
+    async fn offered_action(
+        &self,
+        state: &Connection,
+        phone: &PhoneIdentity,
+        id: &ActionId,
+        deadline: &Deadline,
+    ) -> Result<Option<ResumeAction>> {
+        let connection = state.id.clone();
+        let selected = id.clone();
+        let action = self
+            .read(Some(state.target.project.clone()), deadline, move |cx| {
+                cx.read
+                    .channel_action(&connection, &selected)
+                    .map_err(|e| store_error(&e))
+            })
+            .await?;
+        let Read::Present { value: action } = action else {
+            return Ok(None);
+        };
+        if action.state != "offered"
+            || action.subject != phone.subject
+            || action.private_chat != phone.private_chat
+            || action.expires_at_us <= now()?
+        {
+            return Ok(None);
+        }
+        if action.binding_revision != state.revision
+            || self.resume_configuration(&state.policy)? != Some(action.target.configuration)
+        {
+            return Ok(None);
+        }
+        Ok(Some(action))
+    }
+    async fn control_target_state(
+        &self,
+        project: ProjectId,
+        target: AgentId,
+        deadline: &Deadline,
+    ) -> Result<(u64, u64, Option<EventId>, bool)> {
+        self.read(Some(project), deadline, move |cx| {
+            let target = se_core::scope::require_present(
+                cx.read
+                    .control_target(target)
+                    .map_err(|e| store_error(&e))?,
+                "phone lifecycle target",
+                "Inspect its saved state natively.",
+            )?;
+            let profile = se_core::scope::require_present(
+                target.profile.as_ref(),
+                "phone profile",
+                "Refresh native approval.",
+            )?;
+            let previous = match &target.latest_session {
+                Read::Present { value } => Some(value.current.header.event.clone()),
+                Read::Absent { .. } => None,
+                _ => return Err(channel_error(ChannelError::Unsupported)),
+            };
+            Ok((
+                target.principal.revision.value.get(),
+                profile.revision.value.get(),
+                previous,
+                target.sessions.is_empty() && target.processes.is_empty(),
+            ))
+        })
+        .await
+    }
+    async fn commit_resume_confirmed(
+        &self,
+        project: ProjectId,
+        request: &se_store::RequestIdentity,
+        confirm: Change,
+        handled: Change,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        self.commit(project, request.clone(), deadline, move |cx| {
+            Ok(vec![
+                event(cx, EventBody::ChannelRecorded { change: confirm })?,
+                event(cx, EventBody::ChannelRecorded { change: handled })?,
+            ])
+        })
+        .await?;
+        Ok(())
     }
     pub(super) async fn ack_callback(
         &self,
@@ -150,4 +180,7 @@ impl Channels {
         }
         Ok(())
     }
+}
+fn callback_action(data: &str) -> Option<ActionId> {
+    ActionId::new(data.strip_prefix("r:")?).ok()
 }

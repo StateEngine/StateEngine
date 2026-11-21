@@ -20,7 +20,10 @@ mod transcript;
 mod wake;
 mod write;
 
-use se_core::{ops::AnyOutput, registry::HumanKind};
+use se_core::{
+    ops::{AnyOutput, MessageReadOutput},
+    registry::HumanKind,
+};
 use std::io::{self, Write};
 
 /// Commands printed by a local consumer retain its resolved state home.
@@ -55,10 +58,6 @@ pub fn output_at(
     output(value, json, quiet, out)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) -> io::Result<u8> {
     if !json && matches!(value, AnyOutput::HookClaude(_)) {
         return Err(io::Error::other(
@@ -79,202 +78,288 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             out.flush()?;
             return Ok(value.exit_code());
         }
-        match (value.human_kind(), value) {
-            (HumanKind::RemoteLaunch, AnyOutput::RemoteLaunch(value)) => {
-                remote::launch(&value.value, out)?
-            }
-            (HumanKind::RemoteList, AnyOutput::RemoteList(value)) => {
-                remote::list(&value.value, out)?
-            }
-            (HumanKind::RemoteWatch, AnyOutput::RemoteWatch(value)) => {
-                remote::watch(&value.value, out)?
-            }
-            (HumanKind::RemoteSend, AnyOutput::RemoteSend(value)) => {
-                remote::send(&value.value, out)?
-            }
-            (HumanKind::Resume, AnyOutput::Resume(value)) => continuity::resume(&value.value, out)?,
-            (HumanKind::SessionContext, AnyOutput::SessionContext(value)) => {
-                write!(out, "{}", value.value.assembled_model_input)?
-            }
-            (HumanKind::Version, AnyOutput::MetaVersion(value)) => {
-                writeln!(out, "stateengine {}", value.value.version)?
-            }
-            (HumanKind::Help, AnyOutput::MetaHelp(value)) => write!(out, "{}", value.value.usage)?,
-            (HumanKind::Guide, AnyOutput::MetaGuide(value)) => guide::output(&value.value, out)?,
-            (HumanKind::Schema, AnyOutput::MetaSchema(value)) => read::schema(&value.value, out)?,
-            #[cfg(feature = "import")]
-            (HumanKind::Import, AnyOutput::ImportNode(value)) => import::output(&value.value, out)?,
-            (HumanKind::Erasure, AnyOutput::StoreForget(value)) => {
-                forget::output(&value.value, out)?
-            }
-            (HumanKind::Restore, AnyOutput::StoreRestore(value)) => {
-                restore::output(&value.value, out)?
-            }
-            (HumanKind::Init, AnyOutput::ProjectInit(value)) => write::init(&value.value, out)?,
-            (HumanKind::ProjectMove, AnyOutput::ProjectMove(value)) => {
-                write::move_output(&value.value, out)?
-            }
-            (HumanKind::Bundle, AnyOutput::DiagnosticBundle(value)) => {
-                writeln!(out, "Diagnostic file: {}", value.value.path)?;
-                writeln!(
-                    out,
-                    "{} bytes; SHA-256 {}",
-                    value.value.bytes, value.value.sha256
-                )?;
-                if !value.value.complete {
-                    writeln!(
-                        out,
-                        "Collection incomplete; the file names unreadable or omitted sections."
-                    )?;
-                }
-                writeln!(
-                    out,
-                    "Review the redacted file before sharing it. Delete it when no longer needed."
-                )?;
-            }
-            (HumanKind::Diagnosis, AnyOutput::DoctorInspect(value)) => {
-                doctor::diagnosis(&value.value, out)?
-            }
-            (HumanKind::Repair, AnyOutput::DoctorRepair(value)) => {
-                doctor::repair(&value.value, out)?
-            }
-            (HumanKind::Status, AnyOutput::ProjectStatus(value)) => {
-                read::status(&value.value, out)?
-            }
-            (HumanKind::Assignment, AnyOutput::AssignmentWrite(value)) => {
-                writeln!(
-                    out,
-                    "Assignment {}: {}",
-                    value.value.assignment, value.value.state
-                )?;
-            }
-            (HumanKind::Assignment, AnyOutput::AssignmentList(value)) => {
-                read::assignments(&value.value, out)?
-            }
-            (HumanKind::Captain, AnyOutput::CaptainShow(value)) => {
-                if let Some(captain) = &value.value.captain {
-                    writeln!(out, "Captain: {} ({})", captain.name, captain.id)?;
-                } else {
-                    writeln!(out, "No captain is set.")?;
-                }
-            }
-            (HumanKind::Captain, AnyOutput::CaptainSet(value)) => {
-                writeln!(
-                    out,
-                    "Recorded captain: {} ({})",
-                    value.value.captain.name, value.value.captain.id
-                )?;
-                match &value.value.current_captain {
-                    Some(captain) => {
-                        writeln!(out, "Current captain: {} ({})", captain.name, captain.id)?
-                    }
-                    None => writeln!(out, "No current captain is set.")?,
-                }
-                match &value.value.one_agent_project {
-                    se_types::Read::Present { value: true } => {
-                        writeln!(out, "Warning: this project has one agent.")?
-                    }
-                    se_types::Read::Present { value: false } => {}
-                    other => writeln!(out, "Agent count not established: {other:?}")?,
-                }
-            }
-            (HumanKind::Captain, AnyOutput::CaptainClear(value)) => {
-                writeln!(out, "Recorded captain clear.")?;
-                match &value.value.current_captain {
-                    Some(captain) => {
-                        writeln!(out, "Current captain: {} ({})", captain.name, captain.id)?
-                    }
-                    None => writeln!(out, "No current captain is set.")?,
-                }
-            }
-            (HumanKind::ConfigReceipt, AnyOutput::ConfigSet(value)) => {
-                administration::config(&value.value, out)?
-            }
-            (HumanKind::ConfigValue, AnyOutput::ConfigGet(value)) => {
-                administration::config_value(&value.value, out)?
-            }
-            (HumanKind::ConfigPage, AnyOutput::ConfigList(value)) => {
-                administration::config_page(&value.value, out)?
-            }
-            (HumanKind::AgentPage, AnyOutput::AgentList(value)) => {
-                administration::agents(&value.value, out)?
-            }
-            (HumanKind::Launch, AnyOutput::AgentLaunch(value)) => {
-                control::launch(&value.value, out)?
-            }
-            (HumanKind::Stop, AnyOutput::AgentStop(value)) => stop::output(&value.value, out)?,
-            (HumanKind::Wake, AnyOutput::AgentWake(value)) => wake::output(&value.value, out)?,
-            (HumanKind::Remove, AnyOutput::ProjectRemove(value)) => {
-                control::remove(&value.value, out)?
-            }
-            (HumanKind::AgentStatus, AnyOutput::AgentShow(value)) => {
-                administration::agent_status(&value.value, out)?
-            }
-            (HumanKind::AgentReceipt, AnyOutput::AgentCreate(value)) => {
-                administration::agent(&value.value, out)?
-            }
-            (HumanKind::HistoryPage, AnyOutput::HistoryList(value)) => {
-                event::page(&value.value, out)?
-            }
-            (HumanKind::SearchPage, AnyOutput::HistorySearch(value)) => {
-                event::search_page(&value.value, out)?
-            }
-            (HumanKind::Event, AnyOutput::EventRead(value)) => event::output(&value.value, out)?,
-            (_, AnyOutput::MessageRead(value)) => {
-                writeln!(
-                    out,
-                    "{} → {} [{}]",
-                    value.value.message.from.name,
-                    value.value.message.to.name,
-                    value.value.message.id
-                )?;
-                read::notification::message_state(&value.value.message, out)?;
-                writeln!(out, "{}", value.value.message.body.text)?;
-                writeln!(
-                    out,
-                    "{}",
-                    if value.value.marked_read {
-                        "Marked read."
-                    } else {
-                        "Inspection; recipient read mark unchanged."
-                    }
-                )?;
-            }
-            (_, AnyOutput::MessageDisposition(value)) => writeln!(
-                out,
-                "{}: {}.",
-                value.value.disposition, value.value.message_id
-            )?,
-            (HumanKind::MessageReceipt, AnyOutput::MessageSend(value)) => {
-                write::message(&value.value, out)?
-            }
-            (HumanKind::MessagePage, AnyOutput::MessageList(value)) => {
-                read::messages(&value.value, out)?
-            }
-            (HumanKind::WorkingState, AnyOutput::WorkingStateGet(value)) => {
-                read::working_state(&value.value, out)?
-            }
-            (HumanKind::WorkingStateReceipt, AnyOutput::WorkingStateSet(value)) => {
-                write::working_state(&value.value, out)?
-            }
-            (HumanKind::RuntimeStart, AnyOutput::RuntimeUp(value)) => {
-                write::runtime_start(&value.value, out)?
-            }
-            (HumanKind::RuntimeStop, AnyOutput::RuntimeDown(value)) => {
-                write::runtime_stop(&value.value, out)?
-            }
-            (HumanKind::Uninstall, AnyOutput::Uninstall(value)) => {
-                write::uninstall(&value.value, out)?
-            }
-            _ => {
-                return Err(io::Error::other(
-                    "registered output and human renderer disagree",
-                ));
-            }
-        }
+        render_human(value, out)?;
     }
     out.flush()?;
     Ok(value.exit_code())
+}
+fn render_human(value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
+    if let AnyOutput::MessageRead(value) = value {
+        return message_read(&value.value, out);
+    }
+    if let AnyOutput::MessageDisposition(value) = value {
+        return writeln!(
+            out,
+            "{}: {}.",
+            value.value.disposition, value.value.message_id
+        );
+    }
+    let kind = value.human_kind();
+    match kind {
+        HumanKind::RemoteLaunch
+        | HumanKind::RemoteList
+        | HumanKind::RemoteWatch
+        | HumanKind::RemoteSend => render_remote(kind, value, out),
+        HumanKind::Resume
+        | HumanKind::SessionContext
+        | HumanKind::Version
+        | HumanKind::Help
+        | HumanKind::Guide
+        | HumanKind::Schema => render_meta(kind, value, out),
+        #[cfg(feature = "import")]
+        HumanKind::Import => render_import(kind, value, out),
+        HumanKind::Erasure => match value {
+            AnyOutput::StoreForget(value) => forget::output(&value.value, out),
+            _ => Err(renderer_disagreement()),
+        },
+        HumanKind::Restore => match value {
+            AnyOutput::StoreRestore(value) => restore::output(&value.value, out),
+            _ => Err(renderer_disagreement()),
+        },
+        HumanKind::Init
+        | HumanKind::ProjectMove
+        | HumanKind::Bundle
+        | HumanKind::Diagnosis
+        | HumanKind::Repair
+        | HumanKind::Status => render_project(kind, value, out),
+        HumanKind::Assignment => render_assignment(kind, value, out),
+        HumanKind::Captain => render_captain(kind, value, out),
+        HumanKind::ConfigReceipt
+        | HumanKind::ConfigValue
+        | HumanKind::ConfigPage
+        | HumanKind::AgentPage
+        | HumanKind::AgentStatus
+        | HumanKind::AgentReceipt => render_administration(kind, value, out),
+        HumanKind::Launch | HumanKind::Stop | HumanKind::Wake | HumanKind::Remove => {
+            render_control(kind, value, out)
+        }
+        HumanKind::HistoryPage | HumanKind::SearchPage | HumanKind::Event => {
+            render_history(kind, value, out)
+        }
+        HumanKind::MessageReceipt
+        | HumanKind::MessagePage
+        | HumanKind::WorkingState
+        | HumanKind::WorkingStateReceipt
+        | HumanKind::RuntimeStart
+        | HumanKind::RuntimeStop
+        | HumanKind::Uninstall => render_session(kind, value, out),
+        _ => Err(renderer_disagreement()),
+    }
+}
+fn render_remote(kind: HumanKind, value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
+    match (kind, value) {
+        (HumanKind::RemoteLaunch, AnyOutput::RemoteLaunch(value)) => {
+            remote::launch(&value.value, out)
+        }
+        (HumanKind::RemoteList, AnyOutput::RemoteList(value)) => remote::list(&value.value, out),
+        (HumanKind::RemoteWatch, AnyOutput::RemoteWatch(value)) => remote::watch(&value.value, out),
+        (HumanKind::RemoteSend, AnyOutput::RemoteSend(value)) => remote::send(&value.value, out),
+        _ => Err(renderer_disagreement()),
+    }
+}
+fn render_meta(kind: HumanKind, value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
+    match (kind, value) {
+        (HumanKind::Resume, AnyOutput::Resume(value)) => continuity::resume(&value.value, out),
+        (HumanKind::SessionContext, AnyOutput::SessionContext(value)) => {
+            write!(out, "{}", value.value.assembled_model_input)
+        }
+        (HumanKind::Version, AnyOutput::MetaVersion(value)) => {
+            writeln!(out, "stateengine {}", value.value.version)
+        }
+        (HumanKind::Help, AnyOutput::MetaHelp(value)) => write!(out, "{}", value.value.usage),
+        (HumanKind::Guide, AnyOutput::MetaGuide(value)) => guide::output(&value.value, out),
+        (HumanKind::Schema, AnyOutput::MetaSchema(value)) => read::schema(&value.value, out),
+        _ => Err(renderer_disagreement()),
+    }
+}
+#[cfg(feature = "import")]
+fn render_import(kind: HumanKind, value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
+    match (kind, value) {
+        (HumanKind::Import, AnyOutput::ImportNode(value)) => import::output(&value.value, out),
+        _ => Err(renderer_disagreement()),
+    }
+}
+fn render_project(kind: HumanKind, value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
+    match (kind, value) {
+        (HumanKind::Init, AnyOutput::ProjectInit(value)) => write::init(&value.value, out),
+        (HumanKind::ProjectMove, AnyOutput::ProjectMove(value)) => {
+            write::move_output(&value.value, out)
+        }
+        (HumanKind::Bundle, AnyOutput::DiagnosticBundle(value)) => {
+            writeln!(out, "Diagnostic file: {}", value.value.path)?;
+            writeln!(
+                out,
+                "{} bytes; SHA-256 {}",
+                value.value.bytes, value.value.sha256
+            )?;
+            if !value.value.complete {
+                writeln!(
+                    out,
+                    "Collection incomplete; the file names unreadable or omitted sections."
+                )?;
+            }
+            writeln!(
+                out,
+                "Review the redacted file before sharing it. Delete it when no longer needed."
+            )
+        }
+        (HumanKind::Diagnosis, AnyOutput::DoctorInspect(value)) => {
+            doctor::diagnosis(&value.value, out)
+        }
+        (HumanKind::Repair, AnyOutput::DoctorRepair(value)) => doctor::repair(&value.value, out),
+        (HumanKind::Status, AnyOutput::ProjectStatus(value)) => read::status(&value.value, out),
+        _ => Err(renderer_disagreement()),
+    }
+}
+fn render_assignment(kind: HumanKind, value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
+    match (kind, value) {
+        (HumanKind::Assignment, AnyOutput::AssignmentWrite(value)) => {
+            writeln!(
+                out,
+                "Assignment {}: {}",
+                value.value.assignment, value.value.state
+            )
+        }
+        (HumanKind::Assignment, AnyOutput::AssignmentList(value)) => {
+            read::assignments(&value.value, out)
+        }
+        _ => Err(renderer_disagreement()),
+    }
+}
+fn render_captain(kind: HumanKind, value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
+    match (kind, value) {
+        (HumanKind::Captain, AnyOutput::CaptainShow(value)) => {
+            if let Some(captain) = &value.value.captain {
+                writeln!(out, "Captain: {} ({})", captain.name, captain.id)?;
+            } else {
+                writeln!(out, "No captain is set.")?;
+            }
+            Ok(())
+        }
+        (HumanKind::Captain, AnyOutput::CaptainSet(value)) => {
+            writeln!(
+                out,
+                "Recorded captain: {} ({})",
+                value.value.captain.name, value.value.captain.id
+            )?;
+            match &value.value.current_captain {
+                Some(captain) => {
+                    writeln!(out, "Current captain: {} ({})", captain.name, captain.id)?
+                }
+                None => writeln!(out, "No current captain is set.")?,
+            }
+            match &value.value.one_agent_project {
+                se_types::Read::Present { value: true } => {
+                    writeln!(out, "Warning: this project has one agent.")?
+                }
+                se_types::Read::Present { value: false } => {}
+                other => writeln!(out, "Agent count not established: {other:?}")?,
+            }
+            Ok(())
+        }
+        (HumanKind::Captain, AnyOutput::CaptainClear(value)) => {
+            writeln!(out, "Recorded captain clear.")?;
+            match &value.value.current_captain {
+                Some(captain) => {
+                    writeln!(out, "Current captain: {} ({})", captain.name, captain.id)?
+                }
+                None => writeln!(out, "No current captain is set.")?,
+            }
+            Ok(())
+        }
+        _ => Err(renderer_disagreement()),
+    }
+}
+fn render_administration(
+    kind: HumanKind,
+    value: &AnyOutput,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    match (kind, value) {
+        (HumanKind::ConfigReceipt, AnyOutput::ConfigSet(value)) => {
+            administration::config(&value.value, out)
+        }
+        (HumanKind::ConfigValue, AnyOutput::ConfigGet(value)) => {
+            administration::config_value(&value.value, out)
+        }
+        (HumanKind::ConfigPage, AnyOutput::ConfigList(value)) => {
+            administration::config_page(&value.value, out)
+        }
+        (HumanKind::AgentPage, AnyOutput::AgentList(value)) => {
+            administration::agents(&value.value, out)
+        }
+        (HumanKind::AgentStatus, AnyOutput::AgentShow(value)) => {
+            administration::agent_status(&value.value, out)
+        }
+        (HumanKind::AgentReceipt, AnyOutput::AgentCreate(value)) => {
+            administration::agent(&value.value, out)
+        }
+        _ => Err(renderer_disagreement()),
+    }
+}
+fn render_control(kind: HumanKind, value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
+    match (kind, value) {
+        (HumanKind::Launch, AnyOutput::AgentLaunch(value)) => control::launch(&value.value, out),
+        (HumanKind::Stop, AnyOutput::AgentStop(value)) => stop::output(&value.value, out),
+        (HumanKind::Wake, AnyOutput::AgentWake(value)) => wake::output(&value.value, out),
+        (HumanKind::Remove, AnyOutput::ProjectRemove(value)) => control::remove(&value.value, out),
+        _ => Err(renderer_disagreement()),
+    }
+}
+fn render_history(kind: HumanKind, value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
+    match (kind, value) {
+        (HumanKind::HistoryPage, AnyOutput::HistoryList(value)) => event::page(&value.value, out),
+        (HumanKind::SearchPage, AnyOutput::HistorySearch(value)) => {
+            event::search_page(&value.value, out)
+        }
+        (HumanKind::Event, AnyOutput::EventRead(value)) => event::output(&value.value, out),
+        _ => Err(renderer_disagreement()),
+    }
+}
+fn render_session(kind: HumanKind, value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
+    match (kind, value) {
+        (HumanKind::MessageReceipt, AnyOutput::MessageSend(value)) => {
+            write::message(&value.value, out)
+        }
+        (HumanKind::MessagePage, AnyOutput::MessageList(value)) => {
+            read::messages(&value.value, out)
+        }
+        (HumanKind::WorkingState, AnyOutput::WorkingStateGet(value)) => {
+            read::working_state(&value.value, out)
+        }
+        (HumanKind::WorkingStateReceipt, AnyOutput::WorkingStateSet(value)) => {
+            write::working_state(&value.value, out)
+        }
+        (HumanKind::RuntimeStart, AnyOutput::RuntimeUp(value)) => {
+            write::runtime_start(&value.value, out)
+        }
+        (HumanKind::RuntimeStop, AnyOutput::RuntimeDown(value)) => {
+            write::runtime_stop(&value.value, out)
+        }
+        (HumanKind::Uninstall, AnyOutput::Uninstall(value)) => write::uninstall(&value.value, out),
+        _ => Err(renderer_disagreement()),
+    }
+}
+fn message_read(value: &MessageReadOutput, out: &mut impl Write) -> io::Result<()> {
+    writeln!(
+        out,
+        "{} → {} [{}]",
+        value.message.from.name, value.message.to.name, value.message.id
+    )?;
+    read::notification::message_state(&value.message, out)?;
+    writeln!(out, "{}", value.message.body.text)?;
+    writeln!(
+        out,
+        "{}",
+        if value.marked_read {
+            "Marked read."
+        } else {
+            "Inspection; recipient read mark unchanged."
+        }
+    )
+}
+fn renderer_disagreement() -> io::Error {
+    io::Error::other("registered output and human renderer disagree")
 }
 
 /// Keep every achieved hazard fact while deferring the final Windows verdict.

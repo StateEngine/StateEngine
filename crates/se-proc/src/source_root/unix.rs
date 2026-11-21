@@ -71,21 +71,5 @@ pub(super) fn same_object(a: &File, b: &File) -> io::Result<bool> {
     Ok(ma.dev() == mb.dev() && ma.ino() == mb.ino())
 }
 pub(super) fn revision(file: &File, directory: bool) -> io::Result<NativeFileRevision> {
-    let m = file.metadata()?;
-    if (directory && !m.is_dir()) || (!directory && !m.is_file()) {
-        return Err(invalid(
-            "regular source file or directory required; links and devices refused",
-        ));
-    }
-    let mut volume = [0; 16];
-    let mut id = [0; 16];
-    volume[..8].copy_from_slice(&m.dev().to_be_bytes());
-    id[..8].copy_from_slice(&m.ino().to_be_bytes());
-    Ok(NativeFileRevision {
-        volume,
-        file: id,
-        size: m.len(),
-        mtime_unix_nanos: i128::from(m.mtime()) * 1_000_000_000 + i128::from(m.mtime_nsec()),
-        ctime_unix_nanos: Some(i128::from(m.ctime()) * 1_000_000_000 + i128::from(m.ctime_nsec())),
-    })
+    se_state_files::observe_file_revision_for(file, directory)
 }
