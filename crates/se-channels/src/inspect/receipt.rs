@@ -1,10 +1,8 @@
 //! Saved, notice, read, reply and provider-send facts stay independent.
 use super::*;
-use se_store::{Actor, EventBody, Role, SqliteSnapshot, channel::SavedUpdate};
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+use se_store::{
+    Actor, EventBody, MessageRecord, Role, SqliteSnapshot, StorePosition, channel::SavedUpdate,
+};
 pub(super) fn receipt(
     read: &mut SqliteSnapshot,
     state: &Connection,
@@ -17,7 +15,46 @@ pub(super) fn receipt(
         "saved channel mail",
         "Restore access to the original saved mail.",
     )?;
-    let notice = match message.delivered.as_ref() {
+    let notice = notice_fact(read, state, &message, &saved)?;
+    let read_fact = message
+        .read
+        .as_ref()
+        .map(|position| recipient_read_fact(read, state, position))
+        .transpose()?;
+    let (replies, replies_omitted) = reply_facts(read, state, &saved)?;
+    let elapsed = at.saturating_sub(saved.at_us).max(0) as u64 / 1_000_000;
+    let delay = delay_fact(
+        elapsed,
+        read_fact.is_some(),
+        message.dismissed.is_some(),
+        !replies.is_empty(),
+    );
+    let resume = resume_presentation(read, state, &saved, at)?;
+    Ok(ChannelReceipt {
+        id: saved.receipt,
+        connection: state.id.clone(),
+        message: saved.message,
+        target: state.target.clone(),
+        saved: CommittedFact {
+            event: saved.event,
+            at_us: saved.at_us,
+        },
+        notice,
+        read: read_fact,
+        replies,
+        replies_omitted,
+        delay,
+        resume,
+        observed_at_us: at,
+    })
+}
+fn notice_fact(
+    read: &mut SqliteSnapshot,
+    state: &Connection,
+    message: &MessageRecord,
+    saved: &SavedUpdate,
+) -> Result<NoticeFact> {
+    Ok(match message.delivered.as_ref() {
         Some(position) => {
             let delivered = se_core::scope::require_present(
                 read.event_position(position).map_err(|e| store_error(&e))?,
@@ -97,25 +134,31 @@ pub(super) fn receipt(
             }
             NoticeFact::Pending { reason }
         }
-    };
-    let read_fact = message
-        .read
-        .as_ref()
-        .map(|position| {
-            let event = se_core::scope::require_present(
-                read.event_position(position).map_err(|e| store_error(&e))?,
-                "recipient read fact",
-                "Inspect the exact recipient's read marker.",
-            )?;
-            if event.header.actor != Actor::Agent(state.target.agent.clone()) {
-                return Err(channel_error(ChannelError::InvalidInput));
-            }
-            Ok(CommittedFact {
-                event: event.header.event,
-                at_us: event.recorded_at_us,
-            })
-        })
-        .transpose()?;
+    })
+}
+fn recipient_read_fact(
+    read: &mut SqliteSnapshot,
+    state: &Connection,
+    position: &StorePosition,
+) -> Result<CommittedFact> {
+    let event = se_core::scope::require_present(
+        read.event_position(position).map_err(|e| store_error(&e))?,
+        "recipient read fact",
+        "Inspect the exact recipient's read marker.",
+    )?;
+    if event.header.actor != Actor::Agent(state.target.agent.clone()) {
+        return Err(channel_error(ChannelError::InvalidInput));
+    }
+    Ok(CommittedFact {
+        event: event.header.event,
+        at_us: event.recorded_at_us,
+    })
+}
+fn reply_facts(
+    read: &mut SqliteSnapshot,
+    state: &Connection,
+    saved: &SavedUpdate,
+) -> Result<(Vec<ReplyFact>, u64)> {
     let outputs = read
         .channel_replies(&state.id, &saved.message)
         .map_err(|e| store_error(&e))?;
@@ -153,17 +196,24 @@ pub(super) fn receipt(
             provider_messages: output.provider_messages,
         });
     }
-    let elapsed = at.saturating_sub(saved.at_us).max(0) as u64 / 1_000_000;
-    let delay = if elapsed >= 60 && replies.is_empty() {
-        Some(if read_fact.is_some() {
+    Ok((replies, outputs.omitted))
+}
+fn delay_fact(
+    elapsed_seconds: u64,
+    read: bool,
+    dismissed: bool,
+    has_replies: bool,
+) -> Option<DelayFact> {
+    if elapsed_seconds >= 60 && !has_replies {
+        Some(if read {
             DelayFact::ReadNoReplyYet {
-                elapsed_seconds: elapsed,
+                elapsed_seconds,
                 reason: "no_linked_mail_reply".into(),
             }
         } else {
             DelayFact::NotReadYet {
-                elapsed_seconds: elapsed,
-                reason: if message.dismissed.is_some() {
+                elapsed_seconds,
+                reason: if dismissed {
                     "dismissed_without_read".into()
                 } else {
                     "recipient_has_not_marked_read".into()
@@ -172,47 +222,39 @@ pub(super) fn receipt(
         })
     } else {
         None
-    };
-    let resume = match read
-        .channel_message_action(&state.id, &saved.message)
-        .map_err(|e| store_error(&e))?
-    {
-        Read::Present { value } => Some(ResumePresentation {
-            state: if value.state == "offered" && value.expires_at_us <= at {
-                "expired".into()
-            } else {
-                value.state
-            },
-            expires_at_us: value.expires_at_us,
-            code: value.code,
-        }),
-        Read::Absent { .. } => None,
-        other => {
-            se_core::scope::require_present(
-                other,
-                "phone lifecycle state",
-                "Restore native channel access.",
-            )?;
-            None
-        }
-    };
-    Ok(ChannelReceipt {
-        id: saved.receipt,
-        connection: state.id.clone(),
-        message: saved.message,
-        target: state.target.clone(),
-        saved: CommittedFact {
-            event: saved.event,
-            at_us: saved.at_us,
+    }
+}
+fn resume_presentation(
+    read: &mut SqliteSnapshot,
+    state: &Connection,
+    saved: &SavedUpdate,
+    at: i64,
+) -> Result<Option<ResumePresentation>> {
+    Ok(
+        match read
+            .channel_message_action(&state.id, &saved.message)
+            .map_err(|e| store_error(&e))?
+        {
+            Read::Present { value } => Some(ResumePresentation {
+                state: if value.state == "offered" && value.expires_at_us <= at {
+                    "expired".into()
+                } else {
+                    value.state
+                },
+                expires_at_us: value.expires_at_us,
+                code: value.code,
+            }),
+            Read::Absent { .. } => None,
+            other => {
+                se_core::scope::require_present(
+                    other,
+                    "phone lifecycle state",
+                    "Restore native channel access.",
+                )?;
+                None
+            }
         },
-        notice,
-        read: read_fact,
-        replies,
-        replies_omitted: outputs.omitted,
-        delay,
-        resume,
-        observed_at_us: at,
-    })
+    )
 }
 
 pub(super) fn output_fact(
