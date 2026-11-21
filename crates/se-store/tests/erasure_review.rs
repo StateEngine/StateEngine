@@ -33,15 +33,29 @@ fn read_owned(path: &std::path::Path) -> Result<Option<Vec<u8>>, Box<dyn std::er
         Err(error) => Err(format!("{}: {error}", path.display()).into()),
     }
 }
-/// Each owned copy once: the database and its WAL count as a single copy.
-fn copies(files: &[String]) -> Vec<String> {
-    let mut copies: Vec<String> = files
+/// The backup copies holding the text; backups do not change underneath a scan.
+fn backup_copies(files: &[String]) -> Vec<String> {
+    files
         .iter()
-        .map(|path| path.strip_suffix("-wal").unwrap_or(path).to_owned())
-        .collect();
-    copies.sort();
-    copies.dedup();
-    copies
+        .filter(|path| path.contains("backups"))
+        .cloned()
+        .collect()
+}
+/// Whether the live database or its WAL holds the text. One scan reads the
+/// database and its WAL one after the other, and a background checkpoint can move
+/// the text from the WAL into the database between those two reads, so a scan
+/// that misses it is repeated for a bounded time before concluding it is gone.
+fn live_holds(home: &std::path::Path, needle: &[u8]) -> Result<bool, Box<dyn std::error::Error>> {
+    let end = Instant::now() + Duration::from_secs(2);
+    loop {
+        let live = files_holding(home, needle)?
+            .iter()
+            .any(|path| path.ends_with("state.db") || path.ends_with("state.db-wal"));
+        if live || Instant::now() >= end {
+            return Ok(live);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 fn files_holding(
     root: &std::path::Path,
@@ -127,12 +141,14 @@ fn forget_erases_one_body_from_database_log_and_backups() -> Check {
     };
     let refused = wait_until(client.erase(plan.clone(), approval(99))?, deadline())?;
     assert!(refused.is_err(), "a stale incarnation is refused");
-    // A checkpoint may move the text between the database and its WAL at any
-    // time; the database with its WAL is one copy.
     assert_eq!(
-        copies(&files_holding(&home, FORGOTTEN.as_bytes())?),
-        copies(&before),
-        "a refused approval erases nothing"
+        backup_copies(&files_holding(&home, FORGOTTEN.as_bytes())?),
+        backup_copies(&before),
+        "a refused approval keeps every backup copy"
+    );
+    assert!(
+        live_holds(&home, FORGOTTEN.as_bytes())?,
+        "a refused approval erased the live text"
     );
     let unconfirmed = ErasureApproval {
         accept_named_residuals: false,
