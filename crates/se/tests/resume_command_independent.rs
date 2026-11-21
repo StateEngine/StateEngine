@@ -9,7 +9,7 @@ mod compat;
 mod fixture;
 #[path = "../src/grammar.rs"]
 mod grammar;
-#[path = "../src/render/mod.rs"]
+#[path = "../../se-render/src/lib.rs"]
 mod render;
 use fixture::*;
 use se_core::{

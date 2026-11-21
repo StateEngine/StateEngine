@@ -24,6 +24,7 @@ members = [
     "crates/se-atlas-cold",
     "crates/se-identifiers",
     "crates/se-repository",
+    "crates/se-render",
     "crates/se",
 ]
 

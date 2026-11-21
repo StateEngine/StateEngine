@@ -267,7 +267,7 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
 }
 
 /// Keep every achieved hazard fact while deferring the final Windows verdict.
-pub(crate) fn uninstall_deferred(
+pub fn uninstall_deferred(
     value: &se_core::ops::UninstallOutput,
     out: &mut impl Write,
 ) -> io::Result<()> {

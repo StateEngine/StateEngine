@@ -16,7 +16,7 @@ mod private_entry;
 mod remote;
 #[cfg(feature = "remote")]
 mod remote_owner;
-mod render;
+use se_render as render;
 mod repository;
 mod route;
 mod runtime;

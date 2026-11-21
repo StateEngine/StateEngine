@@ -1,0 +1,23 @@
+[package]
+name = "se-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+import = ["se-core/import", "se-host/import"]
+
+[dependencies]
+se-config = { path = "../se-config" }
+se-core = { path = "../se-core" }
+se-host = { path = "../se-host", default-features = false, features = ["runtime", "listener"] }
+se-mcp = { path = "../se-mcp" }
+se-store = { path = "../se-store" }
+se-types = { path = "../se-types" }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
