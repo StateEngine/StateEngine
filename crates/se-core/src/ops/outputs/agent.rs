@@ -133,6 +133,10 @@ pub struct ProviderActivityView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_seconds: Option<u64>,
     pub next_step: Option<String>,
+    /// While mail waits for the configured wake interval, when it may next
+    /// wake this agent. The mail itself is already delivered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_paced_until: Option<String>,
 }
 /// Single-agent readback reuses the status/list row without flattening Read.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

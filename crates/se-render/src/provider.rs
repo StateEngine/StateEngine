@@ -20,6 +20,12 @@ pub(crate) fn activity(
             if let Some(next) = &value.next_step {
                 writeln!(out, "{prefix}Next: {next}")?;
             }
+            if let Some(at) = &value.mail_paced_until {
+                writeln!(
+                    out,
+                    "{prefix}New mail is delivered; the next wake for it is paced until {at}."
+                )?;
+            }
         }
         Read::Absent { checked } => writeln!(out, "{prefix}Provider activity: absent ({checked})")?,
         Read::Unknown { what } => writeln!(out, "{prefix}Provider activity: unknown ({what})")?,

@@ -165,6 +165,9 @@ fn serve(
         }
     };
     let blocking_jobs = config.value.runtime.resolve_blocking_jobs(cores)?;
+    // An out-of-range interval refuses the host here rather than silently
+    // turning pacing off later.
+    se_host::mail_wake_interval(&config.value.runtime)?;
     let identity = se_proc::current_runtime_identity(machine).map_err(native_error)?;
     if guard
         .as_ref()

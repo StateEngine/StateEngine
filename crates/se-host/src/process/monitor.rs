@@ -17,6 +17,7 @@ impl LaunchCoordinator {
         let mut observation_failed = false;
         loop {
             let mut observation_retry_at = None;
+            let mut pace_at = None;
             let capability_retry_at;
             let wake = {
                 let mut state = job.state.lock().await;
@@ -153,8 +154,10 @@ impl LaunchCoordinator {
                         return;
                     }
                     Ok(_) => {
+                        pace_at = self.mail_pace(&state, &job);
                         if !state.setup_expired
                             && retry_at.is_none_or(|at| tokio::time::Instant::now() >= at)
+                            && pace_at.is_none()
                             && job.mail_pending.swap(false, Ordering::AcqRel)
                         {
                             let result = match deadline.stage(Duration::from_secs(10)) {
@@ -207,12 +210,47 @@ impl LaunchCoordinator {
             };
             // Mail cannot be delivered until native observation succeeds. Its
             // expired retry clock must not spin while that observation is failing.
-            let next = [observation_retry_at.or(retry_at), capability_retry_at]
-                .into_iter()
-                .flatten()
-                .min();
+            // Paced mail stays pending and wakes this loop when its gap ends.
+            let paced = pace_at.filter(|_| job.mail_pending.load(Ordering::Acquire));
+            let next = [
+                observation_retry_at.or(retry_at),
+                capability_retry_at,
+                paced,
+            ]
+            .into_iter()
+            .flatten()
+            .min();
             monitor_wake(&wake.event, next).await;
         }
+    }
+}
+
+/// The configured gap between wakes for mail: 0 (off, the default) through an
+/// hour. Host start calls this so an out-of-range value refuses loudly.
+pub fn mail_wake_interval(runtime: &se_config::config_policy::RuntimeConfig) -> Result<Duration> {
+    match runtime.mail_wake_interval_seconds.unwrap_or(0) {
+        seconds @ 0..=3_600 => Ok(Duration::from_secs(u64::from(seconds))),
+        _ => Err(se_types::SeError::new(
+            se_types::Detail::ConfigurationInvalid(se_types::details::ConfigurationInvalid {
+                subject: "runtime.mail_wake_interval_seconds".into(),
+                reason: "expected 0 (off) through 3600 seconds".into(),
+                next_step: "Correct the selected user config.toml and retry.".into(),
+            }),
+        )),
+    }
+}
+impl LaunchCoordinator {
+    /// When pending mail may next wake this agent, if the configured gap since
+    /// its last wake has not passed. A redelivery the runtime itself arms (an
+    /// owner's explicit wake or recovery) is never held, and no sender's label
+    /// is consulted.
+    pub(super) fn mail_pace(&self, state: &owned::Work, job: &Job) -> Option<tokio::time::Instant> {
+        let interval = mail_wake_interval(&self.options.configuration.runtime).ok()?;
+        if interval.is_zero() || job.mail_reoffer.load(Ordering::Acquire) {
+            return None;
+        }
+        let at = state.mail.last_offer? + interval;
+        (at > tokio::time::Instant::now()).then_some(at)
     }
 }
 
