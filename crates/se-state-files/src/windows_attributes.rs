@@ -1,11 +1,24 @@
 //! One aligned process-attribute allocation. Referenced arrays remain borrowed
 //! until deletion; callers retain handles, startup data and all spawn policy.
 //! https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute
-use super::{Error, Result, last};
-use std::{marker::PhantomData, mem::size_of, ptr};
+use std::{io, marker::PhantomData, mem::size_of, ptr};
 use windows_sys::Win32::{Foundation::HANDLE, System::Threading::*};
 
-pub(crate) struct Attributes<'a> {
+pub struct Error {
+    pub operation: &'static str,
+    pub source: io::Error,
+}
+
+type Result<T> = std::result::Result<T, Error>;
+
+fn last(operation: &'static str) -> Error {
+    Error {
+        operation,
+        source: io::Error::last_os_error(),
+    }
+}
+
+pub struct Attributes<'a> {
     storage: Vec<usize>,
     initialized: bool,
     _values: PhantomData<&'a [HANDLE]>,

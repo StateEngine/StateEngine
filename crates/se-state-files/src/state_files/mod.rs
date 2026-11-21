@@ -6,13 +6,13 @@ use std::{
     io,
     path::{Path, PathBuf},
 };
-pub(crate) mod effects;
+pub mod effects;
 mod metadata;
 mod permissions;
 pub use metadata::NativeMetadataPin;
 mod profile;
 pub use profile::NativeProfileFiles;
-pub(crate) mod source;
+pub mod source;
 pub use permissions::{
     PermissionKind, PermissionProtection, PermissionRepairPin, PermissionRepairWitness,
     PermissionSnapshot,
@@ -20,9 +20,9 @@ pub use permissions::{
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]
-pub(crate) mod user_path;
+pub mod user_path;
 #[cfg(windows)]
-pub(crate) mod windows;
+pub mod windows;
 #[cfg(unix)]
 use unix as os;
 #[cfg(windows)]
@@ -31,7 +31,7 @@ use windows as os;
 /// Clear inheritance only on a newly created, held private directory. Existing
 /// IPC directories remain read-only admission checks, never implicit repairs.
 #[cfg(target_os = "macos")]
-pub(crate) fn protect_created_ipc_directory(file: &File, path: &Path) -> Result<()> {
+pub fn protect_created_ipc_directory(file: &File, path: &Path) -> Result<()> {
     unix::clear_created_acl(file, path, true)
 }
 
@@ -72,12 +72,8 @@ crate::native_error::native_error!(StateFileError, |error, out| {
     }
     Ok(())
 }; source error.source.as_ref().map(|e| e as _));
-pub(super) type Result<T> = std::result::Result<T, StateFileError>;
-pub(super) fn failure(
-    code: StateFileErrorCode,
-    operation: &'static str,
-    path: &Path,
-) -> StateFileError {
+pub type Result<T> = std::result::Result<T, StateFileError>;
+pub fn failure(code: StateFileErrorCode, operation: &'static str, path: &Path) -> StateFileError {
     StateFileError {
         code,
         operation,
@@ -85,7 +81,7 @@ pub(super) fn failure(
         source: None,
     }
 }
-pub(super) fn io_error(operation: &'static str, path: &Path, source: io::Error) -> StateFileError {
+pub fn io_error(operation: &'static str, path: &Path, source: io::Error) -> StateFileError {
     #[cfg(unix)]
     if source.raw_os_error() == Some(libc::ELOOP) {
         return StateFileError {
@@ -106,7 +102,7 @@ pub(super) fn io_error(operation: &'static str, path: &Path, source: io::Error) 
         source: Some(source),
     }
 }
-pub(super) fn unsafe_path(operation: &'static str, path: &Path) -> StateFileError {
+pub fn unsafe_path(operation: &'static str, path: &Path) -> StateFileError {
     failure(StateFileErrorCode::LocationUnsafe, operation, path)
 }
 /// A refusal that names the observed facts behind the check, so the reader
@@ -404,14 +400,14 @@ impl NativeStateFiles {
 /// Shared owned-root traversal for native IPC: trusted system ancestors may
 /// resolve links; the owned directory itself remains no-follow and owner-only.
 #[cfg(unix)]
-pub(crate) fn pin_owned_directory(path: &Path) -> Result<File> {
+pub fn pin_owned_directory(path: &Path) -> Result<File> {
     os::pin_directory(path)
 }
 
 /// A root-owned sticky temporary parent may contain a private runtime leaf.
 /// The caller must validate that leaf with the ordinary owned-root checks.
 #[cfg(unix)]
-pub(crate) fn pin_runtime_temporary_parent(path: &Path) -> Result<File> {
+pub fn pin_runtime_temporary_parent(path: &Path) -> Result<File> {
     os::walk_effect_parent_for_creation(path)
 }
 

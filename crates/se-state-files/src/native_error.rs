@@ -1,6 +1,7 @@
 //! Shared standard error traits; each native adapter retains its facts and policy.
 // Keep concrete structs at their call sites so field visibility and code enums
 // remain unchanged. Formatting and source selection are explicit per type.
+#[macro_export]
 macro_rules! native_error {
     ($name:ident, |$error:ident, $out:ident| $display:expr $(; source $source:expr)? $(;)?) => {
         impl std::fmt::Display for $name {
@@ -17,4 +18,4 @@ macro_rules! native_error {
         }
     };
 }
-pub(crate) use native_error;
+pub use native_error;

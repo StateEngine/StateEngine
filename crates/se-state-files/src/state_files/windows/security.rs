@@ -3,7 +3,7 @@
 //! LocalFree-owned GetSecurityInfo buffers, never caller-supplied bytes.
 use super::super::{Result, io_error, unsafe_path};
 use super::last;
-use crate::windows_native::allocation::Allocation;
+use se_native_path::windows::allocation::Allocation;
 use std::{
     ffi::OsStr,
     fs::File,
@@ -77,8 +77,9 @@ impl User {
         unsafe { (&*self.storage.as_ptr().cast::<TOKEN_USER>()).User.Sid }
     }
     fn text(&self, path: &Path) -> Result<String> {
-        crate::windows_native::sid_text(self.sid())
-            .map_err(|e| io_error(e.operation, path, e.source))
+        // SAFETY: `self` retains the aligned TOKEN_USER buffer owning this SID.
+        unsafe { se_native_path::windows::sid::text(self.sid()) }
+            .map_err(|e| io_error("encode native SID", path, e))
     }
     fn enabled_group(&self, group: PSID, path: &Path) -> Result<bool> {
         let offset = std::mem::offset_of!(TOKEN_GROUPS, Groups);
@@ -248,10 +249,10 @@ fn security(
     file: &File,
     path: &Path,
     dacl: bool,
-) -> Result<crate::windows_native::acl::SecurityDescriptor> {
+) -> Result<se_native_path::windows::acl::SecurityDescriptor> {
     // SAFETY: the caller retains the native handle throughout this query.
     unsafe {
-        crate::windows_native::acl::SecurityDescriptor::query(
+        se_native_path::windows::acl::SecurityDescriptor::query(
             file.as_raw_handle(),
             SE_FILE_OBJECT,
             OWNER_SECURITY_INFORMATION | if dacl { DACL_SECURITY_INFORMATION } else { 0 },

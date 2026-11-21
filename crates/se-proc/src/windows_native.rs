@@ -1,7 +1,7 @@
 //! Shared Windows query primitives. Callers retain their handles/token buffers;
 //! typed adapters add their own operation context without copying native walks.
 pub(crate) use se_native_path::windows::{acl, allocation};
-pub(crate) mod attributes;
+pub(crate) use se_state_files::windows_attributes::{self as attributes, Error};
 pub(crate) mod console;
 mod parent;
 mod process_query;
@@ -23,10 +23,6 @@ use windows_sys::Win32::{
     System::{Diagnostics::ToolHelp::*, Threading::*},
 };
 
-pub(crate) struct Error {
-    pub operation: &'static str,
-    pub source: io::Error,
-}
 type Result<T> = std::result::Result<T, Error>;
 fn last(operation: &'static str) -> Error {
     Error {

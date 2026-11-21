@@ -546,7 +546,7 @@ pub(in crate::state_files) fn remove_empty_directory(path: &Path) -> Result<Dire
 /// Retain an admitted directory without requesting DELETE while the native
 /// state-root pin still denies delete sharing. The carrier reopens this exact
 /// object with DELETE only after the actual parent exits.
-pub(crate) fn uninstall_directory(path: &Path) -> Result<Option<File>> {
+pub fn uninstall_directory(path: &Path) -> Result<Option<File>> {
     let (_parent, physical) = match location(path) {
         Ok(value) => value,
         Err(error) if absent(&error) => return Ok(None),

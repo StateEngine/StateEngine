@@ -1,6 +1,5 @@
 //! Read-only source custody. Every descendant opens relative to retained native
 //! directory handles, without following links. No index, parser or Atlas types.
-use sha2::{Digest, Sha256};
 use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom},
@@ -66,30 +65,7 @@ pub struct NativeRootDirectory<'a> {
     entries: entries::Cursor,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NativeFileRevision {
-    pub volume: [u8; 16],
-    pub file: [u8; 16],
-    pub size: u64,
-    pub mtime_unix_nanos: i128,
-    pub ctime_unix_nanos: Option<i128>,
-}
-/// Generic native facts for an already retained regular file. Ownership and
-/// permission policy belong to the caller's file port.
-pub fn observe_file_revision(file: &File) -> io::Result<NativeFileRevision> {
-    os::revision(file, false)
-}
-impl NativeFileRevision {
-    fn same_object(&self, other: &Self) -> bool {
-        self.volume == other.volume && self.file == other.file
-    }
-    fn root_key(&self) -> [u8; 32] {
-        let mut hash = Sha256::new();
-        hash.update(self.volume);
-        hash.update(self.file);
-        hash.finalize().into()
-    }
-}
+pub use se_state_files::{NativeFileRevision, observe_file_revision};
 
 pub struct NativeSourceRoot {
     path: PathBuf,
