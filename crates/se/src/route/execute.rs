@@ -477,6 +477,7 @@ fn dispatch_with_cold_recovery(
             .map(|pending| pending.finish(daemon_answer_is_used(cx, &output)))
             .transpose()?
             .flatten();
+        super::status::host_peers(&mut output, observed.as_ref(), &caller.admission);
         let mut service_observation = None;
         if let Some(observed) = observed
             && let AnyOutput::ProjectStatus(status) = &mut output
@@ -489,7 +490,6 @@ fn dispatch_with_cold_recovery(
             status.value.atlas = match &observed {
                 Ok(AnyOutput::ProjectStatus(live)) => {
                     merge_status_pending(&mut status.value.pending, &live.value.pending, &op);
-                    status.value.peers.clone_from(&live.value.peers);
                     live.value.atlas.clone()
                 }
                 Ok(_) => se_core::ops::status::atlas_view(Err(scope::unreadable(

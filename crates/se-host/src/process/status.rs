@@ -79,11 +79,10 @@ impl LaunchCoordinator {
             fresh: false,
             watch_only: true,
         };
+        // The same observation chain every host read gets (SE Code, ACP and
+        // provider), so each peer's state settles from the same facts.
         let observed = match self.status(input, owner, deadline).await {
-            Ok(output) => match self.observe_secode_output(output, deadline).await {
-                Ok(output) => self.observe_provider_output(output),
-                Err(error) => Err(error),
-            },
+            Ok(output) => crate::CustodyExecutor::observe_output(self, output, deadline).await,
             Err(error) => Err(error),
         };
         match observed {

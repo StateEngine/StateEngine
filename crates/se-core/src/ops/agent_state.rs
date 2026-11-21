@@ -235,3 +235,38 @@ pub fn peer_rows(owner: &AnyOutput, caller: &AgentId) -> Read<Vec<PeerRow>> {
             .collect(),
     }
 }
+
+/// The peer list a CLI read reports for its caller, from the host answer it
+/// merged: copied when the host answered status, unreadable when it answered
+/// with an error or another operation, unknown when no host answered. The
+/// owner gets no peer list.
+pub fn host_peers(
+    peers: &mut Option<Read<Vec<PeerRow>>>,
+    observed: Option<&Result<AnyOutput>>,
+    agent_caller: bool,
+) {
+    if !agent_caller {
+        return;
+    }
+    *peers = Some(match observed {
+        Some(Ok(AnyOutput::ProjectStatus(live))) => match &live.value.peers {
+            Some(value) => value.clone(),
+            None => Read::Unknown {
+                what: "the host answered without peer summaries".into(),
+            },
+        },
+        Some(Ok(_)) => Read::Unreadable {
+            source: "peer summaries".into(),
+            reason: "the host returned a different operation family".into(),
+            error: None,
+        },
+        Some(Err(error)) => Read::Unreadable {
+            source: "peer summaries".into(),
+            reason: error.to_string(),
+            error: Some(Box::new(error.body.clone())),
+        },
+        None => Read::Unknown {
+            what: "Peer summaries come from the running host, which did not answer this read; start it with se up.".into(),
+        },
+    });
+}
