@@ -14,8 +14,10 @@ use se_store::{Actor, Door, EventBody, MailDirection, MessageQuery, ReadBudget, 
 use se_types::{AgentId, EventId, IdempotencyKey, PageRequest, Read, Result, SeError};
 use std::{num::NonZeroU32, time::Duration};
 
-/// The plain words of every nudge; the assignment ids travel as refs.
-const NUDGE_TEXT: &str = "You have an open assignment and have been idle. Continue it, or tell your captain why you stopped.";
+/// Nudges and alerts are stored under the owner, so their words open by
+/// saying the engine wrote them; the assignment ids travel as refs.
+const AUTOMATED: &str = "[StateEngine automated ";
+const NUDGE_TEXT: &str = "[StateEngine automated nudge] You have an open assignment and have been idle. Continue it, or tell your captain why you stopped.";
 /// How many of the owner's newest messages to this agent are read for nudges.
 const NUDGE_SCAN: u32 = 50;
 
@@ -134,7 +136,7 @@ fn decide<R: Snapshot>(
     }
     let name = super::receipt::actor_ref(cx.read, &Actor::Agent(agent.clone()))?.name;
     let text = format!(
-        "{name} is stuck: it stayed idle on its open assignment after {} nudges with no message, working note or assignment update. Check on it or reassign the work.",
+        "[StateEngine automated stuck alert] {name} is stuck: it stayed idle on its open assignment after {} nudges with no message, working note or assignment update. Check on it or reassign the work.",
         nudges.len()
     );
     let key = key("stuck", agent, progress, nudges.len())?;
@@ -146,6 +148,21 @@ fn decide<R: Snapshot>(
             ..message(&captain, text, key)
         },
     )))
+}
+
+/// Whether a stored message is one of these engine nudges or alerts: owner
+/// mail the host itself recorded, opening with the automated marker.
+pub fn is_automated<R: Snapshot>(
+    cx: &mut Cx<'_, R>,
+    message: &se_store::MessageRecord,
+) -> Result<bool> {
+    let se_store::StoredText::Present(body) = &message.body else {
+        return Ok(false);
+    };
+    if !matches!(message.sender, Actor::Human(_)) || !body.starts_with(AUTOMATED) {
+        return Ok(false);
+    }
+    Ok(event(cx, &message.event)?.header.door == Door::Host)
 }
 
 fn message(to: &AgentId, body: String, idempotency_key: IdempotencyKey) -> MessageSend {
