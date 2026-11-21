@@ -141,6 +141,7 @@ async fn authorize_forwarded(
     })
     .await
     .map_err(|_| unavailable("SSH channel authorization deadline exceeded (10seconds)"))??;
+    Ok(())
 }
 pub(super) async fn receive(socket: &mut Socket, phase: Phase) -> Result<ServerFrame> {
     loop {

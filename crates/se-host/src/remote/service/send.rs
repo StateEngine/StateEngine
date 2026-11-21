@@ -99,7 +99,7 @@ impl Service {
 struct SendReceiptBinding {
     store_key: se_types::IdempotencyKey,
     grant: se_types::RemoteGrantId,
-    revision: se_types::Revision,
+    revision: se_store::Revision,
     target: RemoteTarget,
     key: se_types::IdempotencyKey,
 }

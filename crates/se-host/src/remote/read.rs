@@ -173,10 +173,13 @@ fn identity(principal: ProjectionRecord, profile: Read<ProjectionRecord>) -> Res
         provider,
     })
 }
-fn session_view(facts: &TargetFacts) -> Result<se_core::ops::SessionView> {
+fn session_view(
+    session: &Read<ProjectionRecord>,
+    target_agent: &AgentId,
+) -> Result<se_core::ops::SessionView> {
     let mut session = se_core::ops::unobserved_session();
     session.state = "never-launched".into();
-    if let Read::Present { value: head } = &facts.session {
+    if let Read::Present { value: head } = session {
         let first = head.original.as_deref().unwrap_or(&head.current);
         let EventBody::SessionPrepared {
             session: id, agent, ..
@@ -187,7 +190,7 @@ fn session_view(facts: &TargetFacts) -> Result<se_core::ops::SessionView> {
                 "original session preparation absent",
             ));
         };
-        if agent != &facts.target.agent {
+        if agent != target_agent {
             return Err(scope::unreadable("remote session", "agent differs"));
         }
         session.session_id = Some(id.clone());
@@ -278,7 +281,7 @@ fn observe(facts: TargetFacts, deadline: Instant) -> Result<RemoteAgentView> {
         profile,
         provider,
     } = identity(facts.principal, facts.profile)?;
-    let mut session = session_view(&facts)?;
+    let mut session = session_view(&facts.session, &facts.target.agent)?;
     let process = process_state(
         facts.process,
         &facts.session,
