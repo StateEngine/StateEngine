@@ -91,18 +91,19 @@ fn decode_leaf(
     common: &CommonArgs,
     key: &impl Fn() -> Result<IdempotencyKey>,
 ) -> Result<AnyOp> {
-    decode_session(name, m)
-        .or_else(|_| decode_meta(name, m, path))
-        .or_else(|_| decode_agent(name, m, common, key))
-        .or_else(|_| decode_config(name, m, key))
-        .or_else(|_| decode_project(name, m, path, key))
-        .or_else(|_| decode_store(name, m, key))
-        .or_else(|_| decode_history(name, m))
-        .or_else(|_| decode_message(name, m, key))
-        .or_else(|_| decode_runtime(name, m, key))
-        .or_else(|_| decode_assignment(name, m, key))
+    decode_session(name, m)?
+        .or(decode_meta(name, m, path)?)
+        .or(decode_agent(name, m, common, key)?)
+        .or(decode_config(name, m, key)?)
+        .or(decode_project(name, m, path, key)?)
+        .or(decode_store(name, m, key)?)
+        .or(decode_history(name, m)?)
+        .or(decode_message(name, m, key)?)
+        .or(decode_runtime(name, m, key)?)
+        .or(decode_assignment(name, m, key)?)
+        .ok_or_else(|| unknown(name))
 }
-fn decode_session(name: &str, m: &ArgMatches) -> Result<AnyOp> {
+fn decode_session(name: &str, m: &ArgMatches) -> Result<Option<AnyOp>> {
     let op = match name {
         "continuity.resume" => AnyOp::Resume(Resume {
             source_failure: None,
@@ -127,11 +128,11 @@ fn decode_session(name: &str, m: &ArgMatches) -> Result<AnyOp> {
                 .parse()
                 .map_err(|_| SeError::invalid("budget", "1024..1048576"))?,
         }),
-        _ => return Err(unknown(name)),
+        _ => return Ok(None),
     };
-    Ok(op)
+    Ok(Some(op))
 }
-fn decode_meta(name: &str, m: &ArgMatches, path: &[String]) -> Result<AnyOp> {
+fn decode_meta(name: &str, m: &ArgMatches, path: &[String]) -> Result<Option<AnyOp>> {
     let op = match name {
         "meta.version" => AnyOp::MetaVersion(MetaVersion {}),
         "meta.help" => AnyOp::MetaHelp(MetaHelp {
@@ -150,16 +151,16 @@ fn decode_meta(name: &str, m: &ArgMatches, path: &[String]) -> Result<AnyOp> {
             topic: text(m, "topic"),
         }),
         "meta.schema" => AnyOp::MetaSchema(MetaSchema { op: text(m, "op") }),
-        _ => return Err(unknown(name)),
+        _ => return Ok(None),
     };
-    Ok(op)
+    Ok(Some(op))
 }
 fn decode_agent(
     name: &str,
     m: &ArgMatches,
     common: &CommonArgs,
     key: &impl Fn() -> Result<IdempotencyKey>,
-) -> Result<AnyOp> {
+) -> Result<Option<AnyOp>> {
     let op = match name {
         "agent.list" => AnyOp::AgentList(AgentList {
             limit: required(m, "limit")?
@@ -227,15 +228,15 @@ fn decode_agent(
             name: required(m, "name")?,
             idempotency_key: key()?,
         }),
-        _ => return Err(unknown(name)),
+        _ => return Ok(None),
     };
-    Ok(op)
+    Ok(Some(op))
 }
 fn decode_config(
     name: &str,
     m: &ArgMatches,
     key: &impl Fn() -> Result<IdempotencyKey>,
-) -> Result<AnyOp> {
+) -> Result<Option<AnyOp>> {
     let op = match name {
         "config.get" => AnyOp::ConfigGet(ConfigGet {
             key: required(m, "setting_key")?,
@@ -253,16 +254,16 @@ fn decode_config(
                 .map_err(|_| SeError::invalid("limit", "1..500"))?,
             cursor: text(m, "cursor").map(Cursor::new).transpose()?,
         }),
-        _ => return Err(unknown(name)),
+        _ => return Ok(None),
     };
-    Ok(op)
+    Ok(Some(op))
 }
 fn decode_project(
     name: &str,
     m: &ArgMatches,
     path: &[String],
     key: &impl Fn() -> Result<IdempotencyKey>,
-) -> Result<AnyOp> {
+) -> Result<Option<AnyOp>> {
     let op = match name {
         "project.status" => AnyOp::ProjectStatus(ProjectStatus {
             fresh: !path.is_empty() && flag(m, "fresh"),
@@ -298,15 +299,15 @@ fn decode_project(
             keep_integrations: flag(m, "keep-integrations"),
             idempotency_key: key()?,
         }),
-        _ => return Err(unknown(name)),
+        _ => return Ok(None),
     };
-    Ok(op)
+    Ok(Some(op))
 }
 fn decode_store(
     name: &str,
     m: &ArgMatches,
     key: &impl Fn() -> Result<IdempotencyKey>,
-) -> Result<AnyOp> {
+) -> Result<Option<AnyOp>> {
     let op = match name {
         #[cfg(feature = "import")]
         "store.import_node" => AnyOp::ImportNode(ImportNode {
@@ -337,11 +338,11 @@ fn decode_store(
             yes: flag(m, "yes"),
             idempotency_key: key()?,
         }),
-        _ => return Err(unknown(name)),
+        _ => return Ok(None),
     };
-    Ok(op)
+    Ok(Some(op))
 }
-fn decode_history(name: &str, m: &ArgMatches) -> Result<AnyOp> {
+fn decode_history(name: &str, m: &ArgMatches) -> Result<Option<AnyOp>> {
     let op = match name {
         "history.list" => AnyOp::HistoryList(HistoryList {
             session: text(m, "session")
@@ -384,15 +385,15 @@ fn decode_history(name: &str, m: &ArgMatches) -> Result<AnyOp> {
         "history.event_read" => AnyOp::EventRead(EventRead {
             event_id: required(m, "event")?,
         }),
-        _ => return Err(unknown(name)),
+        _ => return Ok(None),
     };
-    Ok(op)
+    Ok(Some(op))
 }
 fn decode_message(
     name: &str,
     m: &ArgMatches,
     key: &impl Fn() -> Result<IdempotencyKey>,
-) -> Result<AnyOp> {
+) -> Result<Option<AnyOp>> {
     let op = match name {
         "message.read" => AnyOp::MessageRead(MessageRead {
             msg_id: required(m, "msg_id")?
@@ -478,15 +479,15 @@ fn decode_message(
             newest: flag(m, "newest"),
             owner_to: text(m, "to"),
         }),
-        _ => return Err(unknown(name)),
+        _ => return Ok(None),
     };
-    Ok(op)
+    Ok(Some(op))
 }
 fn decode_runtime(
     name: &str,
     m: &ArgMatches,
     key: &impl Fn() -> Result<IdempotencyKey>,
-) -> Result<AnyOp> {
+) -> Result<Option<AnyOp>> {
     let op =
         match name {
             "diagnostic.bundle" => AnyOp::DiagnosticBundle(DiagnosticBundle {}),
@@ -525,15 +526,15 @@ fn decode_runtime(
                 idempotency_key: key()?,
                 yes: m.get_flag("yes"),
             }),
-            _ => return Err(unknown(name)),
+            _ => return Ok(None),
         };
-    Ok(op)
+    Ok(Some(op))
 }
 fn decode_assignment(
     name: &str,
     m: &ArgMatches,
     key: &impl Fn() -> Result<IdempotencyKey>,
-) -> Result<AnyOp> {
+) -> Result<Option<AnyOp>> {
     let op = match name {
         "captain.set" => AnyOp::CaptainSet(CaptainSet {
             captain: required(m, "captain")?,
@@ -568,9 +569,9 @@ fn decode_assignment(
                 .map_err(|_| SeError::invalid("limit", "1..100"))?,
             cursor: text(m, "cursor").map(Cursor::new).transpose()?,
         }),
-        _ => return Err(unknown(name)),
+        _ => return Ok(None),
     };
-    Ok(op)
+    Ok(Some(op))
 }
 
 fn stop_agent(m: &ArgMatches) -> Result<String> {
