@@ -62,6 +62,24 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
         }
         Ok(())
     }
+    fn observe_peers<'a>(
+        &'a self,
+        mut output: AnyOutput,
+        admission: &'a Admission,
+        deadline: &'a Deadline,
+    ) -> HostFuture<'a, AnyOutput> {
+        Box::pin(async move {
+            if matches!(output, AnyOutput::ProjectStatus(_))
+                && let Some((owner, caller)) = self.peer_request(admission)
+            {
+                let peers = self.peer_summaries(owner, &caller, deadline).await;
+                if let AnyOutput::ProjectStatus(status) = &mut output {
+                    status.value.peers = Some(peers);
+                }
+            }
+            Ok(output)
+        })
+    }
     fn observe_output<'a>(
         &'a self,
         output: AnyOutput,

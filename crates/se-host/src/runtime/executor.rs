@@ -133,6 +133,7 @@ pub(super) async fn finish(
             }
             if let Some(custody) = context.custody.get() {
                 output = custody.observe_output(output, &deadline).await?;
+                output = custody.observe_peers(output, &admission, &deadline).await?;
             }
             Ok(ExecutedCall {
                 host_phases,

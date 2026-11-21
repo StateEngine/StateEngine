@@ -95,6 +95,16 @@ pub trait CustodyExecutor: Send + Sync {
     ) -> se_types::Result<()> {
         Ok(())
     }
+    /// Peer summaries for an agent caller's project status, read as the owner
+    /// of that project by the native coordinator; others add nothing.
+    fn observe_peers<'a>(
+        &'a self,
+        output: se_core::ops::AnyOutput,
+        _admission: &'a Admission,
+        _deadline: &'a Deadline,
+    ) -> crate::HostFuture<'a, se_core::ops::AnyOutput> {
+        Box::pin(async move { Ok(output) })
+    }
     /// Enrich retained provider coordinates with authenticated current reads,
     /// after the store read pin and native observation worker are released.
     fn observe_output<'a>(

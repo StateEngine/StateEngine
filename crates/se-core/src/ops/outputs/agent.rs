@@ -104,6 +104,18 @@ pub struct AgentStateView {
     /// The agent's latest question that has no reply yet.
     pub waiting_on: Option<WaitingOnView>,
 }
+/// What another agent in the same project may see of a peer: its identity,
+/// derived state and working note. No session, provider, resume, mail or
+/// unread field exists here, so none can be shown.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PeerRow {
+    pub id: AgentId,
+    pub name: String,
+    pub role: Option<String>,
+    pub provider: Provider,
+    pub state: Option<AgentStateView>,
+    pub working_note: Option<Read<WorkingNoteView>>,
+}
 /// The first line of an agent's working state, for a status row.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WorkingNoteView {

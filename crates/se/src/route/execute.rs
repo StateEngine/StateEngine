@@ -489,6 +489,7 @@ fn dispatch_with_cold_recovery(
             status.value.atlas = match &observed {
                 Ok(AnyOutput::ProjectStatus(live)) => {
                     merge_status_pending(&mut status.value.pending, &live.value.pending, &op);
+                    status.value.peers.clone_from(&live.value.peers);
                     live.value.atlas.clone()
                 }
                 Ok(_) => se_core::ops::status::atlas_view(Err(scope::unreadable(

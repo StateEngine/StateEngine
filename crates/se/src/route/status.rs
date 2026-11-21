@@ -439,6 +439,16 @@ pub(super) fn finish<R: ReadStore>(
         return Ok(output);
     };
     let value = &mut status.value;
+    // Peer summaries are read as the owner by the running host; an agent
+    // caller with no host answer is told so, not shown an empty team.
+    if value.peers.is_none()
+        && matches!(admission.actor, se_store::Actor::Agent(_))
+        && matches!(admission.scope, se_store::Scope::Project(_))
+    {
+        value.peers = Some(se_types::Read::Unknown {
+            what: "Peer summaries come from the running host, which did not answer this read; start it with se up.".into(),
+        });
+    }
     se_host::adoption::status::observe(&cx.home, value);
     if value.removal.is_none() && value.runtime.state != "running" {
         value.atlas.state = if cx.config.value.atlas.enabled {
