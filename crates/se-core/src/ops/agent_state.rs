@@ -65,14 +65,15 @@ pub(crate) fn open_question<R: Snapshot>(
         return Ok(None);
     }
     let to = super::receipt::actor_ref(cx.read, &last.recipient)?.name;
-    let asked_at = match cx.read.event(last.event).map_err(|e| store_error(&e))? {
-        Read::Present { value } => super::receipt::timestamp(value.header.occurred_at_us)?,
+    let asked_at_us = match cx.read.event(last.event).map_err(|e| store_error(&e))? {
+        Read::Present { value } => value.header.occurred_at_us,
         _ => return Ok(None),
     };
     Ok(Some(WaitingOnView {
         message_id: last.message,
         to,
-        asked_at,
+        asked_at: super::receipt::timestamp(asked_at_us)?,
+        asked_at_us,
     }))
 }
 
@@ -125,11 +126,7 @@ fn derive(row: &AgentRow, now_us: i64) -> Result<AgentStateView> {
     };
     let (since, elapsed) = match (state, &waiting_on, elapsed) {
         ("blocked", Some(question), _) => {
-            // A timestamp that does not parse leaves the elapsed time unknown
-            // rather than failing the whole status read.
-            let seconds = se_types::parse_timestamp(&question.asked_at)
-                .ok()
-                .and_then(|asked| u64::try_from((now_us - asked).max(0) / 1_000_000).ok());
+            let seconds = u64::try_from((now_us - question.asked_at_us).max(0) / 1_000_000).ok();
             (Some(question.asked_at.clone()), seconds)
         }
         (_, _, Some((started, seconds))) => (Some(started), Some(seconds)),

@@ -106,6 +106,8 @@ pub struct WaitingOnView {
     pub message_id: se_types::MessageId,
     pub to: String,
     pub asked_at: String,
+    /// The recorded time `asked_at` shows, in Unix microseconds.
+    pub asked_at_us: i64,
 }
 /// A retained provider turn observation, not native liveness or task success.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

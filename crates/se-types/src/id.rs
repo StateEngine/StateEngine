@@ -18,37 +18,6 @@ pub fn format_timestamp(micros: i64) -> Result<String> {
     Ok(format!("{}Z", value.replacen(' ', "T", 1)))
 }
 
-/// Parse a timestamp `format_timestamp` wrote back to Unix microseconds.
-/// Accepts exactly that UTC form; anything else is refused.
-pub fn parse_timestamp(text: &str) -> Result<i64> {
-    let bad = || SeError::invalid("timestamp", "a StateEngine UTC timestamp");
-    let text = text.strip_suffix('Z').ok_or_else(bad)?;
-    let (date, time) = text.split_once('T').ok_or_else(bad)?;
-    let number = |part: &str| part.parse::<i64>().map_err(|_| bad());
-    let mut d = date.splitn(3, '-');
-    let (y, m, day) = match (d.next(), d.next(), d.next()) {
-        (Some(y), Some(m), Some(day)) => (number(y)?, number(m)?, number(day)?),
-        _ => return Err(bad()),
-    };
-    let (clock, fraction) = time.split_once('.').unwrap_or((time, "0"));
-    let mut c = clock.splitn(3, ':');
-    let (h, min, sec) = match (c.next(), c.next(), c.next()) {
-        (Some(h), Some(min), Some(sec)) => (number(h)?, number(min)?, number(sec)?),
-        _ => return Err(bad()),
-    };
-    let micros = format!("{fraction:0<6}")
-        .get(..6)
-        .ok_or_else(bad)
-        .and_then(number)?;
-    // Days from 1970-01-01 in the proleptic Gregorian calendar.
-    let (y, m) = if m <= 2 { (y - 1, m + 9) } else { (y, m - 3) };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * m + 2) / 5 + day - 1;
-    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
-    Ok(((days * 86_400 + h * 3_600 + min * 60 + sec) * 1_000_000) + micros)
-}
-
 macro_rules! ids {
     ($($name:ident => $prefix:literal),+ $(,)?) => {
         #[derive(Clone,Copy,Debug,Eq,PartialEq,Hash)]
