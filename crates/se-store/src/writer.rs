@@ -14,6 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 mod atlas;
+mod erase;
 use crate::checkpoint_task;
 #[expect(
     clippy::struct_excessive_bools,
@@ -47,6 +48,7 @@ struct Request {
 enum Command {
     Append(Request),
     Atlas(atlas::AtlasRequest),
+    Erase(Box<erase::EraseRequest>),
     Flush(Instant, Reply<FlushReport>),
     Drain(Instant),
     Recover,
@@ -457,6 +459,7 @@ fn run(
         };
         match command {
             Command::Atlas(request) => atlas::execute(&mut host, &*lease, &shared, request)?,
+            Command::Erase(request) => erase::execute(&mut host, &*lease, &shared, *request)?,
             Command::Append(first) => {
                 let mut group = vec![first];
                 let mut bytes = group[0].materialized;

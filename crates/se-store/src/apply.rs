@@ -667,6 +667,36 @@ pub(crate) fn apply(
         | ImportUnreadable { .. }
         | LegacyRetained { .. }
         | AliasImported { .. }) => crate::import::apply(c, header, b, seq, revision, facts)?,
+        ErasureRequested {
+            erasure,
+            targets,
+            residuals,
+        } => {
+            crate::erasure::apply::requested(c, seq, &erasure, &targets, &residuals)?;
+            codec::aux(c, seq, facts)?;
+        }
+        TurnErased {
+            target,
+            erasure,
+            original_bytes,
+            ..
+        } => {
+            crate::erasure::apply::body(c, &s, &target, &erasure, original_bytes, "turn")?;
+            codec::aux(c, seq, facts)?;
+        }
+        MessageErased {
+            target,
+            erasure,
+            original_bytes,
+            ..
+        } => {
+            crate::erasure::apply::body(c, &s, &target, &erasure, original_bytes, "message")?;
+            codec::aux(c, seq, facts)?;
+        }
+        ErasureCompleted { erasure, .. } => {
+            crate::erasure::apply::completed(c, seq, &erasure)?;
+            codec::aux(c, seq, facts)?;
+        }
         _ => return later("projection"),
     }
     Ok(())

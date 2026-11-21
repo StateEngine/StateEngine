@@ -70,6 +70,8 @@ pub(crate) mod status;
 pub use planning::PreparedCall;
 #[cfg(feature = "listener")]
 pub(crate) mod client_activity;
+#[cfg(feature = "listener")]
+mod forget;
 #[cfg(all(feature = "listener", feature = "import"))]
 mod history_import;
 #[cfg(feature = "listener")]

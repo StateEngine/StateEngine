@@ -306,6 +306,9 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("since").help("An opaque cursor from context for this same agent"))
             .arg(value("budget").default_value("32768").help("Maximum UTF-8 bytes in the context reply"))
             .arg(value("limit").default_value("20").help("Maximum recent entries per context section")),
+        "store.forget" => c
+            .arg(value("event").long("event").action(ArgAction::Append).required(true).help("Message or captured-turn event ID to forget; repeat for several from one project"))
+            .arg(toggle("yes").help("Erase after reviewing the printed plan; without it nothing is erased")),
         "project.remove" => c
             .arg(toggle("all").conflicts_with("project").help("Remove every registered project in this home"))
             .arg(toggle("keep-integrations").help("Keep registered integrations while removing the project")),

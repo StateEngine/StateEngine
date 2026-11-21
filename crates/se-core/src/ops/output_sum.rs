@@ -125,6 +125,7 @@ AgentLaunch => AgentLaunch, LaunchReply;
 AgentStop => AgentStop, StopResult;
 AgentWake => AgentWake, WakeResult;
 ProjectRemove => ProjectRemove, RemoveResult;
+StoreForget => StoreForget, ErasureReceipt;
 AgentShow => AgentShow, AgentStatusOutput;
 AgentList => AgentList, AgentPage;
 CaptainSet => CaptainSet, CaptainSetOutput;

@@ -5,6 +5,7 @@ mod control;
 mod doctor;
 pub mod error;
 mod event;
+mod forget;
 mod guide;
 #[cfg(feature = "import")]
 mod import;
@@ -106,6 +107,10 @@ fn render_human(value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
         | HumanKind::Schema => render_meta(kind, value, out),
         #[cfg(feature = "import")]
         HumanKind::Import => render_import(kind, value, out),
+        HumanKind::Erasure => match value {
+            AnyOutput::StoreForget(value) => forget::output(&value.value, out),
+            _ => Err(renderer_disagreement()),
+        },
         HumanKind::Init
         | HumanKind::ProjectMove
         | HumanKind::Bundle

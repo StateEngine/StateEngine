@@ -102,6 +102,16 @@ impl Entry {
         })
     }
 }
+/// Generations an erasure must replace: every indexed copy predates it.
+pub(crate) fn generation_ids(
+    files: &dyn StateFiles,
+    home: &Path,
+    store: &StoreId,
+    deadline: Instant,
+) -> StoreResult<Vec<RecordId>> {
+    let (index, _) = read_index(files, &home.join("backups"), store, deadline)?;
+    Ok(index.generations.iter().map(|entry| entry.id).collect())
+}
 fn read_index(
     files: &dyn StateFiles,
     root: &Path,

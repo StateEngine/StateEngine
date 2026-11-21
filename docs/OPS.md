@@ -189,7 +189,7 @@ Library lifecycle methods (`open`, capability verification, tool catalogue/call,
 | `credential.rotate` | `credential rotate` | none — separate human-only credential replacement | owner | write; custody for affected sessions | required key, printed exact credential/session consequences, human-presence check | `CredentialRotation`: revoked sessions and new credential readback; never an implicit config repair | planned, support J3, J5 |
 | `installation.uninstall` | `uninstall` | none — human-only installation removal | owner | custody | required key, printed owned install/integration/PATH plan and affected agents/credentials, human-presence check | `UninstallResult`: exact stops/revocations, removed owned files/integrations and restored managed PATH, independent fresh-shell readback; repositories/history preserved | J5 |
 | `store.import_node` | `import --from-node PATH` | none — explicit owner migration of historical data | owner | write | original Node state root, supported format versions, import identity; no executable callbacks | `ImportReceipt`: source provenance, imported/deduplicated/rejected counts, omissions and resume-binding results; originals retained | support J2–J4 |
-| `store.forget` | `forget --event ID [--event ID...]` | none — human-only irreversible secret erasure | owner | write | required key, explicit captured-record IDs/revisions, printed erase plan and human-presence check; no typed-ID prompt; no broad text selector | `ErasureReceipt`: erased bodies and derived copies, preserved non-secret audit fact, backup/residual-copy limitations or honest refusal | planned, support J3, J5 |
+| `store.forget` | `forget --event ID [--event ID...] [--yes]` | none — human-only irreversible secret erasure | owner | write | required key, explicit captured-record IDs/revisions, printed erase plan, which `--yes` confirms, and human-presence check; no typed-ID prompt; no broad text selector | `ErasureReceipt`: erased bodies and derived copies, preserved non-secret audit fact, backup/residual-copy limitations or honest refusal | support J3, J5 |
 | `atlas.find` | `atlas find QUERY` | `stateengine_atlas_find` | either | read | name/text query, scope, limit/budget | `Page<CodeHit>`: path/line/kind pointers, symbol/text method, coverage and index state | optional J2–J4 |
 | `atlas.refs` | `atlas refs SYMBOL` | `stateengine_atlas_refs` | either | read | typed symbol/path selector, page | `Page<Reference>`: import/call/type sites, enclosing symbol, resolved/name-only confidence and omissions | optional J2–J4 |
 | `atlas.impact` | `atlas impact SYMBOL` | `stateengine_atlas_impact` | either | read | symbol selector, bounded depth at most 3, budget | `Impact`: bounded dependent graph, per-hop confidence, test references and omitted frontier | optional J2–J4 |
@@ -208,7 +208,7 @@ General configuration resolves flag > documented environment variable > config.t
 
 Every hazard prints a concrete plan before effects: targets, agents ended, credentials revoked/rotated, events lost and retained copies. Remove/forget/restore/rotate/uninstall/doctor-fix require owner human presence outside agent ancestry, with the same-user limitation printed; no typed-ID prompts. Import prints source/family/conflict plans and keeps originals read-only. Startup migration prints its supported additive/pre-backup plan automatically; unsupported paths refuse. See 50 §8 for the per-operation hazard table. NORMAL may lose multiple recent ordinary commits on power/OS loss, not application crash.
 
-Default SE Code exit with live agents hands back to a detached `se up`, which exits ten minutes after its last live agent. This differs from ordinary `se down`, which stops its owned scope on every OS. Embedded binding returns an in-process session handle without credential commits. Done includes real Claude and Codex, all five journeys on Windows/Linux/macOS, standalone and embedded; Windows/Linux is intermediate and the borrowed-Mac campaign qualifies before alpha. Forget and live handover remain before alpha.
+Default SE Code exit with live agents hands back to a detached `se up`, which exits ten minutes after its last live agent. This differs from ordinary `se down`, which stops its owned scope on every OS. Embedded binding returns an in-process session handle without credential commits. Done includes real Claude and Codex, all five journeys on Windows/Linux/macOS, standalone and embedded; Windows/Linux is intermediate and the borrowed-Mac campaign qualifies before alpha. Live handover remains before alpha.
 
 ### Windows installation.uninstall
 
@@ -276,7 +276,7 @@ Crew can omit the recipient for a `question`, `blocker`, or `done` message to se
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 57 operations (51 core, 6 Atlas), 29 MCP tools (24 core, 5 Atlas). Planned: 8 operations, 2 MCP tools.
+Registered: 58 operations (52 core, 6 Atlas), 29 MCP tools (24 core, 5 Atlas). Planned: 7 operations, 2 MCP tools.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -332,13 +332,14 @@ Registered: 57 operations (51 core, 6 Atlas), 29 MCP tools (24 core, 5 Atlas). P
 | `agent.launch` | launch | `stateengine_agent_launch` | either | custody |
 | `agent.stop` | stop | `stateengine_agent_stop` | either | custody |
 | `agent.wake` | agent wake | `stateengine_agent_wake` | either | custody |
+| `store.forget` | forget | none | owner | custody |
 | `project.remove` | remove | none | owner | custody |
 | `agent.show` | agent show | none | owner | read |
 | `config.get` | config get | none | owner | read |
 | `config.set` | config set | none | owner | write |
 | `config.list` | config list | none | owner | read |
 
-Planned operations (design tables, not yet registered): `credential.rotate`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`, `store.forget`, `store.restore`
+Planned operations (design tables, not yet registered): `credential.rotate`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`, `store.restore`
 
 Planned MCP tools: `stateengine_agent_status`, `stateengine_session_turn`
 <!-- END GENERATED: ops-inventory -->

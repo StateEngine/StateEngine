@@ -7,11 +7,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 fn text(value: &StoredText) -> Result<Value> {
+    // The owner forgot this body: the event stays, its text does not.
     let StoredText::Present(value) = value else {
-        return Err(scope::unreadable(
-            "event payload",
-            "content was erased; no complete public body is available",
-        ));
+        return Ok(json!({"text":null,"erased":true,"complete":false}));
     };
     let hash: String = se_types::hex_lower(&Sha256::digest(value.as_bytes()));
     Ok(json!({"text":value,"bytes":value.len(),"sha256":hash,"complete":true}))

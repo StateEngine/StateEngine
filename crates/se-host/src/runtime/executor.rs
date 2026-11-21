@@ -210,6 +210,14 @@ pub(super) async fn finish(
             capture_commits: Vec::new(),
             capture_keys: Vec::new(),
         }),
+        OpStep::Custody(CustodyPlan::Forget(input)) => Ok(ExecutedCall {
+            host_phases,
+            output: super::forget::execute(context, input, admission, &deadline).await?,
+            write_timings: None,
+            committed: None,
+            capture_commits: Vec::new(),
+            capture_keys: Vec::new(),
+        }),
         OpStep::Custody(plan) => match context.custody.get() {
             Some(custody) => Ok(ExecutedCall {
                 host_phases,
@@ -374,7 +382,7 @@ pub(crate) fn close_read<T>(result: Result<T>, closed: se_store::StoreResult<()>
         (Err(original), Err(error)) => Err(original.with_cause(error)),
     }
 }
-#[cfg(all(feature = "listener", feature = "import"))]
+#[cfg(feature = "listener")]
 pub(crate) fn check_generation(
     reader: &se_store::SqliteReader,
     expected: se_types::Generation,
@@ -382,11 +390,7 @@ pub(crate) fn check_generation(
     let phase = checked_phase(reader, expected)?;
     close_read(Ok(()), phase.close())
 }
-#[cfg(any(
-    test,
-    feature = "secode",
-    all(feature = "listener", feature = "import")
-))]
+#[cfg(any(test, feature = "secode", feature = "listener"))]
 pub(super) fn checked_phase(
     reader: &se_store::SqliteReader,
     expected: se_types::Generation,
