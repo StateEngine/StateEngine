@@ -54,21 +54,22 @@ fn open_metadata(path: &Path, repair: bool) -> Result<File> {
     Ok(unsafe { File::from_raw_handle(raw) })
 }
 fn snapshot(file: &File, path: &Path) -> Result<PermissionSnapshot> {
-    let info = crate::windows_native::file_information(file)
+    let info = se_native_path::windows::file::file_information(file)
         .map_err(|e| io_error("read repair object kind", path, e))?;
     let directory = info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0;
     let identity = metadata(file, path, directory, false)?;
     // SAFETY: the caller retains the native handle throughout this query.
     let descriptor = unsafe {
-        crate::windows_native::acl::SecurityDescriptor::query(
+        se_native_path::windows::acl::SecurityDescriptor::query(
             file.as_raw_handle(),
             SE_FILE_OBJECT,
             OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
         )
     }
     .map_err(|e| io_error("read repair object security", path, e))?;
-    let owner = crate::windows_native::sid_text(descriptor.owner)
-        .map_err(|e| io_error(e.operation, path, e.source))?;
+    // SAFETY: `descriptor` retains the native security descriptor owning `descriptor.owner`.
+    let owner = unsafe { se_native_path::windows::sid::text(descriptor.owner) }
+        .map_err(|e| io_error("encode native SID", path, e))?;
     if owner != security::current_owner_sid(path)? {
         return Err(unsafe_path(
             "repair requires current OS user ownership",

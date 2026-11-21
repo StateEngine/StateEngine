@@ -1819,6 +1819,7 @@ dependencies = [
  "rusqlite",
  "se-fsevents",
  "se-native-path",
+ "se-state-files",
  "se-types",
  "serde",
  "serde_json",
@@ -1913,6 +1914,20 @@ dependencies = [
  "se-types",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "se-state-files"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "libc",
+ "rusqlite",
+ "se-native-path",
+ "se-types",
+ "serde",
+ "sha2",
+ "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 use super::*;
 #[path = "effects/windows.rs"]
-pub(crate) mod effects;
+pub mod effects;
 use std::{
     mem::{size_of, zeroed},
     os::windows::{
@@ -27,7 +27,7 @@ fn validate_component(value: &std::ffi::OsStr, path: &Path) -> Result<()> {
     }
     Ok(())
 }
-pub(crate) fn wide(path: &Path) -> Result<Vec<u16>> {
+pub fn wide(path: &Path) -> Result<Vec<u16>> {
     use std::path::Prefix;
     for component in path.components() {
         match component {
@@ -80,7 +80,7 @@ pub(super) struct Identity {
     index: [u8; 16],
 }
 fn metadata(file: &File, path: &Path, directory: bool, check_security: bool) -> Result<Identity> {
-    let info = crate::windows_native::file_information(file)
+    let info = se_native_path::windows::file::file_information(file)
         .map_err(|e| io_error("read pinned native file identity", path, e))?;
     if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
         || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0) != directory
@@ -98,7 +98,7 @@ fn metadata(file: &File, path: &Path, directory: bool, check_security: bool) -> 
     if check_security {
         security::verify(file, path, !directory)?;
     }
-    let id = crate::windows_native::file_id(file)
+    let id = se_native_path::windows::file::file_id(file)
         .map_err(|e| io_error("read 128-bit native file identity", path, e))?;
     Ok(Identity {
         volume: id.volume,

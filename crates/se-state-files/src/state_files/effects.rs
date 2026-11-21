@@ -32,7 +32,7 @@ impl OwnedFile {
     /// Internal native handoff only: revalidate the original object and deny
     /// concurrent writes for the lifetime of the returned custody handle.
     #[cfg(windows)]
-    pub(crate) fn uninstall_custody(&self) -> Result<File> {
+    pub fn uninstall_custody(&self) -> Result<File> {
         self.0.mutation_guard()
     }
     /// None means native ENOENT, including an actually absent ancestor. Permission,
@@ -155,7 +155,7 @@ pub fn remove_empty_directory(path: &Path) -> Result<DirectoryRemoval> {
     os::remove_empty_directory(path)
 }
 
-pub(crate) fn changed(operation: &'static str, path: &Path) -> super::StateFileError {
+pub fn changed(operation: &'static str, path: &Path) -> super::StateFileError {
     failure(StateFileErrorCode::SourceChanged, operation, path)
 }
 pub(super) fn absent(error: &super::StateFileError) -> bool {
@@ -248,7 +248,7 @@ pub struct NativeInstallationClaim {
 }
 impl NativeInstallationClaim {
     #[cfg(windows)]
-    pub(crate) fn uninstall_custody(&self) -> Result<File> {
+    pub fn uninstall_custody(&self) -> Result<File> {
         self._pin.check()?;
         self._pin
             .file()
@@ -268,7 +268,7 @@ impl NativeInstallationClaim {
 mod install_hold;
 #[cfg(windows)]
 #[path = "effects/install_hold_windows.rs"]
-mod install_hold;
+pub mod install_hold;
 
 impl NativeInstallationClaim {
     /// Recover the native creator's handoff only from an inherited, still-held

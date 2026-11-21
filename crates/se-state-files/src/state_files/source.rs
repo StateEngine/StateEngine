@@ -23,7 +23,7 @@ pub struct SourceChunk {
     pub end_of_file: bool,
 }
 impl NativeSourcePin {
-    pub(crate) fn try_clone_file(&self) -> Result<std::fs::File> {
+    pub fn try_clone_file(&self) -> Result<std::fs::File> {
         #[cfg(target_os = "linux")]
         {
             use std::os::fd::{AsRawFd, FromRawFd};

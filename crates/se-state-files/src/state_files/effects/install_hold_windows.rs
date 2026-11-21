@@ -42,8 +42,8 @@ fn duplicate(raw: HANDLE, path: &Path) -> Result<OwnedHandle> {
 fn attributes<'a>(
     handles: &'a [HANDLE],
     path: &Path,
-) -> Result<crate::windows_native::attributes::Attributes<'a>> {
-    let mut attributes = crate::windows_native::attributes::Attributes::new(
+) -> Result<crate::windows_attributes::Attributes<'a>> {
+    let mut attributes = crate::windows_attributes::Attributes::new(
         1,
         "size installer handle allowlist",
         "initialize installer handle allowlist",
@@ -92,7 +92,7 @@ fn quote(value: &OsStr, line: &mut Vec<u16>, path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn run(
+pub fn run(
     claim: &File,
     executable: &OsStr,
     args: &[OsString],
@@ -195,7 +195,3 @@ pub(super) fn run(
 
 #[path = "install_environment_windows.rs"]
 mod environment;
-
-#[cfg(test)]
-#[path = "../../../tests/support/windows_install_inheritance.rs"]
-mod judges;

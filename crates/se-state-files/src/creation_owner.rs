@@ -94,9 +94,10 @@ mod windows {
         Ok(storage)
     }
     fn text(sid: PSID) -> Result<String, FileOwnerError> {
-        crate::windows_native::sid_text(sid).map_err(|e| FileOwnerError {
+        // SAFETY: callers retain the native token buffer that owns this SID.
+        unsafe { se_native_path::windows::sid::text(sid) }.map_err(|source| FileOwnerError {
             operation: "encode initialized owner SID",
-            source: e.source,
+            source,
         })
     }
     pub(super) fn initialize() -> Result<FileOwnerInitialization, FileOwnerError> {
