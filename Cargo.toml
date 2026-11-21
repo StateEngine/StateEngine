@@ -22,6 +22,7 @@ members = [
     "crates/se-mcp",
     "crates/se-remote-cli",
     "crates/se-remote",
+    "crates/se-remote-host",
     "crates/se-atlas",
     "crates/se-atlas-cold",
     "crates/se-atlas-host",

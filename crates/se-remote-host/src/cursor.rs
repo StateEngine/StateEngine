@@ -4,9 +4,10 @@ use se_core::store_error::store_error;
 use se_types::{Cursor, SeError};
 use serde::{Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 #[derive(Clone)]
-pub(crate) struct Cursors {
+pub struct Cursors {
     cipher: Arc<keys::CursorCipher>,
     host: RemoteHostId,
     store: se_store::StoreInfo,

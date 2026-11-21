@@ -19,7 +19,7 @@ mod pending;
 use pending::Pending;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct LivePosition {
+pub struct LivePosition {
     pub instance: RemoteInstanceId,
     pub publisher: [u8; 16],
     pub target: RemoteTarget,
@@ -31,7 +31,7 @@ pub(crate) struct LivePosition {
 }
 #[derive(Clone, Debug)]
 pub struct Observation {
-    pub(crate) position: LivePosition,
+    pub position: LivePosition,
     pub item: RemoteLiveItem,
     pub observed_at: Instant,
 }
@@ -48,7 +48,7 @@ struct State {
     bytes: usize,
     pending: Option<std::sync::mpsc::Receiver<Pending>>,
 }
-pub(crate) struct LiveRead {
+pub struct LiveRead {
     pub items: Vec<Arc<Observation>>,
     pub position: Option<LivePosition>,
     pub gap: bool,
@@ -66,36 +66,6 @@ pub struct LivePublisher {
 }
 #[derive(Clone)]
 pub struct LiveSource(Arc<Source>);
-impl se_harness::LivePublisher for LiveSource {
-    fn delta_at(
-        &self,
-        vendor: &str,
-        role: se_harness::LiveTurnRole,
-        delta: &str,
-        observed_at: Instant,
-    ) {
-        let role = match role {
-            se_harness::LiveTurnRole::User => RemoteTurnRole::User,
-            se_harness::LiveTurnRole::Assistant => RemoteTurnRole::Assistant,
-            se_harness::LiveTurnRole::Tool => RemoteTurnRole::Tool,
-        };
-        LiveSource::delta_at(self, vendor, role, delta, observed_at);
-    }
-    fn complete_at(
-        &self,
-        vendor: &str,
-        role: se_harness::LiveTurnRole,
-        text: &str,
-        observed_at: Instant,
-    ) {
-        let role = match role {
-            se_harness::LiveTurnRole::User => RemoteTurnRole::User,
-            se_harness::LiveTurnRole::Assistant => RemoteTurnRole::Assistant,
-            se_harness::LiveTurnRole::Tool => RemoteTurnRole::Tool,
-        };
-        LiveSource::complete_at(self, vendor, role, text, observed_at);
-    }
-}
 struct Source {
     publisher: Weak<LivePublisher>,
     stamp: LivePosition,
@@ -107,7 +77,7 @@ struct Source {
 }
 impl LivePublisher {
     /// A fresh view excludes retained observations from before its attachment.
-    pub(crate) fn checkpoint(&self, target: &RemoteTarget) -> Result<Option<LivePosition>> {
+    pub fn checkpoint(&self, target: &RemoteTarget) -> Result<Option<LivePosition>> {
         let mut state = self
             .state
             .lock()
@@ -122,7 +92,7 @@ impl LivePublisher {
         Ok(Some(position))
     }
 
-    pub(crate) fn fence(&self) -> Result<()> {
+    pub fn fence(&self) -> Result<()> {
         let (mut state, poisoned) = match self.state.lock() {
             Ok(state) => (state, false),
             Err(error) => (error.into_inner(), true),
@@ -152,7 +122,7 @@ impl LivePublisher {
         Ok(Arc::new(Self {
             clock_origin: Instant::now(),
             instance,
-            epoch: session::entropy()?,
+            epoch: crate::entropy()?,
             state: Mutex::new(State {
                 sources: BTreeMap::new(),
                 ring: VecDeque::new(),
@@ -164,7 +134,7 @@ impl LivePublisher {
             committed: AtomicU64::new(0),
         }))
     }
-    pub(crate) fn clock(&self) -> Result<RemoteObservationClock> {
+    pub fn clock(&self) -> Result<RemoteObservationClock> {
         Ok(RemoteObservationClock {
             epoch: self.epoch,
             sampled_at_us: self.clock_us(Instant::now())?,
@@ -172,7 +142,7 @@ impl LivePublisher {
             source_released_at_us: None,
         })
     }
-    pub(crate) fn clock_us(&self, observed: Instant) -> Result<i64> {
+    pub fn clock_us(&self, observed: Instant) -> Result<i64> {
         let (negative, duration) = match observed.checked_duration_since(self.clock_origin) {
             Some(duration) => (false, duration),
             None => (true, self.clock_origin.duration_since(observed)),
@@ -232,7 +202,7 @@ impl LivePublisher {
         state.sources.insert(target, Arc::downgrade(&source));
         Ok(LiveSource(source))
     }
-    pub(crate) fn read(
+    pub fn read(
         &self,
         target: &RemoteTarget,
         after: Option<&LivePosition>,
@@ -306,7 +276,7 @@ impl LivePublisher {
             available: true,
         })
     }
-    pub(crate) fn complete_existing(
+    pub fn complete_existing(
         &self,
         target: &RemoteTarget,
         session: &SessionId,
@@ -326,10 +296,10 @@ impl LivePublisher {
             LiveSource(source).complete_at(item_id, role, text, observed_at);
         }
     }
-    pub(crate) fn changed(&self) -> tokio::sync::futures::Notified<'_> {
+    pub fn changed(&self) -> tokio::sync::futures::Notified<'_> {
         self.changed.notified()
     }
-    pub(crate) fn committed(&self) {
+    pub fn committed(&self) {
         // A revision is a scheduling hint, never an authorization or cursor.
         // Saturation keeps readers conservative instead of wrapping to an old cut.
         let _ = self
@@ -339,7 +309,7 @@ impl LivePublisher {
             });
         self.changed.notify_waiters();
     }
-    pub(crate) fn commit_revision(&self) -> u64 {
+    pub fn commit_revision(&self) -> u64 {
         self.committed.load(Ordering::Acquire)
     }
 }
@@ -347,7 +317,7 @@ impl LiveSource {
     pub fn complete(&self, item_id: &str, role: RemoteTurnRole, text: &str) {
         self.complete_at(item_id, role, text, Instant::now());
     }
-    pub(crate) fn complete_at(
+    pub fn complete_at(
         &self,
         item_id: &str,
         role: RemoteTurnRole,
@@ -362,13 +332,7 @@ impl LiveSource {
     pub fn delta(&self, item_id: &str, role: RemoteTurnRole, delta: &str) {
         self.delta_at(item_id, role, delta, Instant::now());
     }
-    pub(crate) fn delta_at(
-        &self,
-        item_id: &str,
-        role: RemoteTurnRole,
-        delta: &str,
-        observed_at: Instant,
-    ) {
+    pub fn delta_at(&self, item_id: &str, role: RemoteTurnRole, delta: &str, observed_at: Instant) {
         if item_id.is_empty() || item_id.len() > 2048 || item_id.chars().any(char::is_control) {
             self.0.lost();
             return;

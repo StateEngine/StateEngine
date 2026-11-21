@@ -4,13 +4,13 @@ use super::{
     output::Output,
     *,
 };
-use crate::remote::{
+use crate::{
     channel::unavailable,
     transport_io::{BudgetIo, Controls, FramedIo},
     wire::{ClientFrame, Phase, ServerFrame},
 };
 use futures_util::{SinkExt, StreamExt};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use tokio::time::timeout;
 use tokio_tungstenite::{
     WebSocketStream,
@@ -25,15 +25,7 @@ pub(super) async fn bounded<T: Send + 'static>(
     endpoint: &ClientEndpoint,
     work: impl FnOnce() -> Result<T> + Send + 'static,
 ) -> Result<T> {
-    let deadline = crate::client::lease::Deadline::from_options(&crate::client::ClientOptions {
-        expected_generation: None,
-        timeout: Duration::from_secs(10),
-        cancelled: Arc::new(AtomicBool::new(false)),
-    })?;
-    endpoint
-        .blocking
-        .run(crate::runtime::BlockingClass::Foreground, &deadline, work)
-        .await
+    crate::run_foreground(endpoint.blocking.as_ref(), Duration::from_secs(10), work).await
 }
 pub(super) async fn serve(
     socket: TcpStream,

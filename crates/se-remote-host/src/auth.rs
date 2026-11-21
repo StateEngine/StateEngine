@@ -1,7 +1,7 @@
 //! Native owner control is separate from machine session authorization.
 use super::{
-    ClientConnectionId, CredentialSource,
-    session::{SecurityStore, entropy, now},
+    ClientConnectionId, CredentialSource, entropy,
+    session::{SecurityStore, now},
 };
 use se_core::admission::{HumanTerminal, require_human_terminal};
 use se_store::remote::GrantRecord;
@@ -17,8 +17,16 @@ mod authorize;
 mod fence;
 mod handshake;
 mod source;
-pub(crate) use fence::GrantFence;
+pub use fence::GrantFence;
 pub use fence::{OutputFence, OutputInvalidation};
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Authorization {
+    pub channel: [u8; 32],
+    pub hello: RemoteHello,
+    pub credential: LinkSecret,
+}
 
 pub struct AuthenticatedDevice {
     connection: ClientConnectionId,
@@ -35,17 +43,14 @@ impl AuthenticatedDevice {
 }
 
 pub struct AuthorizedRemoteRequest {
-    pub(crate) admission: se_core::remote::RemoteAdmission,
-    pub(crate) request: RemoteRequest,
-    pub(crate) attribution: RemoteAttribution,
-    pub(crate) fence: Arc<fence::GrantFence>,
+    pub admission: se_core::remote::RemoteAdmission,
+    pub request: RemoteRequest,
+    pub attribution: RemoteAttribution,
+    pub fence: Arc<fence::GrantFence>,
     source_fence: Option<Arc<fence::GrantFence>>,
 }
 impl AuthorizedRemoteRequest {
-    pub(crate) fn register_source_output(
-        &self,
-        output: &Arc<dyn OutputInvalidation>,
-    ) -> Result<()> {
+    pub fn register_source_output(&self, output: &Arc<dyn OutputInvalidation>) -> Result<()> {
         if let Some(fence) = &self.source_fence {
             fence.register(output)?;
         }
@@ -95,7 +100,7 @@ impl AdmissionPermit {
     ) -> Result<<se_store::SqliteClient as se_store::WriterClient>::Completion> {
         self.submit_with(writer, batch, se_core::store_error::store_error)
     }
-    pub(crate) fn submit_with(
+    pub fn submit_with(
         self,
         writer: &se_store::SqliteClient,
         batch: se_store::AtomicBatch,
@@ -128,27 +133,27 @@ struct SourceFence {
     fence: Arc<fence::GrantFence>,
 }
 #[derive(Default)]
-pub(crate) struct State {
-    pub(crate) all_fenced: bool,
+pub struct State {
+    pub all_fenced: bool,
     pending: HashMap<[u8; 32], PendingChannel>,
     fences: HashMap<RemoteGrantId, CachedFence>,
     renewing: std::collections::HashSet<RemoteGrantId>,
     source_fences: HashMap<String, HashMap<String, SourceFence>>,
 }
 pub struct Security {
-    pub(crate) store: Arc<SecurityStore>,
-    pub(crate) host: RemoteHostId,
-    pub(crate) instance: RemoteInstanceId,
-    pub(crate) generation: se_types::Generation,
-    pub(crate) state: Mutex<State>,
-    pub(crate) blocking: crate::runtime::BlockingPool,
+    pub store: Arc<SecurityStore>,
+    pub host: RemoteHostId,
+    pub instance: RemoteInstanceId,
+    pub generation: se_types::Generation,
+    pub state: Mutex<State>,
+    pub blocking: Arc<dyn crate::BlockingRunner>,
 }
 impl Security {
     pub fn new(
         store: Arc<SecurityStore>,
         identity: &dyn CredentialSource,
         generation: se_types::Generation,
-        blocking: crate::runtime::BlockingPool,
+        blocking: Arc<dyn crate::BlockingRunner>,
     ) -> Result<Self> {
         if generation.get() != store.generation {
             return Err(refused("remote host generation differs from writer"));
@@ -208,10 +213,7 @@ impl Security {
             .remove(&channel);
         Ok(())
     }
-    pub async fn authorize_channel(
-        &self,
-        authorization: super::ssh::Authorization,
-    ) -> Result<RemoteReady> {
+    pub async fn authorize_channel(&self, authorization: Authorization) -> Result<RemoteReady> {
         let pending = self
             .state
             .lock()
@@ -238,9 +240,10 @@ impl Security {
         let checked = device.clone();
         let instance = self.instance;
         let generation = self.generation;
-        let ready = self
-            .blocking
-            .run_owned(&super::session::control::deadline()?, move || {
+        let ready = crate::run_owned(
+            self.blocking.as_ref(),
+            crate::SESSION_BLOCKING_TIMEOUT,
+            move || {
                 let grant = store.grant(&checked.grant.grant)?;
                 if grant.state != se_store::remote::GrantState::Active
                     || grant.expires_at_us <= now()?
@@ -266,8 +269,9 @@ impl Security {
                             .map_err(|_| refused("machine session expiry is invalid"))?,
                     )?,
                 })
-            })
-            .await?;
+            },
+        )
+        .await?;
         pending
             .reply
             .send(device)
@@ -288,9 +292,10 @@ impl Security {
         }
         let store = self.store.clone();
         let host = self.host;
-        let checked = self
-            .blocking
-            .run_owned(&super::session::control::deadline()?, move || {
+        let checked = crate::run_owned(
+            self.blocking.as_ref(),
+            crate::SESSION_BLOCKING_TIMEOUT,
+            move || {
                 let grant = store.grant(&hello.grant)?;
                 let expected: [u8; 32] = Sha256::digest(credential.expose()).into();
                 use subtle::ConstantTimeEq;
@@ -305,8 +310,9 @@ impl Security {
                     return Err(refused("machine session refused"));
                 }
                 Ok(grant)
-            })
-            .await?;
+            },
+        )
+        .await?;
         let fence = self.fence(&checked)?;
         drop(fence.output()?);
         Ok(AuthenticatedDevice {
@@ -329,7 +335,7 @@ impl Security {
                 .ok_or_else(|| refused("connection entropy absent"))?,
         ))
     }
-    pub(crate) fn fence_all(&self) -> Result<Vec<Arc<fence::GrantFence>>> {
+    pub fn fence_all(&self) -> Result<Vec<Arc<fence::GrantFence>>> {
         let mut state = self
             .state
             .lock()
@@ -342,7 +348,7 @@ impl Security {
             .filter_map(|entry| entry.fence.upgrade())
             .collect())
     }
-    pub(crate) fn retire_fence(
+    pub fn retire_fence(
         &self,
         grant: &RemoteGrantId,
         fence: &Arc<fence::GrantFence>,
@@ -362,7 +368,7 @@ impl Security {
         }
         Ok(())
     }
-    pub(crate) fn fence(&self, g: &GrantRecord) -> Result<Arc<fence::GrantFence>> {
+    pub fn fence(&self, g: &GrantRecord) -> Result<Arc<fence::GrantFence>> {
         let mut state = self
             .state
             .lock()
@@ -392,14 +398,14 @@ impl Security {
         Ok(fence)
     }
 }
-pub(crate) use se_remote::authority_refused as refused;
+pub use se_remote::authority_refused as refused;
 
 /// Constructed by existing IPC/native presence admission, never decoded from wire.
 #[derive(Clone)]
 pub struct VerifiedLocalOwner {
-    pub(crate) owner: se_types::HumanId,
-    pub(crate) generation: u64,
-    pub(crate) deadline: Instant,
+    pub owner: se_types::HumanId,
+    pub generation: u64,
+    pub deadline: Instant,
 }
 impl VerifiedLocalOwner {
     pub fn from_native(admission: &se_store::Admission, terminal: &HumanTerminal) -> Result<Self> {

@@ -1766,6 +1766,7 @@ dependencies = [
  "se-mcp",
  "se-proc",
  "se-remote",
+ "se-remote-host",
  "se-repository",
  "se-secode-image",
  "se-store",
@@ -1856,6 +1857,27 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "se-remote-host"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "base64",
+ "chacha20poly1305",
+ "futures-util",
+ "se-core",
+ "se-proc",
+ "se-remote",
+ "se-store",
+ "se-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tokio",
+ "tokio-tungstenite",
  "zeroize",
 ]
 

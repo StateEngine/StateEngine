@@ -55,7 +55,7 @@ impl CursorCipher {
             ));
         }
         let cipher = self.cipher()?;
-        let nonce = super::super::session::entropy::<24>()?;
+        let nonce = crate::entropy::<24>()?;
         let ciphertext = cipher
             .encrypt(
                 XNonce::from_slice(&nonce),

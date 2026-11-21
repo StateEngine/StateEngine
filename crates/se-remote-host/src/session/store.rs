@@ -9,13 +9,13 @@ use se_types::{EventId, HumanId, IdempotencyKey, Read, Result, remote::*};
 use sha2::{Digest, Sha256};
 
 pub struct SecurityStore {
-    pub(crate) reader: SqliteReader,
+    pub reader: SqliteReader,
     reads: Option<se_store::ReadPhasePool>,
-    pub(crate) writer: SqliteClient,
-    pub(crate) info: StoreInfo,
-    pub(crate) generation: u64,
-    pub(crate) owner: HumanId,
-    owner_fault: Option<std::sync::Arc<crate::runtime::tasks::OwnershipFault>>,
+    pub writer: SqliteClient,
+    pub info: StoreInfo,
+    pub generation: u64,
+    pub owner: HumanId,
+    owner_fault: Option<std::sync::Arc<dyn crate::WriterFaultObserver>>,
 }
 impl SecurityStore {
     pub fn new(
@@ -41,18 +41,18 @@ impl SecurityStore {
             owner_fault: None,
         })
     }
-    pub(crate) fn with_reads(mut self, reads: se_store::ReadPhasePool) -> Self {
+    pub fn with_reads(mut self, reads: se_store::ReadPhasePool) -> Self {
         self.reads = Some(reads);
         self
     }
-    pub(crate) fn with_owner_fault(
+    pub fn with_owner_fault(
         mut self,
-        fault: std::sync::Arc<crate::runtime::tasks::OwnershipFault>,
+        fault: std::sync::Arc<dyn crate::WriterFaultObserver>,
     ) -> Self {
         self.owner_fault = Some(fault);
         self
     }
-    pub(crate) fn read<T>(
+    pub fn read<T>(
         &self,
         call: impl FnOnce(&mut se_store::ReadPhase) -> se_store::StoreResult<T>,
     ) -> Result<T> {
@@ -71,7 +71,7 @@ impl SecurityStore {
             (Err(original), Err(error)) => Err(original.with_cause(error)),
         }
     }
-    pub(crate) fn grant(&self, id: &RemoteGrantId) -> Result<GrantRecord> {
+    pub fn grant(&self, id: &RemoteGrantId) -> Result<GrantRecord> {
         match self.read(|phase| phase.remote_grant(id))? {
             Read::Present { value } if value.store == self.info.id => Ok(value),
             _ => Err(scope::unreadable(
@@ -80,14 +80,14 @@ impl SecurityStore {
             )),
         }
     }
-    pub(crate) fn grants(
+    pub fn grants(
         &self,
         after: Option<&RemoteGrantId>,
         limit: usize,
     ) -> Result<(Vec<GrantRecord>, bool)> {
         self.read(|phase| phase.remote_grants(after, limit))
     }
-    pub(crate) fn security_outcome(
+    pub fn security_outcome(
         &self,
         key: &IdempotencyKey,
     ) -> Result<Option<(se_store::CommitReceipt, SecurityTransition)>> {
@@ -100,7 +100,7 @@ impl SecurityStore {
             )),
         }
     }
-    pub(crate) async fn commit(
+    pub async fn commit(
         &self,
         actor: Actor,
         key: IdempotencyKey,
@@ -171,31 +171,37 @@ impl SecurityStore {
             }
             result
         });
-        let identity = crate::runtime::WriteIdentity {
-            operation,
-            key: Some(original_key.clone()),
-            natural_key: None,
-            natural_events: vec![],
-        };
         completion
             .await
             .map_err(|error| {
-                identity.wait_error(scope::unreadable(
+                se_types::SeError::from(
+                    se_types::ErrorBody::new(se_types::Detail::CommitOutcomeUnknown(
+                        se_types::details::CommitOutcomeUnknown {
+                            operation: operation.into(),
+                            key: Some(original_key.to_string()),
+                            natural_events: vec![],
+                        },
+                    ))
+                    .with_retry(se_types::Retry::AfterReread),
+                )
+                .with_cause(scope::unreadable(
                     "remote security completion",
                     &error.to_string(),
                 ))
             })?
-            .map_err(|error| identity.store_error(&error))
+            .map_err(|error| {
+                se_core::store_error::write_error(&error, operation, Some(&original_key), &[])
+            })
     }
 }
-pub(crate) fn now() -> Result<i64> {
+pub fn now() -> Result<i64> {
     let micros = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| scope::unreadable("remote host clock", &e.to_string()))?
         .as_micros();
     i64::try_from(micros).map_err(|e| scope::unreadable("remote host clock", &e.to_string()))
 }
-pub(crate) fn event_id(now: i64) -> Result<EventId> {
+pub fn event_id(now: i64) -> Result<EventId> {
     EventId::from_parts(
         u64::try_from(now / 1000)
             .map_err(|_| scope::unreadable("remote clock", "negative timestamp"))?,
