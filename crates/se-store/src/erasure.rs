@@ -49,7 +49,7 @@ fn observe_one(
     c: &Connection,
     target: &EraseTarget,
     home: &std::path::Path,
-) -> StoreResult<(Vec<u8>, Body, Option<ResidualCopy>)> {
+) -> StoreResult<(Vec<u8>, Body, Vec<ResidualCopy>)> {
     let row: Option<(i64, String, u64, Option<Vec<u8>>)> = c
         .query_row(
             "SELECT seq,kind,entity_revision,project_id FROM events WHERE event_id=?",
@@ -138,7 +138,11 @@ fn observe_one(
         bytes,
         turn,
     };
-    Ok((project, body, residual(source, turn, home)?))
+    let mut residuals: Vec<ResidualCopy> = residual(source, turn, home)?.into_iter().collect();
+    if !turn {
+        residuals.extend(recipient_transcripts(c, seq)?);
+    }
+    Ok((project, body, residuals))
 }
 /// The copy outside the store's custody that a forgotten body leaves behind.
 fn residual(
@@ -162,6 +166,29 @@ fn residual(
         None => None,
     })
 }
+/// The recipient agent's recorded provider transcripts written after the message
+/// was sent: the message may have been shown to it there, through its mail
+/// prompt or a read tool result.
+fn recipient_transcripts(c: &Connection, seq: i64) -> StoreResult<Vec<ResidualCopy>> {
+    let mut q = c
+        .prepare(
+            "SELECT DISTINCT s.value FROM message_data m JOIN turn_data t ON t.agent_id=m.recipient_id AND t.event_seq>m.event_seq JOIN symbols s ON s.id=t.source_path WHERE m.event_seq=? LIMIT 16",
+        )
+        .map_err(sql)?;
+    let mut rows = q.query([seq]).map_err(sql)?;
+    let mut copies = Vec::new();
+    while let Some(row) = rows.next().map_err(sql)? {
+        let path: Vec<u8> = row.get(0).map_err(sql)?;
+        if let Some(location) = serde_json::from_slice::<Option<NativePath>>(&path).map_err(invalid)? {
+            copies.push(ResidualCopy {
+                custodian: "recipient's provider transcript".into(),
+                location,
+                reason: "The recipient agent's conversation after this message may contain it; StateEngine does not own or edit that file.".into(),
+            });
+        }
+    }
+    Ok(copies)
+}
 fn observe(
     c: &Connection,
     targets: &[EraseTarget],
@@ -180,7 +207,7 @@ fn observe(
                 target.event.as_str()
             )));
         }
-        let (p, body, residual) = observe_one(c, target, home)?;
+        let (p, body, found) = observe_one(c, target, home)?;
         if project.as_ref().is_some_and(|known| known != &p) {
             return Err(fail(
                 StoreErrorCode::ScopeMismatch,
@@ -189,12 +216,13 @@ fn observe(
         }
         project = Some(p);
         bodies.push(body);
-        if let Some(r) = residual
-            && !residuals
+        for r in found {
+            if !residuals
                 .iter()
                 .any(|known| known.location == r.location && known.custodian == r.custodian)
-        {
-            residuals.push(r);
+            {
+                residuals.push(r);
+            }
         }
     }
     let project = project.ok_or_else(|| invalid("forget needs at least one event"))?;
@@ -225,19 +253,6 @@ pub(crate) fn plan(
     let c = reader.connect()?;
     let info = connection::info_at(&c, &reader.path)?;
     crate::open::validate_lease(&info, lease, LeaseMode::Host)?;
-    if let Some(resumed) = unfinished(&c, &targets)? {
-        return Ok(ErasurePlan {
-            owned_generations: crate::backup::generation_ids(
-                lease.files(),
-                &options.state_directory,
-                &info.id,
-                deadline(options.busy_timeout)?,
-            )?,
-            required_bytes: 0,
-            ..resumed
-        });
-    }
-    let observed = observe(&c, &targets, &options.state_directory)?;
     let owned_generations = crate::backup::generation_ids(
         lease.files(),
         &options.state_directory,
@@ -252,15 +267,26 @@ pub(crate) fn plan(
             "state database size is not readable",
         ));
     };
-    let database = database.len();
+    // Rebuilding the database and each replaced backup each needs a full copy,
+    // for a resumed erasure as much as a fresh one.
+    let required_bytes = database
+        .len()
+        .saturating_mul(1 + owned_generations.len() as u64);
+    if let Some(resumed) = unfinished(&c, &targets)? {
+        return Ok(ErasurePlan {
+            owned_generations,
+            required_bytes,
+            ..resumed
+        });
+    }
+    let observed = observe(&c, &targets, &options.state_directory)?;
     let mut random = [0u8; 10];
     random.copy_from_slice(&se_proc::random_secret().map_err(invalid)?.expose()[..10]);
     let now = u64::try_from(connection::now()? / 1000).map_err(invalid)?;
     Ok(ErasurePlan {
         id: RecordId::from_parts(now, random).map_err(invalid)?,
         targets: observed.bodies.into_iter().map(|b| b.target).collect(),
-        // Rebuilding the database and each replaced backup each needs a full copy.
-        required_bytes: database.saturating_mul(1 + owned_generations.len() as u64),
+        required_bytes,
         owned_generations,
         residuals: observed.residuals,
     })
@@ -530,11 +556,14 @@ fn request(
         .execute_batch("PRAGMA secure_delete=ON")
         .map_err(sql)?;
     let committed = commit(host, batch);
-    host.engine
+    let restored = host
+        .engine
         .db
         .execute_batch("PRAGMA secure_delete=OFF")
-        .map_err(sql)?;
-    committed.map(|_| ())
+        .map_err(sql);
+    // The commit's own failure is the one to report; restoring the pragma comes second.
+    committed?;
+    restored
 }
 /// Each new backup retires the oldest of at most two, so two fresh copies
 /// replace every generation taken before the erasure.

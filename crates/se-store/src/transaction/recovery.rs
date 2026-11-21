@@ -72,6 +72,25 @@ impl Engine {
     }
     /// Reconnect only under the same native custody, with a bounded independent
     /// readback of the header, identity and pending receipt members.
+    /// Replace the failed connection with a fresh, configured one; a host
+    /// writer's also answers the erasure triggers from its permit again.
+    fn reconnect(&mut self, path: &Path, timeout: Duration) -> StoreResult<()> {
+        let next = connection::open(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+                | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        // Opening a handle does not acquire a write lock. Close the failed
+        // connection before setting pragmas or attempting journal recovery.
+        let old = std::mem::replace(&mut self.db, next);
+        drop(old);
+        connection::configure(&self.db, path, true, timeout)?;
+        if self.identity.mode == LeaseMode::Host {
+            crate::erasure::permit::install(&self.db)?;
+        }
+        Ok(())
+    }
     pub(crate) fn reopen(
         &mut self,
         path: &Path,
@@ -90,17 +109,7 @@ impl Engine {
                 "writer reopen has no protected state-file readback",
             ));
         }
-        let next = connection::open(
-            path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
-                | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW
-                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        // Opening a handle does not acquire a write lock. Close the failed
-        // connection before setting pragmas or attempting journal recovery.
-        let old = std::mem::replace(&mut self.db, next);
-        drop(old);
-        connection::configure(&self.db, path, true, timeout)?;
+        self.reconnect(path, timeout)?;
         let start = Instant::now();
         let limit = timeout
             .max(Duration::from_millis(100))
