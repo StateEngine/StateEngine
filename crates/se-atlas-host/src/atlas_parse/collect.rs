@@ -61,21 +61,38 @@ fn reply(
         if Instant::now() >= deadline {
             return Err(expired());
         }
-        if let Some(bytes) = worker
-            .receive()
-            .map_err(|error| channel_error(error, deadline))?
-        {
+        let received = worker.receive();
+        if let Some(bytes) = received.map_err(|error| channel_lost(worker, error, deadline))? {
             return serde_json::from_slice(&bytes).map_err(failure);
         }
-        if worker.try_reap().map_err(failure)?.is_some() {
-            return Err(failure("parse child exited before complete output"));
+        let reaped = worker.try_reap();
+        if reaped
+            .map_err(|error| worker_lost(worker, error))?
+            .is_some()
+        {
+            return Err(worker_lost(
+                worker,
+                "parse child exited before complete output",
+            ));
         }
-        worker
-            .wait_ready(deadline.min(Instant::now() + Duration::from_millis(10)))
-            .map_err(failure)?;
+        let ready = worker.wait_ready(deadline.min(Instant::now() + Duration::from_millis(10)));
+        ready.map_err(|error| worker_lost(worker, error))?;
     }
 }
-pub(super) fn channel_error(error: std::io::Error, deadline: Instant) -> SeError {
+/// A lost parse worker, with what is known about it: its exit and the tail of
+/// its stderr, so one lost connection can be diagnosed without a reproduction.
+fn worker_lost(worker: &mut AtlasWorker, reason: impl std::fmt::Display) -> SeError {
+    let exit = se_atlas_cold::worker_report::exit(worker);
+    let stderr = se_atlas_cold::worker_report::stderr(worker);
+    failure(format!("{reason}; {exit}; {stderr}"))
+}
+/// A channel error on a live worker: past the deadline a timeout is expiry,
+/// anything else is a lost worker.
+pub(super) fn channel_lost(
+    worker: &mut AtlasWorker,
+    error: std::io::Error,
+    deadline: Instant,
+) -> SeError {
     if matches!(
         error.kind(),
         std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
@@ -83,7 +100,7 @@ pub(super) fn channel_error(error: std::io::Error, deadline: Instant) -> SeError
     {
         expired()
     } else {
-        failure(error)
+        worker_lost(worker, error)
     }
 }
 #[derive(Clone, Copy)]
@@ -112,9 +129,8 @@ pub(super) fn read(
         spent: Duration::ZERO,
         limit: remaining,
     };
-    worker
-        .send_control(b"source", deadline)
-        .map_err(|error| channel_error(error, deadline))?;
+    let sent = worker.send_control(b"source", deadline);
+    sent.map_err(|error| channel_lost(worker, error, deadline))?;
     let result = read_rows(worker, context, &mut cpu);
     *consumed = cpu.spent;
     result

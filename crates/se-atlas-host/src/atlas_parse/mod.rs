@@ -240,14 +240,12 @@ impl Parser {
         // so no early return leaves a live process or a held slot behind;
         // a failed spawn reaps its own child and holds no slot.
         if self.worker.is_some() {
-            let error = self
-                .worker
-                .as_mut()
-                .and_then(|worker| {
-                    worker.extend_deadline(deadline);
-                    worker.send_control(request_bytes, work_end).err()
-                })
-                .map(|error| collect::channel_error(error, work_end));
+            let error = self.worker.as_mut().and_then(|worker| {
+                worker.extend_deadline(deadline);
+                let sent = worker.send_control(request_bytes, work_end);
+                sent.err()
+                    .map(|error| collect::channel_lost(worker, error, work_end))
+            });
             if let Some(error) = error {
                 return Err(self.closed_error(deadline, error));
             }
