@@ -141,145 +141,173 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
         _ => return Err(invalid("maintenance codec dispatch")),
     })
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn decode(kind: &str, v: &Value, text: Text<'_>) -> StoreResult<EventBody<StoredText>> {
+    match kind {
+        "runtime.owner" => runtime_owner(v),
+        "runtime.handover" => runtime_handover(v),
+        "backup.recorded" => backup_recorded(v),
+        "turn.erased" => turn_erased(v),
+        "message.erased" => message_erased(v),
+        "erasure.requested" => erasure_requested(v),
+        "erasure.completed" => erasure_completed(v),
+        "recovery.recorded" => recovery_recorded(v, text),
+        _ => Err(invalid("maintenance decode dispatch")),
+    }
+}
+fn runtime_owner(v: &Value) -> StoreResult<EventBody<StoredText>> {
     use EventBody::*;
-    Ok(match kind {
-        "runtime.owner" => RuntimeOwnerEstablished {
-            epoch: field(v, "epoch")?,
-            generation: field(v, "generation")?,
-            expected_owner_generation: field(v, "expected_owner_generation")?,
-            expected: field(v, "expected")?,
-            witnesses: field(v, "witnesses")?,
-            recovered: v
-                .get("recovered")
-                .filter(|v| !v.is_null())
-                .map(read_recovered)
-                .transpose()?
-                .map(Box::new),
-        },
-        "runtime.handover" => {
-            let r = v
-                .get("record")
-                .ok_or_else(|| invalid("handover record missing"))?;
-            let completion = r
-                .get("completion")
-                .filter(|v| !v.is_null())
-                .map(|v| -> StoreResult<_> {
-                    Ok(Box::new(RuntimeHandoverCompletion {
-                        activated_custody_sha256: field(v, "activated_custody_sha256")?,
-                        capture_at: pos_field(v, "capture_at")?,
-                        queue_cut_sha256: field(v, "queue_cut_sha256")?,
-                        source_closed_sha256: field(v, "source_closed_sha256")?,
-                    }))
+    Ok(RuntimeOwnerEstablished {
+        epoch: field(v, "epoch")?,
+        generation: field(v, "generation")?,
+        expected_owner_generation: field(v, "expected_owner_generation")?,
+        expected: field(v, "expected")?,
+        witnesses: field(v, "witnesses")?,
+        recovered: v
+            .get("recovered")
+            .filter(|v| !v.is_null())
+            .map(read_recovered)
+            .transpose()?
+            .map(Box::new),
+    })
+}
+
+fn runtime_handover(v: &Value) -> StoreResult<EventBody<StoredText>> {
+    use EventBody::*;
+    let r = v
+        .get("record")
+        .ok_or_else(|| invalid("handover record missing"))?;
+    let completion = r
+        .get("completion")
+        .filter(|v| !v.is_null())
+        .map(|v| -> StoreResult<_> {
+            Ok(Box::new(RuntimeHandoverCompletion {
+                activated_custody_sha256: field(v, "activated_custody_sha256")?,
+                capture_at: pos_field(v, "capture_at")?,
+                queue_cut_sha256: field(v, "queue_cut_sha256")?,
+                source_closed_sha256: field(v, "source_closed_sha256")?,
+            }))
+        })
+        .transpose()?;
+    Ok(RuntimeHandoverRecorded {
+        record: Box::new(RuntimeHandoverRecord {
+            transfer: field(r, "transfer")?,
+            native_nonce: field(r, "native_nonce")?,
+            source_epoch: field(r, "source_epoch")?,
+            successor_epoch: field(r, "successor_epoch")?,
+            source_generation: field(r, "source_generation")?,
+            successor_generation: field(r, "successor_generation")?,
+            phase: read_phase(
+                r.get("phase")
+                    .ok_or_else(|| invalid("handover phase missing"))?,
+            )?,
+            manifest_sha256: field(r, "manifest_sha256")?,
+            frozen_at: pos_field(r, "frozen_at")?,
+            deadline_at: field(r, "deadline_at")?,
+            completion,
+        }),
+        expected: field(v, "expected")?,
+        witnesses: field(v, "witnesses")?,
+    })
+}
+
+fn backup_recorded(v: &Value) -> StoreResult<EventBody<StoredText>> {
+    use EventBody::*;
+    Ok(BackupRecorded {
+        generation: field(v, "generation")?,
+        through: pos_field(v, "through")?,
+        bytes: field(v, "bytes")?,
+        sha256: field(v, "sha256")?,
+        schema_version: field(v, "schema_version")?,
+        witness: field(v, "witness")?,
+    })
+}
+
+fn turn_erased(v: &Value) -> StoreResult<EventBody<StoredText>> {
+    use EventBody::*;
+    Ok(TurnErased {
+        target: field(v, "target")?,
+        erasure: field(v, "erasure")?,
+        original_bytes: field(v, "original_bytes")?,
+        by: field(v, "by")?,
+    })
+}
+
+fn message_erased(v: &Value) -> StoreResult<EventBody<StoredText>> {
+    use EventBody::*;
+    Ok(MessageErased {
+        target: field(v, "target")?,
+        erasure: field(v, "erasure")?,
+        original_bytes: field(v, "original_bytes")?,
+        by: field(v, "by")?,
+    })
+}
+
+fn erasure_requested(v: &Value) -> StoreResult<EventBody<StoredText>> {
+    use EventBody::*;
+    let targets: Vec<Value> = field(v, "targets")?;
+    let residuals: Vec<Value> = field(v, "residuals")?;
+    if targets.len() > 60 || residuals.len() > 64 {
+        return Err(invalid("stored erasure inventory exceeds bounds"));
+    }
+    Ok(ErasureRequested {
+        erasure: field(v, "erasure")?,
+        targets: targets
+            .iter()
+            .map(|v| -> StoreResult<_> {
+                Ok(EraseTarget {
+                    event: field(v, "event")?,
+                    expected: field(v, "expected")?,
                 })
-                .transpose()?;
-            RuntimeHandoverRecorded {
-                record: Box::new(RuntimeHandoverRecord {
-                    transfer: field(r, "transfer")?,
-                    native_nonce: field(r, "native_nonce")?,
-                    source_epoch: field(r, "source_epoch")?,
-                    successor_epoch: field(r, "successor_epoch")?,
-                    source_generation: field(r, "source_generation")?,
-                    successor_generation: field(r, "successor_generation")?,
-                    phase: read_phase(
-                        r.get("phase")
-                            .ok_or_else(|| invalid("handover phase missing"))?,
-                    )?,
-                    manifest_sha256: field(r, "manifest_sha256")?,
-                    frozen_at: pos_field(r, "frozen_at")?,
-                    deadline_at: field(r, "deadline_at")?,
-                    completion,
-                }),
-                expected: field(v, "expected")?,
-                witnesses: field(v, "witnesses")?,
-            }
-        }
-        "backup.recorded" => BackupRecorded {
-            generation: field(v, "generation")?,
-            through: pos_field(v, "through")?,
-            bytes: field(v, "bytes")?,
-            sha256: field(v, "sha256")?,
-            schema_version: field(v, "schema_version")?,
-            witness: field(v, "witness")?,
+            })
+            .collect::<StoreResult<_>>()?,
+        residuals: residuals
+            .iter()
+            .map(|v| -> StoreResult<_> {
+                Ok(ResidualCopy {
+                    custodian: field(v, "custodian")?,
+                    location: field(v, "location")?,
+                    reason: field(v, "reason")?,
+                })
+            })
+            .collect::<StoreResult<_>>()?,
+    })
+}
+
+fn erasure_completed(v: &Value) -> StoreResult<EventBody<StoredText>> {
+    use EventBody::*;
+    Ok(ErasureCompleted {
+        erasure: field(v, "erasure")?,
+        manifest_sha256: field(v, "manifest_sha256")?,
+        incarnation: field(v, "incarnation")?,
+        witnesses: field(v, "witnesses")?,
+    })
+}
+
+fn recovery_recorded(v: &Value, text: Text<'_>) -> StoreResult<EventBody<StoredText>> {
+    use EventBody::*;
+    let loss = v
+        .get("loss")
+        .ok_or_else(|| invalid("recovery loss bounds missing"))?;
+    Ok(RecoveryRecorded {
+        recovery: field(v, "recovery")?,
+        request_key: field(v, "request_key")?,
+        source: field(v, "source")?,
+        source_incarnation: field(v, "source_incarnation")?,
+        source_artifact: field(v, "source_artifact")?,
+        target: field(v, "target")?,
+        target_incarnation: field(v, "target_incarnation")?,
+        backup: field(v, "backup")?,
+        restored_through: pos_field(v, "restored_through")?,
+        loss: RestoreLoss {
+            after: pos_field(loss, "after")?,
+            prior_head: loss
+                .get("prior_head")
+                .filter(|v| !v.is_null())
+                .map(read_position)
+                .transpose()?,
         },
-        "turn.erased" => TurnErased {
-            target: field(v, "target")?,
-            erasure: field(v, "erasure")?,
-            original_bytes: field(v, "original_bytes")?,
-            by: field(v, "by")?,
-        },
-        "message.erased" => MessageErased {
-            target: field(v, "target")?,
-            erasure: field(v, "erasure")?,
-            original_bytes: field(v, "original_bytes")?,
-            by: field(v, "by")?,
-        },
-        "erasure.requested" => {
-            let targets: Vec<Value> = field(v, "targets")?;
-            let residuals: Vec<Value> = field(v, "residuals")?;
-            if targets.len() > 60 || residuals.len() > 64 {
-                return Err(invalid("stored erasure inventory exceeds bounds"));
-            }
-            ErasureRequested {
-                erasure: field(v, "erasure")?,
-                targets: targets
-                    .iter()
-                    .map(|v| -> StoreResult<_> {
-                        Ok(EraseTarget {
-                            event: field(v, "event")?,
-                            expected: field(v, "expected")?,
-                        })
-                    })
-                    .collect::<StoreResult<_>>()?,
-                residuals: residuals
-                    .iter()
-                    .map(|v| -> StoreResult<_> {
-                        Ok(ResidualCopy {
-                            custodian: field(v, "custodian")?,
-                            location: field(v, "location")?,
-                            reason: field(v, "reason")?,
-                        })
-                    })
-                    .collect::<StoreResult<_>>()?,
-            }
-        }
-        "erasure.completed" => ErasureCompleted {
-            erasure: field(v, "erasure")?,
-            manifest_sha256: field(v, "manifest_sha256")?,
-            incarnation: field(v, "incarnation")?,
-            witnesses: field(v, "witnesses")?,
-        },
-        "recovery.recorded" => {
-            let loss = v
-                .get("loss")
-                .ok_or_else(|| invalid("recovery loss bounds missing"))?;
-            RecoveryRecorded {
-                recovery: field(v, "recovery")?,
-                request_key: field(v, "request_key")?,
-                source: field(v, "source")?,
-                source_incarnation: field(v, "source_incarnation")?,
-                source_artifact: field(v, "source_artifact")?,
-                target: field(v, "target")?,
-                target_incarnation: field(v, "target_incarnation")?,
-                backup: field(v, "backup")?,
-                restored_through: pos_field(v, "restored_through")?,
-                loss: RestoreLoss {
-                    after: pos_field(loss, "after")?,
-                    prior_head: loss
-                        .get("prior_head")
-                        .filter(|v| !v.is_null())
-                        .map(read_position)
-                        .transpose()?,
-                },
-                schema_version: field(v, "schema_version")?,
-                witnesses: field(v, "witnesses")?,
-                receipt: text("restore-receipt")?,
-            }
-        }
-        _ => return Err(invalid("maintenance decode dispatch")),
+        schema_version: field(v, "schema_version")?,
+        witnesses: field(v, "witnesses")?,
+        receipt: text("restore-receipt")?,
     })
 }

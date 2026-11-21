@@ -1,5 +1,6 @@
 //! Encode event metadata while payload text stays in its typed column.
 use super::*;
+use EventBody::*;
 
 // Omitting the default preserves pre-notification canonical fingerprints.
 fn notification(mut facts: Value, quiet: bool) -> Value {
@@ -9,12 +10,80 @@ fn notification(mut facts: Value, quiet: bool) -> Value {
     facts
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
-    use EventBody::*;
+    Ok(match body {
+        ChannelRecorded { .. }
+        | RemoteSecurity { .. }
+        | RemoteLaunchAttributed { .. }
+        | RemoteMailboxRecorded { .. }
+        | RemoteMessageAttributed { .. } => channel_remote(body)?,
+        ProjectCaptainChanged { .. }
+        | CaptainMessageRouted { .. }
+        | AssignmentOpened { .. }
+        | AssignmentTransitioned { .. }
+        | ProjectRegistered { .. }
+        | ProjectUpdated { .. }
+        | ProjectMoved { .. } => project_lifecycle(body)?,
+        PrincipalRegistered { .. }
+        | PrincipalRenamed { .. }
+        | ProfileSaved { .. }
+        | GrantRecorded { .. }
+        | ProcessRegistered { .. }
+        | ProcessTransition { .. } => principal_process(body)?,
+        SessionPrepared { .. }
+        | SessionActivated { .. }
+        | SessionEnded { .. }
+        | SessionRevoked { .. }
+        | SessionTurn { .. } => session_turn(body)?,
+        CaptureSource { .. }
+        | CaptureProgress { .. }
+        | CaptureVerified { .. }
+        | CaptureFailed { .. }
+        | CaptureSuppressed { .. } => capture(body)?,
+        CredentialIssued { .. }
+        | CredentialActivated { .. }
+        | CredentialRotated { .. }
+        | CredentialRevoked { .. } => credential(body)?,
+        MessageSent { .. }
+        | WorkMessageSent { .. }
+        | MessageSuperseded { .. }
+        | MessageRead { .. }
+        | MessageDismissed { .. }
+        | MessageDelivered { .. }
+        | WorkingStateSet { .. } => mail_state(body)?,
+        RuntimeOwnerEstablished { recovered, .. } if recovered.is_none() => {
+            runtime_owner_none(body)?
+        }
+        DecisionProposed { .. }
+        | DecisionRatified { .. }
+        | DecisionRejected { .. }
+        | DecisionRetracted { .. }
+        | DecisionSuperseded { .. }
+        | CursorRecorded { .. }
+        | CursorAcknowledged { .. } => decision_cursor(body)?,
+        ProjectRemoved { .. }
+        | EffectRequested { .. }
+        | EffectOffered { .. }
+        | EffectSettled { .. }
+        | IntegrationRecorded { .. } => effect_integration(body)?,
+        ImportStarted { .. }
+        | ImportProgress { .. }
+        | ImportFinished { .. }
+        | ImportUnreadable { .. }
+        | LegacyRetained { .. }
+        | AliasImported { .. } => crate::import::metadata(body)?,
+        RuntimeOwnerEstablished { .. }
+        | RuntimeHandoverRecorded { .. }
+        | BackupRecorded { .. }
+        | TurnErased { .. }
+        | MessageErased { .. }
+        | ErasureRequested { .. }
+        | ErasureCompleted { .. }
+        | RecoveryRecorded { .. } => crate::maintenance::metadata(body)?,
+    })
+}
+
+fn channel_remote<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
     Ok(match body {
         ChannelRecorded { change } => ("channel.recorded", json!({"change":change})),
         RemoteSecurity { transition } => ("remote.security", json!({"transition":transition})),
@@ -23,6 +92,12 @@ pub fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
         RemoteMessageAttributed { record } => {
             ("remote.message_attributed", json!({"record":record}))
         }
+        _ => return unmapped(),
+    })
+}
+
+fn project_lifecycle<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
+    Ok(match body {
         ProjectCaptainChanged {
             project,
             captain,
@@ -91,6 +166,12 @@ pub fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
             "project.moved",
             json!({"project":project,"name":name,"from":from,"to":to,"head":head,"branch":branch,"expected":expected}),
         ),
+        _ => return unmapped(),
+    })
+}
+
+fn principal_process<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
+    Ok(match body {
         PrincipalRegistered {
             principal,
             kind,
@@ -145,6 +226,12 @@ pub fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
             "process.transition",
             json!({"process":process,"identity":identity,"expected":expected,"from":from,"to":to,"observation":observation,"outcome":outcome,"containment":containment}),
         ),
+        _ => return unmapped(),
+    })
+}
+
+fn session_turn<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
+    Ok(match body {
         SessionPrepared {
             session,
             agent,
@@ -198,6 +285,12 @@ pub fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
             "session.turn",
             json!({"turn":turn,"agent":agent,"session":session,"provider":provider,"vendor_ref":vendor_ref,"role":role,"evidence":evidence}),
         ),
+        _ => return unmapped(),
+    })
+}
+
+fn capture<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
+    Ok(match body {
         CaptureSource {
             source,
             session,
@@ -253,6 +346,12 @@ pub fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
             "capture.suppressed",
             json!({"source":source,"session":session,"expected":expected,"reason":reason,"from_offset":from_offset,"to_offset":to_offset,"count":count}),
         ),
+        _ => return unmapped(),
+    })
+}
+
+fn credential<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
+    Ok(match body {
         CredentialIssued {
             credential,
             session,
@@ -294,6 +393,12 @@ pub fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
             "credential.revoked",
             json!({"credential":credential,"expected":expected}),
         ),
+        _ => return unmapped(),
+    })
+}
+
+fn mail_state<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
+    Ok(match body {
         MessageSent {
             message,
             recipient,
@@ -354,6 +459,12 @@ pub fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
             "working_state.set",
             json!({"agent":agent,"expected":expected}),
         ),
+        _ => return unmapped(),
+    })
+}
+
+fn runtime_owner_none<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
+    Ok(match body {
         RuntimeOwnerEstablished {
             epoch,
             generation,
@@ -365,6 +476,12 @@ pub fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
             "runtime.owner",
             json!({"epoch":epoch,"generation":generation,"expected_owner_generation":expected_owner_generation,"expected":expected,"witnesses":witnesses}),
         ),
+        _ => return unmapped(),
+    })
+}
+
+fn decision_cursor<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
+    Ok(match body {
         DecisionProposed {
             decision,
             key,
@@ -417,6 +534,12 @@ pub fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
             "cursor.acknowledged",
             json!({"cursor":cursor,"expected":expected,"evidence":evidence}),
         ),
+        _ => return unmapped(),
+    })
+}
+
+fn effect_integration<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
+    Ok(match body {
         ProjectRemoved {
             project,
             expected,
@@ -471,19 +594,11 @@ pub fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
             "integration.recorded",
             json!({"integration":integration,"path":path,"key":key,"marker":marker,"prior_sha256":prior_sha256,"written_sha256":written_sha256,"state":state,"witness":witness,"expected":expected}),
         ),
-        ImportStarted { .. }
-        | ImportProgress { .. }
-        | ImportFinished { .. }
-        | ImportUnreadable { .. }
-        | LegacyRetained { .. }
-        | AliasImported { .. } => crate::import::metadata(body)?,
-        RuntimeOwnerEstablished { .. }
-        | RuntimeHandoverRecorded { .. }
-        | BackupRecorded { .. }
-        | TurnErased { .. }
-        | MessageErased { .. }
-        | ErasureRequested { .. }
-        | ErasureCompleted { .. }
-        | RecoveryRecorded { .. } => crate::maintenance::metadata(body)?,
+        _ => return unmapped(),
     })
+}
+
+/// Defensive fallback: the router above only sends each body to its own group.
+fn unmapped() -> StoreResult<(&'static str, Value)> {
+    Err(invalid("unmapped event body"))
 }
