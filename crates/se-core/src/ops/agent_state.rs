@@ -139,3 +139,62 @@ fn derive(row: &AgentRow, now_us: i64) -> Result<AgentStateView> {
         waiting_on,
     })
 }
+
+/// The most of a working note a status row shows.
+const NOTE_CHARS: usize = 160;
+/// The agent's working note in short form: its first line, at most
+/// `NOTE_CHARS` characters. No note and an unreadable one stay distinct.
+pub(crate) fn working_note<R: Snapshot>(
+    agent: &AgentId,
+    cx: &mut Cx<'_, R>,
+) -> Result<Read<WorkingNoteView>> {
+    let record = match cx
+        .read
+        .working_state(agent.clone())
+        .map_err(|e| store_error(&e))?
+    {
+        Read::Present { value } => value,
+        Read::Absent { checked } => return Ok(Read::Absent { checked }),
+        Read::Unknown { what } => return Ok(Read::Unknown { what }),
+        Read::Unreadable {
+            source,
+            reason,
+            error,
+        } => {
+            return Ok(Read::Unreadable {
+                source,
+                reason,
+                error,
+            });
+        }
+    };
+    let saved_at = super::receipt::timestamp(super::receipt::event_time(&record.current))?;
+    let se_store::EventBody::WorkingStateSet { text, .. } = &record.current.body else {
+        return Ok(Read::Unreadable {
+            source: "working note".into(),
+            reason: "the current working-state event has another kind".into(),
+            error: None,
+        });
+    };
+    let se_store::StoredText::Present(text) = text else {
+        return Ok(Read::Unreadable {
+            source: "working note".into(),
+            reason: "its stored content was erased".into(),
+            error: None,
+        });
+    };
+    let first = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    let short: String = first.chars().take(NOTE_CHARS).collect();
+    let truncated = short.len() < first.len() || text.trim() != first;
+    Ok(Read::Present {
+        value: WorkingNoteView {
+            text: short,
+            truncated,
+            saved_at,
+        },
+    })
+}

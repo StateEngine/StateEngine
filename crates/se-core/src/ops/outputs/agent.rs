@@ -73,6 +73,9 @@ pub struct AgentRow {
     /// no status read has settled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<AgentStateView>,
+    /// The agent's own short working note, saved without notifying anyone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_note: Option<Read<WorkingNoteView>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secode_binding: Option<Read<super::SecodeBindingView>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,6 +103,14 @@ pub struct AgentStateView {
     pub elapsed_seconds: Option<u64>,
     /// The agent's latest question that has no reply yet.
     pub waiting_on: Option<WaitingOnView>,
+}
+/// The first line of an agent's working state, for a status row.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WorkingNoteView {
+    pub text: String,
+    /// True when the row shows only part of the saved note.
+    pub truncated: bool,
+    pub saved_at: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WaitingOnView {
