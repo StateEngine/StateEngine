@@ -763,6 +763,7 @@ fn plan_message_inbox<R: Snapshot>(
     Ok(OpStep::Complete(crate::ops::inbox::read(input, cx)?.into()))
 }
 
+// Home-wide owner work: a diagnostic bundle or a store restore.
 fn home_owner_refused() -> SeError {
     SeError::invalid(
         "home-wide owner adapter",
@@ -773,7 +774,7 @@ fn home_owner_refused() -> SeError {
 fn doctor_refused() -> SeError {
     SeError::invalid(
         "doctor adapter",
-        "the owner CLI with current native observations",
+        "the installed owner CLI with current native observations",
     )
 }
 
