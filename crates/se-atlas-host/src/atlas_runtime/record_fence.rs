@@ -63,11 +63,11 @@ impl RecordFeedWrite {
     }
 }
 impl RecordFeedFence {
-    #[cfg(all(feature = "listener", any(target_os = "linux", windows, test)))]
+    #[cfg(feature = "listener")]
     pub async fn changed(&self) {
         self.changed.notified().await;
     }
-    #[cfg(all(feature = "listener", any(target_os = "linux", windows, test)))]
+    #[cfg(feature = "listener")]
     pub fn interests(&self) -> Result<Vec<se_types::ProjectId>> {
         Ok(self.lock()?.interests.clone())
     }
