@@ -5,10 +5,6 @@ use se_core::commit::{AbsentRevision, ExpectedRevision};
 pub fn from_matches(matches: &ArgMatches) -> Result<AnyOp> {
     from_matches_with_key(matches, None)
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn from_matches_with_key(
     matches: &ArgMatches,
     generated: Option<IdempotencyKey>,
@@ -84,6 +80,31 @@ pub fn from_matches_with_key(
     }
     let op = match meta.name {
         name if name.starts_with("atlas.") => atlas::decode(name, m, common.json)?,
+        _ => decode_leaf(meta.name, m, &path, &common, &key)?,
+    };
+    Ok(op)
+}
+fn decode_leaf(
+    name: &str,
+    m: &ArgMatches,
+    path: &[String],
+    common: &CommonArgs,
+    key: &impl Fn() -> Result<IdempotencyKey>,
+) -> Result<AnyOp> {
+    decode_session(name, m)?
+        .or(decode_meta(name, m, path)?)
+        .or(decode_agent(name, m, common, key)?)
+        .or(decode_config(name, m, key)?)
+        .or(decode_project(name, m, path, key)?)
+        .or(decode_store(name, m, key)?)
+        .or(decode_history(name, m)?)
+        .or(decode_message(name, m, key)?)
+        .or(decode_runtime(name, m, key)?)
+        .or(decode_assignment(name, m, key)?)
+        .ok_or_else(|| unknown(name))
+}
+fn decode_session(name: &str, m: &ArgMatches) -> Result<Option<AnyOp>> {
+    let op = match name {
         "continuity.resume" => AnyOp::Resume(Resume {
             source_failure: None,
             limit: required(m, "limit")?
@@ -107,6 +128,40 @@ pub fn from_matches_with_key(
                 .parse()
                 .map_err(|_| SeError::invalid("budget", "1024..1048576"))?,
         }),
+        _ => return Ok(None),
+    };
+    Ok(Some(op))
+}
+fn decode_meta(name: &str, m: &ArgMatches, path: &[String]) -> Result<Option<AnyOp>> {
+    let op = match name {
+        "meta.version" => AnyOp::MetaVersion(MetaVersion {}),
+        "meta.help" => AnyOp::MetaHelp(MetaHelp {
+            path: if flag(m, "help") || path == ["atlas"] {
+                path.to_vec()
+            } else {
+                many(m, "path")
+            },
+            all: if flag(m, "help") || path == ["atlas"] {
+                false
+            } else {
+                flag(m, "all")
+            },
+        }),
+        "meta.guide" => AnyOp::MetaGuide(MetaGuide {
+            topic: text(m, "topic"),
+        }),
+        "meta.schema" => AnyOp::MetaSchema(MetaSchema { op: text(m, "op") }),
+        _ => return Ok(None),
+    };
+    Ok(Some(op))
+}
+fn decode_agent(
+    name: &str,
+    m: &ArgMatches,
+    common: &CommonArgs,
+    key: &impl Fn() -> Result<IdempotencyKey>,
+) -> Result<Option<AnyOp>> {
+    let op = match name {
         "agent.list" => AnyOp::AgentList(AgentList {
             limit: required(m, "limit")?
                 .parse()
@@ -116,6 +171,73 @@ pub fn from_matches_with_key(
         "agent.show" => AnyOp::AgentShow(AgentShow {
             target_agent_id: None,
         }),
+        "agent.launch" => AnyOp::AgentLaunch(AgentLaunch {
+            target_agent_id: None,
+            resume: se_types::ResumeSelection::from_cli(text(m, "resume"))?,
+            model: text(m, "model"),
+            task: text(m, "task"),
+            detach: flag(m, "detach"),
+            override_live: flag(m, "override_live"),
+            force_selection: None,
+            idempotency_key: key()?,
+            owner_agent: text(m, "agent"),
+            owner_provider: common.selections.launch_provider,
+        }),
+        "agent.stop" => AnyOp::AgentStop(AgentStop {
+            target_agent_id: None,
+            idempotency_key: key()?,
+            owner_agent: if flag(m, "all") {
+                None
+            } else {
+                Some(stop_agent(m)?)
+            },
+            all: flag(m, "all"),
+            release: flag(m, "release"),
+        }),
+        "agent.wake" => AnyOp::AgentWake(AgentWake {
+            target_agent_id: None,
+            owner_agent: Some(required(m, "agent")?),
+        }),
+        "agent.create" => AnyOp::AgentCreate(AgentCreate {
+            provider_settings: Box::new(se_types::ProviderSettings {
+                model_provider: text(m, "model-provider"),
+                base_url: text(m, "base-url"),
+                wire_api: text(m, "wire-api"),
+                reasoning_effort: text(m, "reasoning-effort"),
+                context_window: text(m, "context-window")
+                    .map(|value| {
+                        value.parse::<u64>().map_err(|_| {
+                            SeError::invalid("context-window", "a positive token count")
+                        })
+                    })
+                    .transpose()?,
+            }),
+            harness: text(m, "harness"),
+            name: required(m, "name")?,
+            provider: text(m, "provider")
+                .map(|value| {
+                    serde_json::from_value(serde_json::Value::String(value))
+                        .map_err(|_| SeError::invalid("provider", "claude, codex, secode or acp"))
+                })
+                .transpose()?,
+            model: text(m, "model"),
+            idempotency_key: key()?,
+        }),
+        "agent.rename" => AnyOp::AgentRename(AgentRename {
+            agent: required(m, "agent")?,
+            name: required(m, "name")?,
+            idempotency_key: key()?,
+        }),
+        _ => return Ok(None),
+    };
+    Ok(Some(op))
+}
+fn decode_config(
+    name: &str,
+    m: &ArgMatches,
+    key: &impl Fn() -> Result<IdempotencyKey>,
+) -> Result<Option<AnyOp>> {
+    let op = match name {
         "config.get" => AnyOp::ConfigGet(ConfigGet {
             key: required(m, "setting_key")?,
             origin: flag(m, "origin"),
@@ -132,61 +254,17 @@ pub fn from_matches_with_key(
                 .map_err(|_| SeError::invalid("limit", "1..500"))?,
             cursor: text(m, "cursor").map(Cursor::new).transpose()?,
         }),
-        "diagnostic.bundle" => AnyOp::DiagnosticBundle(DiagnosticBundle {}),
-        "doctor.inspect" => AnyOp::DoctorInspect(DoctorInspect {}),
-        "doctor.repair" => AnyOp::DoctorRepair(DoctorRepair {
-            check_id: required(m, "fix")?,
-        }),
-        "meta.version" => AnyOp::MetaVersion(MetaVersion {}),
-        "meta.help" => AnyOp::MetaHelp(MetaHelp {
-            path: if flag(m, "help") || path == ["atlas"] {
-                path.clone()
-            } else {
-                many(m, "path")
-            },
-            all: if flag(m, "help") || path == ["atlas"] {
-                false
-            } else {
-                flag(m, "all")
-            },
-        }),
-        "meta.guide" => AnyOp::MetaGuide(MetaGuide {
-            topic: text(m, "topic"),
-        }),
-        "meta.schema" => AnyOp::MetaSchema(MetaSchema { op: text(m, "op") }),
-        "captain.set" => AnyOp::CaptainSet(CaptainSet {
-            captain: required(m, "captain")?,
-            idempotency_key: key()?,
-        }),
-        "captain.clear" => AnyOp::CaptainClear(CaptainClear {
-            idempotency_key: key()?,
-        }),
-        "captain.show" => AnyOp::CaptainShow(CaptainShow {}),
-        "assignment.write" => AnyOp::AssignmentWrite(AssignmentWrite {
-            action: match required(m, "action")?.as_str() {
-                "open" => AssignmentAction::Open,
-                "accept" => AssignmentAction::Accept,
-                "done" => AssignmentAction::Done,
-                "block" => AssignmentAction::Block,
-                "hand-back" => AssignmentAction::HandBack,
-                _ => {
-                    return Err(SeError::invalid(
-                        "action",
-                        "open, accept, done, block, or hand-back",
-                    ));
-                }
-            },
-            assignment: text(m, "assignment").map(|s| s.try_into()).transpose()?,
-            assignee: text(m, "assignee"),
-            body: required(m, "body")?,
-            idempotency_key: key()?,
-        }),
-        "assignment.list" => AnyOp::AssignmentList(AssignmentList {
-            limit: required(m, "limit")?
-                .parse()
-                .map_err(|_| SeError::invalid("limit", "1..100"))?,
-            cursor: text(m, "cursor").map(Cursor::new).transpose()?,
-        }),
+        _ => return Ok(None),
+    };
+    Ok(Some(op))
+}
+fn decode_project(
+    name: &str,
+    m: &ArgMatches,
+    path: &[String],
+    key: &impl Fn() -> Result<IdempotencyKey>,
+) -> Result<Option<AnyOp>> {
+    let op = match name {
         "project.status" => AnyOp::ProjectStatus(ProjectStatus {
             fresh: !path.is_empty() && flag(m, "fresh"),
             watch_only: false,
@@ -196,25 +274,6 @@ pub fn from_matches_with_key(
                 flag(m, "all")
             },
         }),
-        "hook.claude" => AnyOp::HookClaude(HookClaude {
-            event: serde_json::from_value(serde_json::Value::String(required(m, "event")?))
-                .map_err(|_| SeError::invalid("event", "a fixed Claude hook event"))?,
-        }),
-        #[cfg(feature = "import")]
-        "store.import_node" => AnyOp::ImportNode(ImportNode {
-            from_node: required(m, "from_node")?,
-            source_owner: text(m, "source_owner")
-                .map(se_types::HumanId::from_legacy)
-                .transpose()?,
-            human_mappings: m
-                .get_many::<String>("map_human")
-                .into_iter()
-                .flatten()
-                .map(|v| store_import::HumanMapping::parse(v))
-                .collect::<Result<Vec<_>>>()?,
-            idempotency_key: key()?,
-        }),
-
         "project.init" => AnyOp::ProjectInit(ProjectInit {
             harness: text(m, "harness"),
             repo: text(m, "repo"),
@@ -235,6 +294,56 @@ pub fn from_matches_with_key(
             root: required(m, "root")?,
             idempotency_key: key()?,
         }),
+        "project.remove" => AnyOp::ProjectRemove(ProjectRemove {
+            all: flag(m, "all"),
+            keep_integrations: flag(m, "keep-integrations"),
+            idempotency_key: key()?,
+        }),
+        _ => return Ok(None),
+    };
+    Ok(Some(op))
+}
+fn decode_store(
+    name: &str,
+    m: &ArgMatches,
+    key: &impl Fn() -> Result<IdempotencyKey>,
+) -> Result<Option<AnyOp>> {
+    let op = match name {
+        #[cfg(feature = "import")]
+        "store.import_node" => AnyOp::ImportNode(ImportNode {
+            from_node: required(m, "from_node")?,
+            source_owner: text(m, "source_owner")
+                .map(se_types::HumanId::from_legacy)
+                .transpose()?,
+            human_mappings: m
+                .get_many::<String>("map_human")
+                .into_iter()
+                .flatten()
+                .map(|v| store_import::HumanMapping::parse(v))
+                .collect::<Result<Vec<_>>>()?,
+            idempotency_key: key()?,
+        }),
+
+        "store.restore" => AnyOp::StoreRestore(StoreRestore {
+            yes: flag(m, "yes"),
+            idempotency_key: key()?,
+        }),
+        "store.forget" => AnyOp::StoreForget(StoreForget {
+            events: m
+                .get_many::<String>("event")
+                .into_iter()
+                .flatten()
+                .map(|v| v.parse())
+                .collect::<Result<Vec<_>>>()?,
+            yes: flag(m, "yes"),
+            idempotency_key: key()?,
+        }),
+        _ => return Ok(None),
+    };
+    Ok(Some(op))
+}
+fn decode_history(name: &str, m: &ArgMatches) -> Result<Option<AnyOp>> {
+    let op = match name {
         "history.list" => AnyOp::HistoryList(HistoryList {
             session: text(m, "session")
                 .map(|value| {
@@ -276,6 +385,16 @@ pub fn from_matches_with_key(
         "history.event_read" => AnyOp::EventRead(EventRead {
             event_id: required(m, "event")?,
         }),
+        _ => return Ok(None),
+    };
+    Ok(Some(op))
+}
+fn decode_message(
+    name: &str,
+    m: &ArgMatches,
+    key: &impl Fn() -> Result<IdempotencyKey>,
+) -> Result<Option<AnyOp>> {
+    let op = match name {
         "message.read" => AnyOp::MessageRead(MessageRead {
             msg_id: required(m, "msg_id")?
                 .parse()
@@ -360,114 +479,99 @@ pub fn from_matches_with_key(
             newest: flag(m, "newest"),
             owner_to: text(m, "to"),
         }),
-        "working_state.get" => AnyOp::WorkingStateGet(WorkingStateGet { owner_agent: None }),
-        "agent.launch" => AnyOp::AgentLaunch(AgentLaunch {
-            target_agent_id: None,
-            resume: se_types::ResumeSelection::from_cli(text(m, "resume"))?,
-            model: text(m, "model"),
-            task: text(m, "task"),
-            detach: flag(m, "detach"),
-            override_live: flag(m, "override_live"),
-            force_selection: None,
-            idempotency_key: key()?,
-            owner_agent: text(m, "agent"),
-            owner_provider: common.selections.launch_provider,
-        }),
-        "agent.stop" => AnyOp::AgentStop(AgentStop {
-            target_agent_id: None,
-            idempotency_key: key()?,
-            owner_agent: if flag(m, "all") {
-                None
-            } else {
-                Some(stop_agent(m)?)
-            },
-            all: flag(m, "all"),
-            release: flag(m, "release"),
-        }),
-        "agent.wake" => AnyOp::AgentWake(AgentWake {
-            target_agent_id: None,
-            owner_agent: Some(required(m, "agent")?),
-        }),
-        "store.restore" => AnyOp::StoreRestore(StoreRestore {
-            yes: flag(m, "yes"),
-            idempotency_key: key()?,
-        }),
-        "store.forget" => AnyOp::StoreForget(StoreForget {
-            events: m
-                .get_many::<String>("event")
-                .into_iter()
-                .flatten()
-                .map(|v| v.parse())
-                .collect::<Result<Vec<_>>>()?,
-            yes: flag(m, "yes"),
-            idempotency_key: key()?,
-        }),
-        "project.remove" => AnyOp::ProjectRemove(ProjectRemove {
-            all: flag(m, "all"),
-            keep_integrations: flag(m, "keep-integrations"),
-            idempotency_key: key()?,
-        }),
-        "agent.create" => AnyOp::AgentCreate(AgentCreate {
-            provider_settings: Box::new(se_types::ProviderSettings {
-                model_provider: text(m, "model-provider"),
-                base_url: text(m, "base-url"),
-                wire_api: text(m, "wire-api"),
-                reasoning_effort: text(m, "reasoning-effort"),
-                context_window: text(m, "context-window")
-                    .map(|value| {
-                        value.parse::<u64>().map_err(|_| {
-                            SeError::invalid("context-window", "a positive token count")
-                        })
-                    })
-                    .transpose()?,
-            }),
-            harness: text(m, "harness"),
-            name: required(m, "name")?,
-            provider: text(m, "provider")
-                .map(|value| {
-                    serde_json::from_value(serde_json::Value::String(value))
-                        .map_err(|_| SeError::invalid("provider", "claude, codex, secode or acp"))
-                })
-                .transpose()?,
-            model: text(m, "model"),
-            idempotency_key: key()?,
-        }),
-        "agent.rename" => AnyOp::AgentRename(AgentRename {
-            agent: required(m, "agent")?,
-            name: required(m, "name")?,
-            idempotency_key: key()?,
-        }),
-        "working_state.set" => {
-            let expect = required(m, "expect")?;
-            AnyOp::WorkingStateSet(WorkingStateSet {
-                text: required(m, "text")?,
-                expect: if expect == "absent" {
-                    ExpectedRevision::Absent(AbsentRevision::Absent)
-                } else {
-                    ExpectedRevision::Revision(
-                        expect.parse().map_err(|_| {
-                            SeError::invalid("expect", "positive revision or absent")
-                        })?,
-                    )
-                },
-                idempotency_key: key()?,
-                owner_agent: None,
-            })
-        }
-        "runtime.up" => AnyOp::RuntimeUp(RuntimeUp {
-            foreground: flag(m, "foreground"),
-            idempotency_key: key()?,
-        }),
-        "runtime.down" => AnyOp::RuntimeDown(RuntimeDown {
-            idempotency_key: key()?,
-        }),
-        "installation.uninstall" => AnyOp::Uninstall(Uninstall {
-            idempotency_key: key()?,
-            yes: m.get_flag("yes"),
-        }),
-        _ => return Err(unknown(meta.name)),
+        _ => return Ok(None),
     };
-    Ok(op)
+    Ok(Some(op))
+}
+fn decode_runtime(
+    name: &str,
+    m: &ArgMatches,
+    key: &impl Fn() -> Result<IdempotencyKey>,
+) -> Result<Option<AnyOp>> {
+    let op =
+        match name {
+            "diagnostic.bundle" => AnyOp::DiagnosticBundle(DiagnosticBundle {}),
+            "doctor.inspect" => AnyOp::DoctorInspect(DoctorInspect {}),
+            "doctor.repair" => AnyOp::DoctorRepair(DoctorRepair {
+                check_id: required(m, "fix")?,
+            }),
+            "hook.claude" => AnyOp::HookClaude(HookClaude {
+                event: serde_json::from_value(serde_json::Value::String(required(m, "event")?))
+                    .map_err(|_| SeError::invalid("event", "a fixed Claude hook event"))?,
+            }),
+            "working_state.get" => AnyOp::WorkingStateGet(WorkingStateGet { owner_agent: None }),
+            "working_state.set" => {
+                let expect = required(m, "expect")?;
+                AnyOp::WorkingStateSet(WorkingStateSet {
+                    text: required(m, "text")?,
+                    expect: if expect == "absent" {
+                        ExpectedRevision::Absent(AbsentRevision::Absent)
+                    } else {
+                        ExpectedRevision::Revision(expect.parse().map_err(|_| {
+                            SeError::invalid("expect", "positive revision or absent")
+                        })?)
+                    },
+                    idempotency_key: key()?,
+                    owner_agent: None,
+                })
+            }
+            "runtime.up" => AnyOp::RuntimeUp(RuntimeUp {
+                foreground: flag(m, "foreground"),
+                idempotency_key: key()?,
+            }),
+            "runtime.down" => AnyOp::RuntimeDown(RuntimeDown {
+                idempotency_key: key()?,
+            }),
+            "installation.uninstall" => AnyOp::Uninstall(Uninstall {
+                idempotency_key: key()?,
+                yes: m.get_flag("yes"),
+            }),
+            _ => return Ok(None),
+        };
+    Ok(Some(op))
+}
+fn decode_assignment(
+    name: &str,
+    m: &ArgMatches,
+    key: &impl Fn() -> Result<IdempotencyKey>,
+) -> Result<Option<AnyOp>> {
+    let op = match name {
+        "captain.set" => AnyOp::CaptainSet(CaptainSet {
+            captain: required(m, "captain")?,
+            idempotency_key: key()?,
+        }),
+        "captain.clear" => AnyOp::CaptainClear(CaptainClear {
+            idempotency_key: key()?,
+        }),
+        "captain.show" => AnyOp::CaptainShow(CaptainShow {}),
+        "assignment.write" => AnyOp::AssignmentWrite(AssignmentWrite {
+            action: match required(m, "action")?.as_str() {
+                "open" => AssignmentAction::Open,
+                "accept" => AssignmentAction::Accept,
+                "done" => AssignmentAction::Done,
+                "block" => AssignmentAction::Block,
+                "hand-back" => AssignmentAction::HandBack,
+                _ => {
+                    return Err(SeError::invalid(
+                        "action",
+                        "open, accept, done, block, or hand-back",
+                    ));
+                }
+            },
+            assignment: text(m, "assignment").map(|s| s.try_into()).transpose()?,
+            assignee: text(m, "assignee"),
+            body: required(m, "body")?,
+            idempotency_key: key()?,
+        }),
+        "assignment.list" => AnyOp::AssignmentList(AssignmentList {
+            limit: required(m, "limit")?
+                .parse()
+                .map_err(|_| SeError::invalid("limit", "1..100"))?,
+            cursor: text(m, "cursor").map(Cursor::new).transpose()?,
+        }),
+        _ => return Ok(None),
+    };
+    Ok(Some(op))
 }
 
 fn stop_agent(m: &ArgMatches) -> Result<String> {
