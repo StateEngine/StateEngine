@@ -157,11 +157,12 @@ impl Security {
         drop(device.fence.output()?);
         let store = self.store.clone();
         let id = device.grant.grant.clone();
-        let grant =
-            crate::run_foreground(self.blocking.as_ref(), Duration::from_secs(10), move || {
-                store.grant(&id)
-            })
-            .await?;
+        let grant = crate::run_foreground(
+            self.blocking.as_ref(),
+            crate::SESSION_BLOCKING_TIMEOUT,
+            move || store.grant(&id),
+        )
+        .await?;
         let grant = self.checked(device, grant)?;
         let at = now()?;
         if at

@@ -61,7 +61,7 @@ impl Security {
         let recorded = value.clone();
         let current = crate::run_owned(
             self.blocking.as_ref(),
-            std::time::Duration::from_secs(30),
+            crate::SESSION_BLOCKING_TIMEOUT,
             move || {
                 se_core::scope::require_present(
                     store
@@ -131,7 +131,7 @@ impl Security {
         let address = request.address.clone();
         let current = crate::run_owned(
             self.blocking.as_ref(),
-            std::time::Duration::from_secs(30),
+            crate::SESSION_BLOCKING_TIMEOUT,
             move || store.read(|p| p.remote_source_permission(&address)),
         )
         .await?;
@@ -180,7 +180,7 @@ impl Security {
         let address = request.address.clone();
         let current = crate::run_owned(
             self.blocking.as_ref(),
-            std::time::Duration::from_secs(30),
+            crate::SESSION_BLOCKING_TIMEOUT,
             move || {
                 se_core::scope::require_present(
                     store.read(|p| p.remote_source_permission(&address))?,
@@ -214,7 +214,7 @@ impl Security {
         let key = request.key.clone();
         let outcome = crate::run_owned(
             self.blocking.as_ref(),
-            std::time::Duration::from_secs(30),
+            crate::SESSION_BLOCKING_TIMEOUT,
             move || store.security_outcome(&key),
         )
         .await?;

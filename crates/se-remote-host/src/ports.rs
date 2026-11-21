@@ -3,6 +3,9 @@ use se_remote::RemoteFuture;
 use se_types::{Result, SeError};
 use std::{any::Any, time::Duration};
 
+/// Default blocking-pool bound for remote session and authorization checks.
+pub const SESSION_BLOCKING_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Bounded foreground blocking execution port implemented by the host blocking pool.
 pub trait BlockingRunner: Send + Sync {
     fn run_foreground(

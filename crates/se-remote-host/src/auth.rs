@@ -240,33 +240,37 @@ impl Security {
         let checked = device.clone();
         let instance = self.instance;
         let generation = self.generation;
-        let ready = crate::run_owned(self.blocking.as_ref(), Duration::from_secs(10), move || {
-            let grant = store.grant(&checked.grant.grant)?;
-            if grant.state != se_store::remote::GrantState::Active
-                || grant.expires_at_us <= now()?
-                || grant.authority_revision != checked.grant.authority_revision
-            {
-                return Err(refused(
-                    "machine authority changed during SSH authorization",
-                ));
-            }
-            Ok(RemoteReady {
-                protocol: se_types::ApiVersion {
-                    major: CLIENT_PROTOCOL_MAJOR,
-                    minor: CLIENT_PROTOCOL_MINOR,
-                },
-                host: grant.host,
-                instance,
-                generation,
-                grant: grant.grant,
-                authority_revision: grant.authority_revision.value.get(),
-                scope: grant.scope,
-                expires_at: se_types::UnixMicros::new(
-                    u64::try_from(grant.expires_at_us)
-                        .map_err(|_| refused("machine session expiry is invalid"))?,
-                )?,
-            })
-        })
+        let ready = crate::run_owned(
+            self.blocking.as_ref(),
+            crate::SESSION_BLOCKING_TIMEOUT,
+            move || {
+                let grant = store.grant(&checked.grant.grant)?;
+                if grant.state != se_store::remote::GrantState::Active
+                    || grant.expires_at_us <= now()?
+                    || grant.authority_revision != checked.grant.authority_revision
+                {
+                    return Err(refused(
+                        "machine authority changed during SSH authorization",
+                    ));
+                }
+                Ok(RemoteReady {
+                    protocol: se_types::ApiVersion {
+                        major: CLIENT_PROTOCOL_MAJOR,
+                        minor: CLIENT_PROTOCOL_MINOR,
+                    },
+                    host: grant.host,
+                    instance,
+                    generation,
+                    grant: grant.grant,
+                    authority_revision: grant.authority_revision.value.get(),
+                    scope: grant.scope,
+                    expires_at: se_types::UnixMicros::new(
+                        u64::try_from(grant.expires_at_us)
+                            .map_err(|_| refused("machine session expiry is invalid"))?,
+                    )?,
+                })
+            },
+        )
         .await?;
         pending
             .reply
@@ -288,8 +292,10 @@ impl Security {
         }
         let store = self.store.clone();
         let host = self.host;
-        let checked =
-            crate::run_owned(self.blocking.as_ref(), Duration::from_secs(10), move || {
+        let checked = crate::run_owned(
+            self.blocking.as_ref(),
+            crate::SESSION_BLOCKING_TIMEOUT,
+            move || {
                 let grant = store.grant(&hello.grant)?;
                 let expected: [u8; 32] = Sha256::digest(credential.expose()).into();
                 use subtle::ConstantTimeEq;
@@ -304,8 +310,9 @@ impl Security {
                     return Err(refused("machine session refused"));
                 }
                 Ok(grant)
-            })
-            .await?;
+            },
+        )
+        .await?;
         let fence = self.fence(&checked)?;
         drop(fence.output()?);
         Ok(AuthenticatedDevice {

@@ -79,7 +79,7 @@ impl Security {
         let id = request.grant.clone();
         let grant = crate::run_foreground(
             self.blocking.as_ref(),
-            std::time::Duration::from_secs(30),
+            crate::SESSION_BLOCKING_TIMEOUT,
             move || store.grant(&id),
         )
         .await?;

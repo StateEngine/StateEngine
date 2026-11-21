@@ -10,7 +10,9 @@ pub mod publish;
 pub mod session;
 pub mod view_request;
 
-pub use ports::{BlockingRunner, WriterFaultObserver, run_foreground, run_owned};
+pub use ports::{
+    BlockingRunner, SESSION_BLOCKING_TIMEOUT, WriterFaultObserver, run_foreground, run_owned,
+};
 pub use se_remote::{
     ClientConnectionId, CredentialSource, RemoteCallContext, RemoteClient, RemoteConnector,
     RemoteFuture, RemoteRoute, RemoteWatchStream, channel, entropy, ssh, transport_io, wire,
