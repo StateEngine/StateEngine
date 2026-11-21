@@ -263,7 +263,7 @@ pub fn from_matches_with_key(
                 .transpose()?,
             kinds: many(m, "kind"),
             since: text(m, "position")
-                .map(crate::ops::history::position_cursor)
+                .map(se_core::ops::history::position_cursor)
                 .transpose()?,
             limit: number(m, "limit")?,
             byte_budget: required(m, "budget")?
