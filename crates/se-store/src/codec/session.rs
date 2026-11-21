@@ -13,10 +13,6 @@ pub(crate) struct SessionHead {
 pub(crate) fn head(c: &Connection, project: &[u8], session: &[u8]) -> StoreResult<SessionHead> {
     c.query_row("SELECT s.agent_id,d.provider,d.native_ref,d.generation,d.consent,s.state FROM sessions s JOIN session_data d ON d.event_seq=s.last_seq WHERE s.project_id=? AND s.session_id=?",rusqlite::params![project,session],|r|Ok(SessionHead {agent:r.get(0)?,provider:r.get(1)?,native_ref:r.get(2)?,generation:crate::sql_value::value(r,3)?,consent:r.get(4)?,state:r.get(5)?})).optional().map_err(sql)?.ok_or_else(||fail(StoreErrorCode::ReferenceMissing,"session head/data absent"))
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(crate) fn decode(
     c: &Connection,
     seq: i64,
@@ -58,64 +54,8 @@ pub(crate) fn decode(
         .map(Expected::Revision)
         .unwrap_or(Expected::Absent);
     Ok(match kind {
-        "session.prepared" => {
-            let reference: Vec<u8> = c
-                .query_row(
-                    "SELECT value FROM symbols WHERE id=?",
-                    [row.get::<_, i64>("native_ref").map_err(sql)?],
-                    |r| r.get(0),
-                )
-                .map_err(sql)?;
-            EventBody::SessionPrepared {
-                session,
-                agent,
-                provider: parse_provider(&row.get::<_, String>("provider").map_err(sql)?)?,
-                surface: prepared_surface(c, seq)?,
-                native_ref: String::from_utf8(reference).map_err(invalid)?,
-                consent: parse_consent(&row.get::<_, String>("consent").map_err(sql)?)?,
-                generation: u64::try_from(row.get::<_, i64>("generation").map_err(sql)?)
-                    .map_err(invalid)?,
-                expected,
-            }
-        }
-        "session.activated" => {
-            let incumbent = row
-                .get::<_, Option<Vec<u8>>>("incumbent_id")
-                .map_err(sql)?
-                .map(|id| -> StoreResult<_> {
-                    Ok((
-                        wire(c, "session", &id, &s)?.try_into().map_err(invalid)?,
-                        revision(
-                            u64::try_from(
-                                row.get::<_, i64>("incumbent_expected_revision")
-                                    .map_err(sql)?,
-                            )
-                            .map_err(invalid)?,
-                        )?,
-                    ))
-                })
-                .transpose()?;
-            EventBody::SessionActivated {
-                session,
-                expected,
-                incumbent,
-                process: row
-                    .get::<_, Option<Vec<u8>>>("process_id")
-                    .map_err(sql)?
-                    .map(|id| {
-                        wire(c, "lifecycle", &id, &s).and_then(|v| v.try_into().map_err(invalid))
-                    })
-                    .transpose()?,
-                containment: serde_json::from_str(
-                    &row.get::<_, String>("containment_fact").map_err(sql)?,
-                )
-                .map_err(invalid)?,
-                witnesses: serde_json::from_str(
-                    &row.get::<_, String>("witness_refs").map_err(sql)?,
-                )
-                .map_err(invalid)?,
-            }
-        }
+        "session.prepared" => prepared_body(c, seq, row, session, agent, expected)?,
+        "session.activated" => activated_body(c, row, &s, session, expected)?,
         "session.ended" => {
             let facts = facts(c, seq)?;
             EventBody::SessionEnded {
@@ -132,6 +72,73 @@ pub(crate) fn decode(
             reason: stored_text(c, seq, "reason")?,
         },
         _ => return Err(invalid("session kind")),
+    })
+}
+
+fn prepared_body(
+    c: &Connection,
+    seq: i64,
+    row: &rusqlite::Row<'_>,
+    session: SessionId,
+    agent: AgentId,
+    expected: Expected,
+) -> StoreResult<EventBody<StoredText>> {
+    let reference: Vec<u8> = c
+        .query_row(
+            "SELECT value FROM symbols WHERE id=?",
+            [row.get::<_, i64>("native_ref").map_err(sql)?],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    Ok(EventBody::SessionPrepared {
+        session,
+        agent,
+        provider: parse_provider(&row.get::<_, String>("provider").map_err(sql)?)?,
+        surface: prepared_surface(c, seq)?,
+        native_ref: String::from_utf8(reference).map_err(invalid)?,
+        consent: parse_consent(&row.get::<_, String>("consent").map_err(sql)?)?,
+        generation: u64::try_from(row.get::<_, i64>("generation").map_err(sql)?)
+            .map_err(invalid)?,
+        expected,
+    })
+}
+
+fn activated_body(
+    c: &Connection,
+    row: &rusqlite::Row<'_>,
+    s: &[u8],
+    session: SessionId,
+    expected: Expected,
+) -> StoreResult<EventBody<StoredText>> {
+    let incumbent = row
+        .get::<_, Option<Vec<u8>>>("incumbent_id")
+        .map_err(sql)?
+        .map(|id| -> StoreResult<_> {
+            Ok((
+                wire(c, "session", &id, s)?.try_into().map_err(invalid)?,
+                revision(
+                    u64::try_from(
+                        row.get::<_, i64>("incumbent_expected_revision")
+                            .map_err(sql)?,
+                    )
+                    .map_err(invalid)?,
+                )?,
+            ))
+        })
+        .transpose()?;
+    Ok(EventBody::SessionActivated {
+        session,
+        expected,
+        incumbent,
+        process: row
+            .get::<_, Option<Vec<u8>>>("process_id")
+            .map_err(sql)?
+            .map(|id| wire(c, "lifecycle", &id, s).and_then(|v| v.try_into().map_err(invalid)))
+            .transpose()?,
+        containment: serde_json::from_str(&row.get::<_, String>("containment_fact").map_err(sql)?)
+            .map_err(invalid)?,
+        witnesses: serde_json::from_str(&row.get::<_, String>("witness_refs").map_err(sql)?)
+            .map_err(invalid)?,
     })
 }
 
