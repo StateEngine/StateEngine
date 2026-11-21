@@ -535,7 +535,13 @@ pub(crate) fn inventory(
     let index = match files.readback(&root.join(INDEX)) {
         Ok(index) => index,
         // No backups folder yet means no generations, not an unreadable store.
-        Err(e) if e.source.as_ref().is_some_and(|s| s.kind() == std::io::ErrorKind::NotFound) => None,
+        Err(e)
+            if e.source
+                .as_ref()
+                .is_some_and(|s| s.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            None
+        }
         Err(e) => return Err(unreadable(e)),
     };
     let (store, entries) = match index {
