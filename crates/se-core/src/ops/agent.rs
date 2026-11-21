@@ -25,10 +25,6 @@ impl AgentCreateThen {
         &self.request
     }
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn create<R: Snapshot>(
     kernel: &Kernel,
     input: AgentCreate,
@@ -52,33 +48,7 @@ pub fn create<R: Snapshot>(
             "original owner registration is unavailable",
         ));
     };
-    if let Actor::Agent(creator) = &cx.admission.actor {
-        let grant = cx
-            .read
-            .grant(
-                Actor::Agent(creator.clone()),
-                GrantKey::AgentCanCreate(creator.clone()),
-            )
-            .map_err(|error| store_error(&error))?;
-        match grant {
-            Read::Present { value }
-                if matches!(
-                    value.current.body,
-                    EventBody::GrantRecorded { active: true, .. }
-                ) => {}
-            Read::Absent { .. } | Read::Present { .. } => {
-                return Err(SeError::new(Detail::OwnerRequired(
-                    details::OwnerRequired {
-                        op: "agent.create without a current create grant".into(),
-                    },
-                )));
-            }
-            Read::Unreadable { source, reason, .. } => {
-                return Err(scope::unreadable(&source, &reason));
-            }
-            Read::Unknown { what } => return Err(scope::unreadable("agent creation grant", &what)),
-        }
-    }
+    require_create_grant(cx)?;
     let normalized = serde_json::to_value(&input)
         .map_err(|error| scope::unreadable("agent creation intent", &error.to_string()))?;
     let binding =
@@ -138,6 +108,37 @@ pub fn create<R: Snapshot>(
     let mut batch = kernel.batch("agent.create", key.clone(), normalized, identity, cx)?;
     batch.events.push(profile);
     Ok((batch, AgentCreateThen { request: key }))
+}
+
+fn require_create_grant<R: Snapshot>(cx: &Cx<'_, R>) -> Result<()> {
+    if let Actor::Agent(creator) = &cx.admission.actor {
+        let grant = cx
+            .read
+            .grant(
+                Actor::Agent(creator.clone()),
+                GrantKey::AgentCanCreate(creator.clone()),
+            )
+            .map_err(|error| store_error(&error))?;
+        match grant {
+            Read::Present { value }
+                if matches!(
+                    value.current.body,
+                    EventBody::GrantRecorded { active: true, .. }
+                ) => {}
+            Read::Absent { .. } | Read::Present { .. } => {
+                return Err(SeError::new(Detail::OwnerRequired(
+                    details::OwnerRequired {
+                        op: "agent.create without a current create grant".into(),
+                    },
+                )));
+            }
+            Read::Unreadable { source, reason, .. } => {
+                return Err(scope::unreadable(&source, &reason));
+            }
+            Read::Unknown { what } => return Err(scope::unreadable("agent creation grant", &what)),
+        }
+    }
+    Ok(())
 }
 
 pub fn committed<R: Snapshot>(
