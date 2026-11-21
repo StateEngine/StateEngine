@@ -196,18 +196,23 @@ fn recipient_transcripts(c: &Connection, seq: i64) -> StoreResult<Option<Residua
     } else {
         let mut shared = first.clone();
         while !paths.iter().all(|p| p.starts_with(&shared)) && shared.pop() {}
-        let folder = if shared.as_os_str().is_empty() {
-            first.clone()
+        let count = paths.len();
+        if shared.as_os_str().is_empty() {
+            // No folder holds them all (for example, two drives): name one.
+            (
+                first.clone(),
+                format!(
+                    "The recipient agent's {count} transcript files after this message, including this one, may contain it; StateEngine does not own or edit them."
+                ),
+            )
         } else {
-            shared
-        };
-        (
-            folder,
-            format!(
-                "The recipient agent's {} transcript files after this message, under this folder, may contain it; StateEngine does not own or edit them.",
-                paths.len()
-            ),
-        )
+            (
+                shared,
+                format!(
+                    "The recipient agent's {count} transcript files after this message, under this folder, may contain it; StateEngine does not own or edit them."
+                ),
+            )
+        }
     };
     Ok(Some(ResidualCopy {
         custodian: "recipient's provider transcripts".into(),
@@ -318,7 +323,7 @@ pub(crate) fn plan(
             observed
                 .residuals
                 .into_iter()
-                .chain(preserved_copies(&options.state_directory)?)
+                .chain(preserved_copies(lease.files(), &options.state_directory)?)
                 .collect(),
         )?,
     })
@@ -341,16 +346,19 @@ fn within_cap(residuals: Vec<ResidualCopy>) -> StoreResult<Vec<ResidualCopy>> {
 }
 /// Stores a restore replaced are kept whole under `preserved/`; a forget leaves
 /// them as they are, so the folder is named once rather than claimed as erased.
-fn preserved_copies(home: &std::path::Path) -> StoreResult<Option<ResidualCopy>> {
+fn preserved_copies(
+    files: &dyn StateFiles,
+    home: &std::path::Path,
+) -> StoreResult<Option<ResidualCopy>> {
     let directory = home.join("preserved");
-    let files = match std::fs::read_dir(&directory) {
+    // Absence is read without following links; the listing itself goes
+    // through the lease's protected file port.
+    match std::fs::symlink_metadata(&directory) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(fail(StoreErrorCode::Unreadable, error.to_string())),
-        Ok(entries) => entries
-            .collect::<std::io::Result<Vec<_>>>()
-            .map_err(|e| fail(StoreErrorCode::Unreadable, e.to_string()))?
-            .len(),
-    };
+        Ok(_) => (),
+    }
+    let files = files.list_owned(&directory, 4096)?.len();
     if files == 0 {
         return Ok(None);
     }
