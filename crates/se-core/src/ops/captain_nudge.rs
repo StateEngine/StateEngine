@@ -86,13 +86,21 @@ fn decide<R: Snapshot>(
     for (_, latest) in &assignments {
         progress = progress.max(occurred_at(cx, latest)?);
     }
+    // A nudge refers only to this agent's open assignments. That keeps other
+    // host-door owner mail out of the count, and closing an assignment retires
+    // the nudges that named it.
+    let open: Vec<_> = assignments.iter().map(|(id, _)| id).collect();
     let mut nudges = Vec::new();
     for message in newest(cx, Some(me), owner.clone(), NUDGE_SCAN)? {
         let event = event(cx, &message.event)?;
         if event.header.occurred_at_us <= progress {
             break;
         }
-        if event.header.door == Door::Host && message.kind == "task" && !message.refs.is_empty() {
+        if event.header.door == Door::Host
+            && message.kind == "task"
+            && !message.refs.is_empty()
+            && message.refs.iter().all(|id| open.contains(&id))
+        {
             nudges.push(message.event);
         }
     }
@@ -110,12 +118,17 @@ fn decide<R: Snapshot>(
             },
         )));
     };
-    let alerted = newest(cx, Some(captain.clone()), owner.clone(), NUDGE_SCAN)?
-        .iter()
-        .any(|message| message.refs.contains(last));
     let Actor::Agent(captain) = captain else {
         return Ok(None);
     };
+    let alerted = newest(
+        cx,
+        Some(Actor::Agent(captain.clone())),
+        owner.clone(),
+        NUDGE_SCAN,
+    )?
+    .iter()
+    .any(|message| message.refs.contains(last));
     if alerted {
         return Ok(None);
     }
