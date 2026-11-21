@@ -3,7 +3,12 @@ use super::{args, native};
 use crate::runtime::{InstallRecord, Installation};
 use se_proc::{NativeInstallationClaim, NativeStateFiles, OwnedFile};
 use se_types::{Result, Sha256};
-use std::{collections::BTreeMap, ffi::OsString, io, path::Path};
+use std::{
+    collections::BTreeMap,
+    ffi::OsString,
+    io,
+    path::{Path, PathBuf},
+};
 
 fn read(path: &Path, limit: usize) -> Result<Option<Vec<u8>>> {
     OwnedFile::open(path)
@@ -50,10 +55,6 @@ fn plain_tree(root: &Path) -> Result<()> {
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn check(arguments: &[OsString]) -> Result<i32> {
     if arguments.len() != 3 {
         return Err(args::invalid(
@@ -89,31 +90,48 @@ pub(super) fn check(arguments: &[OsString]) -> Result<i32> {
     let manifest = read(&stage.join("manifest.sha256"), 128)?;
     let plan = read(&stage.join("install.json"), 1024 * 1024)?;
     if manifest.is_none() || plan.is_none() {
-        // No payload can be published until the complete write-ahead journal is
-        // durable. A killed journal writer may be restarted only while every
-        // product destination and the completed record are still absent.
-        for path in expected
-            .keys()
-            .chain(std::iter::once(&home.join("standalone-install.json")))
-        {
-            match std::fs::symlink_metadata(path) {
-                Err(error) if error.kind() == io::ErrorKind::NotFound => (),
-                Err(error) => {
-                    return Err(se_core::scope::unreadable(
-                        "partial destination",
-                        &error.to_string(),
-                    ));
-                }
-                Ok(_) => {
-                    return Err(args::invalid(
-                        "a complete journal before any published payload",
-                    ));
-                }
-            }
-        }
-        println!("fresh\n\n");
+        fresh_destination_guard(&expected, &home)?;
         return Ok(0);
     }
+    resume_plan(&user, archive, &stage, &home, expected, manifest, plan)
+}
+
+fn fresh_destination_guard(expected: &BTreeMap<PathBuf, Sha256>, home: &Path) -> Result<()> {
+    // No payload can be published until the complete write-ahead journal is
+    // durable. A killed journal writer may be restarted only while every
+    // product destination and the completed record are still absent.
+    for path in expected
+        .keys()
+        .chain(std::iter::once(&home.join("standalone-install.json")))
+    {
+        match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+            Err(error) => {
+                return Err(se_core::scope::unreadable(
+                    "partial destination",
+                    &error.to_string(),
+                ));
+            }
+            Ok(_) => {
+                return Err(args::invalid(
+                    "a complete journal before any published payload",
+                ));
+            }
+        }
+    }
+    println!("fresh\n\n");
+    Ok(())
+}
+
+fn resume_plan(
+    user: &Path,
+    archive: &Path,
+    stage: &Path,
+    home: &Path,
+    mut expected: BTreeMap<PathBuf, Sha256>,
+    manifest: Option<Vec<u8>>,
+    plan: Option<Vec<u8>>,
+) -> Result<i32> {
     let manifest = manifest.ok_or_else(|| args::invalid("original archive digest"))?;
     if std::str::from_utf8(&manifest).ok().map(str::trim)
         != Some(hash(&archive.join("manifest.json"))?.hex().as_str())
@@ -155,7 +173,7 @@ pub(super) fn check(arguments: &[OsString]) -> Result<i32> {
     let mut profiles = Vec::<String>::new();
     for edit in &record.path_edits {
         let name = Path::new(&edit.target)
-            .strip_prefix(&user)
+            .strip_prefix(user)
             .ok()
             .and_then(|path| path.to_str())
             .filter(|name| {
