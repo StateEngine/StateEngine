@@ -87,11 +87,74 @@ pub(crate) struct ProviderSetup {
     pub config_home: std::path::PathBuf,
 }
 #[cfg(feature = "listener")]
+struct ClaudeAdoption;
+#[cfg(feature = "listener")]
+static CLAUDE_ADOPTION: ClaudeAdoption = ClaudeAdoption;
+#[cfg(feature = "listener")]
+impl Adapter for ClaudeAdoption {
+    #[cfg(any(target_os = "linux", windows))]
+    fn prepare(&self, command: &Path) -> Result<ProviderSetup> {
+        crate::harness::qualify_claude_adoption(command)?;
+        Ok(ProviderSetup {
+            executable: command.to_owned(),
+            config_home: crate::harness::claude::config_home(
+                &std::env::vars_os().collect::<Vec<_>>(),
+            )?,
+        })
+    }
+    #[cfg(any(target_os = "linux", windows))]
+    fn hooks(&self, executable: &Path, home: &Path) -> Result<Vec<(String, serde_json::Value)>> {
+        settings::hooks(executable, home)
+    }
+    fn notice(&self) -> Option<String> {
+        Some("Review and trust the StateEngine hooks in Claude Code when the provider asks; declining keeps the provider usable with the integration inactive".into())
+    }
+}
+#[cfg(feature = "listener")]
+struct CodexAdoption;
+#[cfg(feature = "listener")]
+static CODEX_ADOPTION: CodexAdoption = CodexAdoption;
+#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+pub(crate) use first_setup::FirstSetup;
+#[cfg(feature = "listener")]
+mod first_setup {
+    use super::*;
+    #[cfg(any(target_os = "linux", windows))]
+    pub(crate) struct FirstSetup(());
+    impl Adapter for CodexAdoption {
+        #[cfg(any(target_os = "linux", windows))]
+        fn prepare(&self, command: &Path) -> Result<ProviderSetup> {
+            let executable = codex::native_executable(command)?;
+            let home = crate::process::codex_server::setup_codex_login(&FirstSetup(()))?;
+            settings::prepare(&home, &home.join(Kind::Codex.settings()))?;
+            codex::qualify(&executable)?;
+            Ok(ProviderSetup {
+                executable,
+                config_home: home,
+            })
+        }
+        #[cfg(any(target_os = "linux", windows))]
+        fn hooks(
+            &self,
+            executable: &Path,
+            home: &Path,
+        ) -> Result<Vec<(String, serde_json::Value)>> {
+            codex::hooks(executable, home)
+        }
+        fn discover(&self, home: &Path, saved: &mut Registration, root: &Path) -> Result<()> {
+            codex::trust(home, saved, root)
+        }
+        fn active(&self, home: &Path, project: &ProjectId) -> Result<bool> {
+            status::witnessed(home, Kind::Codex, project)
+        }
+    }
+}
+#[cfg(feature = "listener")]
 impl Kind {
     fn adapter(self) -> &'static dyn Adapter {
         match self {
-            Self::Claude => &crate::harness::CLAUDE_ADOPTION,
-            Self::Codex => &crate::harness::codex_rpc::ADOPTION,
+            Self::Claude => &CLAUDE_ADOPTION,
+            Self::Codex => &CODEX_ADOPTION,
         }
     }
 }

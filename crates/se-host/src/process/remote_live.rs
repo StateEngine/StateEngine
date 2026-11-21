@@ -25,7 +25,7 @@ impl LaunchCoordinator {
             .and_then(|b| b.get::<crate::codex_rpc::Binding>())
             && let Ok(mut live) = binding.live.lock()
         {
-            *live = Some(source.clone());
+            *live = Some(Arc::new(source.clone()));
         }
         work.remote_live = Some(source);
     }

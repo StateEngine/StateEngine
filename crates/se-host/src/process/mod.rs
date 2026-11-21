@@ -246,7 +246,8 @@ impl LaunchCoordinator {
             )
             .with_bells(context.mail_waits.bells.clone())
             .with_atlas_hooks(
-                options.configuration.atlas.enabled && options.configuration.atlas.hooks,
+                (options.configuration.atlas.enabled && options.configuration.atlas.hooks)
+                    .then_some(crate::atlas_hooks::hook_configuration),
             ),
         );
         #[cfg(unix)]
@@ -268,7 +269,10 @@ impl LaunchCoordinator {
                 options.configuration.clone(),
             )
             .with_forwarder(options.helper_executable.to_local()?)
-            .with_atlas_helper(options.helper_executable.to_local()?),
+            .with_atlas_helper(
+                options.helper_executable.to_local()?,
+                crate::atlas_hooks::hook_configuration,
+            ),
         );
         let secode = Arc::new(crate::harness::secode_process::SecodeHarness::new(
             io.clone(),

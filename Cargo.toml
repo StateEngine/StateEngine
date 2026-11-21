@@ -3,6 +3,7 @@ resolver = "2"
 exclude = ["vendor/secode-stateengine-api"]
 members = [
     "crates/se-types",
+    "crates/se-harness",
     "crates/se-harness-registry",
     "crates/se-store",
     "crates/se-store-contract",

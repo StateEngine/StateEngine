@@ -1,0 +1,613 @@
+//! Provider planning and stream attachment only. The launch coordinator owns
+//! profile bootstrap, the service process, durable intent and native effects.
+use super::*;
+use crate::Deadline;
+use crate::harness::binding::{AdapterBinding, Observation, Signal, StopPolicy};
+use crate::{CallContext, Harness, HarnessBinding, HarnessRequest, HostFuture, ProviderIoPlatform};
+use se_types::{NativePath, Read, Result};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    sync::{Arc, Mutex, RwLock},
+};
+
+/// One qualified service for every lifecycle consumer. Original capture and
+/// input coordinates remain immutable in Managed and in their journals.
+#[derive(Clone)]
+pub struct QualifiedControl {
+    pub control: Arc<Control>,
+    pub service: ServiceIdentity,
+    repaired: Option<NoticeBinding>,
+}
+impl QualifiedControl {
+    pub async fn require_idle(&self, session: &str, deadline: &Deadline) -> Result<()> {
+        self.binding(session, deadline).await?;
+        self.control.require_idle(deadline).await?;
+        self.binding(session, deadline).await?;
+        Ok(())
+    }
+
+    pub async fn binding(&self, session: &str, deadline: &Deadline) -> Result<NoticeBinding> {
+        let current = self.control.binding(session, deadline).await?;
+        self.service.require_same(&current.service)?;
+        if let Some(repaired) = &self.repaired
+            && (repaired.session_id != current.session_id
+                || repaired.target_id != current.target_id
+                || repaired.binding != current.binding)
+        {
+            return Err(binding_error("target changed after credential repair"));
+        }
+        Ok(current)
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct LiveBinding(Arc<RwLock<BindingState>>);
+#[derive(Default)]
+enum BindingState {
+    #[default]
+    Original,
+    Repaired(Box<QualifiedControl>),
+    Unavailable,
+}
+impl LiveBinding {
+    pub fn resolve(
+        &self,
+        control: Arc<Control>,
+        service: ServiceIdentity,
+    ) -> Result<QualifiedControl> {
+        let state = self
+            .0
+            .read()
+            .map_err(|_| binding_error("poisoned custody"))?;
+        match &*state {
+            BindingState::Repaired(current) => Ok(current.as_ref().clone()),
+            BindingState::Original => Ok(QualifiedControl {
+                control,
+                service,
+                repaired: None,
+            }),
+            BindingState::Unavailable => Err(binding_error(
+                "unqualified binding; retain input pending reconciliation",
+            )),
+        }
+    }
+    pub fn publish(&self, control: Arc<Control>, repair: &CapabilityRepair) -> Result<()> {
+        let binding = repair
+            .owned_binding()
+            .ok_or_else(|| binding_error("confirmed repair is absent"))?;
+        self.replace(BindingState::Repaired(Box::new(QualifiedControl {
+            control,
+            service: binding.service.clone(),
+            repaired: Some(binding.clone()),
+        })))
+    }
+    pub fn publish_restart(&self, control: Arc<Control>, binding: NoticeBinding) -> Result<()> {
+        binding.require_bound()?;
+        self.replace(BindingState::Repaired(Box::new(QualifiedControl {
+            control,
+            service: binding.service.clone(),
+            repaired: Some(binding),
+        })))
+    }
+    pub fn invalidate(&self) -> Result<()> {
+        self.replace(BindingState::Unavailable)
+    }
+    fn replace(&self, current: BindingState) -> Result<()> {
+        *self
+            .0
+            .write()
+            .map_err(|_| binding_error("poisoned custody"))? = current;
+        Ok(())
+    }
+}
+
+fn binding_error(reason: &str) -> se_types::SeError {
+    unreadable("SE Code current binding", reason)
+}
+
+#[derive(Clone)]
+pub struct Managed {
+    pub control: Arc<Control>,
+    pub service: ServiceIdentity,
+    pub live: LiveBinding,
+    pub profile: NativePath,
+    pub process: se_types::ProcessInstance,
+    pub session: String,
+    pub initial_input: String,
+}
+impl Managed {
+    pub fn current(&self) -> Result<QualifiedControl> {
+        self.live
+            .resolve(self.control.clone(), self.service.clone())
+    }
+}
+pub struct SecodeHarness {
+    io: Arc<dyn ProviderIoPlatform>,
+    home: PathBuf,
+    maximum: usize,
+    images: Mutex<BTreeMap<PathBuf, Arc<Mutex<Images>>>>,
+    prepared: Mutex<BTreeMap<se_types::SessionId, Managed>>,
+}
+pub struct Binding {
+    pub managed: Managed,
+    pub completion: stream::Completion,
+    pub diagnostics: Mutex<stream::Diagnostics>,
+    pub(super) io: Arc<dyn ProviderIoPlatform>,
+    pub(super) transport: crate::ProviderTransport,
+    pub(super) drains: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+}
+impl SecodeHarness {
+    pub fn new(io: Arc<dyn ProviderIoPlatform>, home: PathBuf, maximum: u32) -> Self {
+        Self {
+            io,
+            home,
+            maximum: maximum as usize,
+            images: Mutex::default(),
+            prepared: Mutex::default(),
+        }
+    }
+    pub fn images(&self, path: &std::path::Path) -> Result<Arc<Mutex<Images>>> {
+        self.images
+            .lock()
+            .map_err(|_| unreadable("SE Code executable custody", "poisoned image registry"))?
+            .get(path)
+            .cloned()
+            .ok_or_else(|| incompatible("selected CLI has no completed capability probe"))
+    }
+    pub fn register(&self, session: &se_types::SessionId, prepared: Managed) -> Result<()> {
+        let mut values = self
+            .prepared
+            .lock()
+            .map_err(|_| unreadable("SE Code preparation", "poisoned binding registry"))?;
+        if values.contains_key(session) || values.len() >= self.maximum {
+            return Err(unreadable(
+                "SE Code preparation",
+                "original preparation or finite capacity is already retained",
+            ));
+        }
+        values.insert(session.clone(), prepared);
+        Ok(())
+    }
+    pub fn retire(&self, session: &se_types::SessionId) -> Result<()> {
+        self.prepared
+            .lock()
+            .map_err(|_| unreadable("SE Code preparation", "poisoned binding registry"))?
+            .remove(session);
+        Ok(())
+    }
+    pub fn recover(&self, managed: Managed) -> HarnessBinding {
+        HarnessBinding::new(Arc::new(Binding {
+            managed,
+            completion: stream::Completion::default(),
+            diagnostics: Mutex::new(stream::Diagnostics {
+                recovered: true,
+                ..Default::default()
+            }),
+            io: self.io.clone(),
+            transport: crate::ProviderTransport::console(),
+            drains: tokio::sync::Mutex::default(),
+        }))
+    }
+    pub fn profile(&self, request: &HarnessRequest) -> PathBuf {
+        super::private_profile(
+            &self.home,
+            &request.identity.project,
+            &request.identity.agent,
+        )
+    }
+}
+pub fn session(request: &HarnessRequest) -> Result<String> {
+    match &request.resume {
+        Read::Present { value } => Ok(value.to_string()),
+        Read::Absent { .. } => {
+            let bytes = request.identity.session.canonical_bytes()?.ok_or_else(|| {
+                unreadable(
+                    "SE Code session reservation",
+                    "a fresh launch requires its canonical UUID identity",
+                )
+            })?;
+            Ok(format!("ses_{}", se_types::hex_lower(&bytes)))
+        }
+        Read::Unknown { what } => Err(unreadable("SE Code saved session", what)),
+        Read::Unreadable { reason, .. } => Err(unreadable("SE Code saved session", reason)),
+    }
+}
+pub fn input(request: &HarnessRequest) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(request.key.as_str().as_bytes());
+    format!("msg_{}", se_types::hex_lower(&digest[..16]))
+}
+pub fn bound(binding: &HarnessBinding) -> Result<&Arc<Binding>> {
+    binding
+        .get::<crate::secode_process::Binding>()
+        .ok_or_else(|| {
+            unreadable(
+                "SE Code binding",
+                "retained external-service binding absent",
+            )
+        })
+}
+impl Harness for SecodeHarness {
+    fn recover<'a>(
+        &'a self,
+        request: crate::HarnessRecovery<'a>,
+        _cx: CallContext,
+    ) -> HostFuture<'a, HarnessBinding> {
+        Box::pin(async move {
+            let binding = request.retained.ok_or_else(|| {
+                unreadable("SE Code provider recovery", "original binding absent")
+            })?;
+            Ok(SecodeHarness::recover(
+                self,
+                bound(binding)?.managed.clone(),
+            ))
+        })
+    }
+    fn transcript_path(&self, _binding: &HarnessBinding) -> Result<Option<std::path::PathBuf>> {
+        Ok(None)
+    }
+    fn kind(&self) -> crate::HarnessKind {
+        crate::HarnessKind::Secode
+    }
+    fn probe<'a>(
+        &'a self,
+        request: crate::ProbeRequest,
+        cx: crate::CallContext,
+    ) -> crate::HostFuture<'a, crate::ProviderVersion> {
+        Box::pin(async move {
+            let deadline = crate::Deadline::idle()?.stage(cx.timeout)?;
+            let command = request.command.clone();
+            let previous = self
+                .images
+                .lock()
+                .map_err(|_| unreadable("SE Code image probe", "poisoned image registry"))?
+                .get(&command)
+                .cloned();
+            let images = tokio::task::spawn_blocking(move || {
+                if let Some(previous) = previous {
+                    let reusable = previous
+                        .lock()
+                        .map_err(|_| unreadable("SE Code image probe", "poisoned image custody"))?
+                        .reusable(&command)?;
+                    if reusable {
+                        return Ok(previous);
+                    }
+                }
+                Images::open(&command).map(|images| Arc::new(Mutex::new(images)))
+            })
+            .await
+            .map_err(|e| unreadable("SE Code image probe", e))??;
+            let selected = images.clone();
+            let server = tokio::task::spawn_blocking(move || {
+                selected
+                    .lock()
+                    .map_err(|_| unreadable("SE Code image probe", "poisoned image custody"))?
+                    .server_invocation()
+            })
+            .await
+            .map_err(|e| unreadable("SE Code image probe", e))??;
+            let capabilities = probe::capabilities(server, &deadline).await?;
+            let resume_supported = probe::supports_resume(&capabilities);
+            let selected = images.clone();
+            let cli = tokio::task::spawn_blocking(move || {
+                selected
+                    .lock()
+                    .map_err(|_| unreadable("SE Code image probe", "poisoned image custody"))?
+                    .cli_invocation()
+            })
+            .await
+            .map_err(|e| unreadable("SE Code image probe", e))??;
+            let version = probe::version(cli, &deadline).await?;
+            let reported_version = version.clone();
+            let command = request.command.clone();
+            let images = tokio::task::spawn_blocking(move || {
+                {
+                    let mut held = images.lock().map_err(|_| {
+                        unreadable("SE Code image readback", "poisoned image custody")
+                    })?;
+                    held.validate()?;
+                    held.version = version;
+                    held.resume_supported = resume_supported;
+                }
+                Ok::<_, se_types::SeError>(images)
+            })
+            .await
+            .map_err(|e| unreadable("SE Code image readback", e))??;
+            let mut registry = self
+                .images
+                .lock()
+                .map_err(|_| unreadable("SE Code image probe", "poisoned image registry"))?;
+            if registry.len() >= self.maximum && !registry.contains_key(&command) {
+                return Err(unreadable(
+                    "SE Code image probe",
+                    "finite image registry is full",
+                ));
+            }
+            registry.insert(command.clone(), images);
+            Ok(crate::ProviderVersion {
+                kind: self.kind(),
+                executable: NativePath::from_local(command)?,
+                version: reported_version,
+                protocol: "resident-jsonl+authenticated-control-v1".into(),
+            })
+        })
+    }
+    fn configuration<'a>(
+        &'a self,
+        request: &'a HarnessRequest,
+        _: crate::CallContext,
+    ) -> crate::HostFuture<'a, crate::ConfigPlan> {
+        Box::pin(async move {
+            if request.mode != se_proc::LaunchMode::HeadlessConsole {
+                return Err(incompatible(
+                    "managed SE Code requires a headless native console cancellation path",
+                ));
+            }
+            if request.initial_input.as_str().len() > 262144 {
+                return Err(incompatible("initial UTF-8 input exceeds 256 KiB"));
+            }
+            session(request)?;
+            Ok(crate::ConfigPlan {
+                edits: Vec::new(),
+                ephemeral_files: Vec::new(),
+            })
+        })
+    }
+    fn invocation<'a>(
+        &'a self,
+        request: &'a HarnessRequest,
+        _: crate::CallContext,
+    ) -> crate::HostFuture<'a, crate::ProviderInvocation> {
+        Box::pin(async move {
+            Ok(crate::ProviderInvocation {
+                executable: request.executable.clone(),
+                arguments: vec![
+                    "run".into(),
+                    "--service".into(),
+                    self.profile(request).into_os_string(),
+                    "--session".into(),
+                    session(request)?.into(),
+                    "--stdin".into(),
+                    "--jsonl".into(),
+                    "--resident".into(),
+                    "--input-id".into(),
+                    input(request).into(),
+                ],
+                environment: se_proc::Environment {
+                    entries: super::provider_environment(),
+                },
+            })
+        })
+    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
+    fn attach<'a>(
+        &'a self,
+        attach: crate::HarnessAttach,
+        retained: &'a mut Option<HarnessBinding>,
+        cx: crate::CallContext,
+    ) -> crate::HostFuture<'a, crate::LaunchOutcome> {
+        Box::pin(async move {
+            let managed = self
+                .prepared
+                .lock()
+                .map_err(|_| unreadable("SE Code attach", "poisoned preparation registry"))?
+                .get(&attach.request.identity.session)
+                .cloned()
+                .ok_or_else(|| {
+                    unreadable(
+                        "SE Code attach",
+                        "coordinator has not prepared the original private service",
+                    )
+                })?;
+            if managed.session != session(&attach.request)?
+                || managed.initial_input != input(&attach.request)
+            {
+                return Err(unreadable(
+                    "SE Code attach",
+                    "prepared service coordinates differ from original launch",
+                ));
+            }
+            let binding = Arc::new(Binding {
+                managed,
+                completion: stream::Completion::default(),
+                diagnostics: Mutex::default(),
+                io: self.io.clone(),
+                transport: attach.transport,
+                drains: tokio::sync::Mutex::default(),
+            });
+            *retained = Some(HarnessBinding::new(binding.clone()));
+            stream::start(&binding, cx.generation).await;
+            let deadline = crate::Deadline::idle()?.stage(cx.timeout)?;
+            let text = attach.request.initial_input.as_str();
+            let write = binding
+                .io
+                .write(
+                    &binding.transport,
+                    text.as_bytes().to_vec(),
+                    copy(&cx, &deadline)?,
+                )
+                .await;
+            let close = binding
+                .io
+                .finish_input(&binding.transport, copy(&cx, &deadline)?)
+                .await;
+            // A write failure, including a partial write, has no replay path.
+            // Original keyed readback is the only acceptance authority.
+            let write_failure = match write {
+                Ok(written)
+                    if written.completed_bytes as usize == text.len()
+                        && written.failure.is_none() =>
+                {
+                    None
+                }
+                Ok(written) => Some(written.failure.map(se_types::SeError::from).unwrap_or_else(
+                    || unreadable("SE Code initial stdin", "partial write; pending/no-replay"),
+                )),
+                Err(error) => Some(error),
+            };
+            let mut write_failure = match (write_failure, close) {
+                (Some(write), Err(close)) => Some(close.with_cause(write)),
+                (failure, Ok(())) => failure,
+                (None, Err(close)) => Some(close),
+            };
+            loop {
+                let receipt = binding
+                    .managed
+                    .control
+                    .acceptance(
+                        &binding.managed.service,
+                        &binding.managed.session,
+                        &binding.managed.initial_input,
+                        &deadline,
+                    )
+                    .await
+                    .map_err(|read| match write_failure.take() {
+                        Some(original) => read.with_cause(original),
+                        None => read,
+                    })?;
+                match receipt.verify_initial(
+                    &binding.managed.service,
+                    &binding.managed.session,
+                    &binding.managed.initial_input,
+                    text,
+                )? {
+                    Read::Present { .. } => break,
+                    Read::Absent { .. } if write_failure.is_some() => {
+                        return Err(write_failure.unwrap_or_else(|| {
+                            unreadable("SE Code initial input", "pending/no-replay")
+                        }));
+                    }
+                    Read::Absent { .. } => {
+                        tokio::time::sleep(
+                            deadline
+                                .remaining()?
+                                .min(std::time::Duration::from_millis(25)),
+                        )
+                        .await
+                    }
+                    _ => {
+                        return Err(unreadable(
+                            "SE Code initial input",
+                            "unreadable keyed acceptance; pending/no-replay",
+                        ));
+                    }
+                }
+            }
+            if let Some(failure) = write_failure {
+                return Err(unreadable(
+                    "SE Code initial stdin",
+                    "original keyed input is accepted, but writing or closing its original stdin failed; acceptance is retained and must not be replayed",
+                ).with_cause(failure));
+            }
+            let notice = binding
+                .managed
+                .control
+                .binding(&binding.managed.session, &deadline)
+                .await?;
+            binding.managed.service.require_same(&notice.service)?;
+            notice.require_ready()?;
+            let images = self.images(&attach.request.executable.to_local()?)?;
+            let version = images
+                .lock()
+                .map_err(|_| unreadable("SE Code version", "poisoned image custody"))?
+                .version
+                .clone();
+            Ok(crate::LaunchOutcome {
+                witness: crate::BindingWitness {
+                    identity: attach.request.identity,
+                    conversation: se_types::ProviderSessionId::new(
+                        binding.managed.session.clone(),
+                    )?,
+                    lifecycle: attach.record.lifecycle,
+                    provider: crate::ProviderVersion {
+                        kind: self.kind(),
+                        executable: attach.request.executable,
+                        version,
+                        protocol: "resident-jsonl+authenticated-control-v1".into(),
+                    },
+                },
+                binding: retained.take().ok_or_else(|| {
+                    unreadable("SE Code attach", "retained transport disappeared")
+                })?,
+            })
+        })
+    }
+    fn graceful_stop<'a>(
+        &'a self,
+        binding: &'a HarnessBinding,
+        cx: crate::CallContext,
+    ) -> crate::HostFuture<'a, crate::ProviderInterrupt> {
+        Box::pin(async move {
+            let binding = bound(binding)?;
+            let current = binding.managed.current()?;
+            let deadline = crate::Deadline::idle()?.stage(cx.timeout)?;
+            current.binding(&binding.managed.session, &deadline).await?;
+            current
+                .control
+                .request(
+                    reqwest::Method::POST,
+                    &["api", "session", &binding.managed.session, "interrupt"],
+                    Some(&serde_json::json!({})),
+                    &deadline,
+                )
+                .await?;
+            let held = current.binding(&binding.managed.session, &deadline).await?;
+            if held.status == NoticeStatus::Ready {
+                return Err(unreadable(
+                    "SE Code stop fence",
+                    "native mail remains eligible after interrupt",
+                ));
+            }
+            Ok(crate::ProviderInterrupt { conversation: se_types::ProviderSessionId::new(binding.managed.session.clone())?, requested: true, vendor_event: Read::Absent { checked: "authenticated hold is separate from native client cancellation and execution settlement".into() } })
+        })
+    }
+    fn close_binding<'a>(
+        &'a self,
+        binding: &'a HarnessBinding,
+        cx: crate::CallContext,
+    ) -> crate::HostFuture<'a, ()> {
+        Box::pin(async move { stream::close(bound(binding)?, &cx).await })
+    }
+}
+fn copy(cx: &crate::CallContext, deadline: &crate::Deadline) -> Result<crate::CallContext> {
+    Ok(crate::CallContext {
+        generation: cx.generation,
+        cancellation: cx.cancellation.clone(),
+        timeout: deadline.remaining()?,
+    })
+}
+
+impl AdapterBinding for Arc<Binding> {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn provider(&self) -> se_types::Provider {
+        se_types::Provider::SeCode
+    }
+    fn arm(&self, wake: &Arc<tokio::sync::Notify>) -> Result<()> {
+        self.completion.arm(wake)
+    }
+    fn observe(&self, _capture: bool) -> Observation {
+        let changed = self.completion.take();
+        let failure = match self.diagnostics.lock() {
+            Ok(diagnostics) => diagnostics.failure.clone(),
+            Err(_) => Some(unreadable("SE Code stream state", "poisoned diagnostics").body),
+        };
+        Observation {
+            mail_pending: changed,
+            capture_pending: changed,
+            failure,
+            ..Default::default()
+        }
+    }
+    fn stop_policy(&self) -> StopPolicy {
+        StopPolicy {
+            signal: Some(Signal::Interrupt),
+            ..Default::default()
+        }
+    }
+}

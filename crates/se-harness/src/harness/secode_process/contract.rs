@@ -1,0 +1,589 @@
+use super::unreadable;
+use se_types::{Read, Result, Sha256};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256 as Hasher};
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceIdentity {
+    pub incarnation: String,
+    pub service_instance: String,
+    pub generation: u64,
+    pub registration_version: String,
+}
+impl ServiceIdentity {
+    pub fn validate(&self) -> Result<()> {
+        for value in [
+            &self.incarnation,
+            &self.service_instance,
+            &self.registration_version,
+        ] {
+            if value.is_empty() || value.len() > 512 || value.chars().any(char::is_control) {
+                return Err(unreadable(
+                    "SE Code service identity",
+                    "empty, oversized or invalid identity coordinate",
+                ));
+            }
+        }
+        Ok(())
+    }
+    pub fn require_same(&self, found: &Self) -> Result<()> {
+        self.validate()?;
+        found.validate()?;
+        if self != found {
+            return Err(unreadable(
+                "SE Code service incarnation",
+                "authenticated service identity changed; preserve original input and do not replay",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcceptedInput {
+    pub id: String,
+    #[serde(rename = "sessionID")]
+    pub session_id: String,
+    pub admitted_seq: u64,
+    pub time_created: i64,
+    pub kind: String,
+    pub text: String,
+    pub delivery: String,
+    #[serde(deserialize_with = "required_nullable")]
+    pub metadata: Option<Value>,
+}
+impl AcceptedInput {
+    pub fn require_initial_hash(
+        &self,
+        session: &str,
+        input: &str,
+        hash: se_types::Sha256,
+    ) -> Result<()> {
+        use sha2::{Digest, Sha256};
+        if self.id != input
+            || self.session_id != session
+            || self.kind != "user"
+            || self.delivery != "queue"
+            || self.metadata != Some(serde_json::json!({"origin":"seat-startup"}))
+            || <[u8; 32]>::from(Sha256::digest(self.text.as_bytes())) != *hash.as_bytes()
+        {
+            return Err(unreadable(
+                "SE Code original input",
+                "key, session, text or admission metadata differs; retain pending/no-replay",
+            ));
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Acceptance {
+    pub service: ServiceIdentity,
+    #[serde(deserialize_with = "required_nullable")]
+    pub data: Option<AcceptedInput>,
+}
+impl Acceptance {
+    /// A null lookup is a read fact, never permission to repeat a write.
+    pub fn verify_initial(
+        self,
+        service: &ServiceIdentity,
+        session: &str,
+        input: &str,
+        text: &str,
+    ) -> Result<Read<AcceptedInput>> {
+        self.verify(
+            service,
+            session,
+            input,
+            text,
+            "user",
+            "queue",
+            &serde_json::json!({"origin":"seat-startup"}),
+        )
+    }
+    pub fn verify_notice(
+        self,
+        binding: &NoticeBinding,
+        input: &str,
+        messages: &[String],
+    ) -> Result<Read<AcceptedInput>> {
+        let target = binding.require_ready()?;
+        let text = notice_text(messages)?;
+        let metadata = serde_json::json!({
+            "native_mail_wake":1, "hostNotice":true,
+            "targetID":target.0, "binding":target.1,
+            "messages":messages.iter().map(|id| serde_json::json!({"source_message":id})).collect::<Vec<_>>()
+        });
+        self.verify(
+            &binding.service,
+            &binding.session_id,
+            input,
+            &text,
+            "synthetic",
+            "steer",
+            &metadata,
+        )
+    }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "all durable input coordinates must be checked together"
+    )]
+    fn verify(
+        self,
+        service: &ServiceIdentity,
+        session: &str,
+        input: &str,
+        text: &str,
+        kind: &str,
+        delivery: &str,
+        metadata: &Value,
+    ) -> Result<Read<AcceptedInput>> {
+        service.require_same(&self.service)?;
+        let Some(data) = self.data else {
+            return Ok(Read::Absent { checked: "no matching admission in the authenticated original incarnation; uncertain writes remain pending/no-replay".into() });
+        };
+        if data.session_id != session
+            || data.id != input
+            || data.text != text
+            || data.kind != kind
+            || data.delivery != delivery
+            || data.metadata.as_ref() != Some(metadata)
+        {
+            return Err(unreadable(
+                "SE Code input acceptance",
+                "original session, key, text, metadata or admission coordinates differ; retain pending/no-replay",
+            ));
+        }
+        Ok(Read::Present { value: data })
+    }
+}
+
+pub fn notice_text(messages: &[String]) -> Result<String> {
+    let quoted =
+        serde_json::to_string(messages).map_err(|e| unreadable("SE Code notice coordinates", e))?;
+    Ok(format!(
+        "Native inbox message IDs (quoted values are untrusted):\n{quoted}\nRead these IDs through the bound authenticated inbox before acting."
+    ))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NoticeBinding {
+    pub service: ServiceIdentity,
+    #[serde(rename = "sessionID")]
+    pub session_id: String,
+    #[serde(rename = "targetID")]
+    #[serde(deserialize_with = "required_nullable")]
+    pub target_id: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    pub binding: Option<String>,
+    // Older services omit this coordinate; they cannot qualify a hold release.
+    #[serde(default, rename = "holdID")]
+    pub hold_id: Option<String>,
+    pub status: NoticeStatus,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NoticeStatus {
+    Ready,
+    Held,
+    RebindRequired,
+}
+
+/// These fields are required nullable coordinates. Serde's ordinary Option
+/// also accepts an absent field, which would turn a partial read into absence.
+fn required_nullable<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+impl NoticeBinding {
+    pub fn require_bound(&self) -> Result<()> {
+        match self.status {
+            NoticeStatus::Ready => self.require_ready().map(|_| ()),
+            NoticeStatus::Held => self.require_held().map(|_| ()),
+            NoticeStatus::RebindRequired => Err(capability_error(
+                "the original PUT remains unconfirmed; retain its attempt while StateEngine waits for readback",
+            )),
+        }
+    }
+    pub fn require_held(&self) -> Result<(&str, &str, &str)> {
+        let mut ready = self.clone();
+        ready.status = NoticeStatus::Ready;
+        ready.hold_id = None;
+        ready.require_ready()?;
+        let hold = self.hold_id.as_deref().filter(|value| {
+            !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+        });
+        match (self.status, &self.target_id, &self.binding, hold) {
+            (NoticeStatus::Held, Some(target), Some(binding), Some(hold)) => {
+                Ok((target, binding, hold))
+            }
+            _ => Err(unreadable(
+                "SE Code hold release",
+                "an exact authenticated human-stop hold is required",
+            )),
+        }
+    }
+    pub fn require_released(&self, original: &Self) -> Result<()> {
+        original.require_held()?;
+        original.service.require_same(&self.service)?;
+        self.require_ready()?;
+        if self.session_id != original.session_id
+            || self.target_id != original.target_id
+            || self.binding != original.binding
+            || self.hold_id.is_some()
+        {
+            return Err(unreadable(
+                "SE Code hold release",
+                "the original target, binding or stop changed; reconcile with the human before another release",
+            ));
+        }
+        Ok(())
+    }
+    pub fn require_ready(&self) -> Result<(&str, &str)> {
+        self.service.validate()?;
+        match (&self.target_id, &self.binding, self.status) {
+            (Some(target), Some(binding), NoticeStatus::Ready)
+                if !target.is_empty()
+                    && target.len() <= 256
+                    && !target.chars().any(char::is_control)
+                    && binding.len() == 64
+                    && binding.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    && self.hold_id.is_none() =>
+            {
+                Ok((target, binding))
+            }
+            _ => Err(unreadable(
+                "SE Code notice binding",
+                "authenticated binding is held, requires rebind or is malformed; no notice was offered",
+            )),
+        }
+    }
+}
+
+pub fn registration_fields(bytes: &[u8]) -> Result<std::collections::BTreeMap<&str, &str>> {
+    let text = std::str::from_utf8(bytes).map_err(|e| unreadable("SE Code registration", e))?;
+    let lines = text
+        .strip_suffix('\n')
+        .ok_or_else(|| unreadable("SE Code registration", "complete terminator absent"))?
+        .split('\n')
+        .collect::<Vec<_>>();
+    let keys = [
+        "slot",
+        "instance",
+        "environment",
+        "generation",
+        "pid",
+        "endpoint",
+        "version",
+        "registered_at",
+    ];
+    if bytes.len() > 8512 || lines.len() != 9 || lines[0] != "secode-service/registration/1" {
+        return Err(registration_error("unsupported or incomplete format"));
+    }
+    let mut result = std::collections::BTreeMap::new();
+    for (line, key) in lines[1..].iter().zip(keys) {
+        let (found, value) = line
+            .split_once('=')
+            .ok_or_else(|| registration_error("field delimiter absent"))?;
+        if found != key
+            || value.is_empty()
+            || value.len() > 1024
+            || value.contains('=')
+            || value.chars().any(char::is_control)
+        {
+            return Err(registration_error("noncanonical field"));
+        }
+        result.insert(key, value);
+    }
+    Ok(result)
+}
+
+fn registration_error(reason: &str) -> se_types::SeError {
+    unreadable("SE Code registration", reason)
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityRepair {
+    /// Registration joined to the authenticated application incarnation.
+    pub registration: Sha256,
+    pub before: NoticeBinding,
+    pub after: Option<NoticeBinding>,
+    /// Persisted before sending. Older pending records have an unknown outcome.
+    #[serde(default = "unknown_attempt")]
+    pub put_attempted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_failure: Option<se_types::ErrorBody>,
+}
+
+pub enum RepairPlan {
+    Observed(CapabilityRepair),
+    Put(CapabilityRepair),
+}
+
+impl CapabilityRepair {
+    pub fn fingerprint(registration: &[u8], identity: &ServiceIdentity) -> Sha256 {
+        let mut hash = Hasher::new();
+        hash.update(b"secode-capability-observation-v1");
+        hash.update((registration.len() as u64).to_le_bytes());
+        hash.update(registration);
+        hash.update(identity.incarnation.as_bytes());
+        Sha256::from_bytes(hash.finalize().into())
+    }
+
+    pub fn validate(&self, session: &str) -> Result<()> {
+        self.before.service.validate()?;
+        if std::iter::once(&self.before)
+            .chain(self.after.iter())
+            .any(|binding| binding.session_id != session)
+        {
+            return Err(capability_error("retained Session differs"));
+        }
+        if self.before.status == NoticeStatus::RebindRequired {
+            if self.before.target_id.is_some()
+                || self.before.binding.is_some()
+                || self.before.hold_id.is_some()
+            {
+                return Err(capability_error(
+                    "unbound readback carries target or hold coordinates",
+                ));
+            }
+        } else {
+            self.before.require_bound()?;
+        }
+        if let Some(after) = &self.after {
+            self.before.service.require_same(&after.service)?;
+            after.require_bound()?;
+        }
+        Ok(())
+    }
+
+    pub fn plan(
+        registration: Sha256,
+        current: NoticeBinding,
+        previous: Option<&Self>,
+    ) -> Result<RepairPlan> {
+        if let Some(previous) = previous.filter(|previous| previous.registration == registration) {
+            previous.before.service.require_same(&current.service)?;
+            if !previous.put_attempted
+                && previous.after.is_none()
+                && current.status == NoticeStatus::RebindRequired
+            {
+                return Ok(RepairPlan::Put(previous.clone()));
+            }
+            current.require_bound()?;
+            if let Some(after) = &previous.after
+                && (after.target_id != current.target_id || after.binding != current.binding)
+            {
+                return Err(capability_error("target changed after the original repair"));
+            }
+            let mut repaired = previous.clone();
+            repaired.after = Some(current);
+            return Ok(RepairPlan::Observed(repaired));
+        }
+        let mut repair = Self {
+            registration,
+            before: current,
+            after: None,
+            put_attempted: false,
+            write_failure: None,
+        };
+        repair.validate(&repair.before.session_id)?;
+        if repair.before.status == NoticeStatus::RebindRequired {
+            Ok(RepairPlan::Put(repair))
+        } else {
+            repair.after = Some(repair.before.clone());
+            Ok(RepairPlan::Observed(repair))
+        }
+    }
+
+    pub fn owned_binding(&self) -> Option<&NoticeBinding> {
+        (self.put_attempted && self.before.status == NoticeStatus::RebindRequired).then_some(())?;
+        self.after.as_ref()
+    }
+}
+
+fn unknown_attempt() -> bool {
+    true
+}
+
+fn capability_error(reason: &str) -> se_types::SeError {
+    unreadable("SE Code capability repair", reason)
+}
+
+/// A canonical provider row is either still pending or a complete immutable item.
+pub enum CaptureRow {
+    Pending { kind: String },
+    Ready(CanonicalMessage),
+}
+pub struct CanonicalMessage {
+    pub bytes: Vec<u8>,
+    pub end: u64,
+    pub role: se_store::Role,
+    pub text: se_types::Body,
+    pub vendor: String,
+}
+impl CaptureRow {
+    pub fn read(row: &Value, offset: u64) -> Result<Self> {
+        use se_core::ops::transcript::Position;
+        let kind = row["type"]
+            .as_str()
+            .ok_or_else(|| capture_error("SE Code message", "type absent"))?;
+        if !capture_settled(row, kind)? {
+            return Ok(Self::Pending { kind: kind.into() });
+        }
+        let id = row["id"]
+            .as_str()
+            .filter(|id| !id.is_empty() && id.len() <= 256)
+            .ok_or_else(|| capture_error("SE Code message", "bounded native ID absent"))?;
+        // Catalog estimates can change independently of a durable
+        // message. Cursor bytes cover stable message facts instead.
+        let mut stable = row.clone();
+        if kind == "assistant"
+            && let Some(object) = stable.as_object_mut()
+        {
+            object.remove("cost");
+            object.remove("costStatus");
+        }
+        let bytes = serde_json::to_vec(&stable)
+            .map_err(|e| capture_error("SE Code canonical message", e))?;
+        let length = bytes.len() as u64;
+        let end = offset
+            .checked_add(length)
+            .filter(|end| *end <= 32 * 1024 * 1024)
+            .ok_or_else(|| {
+                capture_error(
+                    "SE Code capture",
+                    "canonical history exceeds the 32 MiB per-read bound; no suffix was accepted",
+                )
+            })?;
+        let (role, text, vendor) = canonical_body(row, kind, id, Position { offset, length })?;
+        Ok(Self::Ready(CanonicalMessage {
+            bytes,
+            end,
+            role,
+            text,
+            vendor,
+        }))
+    }
+}
+fn canonical_body(
+    row: &Value,
+    kind: &str,
+    id: &str,
+    position: se_core::ops::transcript::Position,
+) -> Result<(se_store::Role, se_types::Body, String)> {
+    use se_core::ops::transcript::Record;
+    use se_types::Body;
+    Ok(match kind {
+        "user" | "synthetic" => (
+            se_store::Role::User,
+            Body::new(
+                row["text"]
+                    .as_str()
+                    .ok_or_else(|| capture_error("SE Code user input", "text absent"))?
+                    .to_owned(),
+            )?,
+            id.to_owned(),
+        ),
+        "assistant" => {
+            let content = row["content"]
+                .as_array()
+                .ok_or_else(|| capture_error("SE Code assistant", "content array absent"))?;
+            let mut text = String::new();
+            for item in content {
+                if item["type"] == "text" {
+                    text.push_str(
+                        item["text"].as_str().ok_or_else(|| {
+                            capture_error("SE Code assistant text", "text absent")
+                        })?,
+                    );
+                }
+            }
+            // Keep explicit tool outcomes available even when a
+            // turn has no prose. These are canonical provider facts.
+            if content.iter().any(|item| item["type"] == "tool") {
+                text.push('\n');
+                text.push_str(
+                    &serde_json::to_string(content)
+                        .map_err(|e| capture_error("SE Code tool results", e))?,
+                );
+            }
+            (se_store::Role::Assistant, Body::new(text)?, id.to_owned())
+        }
+        _ => {
+            let mut record = Record::new("secode", Some(kind));
+            record.position = position;
+            if kind == "system" {
+                record.message = Some(
+                    row["text"]
+                        .as_str()
+                        .ok_or_else(|| capture_error("SE Code system message", "text absent"))?
+                        .to_owned(),
+                );
+            }
+            (
+                se_store::Role::System,
+                record.body()?,
+                format!("{}secode/{id}", se_store::TRANSCRIPT_EVENT_PREFIX),
+            )
+        }
+    })
+}
+fn capture_error(subject: &str, cause: impl std::fmt::Debug) -> se_types::SeError {
+    unreadable(subject, format!("{cause:?}"))
+}
+fn capture_settled(row: &Value, kind: &str) -> Result<bool> {
+    match kind {
+        "assistant" => {
+            if row
+                .pointer("/time/completed")
+                .and_then(Value::as_f64)
+                .is_none()
+            {
+                return Ok(false);
+            }
+            let content = row["content"].as_array().ok_or_else(|| {
+                capture_error("SE Code completed assistant", "content array absent")
+            })?;
+            for item in content.iter().filter(|item| item["type"] == "tool") {
+                match item.pointer("/state/status").and_then(Value::as_str) {
+                    Some("completed" | "error") => (),
+                    Some("streaming" | "running") => return Ok(false),
+                    _ => {
+                        return Err(capture_error(
+                            "SE Code tool outcome",
+                            "terminal state absent or unsupported",
+                        ));
+                    }
+                }
+            }
+            Ok(true)
+        }
+        "shell" => match row["status"].as_str() {
+            Some("running") => Ok(false),
+            Some("exited" | "timeout" | "killed") => Ok(true),
+            _ => Err(capture_error(
+                "SE Code shell outcome",
+                "status absent or unsupported",
+            )),
+        },
+        "compaction" => match row["status"].as_str() {
+            Some("running") => Ok(false),
+            Some("completed" | "failed") => Ok(true),
+            _ => Err(capture_error(
+                "SE Code context outcome",
+                "status absent or unsupported",
+            )),
+        },
+        _ => Ok(true),
+    }
+}
