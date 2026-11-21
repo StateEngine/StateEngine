@@ -148,6 +148,13 @@ impl ColdJob {
         }
     }
     fn native_failure(&mut self, reason: impl std::fmt::Display) -> SeError {
+        // What is known about the worker itself, so one lost connection can be
+        // diagnosed without a reproduction. A repeated reap returns the same status.
+        let exit = match self.worker.try_reap() {
+            Ok(Some(status)) => format!("worker exited ({status})"),
+            Ok(None) => "worker still running".to_string(),
+            Err(error) => format!("worker exit unreadable: {error}"),
+        };
         let stderr = self.stderr_report();
         SeError::new(se_types::Detail::AtlasUnreadable(
             se_types::details::AtlasUnreadable {
@@ -157,7 +164,7 @@ impl ColdJob {
                     .map_or("<registered root>", |p| p.as_str())
                     .into(),
                 reason: format!(
-                    "{reason}; last_phase={:?}; cold_memory_limit={}; {}; prior pointer preserved",
+                    "{reason}; {exit}; last_phase={:?}; cold_memory_limit={}; {}; prior pointer preserved",
                     self.last_phase,
                     se_proc::atlas_worker::MEMORY_BYTES,
                     stderr
@@ -175,10 +182,15 @@ impl ColdJob {
         let current = match self.worker.cpu_time() {
             Ok(current) => current,
             Err(error) => {
-                if let Some(status) = self.worker.try_reap().map_err(failure)? {
-                    return Err(self.native_failure(format!("cold child exited {status}")));
+                if self
+                    .worker
+                    .try_reap()
+                    .map_err(|e| self.native_failure(e))?
+                    .is_some()
+                {
+                    return Err(self.native_failure("cold child exited during file work"));
                 }
-                return Err(failure(error));
+                return Err(self.native_io_failure(error));
             }
         };
         let cpu = current
@@ -226,7 +238,11 @@ impl ColdJob {
                             return Err(failure("duplicate source read phase"));
                         }
                         // The worker is waiting; setup CPU is outside the file budget.
-                        self.parse_cpu_start = Some(self.worker.cpu_time().map_err(failure)?);
+                        self.parse_cpu_start = Some(
+                            self.worker
+                                .cpu_time()
+                                .map_err(|error| self.native_io_failure(error))?,
+                        );
                         let end = (Instant::now() + Duration::from_secs(5)).min(self.deadline);
                         self.parse_stall_deadline = Some(end);
                         self.parse_deadline =
@@ -298,9 +314,16 @@ impl ColdJob {
                         return Err(self.reject("cold completion does not match job/root/epoch or explicit partial discovery"));
                     }
                     self.completion = Some(*summary);
-                    self.worker.acknowledge_completion().map_err(|error| {
-                        crate::deadline::cleanup_error(error, Duration::from_millis(200))
-                    })?;
+                    // A lost connection here is a worker failure, not a bare
+                    // socket error; only a timeout is a scheduling stall.
+                    self.worker
+                        .acknowledge_completion()
+                        .map_err(|error| match error.kind() {
+                            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {
+                                crate::deadline::cleanup_error(error, Duration::from_millis(200))
+                            }
+                            _ => self.native_failure(error),
+                        })?;
                     self.peak_observed_bytes = self.worker.peak_observed_bytes();
                 }
                 protocol::Reply::Failed { job, error } => {
@@ -328,7 +351,7 @@ impl ColdJob {
             return Ok(None);
         };
         if !status.success() {
-            return Err(self.native_failure(format!("cold child exited {status}")));
+            return Err(self.native_failure("cold child exited unsuccessfully"));
         }
         let mut summary = self
             .completion
