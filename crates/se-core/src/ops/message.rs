@@ -102,7 +102,7 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
         .read
         .message_count(count_query)
         .map_err(|e| store_error(&e))?;
-    let page = fetch_page(cx.read, input, query)?;
+    let page = fetch_page(cx.read, &input, query)?;
     let window = page.window().clone();
     let next = page.next().cloned();
     let (items, actors) = render_rows(&input, &full_command, cx, page)?;

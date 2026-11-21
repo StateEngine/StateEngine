@@ -2,7 +2,7 @@
 //! liveness witness, and a provider reference is not proof of resumability.
 use super::{ConversationView, ResumeCommand, SessionView, receipt};
 use crate::{commit::Cx, scope, store_error::store_error};
-use se_store::{EventBody, Snapshot};
+use se_store::{EventBody, Snapshot, StoredText};
 use se_types::{AgentId, Read, Result, SessionId};
 mod recorded;
 pub use recorded::process_from_record;
@@ -61,7 +61,7 @@ fn read_inner<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Views>
         .latest_session(agent.clone())
         .map_err(|error| store_error(&error))?;
     let latest = match latest {
-        Read::Absent { .. } => return never_launched(agent, cx)?,
+        Read::Absent { .. } => return never_launched(agent, cx),
         other => scope::require_present(
             other,
             "latest saved agent session",
@@ -163,14 +163,14 @@ fn never_launched<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Vi
     ))
 }
 fn current_head<'a>(
-    body: &'a EventBody,
+    body: &'a EventBody<StoredText>,
     session: &mut SessionView,
 ) -> Result<(&'a SessionId, &'static str)> {
     match body {
-        EventBody::SessionPrepared { session, .. } => (
+        EventBody::SessionPrepared { session, .. } => Ok((
             session,
             "The latest session is only prepared; provider readiness and process liveness are unobserved.",
-        ),
+        )),
         EventBody::SessionActivated {
             session: current,
             containment,
@@ -194,19 +194,19 @@ fn current_head<'a>(
                 se_store::ContainmentFact::NotLaunched
                 | se_store::ContainmentFact::Unknown { .. } => (),
             }
-            (
+            Ok((
                 current,
                 "The session was activated; current native process liveness and provider resumability have not been observed by this read.",
-            )
+            ))
         }
-        EventBody::SessionEnded { session, .. } => (
+        EventBody::SessionEnded { session, .. } => Ok((
             session,
             "The recorded session ended; process exit and provider resumability have not been observed by this read.",
-        ),
-        EventBody::SessionRevoked { session, .. } => (
+        )),
+        EventBody::SessionRevoked { session, .. } => Ok((
             session,
             "The latest session was revoked; revocation alone does not prove process exit or provider resumability.",
-        ),
+        )),
         _ => Err(scope::unreadable(
             "latest saved agent session",
             "current head has the wrong event kind",

@@ -110,7 +110,7 @@ pub fn create<R: Snapshot>(
     Ok((batch, AgentCreateThen { request: key }))
 }
 
-fn require_create_grant<R: Snapshot>(cx: &Cx<'_, R>) -> Result<()> {
+fn require_create_grant<R: Snapshot>(cx: &mut Cx<'_, R>) -> Result<()> {
     if let Actor::Agent(creator) = &cx.admission.actor {
         let grant = cx
             .read
