@@ -87,6 +87,23 @@ impl<F: Borrow<Files>> DirectLease<F> {
             _locked: file,
         }))
     }
+    /// Restore replaces the database as the only writer: the exclusive lock
+    /// that setup takes, held in host mode for the store it restores into.
+    pub fn acquire_restore(files: F, store: se_store::StoreId) -> StoreResult<Option<Self>> {
+        let Some(file) = setup_lock(files.borrow())? else {
+            return Ok(None);
+        };
+        let identity = LeaseIdentity {
+            store: Some(store),
+            generation: 1,
+            mode: se_store::LeaseMode::Host,
+        };
+        Ok(Some(Self {
+            files,
+            identity,
+            _locked: file,
+        }))
+    }
     pub fn acquire(
         files: F,
         lock_file: &Path,

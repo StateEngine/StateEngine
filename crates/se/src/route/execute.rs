@@ -364,6 +364,9 @@ fn dispatch_with_cold_recovery(
     if let AnyOp::ProjectInit(input) = op {
         return super::init::execute(cx, input);
     }
+    if let AnyOp::StoreRestore(input) = op {
+        return super::restore::execute(cx, input, diagnostic);
+    }
     if let AnyOp::Uninstall(input) = op {
         return Ok(super::uninstall::execute(cx, input, diagnostic)?.into());
     }

@@ -276,7 +276,7 @@ Crew can omit the recipient for a `question`, `blocker`, or `done` message to se
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 57 operations (51 core, 6 Atlas), 28 MCP tools (23 core, 5 Atlas). Planned: 8 operations, 3 MCP tools.
+Registered: 58 operations (52 core, 6 Atlas), 28 MCP tools (23 core, 5 Atlas). Planned: 7 operations, 3 MCP tools.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -331,6 +331,7 @@ Registered: 57 operations (51 core, 6 Atlas), 28 MCP tools (23 core, 5 Atlas). P
 | `agent.launch` | launch | `stateengine_agent_launch` | either | custody |
 | `agent.stop` | stop | `stateengine_agent_stop` | either | custody |
 | `agent.wake` | agent wake | `stateengine_agent_wake` | either | custody |
+| `store.restore` | restore | none | owner | custody |
 | `store.forget` | forget | none | owner | custody |
 | `project.remove` | remove | none | owner | custody |
 | `agent.show` | agent show | none | owner | read |
@@ -338,7 +339,7 @@ Registered: 57 operations (51 core, 6 Atlas), 28 MCP tools (23 core, 5 Atlas). P
 | `config.set` | config set | none | owner | write |
 | `config.list` | config list | none | owner | read |
 
-Planned operations (design tables, not yet registered): `credential.rotate`, `history.search`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`, `store.restore`
+Planned operations (design tables, not yet registered): `credential.rotate`, `history.search`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`
 
 Planned MCP tools: `stateengine_agent_status`, `stateengine_search`, `stateengine_session_turn`
 <!-- END GENERATED: ops-inventory -->

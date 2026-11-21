@@ -2,7 +2,7 @@
 //! preserved name and verified before anything is removed; it is never repaired
 //! or salvaged. A verified copy of the backup then takes its place under the
 //! target identity and a new incarnation, with a keyed recovery fact.
-use crate::{connection, error::*, open::SqliteHost, *};
+use crate::{connection, error::*, identity, open::SqliteHost, *};
 use rusqlite::OptionalExtension;
 use se_types::EventId;
 use sha2::{Digest, Sha256};
@@ -69,11 +69,12 @@ fn copy(
     files.publish_no_replace(&staged.path, to)
 }
 /// The backup copy must still match its record and open as a sound store.
+/// Returns the owners it registers.
 fn verify_backup(
     files: &dyn StateFiles,
     backup: &BackupGeneration,
     deadline: Instant,
-) -> StoreResult<()> {
+) -> StoreResult<Vec<se_types::HumanId>> {
     let file = present(files, &backup.path)?
         .ok_or_else(|| restore_failed("the backup generation is absent"))?;
     if digest(file, deadline)? != (backup.bytes, backup.sha256) {
@@ -96,7 +97,34 @@ fn verify_backup(
             "the backup generation does not open as the store it records",
         ));
     }
-    Ok(())
+    let mut owners = Vec::new();
+    let mut q = c
+        .prepare("SELECT human_id FROM owners ORDER BY human_id LIMIT 17")
+        .map_err(sql)?;
+    let mut rows = q.query([]).map_err(sql)?;
+    while let Some(row) = rows.next().map_err(sql)? {
+        let id: Vec<u8> = row.get(0).map_err(sql)?;
+        owners.push(
+            identity::wire(&c, "human", &id, &[0])?
+                .parse()
+                .map_err(invalid)?,
+        );
+    }
+    if owners.is_empty() || owners.len() > 16 {
+        return Err(restore_failed(
+            "the backup generation has no owner registration",
+        ));
+    }
+    Ok(owners)
+}
+/// The owners a verified backup registers, read before any restore.
+pub(crate) fn owners(
+    options: &StoreOptions,
+    files: &dyn StateFiles,
+    backup: &BackupGeneration,
+) -> StoreResult<Vec<se_types::HumanId>> {
+    let deadline = Instant::now() + options.busy_timeout.max(Duration::from_secs(300));
+    verify_backup(files, backup, deadline)
 }
 struct Preserved {
     info: Option<StoreInfo>,
@@ -183,13 +211,48 @@ fn rebind(path: &Path, target: &StoreId, incarnation: u64) -> StoreResult<()> {
         .map_err(sql)?;
     Ok(())
 }
-fn receipt_json(fields: &[(&str, serde_json::Value)]) -> String {
-    let mut value = serde_json::Map::new();
-    value.insert("schema".into(), "se.restore/v1".into());
-    for (k, v) in fields {
-        value.insert((*k).into(), v.clone());
+/// The facts one restore records, in its receipt and in its recovery event.
+struct Recovery {
+    id: RecordId,
+    random: [u8; 10],
+    preserved: Preserved,
+    backup: BackupGeneration,
+    target: StoreId,
+    target_incarnation: u64,
+    restored_through: StorePosition,
+    loss: RestoreLoss,
+}
+impl Recovery {
+    fn source(&self) -> Option<StoreId> {
+        self.preserved.info.as_ref().map(|i| i.id.clone())
     }
-    serde_json::Value::Object(value).to_string()
+    fn source_incarnation(&self) -> Option<u64> {
+        self.preserved.info.as_ref().map(|i| i.incarnation)
+    }
+    fn receipt(&self, request: &RequestIdentity) -> StoreResult<String> {
+        let position = |p: &StorePosition| serde_json::json!(p.storage_parts());
+        let uuid = |bytes: &[u8; 16]| uuid::Uuid::from_bytes(*bytes).to_string();
+        let preserved = (self.preserved.evidence.path.as_ref())
+            .map(|p| p.to_local().map(|l| l.display().to_string()))
+            .transpose()
+            .map_err(invalid)?;
+        Ok(serde_json::json!({
+            "schema": "se.restore/v1",
+            "request_key": request.key.as_str(),
+            "recovery": uuid(self.id.as_bytes()),
+            "backup": uuid(self.backup.id.as_bytes()),
+            "source": self.source().map(|id| id.as_str().to_string()),
+            "source_incarnation": self.source_incarnation(),
+            "preserved": preserved,
+            "target": self.target.as_str(),
+            "target_incarnation": self.target_incarnation,
+            "restored_through": position(&self.restored_through),
+            "lost_after": position(&self.loss.after),
+            "prior_head": self.loss.prior_head.as_ref().map(position),
+            "state": "restored",
+        })
+        .to_string())
+    }
 }
 pub(crate) fn restore(
     options: &StoreOptions,
@@ -208,14 +271,20 @@ pub(crate) fn restore(
     let deadline = Instant::now() + options.busy_timeout.max(Duration::from_secs(300));
     let (files, home) = (lease.files(), &options.state_directory);
     files.prepare_directory(&home.join("staging"))?;
-    verify_backup(files, &backup, deadline)?;
+    let owners = verify_backup(files, &backup, deadline)?;
+    if !matches!(&admission.actor, Actor::Human(owner) if owners.contains(owner)) {
+        return Err(fail(
+            StoreErrorCode::ScopeMismatch,
+            "the backup does not register this owner",
+        ));
+    }
     let mut random = [0u8; 10];
     random.copy_from_slice(&se_proc::random_secret().map_err(invalid)?.expose()[..10]);
-    let recovery = RecordId::from_parts(
+    let id = RecordId::from_parts(
         u64::try_from(connection::now()? / 1000).map_err(invalid)?,
         random,
     )?;
-    let preserved = preserve(files, home, &recovery, deadline)?;
+    let preserved = preserve(files, home, &id, deadline)?;
     let restored: PathBuf = home.join("state.db");
     let copy_source = present(files, &backup.path)?
         .ok_or_else(|| restore_failed("the backup generation is absent"))?;
@@ -227,8 +296,8 @@ pub(crate) fn restore(
         deadline,
     )?;
     let (_, backup_incarnation, _) = backup.through.storage_parts();
-    let source_incarnation = preserved.info.as_ref().map(|i| i.incarnation);
-    let target_incarnation = backup_incarnation.max(source_incarnation.unwrap_or(0)) + 1;
+    let source_incarnation = preserved.info.as_ref().map_or(0, |i| i.incarnation);
+    let target_incarnation = backup_incarnation.max(source_incarnation) + 1;
     rebind(&restored, &target, target_incarnation)?;
     let mut host = match SqliteFactory::open_host(options, lease)? {
         se_types::Read::Present { value } => value,
@@ -243,51 +312,31 @@ pub(crate) fn restore(
         after: restored_through.clone(),
         prior_head: preserved.info.as_ref().and_then(|i| i.head.clone()),
     };
-    let position = |p: &StorePosition| serde_json::json!(p.storage_parts());
-    let receipt = receipt_json(&[
-        ("request_key", request.key.as_str().into()),
-        (
-            "recovery",
-            uuid::Uuid::from_bytes(*recovery.as_bytes())
-                .to_string()
-                .into(),
-        ),
-        (
-            "backup",
-            uuid::Uuid::from_bytes(*backup.id.as_bytes())
-                .to_string()
-                .into(),
-        ),
-        (
-            "source",
-            preserved
-                .info
-                .as_ref()
-                .map(|i| i.id.as_str().to_string())
-                .into(),
-        ),
-        ("source_incarnation", source_incarnation.into()),
-        (
-            "preserved",
-            preserved
-                .evidence
-                .path
-                .as_ref()
-                .map(|p| p.to_local().map(|l| l.display().to_string()))
-                .transpose()
-                .map_err(invalid)?
-                .into(),
-        ),
-        ("target", target.as_str().into()),
-        ("target_incarnation", target_incarnation.into()),
-        ("restored_through", position(&restored_through)),
-        ("lost_after", position(&loss.after)),
-        ("prior_head", loss.prior_head.as_ref().map(position).into()),
-        ("state", "restored".into()),
-    ]);
+    let recovery = Recovery {
+        id,
+        random,
+        preserved,
+        backup,
+        target,
+        target_incarnation,
+        restored_through,
+        loss,
+    };
+    let receipt = record(&mut host, recovery, request, admission)?;
+    Ok(RestoreOutcome { receipt, host })
+}
+/// Commit the keyed recovery fact that carries the receipt verbatim.
+fn record(
+    host: &mut SqliteHost,
+    recovery: Recovery,
+    request: &RequestIdentity,
+    admission: &Admission,
+) -> StoreResult<RestoreReceipt> {
+    let receipt = recovery.receipt(request)?;
+    let (source, source_incarnation) = (recovery.source(), recovery.source_incarnation());
     let event = EventId::from_parts(
         u64::try_from(connection::now()? / 1000).map_err(invalid)?,
-        random,
+        recovery.random,
     )
     .map_err(invalid)?;
     let info = connection::info(&host.engine.db)?;
@@ -306,24 +355,24 @@ pub(crate) fn restore(
                 scope: Scope::Registry,
                 actor: admission.actor.clone(),
                 session: None,
-                origin: target.clone(),
+                origin: recovery.target.clone(),
                 door: Door::Cli,
                 occurred_at_us: connection::now()?,
                 cause: None,
                 supersedes: None,
             },
             body: EventBody::RecoveryRecorded {
-                recovery,
+                recovery: recovery.id,
                 request_key: request.key.clone(),
-                source: preserved.info.as_ref().map(|i| i.id.clone()),
+                source: source.clone(),
                 source_incarnation,
-                source_artifact: preserved.evidence,
-                target: target.clone(),
-                target_incarnation,
-                backup: backup.id,
-                restored_through: restored_through.clone(),
-                loss: loss.clone(),
-                schema_version: backup.schema_version,
+                source_artifact: recovery.preserved.evidence,
+                target: recovery.target.clone(),
+                target_incarnation: recovery.target_incarnation,
+                backup: recovery.backup.id,
+                restored_through: recovery.restored_through.clone(),
+                loss: recovery.loss.clone(),
+                schema_version: recovery.backup.schema_version,
                 witnesses: Vec::new(),
                 receipt: InputText::Inline(receipt.clone()),
             },
@@ -334,21 +383,18 @@ pub(crate) fn restore(
     let committed = results
         .pop()
         .ok_or_else(|| invalid("recovery commit returned no receipt"))??;
-    Ok(RestoreOutcome {
-        receipt: RestoreReceipt {
-            original_receipt: receipt,
-            request_key: request.key.clone(),
-            event,
-            backup: backup.id,
-            source: preserved.info.as_ref().map(|i| i.id.clone()),
-            source_incarnation,
-            target,
-            target_incarnation,
-            restored_through,
-            loss,
-            writer: committed.writer,
-        },
-        host,
+    Ok(RestoreReceipt {
+        original_receipt: receipt,
+        request_key: request.key.clone(),
+        event,
+        backup: recovery.backup.id,
+        source,
+        source_incarnation,
+        target: recovery.target,
+        target_incarnation: recovery.target_incarnation,
+        restored_through: recovery.restored_through,
+        loss: recovery.loss,
+        writer: committed.writer,
     })
 }
 /// The receipt a key already published, verbatim; absent before any restore.

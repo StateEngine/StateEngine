@@ -517,6 +517,37 @@ pub(crate) fn run(
         result
     })()
 }
+/// The recorded store and generations; an absent backups folder lists none.
+fn listed_generations(
+    files: &se_proc::NativeStateFiles,
+    root: &Path,
+) -> StoreResult<(Option<StoreId>, Vec<Entry>)> {
+    let index = match files.readback(&root.join(INDEX)) {
+        Ok(index) => index,
+        // No backups folder yet means no generations, not an unreadable store.
+        Err(e)
+            if e.source
+                .as_ref()
+                .is_some_and(|s| s.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            None
+        }
+        Err(e) => return Err(fail(StoreErrorCode::Unreadable, e.to_string())),
+    };
+    let Some(file) = index else {
+        return Ok((None, Vec::new()));
+    };
+    let mut bytes = Vec::new();
+    file.take(65537).read_to_end(&mut bytes).map_err(invalid)?;
+    let index: Index = serde_json::from_slice(&bytes).map_err(invalid)?;
+    if bytes.len() > 65536 || index.version != 1 || index.generations.len() > 2 {
+        return Err(fail(
+            StoreErrorCode::BackupFailed,
+            "backup index has an unsupported form",
+        ));
+    }
+    Ok((Some(index.store), index.generations))
+}
 /// Every indexed automatic generation, each checked against its recorded size
 /// and digest; one that fails is reported unreadable, never dropped. It reads
 /// native files only, so it still answers when the live store is unreadable.
@@ -532,33 +563,7 @@ pub(crate) fn inventory(
     let home = &options.state_directory;
     let root = home.join("backups");
     let files = se_proc::NativeStateFiles::open(home).map_err(unreadable)?;
-    let index = match files.readback(&root.join(INDEX)) {
-        Ok(index) => index,
-        // No backups folder yet means no generations, not an unreadable store.
-        Err(e)
-            if e.source
-                .as_ref()
-                .is_some_and(|s| s.kind() == std::io::ErrorKind::NotFound) =>
-        {
-            None
-        }
-        Err(e) => return Err(unreadable(e)),
-    };
-    let (store, entries) = match index {
-        None => (None, Vec::new()),
-        Some(file) => {
-            let mut bytes = Vec::new();
-            file.take(65537).read_to_end(&mut bytes).map_err(invalid)?;
-            let index: Index = serde_json::from_slice(&bytes).map_err(invalid)?;
-            if bytes.len() > 65536 || index.version != 1 || index.generations.len() > 2 {
-                return Err(fail(
-                    StoreErrorCode::BackupFailed,
-                    "backup index has an unsupported form",
-                ));
-            }
-            (Some(index.store), index.generations)
-        }
-    };
+    let (store, entries) = listed_generations(&files, &root)?;
     if entries.len() > budget.page.limit.get() as usize {
         return Err(fail(
             StoreErrorCode::ReadBudgetTooSmall,

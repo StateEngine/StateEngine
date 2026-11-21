@@ -291,6 +291,13 @@ impl StoreFactory for SqliteFactory {
     ) -> StoreResult<RestoreOutcome<Self::Host>> {
         crate::restore::restore(options, backup, request, target, admission, lease)
     }
+    fn backup_owners(
+        options: &StoreOptions,
+        files: &dyn StateFiles,
+        backup: &BackupGeneration,
+    ) -> StoreResult<Vec<se_types::HumanId>> {
+        crate::restore::owners(options, files, backup)
+    }
 }
 impl ReadStore for SqliteReader {
     type Snapshot = SqliteSnapshot;

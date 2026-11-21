@@ -521,16 +521,11 @@ impl Kernel {
             AnyOp::MessageInbox(input) => {
                 OpStep::Complete(crate::ops::inbox::read(input, cx)?.into())
             }
-            AnyOp::DiagnosticBundle(_) => {
+            // Home-wide owner work: a diagnostic bundle or a store restore.
+            AnyOp::DiagnosticBundle(_) | AnyOp::StoreRestore(_) => {
                 return Err(SeError::invalid(
-                    "diagnostic bundle adapter",
-                    "the installed owner CLI; home-wide observations are not a project-session tool",
-                ));
-            }
-            AnyOp::StoreRestore(_) => {
-                return Err(SeError::invalid(
-                    "restore adapter",
-                    "the installed owner CLI holding the exclusive runtime lock",
+                    "home-wide owner adapter",
+                    "the installed owner CLI; home-wide work is not a project-session tool",
                 ));
             }
             AnyOp::DoctorInspect(_) | AnyOp::DoctorRepair(_) => {

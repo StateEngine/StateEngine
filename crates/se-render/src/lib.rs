@@ -14,6 +14,7 @@ mod labels;
 mod mail_state_tests;
 mod read;
 mod remote;
+mod restore;
 mod stop;
 mod transcript;
 mod wake;
@@ -105,6 +106,9 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             (HumanKind::Import, AnyOutput::ImportNode(value)) => import::output(&value.value, out)?,
             (HumanKind::Erasure, AnyOutput::StoreForget(value)) => {
                 forget::output(&value.value, out)?
+            }
+            (HumanKind::Restore, AnyOutput::StoreRestore(value)) => {
+                restore::output(&value.value, out)?
             }
             (HumanKind::Init, AnyOutput::ProjectInit(value)) => write::init(&value.value, out)?,
             (HumanKind::ProjectMove, AnyOutput::ProjectMove(value)) => {
