@@ -453,19 +453,18 @@ mod recovery_tests {
         else {
             return Err("CLI recovery required".into());
         };
-        let matches = crate::ops::cli_command().try_get_matches_from(argv.as_slice())?;
-        let common = crate::ops::CommonArgs::from_matches(&matches)?;
-        assert_eq!(common.home, identity.command_home);
+        let argv = argv.as_slice();
         assert_eq!(
-            common.selections.preview.as_deref(),
-            Some(identity.principal.agent.id.as_str())
+            argv[..4],
+            ["se", "--home", "/selected home ' 日本語", "--project"]
         );
-        let crate::ops::AnyOp::Resume(decoded) = crate::ops::from_matches(&matches)? else {
-            return Err("resume grammar required".into());
-        };
-        assert_eq!(decoded.limit, input.limit);
-        assert_eq!(decoded.byte_budget, 8192);
-        assert_eq!(decoded.since, input.since);
+        assert_eq!(argv[4], identity.principal.project.id.as_str());
+        assert_eq!(argv[5..10], ["resume", "--limit", "2", "--budget", "8192"]);
+        assert_eq!(
+            argv[10..12],
+            ["--preview", identity.principal.agent.id.as_str()]
+        );
+        assert_eq!(argv[12..], ["--since", "since-cursor"]);
         let error = budget_refusal(&identity, &input, MAX_BYTES as usize + 1)?;
         assert!(matches!(
             error.body.recovery_command(),

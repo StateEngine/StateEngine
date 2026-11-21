@@ -165,7 +165,7 @@ pub(super) fn decode(
         "remote.send" => AnyOp::RemoteSend(RemoteSendCall {
             expected_binding: text(m, "expected_host")
                 .map(|host| {
-                    Ok::<_, SeError>(Box::new(crate::ops::remote::RemoteBindingSelection {
+                    Ok::<_, SeError>(Box::new(se_core::ops::remote::RemoteBindingSelection {
                         host: RemoteHostId(se_types::Sha256::parse_hex(&host)?),
                         grant: required(m, "expected_grant")?.parse()?,
                     }))

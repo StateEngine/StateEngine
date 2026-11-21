@@ -31,7 +31,7 @@ pub struct HistoryList {
 fn default_limit() -> u16 {
     20
 }
-pub(crate) fn position_cursor(value: String) -> Result<Cursor> {
+pub fn position_cursor(value: String) -> Result<Cursor> {
     if looks_like_time(&value) {
         return Err(SeError::invalid(
             "--position",

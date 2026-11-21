@@ -1,6 +1,45 @@
 //! Trusted CLI selections are reapplied inside the admitted host snapshot;
 //! model JSON never supplies these routing fields.
 use super::*;
+use crate::registry::CliExposure;
+use se_types::{Detail, Result, SeError, details};
+
+/// Strip option values (`--flag=value` or `-fvalue`) before echoing in usage errors.
+pub fn diagnostic_word(word: &str) -> &str {
+    if !word.starts_with('-') {
+        return word;
+    }
+    let option = word.split('=').next().unwrap_or(word);
+    if option.starts_with("--") {
+        return option;
+    }
+    option
+        .char_indices()
+        .nth(2)
+        .map_or(option, |(end, _)| &option[..end])
+}
+
+pub fn unknown_flag(flag: &str, command: &str, reason: &str) -> SeError {
+    SeError::new(Detail::UsageUnknownFlag(details::UsageUnknownFlag {
+        flag: diagnostic_word(flag).into(),
+        command: command_name(command),
+        reason: reason.into(),
+    }))
+}
+
+/// Public CLI spelling for diagnostics, derived from the live catalogue.
+pub fn command_name(operation: &str) -> String {
+    CATALOGUE
+        .iter()
+        .find(|meta| meta.name == operation)
+        .and_then(|meta| match meta.cli {
+            CliExposure::Leaf { path, .. } if !path.is_empty() => {
+                Some(format!("se {}", path.join(" ")))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| "se".into())
+}
 
 /// Authenticated CLI routing metadata, separate from model-facing operation DTOs.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]

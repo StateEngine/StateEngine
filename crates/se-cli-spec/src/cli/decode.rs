@@ -1,6 +1,6 @@
 //! Translate the generated command leaf to its registered typed core input.
 use super::*;
-use crate::commit::{AbsentRevision, ExpectedRevision};
+use se_core::commit::{AbsentRevision, ExpectedRevision};
 
 pub fn from_matches(matches: &ArgMatches) -> Result<AnyOp> {
     from_matches_with_key(matches, None)
@@ -90,7 +90,7 @@ pub fn from_matches_with_key(
                 .parse()
                 .map_err(|_| SeError::invalid("limit", "1..100"))?,
             since: text(m, "since")
-                .map(crate::ops::continuity::resume_since)
+                .map(se_core::ops::continuity::resume_since)
                 .transpose()?,
             byte_budget: required(m, "budget")?
                 .parse()
@@ -245,7 +245,7 @@ pub fn from_matches_with_key(
                 .transpose()?,
             kinds: many(m, "kind"),
             since: text(m, "position")
-                .map(crate::ops::history::position_cursor)
+                .map(se_core::ops::history::position_cursor)
                 .transpose()?,
             limit: number(m, "limit")?,
             cursor: text(m, "cursor").map(Cursor::new).transpose()?,

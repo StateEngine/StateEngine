@@ -8,7 +8,7 @@ use se_core::{
     admission::read_scope,
     commit::{Cx, OpStep},
     dispatch::Kernel,
-    ops::AnyOutput,
+    ops::{AnyOp, AnyOutput},
     ports::{CustodyPlan, Then},
     store_error::store_error,
 };
@@ -49,12 +49,8 @@ pub fn execute(
             && let HostedInput::Operation(operation) = &mut admitted.input
         {
             match operation {
-                se_core::ops::AnyOp::Resume(input) => {
-                    input.source_failure = Some(error.into_body())
-                }
-                se_core::ops::AnyOp::SessionContext(input) => {
-                    input.source_failure = Some(error.into_body())
-                }
+                AnyOp::Resume(input) => input.source_failure = Some(error.into_body()),
+                AnyOp::SessionContext(input) => input.source_failure = Some(error.into_body()),
                 _ => (),
             }
         }
@@ -278,6 +274,9 @@ pub(super) fn plan(
                     se_core::ops::AnyOp::SessionContext(input) => Some(input.byte_budget),
                     _ => None,
                 };
+                if let Some(output) = se_cli_spec::metadata_output(&operation)? {
+                    return Ok(OpStep::Complete(output));
+                }
                 match kernel.plan(operation, &mut cx, &terminal)? {
                     OpStep::Complete(mut output)
                         if matches!(

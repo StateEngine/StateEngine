@@ -13,6 +13,7 @@ remote = ["se-host/remote", "dep:tokio"]
 se-host = { path = "../se-host", default-features = false }
 se-core = { path = "../se-core" }
 se-proc = { path = "../se-proc" }
+se-cli-spec = { path = "../se-cli-spec" }
 se-types = { path = "../se-types" }
 se-store = { path = "../se-store" }
 serde.workspace = true
