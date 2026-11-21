@@ -115,6 +115,7 @@ impl Progress {
                 se_types::format_timestamp(i64::try_from(micros).ok()?).ok()
             }),
             phase_seconds: self.phase_started.map(|at| at.elapsed().as_secs()),
+            mail_paced_until: None,
             next_step,
         }
     }

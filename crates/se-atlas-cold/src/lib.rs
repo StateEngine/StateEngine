@@ -10,3 +10,5 @@ pub mod cold;
 pub mod deadline;
 #[cfg(target_os = "linux")]
 mod quantum;
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+pub mod worker_report;
