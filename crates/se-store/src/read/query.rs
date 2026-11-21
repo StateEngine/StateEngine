@@ -132,7 +132,8 @@ impl SqliteSnapshot {
 pub(super) fn event_size(e: &StoredEvent) -> StoreResult<u64> {
     let body = crate::transaction::descriptor(&e.body, |t| match t {
         StoredText::Present(s) => Ok(s.clone()),
-        StoredText::Erased { .. } => Err(fail(StoreErrorCode::ContentErased, "body was erased")),
+        // An erased body still has its event; it costs no body bytes to read.
+        StoredText::Erased { .. } => Ok(String::new()),
     })?;
     let h = &e.header;
     let header = codec::encode(&(

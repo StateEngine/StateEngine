@@ -81,6 +81,9 @@ fn present(value: &HistoryEvent, conversation_page: bool, out: &mut impl Write) 
                     };
                     fact(label, text, out)?;
                 }
+                serde_json::Value::Null if erased(&value.payload, path) => {
+                    fact(label, "(forgotten by the owner; the text was erased)", out)?
+                }
                 serde_json::Value::Bool(value) => fact(label, &value.to_string(), out)?,
                 serde_json::Value::Number(value) => fact(label, &value.to_string(), out)?,
                 serde_json::Value::Array(items) => {
@@ -131,6 +134,12 @@ fn title(kind: &str) -> &str {
     }
 }
 
+/// A text field whose sibling `erased` flag says the owner forgot it.
+fn erased(payload: &serde_json::Value, path: &str) -> bool {
+    path.rsplit_once('/').is_some_and(|(parent, _)| {
+        payload.pointer(&format!("{parent}/erased")) == Some(&serde_json::Value::Bool(true))
+    })
+}
 fn fact(label: &str, text: &str, out: &mut impl Write) -> io::Result<()> {
     let mut lines = text.split('\n');
     writeln!(out, "  {label}: {}", lines.next().unwrap_or_default())?;
