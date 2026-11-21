@@ -28,6 +28,9 @@ pub struct Discord {
     invalid_sessions: Mutex<VecDeque<String>>,
     /// This token's Identify fire instants, keyed by the token's digest so the
     /// map never holds token bytes; a reserved attempt counts even if refused.
+    /// Expired instants leave on the next reservation, and the map never holds
+    /// more than MAX_CONNECTIONS slots: a token that holds none evicts the
+    /// oldest slot, so a live token's own spacing survives a full map.
     identify_fire: Mutex<HashMap<[u8; 32], Instant>>,
 }
 impl Discord {
@@ -61,8 +64,25 @@ impl Discord {
                 .identify_fire
                 .lock()
                 .map_err(|_| Error::ReceiverNotRunning)?;
-            let key: [u8; 32] = Sha256::digest(token.expose()).into();
             let now = Instant::now();
+            let expired: Vec<[u8; 32]> = fire
+                .iter()
+                .filter(|(_, slot)| **slot + IDENTIFY_WINDOW <= now)
+                .map(|(key, _)| *key)
+                .collect();
+            for key in expired {
+                fire.remove(&key);
+            }
+            let key: [u8; 32] = Sha256::digest(token.expose()).into();
+            while !fire.contains_key(&key) && fire.len() >= se_store::channel::MAX_CONNECTIONS {
+                let oldest = fire
+                    .iter()
+                    .min_by_key(|(_, slot)| *slot)
+                    .map(|(victim, _)| *victim);
+                if let Some(victim) = oldest {
+                    fire.remove(&victim);
+                }
+            }
             let slot = next_identify_fire(fire.get(&key).copied(), now);
             fire.insert(key, slot);
             slot - now

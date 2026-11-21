@@ -421,3 +421,48 @@ fn discord_wire_review_control_traffic_does_not_extend_retries() -> Check {
     }
     f.finish(outcome)
 }
+
+fn identify_token(index: usize) -> Check<se_types::Secret> {
+    Ok(se_types::Secret::new(
+        format!("test-identify-token-{index:04}").into_bytes(),
+    )?)
+}
+
+/// More distinct tokens than connections within one window leave at most
+/// MAX_CONNECTIONS Identify slots behind.
+#[test]
+fn discord_identify_slots_stay_within_the_connection_cap() -> Check {
+    let discord = Discord::new()?;
+    runtime()?.block_on(async {
+        for index in 0..=se_store::channel::MAX_CONNECTIONS {
+            discord.pace_identify(&identify_token(index)?).await?;
+        }
+        Check::Ok(())
+    })?;
+    let held = discord.identify_fire.lock().map_err(|_| "poisoned")?.len();
+    require(
+        held <= se_store::channel::MAX_CONNECTIONS,
+        &format!("{held} Identify slots exceed the connection cap"),
+    )
+}
+
+/// A full map never discards a token's own unexpired slot: its next Identify
+/// still waits out the window instead of firing at once.
+#[test]
+fn discord_full_identify_map_keeps_a_live_tokens_spacing() -> Check {
+    let discord = Discord::new()?;
+    runtime()?.block_on(async {
+        for index in 0..se_store::channel::MAX_CONNECTIONS {
+            discord.pace_identify(&identify_token(index)?).await?;
+        }
+        let again = tokio::time::timeout(
+            Duration::from_millis(500),
+            discord.pace_identify(&identify_token(0)?),
+        )
+        .await;
+        require(
+            again.is_err(),
+            "a live token's Identify fired without its window",
+        )
+    })
+}
