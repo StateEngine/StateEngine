@@ -33,6 +33,16 @@ fn read_owned(path: &std::path::Path) -> Result<Option<Vec<u8>>, Box<dyn std::er
         Err(error) => Err(format!("{}: {error}", path.display()).into()),
     }
 }
+/// Each owned copy once: the database and its WAL count as a single copy.
+fn copies(files: &[String]) -> Vec<String> {
+    let mut copies: Vec<String> = files
+        .iter()
+        .map(|path| path.strip_suffix("-wal").unwrap_or(path).to_owned())
+        .collect();
+    copies.sort();
+    copies.dedup();
+    copies
+}
 fn files_holding(
     root: &std::path::Path,
     needle: &[u8],
@@ -117,9 +127,11 @@ fn forget_erases_one_body_from_database_log_and_backups() -> Check {
     };
     let refused = wait_until(client.erase(plan.clone(), approval(99))?, deadline())?;
     assert!(refused.is_err(), "a stale incarnation is refused");
+    // A checkpoint may move the text between the database and its WAL at any
+    // time; the database with its WAL is one copy.
     assert_eq!(
-        files_holding(&home, FORGOTTEN.as_bytes())?,
-        before,
+        copies(&files_holding(&home, FORGOTTEN.as_bytes())?),
+        copies(&before),
         "a refused approval erases nothing"
     );
     let unconfirmed = ErasureApproval {
