@@ -2,10 +2,6 @@ use super::target::*;
 use super::*;
 use rusqlite::types::Value;
 impl QueryReader<'_, '_, '_> {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub fn refs(&mut self, query: &RefsQuery) -> AtlasResult<Answer<Read<Page<ReferenceHit>>>> {
         let end = deadline(query.budget)?;
         let started = end - query.budget.work;
@@ -50,94 +46,8 @@ impl QueryReader<'_, '_, '_> {
                 return Err(cursor::invalid("invalid reference key"));
             }
             let mut items = Vec::new();
-            let mut bytes = 0;
-            let mut last = key.cloned().unwrap_or_default();
-            let mut more = false;
-            for phase in 0..=1 {
-                if key.is_some_and(|k| k.integers[0] > phase)
-                    || phase == 1 && !query.include_name_only
-                {
-                    continue;
-                }
-                if phase == 0 && !matches!(target.file.coverage, FileCoverage::Indexed) {
-                    continue;
-                }
-                let (statement, values) = reference_plan(
-                    query,
-                    &target,
-                    key.filter(|k| k.integers[0] == phase),
-                    phase,
-                )?;
-                let ids = {
-                    let mut stmt = sql.prepare(&statement)?;
-                    let mut rows = stmt
-                        .query(rusqlite::params_from_iter(values))
-                        .map_err(cache_error)?;
-                    let mut ids = Vec::with_capacity(query.budget.max_results as usize + 1);
-                    while let Some(row) = rows.next().map_err(cache_error)? {
-                        ids.push(get::<i64>(row, 0)?);
-                    }
-                    ids
-                };
-                let scan_limited = ids.len() == 513;
-                for id in ids.into_iter().take(512) {
-                    let reference = reference_by_id(sql, id)?;
-                    if crate::policy::built_in_denied(&reference.site.path) {
-                        last = reference_key(&reference, id)?;
-                        continue;
-                    }
-                    if !query.kinds.is_empty() && !query.kinds.contains(&reference.kind) {
-                        last = reference_key(&reference, id)?;
-                        continue;
-                    }
-                    let cost = size(&reference)?;
-                    if items.len() == query.budget.max_results as usize
-                        || bytes + cost + size(&snapshot.index)? + 1800
-                            > query.budget.max_bytes as usize
-                    {
-                        more = true;
-                        break;
-                    }
-                    last = reference_key(&reference, id)?;
-                    bytes += cost;
-                    items.push(ReferenceHit::Code(reference));
-                }
-                if scan_limited {
-                    more = true;
-                }
-                if more {
-                    break;
-                }
-            }
-            if !more {
-                let record_key = key.filter(|k| k.integers[0] == 2).map(|k| Key {
-                    integers: vec![1, k.integers[1]],
-                    bytes: k.bytes.clone(),
-                });
-                let linked = super::linked::for_file(
-                    &env,
-                    sql,
-                    &snapshot,
-                    super::linked::LinkedRequest {
-                        file: &target.file.pointer,
-                        limit: query.budget.max_results as usize - items.len(),
-                        bytes: (query.budget.max_bytes as usize)
-                            .saturating_sub(bytes + size(&snapshot.index)? + 500),
-                        after: record_key.as_ref(),
-                        query: None,
-                        end,
-                    },
-                )?;
-                more = linked.more;
-                for record in linked.items {
-                    bytes += size(&record)?;
-                    items.push(ReferenceHit::Record(record));
-                }
-                if let Some(mut k) = linked.last {
-                    k.integers = vec![2, k.integers[1], 0, 0];
-                    last = k;
-                }
-            }
+            let (last, more, bytes) =
+                collect_references(query, &target, (&env, sql, &snapshot), key, &mut items, end)?;
             if more && last == key.cloned().unwrap_or_default() {
                 return Err(capacity("Atlas refs response bytes", 1, 0));
             }
@@ -169,6 +79,97 @@ impl QueryReader<'_, '_, '_> {
             super::freshness::finish(self, answer, query.budget, end),
         )
     }
+}
+fn collect_references(
+    query: &RefsQuery,
+    target: &Target,
+    db: (&QueryEnv<'_>, &SqlView<'_>, &Snapshot),
+    key: Option<&Key>,
+    items: &mut Vec<ReferenceHit>,
+    end: Instant,
+) -> AtlasResult<(Key, bool, usize)> {
+    let (env, sql, snapshot) = db;
+    let mut last = key.cloned().unwrap_or_default();
+    let mut bytes = 0;
+    let mut more = false;
+    for phase in 0..=1 {
+        if key.is_some_and(|k| k.integers[0] > phase) || phase == 1 && !query.include_name_only {
+            continue;
+        }
+        if phase == 0 && !matches!(target.file.coverage, FileCoverage::Indexed) {
+            continue;
+        }
+        let (statement, values) =
+            reference_plan(query, target, key.filter(|k| k.integers[0] == phase), phase)?;
+        let ids = {
+            let mut stmt = sql.prepare(&statement)?;
+            let mut rows = stmt
+                .query(rusqlite::params_from_iter(values))
+                .map_err(cache_error)?;
+            let mut ids = Vec::with_capacity(query.budget.max_results as usize + 1);
+            while let Some(row) = rows.next().map_err(cache_error)? {
+                ids.push(get::<i64>(row, 0)?);
+            }
+            ids
+        };
+        for id in ids.iter().take(512) {
+            let reference = reference_by_id(sql, *id)?;
+            if crate::policy::built_in_denied(&reference.site.path) {
+                last = reference_key(&reference, *id)?;
+                continue;
+            }
+            if !query.kinds.is_empty() && !query.kinds.contains(&reference.kind) {
+                last = reference_key(&reference, *id)?;
+                continue;
+            }
+            let cost = size(&reference)?;
+            if items.len() == query.budget.max_results as usize
+                || bytes + cost + size(&snapshot.index)? + 1800 > query.budget.max_bytes as usize
+            {
+                more = true;
+                break;
+            }
+            last = reference_key(&reference, *id)?;
+            bytes += cost;
+            items.push(ReferenceHit::Code(reference));
+        }
+        if ids.len() == 513 {
+            more = true;
+        }
+        if more {
+            break;
+        }
+    }
+    if !more {
+        let record_key = key.filter(|k| k.integers[0] == 2).map(|k| Key {
+            integers: vec![1, k.integers[1]],
+            bytes: k.bytes.clone(),
+        });
+        let linked = super::linked::for_file(
+            env,
+            sql,
+            snapshot,
+            super::linked::LinkedRequest {
+                file: &target.file.pointer,
+                limit: query.budget.max_results as usize - items.len(),
+                bytes: (query.budget.max_bytes as usize)
+                    .saturating_sub(bytes + size(&snapshot.index)? + 500),
+                after: record_key.as_ref(),
+                query: None,
+                end,
+            },
+        )?;
+        more = linked.more;
+        for record in linked.items {
+            bytes += size(&record)?;
+            items.push(ReferenceHit::Record(record));
+        }
+        if let Some(mut k) = linked.last {
+            k.integers = vec![2, k.integers[1], 0, 0];
+            last = k;
+        }
+    }
+    Ok((last, more, bytes))
 }
 fn reference_plan(
     query: &RefsQuery,
@@ -223,7 +224,6 @@ fn reference_plan(
     ));
     Ok((statement, values))
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

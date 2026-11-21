@@ -11,10 +11,6 @@ use tokio::{net::TcpStream, time::timeout};
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
 pub(super) use se_remote::channel::{Socket, unavailable};
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) async fn open(
     route: &RemoteRoute,
     device: &MachineSession,
@@ -57,8 +53,20 @@ pub(super) async fn open(
         }
         Err(error) => return Err(error),
     };
+    authorize_forwarded(&mut socket, route, device, signer, blocking, forwards).await?;
+    controls.authenticated();
+    Ok(socket)
+}
+async fn authorize_forwarded(
+    socket: &mut Socket,
+    route: &RemoteRoute,
+    device: &MachineSession,
+    signer: Arc<dyn CredentialSource>,
+    blocking: &crate::runtime::BlockingPool,
+    forwards: &ssh::Forwards,
+) -> Result<()> {
     timeout(Duration::from_secs(10), async {
-        let channel = match receive(&mut socket, Phase::PreAuth).await? {
+        let channel = match receive(socket, Phase::PreAuth).await? {
             ServerFrame::Open { channel } => channel,
             ServerFrame::Error { error, .. } => return Err(error.with_far_origin().into()),
             _ => return Err(auth::refused("native forwarded channel identity is absent")),
@@ -108,7 +116,7 @@ pub(super) async fn open(
                 "SSH authorization changed the saved environment or session",
             ));
         }
-        match receive(&mut socket, Phase::PreAuth).await? {
+        match receive(socket, Phase::PreAuth).await? {
             ServerFrame::Ready(mut ready) => {
                 // A concurrent native renewal can extend the same session
                 // between the SSH authorization and its socket publication.
@@ -133,8 +141,7 @@ pub(super) async fn open(
     })
     .await
     .map_err(|_| unavailable("SSH channel authorization deadline exceeded (10seconds)"))??;
-    controls.authenticated();
-    Ok(socket)
+    Ok(())
 }
 pub(super) async fn receive(socket: &mut Socket, phase: Phase) -> Result<ServerFrame> {
     loop {

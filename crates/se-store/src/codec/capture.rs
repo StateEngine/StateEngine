@@ -41,10 +41,6 @@ fn parse_role(value: &str) -> StoreResult<Role> {
 pub(crate) fn record(bytes: Vec<u8>) -> StoreResult<RecordId> {
     RecordId::from_bytes(bytes.try_into().map_err(|_| invalid("record ID length"))?)
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(crate) fn decode(
     c: &Connection,
     seq: i64,
@@ -52,54 +48,7 @@ pub(crate) fn decode(
     scope: &Scope,
 ) -> StoreResult<EventBody<StoredText>> {
     if kind != "session.turn" {
-        let v = facts(c, seq)?;
-        return Ok(match kind {
-            "capture.source" => EventBody::CaptureSource {
-                source: field(&v, "source")?,
-                session: field(&v, "session")?,
-                consent: field(&v, "consent")?,
-                native_ref: field(&v, "native_ref")?,
-                incarnation: field(&v, "incarnation")?,
-                expected: field(&v, "expected")?,
-            },
-            "capture.progress" => EventBody::CaptureProgress {
-                source: field(&v, "source")?,
-                expected: field(&v, "expected")?,
-                incarnation: field(&v, "incarnation")?,
-                old_offset: field(&v, "old_offset")?,
-                new_offset: field(&v, "new_offset")?,
-                last_turn: field(&v, "last_turn")?,
-                replay_evidence: v
-                    .get("replay_evidence")
-                    .map(|v| serde_json::from_value(v.clone()).map_err(invalid))
-                    .transpose()?
-                    .flatten(),
-            },
-            "capture.verified" => EventBody::CaptureVerified {
-                source: field(&v, "source")?,
-                session: field(&v, "session")?,
-                offset: field(&v, "offset")?,
-            },
-            "capture.failed" => EventBody::CaptureFailed {
-                source: field(&v, "source")?,
-                session: field(&v, "session")?,
-                from_offset: field(&v, "from_offset")?,
-                to_offset: field(&v, "to_offset")?,
-                code: field(&v, "code")?,
-                cause: field(&v, "cause")?,
-                retry: field(&v, "retry")?,
-            },
-            "capture.suppressed" => EventBody::CaptureSuppressed {
-                source: field(&v, "source")?,
-                session: field(&v, "session")?,
-                expected: field(&v, "expected")?,
-                reason: field(&v, "reason")?,
-                from_offset: field(&v, "from_offset")?,
-                to_offset: field(&v, "to_offset")?,
-                count: field(&v, "count")?,
-            },
-            _ => return Err(invalid("capture kind")),
-        });
+        return capture_body(kind, &facts(c, seq)?);
     }
     let mut q = c
         .prepare("SELECT * FROM turn_data WHERE event_seq=?")
@@ -158,6 +107,56 @@ pub(crate) fn decode(
                 .map(|v| v.try_into().map_err(|_| invalid("source sha length")))
                 .transpose()?,
         },
+    })
+}
+
+fn capture_body(kind: &str, v: &serde_json::Value) -> StoreResult<EventBody<StoredText>> {
+    Ok(match kind {
+        "capture.source" => EventBody::CaptureSource {
+            source: field(v, "source")?,
+            session: field(v, "session")?,
+            consent: field(v, "consent")?,
+            native_ref: field(v, "native_ref")?,
+            incarnation: field(v, "incarnation")?,
+            expected: field(v, "expected")?,
+        },
+        "capture.progress" => EventBody::CaptureProgress {
+            source: field(v, "source")?,
+            expected: field(v, "expected")?,
+            incarnation: field(v, "incarnation")?,
+            old_offset: field(v, "old_offset")?,
+            new_offset: field(v, "new_offset")?,
+            last_turn: field(v, "last_turn")?,
+            replay_evidence: v
+                .get("replay_evidence")
+                .map(|v| serde_json::from_value(v.clone()).map_err(invalid))
+                .transpose()?
+                .flatten(),
+        },
+        "capture.verified" => EventBody::CaptureVerified {
+            source: field(v, "source")?,
+            session: field(v, "session")?,
+            offset: field(v, "offset")?,
+        },
+        "capture.failed" => EventBody::CaptureFailed {
+            source: field(v, "source")?,
+            session: field(v, "session")?,
+            from_offset: field(v, "from_offset")?,
+            to_offset: field(v, "to_offset")?,
+            code: field(v, "code")?,
+            cause: field(v, "cause")?,
+            retry: field(v, "retry")?,
+        },
+        "capture.suppressed" => EventBody::CaptureSuppressed {
+            source: field(v, "source")?,
+            session: field(v, "session")?,
+            expected: field(v, "expected")?,
+            reason: field(v, "reason")?,
+            from_offset: field(v, "from_offset")?,
+            to_offset: field(v, "to_offset")?,
+            count: field(v, "count")?,
+        },
+        _ => return Err(invalid("capture kind")),
     })
 }
 pub(crate) fn natural(c: &Connection, e: &NewEvent) -> StoreResult<Option<i64>> {
