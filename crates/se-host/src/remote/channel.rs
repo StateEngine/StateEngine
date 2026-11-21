@@ -66,7 +66,7 @@ async fn authorize_forwarded(
     forwards: &ssh::Forwards,
 ) -> Result<()> {
     timeout(Duration::from_secs(10), async {
-        let channel = match receive(&mut socket, Phase::PreAuth).await? {
+        let channel = match receive(socket, Phase::PreAuth).await? {
             ServerFrame::Open { channel } => channel,
             ServerFrame::Error { error, .. } => return Err(error.with_far_origin().into()),
             _ => return Err(auth::refused("native forwarded channel identity is absent")),
@@ -116,7 +116,7 @@ async fn authorize_forwarded(
                 "SSH authorization changed the saved environment or session",
             ));
         }
-        match receive(&mut socket, Phase::PreAuth).await? {
+        match receive(socket, Phase::PreAuth).await? {
             ServerFrame::Ready(mut ready) => {
                 // A concurrent native renewal can extend the same session
                 // between the SSH authorization and its socket publication.
