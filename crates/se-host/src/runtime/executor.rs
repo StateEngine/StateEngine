@@ -8,7 +8,7 @@ use se_core::{
     admission::read_scope,
     commit::{Cx, OpStep},
     dispatch::Kernel,
-    ops::{AnyOp, AnyOutput},
+    ops::AnyOutput,
     ports::{CustodyPlan, Then},
     store_error::store_error,
 };
@@ -49,8 +49,12 @@ pub fn execute(
             && let HostedInput::Operation(operation) = &mut admitted.input
         {
             match operation {
-                AnyOp::Resume(input) => input.source_failure = Some(error.into_body()),
-                AnyOp::SessionContext(input) => input.source_failure = Some(error.into_body()),
+                se_core::ops::AnyOp::Resume(input) => {
+                    input.source_failure = Some(error.into_body())
+                }
+                se_core::ops::AnyOp::SessionContext(input) => {
+                    input.source_failure = Some(error.into_body())
+                }
                 _ => (),
             }
         }

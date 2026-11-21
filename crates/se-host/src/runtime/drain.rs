@@ -19,10 +19,6 @@ impl HostedRuntime {
     /// Call after fencing admission and joining accepted operation tasks. A
     /// timed-out join remains owned here and can be polled with a later bound.
     /// This method never claims agent/capture/debt closure or releases the lease.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub async fn drain_storage(&mut self, deadline: &Deadline) -> Result<StorageDrainReport> {
         if let Some(report) = &self.storage_report {
             return Ok(report.clone());
@@ -33,6 +29,30 @@ impl HostedRuntime {
                 "a prior join/close failed; retain the exclusive lease and its original failure",
             ));
         }
+        self.begin_drain(deadline).await?;
+        self.join_writer(deadline).await?;
+        if self
+            .flush
+            .as_ref()
+            .is_some_and(|flush| flush.pending_requests == 0 && flush.indeterminate.is_empty())
+        {
+            self.execution.pending_writes.clear()?;
+        }
+        let mut report = self.assemble_drain_report();
+        if let Some(flush) = &self.flush
+            && (flush.pending_requests != 0 || !flush.indeterminate.is_empty())
+        {
+            report.pending.push(format!("Writer join reports {} pending requests and indeterminate original identities {:?}; resolve them before resource closure.", flush.pending_requests, flush.indeterminate));
+            return Ok(report);
+        }
+        self.checkpoint_and_clean_close(deadline, &mut report)
+            .await?;
+        if self.phase == crate::HostPhase::Drained {
+            self.storage_report = Some(report.clone());
+        }
+        Ok(report)
+    }
+    async fn begin_drain(&mut self, deadline: &Deadline) -> Result<()> {
         self.fenced
             .store(true, std::sync::atomic::Ordering::Release);
         self.capture_fenced
@@ -49,6 +69,9 @@ impl HostedRuntime {
                 reads.close().map_err(|error| store_error(&error))
             })
             .await?;
+        Ok(())
+    }
+    async fn join_writer(&mut self, deadline: &Deadline) -> Result<()> {
         let drain_budget = deadline.remaining()?;
         if self.drain.is_none()
             && let Some(writer) = self.writer.take()
@@ -69,13 +92,9 @@ impl HostedRuntime {
                 }
             }
         }
-        if self
-            .flush
-            .as_ref()
-            .is_some_and(|flush| flush.pending_requests == 0 && flush.indeterminate.is_empty())
-        {
-            self.execution.pending_writes.clear()?;
-        }
+        Ok(())
+    }
+    fn assemble_drain_report(&self) -> StorageDrainReport {
         let mut report = StorageDrainReport {
             writer_joined: self.flush.is_some(),
             flush: self.flush.clone().map_or_else(
@@ -102,23 +121,33 @@ impl HostedRuntime {
                 report.pending.push("Background store maintenance failed, but its recorded cause is unavailable. Preserve the data home and restart the runtime process to recreate the maintenance task; for an embedded runtime, restart its owning application.".into());
             }
         }
-        if let Some(flush) = &self.flush
-            && (flush.pending_requests != 0 || !flush.indeterminate.is_empty())
-        {
-            report.pending.push(format!("Writer join reports {} pending requests and indeterminate original identities {:?}; resolve them before resource closure.", flush.pending_requests, flush.indeterminate));
-            return Ok(report);
-        }
+        report
+    }
+    async fn checkpoint_and_clean_close(
+        &mut self,
+        deadline: &Deadline,
+        report: &mut StorageDrainReport,
+    ) -> Result<()> {
         let close_permit = self.execution.blocking.admit_owned(deadline).await?;
         let remaining = deadline.remaining()?;
         if let Some(mut host) = self.drained.take() {
             let lease = std::sync::Arc::clone(&self.lease);
-            let (checkpoint,backup)=self.execution.blocking.run_admitted_owned(close_permit,move || {
-                let checkpoint=host.checkpoint(se_store::CheckpointMode::Truncate,lease.as_ref());
-                if !matches!(&checkpoint,Ok(value) if !value.busy && value.checkpointed_frames==value.wal_frames) {
-                    return Ok((checkpoint,None,Some(host)));
-                }
-                Ok((checkpoint,Some(host.close_clean(lease.as_ref(),remaining)),None))
-            }).await.map(|(checkpoint,backup,host)| {self.drained=host;(checkpoint,backup)})?;
+            let (checkpoint, backup) = self
+                .execution
+                .blocking
+                .run_admitted_owned(close_permit, move || {
+                    let checkpoint =
+                        host.checkpoint(se_store::CheckpointMode::Truncate, lease.as_ref());
+                    if !matches!(&checkpoint, Ok(value) if !value.busy && value.checkpointed_frames == value.wal_frames) {
+                        return Ok((checkpoint, None, Some(host)));
+                    }
+                    Ok((checkpoint, Some(host.close_clean(lease.as_ref(), remaining)), None))
+                })
+                .await
+                .map(|(checkpoint, backup, host)| {
+                    self.drained = host;
+                    (checkpoint, backup)
+                })?;
             report.checkpoint = match checkpoint {
                 Ok(value) => Read::Present { value },
                 Err(error) => {
@@ -152,9 +181,6 @@ impl HostedRuntime {
                 }
             };
         }
-        if self.phase == crate::HostPhase::Drained {
-            self.storage_report = Some(report.clone());
-        }
-        Ok(report)
+        Ok(())
     }
 }
