@@ -51,7 +51,11 @@ impl Channels {
         })
         .await
     }
-    async fn retire_worker(&self, id: ChannelId, receiver: Receiver) -> Result<()> {
+    async fn retire_worker(
+        &self,
+        id: ChannelId,
+        receiver: Receiver,
+    ) -> Result<Option<se_types::SeError>> {
         receiver.stop.send_replace(true);
         let join = joined(receiver.task.await);
         self.health
@@ -61,7 +65,7 @@ impl Channels {
         self.health_version
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         self.changed.notify_waiters();
-        join
+        Ok(join.err())
     }
     pub async fn run<T: Send + Sync + 'static>(
         self: Arc<Self>,
@@ -128,7 +132,7 @@ impl Channels {
             // Join the retired poller before another connection can use its bot.
             for id in retired {
                 if let Some(receiver) = workers.remove(&id)
-                    && let Err(error) = self.retire_worker(id, receiver).await
+                    && let Some(error) = self.retire_worker(id, receiver).await?
                 {
                     failure = Some(error);
                 }
