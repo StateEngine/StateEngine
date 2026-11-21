@@ -19,6 +19,7 @@ fn row(
             "message_id": MessageId::from_parts(1, [2; 10]).map(|m| m.to_string()).unwrap_or_default(),
             "to": "Lead",
             "asked_at": ASKED,
+            "asked_at_us": ASKED_US,
         })
     });
     let mut row = json!({
@@ -67,6 +68,15 @@ fn activity(kind: &str) -> Value {
             "phase_seconds": 42,
             "next_step": null,
         }),
+    })
+    .unwrap_or(Value::Null)
+}
+
+fn unreadable() -> Value {
+    serde_json::to_value(se_types::Read::<Value>::Unreadable {
+        source: "provider activity".into(),
+        reason: "synthetic unreadable observation".into(),
+        error: None,
     })
     .unwrap_or(Value::Null)
 }
@@ -138,6 +148,8 @@ fn state_follows_observed_facts_in_precedence() -> Check {
         ("running", None, true, "blocked"),
         ("running", Some(activity("turn-completed")), false, "idle"),
         ("running", None, false, "running"),
+        // An observation that could not be read is not an absent one.
+        ("running", Some(unreadable()), false, "turn-unreadable"),
     ];
     for (session, observed, question, expected) in cases {
         let state = settled(row(session, observed.clone(), question)?, now)?;
