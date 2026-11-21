@@ -70,8 +70,6 @@ impl Engine {
         }
         Ok(())
     }
-    /// Reconnect only under the same native custody, with a bounded independent
-    /// readback of the header, identity and pending receipt members.
     /// Replace the failed connection with a fresh, configured one; a host
     /// writer's also answers the erasure triggers from its permit again.
     fn reconnect(&mut self, path: &Path, timeout: Duration) -> StoreResult<()> {
@@ -91,6 +89,8 @@ impl Engine {
         }
         Ok(())
     }
+    /// Reconnect only under the same native custody, with a bounded independent
+    /// readback of the header, identity and pending receipt members.
     pub(crate) fn reopen(
         &mut self,
         path: &Path,

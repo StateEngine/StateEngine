@@ -172,7 +172,7 @@ fn residual(
 fn recipient_transcripts(c: &Connection, seq: i64) -> StoreResult<Vec<ResidualCopy>> {
     let mut q = c
         .prepare(
-            "SELECT DISTINCT s.value FROM message_data m JOIN turn_data t ON t.agent_id=m.recipient_id AND t.event_seq>m.event_seq JOIN symbols s ON s.id=t.source_path WHERE m.event_seq=? LIMIT 16",
+            "SELECT DISTINCT s.value FROM message_data m JOIN events e ON e.seq=m.event_seq JOIN turn_data t ON t.project_id=e.project_id AND t.agent_id=m.recipient_id AND t.event_seq>m.event_seq JOIN symbols s ON s.id=t.source_path WHERE m.event_seq=? LIMIT 16",
         )
         .map_err(sql)?;
     let mut rows = q.query([seq]).map_err(sql)?;
