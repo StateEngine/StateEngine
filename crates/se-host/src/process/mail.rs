@@ -27,6 +27,22 @@ pub(super) struct Flight {
     evidence: Option<se_store::mail::OfferObservation>,
     observed: bool,
 }
+/// A retained-notice offer failure and how it was witnessed.
+enum OfferFailure {
+    /// The retained flight vanished before the SE Code offer crossed the boundary.
+    Retired(se_types::SeError),
+    /// The transport offer failed, witnessed by its completed bytes if known.
+    Transport(se_types::SeError, Option<u32>),
+}
+/// The retained notice and its provider transport target.
+struct NoticeOffer<'a> {
+    text: &'a Body,
+    expected_conversation: &'a se_types::ProviderSessionId,
+    descriptor: RecordId,
+    bytes: u64,
+    secode: bool,
+    codex: bool,
+}
 fn id() -> Result<RecordId> {
     let facts = crate::runtime::start::allocate_facts()?;
     let value = facts
@@ -64,23 +80,10 @@ impl LaunchCoordinator {
         if work.secode.is_none() || work.mail.flight.is_none() || !work.capture_flushed {
             return Ok(());
         }
-        let target = core::MailTarget {
-            project: work.meta.project.id.clone(),
-            agent: work.meta.agent.id.clone(),
-            session: work.meta.session.clone(),
-            epoch: self.options.epoch.clone(),
-            generation: self.store.generation.get(),
-            fingerprint: work
-                .pin_hash
-                .ok_or_else(|| error("mail target", "verified launch pin is unavailable"))?,
-        };
+        let target = self.mail_target(work)?;
         self.reconcile_captured_mail(work, &target, deadline).await
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) async fn deliver_mail(
         &self,
         work: &mut owned::Work,
@@ -99,16 +102,7 @@ impl LaunchCoordinator {
         self.reconcile_restart_secode_mail(work, deadline).await?;
         self.reconcile_recovered_secode_notice(work, deadline)
             .await?;
-        let target = core::MailTarget {
-            project: work.meta.project.id.clone(),
-            agent: work.meta.agent.id.clone(),
-            session: work.meta.session.clone(),
-            epoch: self.options.epoch.clone(),
-            generation: self.store.generation.get(),
-            fingerprint: work
-                .pin_hash
-                .ok_or_else(|| error("mail target", "verified launch pin is unavailable"))?,
-        };
+        let target = self.mail_target(work)?;
         self.reconcile_mail(work, &target, deadline).await?;
         let codex = work
             .binding
@@ -143,6 +137,64 @@ impl LaunchCoordinator {
             work.mail.seen.clear();
             work.mail.backlog = false;
         }
+        let Some(reserved) = self
+            .reserve_coalesced_notice(work, &target, reoffer, deadline)
+            .await?
+        else {
+            return Ok(());
+        };
+        let text = if secode {
+            Body::new(crate::harness::secode_process::notice_text(
+                &reserved
+                    .ids
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>(),
+            )?)?
+        } else {
+            self.mail_notice_text(&target, &reserved, deadline).await?
+        };
+        let expected_conversation = scope::require_present(
+            work.meta.conversation.clone(),
+            "mail provider conversation",
+            "Restore the exact live provider binding before another offer.",
+        )?;
+        let bytes = crate::harness::claude::input_frame(&text)?.len() as u64;
+        let effect = reserved.effect_id;
+        let descriptor = self.notice_descriptor(&target, effect, deadline).await?;
+        let offer = NoticeOffer {
+            text: &text,
+            expected_conversation: &expected_conversation,
+            descriptor,
+            bytes,
+            secode,
+            codex,
+        };
+        self.offer_retained_notice(work, &target, reserved, &offer, deadline)
+            .await
+    }
+
+    /// Build the durable mail target from the verified launch pin.
+    fn mail_target(&self, work: &owned::Work) -> Result<core::MailTarget> {
+        Ok(core::MailTarget {
+            project: work.meta.project.id.clone(),
+            agent: work.meta.agent.id.clone(),
+            session: work.meta.session.clone(),
+            epoch: self.options.epoch.clone(),
+            generation: self.store.generation.get(),
+            fingerprint: work
+                .pin_hash
+                .ok_or_else(|| error("mail target", "verified launch pin is unavailable"))?,
+        })
+    }
+    /// Reserve the coalesced notice; an absent reservation retires reoffer state.
+    async fn reserve_coalesced_notice(
+        &self,
+        work: &mut owned::Work,
+        target: &core::MailTarget,
+        reoffer: bool,
+        deadline: &Deadline,
+    ) -> Result<Option<core::Reservation>> {
         let excluded = if work.mail.backlog {
             work.mail.seen.clone()
         } else {
@@ -161,7 +213,7 @@ impl LaunchCoordinator {
         };
         let reserved = commit::step(
             &self.store,
-            admission(&target),
+            admission(target),
             deadline,
             move |kernel, cx| core::reserve_coalesced(kernel, cx, request, reoffer, excluded),
             |kernel, cx, then, receipt| {
@@ -170,40 +222,28 @@ impl LaunchCoordinator {
         )
         .await?;
         work.mail.reoffer = false;
-        let reserved = match reserved {
-            Read::Present { value } => value,
+        Ok(match reserved {
+            Read::Present { value } => Some(value),
             Read::Absent { .. } => {
                 work.mail.backlog = false;
                 work.mail.seen.clear();
-                return Ok(());
+                None
             }
             Read::Unknown { what } => return Err(scope::unreadable("mail reservation", &what)),
             Read::Unreadable { source, reason, .. } => {
                 return Err(scope::unreadable(&source, &reason));
             }
-        };
-        let text = if secode {
-            Body::new(crate::harness::secode_process::notice_text(
-                &reserved
-                    .ids
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>(),
-            )?)?
-        } else {
-            self.mail_notice_text(&target, &reserved, deadline).await?
-        };
-        let expected_conversation = scope::require_present(
-            work.meta.conversation.clone(),
-            "mail provider conversation",
-            "Restore the exact live provider binding before another offer.",
-        )?;
-        let digest = reserved.digest;
-        let bytes = crate::harness::claude::input_frame(&text)?.len() as u64;
-        let effect = reserved.effect_id;
-        let descriptor = self
-            .store
-            .read(admission(&target), deadline, move |cx| {
+        })
+    }
+    /// Read the committed notice descriptor for the reserved effect.
+    async fn notice_descriptor(
+        &self,
+        target: &core::MailTarget,
+        effect: RecordId,
+        deadline: &Deadline,
+    ) -> Result<RecordId> {
+        self.store
+            .read(admission(target), deadline, move |cx| {
                 let record = scope::require_present(
                     cx.read.effect(effect).map_err(|e| store_error(&e))?,
                     "mail descriptor",
@@ -217,7 +257,18 @@ impl LaunchCoordinator {
                     _ => Err(error("mail descriptor", "committed intent is not a notice")),
                 }
             })
-            .await?;
+            .await
+    }
+    /// Retain the attempted notice, cross the transport boundary, and observe it.
+    async fn offer_retained_notice(
+        &self,
+        work: &mut owned::Work,
+        target: &core::MailTarget,
+        reserved: core::Reservation,
+        offer: &NoticeOffer<'_>,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let digest = reserved.digest;
         let binding = work
             .binding
             .as_ref()
@@ -227,85 +278,26 @@ impl LaunchCoordinator {
         let observed_at_us = crate::runtime::start::now_unix_micros()?;
         work.mail.flight = Some(Flight {
             reservation: reserved,
-            text_sha256: Sha256::digest(text.as_str().as_bytes()).into(),
+            text_sha256: Sha256::digest(offer.text.as_str().as_bytes()).into(),
             attempt,
             evidence: None,
             observed: false,
         });
         // Retain the attempted notice before crossing the transport boundary.
         // A partial/uncertain write is never blindly sent again on this binding.
-        let offered = if secode {
-            let reserved = work
-                .mail
-                .flight
-                .as_ref()
-                .ok_or_else(|| error("SE Code mail offer", "original reservation absent"))?
-                .reservation
-                .clone();
-            self.offer_secode_notice(work, &reserved, deadline)
-                .await
-                .map(|event_id| se_store::mail::OfferReport::VendorReported {
-                    provider: se_store::Provider::SeCode,
-                    event_id,
-                })
-                .map_err(|error| (error, None))
-        } else if work.meta.provider == se_store::Provider::Acp {
-            self.acp
-                .offer_mail(
-                    binding,
-                    &expected_conversation,
-                    &text,
-                    &format!(
-                        "acp-notice-{}:{}",
-                        se_types::hex_lower(descriptor.as_bytes()),
-                        se_types::hex_lower(attempt.as_bytes())
-                    ),
-                    call,
-                )
-                .await
-                .map(|bytes| se_store::mail::OfferReport::TransportWritten {
-                    transport: se_store::mail::MailTransport::Stdio,
-                    bytes,
-                })
-                .map_err(|failure| (failure.error, failure.completed_bytes))
-        } else if codex {
-            self.codex
-                .offer_mail(
-                    binding,
-                    &expected_conversation,
-                    &text,
-                    &format!(
-                        "{}:{}",
-                        se_types::hex_lower(descriptor.as_bytes()),
-                        se_types::hex_lower(attempt.as_bytes())
-                    ),
-                    call,
-                )
-                .await
-                .map(|event_id| se_store::mail::OfferReport::VendorReported {
-                    provider: se_store::Provider::Codex,
-                    event_id,
-                })
-                .map_err(|failure| (failure.error, failure.completed_bytes))
-        } else {
-            self.harness
-                .offer_mail(binding, &expected_conversation, &text, call)
-                .await
-                .map(|()| se_store::mail::OfferReport::TransportWritten {
-                    transport: se_store::mail::MailTransport::Stdio,
-                    bytes,
-                })
-                .map_err(|failure| (failure.error, failure.completed_bytes))
-        };
+        let offered = self
+            .transport_offer(work, binding, offer, attempt, deadline, call)
+            .await;
         let (report, failure) = match offered {
             Ok(report) => (report, None),
-            Err((error, Some(0))) => (
+            Err(OfferFailure::Retired(error)) => return Err(error),
+            Err(OfferFailure::Transport(error, Some(0))) => (
                 se_store::mail::OfferReport::Failed {
                     code: "zero-byte-write".into(),
                 },
                 Some(error),
             ),
-            Err((error, _)) => (
+            Err(OfferFailure::Transport(error, _)) => (
                 se_store::mail::OfferReport::Unknown {
                     code: "acceptance-unknown".into(),
                 },
@@ -320,7 +312,7 @@ impl LaunchCoordinator {
         let no_input = matches!(&report, se_store::mail::OfferReport::Failed { .. });
         flight.evidence = Some(se_store::mail::OfferObservation {
             version: 1,
-            notice_id: descriptor,
+            notice_id: offer.descriptor,
             target_agent: target.agent.clone(),
             session: target.session.clone(),
             epoch: target.epoch.clone(),
@@ -333,11 +325,87 @@ impl LaunchCoordinator {
         // A proved zero-byte failure did not start a turn; retain eligibility
         // for an explicit same-key retry wake.
         work.mail.idle = no_input;
-        let observed = self.reconcile_mail(work, &target, deadline).await;
+        let observed = self.reconcile_mail(work, target, deadline).await;
         match (observed, failure) {
             (Err(record), Some(original)) => Err(record.with_cause(original)),
             (Ok(()), Some(original)) => Err(original),
             (result, None) => result,
+        }
+    }
+    /// Offer the retained notice over its provider transport.
+    async fn transport_offer(
+        &self,
+        work: &owned::Work,
+        binding: &crate::HarnessBinding,
+        offer: &NoticeOffer<'_>,
+        attempt: RecordId,
+        deadline: &Deadline,
+        call: crate::CallContext,
+    ) -> std::result::Result<se_store::mail::OfferReport, OfferFailure> {
+        if offer.secode {
+            let reserved = match work.mail.flight.as_ref() {
+                Some(flight) => flight.reservation.clone(),
+                None => {
+                    return Err(OfferFailure::Retired(error(
+                        "SE Code mail offer",
+                        "original reservation absent",
+                    )));
+                }
+            };
+            self.offer_secode_notice(work, &reserved, deadline)
+                .await
+                .map(|event_id| se_store::mail::OfferReport::VendorReported {
+                    provider: se_store::Provider::SeCode,
+                    event_id,
+                })
+                .map_err(|error| OfferFailure::Transport(error, None))
+        } else if work.meta.provider == se_store::Provider::Acp {
+            self.acp
+                .offer_mail(
+                    binding,
+                    offer.expected_conversation,
+                    offer.text,
+                    &format!(
+                        "acp-notice-{}:{}",
+                        se_types::hex_lower(offer.descriptor.as_bytes()),
+                        se_types::hex_lower(attempt.as_bytes())
+                    ),
+                    call,
+                )
+                .await
+                .map(|bytes| se_store::mail::OfferReport::TransportWritten {
+                    transport: se_store::mail::MailTransport::Stdio,
+                    bytes,
+                })
+                .map_err(|failure| OfferFailure::Transport(failure.error, failure.completed_bytes))
+        } else if offer.codex {
+            self.codex
+                .offer_mail(
+                    binding,
+                    offer.expected_conversation,
+                    offer.text,
+                    &format!(
+                        "{}:{}",
+                        se_types::hex_lower(offer.descriptor.as_bytes()),
+                        se_types::hex_lower(attempt.as_bytes())
+                    ),
+                    call,
+                )
+                .await
+                .map(|event_id| se_store::mail::OfferReport::VendorReported {
+                    provider: se_store::Provider::Codex,
+                    event_id,
+                })
+                .map_err(|failure| OfferFailure::Transport(failure.error, failure.completed_bytes))
+        } else {
+            self.harness
+                .offer_mail(binding, offer.expected_conversation, offer.text, call)
+                .await
+                .map(|()| se_store::mail::OfferReport::TransportWritten {
+                    transport: se_store::mail::MailTransport::Stdio,
+                    bytes: offer.bytes,
+                })
+                .map_err(|failure| OfferFailure::Transport(failure.error, failure.completed_bytes))
         }
     }
 }
