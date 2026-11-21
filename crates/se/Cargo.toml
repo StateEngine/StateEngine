@@ -23,6 +23,7 @@ se-cli-spec = { path = "../se-cli-spec" }
 se-mcp = { path = "../se-mcp" }
 se-types = { path = "../se-types" }
 se-proc = { path = "../se-proc" }
+se-local-socket = { path = "../se-local-socket" }
 se-repository = { path = "../se-repository" }
 se-render = { path = "../se-render" }
 serde.workspace = true

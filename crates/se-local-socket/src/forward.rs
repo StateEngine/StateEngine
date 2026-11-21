@@ -30,6 +30,10 @@ const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 type Upstream = std::os::unix::net::UnixStream;
 #[cfg(windows)]
 type Upstream = uds_windows::UnixStream;
+#[cfg(unix)]
+type Listener = std::os::unix::net::UnixListener;
+#[cfg(windows)]
+type Listener = uds_windows::UnixListener;
 
 /// `se ENTRY <private socket | -> <control socket>`. Returns when the agent's
 /// provider has ended.
@@ -49,31 +53,25 @@ pub fn private_entry(args: &[OsString]) -> io::Result<()> {
     if downstream == STDIO {
         return bridge_stdio(&control);
     }
-    #[cfg(unix)]
-    {
-        pipe_socket(Path::new(downstream), control)
-    }
-    #[cfg(windows)]
-    {
-        Err(io::Error::other("this platform offers the host only stdio"))
-    }
+    pipe_socket(Path::new(downstream), control)
 }
 
 /// Serve the private socket until the server closes a connection first.
-#[cfg(unix)]
 fn pipe_socket(path: &Path, control: PathBuf) -> io::Result<()> {
     use std::net::Shutdown;
-    use std::os::unix::net::UnixListener;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     };
-    let listener = UnixListener::bind(path)?;
+    let listener = Listener::bind(path)?;
     // The host accepts only an owner-only endpoint; the directory is private too.
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
+    // What this forwarder bound, so its exit removes only that endpoint.
+    let bound = crate::identity::ObjectId::local_socket(path)?;
     let (ended, server_gone) = std::sync::mpsc::channel::<io::Error>();
     std::thread::Builder::new()
         .name("se-codex-forward-accept".into())
@@ -93,7 +91,7 @@ fn pipe_socket(path: &Path, control: PathBuf) -> io::Result<()> {
                                 if matches!(
                                     e.kind(),
                                     io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-                                ) =>
+                                ) || (cfg!(windows) && e.raw_os_error() == Some(10050)) =>
                             {
                                 let _ = ended.send(io::Error::other(
                                     "the login's app-server no longer accepts connections",
@@ -134,7 +132,13 @@ fn pipe_socket(path: &Path, control: PathBuf) -> io::Result<()> {
     let reason = server_gone
         .recv()
         .unwrap_or_else(|_| io::Error::other("the private socket stopped accepting"));
-    let _ = std::fs::remove_file(path);
+    // Remove only the endpoint this forwarder bound; anything else is kept.
+    if let Err(error) = bound.remove_local_socket(path) {
+        eprintln!(
+            "codex forwarder: {} was not removed: {error}",
+            path.display()
+        );
+    }
     Err(reason)
 }
 

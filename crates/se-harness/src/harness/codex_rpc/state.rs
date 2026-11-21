@@ -162,7 +162,7 @@ impl State {
         self.canonical.push_back(event);
         Ok(())
     }
-    #[cfg(any(unix, test))]
+    #[cfg(any(unix, windows, test))]
     pub(super) fn restore(&mut self, response: &Value) -> Result<()> {
         let invalid = || {
             SeError::invalid(
