@@ -46,8 +46,17 @@ function se {
     $words = @($args)
     $at = [Array]::IndexOf($words, '--home')
     if ($at -lt 0 -or $at + 1 -ge $words.Length) { throw 'Printed se command did not select a fixture home' }
+    $script:PrintedHome = $words[$at + 1]
     Invoke-ProviderFixture -StateHome $words[$at + 1] -Words $words
     if ($script:ProviderExit -ne 0) { throw "Printed se command failed: $script:ProviderExit" }
+}
+# Automatic backups make the remedy name se restore; setting them aside beside
+# the home exercises the manual commands kept for a home without one.
+function Set-BackupsAside([string]$StateHome) {
+    $backups = Join-Path $StateHome 'backups'
+    if (Test-Path -LiteralPath $backups) {
+        [System.IO.Directory]::Move($backups, (Join-Path (Split-Path -Parent $StateHome) ('backups-aside-{0:d3}' -f $script:Calls)))
+    }
 }
 $passed = 0
 try {
@@ -71,6 +80,7 @@ try {
     foreach ($leaf in @('state.db-wal','state.db-shm')) {
         [System.IO.File]::WriteAllText((Join-Path $state $leaf), "Retain old $leaf bytes")
     }
+    Set-BackupsAside $state
     $missing = Invoke-Se -StateHome $state -Words @('status')
     Require ($missing.Code -ne 0 -and $missing.Value.code -eq 'state-conflict') 'Missing state was not identified'
     $restore = Block $missing.Value.remedy.text 'RESTORE COMMANDS'
@@ -135,12 +145,29 @@ try {
     }
     Require ([System.IO.File]::ReadAllText((Join-Path $repo 'user-work.txt')) -eq 'User work survives recovery.') 'User work changed'
     $passed++; Write-Output 'ok 5 - staging quarantined and owner preserved'
+    # A clean host stop takes the automatic backup the restore remedy offers.
+    Require ((Invoke-Se -StateHome $state -Words @('up')).Code -eq 0) 'Pre-corruption up failed'
     Require ((Invoke-Se -StateHome $state -Words @('down')).Code -eq 0) 'Pre-corruption down failed'
+    Require (Test-Path -LiteralPath (Join-Path $state 'backups/backup-index.json')) 'Clean stop took no automatic backup'
     $damaged = 'Preserve these exact damaged database bytes.'
     [System.IO.File]::WriteAllText((Join-Path $state 'state.db'), $damaged)
     $corrupt = Invoke-Se -StateHome $state -Words @('status')
     Require ($corrupt.Code -ne 0 -and $corrupt.Value.code -eq 'store-corrupt') 'Corruption was not reported'
-    Require (-not $corrupt.Value.remedy.text.Contains('se restore')) 'Remedy promises an unavailable verb'
+    # With a verified backup the remedy is one se restore command for this
+    # exact home. Restore needs a human terminal, so here it must refuse
+    # and leave the damaged bytes alone.
+    $named = Block $corrupt.Value.remedy.text 'RESTORE COMMAND'
+    Require ($named.Trim().StartsWith('se --home ') -and $named.Trim().EndsWith(' restore')) 'Backup remedy names another command'
+    $script:PrintedHome = $null
+    $refusedRestore = $false
+    try { & ([scriptblock]::Create($named)) *> (Join-Path $OutputRoot 'named-restore.log') } catch { $refusedRestore = $true }
+    Require ($script:PrintedHome -eq $state) 'Printed restore selected another home'
+    Require ($refusedRestore -and $script:ProviderExit -eq 1) 'Printed restore ran without a human terminal'
+    Require ([System.IO.File]::ReadAllText((Join-Path $state 'state.db')) -eq $damaged) 'Refused restore changed the damaged database'
+    Set-BackupsAside $state
+    $corrupt = Invoke-Se -StateHome $state -Words @('status')
+    Require ($corrupt.Code -ne 0 -and $corrupt.Value.code -eq 'store-corrupt') 'Corruption was not reported without backups'
+    Require (-not $corrupt.Value.remedy.text.Contains("BEGIN SE RESTORE COMMAND`n")) 'A home without a backup was offered se restore'
     $corruptRestore = Block $corrupt.Value.remedy.text 'RESTORE COMMANDS'
     [System.IO.File]::WriteAllText((Join-Path $OutputRoot 'printed-corrupt-restore.ps1'), $corruptRestore)
     & ([scriptblock]::Create($corruptRestore)) *> (Join-Path $OutputRoot 'corrupt-restore.log')
@@ -150,7 +177,7 @@ try {
     $afterCorrupt = Invoke-Se -StateHome $state -Words @('init','--repo',$repo)
     Require ($afterCorrupt.Code -eq 0 -and $afterCorrupt.Value.owner.human_id -eq $owner) 'Corrupt restore changed owner'
     Require ((Get-FileHash -LiteralPath (Join-Path $script:RetainedCopy 'state.db')).Hash -eq $sourceHash) 'Corrupt restore changed retained copy'
-    $passed++; Write-Output 'ok 6 - corrupt store restores a closed copy and preserves damaged bytes'
+    $passed++; Write-Output 'ok 6 - corrupt store offers se restore with a backup, else restores a closed copy and preserves damaged bytes'
 } finally {
     foreach ($stateHome in $homes) {
         $down = Invoke-Se -StateHome $stateHome -Words @('down')

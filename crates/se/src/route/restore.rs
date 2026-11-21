@@ -80,7 +80,7 @@ fn request(input: &StoreRestore) -> Result<RequestIdentity> {
         },
     })
 }
-fn newest(options: &StoreOptions) -> Result<Option<BackupGeneration>> {
+pub(super) fn newest(options: &StoreOptions) -> Result<Option<BackupGeneration>> {
     let page =
         SqliteFactory::inspect_backups(options, owner::budget()?).map_err(|e| store_error(&e))?;
     Ok(page
