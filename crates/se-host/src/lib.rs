@@ -3,7 +3,7 @@
 #[cfg(test)]
 extern crate self as se_host;
 #[cfg(feature = "listener")]
-pub mod acp;
+pub use se_harness::acp;
 #[cfg(all(test, feature = "listener"))]
 #[path = "../tests/support/acp_session_independent.rs"]
 mod acp_session_independent;
@@ -16,7 +16,7 @@ mod agent_observation;
 #[cfg(feature = "channels")]
 pub mod channels;
 #[cfg(feature = "listener")]
-mod child_io;
+pub(crate) use se_harness::child_io;
 pub mod client;
 pub mod remote;
 #[cfg(feature = "remote")]
@@ -30,7 +30,7 @@ mod test_directory;
 pub use agent_observation::{
     AgentObservation, AgentObservationPlan, observe_agent, prepare_agent_observation,
 };
-mod harness;
+pub(crate) use se_harness::harness;
 pub mod harness_setup;
 mod owner_inventory;
 pub use owner_inventory::decode_owner_inventory;
@@ -52,19 +52,17 @@ pub use mcp::{McpBackend, McpReply};
 pub mod mcp {
     pub use se_mcp::{McpBackend, McpPrincipal, McpReply, dispatch};
 }
-mod model;
+pub(crate) use se_harness::model;
 #[cfg(all(
     feature = "listener",
     any(target_os = "linux", target_os = "macos", windows)
 ))]
 mod process;
 #[cfg(feature = "listener")]
-mod process_io;
+pub(crate) use se_harness::process_io;
 #[cfg(feature = "listener")]
 pub mod provider_mcp;
 mod runtime;
-#[cfg(feature = "listener")]
-mod startup_timing;
 #[cfg(all(
     feature = "listener",
     any(target_os = "linux", target_os = "macos", windows)
@@ -86,8 +84,10 @@ use se_atlas_host::atlas_continuity;
 #[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
 pub use se_atlas_host::atlas_renewal;
 pub use se_atlas_host::{atlas_cold, atlas_hooks, atlas_queries, atlas_records, atlas_runtime};
-pub mod codex_forward;
-mod session;
+pub use se_harness::codex_forward;
+pub(crate) use se_harness::session;
+#[cfg(feature = "listener")]
+pub(crate) use se_harness::startup_timing;
 pub mod state_files;
 pub use harness::*;
 pub use ipc::*;
@@ -96,7 +96,7 @@ pub use runtime::*;
 pub use session::*;
 
 #[cfg(feature = "secode")]
-pub mod linked;
+pub use se_harness::linked;
 
 #[cfg(all(test, feature = "listener"))]
 #[path = "../tests/support/acp_correction_independent.rs"]

@@ -66,6 +66,36 @@ pub struct LivePublisher {
 }
 #[derive(Clone)]
 pub struct LiveSource(Arc<Source>);
+impl se_harness::LivePublisher for LiveSource {
+    fn delta_at(
+        &self,
+        vendor: &str,
+        role: se_harness::LiveTurnRole,
+        delta: &str,
+        observed_at: Instant,
+    ) {
+        let role = match role {
+            se_harness::LiveTurnRole::User => RemoteTurnRole::User,
+            se_harness::LiveTurnRole::Assistant => RemoteTurnRole::Assistant,
+            se_harness::LiveTurnRole::Tool => RemoteTurnRole::Tool,
+        };
+        LiveSource::delta_at(self, vendor, role, delta, observed_at);
+    }
+    fn complete_at(
+        &self,
+        vendor: &str,
+        role: se_harness::LiveTurnRole,
+        text: &str,
+        observed_at: Instant,
+    ) {
+        let role = match role {
+            se_harness::LiveTurnRole::User => RemoteTurnRole::User,
+            se_harness::LiveTurnRole::Assistant => RemoteTurnRole::Assistant,
+            se_harness::LiveTurnRole::Tool => RemoteTurnRole::Tool,
+        };
+        LiveSource::complete_at(self, vendor, role, text, observed_at);
+    }
+}
 struct Source {
     publisher: Weak<LivePublisher>,
     stamp: LivePosition,

@@ -9,10 +9,13 @@ use tokio::sync::watch;
 
 pub use se_channels::*;
 
-impl AsChannelDeadline for Deadline {
-    fn as_channel_deadline(&self) -> ChannelDeadline {
-        self.to_channel_deadline()
-    }
+fn host_deadline(deadline: &ChannelDeadline) -> Result<Deadline> {
+    let budget = deadline.remaining()?;
+    Ok(Deadline::from_parts(
+        deadline.at(),
+        budget,
+        deadline.cancelled(),
+    ))
 }
 
 struct HostChannelPort {
@@ -40,7 +43,7 @@ impl ChannelHost for HostChannelPort {
         deadline: &ChannelDeadline,
         work: BoxedBlockingWork,
     ) -> HostFuture<'_, Box<dyn Any + Send>> {
-        let bound = Deadline::from_channel_deadline(deadline);
+        let bound = host_deadline(deadline);
         Box::pin(async move {
             let bound = bound?;
             if owned {
@@ -60,7 +63,7 @@ impl ChannelHost for HostChannelPort {
         deadline: &ChannelDeadline,
         work: BoxedReadWork,
     ) -> HostFuture<'_, Box<dyn Any + Send>> {
-        let bound = Deadline::from_channel_deadline(deadline);
+        let bound = host_deadline(deadline);
         Box::pin(async move {
             let bound = bound?;
             self.store.read(admission, &bound, work).await
@@ -74,7 +77,7 @@ impl ChannelHost for HostChannelPort {
         key: IdempotencyKey,
         deadline: &ChannelDeadline,
     ) -> HostFuture<'_, CommitReceipt> {
-        let bound = Deadline::from_channel_deadline(deadline);
+        let bound = host_deadline(deadline);
         Box::pin(async move {
             let bound = bound?;
             let identity = crate::runtime::WriteIdentity {
@@ -93,7 +96,7 @@ impl ChannelHost for HostChannelPort {
         admission: Admission,
         deadline: &ChannelDeadline,
     ) -> HostFuture<'_, ()> {
-        let bound = Deadline::from_channel_deadline(deadline);
+        let bound = host_deadline(deadline);
         Box::pin(async move {
             let bound = bound?;
             let coordinator = self

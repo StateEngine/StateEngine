@@ -61,7 +61,7 @@ pub(super) fn launch_login(_: &super::launch::NewLaunch) -> Result<PathBuf> {
 
 /// The login first setup (provider adoption) prepares. Never an agent's login.
 #[cfg(any(target_os = "linux", windows))]
-pub(crate) fn setup_codex_login(_: &crate::codex_rpc::FirstSetup) -> Result<PathBuf> {
+pub(crate) fn setup_codex_login(_: &crate::adoption::FirstSetup) -> Result<PathBuf> {
     host_codex_home()
 }
 

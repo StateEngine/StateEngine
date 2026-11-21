@@ -27,14 +27,6 @@ impl std::ops::Deref for RemoteBroker {
         &self.inner
     }
 }
-impl se_remote::broker::Budget for Deadline {
-    fn remaining(&self) -> Result<std::time::Duration> {
-        Deadline::remaining(self)
-    }
-    fn write_timeout(&self) -> std::time::Duration {
-        crate::client::lease::WRITE_TIMEOUT
-    }
-}
 impl RemoteBroker {
     pub(crate) async fn close(&self) -> Result<()> {
         #[cfg(feature = "remote")]

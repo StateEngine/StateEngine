@@ -1699,6 +1699,41 @@ name = "se-fsevents"
 version = "0.0.1-alpha.1"
 
 [[package]]
+name = "se-harness"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "base64",
+ "futures-util",
+ "hmac",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "reqwest",
+ "se-channels",
+ "se-config",
+ "se-core",
+ "se-mcp",
+ "se-proc",
+ "se-remote",
+ "se-repository",
+ "se-secode-image",
+ "se-store",
+ "se-types",
+ "secode-stateengine-api",
+ "serde",
+ "serde_json",
+ "sha2",
+ "shlex",
+ "tokio",
+ "tokio-tungstenite",
+ "toml",
+ "toml_edit",
+ "uds_windows",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "se-harness-registry"
 version = "0.0.1-alpha.1"
 dependencies = [
@@ -1727,6 +1762,7 @@ dependencies = [
  "se-cli-spec",
  "se-config",
  "se-core",
+ "se-harness",
  "se-mcp",
  "se-proc",
  "se-remote",

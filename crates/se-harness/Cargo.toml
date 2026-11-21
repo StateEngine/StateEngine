@@ -1,0 +1,67 @@
+[package]
+name = "se-harness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+runtime = ["dep:tokio", "tokio/sync", "tokio/time", "tokio/rt"]
+listener = [
+    "runtime",
+    "tokio/macros",
+    "tokio/net",
+    "tokio/io-util",
+    "tokio/process",
+    "dep:reqwest",
+    "dep:tokio-tungstenite",
+    "dep:futures-util",
+    "dep:base64",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:http-body-util",
+    "dep:se-remote",
+    "se-remote/listener",
+    "dep:se-secode-image",
+]
+secode = ["listener", "dep:secode-stateengine-api"]
+remote = []
+channels = ["listener", "dep:se-channels"]
+
+[dependencies]
+se-config = { path = "../se-config" }
+se-channels = { path = "../se-channels", optional = true }
+se-core = { path = "../se-core" }
+se-mcp = { path = "../se-mcp" }
+se-proc = { path = "../se-proc" }
+se-remote = { path = "../se-remote", optional = true }
+se-repository = { path = "../se-repository" }
+se-store = { path = "../se-store" }
+se-types = { path = "../se-types" }
+se-secode-image = { path = "../se-secode-image", optional = true }
+secode-stateengine-api = { version = "=2.0.0", optional = true }
+serde.workspace = true
+serde_json.workspace = true
+shlex = "2.0.1"
+toml = "0.9.11"
+toml_edit = { version = "0.25.13", features = ["serde"] }
+hmac = "0.12.1"
+sha2.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+zeroize.workspace = true
+tokio = { workspace = true, optional = true }
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"], optional = true }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"], optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"], optional = true }
+base64 = { version = "0.23.1", optional = true }
+hyper = { version = "1.11", default-features = false, features = ["server", "client", "http1"], optional = true }
+hyper-util = { version = "0.1.20", default-features = false, features = ["tokio"], optional = true }
+http-body-util = { version = "0.1.5", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+uds_windows = "1.2.1"
+
+[lints]
+workspace = true
