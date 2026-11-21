@@ -1,34 +1,12 @@
 //! Owner-scoped project summaries. Counts come from each project's own finite
 //! snapshot; native observations run only after that snapshot closes.
 use super::*;
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn page<R: ReadStore>(
     reader: &R,
     admission: &Admission,
 ) -> Result<se_types::Page<ProjectSummary>> {
     let deadline = super::super::session_observation::deadline()?;
-    let mut snap = reader
-        .snapshot(read_scope(admission))
-        .map_err(|e| store_error(&e))?;
-    let result = snap
-        .projects(super::super::select::budget(None)?)
-        .map_err(|e| store_error(&e));
-    let closed = snap.close().map_err(|e| store_error(&e));
-    let page = match result {
-        Ok(page) => {
-            closed?;
-            page
-        }
-        Err(error) => {
-            return Err(match closed {
-                Ok(()) => error,
-                Err(close) => error.with_cause(close),
-            });
-        }
-    };
+    let page = registered_projects_page(reader, admission)?;
     let mut fields =
         page.window().fields().cloned().ok_or_else(|| {
             scope::unreadable("registered projects", "window accounting is absent")
@@ -36,84 +14,7 @@ pub(super) fn page<R: ReadStore>(
     let next = page.next().cloned();
     let mut rows = Vec::new();
     for record in page.into_items() {
-        let (id, name, roots) = match record.current.body {
-            EventBody::ProjectRegistered {
-                project,
-                name,
-                roots,
-                ..
-            }
-            | EventBody::ProjectUpdated {
-                project,
-                name,
-                roots,
-                ..
-            } => (project, name, roots),
-            EventBody::ProjectMoved {
-                project, name, to, ..
-            } => (project, name, vec![to.clone()]),
-            _ => {
-                return Err(scope::unreadable(
-                    "registered project",
-                    "active metadata has an unexpected event kind",
-                ));
-            }
-        };
-        let mut errors = Vec::new();
-        let root = match roots
-            .first()
-            .ok_or_else(|| scope::unreadable("registered project", "repository root is absent"))
-            .and_then(|root| root.path.to_local())
-        {
-            Ok(path) => Some(path.display().to_string()),
-            Err(error) => {
-                errors.push(error.body);
-                None
-            }
-        };
-        let mut project_admission = admission.clone();
-        project_admission.scope = Scope::Project(id.clone());
-        let mut agents_running = None;
-        let mut owner_unread = None;
-        match reader.snapshot(read_scope(&project_admission)) {
-            Err(error) => errors.push(store_error(&error).body),
-            Ok(mut snap) => {
-                let observed = super::super::select::budget(None)
-                    .and_then(|budget| prepare_running(&mut snap, &project_admission, budget));
-                match snap.message_count(MessageQuery {
-                    sender: None,
-                    recipient: Some(admission.actor.clone()),
-                    kind: None,
-                    unread_only: true,
-                    full_body: false,
-                    direction: MailDirection::OldestFirst,
-                }) {
-                    Ok(count) => owner_unread = Some(count),
-                    Err(error) => errors.push(store_error(&error).body),
-                }
-                match snap.close() {
-                    Err(error) => {
-                        if let Err(read_error) = observed {
-                            errors.push(read_error.body);
-                        }
-                        errors.push(store_error(&error).body);
-                        owner_unread = None;
-                    }
-                    Ok(()) => match observed.and_then(|rows| count_running(rows, deadline)) {
-                        Ok(count) => agents_running = Some(count),
-                        Err(error) => errors.push(error.body),
-                    },
-                }
-            }
-        }
-        rows.push(ProjectSummary {
-            id,
-            name,
-            root,
-            agents_running,
-            owner_unread,
-            errors,
-        });
+        rows.push(project_summary_row(reader, admission, deadline, record)?);
     }
     fields.returned = rows.len() as u64;
     fields.bytes = serde_json::to_vec(&rows)
@@ -126,6 +27,113 @@ pub(super) fn page<R: ReadStore>(
         ));
     }
     se_types::Page::new(rows, se_types::Window::new(fields)?, next)
+}
+fn registered_projects_page<R: ReadStore>(
+    reader: &R,
+    admission: &Admission,
+) -> Result<se_types::Page<se_store::ProjectionRecord>> {
+    let mut snap = reader
+        .snapshot(read_scope(admission))
+        .map_err(|e| store_error(&e))?;
+    let result = snap
+        .projects(super::super::select::budget(None)?)
+        .map_err(|e| store_error(&e));
+    let closed = snap.close().map_err(|e| store_error(&e));
+    match result {
+        Ok(page) => {
+            closed?;
+            Ok(page)
+        }
+        Err(error) => Err(match closed {
+            Ok(()) => error,
+            Err(close) => error.with_cause(close),
+        }),
+    }
+}
+fn project_summary_row<R: ReadStore>(
+    reader: &R,
+    admission: &Admission,
+    deadline: std::time::Instant,
+    record: se_store::ProjectionRecord,
+) -> Result<ProjectSummary> {
+    let (id, name, roots) = match record.current.body {
+        EventBody::ProjectRegistered {
+            project,
+            name,
+            roots,
+            ..
+        }
+        | EventBody::ProjectUpdated {
+            project,
+            name,
+            roots,
+            ..
+        } => (project, name, roots),
+        EventBody::ProjectMoved {
+            project, name, to, ..
+        } => (project, name, vec![to.clone()]),
+        _ => {
+            return Err(scope::unreadable(
+                "registered project",
+                "active metadata has an unexpected event kind",
+            ));
+        }
+    };
+    let mut errors = Vec::new();
+    let root = match roots
+        .first()
+        .ok_or_else(|| scope::unreadable("registered project", "repository root is absent"))
+        .and_then(|root| root.path.to_local())
+    {
+        Ok(path) => Some(path.display().to_string()),
+        Err(error) => {
+            errors.push(error.body);
+            None
+        }
+    };
+    let mut project_admission = admission.clone();
+    project_admission.scope = Scope::Project(id.clone());
+    let mut agents_running = None;
+    let mut owner_unread = None;
+    match reader.snapshot(read_scope(&project_admission)) {
+        Err(error) => errors.push(store_error(&error).body),
+        Ok(mut snap) => {
+            let observed = super::super::select::budget(None)
+                .and_then(|budget| prepare_running(&mut snap, &project_admission, budget));
+            match snap.message_count(MessageQuery {
+                sender: None,
+                recipient: Some(admission.actor.clone()),
+                kind: None,
+                unread_only: true,
+                full_body: false,
+                direction: MailDirection::OldestFirst,
+            }) {
+                Ok(count) => owner_unread = Some(count),
+                Err(error) => errors.push(store_error(&error).body),
+            }
+            match snap.close() {
+                Err(error) => {
+                    if let Err(read_error) = observed {
+                        errors.push(read_error.body);
+                    }
+                    errors.push(store_error(&error).body);
+                    owner_unread = None;
+                }
+                Ok(()) => match observed.and_then(|rows| count_running(rows, deadline)) {
+                    Ok(count) => agents_running = Some(count),
+                    Err(error) => errors.push(error.body),
+                },
+            }
+        }
+    }
+    Ok(ProjectSummary {
+        id,
+        name,
+        root,
+        agents_running,
+        owner_unread,
+        errors,
+    })
 }
 
 /// Copy the same saved-agent rows and native plans as project status. A finite
