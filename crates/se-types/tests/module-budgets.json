@@ -22,12 +22,12 @@
   "se-store-contract": 2810,
   "se-store-codec": 991,
   "se-core": 24310,
-  "se-render": 3481,
+  "se-render": 4000,
   "se": 23288,
   "se-atlas": 16453,
   "se-atlas-cold": 5694,
   "se-types": 5427,
-  "se-cli-spec": 2070,
+  "se-cli-spec": 2600,
   "se-atlas-host": 8310
  },
  "directories": {
