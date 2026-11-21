@@ -1,0 +1,20 @@
+[package]
+name = "se-store-sql"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+se-store-contract = { path = "../se-store-contract" }
+se-proc = { path = "../se-proc" }
+se-types = { path = "../se-types" }
+se-trusted-path = { path = "../se-trusted-path" }
+rusqlite = { version = "0.41", features = ["bundled", "functions", "hooks", "backup"] }
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

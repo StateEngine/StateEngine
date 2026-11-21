@@ -93,7 +93,6 @@
   "crates/se-host/src/remote/auth": 6,
   "crates/se-host/src/remote/session": 6,
   "crates/se-host/src/remote/ssh": 6,
-  "crates/se-store/src/channel": 6,
   "crates/se-store/src/read/channel": 6,
   "crates/se/src/route/diagnostic_bundle": 5,
   "crates/se/src/route/setup": 5,
@@ -144,7 +143,7 @@
   "crates/se-proc/src/linux_native": 4,
   "crates/se-proc/src/runtime/validate": 4,
   "crates/se-store/src/codec/capture": 4,
-  "crates/se-store/src/error": 4,
+  "crates/se-store-sql/src/error": 4,
   "crates/se-store/src/writer": 4,
   "crates/se-types/src/error": 4,
   "crates/se-types/src/surface": 4
