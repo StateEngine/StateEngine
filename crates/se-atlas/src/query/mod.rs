@@ -73,20 +73,7 @@ pub trait RecordReader {
         query: Option<&QueryText>,
     ) -> AtlasResult<Read<HitBody>>;
 }
-pub trait LiveSource: crate::lifecycle::AtlasSource {
-    fn open_stream(
-        &self,
-        path: &RelativePath,
-    ) -> AtlasResult<Option<Box<dyn crate::source::SourceFile + '_>>>;
-}
-impl<A: crate::source::SourceAccess> LiveSource for crate::source::RegisteredSource<A> {
-    fn open_stream(
-        &self,
-        path: &RelativePath,
-    ) -> AtlasResult<Option<Box<dyn crate::source::SourceFile + '_>>> {
-        self.open(path)
-    }
-}
+pub use crate::source::LiveSource;
 pub struct ReaderContext<'a> {
     pub memory: Option<MemoryBudget>,
     pub viewer: AtlasPrincipal,

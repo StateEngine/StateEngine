@@ -26,28 +26,37 @@ pub(super) fn open_relative(root: &File, path: &str) -> io::Result<File> {
 pub(super) fn open_directory(root: &File, path: &str) -> io::Result<File> {
     open_components(root, if path.is_empty() { "." } else { path }, true)
 }
+pub(super) fn open_component(parent: &File, part: &str, is_directory: bool) -> io::Result<File> {
+    let name = CString::new(part).map_err(|_| invalid("NUL in source component"))?;
+    let flags = libc::O_RDONLY
+        | libc::O_CLOEXEC
+        | libc::O_NOFOLLOW
+        | if is_directory {
+            libc::O_DIRECTORY
+        } else {
+            libc::O_NONBLOCK
+        };
+    // SAFETY: live retained directory and one validated relative component;
+    // no link traversal, creation, writes or inherited descriptors.
+    let fd = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) };
+    let child = owned(fd)?;
+    let m = child.metadata()?;
+    if (is_directory && !m.is_dir()) || (!is_directory && !m.is_file()) {
+        return Err(invalid(
+            "regular source file or directory required; links and devices refused",
+        ));
+    }
+    Ok(child)
+}
 fn open_components(root: &File, path: &str, last_directory: bool) -> io::Result<File> {
-    let mut directory = root.try_clone()?;
+    let mut held: Option<File> = None;
     let mut components = path.split('/').peekable();
     while let Some(part) = components.next() {
-        let name = CString::new(part).map_err(|_| invalid("NUL in source component"))?;
         let is_directory = components.peek().is_some() || last_directory;
-        let flags = libc::O_RDONLY
-            | libc::O_CLOEXEC
-            | libc::O_NOFOLLOW
-            | if is_directory {
-                libc::O_DIRECTORY
-            } else {
-                libc::O_NONBLOCK
-            };
-        // SAFETY: live retained directory and one validated relative component;
-        // no link traversal, creation, writes or inherited descriptors.
-        let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
-        let child = owned(fd)?;
-        revision(&child, is_directory)?;
-        directory = child;
+        let parent = held.as_ref().unwrap_or(root);
+        held = Some(open_component(parent, part, is_directory)?);
     }
-    Ok(directory)
+    held.ok_or_else(|| invalid("bounded slash-separated root-relative source path required"))
 }
 fn owned(fd: libc::c_int) -> io::Result<File> {
     if fd < 0 {
@@ -55,6 +64,11 @@ fn owned(fd: libc::c_int) -> io::Result<File> {
     }
     // SAFETY: successful native open transferred this uniquely owned fd.
     Ok(unsafe { File::from_raw_fd(fd) })
+}
+pub(super) fn same_object(a: &File, b: &File) -> io::Result<bool> {
+    let ma = a.metadata()?;
+    let mb = b.metadata()?;
+    Ok(ma.dev() == mb.dev() && ma.ino() == mb.ino())
 }
 pub(super) fn revision(file: &File, directory: bool) -> io::Result<NativeFileRevision> {
     let m = file.metadata()?;

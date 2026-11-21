@@ -1,7 +1,7 @@
 //! Text pages recompute one bounded matching-file window, then advance by file.
 //! A cursor holds only its window start and last ranked result, never source bytes.
 use super::candidates::{Candidate, Kind};
-use super::text_files::{FileCandidate, file_window};
+use super::text_files::file_window;
 use super::text_rank::{Hit, RankedWindow};
 use super::*;
 const MAX_MATCHING_FILES: usize = 200;
@@ -178,6 +178,7 @@ impl QueryReader<'_, '_, '_> {
                 .reasons
                 .push(CoverageReason::ReadFailure);
         }
+        let mut scan = source.map(LiveSource::open_scan).transpose()?;
         'scan: loop {
             if pinned
                 .as_ref()
@@ -186,19 +187,19 @@ impl QueryReader<'_, '_, '_> {
                 more_window = pinned.as_ref().is_some_and(|p| p.has_more);
                 break;
             }
-            let Some(source) = source else {
+            let Some(scan) = scan.as_mut() else {
                 break;
             };
             if crate::clock::now() >= work_end || matching == MAX_MATCHING_FILES {
                 more_window = true;
                 break;
             }
-            let (ids, has_more) = file_window(sql, position.0, &position.2, &query.scope)?;
-            if ids.is_empty() {
+            let (files_batch, has_more) = file_window(sql, position.0, &position.2, &query.scope)?;
+            if files_batch.is_empty() {
                 break;
             }
             let exhausted = !has_more;
-            for FileCandidate { id, last, key } in ids {
+            for file in files_batch {
                 if pinned
                     .as_ref()
                     .is_some_and(|p| at_window_end(position.0, position.1, &position.2, p))
@@ -210,9 +211,8 @@ impl QueryReader<'_, '_, '_> {
                     more_window = true;
                     break 'scan;
                 }
-                let file = file_by_id(sql, id)?;
                 let previous_end = window_end;
-                position = (true, last.unwrap_or(i64::MIN), key.to_vec());
+                position = (true, i64::MIN, file.pointer.file.0.to_vec());
                 window_end = Some((position.1, file.pointer.file));
                 if crate::policy::built_in_denied(&file.pointer.path) {
                     continue;
@@ -226,7 +226,7 @@ impl QueryReader<'_, '_, '_> {
                     continue;
                 }
                 stats.scanned_files += 1;
-                let Some(stream) = source.open_stream(&file.pointer.path)? else {
+                let Some(stream) = scan.open(&file.pointer.path)? else {
                     range_incomplete = true;
                     stats.unavailable_files += 1;
                     if !snapshot
@@ -345,7 +345,7 @@ impl QueryReader<'_, '_, '_> {
                     key: file.pointer.file.0.to_vec(),
                     tie: file.pointer.path.as_str().into(),
                     activity,
-                    precomputed_last: last,
+                    precomputed_last: None,
                     lexical: metadata.as_ref().map_or(0.0, |(_, _, lexical, _)| *lexical),
                     related: metadata.as_ref().is_some_and(|(_, _, _, related)| *related),
                     downweighted: false,
@@ -406,6 +406,9 @@ impl QueryReader<'_, '_, '_> {
             if exhausted {
                 break;
             }
+        }
+        if let Some(scan) = scan {
+            scan.finish()?;
         }
         if let Some(pinned) = &pinned
             && !at_window_end(position.0, position.1, &position.2, pinned)
