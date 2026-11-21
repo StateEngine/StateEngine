@@ -105,7 +105,7 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
     let page = fetch_page(cx.read, &input, query)?;
     let window = page.window().clone();
     let next = page.next().cloned();
-    let (items, actors) = render_rows(&input, &full_command, cx, page)?;
+    let (items, mut actors) = render_rows(&input, &full_command, cx, page)?;
     let view = page_view(&input, cx, &to, &from, &mut actors)?;
     Ok(MessagePage {
         view,
