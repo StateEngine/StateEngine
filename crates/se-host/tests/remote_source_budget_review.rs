@@ -212,7 +212,9 @@ fn one_machine_cannot_exhaust_another_machines_source_budget() -> Check {
             store,
             &Identity,
             execution.generation,
-            Arc::new(execution.blocking.clone()),
+            Arc::new(se_host::remote::RemoteBlockingRunner(
+                execution.blocking.clone(),
+            )),
         )?;
         let devices = machine_sessions(&security, &f).await?;
         let result = check_budgets(&security, &devices, &f);

@@ -64,7 +64,10 @@ pub mod broker;
 pub(crate) use se_remote_host::view_request;
 
 #[cfg(feature = "remote")]
-impl se_remote_host::BlockingRunner for crate::runtime::BlockingPool {
+pub struct RemoteBlockingRunner(pub crate::runtime::BlockingPool);
+
+#[cfg(feature = "remote")]
+impl se_remote_host::BlockingRunner for RemoteBlockingRunner {
     fn run_foreground(
         &self,
         timeout: std::time::Duration,
@@ -77,7 +80,8 @@ impl se_remote_host::BlockingRunner for crate::runtime::BlockingPool {
                     timeout,
                     cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 })?;
-            self.run(crate::runtime::BlockingClass::Foreground, &deadline, work)
+            self.0
+                .run(crate::runtime::BlockingClass::Foreground, &deadline, work)
                 .await
         })
     }
@@ -93,7 +97,7 @@ impl se_remote_host::BlockingRunner for crate::runtime::BlockingPool {
                     timeout,
                     cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 })?;
-            self.run_owned(&deadline, work).await
+            self.0.run_owned(&deadline, work).await
         })
     }
 }

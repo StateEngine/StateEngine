@@ -144,7 +144,7 @@ impl Control {
             store,
             &*key,
             context.generation,
-            Arc::new(context.blocking.clone()),
+            Arc::new(RemoteBlockingRunner(context.blocking.clone())),
         )?);
         let startup = startup::Fence::load(&*files, &root, &security)?;
         let records = Arc::new(bindings::ProtectedBindings::new(files.clone(), root));

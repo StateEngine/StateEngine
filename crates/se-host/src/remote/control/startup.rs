@@ -266,7 +266,7 @@ impl Control {
                 self.security.store.clone(),
                 &*self.key,
                 context.generation,
-                Arc::new(context.blocking.clone()),
+                Arc::new(RemoteBlockingRunner(context.blocking.clone())),
             )?);
             eprintln!("{}", self.startup.notice());
         }
