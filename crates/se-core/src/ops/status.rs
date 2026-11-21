@@ -86,6 +86,7 @@ pub fn missing(home: String, generated_at: String, checked: String) -> StatusOut
         },
         pending: vec![],
         projects: None,
+        peers: None,
         next: NextStep {
             text: "Initialize this repository, then launch your first agent.".into(),
             command: "se init".into(),

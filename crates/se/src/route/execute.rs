@@ -477,6 +477,7 @@ fn dispatch_with_cold_recovery(
             .map(|pending| pending.finish(daemon_answer_is_used(cx, &output)))
             .transpose()?
             .flatten();
+        super::status::host_peers(&mut output, observed.as_ref(), &caller.admission);
         let mut service_observation = None;
         if let Some(observed) = observed
             && let AnyOutput::ProjectStatus(status) = &mut output

@@ -124,5 +124,9 @@ pub struct StatusOutput {
     pub atlas: AtlasView,
     pub pending: Vec<PendingFact>,
     pub projects: Option<Page<ProjectSummary>>,
+    /// For an agent caller, a summary of each other agent in its project. Only
+    /// the summary fields exist on a peer row; absent for the owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peers: Option<Read<Vec<super::PeerRow>>>,
     pub next: NextStep,
 }

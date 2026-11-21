@@ -198,3 +198,75 @@ pub(crate) fn working_note<R: Snapshot>(
         },
     })
 }
+
+/// Peer summaries from a settled owner status of the same project: every agent
+/// but the caller, reduced to the fields a peer row holds.
+pub fn peer_rows(owner: &AnyOutput, caller: &AgentId) -> Read<Vec<PeerRow>> {
+    let AnyOutput::ProjectStatus(status) = owner else {
+        return Read::Unreadable {
+            source: "peer summaries".into(),
+            reason: "the owner read returned another operation family".into(),
+            error: None,
+        };
+    };
+    let Some(agents) = &status.value.agents else {
+        return Read::Absent {
+            checked: "the owner status listed no agents".into(),
+        };
+    };
+    if agents.next().is_some() {
+        return Read::Unknown {
+            what: "the project has more agents than one status page; peer summaries are not shown partially".into(),
+        };
+    }
+    Read::Present {
+        value: agents
+            .items()
+            .iter()
+            .filter(|row| &row.id != caller)
+            .map(|row| PeerRow {
+                id: row.id.clone(),
+                name: row.name.clone(),
+                role: row.role.clone(),
+                provider: row.provider,
+                state: row.state.clone(),
+                working_note: row.working_note.clone(),
+            })
+            .collect(),
+    }
+}
+
+/// The peer list a CLI read reports for its caller, from the host answer it
+/// merged: copied when the host answered status, unreadable when it answered
+/// with an error or another operation, unknown when no host answered. The
+/// owner gets no peer list.
+pub fn host_peers(
+    peers: &mut Option<Read<Vec<PeerRow>>>,
+    observed: Option<&Result<AnyOutput>>,
+    agent_caller: bool,
+) {
+    if !agent_caller {
+        return;
+    }
+    *peers = Some(match observed {
+        Some(Ok(AnyOutput::ProjectStatus(live))) => match &live.value.peers {
+            Some(value) => value.clone(),
+            None => Read::Unknown {
+                what: "the host answered without peer summaries".into(),
+            },
+        },
+        Some(Ok(_)) => Read::Unreadable {
+            source: "peer summaries".into(),
+            reason: "the host returned a different operation family".into(),
+            error: None,
+        },
+        Some(Err(error)) => Read::Unreadable {
+            source: "peer summaries".into(),
+            reason: error.to_string(),
+            error: Some(Box::new(error.body.clone())),
+        },
+        None => Read::Unknown {
+            what: "Peer summaries come from the running host, which did not answer this read; start it with se up.".into(),
+        },
+    });
+}

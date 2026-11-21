@@ -17,6 +17,7 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     project_lines(value, out)?;
     runtime_lines(value, out)?;
     agents_section(value, out)?;
+    peers_section(value, out)?;
     projects_section(value, out)?;
     unread_lines(value, out)?;
     recording_lines(value, healthy_stopped, out)?;
@@ -168,6 +169,42 @@ fn agents_section(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> 
         omissions(agents, out)?;
     }
     Ok(())
+}
+fn peers_section(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
+    match &value.peers {
+        None => Ok(()),
+        Some(se_types::Read::Present { value: peers }) => {
+            if peers.is_empty() {
+                writeln!(out, "  Peers: none")?;
+            }
+            for peer in peers {
+                let state = peer
+                    .state
+                    .as_ref()
+                    .map_or_else(|| "state unknown".into(), crew_state);
+                writeln!(out, "  Peer {}: {state}", peer.name)?;
+                if let Some(question) = peer.state.as_ref().and_then(|s| s.waiting_on.as_ref()) {
+                    writeln!(
+                        out,
+                        "    Waiting on {} (asked {})",
+                        question.to, question.asked_at
+                    )?;
+                }
+                if let Some(se_types::Read::Present { value: note }) = &peer.working_note
+                    && !note.text.is_empty()
+                {
+                    let more = if note.truncated { " …" } else { "" };
+                    writeln!(out, "    Note: {}{more}", note.text)?;
+                }
+            }
+            Ok(())
+        }
+        Some(se_types::Read::Absent { .. }) => writeln!(out, "  Peers: none"),
+        Some(se_types::Read::Unknown { what }) => writeln!(out, "  Peers: unknown ({what})"),
+        Some(se_types::Read::Unreadable { reason, .. }) => {
+            writeln!(out, "  Peers: unreadable ({reason})")
+        }
+    }
 }
 /// "working for 4m", "idle for 2h 5m", or the bare state when its start is unknown.
 fn crew_state(state: &se_core::ops::AgentStateView) -> String {
