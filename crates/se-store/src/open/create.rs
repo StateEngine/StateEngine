@@ -108,6 +108,9 @@ fn build_staged(
         reader.validate_connection(db)
     })?;
     reader.validate_identity()?;
+    if identity.mode == LeaseMode::Host {
+        crate::erasure::permit::install(&db)?;
+    }
     let identity = LeaseIdentity {
         store: Some(id),
         ..identity

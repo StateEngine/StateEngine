@@ -150,6 +150,7 @@ impl SqliteFactory {
                 })?;
                 let info = connection::info_at(&db, &reader.path)?;
                 let identity = crate::open::validate_lease(&info, lease, LeaseMode::Host)?;
+                crate::erasure::permit::install(&db)?;
                 let context = BackupContext::bound(
                     &info,
                     identity.generation,

@@ -2,7 +2,6 @@
 //! store header, the identity dictionary, value conversion and error mapping.
 //! Event rules, reads and the writer build on it in the store.
 pub mod connection;
-pub mod erase_permit;
 pub mod error;
 pub mod identity;
 pub mod sql_value;

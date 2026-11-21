@@ -3,7 +3,7 @@
 //! its write-ahead log, and replaces every backup generation taken before it.
 //! Copies outside the store's custody are named, never treated as erased.
 pub(crate) mod apply;
-pub(crate) use se_store_sql::erase_permit as permit;
+pub(crate) mod permit;
 use crate::{connection, error::*, open::SqliteHost, *};
 use rusqlite::{Connection, OptionalExtension};
 use se_types::{EventId, HumanId, NativePath};
