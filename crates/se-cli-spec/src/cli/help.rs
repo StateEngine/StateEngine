@@ -47,6 +47,9 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
         "history.list" => {
             "Read the public timeline: conversations, mail, decisions, working state and saved identity changes"
         }
+        "history.search" => {
+            "Search authorized project history text with bounded candidate scanning"
+        }
         "message.send" => "Send one direct message or a shared project message (the floor)",
         "message.read" => "Read one complete message and mark it read as its recipient",
         "message.ack" => "Mark your received message read without returning its body",

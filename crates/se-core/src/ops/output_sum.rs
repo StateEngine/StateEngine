@@ -109,6 +109,7 @@ DoctorInspect => DoctorInspect, Diagnosis;
 DoctorRepair => DoctorRepair, RepairOutput;
 EventRead => EventRead, EventOutput;
 HistoryList => HistoryList, HistoryPage;
+HistorySearch => HistorySearch, SearchPage;
 MessageSend => MessageSend, MessageOutput;
 MessageList => MessageList, MessagePage;
 MessageRead => MessageRead, MessageReadOutput;

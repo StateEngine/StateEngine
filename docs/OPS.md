@@ -126,7 +126,7 @@ Plain `se init` (including `--repo DIR`) is managed setup and writes nothing ins
 | `continuity.resume` | `resume [--since CURSOR --budget BYTES --limit N] [--preview AGENT]` | `stateengine_resume` | either | read | opaque since cursor, bounded context budget; preview target only for owner | `Resume`: verified principal, continuity/working state, required reads, omissions/deferred retrieval, next cursor and integrity/readiness facts | J3, J4 |
 | `working_state.get` | `working-state [--agent AGENT]` | `stateengine_working_state_get` | either | read | owner selector or implicit self | `Read<WorkingState>`: text and revision/absence fact | J3 |
 | `working_state.set` | `working-state set TEXT [--agent AGENT] --expect REV` | `stateengine_working_state_set` | either | write | text, expected revision or explicit absent sentinel; owner selector or implicit self | `WorkingStateReceipt`: new revision/readback; revision conflict uses the common error channel with expected/current revision and no event | J3 |
-| `history.search` | `search QUERY` | `stateengine_search` | either | read | query, authorized record-kind/time filters, page/budget | `Page<SearchHit>`: pointers/snippets, scope/window and omissions; matches are not authority | planned J3, J4 |
+| `history.search` | `search QUERY` | `stateengine_search` | either | read | query, authorized record-kind/time filters, page/budget | `Page<SearchHit>`: pointers/snippets, scope/window and omissions; matches are not authority | J3, J4 |
 | `history.list` | `history [--agent AGENT --position CURSOR]` | none — agents use search/resume and event_read for bounded retrieval | either | read | owner agent filter or implicit self, position/page | `Page<HistoryEvent>`: attributable turns/messages/decisions within authorized scope | J3, J4 |
 | `history.event_read` | `history --event ID` | `stateengine_event_read` | either | read | event ID in authorized project/history scope | `Read<HistoryEvent>`: independent committed-event readback, checked source/window and provenance | J3, J4 |
 
@@ -276,7 +276,7 @@ Crew can omit the recipient for a `question`, `blocker`, or `done` message to se
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 57 operations (51 core, 6 Atlas), 28 MCP tools (23 core, 5 Atlas). Planned: 8 operations, 3 MCP tools.
+Registered: 58 operations (52 core, 6 Atlas), 29 MCP tools (24 core, 5 Atlas). Planned: 7 operations, 2 MCP tools.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -311,6 +311,7 @@ Registered: 57 operations (51 core, 6 Atlas), 28 MCP tools (23 core, 5 Atlas). P
 | `project.status` | status | `stateengine_status` | either | read |
 | `history.event_read` | history --event | `stateengine_event_read` | either | read |
 | `history.list` | history | none | either | read |
+| `history.search` | search | `stateengine_search` | either | read |
 | `message.send` | msg send | `stateengine_msg_send` | either | write |
 | `message.read` | msg read | `stateengine_msg_read` | either | write |
 | `message.ack` | msg ack | `stateengine_msg_ack` | either | write |
@@ -338,7 +339,7 @@ Registered: 57 operations (51 core, 6 Atlas), 28 MCP tools (23 core, 5 Atlas). P
 | `config.set` | config set | none | owner | write |
 | `config.list` | config list | none | owner | read |
 
-Planned operations (design tables, not yet registered): `credential.rotate`, `history.search`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`, `store.restore`
+Planned operations (design tables, not yet registered): `credential.rotate`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`, `store.restore`
 
-Planned MCP tools: `stateengine_agent_status`, `stateengine_search`, `stateengine_session_turn`
+Planned MCP tools: `stateengine_agent_status`, `stateengine_session_turn`
 <!-- END GENERATED: ops-inventory -->

@@ -2,151 +2,16 @@
 //! receive the same deadline; reconnect never renews a request's clock.
 use crate::client::ClientOptions;
 use se_types::{Result, SeError};
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 mod follow;
 
-pub const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 /// Bounded cold-handshake warm-up budget for a freshly started client door
 /// connecting to a contended host. Ordinary refusal paths still use HELLO_TIMEOUT.
 pub const COLD_HELLO_BUDGET: Duration = Duration::from_secs(15);
 const COLD_HELLO_ATTEMPTS: usize = 3;
 const COLD_HELLO_PAUSE: Duration = Duration::from_millis(50);
-pub const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-pub const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
-pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
-
-#[derive(Clone)]
-pub struct Deadline {
-    started: Instant,
-    at: Instant,
-    budget: Duration,
-    cancelled: Arc<AtomicBool>,
-}
-impl Deadline {
-    pub fn from_options(options: &ClientOptions) -> Result<Self> {
-        let timeout = options.timeout.min(CALL_TIMEOUT);
-        if timeout.is_zero() {
-            return Err(SeError::invalid(
-                "IPC timeout",
-                "a positive bounded duration",
-            ));
-        }
-        Self::new(timeout, Arc::clone(&options.cancelled))
-    }
-    fn new(timeout: Duration, cancelled: Arc<AtomicBool>) -> Result<Self> {
-        let started = Instant::now();
-        let at = started
-            .checked_add(timeout)
-            .ok_or_else(|| SeError::invalid("IPC deadline", "a representable absolute deadline"))?;
-        let deadline = Self {
-            started,
-            at,
-            budget: timeout,
-            cancelled,
-        };
-        deadline.remaining()?;
-        Ok(deadline)
-    }
-    #[cfg(feature = "listener")]
-    pub(crate) fn idle() -> Result<Self> {
-        Self::new(IDLE_TIMEOUT, Arc::new(AtomicBool::new(false)))
-    }
-    #[cfg(feature = "listener")]
-    pub(crate) fn next_call(&self) -> Result<Self> {
-        Self::new(CALL_TIMEOUT, Arc::clone(&self.cancelled))
-    }
-    /// Retained native supervision keeps the original absolute deadline while
-    /// a disconnected client can no longer cancel its cleanup ownership.
-    #[cfg(feature = "listener")]
-    pub(crate) fn retained(&self) -> Self {
-        Self {
-            started: self.started,
-            at: self.at,
-            budget: self.budget,
-            cancelled: Arc::new(AtomicBool::new(false)),
-        }
-    }
-    /// Include the producer notification before any supervisor scheduling delay.
-    #[cfg(feature = "listener")]
-    pub(crate) fn observed_since(mut self, observed_at: Instant) -> Self {
-        self.started = self.started.min(observed_at);
-        self
-    }
-    pub fn at(&self) -> Instant {
-        self.at
-    }
-    #[cfg(feature = "channels")]
-    pub(crate) fn to_channel_deadline(&self) -> se_channels::ChannelDeadline {
-        se_channels::ChannelDeadline::from_parts(self.at, self.budget, Arc::clone(&self.cancelled))
-    }
-    #[cfg(feature = "channels")]
-    pub(crate) fn from_channel_deadline(deadline: &se_channels::ChannelDeadline) -> Result<Self> {
-        let budget = deadline.remaining()?;
-        let started = Instant::now();
-        Ok(Self {
-            started,
-            at: deadline.at(),
-            budget,
-            cancelled: deadline.cancelled(),
-        })
-    }
-    /// Stages and retained cleanup preserve the originating native request's
-    /// start so decoding and admission never disappear from a visible clock.
-    #[cfg(feature = "remote")]
-    pub(crate) fn started(&self) -> Instant {
-        self.started
-    }
-    /// Share a shutdown clock without discarding this caller's cancellation.
-    #[cfg(feature = "listener")]
-    pub(crate) fn capped_by(&self, limit: &Self) -> Self {
-        Self {
-            started: self.started.min(limit.started),
-            at: self.at.min(limit.at),
-            budget: self.budget.min(limit.budget),
-            cancelled: Arc::clone(&self.cancelled),
-        }
-    }
-    pub fn stage(&self, maximum: Duration) -> Result<Self> {
-        let budget = maximum.min(self.remaining()?);
-        let at = Instant::now()
-            .checked_add(budget)
-            .ok_or_else(|| SeError::invalid("IPC stage", "a representable deadline"))?
-            .min(self.at);
-        Ok(Self {
-            started: self.started,
-            at,
-            budget,
-            cancelled: Arc::clone(&self.cancelled),
-        })
-    }
-    pub fn remaining(&self) -> Result<Duration> {
-        if self.cancelled.load(Ordering::Acquire) {
-            return Err(SeError::new(se_types::Detail::Cancelled(
-                se_types::details::Cancelled {
-                    op: "local IPC".into(),
-                },
-            )));
-        }
-        self.at
-            .checked_duration_since(Instant::now())
-            .filter(|duration| !duration.is_zero())
-            .ok_or_else(|| {
-                SeError::new(se_types::Detail::DeadlineExceeded(
-                    se_types::details::DeadlineExceeded {
-                        op: "local IPC".into(),
-                        deadline_ms: self.budget.as_millis() as u64,
-                    },
-                ))
-            })
-    }
-}
+pub use se_harness::{CALL_TIMEOUT, Deadline, HELLO_TIMEOUT, IDLE_TIMEOUT, WRITE_TIMEOUT};
 
 #[cfg(unix)]
 type NativeStream = se_proc::native_ipc::NativeUnixStream;
@@ -192,14 +57,6 @@ pub struct BlockingConnection {
     last_activity: Instant,
     issued_at: Instant,
     renew_needed: bool,
-}
-impl Deadline {
-    pub fn native_bound(&self) -> se_proc::native_ipc::IpcIoBound {
-        se_proc::native_ipc::IpcIoBound {
-            deadline: self.at,
-            cancelled: Arc::clone(&self.cancelled),
-        }
-    }
 }
 pub(crate) fn native_error(cause: se_proc::native_ipc::IpcNativeError) -> SeError {
     let detail = match cause.code {
@@ -317,7 +174,7 @@ impl crate::client::BlockingIpcClient {
     ) -> Result<BlockingConnection> {
         let budget = Deadline::from_options(options)?;
         let warmup = budget.stage(COLD_HELLO_BUDGET)?;
-        let warmup_budget = warmup.budget;
+        let warmup_budget = warmup.budget();
         let started = Instant::now();
         let mut attempt = 0usize;
         loop {

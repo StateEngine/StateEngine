@@ -1,6 +1,6 @@
 //! Finite admitted identity reads; absence and an incomplete search remain distinct.
 use crate::store_error::store_error;
-use se_store::{Actor, Admission, EventBody, ReadBudget, Scope, Snapshot};
+use se_store::{Actor, Admission, EventBody, ProjectionRecord, ReadBudget, Scope, Snapshot};
 use se_types::{AgentId, Detail, PageRequest, ProjectId, Read, Result, SeError, details};
 use std::{num::NonZeroU32, time::Duration};
 
@@ -86,65 +86,17 @@ impl se_types::OperationCommand for AgentChoices<'_> {
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn actor_selector<R: Snapshot>(read: &mut R, selector: &str) -> Result<Actor> {
-    if let Ok(id) = AgentId::from_legacy(selector.to_owned()) {
-        let actor = Actor::Agent(id);
-        require_present(
-            read.principal(actor.clone()).map_err(|e| store_error(&e))?,
-            selector,
-            "Select an existing principal in this project, using its exact agent ID or registered name.",
-        )?;
+    if let Some(actor) = legacy_direct_principal(read, selector)? {
         return Ok(actor);
     }
-    let (registered, alias) = {
-        let registry = read.legacy_registry().map_err(|e| store_error(&e))?;
-        let registered = if se_types::LegacyIdRegistry::contains(
-            &registry,
-            se_types::IdKind::AgentId,
-            selector,
-        )? {
-            Some(AgentId::from_registered_legacy(
-                selector.to_owned(),
-                &registry,
-            )?)
-        } else {
-            None
-        };
-        let alias = se_types::LegacyIdRegistry::resolve_alias(
-            &registry,
-            se_types::IdKind::AgentId,
-            selector,
-        )?;
-        let alias = alias
-            .map(|wire| {
-                AgentId::from_legacy(wire.clone())
-                    .or_else(|_| AgentId::from_registered_legacy(wire, &registry))
-            })
-            .transpose()?;
-        (registered, alias)
-    };
-    if let Some(id) = registered {
-        let actor = Actor::Agent(id);
-        require_present(
-            read.principal(actor.clone()).map_err(|e| store_error(&e))?,
-            selector,
-            "Select an exact source-registered principal in this project.",
-        )?;
+    let (registered, alias) = legacy_registry_lookup(read, selector)?;
+    if let Some(actor) = registered_principal(read, registered, selector)? {
         return Ok(actor);
     }
     let mut after = None;
     let mut matches = Vec::new();
-    if let Some(agent) = alias {
-        let actor = Actor::Agent(agent);
-        require_present(
-            read.principal(actor.clone()).map_err(|e| store_error(&e))?,
-            selector,
-            "Restore the exact imported alias principal.",
-        )?;
+    if let Some(actor) = alias_principal(read, alias, selector)? {
         matches.push(actor);
     }
     // A finite bound is explicit; exhausting it is never reported as absence.
@@ -162,20 +114,8 @@ pub fn actor_selector<R: Snapshot>(read: &mut R, selector: &str) -> Result<Actor
             })
             .map_err(|e| store_error(&e))?;
         for record in page.items() {
-            match &record.current.body {
-                EventBody::PrincipalRegistered {
-                    principal, name, ..
-                }
-                | EventBody::PrincipalRenamed {
-                    principal, name, ..
-                } if (selector != "owner" && name == selector)
-                    || matches!(&record.original.as_deref().unwrap_or(&record.current).body,
-                        EventBody::PrincipalRegistered { principal: Actor::Human(human), owner, .. }
-                        if human == owner && (selector == "owner" || human.as_str() == selector)) =>
-                {
-                    matches.push(principal.clone())
-                }
-                _ => (),
+            if let Some(principal) = matched_principal(record, selector) {
+                matches.push(principal.clone());
             }
         }
         if let Some(next) = page.next() {
@@ -188,28 +128,138 @@ pub fn actor_selector<R: Snapshot>(read: &mut R, selector: &str) -> Result<Actor
                 "the finite principal read was incomplete",
             ));
         }
-        matches.sort_by_key(|actor| actor.wire().to_owned());
-        matches.dedup();
-        return match matches.as_slice() {
-            [actor] => Ok(actor.clone()),
-            [] => Err(target_unknown(
-                selector,
-                "not present in the admitted project snapshot",
-                "Select an existing principal in this project, using its exact agent ID or registered name.",
-            )),
-            actors => Err(SeError::new(Detail::SelectorAmbiguous(
-                details::SelectorAmbiguous {
-                    kind: "principal".into(),
-                    selector: selector.into(),
-                    matches: actors.iter().map(|actor| actor.wire().to_owned()).collect(),
-                },
-            ))),
-        };
+        return resolve_actor_matches(selector, matches);
     }
     Err(unreadable(
         "principal lookup",
         "the bounded lookup exceeded 6400 principals; use an exact agent ID",
     ))
+}
+fn principal_actor<R: Snapshot>(
+    read: &mut R,
+    actor: Actor,
+    selector: &str,
+    next_step: &str,
+) -> Result<Actor> {
+    require_present(
+        read.principal(actor.clone()).map_err(|e| store_error(&e))?,
+        selector,
+        next_step,
+    )?;
+    Ok(actor)
+}
+fn legacy_direct_principal<R: Snapshot>(read: &mut R, selector: &str) -> Result<Option<Actor>> {
+    let Ok(id) = AgentId::from_legacy(selector.to_owned()) else {
+        return Ok(None);
+    };
+    let actor = Actor::Agent(id);
+    principal_actor(
+        read,
+        actor,
+        selector,
+        "Select an existing principal in this project, using its exact agent ID or registered name.",
+    )
+    .map(Some)
+}
+fn legacy_registry_lookup<R: Snapshot>(
+    read: &mut R,
+    selector: &str,
+) -> Result<(Option<AgentId>, Option<AgentId>)> {
+    let registry = read.legacy_registry().map_err(|e| store_error(&e))?;
+    let registered =
+        if se_types::LegacyIdRegistry::contains(&registry, se_types::IdKind::AgentId, selector)? {
+            Some(AgentId::from_registered_legacy(
+                selector.to_owned(),
+                &registry,
+            )?)
+        } else {
+            None
+        };
+    let alias =
+        se_types::LegacyIdRegistry::resolve_alias(&registry, se_types::IdKind::AgentId, selector)?;
+    let alias = alias
+        .map(|wire| {
+            AgentId::from_legacy(wire.clone())
+                .or_else(|_| AgentId::from_registered_legacy(wire, &registry))
+        })
+        .transpose()?;
+    Ok((registered, alias))
+}
+fn registered_principal<R: Snapshot>(
+    read: &mut R,
+    registered: Option<AgentId>,
+    selector: &str,
+) -> Result<Option<Actor>> {
+    let Some(id) = registered else {
+        return Ok(None);
+    };
+    let actor = Actor::Agent(id);
+    principal_actor(
+        read,
+        actor,
+        selector,
+        "Select an exact source-registered principal in this project.",
+    )
+    .map(Some)
+}
+fn alias_principal<R: Snapshot>(
+    read: &mut R,
+    alias: Option<AgentId>,
+    selector: &str,
+) -> Result<Option<Actor>> {
+    let Some(agent) = alias else {
+        return Ok(None);
+    };
+    let actor = Actor::Agent(agent);
+    principal_actor(
+        read,
+        actor,
+        selector,
+        "Restore the exact imported alias principal.",
+    )
+    .map(Some)
+}
+fn matched_principal<'a>(record: &'a ProjectionRecord, selector: &str) -> Option<&'a Actor> {
+    match &record.current.body {
+        EventBody::PrincipalRegistered {
+            principal, name, ..
+        }
+        | EventBody::PrincipalRenamed {
+            principal, name, ..
+        } if (selector != "owner" && name == selector)
+            || matches!(
+                &record.original.as_deref().unwrap_or(&record.current).body,
+                EventBody::PrincipalRegistered {
+                    principal: Actor::Human(human),
+                    owner,
+                    ..
+                }
+                if human == owner && (selector == "owner" || human.as_str() == selector)
+            ) =>
+        {
+            Some(principal)
+        }
+        _ => None,
+    }
+}
+fn resolve_actor_matches(selector: &str, mut matches: Vec<Actor>) -> Result<Actor> {
+    matches.sort_by_key(|actor| actor.wire().to_owned());
+    matches.dedup();
+    match matches.as_slice() {
+        [actor] => Ok(actor.clone()),
+        [] => Err(target_unknown(
+            selector,
+            "not present in the admitted project snapshot",
+            "Select an existing principal in this project, using its exact agent ID or registered name.",
+        )),
+        actors => Err(SeError::new(Detail::SelectorAmbiguous(
+            details::SelectorAmbiguous {
+                kind: "principal".into(),
+                selector: selector.into(),
+                matches: actors.iter().map(|actor| actor.wire().to_owned()).collect(),
+            },
+        ))),
+    }
 }
 /// The reader supplies recovery for its own source. This helper can run after
 /// a commit, so no read failure implies that the preceding write was undone.

@@ -514,6 +514,9 @@ impl Kernel {
             AnyOp::HistoryList(input) => {
                 OpStep::Complete(crate::ops::history::list(input, cx)?.into())
             }
+            AnyOp::HistorySearch(input) => {
+                OpStep::Complete(crate::ops::history::search(input, cx)?.into())
+            }
             AnyOp::EventRead(input) => OpStep::Complete(crate::ops::event::read(input, cx)?.into()),
             AnyOp::MessageList(input) => {
                 OpStep::Complete(crate::ops::message::list(input, cx)?.into())
