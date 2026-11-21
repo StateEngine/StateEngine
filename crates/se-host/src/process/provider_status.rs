@@ -22,6 +22,14 @@ impl LaunchCoordinator {
             }
             _ => (),
         }
+        // Every host read ends here, so each row's state is settled from its
+        // final merged observations, for the CLI and the MCP door alike.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| se_types::SeError::invalid("host clock", "after the Unix epoch"))?;
+        let now = i64::try_from(now.as_micros())
+            .map_err(|_| se_types::SeError::invalid("host clock", "representable microseconds"))?;
+        se_core::ops::agent_state::settle(&mut output, now)?;
         Ok(output)
     }
     fn observe_provider_page(&self, page: &Page<AgentRow>) -> Result<Page<AgentRow>> {
