@@ -2,7 +2,7 @@
 use super::*;
 
 impl Security {
-    pub(crate) fn source_fence(&self, address: &RemoteAgentAddress) -> Result<Arc<GrantFence>> {
+    pub fn source_fence(&self, address: &RemoteAgentAddress) -> Result<Arc<GrantFence>> {
         let (policy, pending) = self.store.read(|phase| {
             Ok((
                 phase.remote_source_permission(address)?,
@@ -40,7 +40,7 @@ impl Security {
         Ok(fence)
     }
 
-    pub(crate) fn source_fence_at(
+    pub fn source_fence_at(
         &self,
         address: &RemoteAgentAddress,
         revision: u64,

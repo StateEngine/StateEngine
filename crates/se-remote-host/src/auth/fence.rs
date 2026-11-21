@@ -17,15 +17,20 @@ struct State {
     open: bool,
     outputs: Vec<Weak<dyn OutputInvalidation>>,
 }
-pub(crate) struct GrantFence {
+pub struct GrantFence {
     state: Mutex<State>,
 }
 pub struct OutputFence<'a> {
     _guard: MutexGuard<'a, State>,
 }
 
+impl Default for GrantFence {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl GrantFence {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             state: Mutex::new(State {
                 open: true,
@@ -34,7 +39,7 @@ impl GrantFence {
         }
     }
     /// The returned guard is not Clone or Send and cannot escape to an async writer.
-    pub(crate) fn output(&self) -> Result<OutputFence<'_>> {
+    pub fn output(&self) -> Result<OutputFence<'_>> {
         let guard = self.state.lock().map_err(|_| {
             scope::unreadable(
                 "remote grant fence",
@@ -49,7 +54,7 @@ impl GrantFence {
         }
         Ok(OutputFence { _guard: guard })
     }
-    pub(crate) fn register(&self, output: &Arc<dyn OutputInvalidation>) -> Result<()> {
+    pub fn register(&self, output: &Arc<dyn OutputInvalidation>) -> Result<()> {
         let mut guard = self
             .state
             .lock()
@@ -79,7 +84,7 @@ impl GrantFence {
         guard.outputs.push(Arc::downgrade(output));
         Ok(())
     }
-    pub(crate) fn outputs_closed(&self) -> Result<bool> {
+    pub fn outputs_closed(&self) -> Result<bool> {
         let guard = self
             .state
             .lock()
@@ -92,7 +97,7 @@ impl GrantFence {
     }
     /// Irreversible for this instance, including on a failed/unknown FULL revoke.
     /// A later socket cannot reactivate a cached fence merely by proving its key.
-    pub(crate) fn revoke(&self) -> Result<()> {
+    pub fn revoke(&self) -> Result<()> {
         let mut guard = self.state.lock().map_err(|_| {
             scope::unreadable(
                 "remote grant fence",

@@ -6,7 +6,7 @@ use se_store::{
 };
 use se_types::{Result, SeError};
 
-pub(crate) enum ViewRequest {
+pub enum ViewRequest {
     Remote(Box<auth::AuthorizedRemoteRequest>),
     Local {
         admission: Admission,
@@ -16,7 +16,7 @@ pub(crate) enum ViewRequest {
     },
 }
 impl ViewRequest {
-    pub(crate) fn local(admission: Admission, request: RemoteWatch) -> Result<Self> {
+    pub fn local(admission: Admission, request: RemoteWatch) -> Result<Self> {
         request.validate()?;
         let se_store::Actor::Human(owner) = &admission.actor else {
             return Err(SeError::invalid("local view", "native human authority"));
@@ -36,25 +36,25 @@ impl ViewRequest {
             targets,
         })
     }
-    pub(crate) fn request(&self) -> &RemoteRequest {
+    pub fn request(&self) -> &RemoteRequest {
         match self {
             Self::Remote(value) => value.request(),
             Self::Local { request, .. } => request,
         }
     }
-    pub(crate) fn targets(&self) -> &[RemoteTarget] {
+    pub fn targets(&self) -> &[RemoteTarget] {
         match self {
             Self::Remote(value) => value.admission().targets(),
             Self::Local { targets, .. } => targets,
         }
     }
-    pub(crate) fn verb(&self) -> RemoteVerb {
+    pub fn verb(&self) -> RemoteVerb {
         match self {
             Self::Remote(value) => *value.admission().verb(),
             Self::Local { .. } => RemoteVerb::Watch,
         }
     }
-    pub(crate) fn cursor_authority(&self, associated: &mut serde_json::Value) {
+    pub fn cursor_authority(&self, associated: &mut serde_json::Value) {
         match self {
             Self::Remote(value) => {
                 let grant = value.admission().grant();
@@ -79,7 +79,7 @@ impl ViewRequest {
             }
         }
     }
-    pub(crate) fn target(
+    pub fn target(
         &self,
         phase: &ReadPhase,
         target: &RemoteTarget,
@@ -94,7 +94,7 @@ impl ViewRequest {
             Self::Local { admission, .. } => phase.local_client_target(admission, target),
         }
     }
-    pub(crate) fn position(
+    pub fn position(
         &self,
         phase: &ReadPhase,
         target: &RemoteTarget,
@@ -108,7 +108,7 @@ impl ViewRequest {
             Self::Local { admission, .. } => phase.local_client_position(admission, target),
         }
     }
-    pub(crate) fn changes(
+    pub fn changes(
         &self,
         phase: &mut ReadPhase,
         target: &RemoteTarget,
@@ -123,7 +123,7 @@ impl ViewRequest {
             Self::Local { admission, .. } => phase.local_client_changes(admission, target, query),
         }
     }
-    pub(crate) fn page_targets(
+    pub fn page_targets(
         &self,
         phase: &ReadPhase,
         after: Option<&RemoteTarget>,

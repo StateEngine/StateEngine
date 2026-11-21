@@ -48,7 +48,7 @@ impl Control {
             key: self.key.clone(),
             cipher: self.cipher.clone(),
             service,
-            blocking: router.execution.blocking.clone(),
+            blocking: Arc::new(router.execution.blocking.clone()),
         });
         let address = listener.address();
         let (shutdown, stop) = watch::channel(false);

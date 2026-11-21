@@ -1,5 +1,5 @@
 //! Finite native Owner controls over the existing FULL writer.
-use crate::remote::{
+use crate::{
     auth::{Security, VerifiedLocalOwner, refused},
     *,
 };
@@ -21,7 +21,7 @@ pub struct ControlReceipt<T> {
     pub sockets_pending: bool,
 }
 impl Security {
-    pub(crate) fn owner(&self, owner: &VerifiedLocalOwner) -> Result<()> {
+    pub fn owner(&self, owner: &VerifiedLocalOwner) -> Result<()> {
         if owner.owner != self.store.owner
             || owner.generation != self.store.generation
             || owner.deadline <= std::time::Instant::now()
@@ -34,7 +34,7 @@ impl Security {
     }
     /// Automatic invalidation by the owning host before exposing a changed
     /// protected credential/store binding. This grants no Owner capability.
-    pub(crate) async fn revoke_all_before_listen(
+    pub async fn revoke_all_before_listen(
         &self,
         key: IdempotencyKey,
     ) -> Result<ControlReceipt<()>> {
@@ -77,14 +77,12 @@ impl Security {
         self.owner(&owner)?;
         let store = self.store.clone();
         let id = request.grant.clone();
-        let grant = self
-            .blocking
-            .run(
-                crate::runtime::BlockingClass::Foreground,
-                &deadline()?,
-                move || store.grant(&id),
-            )
-            .await?;
+        let grant = crate::run_foreground(
+            self.blocking.as_ref(),
+            std::time::Duration::from_secs(30),
+            move || store.grant(&id),
+        )
+        .await?;
         let fence = self.fence(&grant)?;
         fence.revoke()?;
         let intent = serde_json::json!({"grant":request.grant,"expected_revision":request.expected_revision});
@@ -116,28 +114,39 @@ impl Security {
         })
     }
 }
-pub(crate) fn deadline() -> Result<crate::client::lease::Deadline> {
-    crate::client::lease::Deadline::from_options(&crate::client::ClientOptions {
-        expected_generation: None,
-        timeout: std::time::Duration::from_secs(30),
-        cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-    })
+pub struct CommittedWrite {
+    pub operation: String,
+    pub key: Option<se_types::IdempotencyKey>,
+    pub natural_events: Vec<se_types::EventId>,
+    pub committed_events: Vec<se_types::EventId>,
+}
+impl CommittedWrite {
+    pub fn response_error(&self, cause: se_types::SeError) -> se_types::SeError {
+        se_types::SeError::from(
+            se_types::ErrorBody::new(se_types::Detail::CommittedResponseUnavailable(
+                se_types::details::CommittedResponseUnavailable {
+                    operation: self.operation.clone().into_boxed_str(),
+                    key: self.key.as_ref().map(ToString::to_string),
+                    natural_events: self.natural_events.clone().into_boxed_slice(),
+                    committed_events: self.committed_events.clone().into_boxed_slice(),
+                    reason: cause.to_string().into_boxed_str(),
+                },
+            ))
+            .with_retry(se_types::Retry::AfterReread),
+        )
+        .with_cause(cause)
+    }
 }
 
-pub(crate) fn committed(
-    operation: &str,
-    receipt: &CommitReceipt,
-) -> crate::runtime::CommittedWrite {
-    crate::runtime::CommittedWrite {
+pub fn committed(operation: &str, receipt: &CommitReceipt) -> CommittedWrite {
+    CommittedWrite {
         operation: operation.into(),
         key: receipt.request_key.clone(),
         natural_events: vec![],
         committed_events: receipt.events.clone(),
     }
 }
-pub(crate) async fn outputs_closed(
-    fences: &[std::sync::Arc<crate::remote::auth::GrantFence>],
-) -> Result<bool> {
+pub async fn outputs_closed(fences: &[std::sync::Arc<crate::auth::GrantFence>]) -> Result<bool> {
     let until = std::time::Instant::now() + std::time::Duration::from_secs(1);
     loop {
         let closed = fences

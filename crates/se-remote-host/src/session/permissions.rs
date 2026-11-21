@@ -1,6 +1,6 @@
 //! Durable Owner consent changes and their native writer read-back.
 use super::control;
-use crate::remote::auth::{Security, VerifiedLocalOwner, refused};
+use crate::auth::{Security, VerifiedLocalOwner, refused};
 use se_store::remote::{
     LaunchCandidate, LaunchPermission, LaunchPermissionChange, SecurityTransition, SourceContact,
     SourcePermission,
@@ -59,9 +59,10 @@ impl Security {
         let known = control::committed("remote.launch.permission", &receipt);
         let store = self.store.clone();
         let recorded = value.clone();
-        let current = self
-            .blocking
-            .run_owned(&control::deadline()?, move || {
+        let current = crate::run_owned(
+            self.blocking.as_ref(),
+            std::time::Duration::from_secs(30),
+            move || {
                 se_core::scope::require_present(
                     store
                         .read(|p| p.remote_launch_permission(&recorded.grant, &recorded.target))?,
@@ -128,12 +129,12 @@ impl Security {
         }
         let store = self.store.clone();
         let address = request.address.clone();
-        let current = self
-            .blocking
-            .run_owned(&control::deadline()?, move || {
-                store.read(|p| p.remote_source_permission(&address))
-            })
-            .await?;
+        let current = crate::run_owned(
+            self.blocking.as_ref(),
+            std::time::Duration::from_secs(30),
+            move || store.read(|p| p.remote_source_permission(&address)),
+        )
+        .await?;
         let previous = match current {
             Read::Present { value } => Some(value.revision),
             Read::Absent { .. } => None,
@@ -177,9 +178,10 @@ impl Security {
         let value = permission_value(&request)?;
         let store = self.store.clone();
         let address = request.address.clone();
-        let current = self
-            .blocking
-            .run_owned(&control::deadline()?, move || {
+        let current = crate::run_owned(
+            self.blocking.as_ref(),
+            std::time::Duration::from_secs(30),
+            move || {
                 se_core::scope::require_present(
                     store.read(|p| p.remote_source_permission(&address))?,
                     "committed source permission",
@@ -210,10 +212,12 @@ impl Security {
     ) -> Result<Option<control::ControlReceipt<SourcePermission>>> {
         let store = self.store.clone();
         let key = request.key.clone();
-        let outcome = self
-            .blocking
-            .run_owned(&control::deadline()?, move || store.security_outcome(&key))
-            .await?;
+        let outcome = crate::run_owned(
+            self.blocking.as_ref(),
+            std::time::Duration::from_secs(30),
+            move || store.security_outcome(&key),
+        )
+        .await?;
         let Some((receipt, transition)) = outcome else {
             return Ok(None);
         };

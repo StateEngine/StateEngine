@@ -10,7 +10,6 @@ use std::{io::Read as _, net::SocketAddr, path::PathBuf, sync::Arc};
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SavedBinding {
-    #[cfg(feature = "remote")]
     #[serde(default)]
     pub forward: Option<ssh::ForwardConfig>,
     pub connected: bool,
@@ -21,7 +20,7 @@ pub struct SavedBinding {
 }
 impl SavedBinding {
     /// Lease renewal is fresh server state, not a change of local authority.
-    pub(crate) fn same_authority(&self, other: &Self) -> bool {
+    pub fn same_authority(&self, other: &Self) -> bool {
         let mut expected = self.clone();
         expected.paired.expires_at = other.paired.expires_at;
         expected == *other
@@ -234,7 +233,6 @@ fn alias_name(alias: &str) -> Result<()> {
 fn validate(binding: &SavedBinding) -> Result<()> {
     alias_name(&binding.alias)?;
     RemoteRoute {
-        #[cfg(feature = "remote")]
         forward: None,
         address: binding.route,
         host: binding.paired.host,
@@ -265,7 +263,7 @@ fn validate(binding: &SavedBinding) -> Result<()> {
 }
 
 impl ProtectedBindings {
-    pub(crate) fn forget(&self, binding: &SavedBinding, expected: [u8; 32]) -> Result<()> {
+    pub fn forget(&self, binding: &SavedBinding, expected: [u8; 32]) -> Result<()> {
         let current = scope::require_present(
             self.read(&binding.alias)?,
             "saved machine",
@@ -304,7 +302,7 @@ impl ProtectedBindings {
             .join("remote-bindings")
             .join(format!(".machine-{}.name", host.0.hex()))
     }
-    pub(crate) fn check_machine(&self, binding: &SavedBinding) -> Result<()> {
+    pub fn check_machine(&self, binding: &SavedBinding) -> Result<()> {
         self.machine_name(binding, false)
     }
     fn claim_machine(&self, binding: &SavedBinding) -> Result<()> {

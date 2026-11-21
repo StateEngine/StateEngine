@@ -25,7 +25,7 @@ pub struct ClientEndpoint {
     pub key: Arc<keys::ProtectedCredential>,
     pub cipher: Arc<keys::CursorCipher>,
     pub service: Arc<dyn RemoteService>,
-    pub blocking: crate::runtime::BlockingPool,
+    pub blocking: Arc<dyn crate::BlockingRunner>,
 }
 pub struct ClientListener {
     listener: TcpListener,

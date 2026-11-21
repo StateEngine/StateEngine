@@ -10,7 +10,7 @@ use std::{sync::Arc, time::Duration};
 use tokio::{net::TcpStream, time::timeout};
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
-pub(super) use se_remote::channel::{Socket, busy, unavailable};
+pub(super) use se_remote::channel::{Socket, unavailable};
 #[expect(
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
