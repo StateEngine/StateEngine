@@ -1,10 +1,7 @@
 //! Independent real TLS/Gateway/REST controls. Native Windows/macOS and a live
 //! provider account are separate qualifications; this local fixture is Linux-only.
+use super::test_fixture::Fixture;
 use super::*;
-use std::sync::Arc;
-mod fixture;
-mod host;
-use fixture::Fixture;
 type Check<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn require(condition: bool, message: &str) -> Check {

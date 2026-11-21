@@ -1,0 +1,34 @@
+[package]
+name = "se-channels"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+test-fixture = []
+
+[dependencies]
+se-config = { path = "../se-config" }
+se-core = { path = "../se-core" }
+se-proc = { path = "../se-proc" }
+se-store = { path = "../se-store" }
+se-types = { path = "../se-types" }
+base64 = "0.23.1"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+hmac = "0.12.1"
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle = "2.6"
+tokio = { workspace = true, features = ["macros", "net", "io-util", "time", "sync"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+zeroize.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
+
+[lints]
+workspace = true

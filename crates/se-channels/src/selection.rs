@@ -1,7 +1,7 @@
 //! Rust saved-agent choices carry the exact principal/profile revisions.
 //! A Node registration or a cached display row is never a valid selection.
 use super::{service::*, *};
-use crate::client::lease::Deadline;
+use crate::host::AsChannelDeadline;
 use se_core::{ops::agent_status, scope, store_error::store_error};
 use se_store::{Actor, Snapshot};
 use se_types::{Page, PageRequest, Result, Window};
@@ -10,8 +10,9 @@ impl Channels {
     pub async fn targets(
         &self,
         input: ChannelTargets,
-        deadline: &Deadline,
+        deadline: &impl AsChannelDeadline,
     ) -> Result<Page<ChannelAgentChoice>> {
+        let deadline = &deadline.as_channel_deadline();
         if input.after.as_ref().is_some_and(|c| c.as_str().len() > 512) {
             return Err(channel_error(ChannelError::InvalidInput));
         }

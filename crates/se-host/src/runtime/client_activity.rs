@@ -54,7 +54,7 @@ impl Drop for Work {
 pub(crate) async fn idle(
     waits: Arc<Waits>,
     activity: &mut tokio::sync::watch::Receiver<u32>,
-    channels: Arc<crate::channels::Channels>,
+    #[cfg(feature = "channels")] channels: Arc<crate::channels::Channels>,
 ) {
     loop {
         let changed = waits.client_activity.changed.notified();
@@ -64,9 +64,13 @@ pub(crate) async fn idle(
             changed.await;
             continue;
         }
+        #[cfg(feature = "channels")]
+        let expiry = crate::channels::idle(activity, channels.clone());
+        #[cfg(not(feature = "channels"))]
+        let expiry = super::serve::idle_expiry(activity);
         tokio::select! { biased;
             _ = changed => (),
-            _ = crate::channels::runtime::idle(activity, channels.clone()) => {
+            _ = expiry => {
                 if waits.client_activity.idle() { return; }
             }
         }

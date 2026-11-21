@@ -77,6 +77,21 @@ impl Deadline {
     pub fn at(&self) -> Instant {
         self.at
     }
+    #[cfg(feature = "channels")]
+    pub(crate) fn to_channel_deadline(&self) -> se_channels::ChannelDeadline {
+        se_channels::ChannelDeadline::from_parts(self.at, self.budget, Arc::clone(&self.cancelled))
+    }
+    #[cfg(feature = "channels")]
+    pub(crate) fn from_channel_deadline(deadline: &se_channels::ChannelDeadline) -> Result<Self> {
+        let budget = deadline.remaining()?;
+        let started = Instant::now();
+        Ok(Self {
+            started,
+            at: deadline.at(),
+            budget,
+            cancelled: deadline.cancelled(),
+        })
+    }
     /// Stages and retained cleanup preserve the originating native request's
     /// start so decoding and admission never disappear from a visible clock.
     #[cfg(feature = "remote")]

@@ -7,15 +7,17 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-default = ["runtime", "listener"]
+default = ["runtime", "listener", "channels"]
 import = ["se-core/import"]
 runtime = ["dep:tokio"]
 listener = ["runtime", "se-remote/listener", "se-atlas-cold/listener", "dep:reqwest", "tokio/macros", "tokio/net", "tokio/io-util", "tokio/time", "tokio/sync", "tokio/process", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio-tungstenite", "dep:futures-util", "dep:base64", "dep:se-secode-image"]
+channels = ["listener", "dep:se-channels"]
 secode = ["runtime", "listener", "dep:secode-stateengine-api"]
 remote = ["se-remote/remote", "dep:base64", "listener", "tokio/fs", "dep:chacha20poly1305", "tokio/macros"]
 
 [dependencies]
 se-config = { path = "../se-config" }
+se-channels = { path = "../se-channels", optional = true }
 secode-stateengine-api = { version = "=2.0.0", optional = true }
 se-types = { path = "../se-types" }
 se-remote = { path = "../se-remote" }
@@ -69,8 +71,49 @@ name = "w3_lifecycle_independent"
 path = "tests/w3_lifecycle_independent.rs"
 required-features = ["secode"]
 
+[[test]]
+name = "channel_checkpoint_independent"
+path = "tests/channel_checkpoint_independent.rs"
+required-features = ["channels"]
+
+[[test]]
+name = "channel_credentials"
+path = "tests/channel_credentials.rs"
+required-features = ["channels"]
+
+[[test]]
+name = "channel_host"
+path = "tests/channel_host.rs"
+required-features = ["channels"]
+
+[[test]]
+name = "channel_idle_review"
+path = "tests/channel_idle_review.rs"
+required-features = ["channels"]
+
+[[test]]
+name = "channel_roundtrip"
+path = "tests/channel_roundtrip.rs"
+required-features = ["channels"]
+
+[[test]]
+name = "channel_safety_independent"
+path = "tests/channel_safety_independent.rs"
+required-features = ["channels"]
+
+[[test]]
+name = "discord_channel_host"
+path = "tests/discord_channel_host.rs"
+required-features = ["channels"]
+
+[[test]]
+name = "lifecycle_read_custody_independent"
+path = "tests/lifecycle_read_custody_independent.rs"
+required-features = ["channels"]
+
 [dev-dependencies]
 se-atlas = { path = "../se-atlas", features = ["test-clock"] }
+se-channels = { path = "../se-channels", features = ["test-fixture"] }
 rusqlite = { version = "0.41", features = ["hooks"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "io-util"] }
 

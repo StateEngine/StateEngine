@@ -2,11 +2,11 @@
 //! is registered in the agent tool catalogue or the ordinary HTTP dispatcher.
 use super::coverage::ReceiverObservation;
 use super::*;
-use crate::{ExecutionContext, client::lease::Deadline};
+use crate::host::{AsChannelDeadline, ChannelDeadline as Deadline, ChannelHost};
 use se_core::{commit::Cx, store_error::store_error};
 use se_store::{
     Actor, Admission, AtomicBatch, CommitReceipt, Door, EventBody, EventHeader, IntentDigest,
-    NewEvent, ReadStore, RequestIdentity, Scope, Snapshot, SqliteSnapshot,
+    NewEvent, RequestIdentity, Scope, Snapshot, SqliteSnapshot,
 };
 use se_types::{HumanId, IdempotencyKey, ProjectId, Read, Result, Secret};
 use sha2::{Digest, Sha256};
@@ -20,7 +20,7 @@ use std::sync::{
 /// production defaults live here; the in-process test hook shortens them
 /// without adding a user-visible configuration surface.
 #[derive(Clone, Copy)]
-pub(crate) struct ReceiverIntervals {
+pub struct ReceiverIntervals {
     pub rescan: std::time::Duration,
     pub poll: std::time::Duration,
 }
@@ -33,9 +33,8 @@ impl Default for ReceiverIntervals {
     }
 }
 pub struct Channels {
-    pub(super) context: ExecutionContext,
+    pub(super) host: Arc<dyn ChannelHost>,
     pub(super) configuration: Option<se_config::config_policy::ConfigFile>,
-    pub(super) store: crate::runtime::store::Store,
     pub(super) owner: HumanId,
     pub(super) store_id: se_types::StoreId,
     pub(super) credentials: Arc<NativeChannelCredentials>,
@@ -51,8 +50,8 @@ pub struct Channels {
     pub(super) health: std::sync::Mutex<std::collections::HashMap<ChannelId, ReceiverObservation>>,
 }
 impl Channels {
-    pub(crate) fn new(
-        context: ExecutionContext,
+    pub fn new(
+        host: Arc<dyn ChannelHost>,
         transports: Vec<Arc<dyn ChannelTransport>>,
         configuration: Option<se_config::config_policy::ConfigFile>,
         owner: HumanId,
@@ -60,26 +59,10 @@ impl Channels {
         pairing_key: Secret,
         fenced: Arc<AtomicBool>,
     ) -> Result<Self> {
-        let store_id = context
-            .reader
-            .info()
-            .map_err(|error| store_error(&error))?
-            .id;
-        let store = crate::runtime::store::Store {
-            record_feed: context.atlas.records.clone(),
-            reader: context.reader.clone(),
-            reads: context.reads.clone(),
-            writer: context.writer.clone(),
-            pool: context.blocking.clone(),
-            generation: context.generation,
-            pending: context.pending_writes.clone(),
-            mail_waits: context.mail_waits.clone(),
-            fault: context.ownership_fault.clone(),
-        };
+        let store_id = host.store_id();
         Ok(Self {
-            context,
+            host,
             configuration,
-            store,
             owner,
             store_id,
             credentials,
@@ -93,6 +76,9 @@ impl Channels {
             receiver_running: AtomicBool::new(false),
         })
     }
+    pub fn changed(&self) -> &tokio::sync::Notify {
+        &self.changed
+    }
     pub(super) fn transport(&self, connector: Connector) -> Result<Arc<dyn ChannelTransport>> {
         self.transports
             .iter()
@@ -100,31 +86,50 @@ impl Channels {
             .cloned()
             .ok_or_else(|| channel_error(ChannelError::Unsupported))
     }
+    pub(super) async fn blocking<T: Send + 'static>(
+        &self,
+        owned: bool,
+        deadline: &Deadline,
+        work: impl FnOnce() -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let value = self
+            .host
+            .run_blocking(
+                owned,
+                deadline,
+                Box::new(move || Ok(Box::new(work()?) as Box<dyn std::any::Any + Send>)),
+            )
+            .await?;
+        value
+            .downcast::<T>()
+            .map(|boxed| *boxed)
+            .map_err(|_| channel_error(ChannelError::ReceiverNotRunning))
+    }
     pub(super) async fn token(
         &self,
         reference: CredentialRef,
         deadline: &Deadline,
     ) -> Result<Secret> {
         let credentials = self.credentials.clone();
-        self.context
-            .blocking
-            .run(crate::BlockingClass::Foreground, deadline, move || {
-                credentials.resolve(&reference).map_err(channel_error)
-            })
-            .await
+        self.blocking(false, deadline, move || {
+            credentials.resolve(&reference).map_err(channel_error)
+        })
+        .await
     }
     pub fn supports_resume(&self) -> bool {
-        self.configuration.is_some() && self.context.custody.get().is_some()
+        self.configuration.is_some() && self.host.has_custody()
     }
-    pub async fn credential_catalog(&self, deadline: &Deadline) -> Result<CredentialCatalog> {
+    pub async fn credential_catalog(
+        &self,
+        deadline: &impl AsChannelDeadline,
+    ) -> Result<CredentialCatalog> {
+        let deadline = &deadline.as_channel_deadline();
         self.admission(None)?;
         let credentials = self.credentials.clone();
-        self.context
-            .blocking
-            .run(crate::BlockingClass::Foreground, deadline, move || {
-                credentials.catalog().map_err(channel_error)
-            })
-            .await
+        self.blocking(false, deadline, move || {
+            credentials.catalog().map_err(channel_error)
+        })
+        .await
     }
     pub(super) fn output_gate(&self, id: &ChannelId) -> Result<Arc<tokio::sync::Mutex<()>>> {
         let mut gates = self
@@ -170,7 +175,7 @@ impl Channels {
             scope: project.map(Scope::Project).unwrap_or(Scope::Registry),
             actor: Actor::Human(self.owner.clone()),
             session: None,
-            generation: self.context.generation.get(),
+            generation: self.host.generation().get(),
         })
     }
     pub(super) async fn read<T: Send + 'static>(
@@ -179,9 +184,18 @@ impl Channels {
         deadline: &Deadline,
         work: impl FnOnce(&mut Cx<'_, SqliteSnapshot>) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        self.store
-            .read(self.admission(project)?, deadline, work)
-            .await
+        let value = self
+            .host
+            .read_snapshot(
+                self.admission(project)?,
+                deadline,
+                Box::new(move |cx| Ok(Box::new(work(cx)?) as Box<dyn std::any::Any + Send>)),
+            )
+            .await?;
+        value
+            .downcast::<T>()
+            .map(|boxed| *boxed)
+            .map_err(|_| channel_error(ChannelError::ReceiverNotRunning))
     }
     pub(super) async fn connection(
         &self,
@@ -242,12 +256,8 @@ impl Channels {
         deadline: &Deadline,
         plan: impl FnOnce(&mut Cx<'_, SqliteSnapshot>) -> Result<Vec<NewEvent>> + Send + 'static,
     ) -> Result<CommitReceipt> {
-        let identity = crate::runtime::WriteIdentity {
-            operation: request.intent.operation,
-            natural_key: None,
-            key: Some(request.key.clone()),
-            natural_events: vec![],
-        };
+        let operation = request.intent.operation;
+        let key = request.key.clone();
         let batch = self
             .read(Some(project), deadline, move |cx| {
                 Ok(AtomicBatch {
@@ -259,8 +269,10 @@ impl Channels {
                 })
             })
             .await?;
-        let receipt =
-            crate::runtime::submit::submit(&self.context, batch, &identity, deadline).await?;
+        let receipt = self
+            .host
+            .submit_batch(batch, operation, key, deadline)
+            .await?;
         self.changed.notify_waiters();
         Ok(receipt)
     }
@@ -308,11 +320,48 @@ pub(super) fn intent(
         },
     })
 }
+pub(super) fn allocate_facts() -> Result<se_core::dispatch::CallFacts> {
+    let time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| se_core::scope::unreadable("system clock", &e.to_string()))?;
+    let mut random = [0; 60];
+    se_proc::fill_entropy(&mut random)
+        .map_err(|e| se_core::scope::unreadable("host identity entropy", &e.to_string()))?;
+    let mut event = [0; 10];
+    event.copy_from_slice(&random[..10]);
+    let mut message = [0; 10];
+    message.copy_from_slice(&random[10..20]);
+    let mut agent = [0; 10];
+    agent.copy_from_slice(&random[20..30]);
+    let mut profile_event = [0; 10];
+    profile_event.copy_from_slice(&random[30..40]);
+    let mut notification_event = [0; 10];
+    notification_event.copy_from_slice(&random[40..50]);
+    let mut notification_message = [0; 10];
+    notification_message.copy_from_slice(&random[50..60]);
+    Ok(se_core::dispatch::CallFacts {
+        event: se_types::EventId::from_parts(time.as_millis() as u64, event)?,
+        message: se_types::MessageId::from_parts(time.as_millis() as u64, message)?,
+        agent: se_types::AgentId::from_parts(time.as_millis() as u64, agent)?,
+        profile_event: se_types::EventId::from_parts(time.as_millis() as u64, profile_event)?,
+        notification_event: se_types::EventId::from_parts(
+            time.as_millis() as u64,
+            notification_event,
+        )?,
+        notification_message: se_types::MessageId::from_parts(
+            time.as_millis() as u64,
+            notification_message,
+        )?,
+        occurred_at_us: i64::try_from(time.as_micros())
+            .map_err(|_| se_core::scope::unreadable("system clock", "timestamp exceeds i64"))?,
+        door: se_store::Door::Host,
+    })
+}
 pub(super) fn event(
     cx: &Cx<'_, SqliteSnapshot>,
     body: EventBody<se_store::InputText>,
 ) -> Result<NewEvent> {
-    let facts = crate::runtime::start::allocate_facts()?;
+    let facts = allocate_facts()?;
     Ok(NewEvent {
         header: EventHeader {
             event: facts.event,
@@ -344,9 +393,5 @@ pub(super) fn now() -> Result<i64> {
 }
 
 pub(super) fn deadline(timeout: std::time::Duration) -> Result<Deadline> {
-    Deadline::from_options(&crate::client::ClientOptions {
-        expected_generation: None,
-        timeout,
-        cancelled: Arc::new(AtomicBool::new(false)),
-    })
+    Deadline::from_timeout(timeout)
 }

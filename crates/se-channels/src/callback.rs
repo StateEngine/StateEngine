@@ -1,6 +1,6 @@
 //! Provider callback acknowledgments do not grant lifecycle or read authority.
 use super::{service::*, *};
-use crate::client::lease::Deadline;
+use crate::host::ChannelDeadline as Deadline;
 use se_core::store_error::store_error;
 use se_store::{
     EventBody, Snapshot,

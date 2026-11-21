@@ -1,7 +1,7 @@
 //! Verified provider identity becomes only the exact paired Owner's mail.
 //! Provider cursors are read from committed dispositions, never local counters.
 use super::{service::*, *};
-use crate::client::lease::Deadline;
+use crate::host::ChannelDeadline as Deadline;
 use se_core::{
     commit::{CoreOps, MessageKind, MessageSend, OpStep},
     dispatch::Kernel,
@@ -228,7 +228,7 @@ impl Channels {
         let saved_state = state.clone();
         let committed = self
             .commit(state.target.project.clone(), request, deadline, move |cx| {
-                let facts = crate::runtime::start::allocate_facts()?;
+                let facts = super::service::allocate_facts()?;
                 let message = facts.message.clone();
                 let kernel = Kernel::new(facts)?;
                 let send = MessageSend {

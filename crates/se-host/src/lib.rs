@@ -13,6 +13,7 @@ mod acp_transport_independent;
 pub mod adoption;
 #[cfg(feature = "runtime")]
 mod agent_observation;
+#[cfg(feature = "channels")]
 pub mod channels;
 #[cfg(feature = "listener")]
 mod child_io;

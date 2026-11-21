@@ -82,10 +82,7 @@ fn exchange(
     options: &ClientOptions,
 ) -> Result<AnyOutput> {
     let keyed = match &call.request {
-        IpcRequest::Operation(operation) => operation
-            .key
-            .as_ref()
-            .map(|key| (operation.name.clone(), key.clone())),
+        IpcRequest::Operation(op) => op.key.as_ref().map(|k| (op.name.clone(), k.clone())),
         _ => None,
     };
     let output = exchange_output(endpoint, credential, call, options)?;
@@ -98,11 +95,10 @@ pub(crate) fn exchange_output(
     options: &ClientOptions,
 ) -> Result<OperationOutput> {
     let keyed = match &call.request {
-        IpcRequest::Operation(operation) => operation
-            .key
-            .as_ref()
-            .map(|key| (operation.name.clone(), key.clone())),
-        IpcRequest::Hook(_) | IpcRequest::Channels(_) | IpcRequest::Adopt(_) => None,
+        IpcRequest::Operation(op) => op.key.as_ref().map(|k| (op.name.clone(), k.clone())),
+        IpcRequest::Hook(_) | IpcRequest::Adopt(_) => None,
+        #[cfg(feature = "channels")]
+        IpcRequest::Channels(_) => None,
         #[cfg(feature = "remote")]
         IpcRequest::RemoteOwner(input) => input
             .key()
@@ -192,6 +188,7 @@ fn call_operation(call: &IpcEnvelope) -> &str {
     match &call.request {
         IpcRequest::Operation(op) => &op.name,
         IpcRequest::Hook(_) => "hook.claude",
+        #[cfg(feature = "channels")]
         IpcRequest::Channels(_) => "native.channels",
         IpcRequest::Adopt(_) => "native.adopt",
         #[cfg(feature = "remote")]

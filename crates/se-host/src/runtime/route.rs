@@ -59,6 +59,7 @@ pub struct AdmittedExchange {
     call: Option<Result<RoutedCall>>,
     /// An owner terminal's launch sign-in, scoped around this call's execution.
     pub(super) sign_in: Option<crate::launch_sign_in::SignIn>,
+    #[cfg(feature = "channels")]
     pub(super) channels: Option<crate::channels::ChannelRequest>,
     pub(super) adopted: Option<crate::adoption::NativeCall>,
     #[cfg(feature = "remote")]
@@ -74,6 +75,7 @@ pub struct HostedRouter {
     pub(crate) execution: ExecutionContext,
     pub(crate) sources: TranscriptBindings,
     pub(crate) context: AdmissionContext,
+    #[cfg(feature = "channels")]
     pub(crate) channels: std::sync::Arc<crate::channels::Channels>,
     response_bytes: std::num::NonZeroU32,
     pub(crate) fenced: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -91,6 +93,7 @@ impl HostedRuntime {
             execution: self.execution.clone(),
             sources: self.sources.clone(),
             context: self.admission_context(),
+            #[cfg(feature = "channels")]
             channels: self.channels()?,
             response_bytes: self.response_bytes,
             fenced: std::sync::Arc::clone(&self.fenced),
@@ -274,25 +277,32 @@ impl HostedRouter {
                 #[cfg(feature = "remote")]
                 let mut owner = None;
                 let mut adopted = None;
-                let (call, channels) = match call {
+                #[cfg(feature = "channels")]
+                let mut channels = None;
+                let call = match call {
                     Ok(RouteChoice::Adopt(call)) => {
                         adopted = Some(*call);
-                        (None, None)
+                        None
                     }
                     #[cfg(feature = "remote")]
                     Ok(RouteChoice::Owner(call)) => {
                         owner = Some(*call);
-                        (None, None)
+                        None
                     }
-                    Ok(RouteChoice::Channels(input)) => (None, Some(*input)),
-                    Ok(RouteChoice::Core(call)) => (Some(Ok(*call)), None),
-                    Err(error) => (Some(Err(error)), None),
+                    #[cfg(feature = "channels")]
+                    Ok(RouteChoice::Channels(input)) => {
+                        channels = Some(*input);
+                        None
+                    }
+                    Ok(RouteChoice::Core(call)) => Some(Ok(*call)),
+                    Err(error) => Some(Err(error)),
                 };
                 Ok(Some(AdmittedExchange {
                     connection,
                     request_id,
                     call,
                     sign_in: None,
+                    #[cfg(feature = "channels")]
                     channels,
                     adopted,
                     #[cfg(feature = "remote")]
@@ -462,6 +472,7 @@ enum RouteChoice {
     #[cfg(feature = "remote")]
     Owner(Box<crate::remote::OwnerCall>),
     Core(Box<RoutedCall>),
+    #[cfg(feature = "channels")]
     Channels(Box<crate::channels::ChannelRequest>),
 }
 /// The authenticated frame fields shared by the three terminal-scoped routes.
@@ -513,6 +524,7 @@ impl RouteScope<'_> {
             input,
         })))
     }
+    #[cfg(feature = "channels")]
     fn channels(&self, input: crate::channels::ChannelRequest) -> Result<RouteChoice> {
         self.context.channel_owner(
             self.connection.connection.peer(),
@@ -550,6 +562,7 @@ fn route(
         IpcRequest::Adopt(input) => return scoped.adopt(input),
         #[cfg(feature = "remote")]
         IpcRequest::RemoteOwner(input) => return scoped.owner(*input),
+        #[cfg(feature = "channels")]
         IpcRequest::Channels(input) => return scoped.channels(input),
         IpcRequest::Operation(raw) => {
             if raw.name == "hook.claude" {
