@@ -93,10 +93,6 @@ fn urgent(tx: &mpsc::Sender<Message>, message: Message) -> Result<()> {
     tx.try_send(message)
         .map_err(|_| unavailable("bounded client control queue full or closed"))
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 async fn reader(
     mut stream: Stream,
     endpoint: &Arc<ClientEndpoint>,
@@ -150,49 +146,15 @@ async fn reader(
             }
             frame=stream.next()=>{
                 match frame {
-                    Some(Ok(Message::Text(text))) => match wire::decode(text.as_bytes(), Phase::Authenticated)? {
-                        ClientFrame::Request { id, invocation } => {
-                            if last_request.is_some_and(|last| id <= last) {
-                                return Err(unavailable("request IDs must increase on this connection; reconnect before reuse"));
-                            }
-                            last_request = Some(id);
-                            let mutation = matches!(invocation.request, RemoteRequest::Send(_) | RemoteRequest::Reply(_) | RemoteRequest::Launch(_));
-                            let admission = match slot.limits.request(mutation) {
-                                Ok(admission) => admission,
-                                Err(error) => {
-                                    let permit = refusals.clone().try_acquire_owned().map_err(|_| {
-                                        unavailable("bounded busy-response queue full; reconnect from consumed cursors")
-                                    })?;
-                                    let endpoint = endpoint.clone();
-                                    let output = output.clone();
-                                    let device = device.clone();
-                                    tasks.spawn(async move {
-                                        let _permit = permit;
-                                        requests::enqueue(&endpoint, &output, &device, ServerFrame::Error {
-                                            id: Some(id), error: error.into_body(),
-                                        }).await.map(|()| id)
-                                    });
-                                    continue;
-                                }
-                            };
-                            let endpoint = endpoint.clone();
-                            let output = output.clone();
-                            let device = device.clone();
-                            let task = tasks.spawn(async move {
-                                requests::run(endpoint, output, device, id, *invocation)
-                                    .await.map(|()| id)
-                            });
-                            pending.insert(id, Pending { task, mutation, _admission: admission });
-                        }
-                        ClientFrame::Cancel { id } => {
-                            if pending.get(&id).is_some_and(|call| !call.mutation)
-                                && let Some(call) = pending.remove(&id)
-                            {
-                                // Drop read/watch permits now, not after the aborted
-                                // worker next reaches the executor. Writes stay owned.
-                                call.task.abort();
-                            }
-                        }
+                    Some(Ok(Message::Text(text))) => {
+                        let mut frame = TextFrame {
+                            pending: &mut pending,
+                            tasks: &mut tasks,
+                            refusals: &refusals,
+                            slot: &slot,
+                            last_request: &mut last_request,
+                        };
+                        text_frame(&text, &mut frame, endpoint, output, device)?;
                     },
                     Some(Ok(Message::Ping(bytes))) => urgent(&control, Message::Pong(bytes))?,
                     Some(Ok(Message::Pong(bytes))) => {
@@ -207,6 +169,91 @@ async fn reader(
             }
         }
     }
+}
+
+struct TextFrame<'a> {
+    pending: &'a mut BTreeMap<wire::RequestId, Pending>,
+    tasks: &'a mut JoinSet<Result<wire::RequestId>>,
+    refusals: &'a Arc<Semaphore>,
+    slot: &'a limits::DeviceSlot,
+    last_request: &'a mut Option<wire::RequestId>,
+}
+
+fn text_frame(
+    text: &str,
+    frame: &mut TextFrame<'_>,
+    endpoint: &Arc<ClientEndpoint>,
+    output: &Arc<Output>,
+    device: &Device,
+) -> Result<()> {
+    match wire::decode(text.as_bytes(), Phase::Authenticated)? {
+        ClientFrame::Request { id, invocation } => {
+            if frame.last_request.is_some_and(|last| id <= last) {
+                return Err(unavailable(
+                    "request IDs must increase on this connection; reconnect before reuse",
+                ));
+            }
+            *frame.last_request = Some(id);
+            let mutation = matches!(
+                invocation.request,
+                RemoteRequest::Send(_) | RemoteRequest::Reply(_) | RemoteRequest::Launch(_)
+            );
+            let admission = match frame.slot.limits.request(mutation) {
+                Ok(admission) => admission,
+                Err(error) => {
+                    let permit = frame.refusals.clone().try_acquire_owned().map_err(|_| {
+                        unavailable(
+                            "bounded busy-response queue full; reconnect from consumed cursors",
+                        )
+                    })?;
+                    let endpoint = endpoint.clone();
+                    let output = output.clone();
+                    let device = device.clone();
+                    frame.tasks.spawn(async move {
+                        let _permit = permit;
+                        requests::enqueue(
+                            &endpoint,
+                            &output,
+                            &device,
+                            ServerFrame::Error {
+                                id: Some(id),
+                                error: error.into_body(),
+                            },
+                        )
+                        .await
+                        .map(|()| id)
+                    });
+                    return Ok(());
+                }
+            };
+            let endpoint = endpoint.clone();
+            let output = output.clone();
+            let device = device.clone();
+            let task = frame.tasks.spawn(async move {
+                requests::run(endpoint, output, device, id, *invocation)
+                    .await
+                    .map(|()| id)
+            });
+            frame.pending.insert(
+                id,
+                Pending {
+                    task,
+                    mutation,
+                    _admission: admission,
+                },
+            );
+        }
+        ClientFrame::Cancel { id } => {
+            if frame.pending.get(&id).is_some_and(|call| !call.mutation)
+                && let Some(call) = frame.pending.remove(&id)
+            {
+                // Drop read/watch permits now, not after the aborted
+                // worker next reaches the executor. Writes stay owned.
+                call.task.abort();
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn lease(
