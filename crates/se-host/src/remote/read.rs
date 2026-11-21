@@ -272,6 +272,7 @@ fn observe(facts: TargetFacts, deadline: Instant) -> Result<RemoteAgentView> {
         unread: Some(facts.pending),
         last_activity_at: None,
         state: None,
+        working_note: None,
         // This view's provider filter admits Claude/Codex, not managed services.
         secode_binding: None,
         secode_runtime: None,

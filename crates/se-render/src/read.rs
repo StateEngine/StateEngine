@@ -129,6 +129,12 @@ fn agents_section(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> 
                     question.to, question.message_id, question.asked_at
                 )?;
             }
+            if let Some(se_types::Read::Present { value: note }) = &agent.working_note
+                && !note.text.is_empty()
+            {
+                let more = if note.truncated { " …" } else { "" };
+                writeln!(out, "    Note: {}{more}", note.text)?;
+            }
             if let Some(harness) = &agent.harness {
                 writeln!(out, "    Harness: {harness}")?;
             }
