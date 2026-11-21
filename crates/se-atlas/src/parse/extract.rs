@@ -11,23 +11,27 @@ struct ScopeFrame {
     node: usize,
     scope: u32,
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-pub(super) fn extract(
-    scope: &Scope,
-    snapshot: &SourceSnapshot,
+struct Ctx<'a> {
+    scope: &'a Scope,
+    snapshot: &'a SourceSnapshot,
+    file: FileId,
     language: Language,
-    tree: &Tree,
-    mut arena: Arena,
-) -> AtlasResult<ParsedFile> {
-    let file = scope.file_id(&snapshot.path);
-    let root = tree.root_node();
+    root: Node<'a>,
+}
+/// Mutable extraction rows, kept apart from the ancestry so a declared
+/// symbol can borrow the ancestry while the rows are being filled.
+struct State {
+    parsed: ParsedFile,
+    symbols: Vec<Frame>,
+    scopes: Vec<ScopeFrame>,
+    reasons: Vec<CoverageReason>,
+}
+fn module_header(ctx: &Ctx, arena: &mut Arena) -> AtlasResult<State> {
+    let path = ctx.snapshot.path.as_str();
     let mut parsed = ParsedFile {
-        file,
-        language,
-        content_hash: snapshot.content_hash,
+        file: ctx.file,
+        language: ctx.language,
+        content_hash: ctx.snapshot.content_hash,
         coverage: FileCoverage::Indexed,
         symbols: Vec::new(),
         imports: Vec::new(),
@@ -38,22 +42,16 @@ pub(super) fn extract(
         &mut parsed.scopes,
         LexicalScope {
             parent: None,
-            span: span(root),
+            span: span(ctx.root),
         },
     )?;
-    let module = scope.symbol_id(file, "Module", &[], snapshot.path.as_str(), 0);
-    let module_name = snapshot
-        .path
-        .as_str()
-        .rsplit('/')
-        .next()
-        .unwrap_or(snapshot.path.as_str());
-    let module_name = if module_name.len() <= 1024 {
+    let module = ctx.scope.symbol_id(ctx.file, "Module", &[], path, 0);
+    let module_name = path.rsplit('/').next().unwrap_or(path);
+    let name = arena.text(if module_name.len() <= 1024 {
         module_name
     } else {
         "(file)"
-    };
-    let name = arena.text(module_name)?;
+    })?;
     arena.row(
         &mut parsed.symbols,
         SymbolRecord {
@@ -61,7 +59,7 @@ pub(super) fn extract(
             parent: None,
             name,
             kind: SymbolKind::Module,
-            span: span(root),
+            span: span(ctx.root),
             exported: false,
             export_alias: None,
             signature_hash: None,
@@ -75,32 +73,54 @@ pub(super) fn extract(
     arena.push(
         &mut symbols,
         Frame {
-            node: root.id(),
+            node: ctx.root.id(),
             symbol: 0,
         },
     )?;
     arena.push(
         &mut scopes,
         ScopeFrame {
-            node: root.id(),
+            node: ctx.root.id(),
             scope: 0,
         },
     )?;
     let mut reasons = Vec::new();
-    if root.has_error() {
+    if ctx.root.has_error() {
         reasons.push(CoverageReason::ParseErrors)
     }
-    let mut cursor = root.walk();
+    Ok(State {
+        parsed,
+        symbols,
+        scopes,
+        reasons,
+    })
+}
+pub(super) fn extract(
+    scope: &Scope,
+    snapshot: &SourceSnapshot,
+    language: Language,
+    tree: &Tree,
+    mut arena: Arena,
+) -> AtlasResult<ParsedFile> {
+    let ctx = Ctx {
+        scope,
+        snapshot,
+        file: scope.file_id(&snapshot.path),
+        language,
+        root: tree.root_node(),
+    };
+    let mut state = module_header(&ctx, &mut arena)?;
+    let mut cursor = ctx.root.walk();
     // Node::parent searches from the root; reuse the cursor's ancestry instead.
     // The extraction arena and existing depth bound cover these retained nodes.
     let mut ancestors = Vec::new();
     loop {
         let node = cursor.node();
         if ancestors.len() >= 128 {
-            reasons.push(CoverageReason::ResultLimit);
+            state.reasons.push(CoverageReason::ResultLimit);
             break;
         }
-        let current_scope = scopes.last().map_or(0, |f| f.scope);
+        let current_scope = state.scopes.last().map_or(0, |f| f.scope);
         let declaration = match language {
             Language::Rust => super::rust::declaration(node, &ancestors, &snapshot.bytes),
             Language::Python => super::python::declaration(node, &ancestors, &snapshot.bytes),
@@ -109,73 +129,10 @@ pub(super) fn extract(
         .or_else(|| pattern_binding(node, &ancestors, language, &snapshot.bytes));
         let declaration_name = declaration.as_ref().map(|d| d.name.id());
         if let Some(declaration) = declaration {
-            let name = declaration
-                .name_override
-                .unwrap_or_else(|| text(declaration.name, &snapshot.bytes));
-            if name.is_empty() || name.len() > 1024 {
-                if !reasons.contains(&CoverageReason::ByteLimit) {
-                    reasons.push(CoverageReason::ByteLimit)
-                }
-            } else {
-                let parent = symbols.last().map(|f| parsed.symbols[f.symbol].id);
-                let kind = format!("{:?}", declaration.kind);
-                let ordinal = parsed
-                    .symbols
-                    .iter()
-                    .filter(|s| s.parent == parent && s.name == name && s.kind == declaration.kind)
-                    .count() as u32;
-                let id = scope.child_symbol_id(file, parent, &kind, name, ordinal);
-                let name = arena.text(name)?;
-                let doc_line = arena.text(doc_line(node, &snapshot.bytes))?;
-                let signature_hash = signature(node, declaration.body, &snapshot.bytes);
-                let export_alias =
-                    if default_export(&ancestors, &snapshot.bytes) && name != "default" {
-                        Some(arena.text("default")?)
-                    } else {
-                        None
-                    };
-                let record = SymbolRecord {
-                    id,
-                    parent,
-                    name,
-                    kind: declaration.kind,
-                    span: span(node),
-                    exported: declaration.exported,
-                    export_alias,
-                    signature_hash: Some(signature_hash),
-                    body_hash: declaration.body.map(|b| body_hash(b, &snapshot.bytes)),
-                    doc_line,
-                    lexical_scope: current_scope,
-                };
-                let index = parsed.symbols.len();
-                arena.row(&mut parsed.symbols, record)?;
-                arena.push(
-                    &mut symbols,
-                    Frame {
-                        node: node.id(),
-                        symbol: index,
-                    },
-                )?;
-            }
+            record_declaration(&ctx, &ancestors, &mut state, node, declaration, &mut arena)?;
         }
-        if node != root && scope_boundary(node, language) {
-            let next = parsed.scopes.len() as u32;
-            arena.row(
-                &mut parsed.scopes,
-                LexicalScope {
-                    parent: Some(current_scope),
-                    span: span(node),
-                },
-            )?;
-            arena.push(
-                &mut scopes,
-                ScopeFrame {
-                    node: node.id(),
-                    scope: next,
-                },
-            )?;
-        }
-        let current_scope = scopes.last().map_or(0, |f| f.scope);
+        enter_scope(&ctx, &mut state, node, current_scope, &mut arena)?;
+        let current_scope = state.scopes.last().map_or(0, |f| f.scope);
         imports::extract(
             node,
             &ancestors,
@@ -183,76 +140,194 @@ pub(super) fn extract(
             language,
             current_scope,
             &mut arena,
-            &mut parsed.imports,
+            &mut state.parsed.imports,
         )?;
-        if let Some((name, kind, qualifier)) = reference(node, &ancestors, &snapshot.bytes)
-            && declaration_name != Some(name.id())
-        {
-            let spelling = text(name, &snapshot.bytes);
-            if !spelling.is_empty() && spelling.len() <= 1024 {
-                let spelling = arena.text(spelling)?;
-                let qualifier = match qualifier {
-                    SyntaxQualifier::Unqualified => ReferenceQualifier::Unqualified,
-                    SyntaxQualifier::Dynamic => ReferenceQualifier::Dynamic,
-                    SyntaxQualifier::Namespace(text)
-                        if text.len() <= 4096 && text.split("::").count() <= 8 =>
-                    {
-                        let count = text.split("::").count();
-                        arena.charge(count * std::mem::size_of::<String>())?;
-                        let mut parts = Vec::with_capacity(count);
-                        for part in text.split("::") {
-                            parts.push(arena.text(part)?);
-                        }
-                        ReferenceQualifier::Namespace(parts)
-                    }
-                    _ => ReferenceQualifier::Dynamic,
-                };
-                arena.charge(snapshot.path.as_str().len())?;
-                arena.row(
-                    &mut parsed.references,
-                    ParsedReference {
-                        site: Reference {
-                            site: CodePointer {
-                                file,
-                                path: snapshot.path.clone(),
-                                span: Some(span(name)),
-                                content_hash: Some(snapshot.content_hash),
-                                freshness: SnapshotFreshness::Current,
-                            },
-                            kind,
-                            spelling,
-                            enclosing: symbols.last().map(|f| parsed.symbols[f.symbol].id),
-                            resolved_target: None,
-                            accuracy: Accuracy::NameOnly,
-                        },
-                        lexical_scope: current_scope,
-                        qualifier,
-                    },
-                )?;
-            } else if !reasons.contains(&CoverageReason::ByteLimit) {
-                reasons.push(CoverageReason::ByteLimit)
-            }
-        }
+        record_reference(
+            &ctx,
+            &ancestors,
+            &mut state,
+            node,
+            declaration_name,
+            &mut arena,
+        )?;
         if cursor.goto_first_child() {
             arena.push(&mut ancestors, node)?;
             continue;
         }
         loop {
-            leave(cursor.node(), &mut symbols, &mut scopes);
+            leave(cursor.node(), &mut state.symbols, &mut state.scopes);
             if cursor.goto_next_sibling() {
                 break;
             }
             if !cursor.goto_parent() {
-                if !reasons.is_empty() {
-                    parsed.coverage = FileCoverage::Partial { reasons }
+                if !state.reasons.is_empty() {
+                    state.parsed.coverage = FileCoverage::Partial {
+                        reasons: state.reasons,
+                    }
                 }
-                return Ok(parsed);
+                return Ok(state.parsed);
             }
             ancestors.pop();
         }
     }
-    parsed.coverage = FileCoverage::Partial { reasons };
-    Ok(parsed)
+    state.parsed.coverage = FileCoverage::Partial {
+        reasons: state.reasons,
+    };
+    Ok(state.parsed)
+}
+fn record_declaration(
+    ctx: &Ctx,
+    ancestors: &[Node],
+    state: &mut State,
+    node: Node,
+    declaration: Declaration,
+    arena: &mut Arena,
+) -> AtlasResult<()> {
+    let current_scope = state.scopes.last().map_or(0, |f| f.scope);
+    let name = declaration
+        .name_override
+        .unwrap_or_else(|| text(declaration.name, &ctx.snapshot.bytes));
+    if name.is_empty() || name.len() > 1024 {
+        if !state.reasons.contains(&CoverageReason::ByteLimit) {
+            state.reasons.push(CoverageReason::ByteLimit)
+        }
+        return Ok(());
+    }
+    let parent = state
+        .symbols
+        .last()
+        .map(|f| state.parsed.symbols[f.symbol].id);
+    let kind = format!("{:?}", declaration.kind);
+    let ordinal = state
+        .parsed
+        .symbols
+        .iter()
+        .filter(|s| s.parent == parent && s.name == name && s.kind == declaration.kind)
+        .count() as u32;
+    let id = ctx
+        .scope
+        .child_symbol_id(ctx.file, parent, &kind, name, ordinal);
+    let name = arena.text(name)?;
+    let doc_line = arena.text(doc_line(node, &ctx.snapshot.bytes))?;
+    let signature_hash = signature(node, declaration.body, &ctx.snapshot.bytes);
+    let export_alias = if default_export(ancestors, &ctx.snapshot.bytes) && name != "default" {
+        Some(arena.text("default")?)
+    } else {
+        None
+    };
+    let record = SymbolRecord {
+        id,
+        parent,
+        name,
+        kind: declaration.kind,
+        span: span(node),
+        exported: declaration.exported,
+        export_alias,
+        signature_hash: Some(signature_hash),
+        body_hash: declaration.body.map(|b| body_hash(b, &ctx.snapshot.bytes)),
+        doc_line,
+        lexical_scope: current_scope,
+    };
+    let index = state.parsed.symbols.len();
+    arena.row(&mut state.parsed.symbols, record)?;
+    arena.push(
+        &mut state.symbols,
+        Frame {
+            node: node.id(),
+            symbol: index,
+        },
+    )
+}
+fn enter_scope(
+    ctx: &Ctx,
+    state: &mut State,
+    node: Node,
+    current_scope: u32,
+    arena: &mut Arena,
+) -> AtlasResult<()> {
+    if node != ctx.root && scope_boundary(node, ctx.language) {
+        let next = state.parsed.scopes.len() as u32;
+        arena.row(
+            &mut state.parsed.scopes,
+            LexicalScope {
+                parent: Some(current_scope),
+                span: span(node),
+            },
+        )?;
+        arena.push(
+            &mut state.scopes,
+            ScopeFrame {
+                node: node.id(),
+                scope: next,
+            },
+        )
+    } else {
+        Ok(())
+    }
+}
+fn record_reference(
+    ctx: &Ctx,
+    ancestors: &[Node],
+    state: &mut State,
+    node: Node,
+    declaration_name: Option<usize>,
+    arena: &mut Arena,
+) -> AtlasResult<()> {
+    let current_scope = state.scopes.last().map_or(0, |f| f.scope);
+    let Some((name, kind, qualifier)) = reference(node, ancestors, &ctx.snapshot.bytes) else {
+        return Ok(());
+    };
+    if declaration_name == Some(name.id()) {
+        return Ok(());
+    }
+    let spelling = text(name, &ctx.snapshot.bytes);
+    if spelling.is_empty() || spelling.len() > 1024 {
+        if !state.reasons.contains(&CoverageReason::ByteLimit) {
+            state.reasons.push(CoverageReason::ByteLimit)
+        }
+        return Ok(());
+    }
+    let spelling = arena.text(spelling)?;
+    let qualifier = match qualifier {
+        SyntaxQualifier::Unqualified => ReferenceQualifier::Unqualified,
+        SyntaxQualifier::Dynamic => ReferenceQualifier::Dynamic,
+        SyntaxQualifier::Namespace(text) if text.len() <= 4096 && text.split("::").count() <= 8 => {
+            let count = text.split("::").count();
+            arena.charge(count * std::mem::size_of::<String>())?;
+            let mut parts = Vec::with_capacity(count);
+            for part in text.split("::") {
+                parts.push(arena.text(part)?);
+            }
+            ReferenceQualifier::Namespace(parts)
+        }
+        _ => ReferenceQualifier::Dynamic,
+    };
+    arena.charge(ctx.snapshot.path.as_str().len())?;
+    let enclosing = state
+        .symbols
+        .last()
+        .map(|f| state.parsed.symbols[f.symbol].id);
+    arena.row(
+        &mut state.parsed.references,
+        ParsedReference {
+            site: Reference {
+                site: CodePointer {
+                    file: ctx.file,
+                    path: ctx.snapshot.path.clone(),
+                    span: Some(span(name)),
+                    content_hash: Some(ctx.snapshot.content_hash),
+                    freshness: SnapshotFreshness::Current,
+                },
+                kind,
+                spelling,
+                enclosing,
+                resolved_target: None,
+                accuracy: Accuracy::NameOnly,
+            },
+            lexical_scope: current_scope,
+            qualifier,
+        },
+    )
 }
 fn leave(node: Node<'_>, symbols: &mut Vec<Frame>, scopes: &mut Vec<ScopeFrame>) {
     if symbols.last().is_some_and(|f| f.node == node.id()) {

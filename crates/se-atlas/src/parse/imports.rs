@@ -63,10 +63,6 @@ fn emit(
     };
     arena.row(into, record)
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn javascript(
     node: Node<'_>,
     ancestors: &[Node<'_>],
@@ -93,45 +89,8 @@ fn javascript(
             return Ok(());
         };
         let reexport = statement.kind() == "export_statement";
-        let (local, imported, wildcard) = match node.kind() {
-            "import_specifier" | "export_specifier" => {
-                let Some(name) = node.child_by_field_name("name") else {
-                    return Ok(());
-                };
-                let name = literal(name, bytes).unwrap_or_else(|| text(name, bytes));
-                (
-                    Some(
-                        node.child_by_field_name("alias")
-                            .map(|n| text(n, bytes))
-                            .unwrap_or(name),
-                    ),
-                    Some(name),
-                    false,
-                )
-            }
-            "namespace_import" => (node.named_child(0).map(|n| text(n, bytes)), None, false),
-            "identifier"
-                if ancestors
-                    .last()
-                    .is_some_and(|p| p.kind() == "import_clause") =>
-            {
-                (Some(text(node, bytes)), Some("default"), false)
-            }
-            "import_statement"
-                if !(0..node.named_child_count())
-                    .filter_map(|i| node.named_child(i as u32))
-                    .any(|n| n.kind() == "import_clause") =>
-            {
-                (None, None, false)
-            }
-            "export_statement"
-                if !(0..node.named_child_count())
-                    .filter_map(|i| node.named_child(i as u32))
-                    .any(|n| n.kind() == "export_clause") =>
-            {
-                (None, None, true)
-            }
-            _ => return Ok(()),
+        let Some((local, imported, wildcard)) = esm_fields(node, ancestors, bytes) else {
+            return Ok(());
         };
         return emit(
             node,
@@ -149,31 +108,9 @@ fn javascript(
         );
     }
     if node.kind() == "variable_declarator" {
-        let Some(value) = node
-            .child_by_field_name("value")
-            .filter(|n| n.kind() == "call_expression")
-        else {
+        let Some((source, local)) = commonjs_fields(node, bytes) else {
             return Ok(());
         };
-        if value
-            .child_by_field_name("function")
-            .map(|n| text(n, bytes))
-            != Some("require")
-        {
-            return Ok(());
-        }
-        let Some(source) = value
-            .child_by_field_name("arguments")
-            .filter(|n| n.named_child_count() == 1)
-            .and_then(|n| n.named_child(0))
-            .and_then(|n| literal(n, bytes))
-        else {
-            return Ok(());
-        };
-        let local = node
-            .child_by_field_name("name")
-            .filter(|n| n.kind() == "identifier")
-            .map(|n| text(n, bytes));
         return emit(
             node,
             Binding {
@@ -191,6 +128,73 @@ fn javascript(
     }
     Ok(())
 }
+fn esm_fields<'a>(
+    node: Node<'a>,
+    ancestors: &[Node<'a>],
+    bytes: &'a [u8],
+) -> Option<(Option<&'a str>, Option<&'a str>, bool)> {
+    Some(match node.kind() {
+        "import_specifier" | "export_specifier" => {
+            let name = node.child_by_field_name("name")?;
+            let name = literal(name, bytes).unwrap_or_else(|| text(name, bytes));
+            (
+                Some(
+                    node.child_by_field_name("alias")
+                        .map(|n| text(n, bytes))
+                        .unwrap_or(name),
+                ),
+                Some(name),
+                false,
+            )
+        }
+        "namespace_import" => (node.named_child(0).map(|n| text(n, bytes)), None, false),
+        "identifier"
+            if ancestors
+                .last()
+                .is_some_and(|p| p.kind() == "import_clause") =>
+        {
+            (Some(text(node, bytes)), Some("default"), false)
+        }
+        "import_statement"
+            if !(0..node.named_child_count())
+                .filter_map(|i| node.named_child(i as u32))
+                .any(|n| n.kind() == "import_clause") =>
+        {
+            (None, None, false)
+        }
+        "export_statement"
+            if !(0..node.named_child_count())
+                .filter_map(|i| node.named_child(i as u32))
+                .any(|n| n.kind() == "export_clause") =>
+        {
+            (None, None, true)
+        }
+        _ => return None,
+    })
+}
+fn commonjs_fields<'a>(node: Node<'a>, bytes: &'a [u8]) -> Option<(&'a str, Option<&'a str>)> {
+    let value = node
+        .child_by_field_name("value")
+        .filter(|n| n.kind() == "call_expression")?;
+    if value
+        .child_by_field_name("function")
+        .map(|n| text(n, bytes))
+        != Some("require")
+    {
+        return None;
+    }
+    let source = value
+        .child_by_field_name("arguments")
+        .filter(|n| n.named_child_count() == 1)
+        .and_then(|n| n.named_child(0))
+        .and_then(|n| literal(n, bytes))?;
+    let local = node
+        .child_by_field_name("name")
+        .filter(|n| n.kind() == "identifier")
+        .map(|n| text(n, bytes));
+    Some((source, local))
+}
+
 fn python(
     node: Node<'_>,
     ancestors: &[Node<'_>],
