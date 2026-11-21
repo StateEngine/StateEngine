@@ -14,6 +14,25 @@ const FORGOTTEN: &str = "forget-me-7f3a9c2e-synthetic-private-text";
 const KEPT: &str = "keep-me-41d8b6aa-synthetic-neighbour-text";
 const BUDGET: Duration = Duration::from_secs(60);
 
+/// Read one file for the scan. On Windows a held SQLite shared-memory index or
+/// lease lock refuses reads of its locked range (ERROR_LOCK_VIOLATION); neither
+/// file can hold message text, so only those are skipped. Every other refusal
+/// fails, naming the file.
+fn scanned(path: &std::path::Path) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error)
+            if error.raw_os_error() == Some(33)
+                && path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.ends_with("-shm") || n.ends_with(".lock")) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(format!("read {}: {error}", path.display()).into()),
+    }
+}
 fn files_holding(root: &Path, needle: &[u8]) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut hits = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -24,7 +43,9 @@ fn files_holding(root: &Path, needle: &[u8]) -> Result<Vec<String>, Box<dyn std:
             if kind.is_dir() {
                 stack.push(entry.path());
             } else if kind.is_file() {
-                let bytes = std::fs::read(entry.path())?;
+                let Some(bytes) = scanned(&entry.path())? else {
+                    continue;
+                };
                 if bytes.windows(needle.len()).any(|w| w == needle) {
                     hits.push(entry.path().display().to_string());
                 }
