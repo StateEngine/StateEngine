@@ -1,10 +1,6 @@
 //! One store-domain to public-catalogue mapping; the original cause is never dropped.
 use se_store::{StoreError, StoreErrorCode as C};
 use se_types::{Detail, SeError, details};
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn store_error(error: &StoreError) -> SeError {
     if let se_store::StoreDetail::PrincipalNameConflict {
         project,
@@ -12,57 +8,63 @@ pub fn store_error(error: &StoreError) -> SeError {
         existing,
     } = &error.detail
     {
-        let se_store::Actor::Agent(agent) = existing else {
-            return SeError::new(Detail::StateConflict(details::StateConflict {
-                subject: format!("principal name {name}"),
-                reason: "this name belongs to an existing human in the selected project".into(),
-                next_step: "Choose another name for the new agent.".into(),
-            }))
-            .with_cause(error.clone());
-        };
-        let command = match se_types::Argv::from_op(&ExistingAgent { project, agent }) {
-            Ok(argv) => se_types::Cmd::Se { argv },
-            Err(cause) => return cause.with_cause(error.clone()),
-        };
-        return SeError::from(
-            se_types::ErrorBody::new(Detail::AgentNameConflict(details::AgentNameConflict {
-                name: name.clone(),
-                agent: agent.clone(),
-                project: project.clone(),
-            }))
-            .with_remedy(se_types::Remedy {
-                text: "Choose another name for the new agent, or use the existing agent.".into(),
-                command: Some(command),
-            }),
-        )
-        .with_cause(error.clone());
+        return principal_name_conflict(error, project, name, existing);
     }
     let subject = format!("store {:?}", error.code);
     let reason = error.cause.clone();
     let next_step = error.remedy.text.clone();
-    let mut mapped = SeError::new(match error.code {
+    let mut mapped =
+        SeError::new(mapped_detail(error, subject, reason, next_step)).with_cause(error.clone());
+    if matches!(
+        error.detail,
+        se_store::StoreDetail::NativeContention { .. } | se_store::StoreDetail::BusyWait { .. }
+    ) {
+        mapped.body = mapped.body.with_retry(error.retry.clone());
+    }
+    mapped
+}
+
+fn principal_name_conflict(
+    error: &StoreError,
+    project: &se_types::ProjectId,
+    name: &str,
+    existing: &se_store::Actor,
+) -> SeError {
+    let se_store::Actor::Agent(agent) = existing else {
+        return SeError::new(Detail::StateConflict(details::StateConflict {
+            subject: format!("principal name {name}"),
+            reason: "this name belongs to an existing human in the selected project".into(),
+            next_step: "Choose another name for the new agent.".into(),
+        }))
+        .with_cause(error.clone());
+    };
+    let command = match se_types::Argv::from_op(&ExistingAgent { project, agent }) {
+        Ok(argv) => se_types::Cmd::Se { argv },
+        Err(cause) => return cause.with_cause(error.clone()),
+    };
+    SeError::from(
+        se_types::ErrorBody::new(Detail::AgentNameConflict(details::AgentNameConflict {
+            name: name.to_string(),
+            agent: agent.clone(),
+            project: project.clone(),
+        }))
+        .with_remedy(se_types::Remedy {
+            text: "Choose another name for the new agent, or use the existing agent.".into(),
+            command: Some(command),
+        }),
+    )
+    .with_cause(error.clone())
+}
+
+fn mapped_detail(error: &StoreError, subject: String, reason: String, next_step: String) -> Detail {
+    match error.code {
         C::Absent | C::ReferenceMissing => Detail::TargetUnknown(details::TargetUnknown {
             subject,
             reason,
             next_step,
         }),
-        C::Corrupt => Detail::StoreCorrupt(details::StoreCorrupt {
-            path: match &error.detail {
-                se_store::StoreDetail::Io { path, .. } => path.clone(),
-                _ => subject,
-            },
-            check: reason,
-        }),
-        C::Busy | C::Backpressure => Detail::StoreBusy(details::StoreBusy {
-            waited_ms: match error.detail {
-                se_store::StoreDetail::NativeContention { waited_ms }
-                | se_store::StoreDetail::BusyWait { waited_ms, .. } => waited_ms,
-                _ => 0,
-            },
-            replay: None,
-            reason,
-            next_step,
-        }),
+        C::Corrupt => corrupt_detail(error, subject, reason),
+        C::Busy | C::Backpressure => busy_detail(error, reason, next_step),
         C::WriterClosed | C::NotReady | C::GenerationChanged => {
             Detail::RuntimeNotRunning(details::RuntimeNotRunning {
                 op: subject,
@@ -78,88 +80,14 @@ pub fn store_error(error: &StoreError) -> SeError {
             reason,
             next_step,
         }),
-        C::DiskFull => Detail::StoreDiskFull(details::StoreDiskFull {
-            path: match &error.detail {
-                se_store::StoreDetail::Io { opened_path, .. } => opened_path.clone(),
-                _ => reason,
-            },
-            free_bytes: None,
-        }),
-        C::TooNew | C::VersionUnsupported => match &error.detail {
-            se_store::StoreDetail::Version { found, maximum, .. } => {
-                Detail::StoreTooNew(details::StoreTooNew {
-                    store_version: u64::from(*found),
-                    supported: u64::from(*maximum),
-                })
-            }
-            _ => Detail::StateConflict(details::StateConflict {
-                subject,
-                reason,
-                next_step,
-            }),
-        },
-        C::MigrationRequired => match &error.detail {
-            se_store::StoreDetail::Version { found, minimum, .. } => {
-                Detail::StoreMigrationRequired(details::StoreMigrationRequired {
-                    from: u64::from(*found),
-                    to: u64::from(*minimum),
-                })
-            }
-            _ => Detail::StateConflict(details::StateConflict {
-                subject,
-                reason,
-                next_step,
-            }),
-        },
-        C::RevisionConflict => match &error.detail {
-            se_store::StoreDetail::Conflict { expected, observed } => {
-                Detail::RevisionConflict(details::RevisionConflict {
-                    entity: subject,
-                    expected: format!("{expected:?}"),
-                    current: observed
-                        .map(|r| r.value.to_string())
-                        .unwrap_or_else(|| "absent".into()),
-                })
-            }
-            _ => Detail::StateConflict(details::StateConflict {
-                subject,
-                reason,
-                next_step,
-            }),
-        },
-        C::ProjectRemoved => match &error.detail {
-            se_store::StoreDetail::ProjectRemoved { project, at } => {
-                Detail::ProjectRemoved(details::ProjectRemoved {
-                    project: project.clone(),
-                    at: *at,
-                })
-            }
-            _ => Detail::StateConflict(details::StateConflict {
-                subject,
-                reason,
-                next_step,
-            }),
-        },
-        C::MessageRateOverCap => match &error.detail {
-            se_store::StoreDetail::MessageRateOverCap {
-                from,
-                to,
-                count,
-                limit,
-                window_minutes,
-            } => Detail::MessageRateOverCap(details::MessageRateOverCap {
-                from: from.clone(),
-                to: to.clone(),
-                count: *count,
-                limit: *limit,
-                window_minutes: *window_minutes,
-            }),
-            _ => Detail::StateConflict(details::StateConflict {
-                subject,
-                reason,
-                next_step,
-            }),
-        },
+        C::DiskFull => disk_full_detail(error, reason),
+        C::TooNew | C::VersionUnsupported => {
+            version_too_new_detail(error, subject, reason, next_step)
+        }
+        C::MigrationRequired => migration_required_detail(error, subject, reason, next_step),
+        C::RevisionConflict => revision_conflict_detail(error, subject, reason, next_step),
+        C::ProjectRemoved => project_removed_detail(error, subject, reason, next_step),
+        C::MessageRateOverCap => message_rate_detail(error, subject, reason, next_step),
         C::ScopeMismatch | C::CreatorControlRefused => {
             Detail::CapabilityInvalid(details::CapabilityInvalid {
                 subject,
@@ -174,29 +102,8 @@ pub fn store_error(error: &StoreError) -> SeError {
                 expected: next_step,
             })
         }
-        C::CommitOutcomeUnknown => Detail::CommitOutcomeUnknown(details::CommitOutcomeUnknown {
-            operation: subject,
-            key: match &error.detail {
-                se_store::StoreDetail::Request { key, .. } => Some(key.to_string()),
-                _ => None,
-            },
-            natural_events: vec![],
-        }),
-        C::IdempotencyKeyReused => match &error.detail {
-            se_store::StoreDetail::Request {
-                key,
-                original_event: Some(original_event),
-                ..
-            } => Detail::IdempotencyKeyReused(details::IdempotencyKeyReused {
-                key: key.to_string(),
-                original_event: original_event.clone(),
-            }),
-            _ => Detail::SourceUnreadable(details::SourceUnreadable {
-                subject,
-                reason: format!("{reason}; retained key conflict has no original event"),
-                next_step,
-            }),
-        },
+        C::CommitOutcomeUnknown => commit_outcome_detail(error, subject),
+        C::IdempotencyKeyReused => idempotency_reused_detail(error, subject, reason, next_step),
         C::AlreadyExists | C::EventIdConflict | C::NaturalKeyConflict | C::InvalidTransition => {
             Detail::StateConflict(details::StateConflict {
                 subject,
@@ -224,17 +131,190 @@ pub fn store_error(error: &StoreError) -> SeError {
                 next_step,
             })
         }
-    })
-    .with_cause(error.clone());
-    if matches!(
-        error.detail,
-        se_store::StoreDetail::NativeContention { .. } | se_store::StoreDetail::BusyWait { .. }
-    ) {
-        mapped.body = mapped.body.with_retry(error.retry.clone());
     }
-    mapped
 }
 
+fn corrupt_detail(error: &StoreError, subject: String, reason: String) -> Detail {
+    Detail::StoreCorrupt(details::StoreCorrupt {
+        path: match &error.detail {
+            se_store::StoreDetail::Io { path, .. } => path.clone(),
+            _ => subject,
+        },
+        check: reason,
+    })
+}
+
+fn busy_detail(error: &StoreError, reason: String, next_step: String) -> Detail {
+    Detail::StoreBusy(details::StoreBusy {
+        waited_ms: match error.detail {
+            se_store::StoreDetail::NativeContention { waited_ms }
+            | se_store::StoreDetail::BusyWait { waited_ms, .. } => waited_ms,
+            _ => 0,
+        },
+        replay: None,
+        reason,
+        next_step,
+    })
+}
+
+fn disk_full_detail(error: &StoreError, reason: String) -> Detail {
+    Detail::StoreDiskFull(details::StoreDiskFull {
+        path: match &error.detail {
+            se_store::StoreDetail::Io { opened_path, .. } => opened_path.clone(),
+            _ => reason,
+        },
+        free_bytes: None,
+    })
+}
+
+fn version_too_new_detail(
+    error: &StoreError,
+    subject: String,
+    reason: String,
+    next_step: String,
+) -> Detail {
+    match &error.detail {
+        se_store::StoreDetail::Version { found, maximum, .. } => {
+            Detail::StoreTooNew(details::StoreTooNew {
+                store_version: u64::from(*found),
+                supported: u64::from(*maximum),
+            })
+        }
+        _ => Detail::StateConflict(details::StateConflict {
+            subject,
+            reason,
+            next_step,
+        }),
+    }
+}
+
+fn migration_required_detail(
+    error: &StoreError,
+    subject: String,
+    reason: String,
+    next_step: String,
+) -> Detail {
+    match &error.detail {
+        se_store::StoreDetail::Version { found, minimum, .. } => {
+            Detail::StoreMigrationRequired(details::StoreMigrationRequired {
+                from: u64::from(*found),
+                to: u64::from(*minimum),
+            })
+        }
+        _ => Detail::StateConflict(details::StateConflict {
+            subject,
+            reason,
+            next_step,
+        }),
+    }
+}
+
+fn revision_conflict_detail(
+    error: &StoreError,
+    subject: String,
+    reason: String,
+    next_step: String,
+) -> Detail {
+    match &error.detail {
+        se_store::StoreDetail::Conflict { expected, observed } => {
+            Detail::RevisionConflict(details::RevisionConflict {
+                entity: subject,
+                expected: format!("{expected:?}"),
+                current: observed
+                    .map(|r| r.value.to_string())
+                    .unwrap_or_else(|| "absent".into()),
+            })
+        }
+        _ => Detail::StateConflict(details::StateConflict {
+            subject,
+            reason,
+            next_step,
+        }),
+    }
+}
+
+fn project_removed_detail(
+    error: &StoreError,
+    subject: String,
+    reason: String,
+    next_step: String,
+) -> Detail {
+    match &error.detail {
+        se_store::StoreDetail::ProjectRemoved { project, at } => {
+            Detail::ProjectRemoved(details::ProjectRemoved {
+                project: project.clone(),
+                at: *at,
+            })
+        }
+        _ => Detail::StateConflict(details::StateConflict {
+            subject,
+            reason,
+            next_step,
+        }),
+    }
+}
+
+fn message_rate_detail(
+    error: &StoreError,
+    subject: String,
+    reason: String,
+    next_step: String,
+) -> Detail {
+    match &error.detail {
+        se_store::StoreDetail::MessageRateOverCap {
+            from,
+            to,
+            count,
+            limit,
+            window_minutes,
+        } => Detail::MessageRateOverCap(details::MessageRateOverCap {
+            from: from.clone(),
+            to: to.clone(),
+            count: *count,
+            limit: *limit,
+            window_minutes: *window_minutes,
+        }),
+        _ => Detail::StateConflict(details::StateConflict {
+            subject,
+            reason,
+            next_step,
+        }),
+    }
+}
+
+fn commit_outcome_detail(error: &StoreError, subject: String) -> Detail {
+    Detail::CommitOutcomeUnknown(details::CommitOutcomeUnknown {
+        operation: subject,
+        key: match &error.detail {
+            se_store::StoreDetail::Request { key, .. } => Some(key.to_string()),
+            _ => None,
+        },
+        natural_events: vec![],
+    })
+}
+
+fn idempotency_reused_detail(
+    error: &StoreError,
+    subject: String,
+    reason: String,
+    next_step: String,
+) -> Detail {
+    match &error.detail {
+        se_store::StoreDetail::Request {
+            key,
+            original_event: Some(original_event),
+            ..
+        } => Detail::IdempotencyKeyReused(details::IdempotencyKeyReused {
+            key: key.to_string(),
+            original_event: original_event.clone(),
+        }),
+        _ => Detail::SourceUnreadable(details::SourceUnreadable {
+            subject,
+            reason: format!("{reason}; retained key conflict has no original event"),
+            next_step,
+        }),
+    }
+}
 /// The adapter retains these submitted identities around append/await; lost ACK
 /// never mints a key or claims a definite rollback.
 pub fn write_error(
