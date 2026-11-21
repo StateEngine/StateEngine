@@ -203,10 +203,6 @@ async fn finish_close(stream: &mut TcpStream, shutdown: &mut watch::Receiver<Opt
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 async fn respond(
     router: &HostedRouter,
     request: Request<Incoming>,
@@ -219,131 +215,148 @@ async fn respond(
         Err(refusal) => return refused(&refusal),
     };
     match route {
-        Route::Livez => match serde_json::to_value(se_types::API_VERSION) {
-            // Anonymous liveness: no counts, projects or readiness claims.
-            Ok(api) => json(StatusCode::OK, &serde_json::json!({"ok": true, "api": api})),
-            Err(_) => status_only(StatusCode::INTERNAL_SERVER_ERROR),
-        },
-        Route::Mail => {
-            if request.headers().contains_key("x-se-mail-session") {
-                return super::mail::bell::respond(router, request, active).await;
-            }
-            let secret = match admission::bearer(request.headers()) {
-                Ok(Some(secret)) => Arc::new(secret),
-                _ => {
-                    return refused(&Refusal {
-                        status: StatusCode::UNAUTHORIZED,
-                        reason: "an active session bearer is required; relaunch the agent",
-                        allow: None,
-                    });
-                }
-            };
-            let values = request.headers().get_all("last-event-id");
-            let mut values = values.iter();
-            let after = match values.next() {
-                None => None,
-                Some(value) => match value
-                    .to_str()
-                    .ok()
-                    .and_then(|text| se_types::Cursor::new(text).ok())
-                {
-                    Some(cursor) => Some(cursor.as_str().to_owned()),
-                    None => return status_only(StatusCode::BAD_REQUEST),
-                },
-            };
-            if values.next().is_some() {
-                return status_only(StatusCode::BAD_REQUEST);
-            }
-            let deadline = match request_deadline() {
-                Ok(deadline) => deadline,
-                Err(_) => return status_only(StatusCode::SERVICE_UNAVAILABLE),
-            };
-            match router.next_mail(secret, after, active, &deadline).await {
-                Ok(page) => match serde_json::to_value(page) {
-                    Ok(value) => json(StatusCode::OK, &value),
-                    Err(_) => status_only(StatusCode::INTERNAL_SERVER_ERROR),
-                },
-                Err(error) => json(
-                    StatusCode::CONFLICT,
-                    &serde_json::json!({"error": error.body}),
-                ),
-            }
-        }
-        Route::Proof => {
-            let deadline = match request_deadline() {
-                Ok(deadline) => deadline,
-                Err(_) => return status_only(StatusCode::SERVICE_UNAVAILABLE),
-            };
-            let body = Limited::new(request.into_body(), 1024).collect();
-            let body =
-                match tokio::time::timeout(deadline.remaining().unwrap_or_default(), body).await {
-                    Ok(Ok(body)) => body.to_bytes(),
-                    _ => return status_only(StatusCode::BAD_REQUEST),
-                };
-            let challenge = match serde_json::from_slice::<super::proof::Challenge>(&body) {
-                Ok(challenge) => challenge,
-                Err(_) => return status_only(StatusCode::BAD_REQUEST),
-            };
-            match router
-                .local_http_proof(challenge, port, peer, &deadline)
-                .await
-            {
-                Ok(value) => json(StatusCode::OK, &value),
-                Err(_) => json(
-                    StatusCode::CONFLICT,
-                    &serde_json::json!({"error": "use a fresh challenge with the running host; obtain credentials only over protected IPC"}),
-                ),
-            }
-        }
-        Route::Mcp => {
-            // Ordinary initialization stays anonymous. An explicitly supplied
-            // first-use pair is verified even before the provider lists tools.
-            let (secret, malformed) = match admission::bearer(request.headers()) {
-                Ok(secret) => (secret, false),
-                Err(_) => (None, true),
-            };
-            let (session_proof, malformed_proof) = match admission::session_proof(request.headers())
-            {
-                Ok(value) => (value.map(Arc::new), false),
-                Err(_) => (None, true),
-            };
-            let deadline = match Deadline::from_options(&ClientOptions {
-                expected_generation: None,
-                timeout: CALL_TIMEOUT,
-                cancelled: Arc::new(AtomicBool::new(false)),
-            }) {
-                Ok(deadline) => deadline,
-                Err(_) => return status_only(StatusCode::SERVICE_UNAVAILABLE),
-            };
-            // Count actual bytes whatever Content-Length claimed, within the
-            // same request clock as execution.
-            let body = Limited::new(request.into_body(), MAX_BODY_BYTES).collect();
-            let body = match tokio::time::timeout(CALL_TIMEOUT, body).await {
-                Ok(Ok(body)) => body.to_bytes(),
-                Ok(Err(_)) => {
-                    return refused(&Refusal {
-                        status: StatusCode::PAYLOAD_TOO_LARGE,
-                        reason: "body exceeds 1 MiB or ended early",
-                        allow: None,
-                    });
-                }
-                Err(_) => return status_only(StatusCode::REQUEST_TIMEOUT),
-            };
-            let mut backend = HttpBackend {
-                router,
-                deadline: &deadline,
-                malformed,
-                session_proof,
-                malformed_proof,
-            };
-            match crate::mcp::dispatch(&body, secret.map(Arc::new), &mut backend).await {
-                McpReply::Json(value) => json(StatusCode::OK, &value),
-                McpReply::Accepted => status_only(StatusCode::ACCEPTED),
-            }
-        }
+        Route::Livez => livez_response(),
+        Route::Mail => respond_mail(router, request, active).await,
+        Route::Proof => respond_proof(router, request, port, peer).await,
+        Route::Mcp => respond_mcp(router, request).await,
     }
 }
 
+/// Build the anonymous liveness body.
+fn livez_response() -> Response<Full<Bytes>> {
+    match serde_json::to_value(se_types::API_VERSION) {
+        // Anonymous liveness: no counts, projects or readiness claims.
+        Ok(api) => json(StatusCode::OK, &serde_json::json!({"ok": true, "api": api})),
+        Err(_) => status_only(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+/// Serve a mail page or hand a session header to the bell.
+async fn respond_mail(
+    router: &HostedRouter,
+    request: Request<Incoming>,
+    active: Arc<Mutex<Option<OwnedSemaphorePermit>>>,
+) -> Response<Full<Bytes>> {
+    if request.headers().contains_key("x-se-mail-session") {
+        return super::mail::bell::respond(router, request, active).await;
+    }
+    let secret = match admission::bearer(request.headers()) {
+        Ok(Some(secret)) => Arc::new(secret),
+        _ => {
+            return refused(&Refusal {
+                status: StatusCode::UNAUTHORIZED,
+                reason: "an active session bearer is required; relaunch the agent",
+                allow: None,
+            });
+        }
+    };
+    let values = request.headers().get_all("last-event-id");
+    let mut values = values.iter();
+    let after = match values.next() {
+        None => None,
+        Some(value) => match value
+            .to_str()
+            .ok()
+            .and_then(|text| se_types::Cursor::new(text).ok())
+        {
+            Some(cursor) => Some(cursor.as_str().to_owned()),
+            None => return status_only(StatusCode::BAD_REQUEST),
+        },
+    };
+    if values.next().is_some() {
+        return status_only(StatusCode::BAD_REQUEST);
+    }
+    let deadline = match request_deadline() {
+        Ok(deadline) => deadline,
+        Err(_) => return status_only(StatusCode::SERVICE_UNAVAILABLE),
+    };
+    match router.next_mail(secret, after, active, &deadline).await {
+        Ok(page) => match serde_json::to_value(page) {
+            Ok(value) => json(StatusCode::OK, &value),
+            Err(_) => status_only(StatusCode::INTERNAL_SERVER_ERROR),
+        },
+        Err(error) => json(
+            StatusCode::CONFLICT,
+            &serde_json::json!({"error": error.body}),
+        ),
+    }
+}
+/// Answer a local HTTP proof challenge.
+async fn respond_proof(
+    router: &HostedRouter,
+    request: Request<Incoming>,
+    port: u16,
+    peer: IpAddr,
+) -> Response<Full<Bytes>> {
+    let deadline = match request_deadline() {
+        Ok(deadline) => deadline,
+        Err(_) => return status_only(StatusCode::SERVICE_UNAVAILABLE),
+    };
+    let body = Limited::new(request.into_body(), 1024).collect();
+    let body = match tokio::time::timeout(deadline.remaining().unwrap_or_default(), body).await {
+        Ok(Ok(body)) => body.to_bytes(),
+        _ => return status_only(StatusCode::BAD_REQUEST),
+    };
+    let challenge = match serde_json::from_slice::<super::proof::Challenge>(&body) {
+        Ok(challenge) => challenge,
+        Err(_) => return status_only(StatusCode::BAD_REQUEST),
+    };
+    match router
+        .local_http_proof(challenge, port, peer, &deadline)
+        .await
+    {
+        Ok(value) => json(StatusCode::OK, &value),
+        Err(_) => json(
+            StatusCode::CONFLICT,
+            &serde_json::json!({"error": "use a fresh challenge with the running host; obtain credentials only over protected IPC"}),
+        ),
+    }
+}
+/// Dispatch an MCP request to the hosted backend.
+async fn respond_mcp(router: &HostedRouter, request: Request<Incoming>) -> Response<Full<Bytes>> {
+    // Ordinary initialization stays anonymous. An explicitly supplied
+    // first-use pair is verified even before the provider lists tools.
+    let (secret, malformed) = match admission::bearer(request.headers()) {
+        Ok(secret) => (secret, false),
+        Err(_) => (None, true),
+    };
+    let (session_proof, malformed_proof) = match admission::session_proof(request.headers()) {
+        Ok(value) => (value.map(Arc::new), false),
+        Err(_) => (None, true),
+    };
+    let deadline = match Deadline::from_options(&ClientOptions {
+        expected_generation: None,
+        timeout: CALL_TIMEOUT,
+        cancelled: Arc::new(AtomicBool::new(false)),
+    }) {
+        Ok(deadline) => deadline,
+        Err(_) => return status_only(StatusCode::SERVICE_UNAVAILABLE),
+    };
+    // Count actual bytes whatever Content-Length claimed, within the
+    // same request clock as execution.
+    let body = Limited::new(request.into_body(), MAX_BODY_BYTES).collect();
+    let body = match tokio::time::timeout(CALL_TIMEOUT, body).await {
+        Ok(Ok(body)) => body.to_bytes(),
+        Ok(Err(_)) => {
+            return refused(&Refusal {
+                status: StatusCode::PAYLOAD_TOO_LARGE,
+                reason: "body exceeds 1 MiB or ended early",
+                allow: None,
+            });
+        }
+        Err(_) => return status_only(StatusCode::REQUEST_TIMEOUT),
+    };
+    let mut backend = HttpBackend {
+        router,
+        deadline: &deadline,
+        malformed,
+        session_proof,
+        malformed_proof,
+    };
+    match crate::mcp::dispatch(&body, secret.map(Arc::new), &mut backend).await {
+        McpReply::Json(value) => json(StatusCode::OK, &value),
+        McpReply::Accepted => status_only(StatusCode::ACCEPTED),
+    }
+}
 fn refused(refusal: &Refusal) -> Response<Full<Bytes>> {
     let mut response = json(
         refusal.status,
