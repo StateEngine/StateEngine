@@ -290,8 +290,36 @@ pub(crate) fn plan(
         targets: observed.bodies.into_iter().map(|b| b.target).collect(),
         required_bytes,
         owned_generations,
-        residuals: observed.residuals,
+        residuals: observed
+            .residuals
+            .into_iter()
+            .chain(preserved_copies(lease.files(), &options.state_directory)?)
+            .collect(),
     })
+}
+/// Stores a restore replaced are kept whole under `preserved/`; a forget leaves
+/// them as they are, so each is named rather than claimed as erased.
+fn preserved_copies(
+    files: &dyn StateFiles,
+    home: &std::path::Path,
+) -> StoreResult<Vec<ResidualCopy>> {
+    let directory = home.join("preserved");
+    match std::fs::symlink_metadata(&directory) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(fail(StoreErrorCode::Unreadable, error.to_string())),
+        Ok(_) => (),
+    }
+    files
+        .list_owned(&directory, 64)?
+        .into_iter()
+        .map(|path| {
+            Ok(ResidualCopy {
+                custodian: "store replaced by a restore".into(),
+                location: NativePath::from_local(path).map_err(invalid)?,
+                reason: "A restore kept the store it replaced here, unchanged; it may still hold this text. Delete it yourself once you no longer need it.".into(),
+            })
+        })
+        .collect()
 }
 /// An interrupted erasure is planned again from its own committed manifest, so
 /// a retry resumes its cleanup instead of failing on bodies it already removed.
