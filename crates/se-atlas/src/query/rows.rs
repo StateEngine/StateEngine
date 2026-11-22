@@ -1,13 +1,11 @@
 //! Decoding is fallible: damaged rows never disappear into an empty answer.
 use super::*;
-use rusqlite::Row;
+use rusqlite::{Row, types::ValueRef};
 use serde::de::DeserializeOwned;
 
 pub(super) fn get<T: rusqlite::types::FromSql>(row: &Row<'_>, column: usize) -> AtlasResult<T> {
     match row.get_ref(column).map_err(cache_error)? {
-        rusqlite::types::ValueRef::Text(bytes) | rusqlite::types::ValueRef::Blob(bytes)
-            if bytes.len() > 8192 =>
-        {
+        ValueRef::Text(bytes) | ValueRef::Blob(bytes) if bytes.len() > 8192 => {
             return Err(cache_error("cache query field exceeds 8192 bytes"));
         }
         _ => (),
@@ -66,7 +64,10 @@ pub(super) struct FileRow {
 }
 pub(super) const FILE_COLUMNS: &str = "f.id,f.key,f.path,f.indexed_hash,f.coverage_json,f.language";
 pub(super) fn file(row: &Row<'_>, start: usize) -> AtlasResult<FileRow> {
-    let coverage: FileCoverage = json(&get::<String>(row, start + 4)?)?;
+    let coverage = match row.get_ref(start + 4).map_err(cache_error)? {
+        ValueRef::Text(b"\"Indexed\"") => FileCoverage::Indexed,
+        _ => json(&get::<String>(row, start + 4)?)?,
+    };
     let freshness = match &coverage {
         FileCoverage::Indexed => SnapshotFreshness::Current,
         FileCoverage::Stale { .. } => SnapshotFreshness::Stale,
@@ -82,9 +83,13 @@ pub(super) fn file(row: &Row<'_>, start: usize) -> AtlasResult<FileRow> {
             freshness,
         },
         coverage,
-        language: get::<Option<String>>(row, start + 5)?
-            .map(tag)
-            .transpose()?,
+        language: match row.get_ref(start + 5).map_err(cache_error)? {
+            ValueRef::Null => None,
+            ValueRef::Text(b) => Some(
+                crate::policy::decode_language(b).map_or_else(|| tag(get(row, start + 5)?), Ok)?,
+            ),
+            _ => Some(tag(get(row, start + 5)?)?),
+        },
     })
 }
 pub(super) fn file_by_path(sql: &SqlView<'_>, path: &RelativePath) -> AtlasResult<Option<FileRow>> {

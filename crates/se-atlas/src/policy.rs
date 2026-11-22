@@ -65,6 +65,24 @@ pub fn language(path: &RelativePath) -> Option<Language> {
         _ => None,
     }
 }
+pub(crate) fn decode_language(bytes: &[u8]) -> Option<Language> {
+    match bytes {
+        b"JavaScript" => Some(Language::JavaScript),
+        b"Jsx" => Some(Language::Jsx),
+        b"TypeScript" => Some(Language::TypeScript),
+        b"Tsx" => Some(Language::Tsx),
+        b"Rust" => Some(Language::Rust),
+        b"Python" => Some(Language::Python),
+        _ => None,
+    }
+}
+pub(crate) fn contains_ascii_ci(haystack: &str, needle: &str) -> bool {
+    needle.is_empty()
+        || haystack
+            .as_bytes()
+            .windows(needle.len())
+            .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+}
 
 /// The changed-path budget one writer quantum may carry across the cache
 /// connection; commits beyond it are dropped oldest-first, and a final
@@ -80,57 +98,64 @@ pub fn writer_quantum_allowed(paths: &[String]) -> u32 {
         })
         .count() as u32
 }
+const DENIED_EXACT: &[&str] = &[
+    ".git",
+    ".stateengine",
+    ".ssh",
+    ".aws",
+    ".gnupg",
+    ".azure",
+    ".kube",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    "secret",
+    "secrets",
+    "credentials",
+    "credential",
+    "keystore",
+    "config.js",
+    "config.mjs",
+    "config.cjs",
+    "config.ts",
+    "config.py",
+    "config.json",
+    "config.yaml",
+    "config.yml",
+    "config.toml",
+    "config.ini",
+    "settings.py",
+];
+const DENIED_PREFIXES: &[&[u8]] = &[
+    b".env",
+    b"id_",
+    b"secret.",
+    b"secrets.",
+    b"credentials.",
+    b"credential.",
+    b"service-account.",
+    b"service_account.",
+];
+const DENIED_SUFFIXES: &[&[u8]] = &[b".pem", b".key", b".p12", b".pfx", b".jks", b".keystore"];
 /// Always denied before traversal, observation or live text access. Ignore-file
 /// negations cannot override this private-file boundary.
 pub fn built_in_denied(path: &RelativePath) -> bool {
     path.as_str().split('/').any(|part| {
-        let name = part.to_ascii_lowercase();
-        matches!(
-            name.as_str(),
-            ".git"
-                | ".stateengine"
-                | ".ssh"
-                | ".aws"
-                | ".gnupg"
-                | ".azure"
-                | ".kube"
-                | ".netrc"
-                | ".npmrc"
-                | ".pypirc"
-                | "secret"
-                | "secrets"
-                | "credentials"
-                | "credential"
-                | "keystore"
-        ) || name.starts_with(".env")
-            || name.starts_with("id_")
-            || [
-                "secret.",
-                "secrets.",
-                "credentials.",
-                "credential.",
-                "service-account.",
-                "service_account.",
-            ]
+        let bytes = part.as_bytes();
+        DENIED_EXACT
             .iter()
-            .any(|prefix| name.starts_with(prefix))
-            || matches!(
-                name.as_str(),
-                "config.js"
-                    | "config.mjs"
-                    | "config.cjs"
-                    | "config.ts"
-                    | "config.py"
-                    | "config.json"
-                    | "config.yaml"
-                    | "config.yml"
-                    | "config.toml"
-                    | "config.ini"
-                    | "settings.py"
-            )
-            || [".pem", ".key", ".p12", ".pfx", ".jks", ".keystore"]
-                .iter()
-                .any(|suffix| name.ends_with(suffix))
+            .any(|name| part.eq_ignore_ascii_case(name))
+            || DENIED_PREFIXES.iter().any(|prefix| {
+                bytes
+                    .get(..prefix.len())
+                    .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+            })
+            || DENIED_SUFFIXES.iter().any(|suffix| {
+                bytes
+                    .len()
+                    .checked_sub(suffix.len())
+                    .is_some_and(|start| bytes[start..].eq_ignore_ascii_case(suffix))
+            })
     })
 }
 #[cfg(test)]

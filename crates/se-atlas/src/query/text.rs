@@ -138,7 +138,7 @@ impl QueryReader<'_, '_, '_> {
             );
         }
         let metadata_started = crate::clock::now();
-        let metadata_pool = phase_timeout(
+        let mut metadata_pool = phase_timeout(
             "source metadata candidates",
             metadata_started,
             work_end,
@@ -146,6 +146,7 @@ impl QueryReader<'_, '_, '_> {
         )?;
         range_incomplete |= metadata_pool.truncated;
         let matcher = crate::text::compile_pattern(&pattern, regex, !query.regex)?;
+        let mut searcher = crate::text::build_searcher();
         let mut position = (
             start.integers[0] != 0,
             super::linked::from_time_key(start.integers[1]),
@@ -179,6 +180,7 @@ impl QueryReader<'_, '_, '_> {
                 .push(CoverageReason::ReadFailure);
         }
         let mut scan = source.map(LiveSource::open_scan).transpose()?;
+        let mut last_path_key = None;
         'scan: loop {
             if pinned
                 .as_ref()
@@ -194,7 +196,13 @@ impl QueryReader<'_, '_, '_> {
                 more_window = true;
                 break;
             }
-            let (files_batch, has_more) = file_window(sql, position.0, &position.2, &query.scope)?;
+            let (files_batch, has_more) = file_window(
+                sql,
+                position.0,
+                &position.2,
+                &mut last_path_key,
+                &query.scope,
+            )?;
             if files_batch.is_empty() {
                 break;
             }
@@ -254,6 +262,7 @@ impl QueryReader<'_, '_, '_> {
                         full: query.full,
                     },
                     &matcher,
+                    &mut searcher,
                     terms.as_ref(),
                 )?;
                 for (condition, reason) in [
