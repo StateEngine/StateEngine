@@ -53,11 +53,17 @@ fn observe(
     }
     let engine = std::env::current_exe().ok();
     let root = &observed.record.root;
-    let mut members: Vec<&ProcessIdentity> = remaining
-        .known_live
-        .iter()
-        .filter(|member| !infrastructure(member, root, engine.as_deref()))
-        .collect();
+    let mut members: Vec<&ProcessIdentity> = Vec::new();
+    for member in &remaining.known_live {
+        if infrastructure(member, root, engine.as_deref()) {
+            continue;
+        }
+        match provider_under_supervisor(member, root) {
+            Ok(true) => continue,
+            Ok(false) => members.push(member),
+            Err(error) => return unreadable(format!("{error:?}")),
+        }
+    }
     // Only the oldest start is shown, so only it pays for a wall-clock birth
     // read. One that exited since the listing is dropped and the next tried.
     members.sort_by_key(|member| start_order(&member.start));
@@ -101,6 +107,23 @@ fn infrastructure(member: &ProcessIdentity, root: &ProcessIdentity, engine: Opti
         || CONSOLE_HOSTS
             .iter()
             .any(|host| program(&member.image).eq_ignore_ascii_case(host))
+}
+
+/// A script-launched provider runs under StateEngine's `/bin/sh` alias
+/// supervisor, which starts only the provider. That direct child is the
+/// provider itself; the work it starts runs below it and still counts.
+fn provider_under_supervisor(
+    member: &ProcessIdentity,
+    root: &ProcessIdentity,
+) -> se_proc::ProcResult<bool> {
+    if !cfg!(unix) || se_proc::canonicalize_path("/bin/sh").ok().as_ref() != Some(&root.image) {
+        return Ok(false);
+    }
+    Ok(matches!(
+        se_proc::read_process(member.machine.clone(), member.pid)?,
+        se_proc::ProcessRead::Present(live)
+            if live.identity.start == member.start && live.parent == Some(root.pid)
+    ))
 }
 
 /// Native start order within one platform's start clock.
