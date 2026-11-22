@@ -1,6 +1,7 @@
 """The same five public journeys for every admitted native harness row."""
 import json
 from pathlib import Path
+import re
 import sys
 import time
 import uuid
@@ -87,7 +88,7 @@ class Journeys(Smoke):
         servers = [row for row in raw_census()
                    if row.get('exe') and (row['pid'], row['birth']) not in self.commands.observer.baseline
                    and not row['state'].startswith(('Z', 'X', 'x'))
-                   and ' app-server ' in ' ' + (row['command'] or '') + ' ']
+                   and 'app-server' in (t.strip('"') for t in re.findall(r'"[^"]*"|\S+', row['command'] or ''))]
         require(servers, 'No shared Codex app-server started for this journey')
         images = {Path(row['exe']).resolve(strict=True) for row in servers}
         require(len(images) == 1, 'Shared Codex app-servers run different native images')
