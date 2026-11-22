@@ -1,4 +1,4 @@
-#[path = "../src/render/error.rs"]
+#[path = "../../se-render/src/error.rs"]
 mod render_error;
 
 use se_types::{ErrorBody, RenderCx, SeError};

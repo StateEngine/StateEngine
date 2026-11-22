@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 se-native-path = { path = "../se-native-path" }
+se-state-files = { path = "../se-state-files" }
 se-types = { path = "../se-types" }
 se-custody = { path = "../se-custody" }
 sha2.workspace = true

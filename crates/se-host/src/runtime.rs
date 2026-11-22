@@ -14,9 +14,9 @@ pub use crate::process::LaunchCoordinator;
 #[cfg(all(feature = "listener", target_os = "linux", target_env = "gnu"))]
 mod memory;
 #[cfg(feature = "listener")]
-pub(crate) mod pool;
-#[cfg(feature = "listener")]
 pub use pool::*;
+#[cfg(feature = "listener")]
+pub(crate) use se_harness::pool;
 #[cfg(feature = "listener")]
 mod call;
 #[cfg(feature = "listener")]
@@ -51,7 +51,7 @@ mod drain;
 pub use drain::StorageDrainReport;
 #[cfg(feature = "listener")]
 mod adoption;
-#[cfg(feature = "listener")]
+#[cfg(feature = "channels")]
 mod channels;
 #[cfg(feature = "listener")]
 mod route;
@@ -70,6 +70,8 @@ pub(crate) mod status;
 pub use planning::PreparedCall;
 #[cfg(feature = "listener")]
 pub(crate) mod client_activity;
+#[cfg(feature = "listener")]
+mod forget;
 #[cfg(all(feature = "listener", feature = "import"))]
 mod history_import;
 #[cfg(feature = "listener")]

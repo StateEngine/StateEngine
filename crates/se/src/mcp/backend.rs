@@ -16,6 +16,7 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
 pub struct Backend {
     home: Option<PathBuf>,
     client: Option<crate::ipc::SessionForwarder>,
+    warmed: bool,
     managed_hash: Option<[u8; 32]>,
     /// Bound principal per capability digest. The credential's project and
     /// agent binding is fixed for the credential's life, so one authenticated
@@ -29,6 +30,7 @@ impl Backend {
         Self {
             home,
             client: None,
+            warmed: false,
             managed_hash: None,
             principals: HashMap::new(),
         }
@@ -145,54 +147,41 @@ impl Backend {
         self.principals.insert(key, principal.clone());
         Ok(principal)
     }
+    fn ensure_client(
+        &mut self,
+        secret: &Secret,
+        operation: &AnyOp,
+        started: Instant,
+    ) -> Result<()> {
+        if self.client.is_some() {
+            return Ok(());
+        }
+        let autostart = std::env::var_os("SE_SESSION").is_some();
+        let (endpoint, mut options, _) =
+            discover_endpoint(self.home.clone(), autostart.then_some(operation), started)?;
+        let cold = !self.warmed;
+        let attempt = if cold {
+            crate::ipc::SessionForwarder::connect_cold(&endpoint, secret, &options)
+        } else {
+            crate::ipc::SessionForwarder::connect(&endpoint, secret, &options)
+        };
+        let connected = match attempt {
+            Err(error) if expired_session(&error) && autostart => {
+                options.timeout = crate::route::execute::options().timeout;
+                charge_elapsed(&mut options, started)?;
+                crate::ipc::SessionForwarder::connect_renewed(&endpoint, secret, &options, cold)?
+            }
+            other => other?,
+        };
+        self.client = Some(connected);
+        self.warmed = true;
+        Ok(())
+    }
+
     pub fn call(&mut self, secret: &Secret, operation: AnyOp) -> Result<serde_json::Value> {
         let mut options = crate::route::execute::options();
         let started = Instant::now();
-        if self.client.is_none() {
-            let home = crate::bootstrap::state_home(self.home.clone())?;
-            let files =
-                crate::route::files::Files::open(&home).map_err(|error| store_error(&error))?;
-            let bound = Deadline::from_options(&options)?;
-            let endpoint = if std::env::var_os("SE_SESSION").is_some() {
-                let cx = crate::bootstrap::Bootstrap::resolve(
-                    self.home.clone(),
-                    None,
-                    false,
-                    true,
-                    &operation,
-                )?;
-                crate::route::autostart::endpoint(&cx, &files, &bound, &mut |message| {
-                    use std::io::Write;
-                    writeln!(std::io::stderr().lock(), "{message}")
-                })?
-            } else {
-                scope::require_present(
-                    crate::route::execute::endpoint(&files)?,
-                    "live runtime endpoint",
-                    "Launch this agent through StateEngine or run se up in this data home; MCP never writes directly or uses owner authority.",
-                )?
-            };
-            se_proc::native_ipc::restore_image_cache(
-                &home,
-                endpoint.image_sha256,
-                &bound.native_bound(),
-            )
-            .map_err(|error| scope::unreadable("protected executable cache", &error.to_string()))?;
-            options.expected_generation = Some(endpoint.generation);
-            charge_elapsed(&mut options, started)?;
-            let connected = match crate::ipc::SessionForwarder::connect(&endpoint, secret, &options)
-            {
-                Err(error)
-                    if expired_session(&error) && std::env::var_os("SE_SESSION").is_some() =>
-                {
-                    options.timeout = crate::route::execute::options().timeout;
-                    charge_elapsed(&mut options, started)?;
-                    crate::ipc::SessionForwarder::connect_renewed(&endpoint, secret, &options)?
-                }
-                other => other?,
-            };
-            self.client = Some(connected);
-        }
+        self.ensure_client(secret, &operation, started)?;
         // Discovery/authentication consume this call's original budget too.
         options.timeout = crate::route::execute::options().timeout;
         charge_elapsed(&mut options, started)?;
@@ -216,19 +205,11 @@ impl Backend {
             }
             Err(error) if expired_session(&error) && std::env::var_os("SE_SESSION").is_some() => {
                 self.client = None;
-                let home = crate::bootstrap::state_home(self.home.clone())?;
-                let files =
-                    crate::route::files::Files::open(&home).map_err(|error| store_error(&error))?;
-                let endpoint = scope::require_present(
-                    crate::route::execute::endpoint(&files)?,
-                    "live runtime endpoint",
-                    "Start the runtime and retry the same operation.",
+                let (endpoint, mut options, _) =
+                    discover_endpoint(self.home.clone(), None, started)?;
+                let mut client = crate::ipc::SessionForwarder::connect_renewed(
+                    &endpoint, secret, &options, false,
                 )?;
-                options.timeout = crate::route::execute::options().timeout;
-                charge_elapsed(&mut options, started)?;
-                options.expected_generation = Some(endpoint.generation);
-                let mut client =
-                    crate::ipc::SessionForwarder::connect_renewed(&endpoint, secret, &options)?;
                 options.timeout = crate::route::execute::options().timeout;
                 charge_elapsed(&mut options, started)?;
                 let output = client.forward(secret, operation, &options)?;
@@ -276,31 +257,53 @@ impl Backend {
             return Ok(());
         }
         let op = AnyOp::ProjectStatus(ProjectStatus::default());
-        let cx = crate::bootstrap::Bootstrap::resolve(self.home.clone(), None, false, true, &op)?;
+        let (endpoint, options, cwd) = discover_endpoint(self.home.clone(), Some(&op), started)?;
+        let cwd = se_types::NativePath::from_local(
+            cwd.ok_or_else(|| invalid_capability("missing working directory"))?,
+        )?;
+        self.client = Some(crate::ipc::SessionForwarder::connect_guest(
+            &endpoint,
+            cwd,
+            &options,
+            !self.warmed,
+        )?);
+        self.warmed = true;
+        Ok(())
+    }
+}
+fn discover_endpoint(
+    home: Option<PathBuf>,
+    autostart: Option<&AnyOp>,
+    started: Instant,
+) -> Result<(se_host::EndpointRecord, ClientOptions, Option<PathBuf>)> {
+    let mut options = crate::route::execute::options();
+    charge_elapsed(&mut options, started)?;
+    let bound = Deadline::from_options(&options)?;
+    let (home, endpoint, cwd) = if let Some(operation) = autostart {
+        let cx = crate::bootstrap::Bootstrap::resolve(home, None, false, true, operation)?;
         let files =
             crate::route::files::Files::open(&cx.home).map_err(|error| store_error(&error))?;
-        let mut options = crate::route::execute::options();
-        charge_elapsed(&mut options, started)?;
-        let bound = Deadline::from_options(&options)?;
         let endpoint = crate::route::autostart::endpoint(&cx, &files, &bound, &mut |message| {
             use std::io::Write;
             writeln!(std::io::stderr().lock(), "{message}")
         })?;
-        se_proc::native_ipc::restore_image_cache(
-            &cx.home,
-            endpoint.image_sha256,
-            &bound.native_bound(),
-        )
+        (cx.home, endpoint, Some(cx.cwd))
+    } else {
+        let home = crate::bootstrap::state_home(home)?;
+        let files = crate::route::files::Files::open(&home).map_err(|error| store_error(&error))?;
+        let endpoint = scope::require_present(
+            crate::route::execute::endpoint(&files)?,
+            "live runtime endpoint",
+            "Launch this agent through StateEngine or run se up in this data home; MCP never writes directly or uses owner authority.",
+        )?;
+        (home, endpoint, None)
+    };
+    se_proc::native_ipc::restore_image_cache(&home, endpoint.image_sha256, &bound.native_bound())
         .map_err(|error| scope::unreadable("protected executable cache", &error.to_string()))?;
-        options.expected_generation = Some(endpoint.generation);
-        options.timeout = crate::route::execute::options().timeout;
-        charge_elapsed(&mut options, started)?;
-        let cwd = se_types::NativePath::from_local(cx.cwd)?;
-        self.client = Some(crate::ipc::SessionForwarder::connect_guest(
-            &endpoint, cwd, &options,
-        )?);
-        Ok(())
-    }
+    options.timeout = crate::route::execute::options().timeout;
+    options.expected_generation = Some(endpoint.generation);
+    charge_elapsed(&mut options, started)?;
+    Ok((endpoint, options, cwd))
 }
 fn expired_session(error: &se_types::SeError) -> bool {
     matches!(error.body.detail(), se_types::Detail::CapabilityInvalid(detail)

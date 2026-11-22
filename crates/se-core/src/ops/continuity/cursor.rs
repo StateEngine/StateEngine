@@ -7,7 +7,7 @@ pub(crate) fn invalid_cursor(reason: impl Into<String>) -> SeError {
         next_step: "Retry without --since (CLI), or omit since from the MCP request, to request a fresh context window.".into(),
     }))
 }
-pub(crate) fn resume_since(value: String) -> Result<Cursor> {
+pub fn resume_since(value: String) -> Result<Cursor> {
     Cursor::new(value).map_err(|_| invalid_cursor("malformed resume cursor"))
 }
 pub(crate) fn validate_resume_since(arguments: &serde_json::Value) -> Result<()> {

@@ -261,6 +261,10 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
         | LegacyRetained { .. }
         | AliasImported { .. } => crate::import::revision(c, e),
         ChannelRecorded { change } => super::channel::revision(c, change),
+        // An erasure is one record: requested creates it, completion is its one change.
+        ErasureRequested { .. } | TurnErased { .. } | MessageErased { .. } => Ok(1),
+        ErasureCompleted { .. } => Ok(2),
+        RecoveryRecorded { .. } => Ok(1),
         _ => later("event revision"),
     }
 }

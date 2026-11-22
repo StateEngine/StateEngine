@@ -242,6 +242,10 @@ fn from_principal<R: Snapshot>(
             direction: se_store::MailDirection::OldestFirst,
         })
         .map_err(|error| store_error(&error))?;
+    // The open question is a stored fact; the state itself is settled once the
+    // runtime's observations are merged.
+    let waiting_on = super::agent_state::open_question(&agent, cx)?;
+    let working_note = super::agent_state::working_note(&agent, cx)?;
     Ok(AgentStatusOutput {
         agent: Read::Present {
             value: AgentRow {
@@ -275,6 +279,14 @@ fn from_principal<R: Snapshot>(
                 resume,
                 unread: Some(unread),
                 last_activity_at: None,
+                state: Some(super::AgentStateView {
+                    state: "unknown".into(),
+                    since: None,
+                    elapsed_seconds: None,
+                    waiting_on,
+                }),
+                working_note: Some(working_note),
+                background: None,
             },
         },
     })

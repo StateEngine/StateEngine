@@ -194,6 +194,42 @@ pub(super) fn corrupt_remedy(root: &Path) -> Result<String> {
     remedy(root, true)
 }
 
+/// With a verified automatic backup the remedy is `se restore`, which keeps the
+/// damaged files itself. Otherwise the reason it is not offered, so the manual
+/// path below can say why it is the step.
+fn backup_remedy(root: &Path, damaged: bool) -> Result<std::result::Result<String, String>> {
+    use se_core::ops::AgentCommand;
+    let options = StoreOptions {
+        state_directory: root.to_path_buf(),
+        busy_timeout: Duration::from_millis(250),
+    };
+    let backup = match crate::route::restore::newest(&options) {
+        Ok(Some(backup)) => backup,
+        Ok(None) => {
+            return Ok(Err(
+                "No verified automatic backup exists in this home. ".into()
+            ));
+        }
+        Err(error) => {
+            return Ok(Err(format!(
+                "Automatic backups could not be read ({error}). "
+            )));
+        }
+    };
+    let home = root
+        .to_str()
+        .and_then(AgentCommand::quoted_word)
+        .ok_or_else(|| SeError::invalid("recovery path", AgentCommand::HOME_UNAVAILABLE))?;
+    let kept = if damaged {
+        "The damaged database and its WAL/SHM are kept unchanged in the home's preserved folder; nothing is salvaged or deleted."
+    } else {
+        "The surviving database files are kept unchanged in the home's preserved folder."
+    };
+    Ok(Ok(format!(
+        "Stop all writers first. Restore the newest verified automatic backup, which holds this home's history through event {}: run this in your own terminal, review the plan it prints, then run the confirmation it names.\nBEGIN SE RESTORE COMMAND\nse --home {home} restore\nEND SE RESTORE COMMAND\n{kept} Events recorded after that backup are no longer active.",
+        backup.through.sequence()
+    )))
+}
 #[expect(
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
@@ -203,6 +239,10 @@ fn remedy(root: &Path, damaged: bool) -> Result<String> {
     if AgentCommand::home_argument(root).is_none() {
         return Ok(AgentCommand::HOME_UNAVAILABLE.into());
     }
+    let why = match backup_remedy(root, damaged)? {
+        Ok(text) => return Ok(text),
+        Err(why) => why,
+    };
     let stamp =
         se_core::ops::receipt::timestamp(crate::route::execute::now_us()?)?.replace(':', "-");
     let fresh = root.with_file_name(format!(
@@ -305,7 +345,7 @@ se --home {home} status"#,
         preserved = q(&preserved)?,
     );
     Ok(format!(
-        "Stop all writers first. Restore exactly state.db and its matching state.db-wal from a CLOSED retained copy; {}old WAL/SHM are preserved and SHM is never restored. Restoring replaces active history with the selected copy, so changes newer than that copy are no longer active. No automatic backup selection or salvage is performed.\nBEGIN SE RESTORE COMMANDS\n{restore}\nEND SE RESTORE COMMANDS\nNo backup? Keep this home intact and create fresh identities and empty history in a separate home:\nBEGIN SE FRESH COMMAND\nse --home {} init --repo .\nEND SE FRESH COMMAND\nThe recorded human identity cannot be reconstructed from the machine credential alone.",
+        "{why}Stop all writers first. Restore exactly state.db and its matching state.db-wal from a CLOSED retained copy; {}old WAL/SHM are preserved and SHM is never restored. Restoring replaces active history with the selected copy, so changes newer than that copy are no longer active. No automatic backup selection or salvage is performed.\nBEGIN SE RESTORE COMMANDS\n{restore}\nEND SE RESTORE COMMANDS\nNo backup? Keep this home intact and create fresh identities and empty history in a separate home:\nBEGIN SE FRESH COMMAND\nse --home {} init --repo .\nEND SE FRESH COMMAND\nThe recorded human identity cannot be reconstructed from the machine credential alone.",
         if damaged {
             "the damaged database and "
         } else {

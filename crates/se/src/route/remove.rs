@@ -193,10 +193,6 @@ pub fn absent<R: ReadStore>(
 }
 /// A project tombstone is permanent. A human retry can report its measured
 /// absence without starting a host, replacing a retired key or writing again.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn absent_project<R: ReadStore>(
     cx: &crate::bootstrap::Bootstrap,
     files: &Files,
@@ -204,30 +200,7 @@ fn absent_project<R: ReadStore>(
     admission: &Admission,
     input: &ProjectRemove,
 ) -> Result<Option<AnyOutput>> {
-    let mut snapshot = reader
-        .snapshot(se_core::admission::read_scope(admission))
-        .map_err(|e| store_error(&e))?;
-    let plan = project_remove::plan(
-        input.clone(),
-        &mut se_core::commit::Cx {
-            read: &mut snapshot,
-            admission,
-        },
-    );
-    let closed = snapshot.close().map_err(|e| store_error(&e));
-    let plan = match plan {
-        Ok(plan) => {
-            closed?;
-            plan
-        }
-        Err(error) => {
-            return Err(match closed {
-                Ok(()) => error,
-                Err(close) => error.with_cause(close),
-            });
-        }
-    };
-    if !plan.projects.is_empty() {
+    if absent_project_projects_exist(reader, admission, input)? {
         return Ok(None);
     }
     let AnyOutput::ProjectStatus(status) = super::status::observe(cx, reader, files, admission)?
@@ -244,40 +217,8 @@ fn absent_project<R: ReadStore>(
             "the selected project's tombstone was not read back",
         )
     })?;
-    let action = match status.runtime.state.as_str() {
-        "running" => "left-running",
-        "stopped" => "not-running",
-        _ => {
-            return Err(scope::unreadable(
-                "removed project runtime",
-                "status could not establish the runtime state; restore its protected endpoint and retry the same project ID",
-            ));
-        }
-    };
-    let credential = match super::credential::read(files)? {
-        Read::Absent { checked } => project_remove::RemovedMachineCredential {
-            state: "removed".into(),
-            witness: witnessed("independent protected-file absence", Some(checked))?,
-        },
-        read => {
-            scope::require_present(
-                read,
-                "removed project credential",
-                "Restore access to the original credential state before retrying; unreadable is not absent.",
-            )?;
-            project_remove::RemovedMachineCredential {
-                state: "kept".into(),
-                witness: project_remove::RemovalWitness {
-                    state: "not-applicable".into(),
-                    method: None,
-                    observed_at: None,
-                    detail: Some(
-                        "This already removed project changes no machine credential.".into(),
-                    ),
-                },
-            }
-        }
-    };
+    let action = absent_project_runtime_action(&status.runtime.state)?;
+    let credential = absent_project_credential(files)?;
     Ok(Some(
         RemoveResult {
             idempotency_key: input.idempotency_key.clone(),
@@ -318,6 +259,72 @@ fn absent_project<R: ReadStore>(
         }
         .into(),
     ))
+}
+fn absent_project_projects_exist<R: ReadStore>(
+    reader: &R,
+    admission: &Admission,
+    input: &ProjectRemove,
+) -> Result<bool> {
+    let mut snapshot = reader
+        .snapshot(se_core::admission::read_scope(admission))
+        .map_err(|e| store_error(&e))?;
+    let plan = project_remove::plan(
+        input.clone(),
+        &mut se_core::commit::Cx {
+            read: &mut snapshot,
+            admission,
+        },
+    );
+    let closed = snapshot.close().map_err(|e| store_error(&e));
+    let plan = match plan {
+        Ok(plan) => {
+            closed?;
+            plan
+        }
+        Err(error) => {
+            return Err(match closed {
+                Ok(()) => error,
+                Err(close) => error.with_cause(close),
+            });
+        }
+    };
+    Ok(!plan.projects.is_empty())
+}
+fn absent_project_runtime_action(state: &str) -> Result<&'static str> {
+    match state {
+        "running" => Ok("left-running"),
+        "stopped" => Ok("not-running"),
+        _ => Err(scope::unreadable(
+            "removed project runtime",
+            "status could not establish the runtime state; restore its protected endpoint and retry the same project ID",
+        )),
+    }
+}
+fn absent_project_credential(files: &Files) -> Result<project_remove::RemovedMachineCredential> {
+    Ok(match super::credential::read(files)? {
+        Read::Absent { checked } => project_remove::RemovedMachineCredential {
+            state: "removed".into(),
+            witness: witnessed("independent protected-file absence", Some(checked))?,
+        },
+        read => {
+            scope::require_present(
+                read,
+                "removed project credential",
+                "Restore access to the original credential state before retrying; unreadable is not absent.",
+            )?;
+            project_remove::RemovedMachineCredential {
+                state: "kept".into(),
+                witness: project_remove::RemovalWitness {
+                    state: "not-applicable".into(),
+                    method: None,
+                    observed_at: None,
+                    detail: Some(
+                        "This already removed project changes no machine credential.".into(),
+                    ),
+                },
+            }
+        }
+    })
 }
 fn witnessed(method: &str, detail: Option<String>) -> Result<project_remove::RemovalWitness> {
     Ok(project_remove::RemovalWitness {

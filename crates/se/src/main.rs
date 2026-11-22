@@ -16,13 +16,14 @@ mod private_entry;
 mod remote;
 #[cfg(feature = "remote")]
 mod remote_owner;
-mod render;
+use se_render as render;
 mod repository;
 mod route;
 mod runtime;
 
-use se_core::ops::{AnyOp, AnyOutput, metadata_output};
-use se_types::RenderCx;
+use se_cli_spec::CommonArgs;
+use se_core::ops::{AnyOp, AnyOutput, HookEvent};
+use se_types::{RenderCx, SeError};
 use std::{
     ffi::OsString,
     io::{self, Write},
@@ -30,10 +31,6 @@ use std::{
 
 /// The binary supplies B03's concrete route once its native/store joins exist.
 /// Metadata completes here before environment, configuration or state access.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn run(
     args: Vec<OsString>,
     mut dispatch: impl FnMut(
@@ -49,25 +46,9 @@ pub fn run(
     let mut stdout = io::stdout().lock();
     let mut stderr = io::stderr().lock();
     let original_args = args.clone();
-    let invocation = match grammar::parse(args) {
+    let invocation = match parse_invocation(args, &mut stdout, &mut stderr) {
         Ok(invocation) => invocation,
-        Err(failure) => {
-            if let Some(remote) = failure.remote {
-                return remote::parse_refusal(
-                    &failure.error,
-                    failure.json,
-                    remote.key.as_ref(),
-                    &mut stderr,
-                );
-            }
-            return render::error::write(
-                &failure.error,
-                &RenderCx::default(),
-                failure.json,
-                &mut stdout,
-                &mut stderr,
-            );
-        }
+        Err(exit) => return exit,
     };
     let hook_event = match &invocation.operation {
         AnyOp::HookClaude(value) => Some(value.event),
@@ -76,87 +57,34 @@ pub fn run(
     let common = invocation.common;
     let retry_invocation = route::startup_retry::Invocation::new(original_args, &common);
     let mut operation = invocation.operation;
-    #[cfg(feature = "remote")]
-    if let Some(output) = remote_owner::help(&operation) {
-        return render::output(&output, common.json, common.quiet, &mut stdout);
-    }
-    match metadata_output(&operation) {
-        Ok(Some(output)) => return render::output(&output, common.json, common.quiet, &mut stdout),
-        Ok(None) => (),
-        Err(error) => {
-            return render::error::write(
-                &error,
-                &RenderCx::default(),
-                common.json,
-                &mut stdout,
-                &mut stderr,
-            )
-            .map(|code| {
-                if hook_event.is_some() && !common.json {
-                    0
-                } else {
-                    code
-                }
-            });
-        }
-    }
-    if let Err(error) = operation
-        .resolve_stdin(&mut bootstrap::text_input)
-        .and_then(|()| operation.validate())
+    if let Some(code) = fast_exit_output(&operation, hook_event, &common, &mut stdout, &mut stderr)?
     {
-        if operation.is_client() {
-            return remote::refusal(&error, &operation, common.json, &mut stderr);
-        }
-        return render::error::write(
+        return Ok(code);
+    }
+    let prepared = operation
+        .resolve_stdin(&mut bootstrap::text_input)
+        .and_then(|()| operation.validate());
+    if let Err(error) = prepared {
+        return refuse(
             &error,
-            &RenderCx::default(),
+            &operation,
+            hook_event,
             common.json,
             &mut stdout,
             &mut stderr,
-        )
-        .map(|code| {
-            if hook_event.is_some() && !common.json {
-                0
-            } else {
-                code
-            }
-        });
+        );
     }
-    let mut context = match bootstrap::check_session_route(&operation).and_then(|()| {
-        bootstrap::Bootstrap::resolve(
-            common.home,
-            common.project,
-            common.no_color,
-            common.json,
-            &operation,
-        )
-    }) {
-        Ok(context) => context,
-        Err(error) => {
-            if operation.is_client() {
-                return remote::refusal(&error, &operation, common.json, &mut stderr);
-            }
-            return render::error::write(
-                &error,
-                &RenderCx::default(),
-                common.json,
-                &mut stdout,
-                &mut stderr,
-            )
-            .map(|code| {
-                if hook_event.is_some() && !common.json {
-                    0
-                } else {
-                    code
-                }
-            });
-        }
-    };
-    context.selections = common.selections;
+    let (json, quiet, selections) = (common.json, common.quiet, common.selections.clone());
+    let mut context =
+        match bootstrap_context(&mut operation, hook_event, common, &mut stdout, &mut stderr) {
+            Ok(context) => context,
+            Err(exit) => return exit,
+        };
+    context.selections = selections;
     context.retry_invocation = Some(retry_invocation);
     // Remote structured stderr is reserved for keyed status/error records.
     // Legacy variables never contribute input or authority to these calls.
-    if context.legacy_environment_present && !(operation.is_client() && common.json) {
+    if context.legacy_environment_present && !(operation.is_client() && json) {
         writeln!(
             stderr,
             "warning[w-legacy-env-present]: legacy STATEENGINE_* variables are present and ignored"
@@ -169,58 +97,200 @@ pub fn run(
         return remote::run(
             &context,
             operation,
-            common.json,
-            common.quiet,
+            json,
+            quiet,
             &mut stdout,
             &mut stderr,
             &mut dispatch,
         );
     }
     if let AnyOp::MessageSend(input) = &operation {
-        remote::pending_native(&context, input, common.json, &mut stderr)?;
+        remote::pending_native(&context, input, json, &mut stderr)?;
     }
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if matches!(&operation, AnyOp::RuntimeUp(input) if input.foreground) {
-        // The Windows host loop uses its own bounded stack. Do not hold a
-        // main-thread stream lock while that loop prints startup or shutdown.
-        drop(stdout);
-        drop(stderr);
-        return foreground::run(&context, common.json, common.quiet);
+        return foreground_takeover(&context, json, quiet, stdout, stderr);
     }
+    let atlas_presentation = operation.atlas_options().cloned();
     #[cfg(windows)]
     let foreground_fallback = matches!(&operation, AnyOp::RuntimeUp(_));
-    let atlas_presentation = operation.atlas_options().cloned();
-    let result = {
-        let mut diagnostic = |message: &str| {
-            writeln!(stderr, "{message}")?;
-            stderr.flush()
-        };
-        dispatch(&context, operation, &mut diagnostic)
-            .map_err(|error| route::setup::with_recovery_remedy(error, &context.home))
-    };
+    let result = dispatch_operation(&context, operation, &mut stderr, &mut dispatch);
     #[cfg(windows)]
-    if foreground_fallback
-        && result
-            .as_ref()
-            .is_err_and(|error| error.code() == se_types::Code::JobBreakawayRefused)
+    if foreground_fallback && job_breakaway_to_foreground(&result, &mut stderr)? {
+        return foreground_takeover(&context, json, quiet, stdout, stderr);
+    }
+    warn_maintenance_pending(&result, &mut stderr);
+    if let Some(event) = hook_event
+        && !json
+    {
+        return finish_hook_capture(event, &result, &context, &mut stdout, &mut stderr);
+    }
+    if let Some(receiver) = runtime::uninstall_completion::take_started() {
+        render_uninstall_handoff(receiver, &result, json, quiet, &mut stdout, &mut stderr)?;
+        // The installed image must exit before its helper can remove it. This
+        // code means delegation, not success; uninstall.ps1 returns the verdict.
+        return Ok(runtime::uninstall_completion::DEFERRED_EXIT);
+    }
+    render_final(
+        result,
+        &context,
+        json,
+        quiet,
+        atlas_presentation.as_ref(),
+        &mut stdout,
+        &mut stderr,
+    )
+}
+
+fn parse_invocation(
+    args: Vec<OsString>,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> Result<grammar::Invocation, io::Result<u8>> {
+    match grammar::parse(args) {
+        Ok(invocation) => Ok(invocation),
+        Err(failure) => {
+            if let Some(remote) = failure.remote {
+                return Err(remote::parse_refusal(
+                    &failure.error,
+                    failure.json,
+                    remote.key.as_ref(),
+                    stderr,
+                ));
+            }
+            Err(render::error::write(
+                &failure.error,
+                &RenderCx::default(),
+                failure.json,
+                stdout,
+                stderr,
+            ))
+        }
+    }
+}
+fn fast_exit_output(
+    operation: &AnyOp,
+    hook_event: Option<HookEvent>,
+    common: &CommonArgs,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> io::Result<Option<u8>> {
+    #[cfg(feature = "remote")]
+    if let Some(output) = remote_owner::help(operation) {
+        return render::output(&output, common.json, common.quiet, stdout).map(Some);
+    }
+    match se_cli_spec::metadata_output(operation) {
+        Ok(Some(output)) => render::output(&output, common.json, common.quiet, stdout).map(Some),
+        Ok(None) => Ok(None),
+        Err(error) => {
+            render::error::write(&error, &RenderCx::default(), common.json, stdout, stderr)
+                .map(|code| {
+                    if hook_event.is_some() && !common.json {
+                        0
+                    } else {
+                        code
+                    }
+                })
+                .map(Some)
+        }
+    }
+}
+fn refuse(
+    error: &SeError,
+    operation: &AnyOp,
+    hook_event: Option<HookEvent>,
+    json: bool,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> io::Result<u8> {
+    if operation.is_client() {
+        return remote::refusal(error, operation, json, stderr);
+    }
+    render::error::write(error, &RenderCx::default(), json, stdout, stderr).map(|code| {
+        if hook_event.is_some() && !json {
+            0
+        } else {
+            code
+        }
+    })
+}
+fn bootstrap_context(
+    operation: &mut AnyOp,
+    hook_event: Option<HookEvent>,
+    common: CommonArgs,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> Result<bootstrap::Bootstrap, io::Result<u8>> {
+    match bootstrap::check_session_route(operation).and_then(|()| {
+        bootstrap::Bootstrap::resolve(
+            common.home,
+            common.project,
+            common.no_color,
+            common.json,
+            operation,
+        )
+    }) {
+        Ok(context) => Ok(context),
+        Err(error) => Err(refuse(
+            &error,
+            operation,
+            hook_event,
+            common.json,
+            stdout,
+            stderr,
+        )),
+    }
+}
+fn dispatch_operation(
+    context: &bootstrap::Bootstrap,
+    operation: AnyOp,
+    stderr: &mut io::StderrLock<'_>,
+    dispatch: &mut impl FnMut(
+        &bootstrap::Bootstrap,
+        AnyOp,
+        &mut dyn FnMut(&str) -> io::Result<()>,
+    ) -> se_types::Result<AnyOutput>,
+) -> se_types::Result<AnyOutput> {
+    let mut diagnostic = |message: &str| {
+        writeln!(stderr, "{message}")?;
+        stderr.flush()
+    };
+    dispatch(context, operation, &mut diagnostic)
+        .map_err(|error| route::setup::with_recovery_remedy(error, &context.home))
+}
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn foreground_takeover(
+    context: &bootstrap::Bootstrap,
+    json: bool,
+    quiet: bool,
+    stdout: io::StdoutLock<'_>,
+    stderr: io::StderrLock<'_>,
+) -> io::Result<u8> {
+    // The Windows host loop uses its own bounded stack. Do not hold a
+    // main-thread stream lock while that loop prints startup or shutdown.
+    drop(stdout);
+    drop(stderr);
+    foreground::run(context, json, quiet)
+}
+#[cfg(windows)]
+fn job_breakaway_to_foreground(
+    result: &se_types::Result<AnyOutput>,
+    stderr: &mut io::StderrLock<'_>,
+) -> io::Result<bool> {
+    if result
+        .as_ref()
+        .is_err_and(|error| error.code() == se_types::Code::JobBreakawayRefused)
     {
         writeln!(
             stderr,
             "Windows prevented detached startup; starting in the foreground. Keep this terminal open; use se down with the same home from another terminal to stop the host."
         )?;
         stderr.flush()?;
-        drop(stdout);
-        drop(stderr);
-        return foreground::run(&context, common.json, common.quiet);
+        return Ok(true);
     }
-    let setup_remedy = route::setup::InitRemedy {
-        home: &context.home,
-        workspace: &context.cwd,
-    };
-    let render_context = RenderCx {
-        commands: Some(&setup_remedy),
-        ..RenderCx::default()
-    };
+    Ok(false)
+}
+fn warn_maintenance_pending(result: &se_types::Result<AnyOutput>, stderr: &mut impl Write) {
     if result.as_ref().is_ok_and(AnyOutput::maintenance_pending) {
         // The commit is known to have succeeded. Diagnostic delivery cannot
         // change its receipt or turn that success into an uncertain outcome.
@@ -230,83 +300,102 @@ pub fn run(
         )
         .and_then(|()| stderr.flush());
     }
-    if let Some(event) = hook_event
-        && !common.json
-    {
-        match result {
-            Ok(AnyOutput::HookClaude(value)) => {
-                if let Err(error) =
-                    hook::write_native(event, &value.value, &mut stdout, &mut stderr)
-                {
-                    writeln!(stderr, "capture failed: {error}")?;
-                    stderr.flush()?;
-                }
-            }
-            Ok(_) => {
-                writeln!(
-                    stderr,
-                    "capture failed: host returned a different operation family"
-                )?;
+}
+fn finish_hook_capture(
+    event: HookEvent,
+    result: &se_types::Result<AnyOutput>,
+    context: &bootstrap::Bootstrap,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> io::Result<u8> {
+    let setup_remedy = route::setup::InitRemedy {
+        home: &context.home,
+        workspace: &context.cwd,
+    };
+    let render_context = RenderCx {
+        commands: Some(&setup_remedy),
+        ..RenderCx::default()
+    };
+    match result {
+        Ok(AnyOutput::HookClaude(value)) => {
+            if let Err(error) = hook::write_native(event, &value.value, stdout, stderr) {
+                writeln!(stderr, "capture failed: {error}")?;
                 stderr.flush()?;
             }
-            Err(error) => {
-                render::error::write(&error, &render_context, false, &mut stdout, &mut stderr)?;
-            }
         }
-        return Ok(0);
-    }
-    let handoff = runtime::uninstall_completion::take_started();
-    if let Some(receiver) = handoff {
-        if let Err(error) = &result {
+        Ok(_) => {
             writeln!(
                 stderr,
-                "Uninstall parent post-authorization observation: {}; final outcome awaits the helper",
-                error.body.message()
+                "capture failed: host returned a different operation family"
             )?;
             stderr.flush()?;
         }
-        if common.json && !receiver {
-            // Structured effects remain explicitly pending, never complete.
-            if let Ok(output) = &result {
-                render::output(output, true, common.quiet, &mut stdout)?;
-            }
-        } else if !common.json {
-            if let Ok(AnyOutput::Uninstall(value)) = &result {
-                render::uninstall_deferred(&value.value, &mut stdout)?;
-            }
-            stdout.flush()?;
+        Err(error) => {
+            render::error::write(error, &render_context, false, stdout, stderr)?;
         }
+    }
+    Ok(0)
+}
+fn render_uninstall_handoff(
+    receiver: bool,
+    result: &se_types::Result<AnyOutput>,
+    json: bool,
+    quiet: bool,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> io::Result<()> {
+    if let Err(error) = result {
         writeln!(
             stderr,
-            "Finishing uninstall after this process exits (exit 75). Completion is pending."
+            "Uninstall parent post-authorization observation: {}; final outcome awaits the helper",
+            error.body.message()
         )?;
-        if !receiver {
-            writeln!(
-                stderr,
-                "For a final exit status, start with the matching archive's uninstall.ps1. This handoff has already started: use PowerShell Get-Item -LiteralPath on each printed image, record and helper path to check absence; access errors remain unresolved."
-            )?;
-        }
         stderr.flush()?;
-        // The installed image must exit before its helper can remove it. This
-        // code means delegation, not success; uninstall.ps1 returns the verdict.
-        return Ok(runtime::uninstall_completion::DEFERRED_EXIT);
     }
+    if json && !receiver {
+        // Structured effects remain explicitly pending, never complete.
+        if let Ok(output) = result {
+            render::output(output, true, quiet, stdout)?;
+        }
+    } else if !json {
+        if let Ok(AnyOutput::Uninstall(value)) = result {
+            render::uninstall_deferred(&value.value, stdout)?;
+        }
+        stdout.flush()?;
+    }
+    writeln!(
+        stderr,
+        "Finishing uninstall after this process exits (exit 75). Completion is pending."
+    )?;
+    if !receiver {
+        writeln!(
+            stderr,
+            "For a final exit status, start with the matching archive's uninstall.ps1. This handoff has already started: use PowerShell Get-Item -LiteralPath on each printed image, record and helper path to check absence; access errors remain unresolved."
+        )?;
+    }
+    stderr.flush()?;
+    Ok(())
+}
+fn render_final(
+    result: se_types::Result<AnyOutput>,
+    context: &bootstrap::Bootstrap,
+    json: bool,
+    quiet: bool,
+    atlas: Option<&se_core::ops::AtlasOptions>,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> io::Result<u8> {
+    let setup_remedy = route::setup::InitRemedy {
+        home: &context.home,
+        workspace: &context.cwd,
+    };
+    let render_context = RenderCx {
+        commands: Some(&setup_remedy),
+        ..RenderCx::default()
+    };
     match result {
-        Ok(output) => render::output_at(
-            &output,
-            common.json,
-            common.quiet,
-            &context.home,
-            atlas_presentation.as_ref(),
-            &mut stdout,
-        ),
-        Err(error) => render::error::write(
-            &error,
-            &render_context,
-            common.json,
-            &mut stdout,
-            &mut stderr,
-        ),
+        Ok(output) => render::output_at(&output, json, quiet, &context.home, atlas, stdout),
+        Err(error) => render::error::write(&error, &render_context, json, stdout, stderr),
     }
 }
 

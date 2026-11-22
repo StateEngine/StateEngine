@@ -1560,12 +1560,14 @@ dependencies = [
  "regex",
  "rusqlite",
  "se-atlas",
+ "se-cli-spec",
  "se-config",
  "se-core",
  "se-host",
  "se-mcp",
  "se-proc",
  "se-remote-cli",
+ "se-render",
  "se-repository",
  "se-store",
  "se-types",
@@ -1617,6 +1619,59 @@ dependencies = [
 ]
 
 [[package]]
+name = "se-atlas-host"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-atlas",
+ "se-atlas-cold",
+ "se-config",
+ "se-core",
+ "se-mcp",
+ "se-proc",
+ "se-store",
+ "se-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
+name = "se-channels"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "base64",
+ "futures-util",
+ "hmac",
+ "reqwest",
+ "se-config",
+ "se-core",
+ "se-proc",
+ "se-store",
+ "se-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tokio",
+ "tokio-tungstenite",
+ "zeroize",
+]
+
+[[package]]
+name = "se-cli-spec"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "clap",
+ "se-config",
+ "se-core",
+ "se-store",
+ "se-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "se-config"
 version = "0.0.1-alpha.1"
 dependencies = [
@@ -1630,7 +1685,6 @@ dependencies = [
 name = "se-core"
 version = "0.0.1-alpha.1"
 dependencies = [
- "clap",
  "schemars",
  "se-config",
  "se-store",
@@ -1651,6 +1705,41 @@ dependencies = [
 [[package]]
 name = "se-fsevents"
 version = "0.0.1-alpha.1"
+
+[[package]]
+name = "se-harness"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "base64",
+ "futures-util",
+ "hmac",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "reqwest",
+ "se-channels",
+ "se-config",
+ "se-core",
+ "se-mcp",
+ "se-proc",
+ "se-remote",
+ "se-repository",
+ "se-secode-image",
+ "se-store",
+ "se-types",
+ "secode-stateengine-api",
+ "serde",
+ "serde_json",
+ "sha2",
+ "shlex",
+ "tokio",
+ "tokio-tungstenite",
+ "toml",
+ "toml_edit",
+ "uds_windows",
+ "uuid",
+ "zeroize",
+]
 
 [[package]]
 name = "se-harness-registry"
@@ -1676,11 +1765,16 @@ dependencies = [
  "rusqlite",
  "se-atlas",
  "se-atlas-cold",
+ "se-atlas-host",
+ "se-channels",
+ "se-cli-spec",
  "se-config",
  "se-core",
+ "se-harness",
  "se-mcp",
  "se-proc",
  "se-remote",
+ "se-remote-host",
  "se-repository",
  "se-secode-image",
  "se-store",
@@ -1734,6 +1828,7 @@ dependencies = [
  "se-custody",
  "se-fsevents",
  "se-native-path",
+ "se-state-files",
  "se-types",
  "serde",
  "serde_json",
@@ -1762,14 +1857,52 @@ name = "se-remote-cli"
 version = "0.0.1-alpha.1"
 dependencies = [
  "clap",
+ "se-cli-spec",
  "se-core",
  "se-host",
+ "se-proc",
  "se-store",
  "se-types",
  "serde",
  "serde_json",
+ "tokio",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "se-remote-host"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "base64",
+ "chacha20poly1305",
+ "futures-util",
+ "se-core",
+ "se-proc",
+ "se-remote",
+ "se-store",
+ "se-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tokio",
+ "tokio-tungstenite",
+ "zeroize",
+]
+
+[[package]]
+name = "se-render"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-config",
+ "se-core",
+ "se-host",
+ "se-mcp",
+ "se-store",
+ "se-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1793,12 +1926,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "se-state-files"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "libc",
+ "rusqlite",
+ "se-native-path",
+ "se-types",
+ "serde",
+ "sha2",
+ "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
 name = "se-store"
 version = "0.0.1-alpha.1"
 dependencies = [
  "rusqlite",
  "se-proc",
+ "se-store-codec",
  "se-store-contract",
+ "se-store-sql",
  "se-trusted-path",
  "se-types",
  "serde",
@@ -1808,12 +1957,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "se-store-codec"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-store-contract",
+ "se-types",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "se-store-contract"
 version = "0.0.1-alpha.1"
 dependencies = [
  "rusqlite",
  "se-types",
  "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
+
+[[package]]
+name = "se-store-sql"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "rusqlite",
+ "se-proc",
+ "se-store-contract",
+ "se-trusted-path",
+ "se-types",
  "serde_json",
  "sha2",
  "uuid",

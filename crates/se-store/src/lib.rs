@@ -11,12 +11,10 @@ pub mod channel;
 mod checkpoint_task;
 mod codec;
 mod completion;
-mod connection;
 mod creator;
 mod credential;
-mod error;
+mod erasure;
 mod event;
-mod identity;
 pub mod import;
 mod inventory;
 pub mod mail;
@@ -30,15 +28,14 @@ mod read_phase;
 mod read_phase_pool;
 mod read_slots;
 pub mod remote;
+mod restore;
 mod return_mail;
 mod security_receipt;
-mod sql_value;
 mod staging;
 mod transaction;
 mod transcript;
-#[cfg(all(test, any(target_os = "linux", windows)))]
-mod write_tests;
 mod writer;
+use se_store_sql::{connection, error, identity, sql_value};
 /// The channel delayed-phone-status threshold in microseconds after the
 /// Saved commit at which the status becomes due. Production keeps this
 /// constant; only the in-process test hook opens a writer on a shorter one.

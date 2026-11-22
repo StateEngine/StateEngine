@@ -425,3 +425,6 @@ fn store_refuses_deny_ace_even_when_the_os_allows_reading() -> Check {
     drop(file);
     Ok(())
 }
+
+#[path = "windows_install_inheritance.rs"]
+mod windows_install_inheritance;

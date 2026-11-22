@@ -82,10 +82,7 @@ fn exchange(
     options: &ClientOptions,
 ) -> Result<AnyOutput> {
     let keyed = match &call.request {
-        IpcRequest::Operation(operation) => operation
-            .key
-            .as_ref()
-            .map(|key| (operation.name.clone(), key.clone())),
+        IpcRequest::Operation(op) => op.key.as_ref().map(|k| (op.name.clone(), k.clone())),
         _ => None,
     };
     let output = exchange_output(endpoint, credential, call, options)?;
@@ -98,11 +95,10 @@ pub(crate) fn exchange_output(
     options: &ClientOptions,
 ) -> Result<OperationOutput> {
     let keyed = match &call.request {
-        IpcRequest::Operation(operation) => operation
-            .key
-            .as_ref()
-            .map(|key| (operation.name.clone(), key.clone())),
-        IpcRequest::Hook(_) | IpcRequest::Channels(_) | IpcRequest::Adopt(_) => None,
+        IpcRequest::Operation(op) => op.key.as_ref().map(|k| (op.name.clone(), k.clone())),
+        IpcRequest::Hook(_) | IpcRequest::Adopt(_) => None,
+        #[cfg(feature = "channels")]
+        IpcRequest::Channels(_) => None,
         #[cfg(feature = "remote")]
         IpcRequest::RemoteOwner(input) => input
             .key()
@@ -192,6 +188,7 @@ fn call_operation(call: &IpcEnvelope) -> &str {
     match &call.request {
         IpcRequest::Operation(op) => &op.name,
         IpcRequest::Hook(_) => "hook.claude",
+        #[cfg(feature = "channels")]
         IpcRequest::Channels(_) => "native.channels",
         IpcRequest::Adopt(_) => "native.adopt",
         #[cfg(feature = "remote")]
@@ -211,27 +208,38 @@ pub struct SessionForwarder {
     source_hash: Option<[u8; 32]>,
 }
 impl SessionForwarder {
-    pub fn connect_guest(
+    fn open(
         endpoint: &EndpointRecord,
-        cwd: se_types::NativePath,
+        credential: ClientCredential,
         options: &ClientOptions,
+        cold: bool,
     ) -> Result<Self> {
-        let connection = BlockingIpcClient::connect_authenticated(
-            endpoint,
-            ClientCredential::GuestBootstrap(cwd),
-            NonZeroU32::new(DEFAULT_REPLY_BYTES).ok_or_else(|| invalid("nonzero reply budget"))?,
-            options,
-        )?;
-        if connection.negotiated().lease.is_none() {
-            return Err(invalid("a host-issued guest ticket"));
-        }
+        let limit =
+            NonZeroU32::new(DEFAULT_REPLY_BYTES).ok_or_else(|| invalid("nonzero reply budget"))?;
+        let connection = if cold {
+            BlockingIpcClient::connect_cold_authenticated(endpoint, credential, limit, options)?
+        } else {
+            BlockingIpcClient::connect_authenticated(endpoint, credential, limit, options)?
+        };
         Ok(Self {
             connection,
             request_id: 0,
             source_hash: None,
         })
     }
-
+    pub fn connect_guest(
+        endpoint: &EndpointRecord,
+        cwd: se_types::NativePath,
+        options: &ClientOptions,
+        cold: bool,
+    ) -> Result<Self> {
+        let cred = ClientCredential::GuestBootstrap(cwd);
+        let client = Self::open(endpoint, cred, options, cold)?;
+        if client.connection.negotiated().lease.is_none() {
+            return Err(invalid("a host-issued guest ticket"));
+        }
+        Ok(client)
+    }
     pub fn guest_ticket(&self) -> Option<&se_host::ConnectionTicket> {
         self.connection
             .negotiated()
@@ -239,64 +247,52 @@ impl SessionForwarder {
             .as_ref()
             .filter(|ticket| ticket.agent.is_none())
     }
-
     pub fn is_leased(&self) -> bool {
         self.connection.negotiated().lease.is_some()
     }
-
     pub fn connect_renewed(
         endpoint: &EndpointRecord,
         secret: &se_types::Secret,
         options: &ClientOptions,
+        cold: bool,
     ) -> Result<Self> {
-        let connection = BlockingIpcClient::connect_authenticated(
-            endpoint,
-            ClientCredential::SessionBootstrap(se_types::Secret::new(secret.expose().to_vec())?),
-            NonZeroU32::new(DEFAULT_REPLY_BYTES).ok_or_else(|| invalid("nonzero reply budget"))?,
-            options,
-        )?;
-        if connection
+        let cred =
+            ClientCredential::SessionBootstrap(se_types::Secret::new(secret.expose().to_vec())?);
+        let mut client = Self::open(endpoint, cred, options, cold)?;
+        let ticket = client
+            .connection
             .negotiated()
             .lease
             .as_ref()
-            .is_none_or(|ticket| ticket.agent.is_none() || ticket.session.is_none())
-        {
-            return Err(invalid("a host-issued session ticket"));
-        }
+            .filter(|t| t.agent.is_some() && t.session.is_some())
+            .ok_or_else(|| invalid("a host-issued session ticket"))?;
         let requested =
             std::env::var("SE_SESSION").map_err(|_| invalid("the launched session handle"))?;
-        if connection
-            .negotiated()
-            .lease
+        if ticket
+            .session
             .as_ref()
-            .and_then(|ticket| ticket.session.as_ref())
-            .is_none_or(|session| session.as_str() != requested)
+            .is_none_or(|s| s.as_str() != requested)
         {
             return Err(invalid("the same launched session handle"));
         }
-        Ok(Self {
-            connection,
-            request_id: 0,
-            source_hash: Some(Sha256::digest(secret.expose()).into()),
-        })
+        client.source_hash = Some(Sha256::digest(secret.expose()).into());
+        Ok(client)
     }
-
     pub fn connect(
         endpoint: &EndpointRecord,
         secret: &se_types::Secret,
         options: &ClientOptions,
     ) -> Result<Self> {
-        let connection = BlockingIpcClient::connect_authenticated(
-            endpoint,
-            ClientCredential::Session(se_types::Secret::new(secret.expose().to_vec())?),
-            NonZeroU32::new(DEFAULT_REPLY_BYTES).ok_or_else(|| invalid("nonzero reply budget"))?,
-            options,
-        )?;
-        Ok(Self {
-            connection,
-            request_id: 0,
-            source_hash: None,
-        })
+        let cred = ClientCredential::Session(se_types::Secret::new(secret.expose().to_vec())?);
+        Self::open(endpoint, cred, options, false)
+    }
+    pub fn connect_cold(
+        endpoint: &EndpointRecord,
+        secret: &se_types::Secret,
+        options: &ClientOptions,
+    ) -> Result<Self> {
+        let cred = ClientCredential::Session(se_types::Secret::new(secret.expose().to_vec())?);
+        Self::open(endpoint, cred, options, true)
     }
     pub fn forward(
         &mut self,

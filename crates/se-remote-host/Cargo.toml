@@ -1,0 +1,27 @@
+[package]
+name = "se-remote-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+se-core = { path = "../se-core" }
+se-proc = { path = "../se-proc" }
+se-remote = { path = "../se-remote", features = ["remote"] }
+se-store = { path = "../se-store" }
+se-types = { path = "../se-types" }
+base64 = "0.23.1"
+chacha20poly1305 = { version = "0.10.1", default-features = false, features = ["std"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle = "2.6"
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "sync", "time"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+zeroize.workspace = true
+
+[lints]
+workspace = true

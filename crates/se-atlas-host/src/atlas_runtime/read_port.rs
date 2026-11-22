@@ -1,0 +1,222 @@
+//! One owner-installed read port. No root activation, SQL connection, worker or
+//! authoritative snapshot is created by this handoff. Explicit queries may
+//! notify the existing background owner of project interest.
+use super::{NativeController, RenewalDriver, record_fence::*};
+use crate::atlas_source::NativeAtlasSource;
+use se_atlas::{
+    cache::connection::CacheConnection, lifecycle::AtlasController, source::RegisteredSource,
+};
+#[cfg(feature = "listener")]
+use se_types::SeError;
+use se_types::{
+    ProjectId, Result,
+    code::{IndexSummary, RootId},
+};
+use std::sync::{Arc, Mutex, OnceLock};
+
+pub type AtlasReadCallback<'a> = dyn FnMut(&mut CacheConnection<'_>, &RegisteredSource<NativeAtlasSource>, bool) -> Result<()>
+    + 'a;
+pub struct AtlasReadObservation {
+    pub summary: IndexSummary,
+    pub epoch_retired: bool,
+    /// Filled by AtlasOwnerPort against the authoritative query snapshot.
+    pub record_feed_current: bool,
+}
+pub type AtlasObservedReadCallback<'a> = dyn FnMut(
+        &mut CacheConnection<'_>,
+        &RegisteredSource<NativeAtlasSource>,
+        AtlasReadObservation,
+    ) -> Result<()>
+    + 'a;
+/// Object-safe owner-loop handoff. The callback runs synchronously while the
+/// selected controller lends its one scoped reader; nothing escapes the call.
+pub trait AtlasReadPort: Send + Sync {
+    /// A retained disabled controller still serves explicit availability errors.
+    fn is_enabled(&self) -> bool {
+        true
+    }
+    /// Current project roots from the caller's authoritative read snapshot.
+    fn observe_project(&self, _project: &ProjectId, _roots: &[se_store::Root]) -> Result<()> {
+        Ok(())
+    }
+    /// Signal an admitted query's project without doing native work here.
+    fn request_interest(&self, _project: &ProjectId, _root: Option<&RootId>) -> Result<()> {
+        Ok(())
+    }
+    fn summary(&self, project: &ProjectId, root: Option<&RootId>) -> Result<IndexSummary>;
+    /// Status observes publication only; no cache opens or work is scheduled.
+    fn status(
+        &self,
+        project: &ProjectId,
+        root: Option<&RootId>,
+    ) -> Result<se_types::Read<IndexSummary>> {
+        self.summary(project, root)
+            .map(|value| se_types::Read::Present { value })
+    }
+    fn with_reader(
+        &self,
+        project: &ProjectId,
+        root: Option<&RootId>,
+        read: &mut AtlasReadCallback<'_>,
+    ) -> Result<()>;
+    /// Borrowing controllers observe before lending their reader, avoiding
+    /// recursive owner locking. The native service observes after admission.
+    fn with_observed_reader(
+        &self,
+        project: &ProjectId,
+        root: Option<&RootId>,
+        read: &mut AtlasObservedReadCallback<'_>,
+    ) -> Result<()> {
+        let summary = self.summary(project, root)?;
+        self.with_reader(project, root, &mut |cache, source, epoch_retired| {
+            read(
+                cache,
+                source,
+                AtlasReadObservation {
+                    summary: summary.clone(),
+                    epoch_retired,
+                    record_feed_current: false,
+                },
+            )
+        })
+    }
+}
+#[derive(Default)]
+pub struct AtlasOwnerPort {
+    reader: OnceLock<Arc<dyn AtlasReadPort>>,
+    pub records: Arc<RecordFeedFence>,
+}
+impl AtlasOwnerPort {
+    pub(crate) fn observe_project(
+        &self,
+        project: &ProjectId,
+        roots: &[se_store::Root],
+    ) -> Result<()> {
+        if let Some(reader) = self.reader.get() {
+            reader.observe_project(project, roots)?;
+        }
+        Ok(())
+    }
+    #[cfg(feature = "listener")]
+    pub fn is_available(&self) -> bool {
+        self.reader.get().is_some_and(|reader| reader.is_enabled())
+    }
+    pub fn status(
+        &self,
+        project: &ProjectId,
+        root: Option<&RootId>,
+    ) -> Result<se_types::Read<IndexSummary>> {
+        match self.reader.get() {
+            Some(reader) => reader.status(project, root),
+            None => Ok(se_types::Read::Absent {
+                checked: "No Atlas controller is installed in this host.".into(),
+            }),
+        }
+    }
+    pub(crate) fn request_interest(
+        &self,
+        project: &ProjectId,
+        root: Option<&RootId>,
+    ) -> Result<()> {
+        if let Some(reader) = self.reader.get() {
+            reader.request_interest(project, root)?;
+        }
+        Ok(())
+    }
+    pub fn summary(&self, project: &ProjectId, root: Option<&RootId>) -> Result<IndexSummary> {
+        self.reader.get().ok_or_else(|| se_core::scope::unreadable("Atlas owner read port", "the owner has not installed its controller; no registered root summary is available"))?.summary(project, root)
+    }
+    #[cfg(feature = "listener")]
+    pub fn install(&self, reader: Arc<dyn AtlasReadPort>) -> Result<()> {
+        self.reader.set(reader).map_err(|_| {
+            SeError::invalid(
+                "Atlas read port",
+                "one controller installation before host publication",
+            )
+        })
+    }
+    /// Capture ticket before the core query snapshot. This check occurs after
+    /// that snapshot opens, so an intervening committed write cannot appear fresh.
+    pub fn with_reader(
+        &self,
+        project: &ProjectId,
+        root: Option<&RootId>,
+        ticket: Option<RecordFeedTicket>,
+        read: &mut AtlasReadCallback<'_>,
+    ) -> Result<()> {
+        self.with_observed_reader(project, root, ticket, &mut |cache, source, observed| {
+            read(cache, source, observed.record_feed_current)
+        })
+    }
+    pub(crate) fn with_observed_reader(
+        &self,
+        project: &ProjectId,
+        root: Option<&RootId>,
+        ticket: Option<RecordFeedTicket>,
+        read: &mut AtlasObservedReadCallback<'_>,
+    ) -> Result<()> {
+        let reader = self.reader.get().ok_or_else(|| se_core::scope::unreadable("Atlas owner read port", "the owner has not installed its controller; queries cannot open a substitute cache"))?;
+        reader.with_observed_reader(project, root, &mut |cache, source, mut observed| {
+            observed.record_feed_current = self
+                .records
+                .is_current(&RecordFeedScope::from(cache.identity()), ticket)?;
+            read(cache, source, observed)
+        })
+    }
+}
+/// Shared only with the native owner's event driver. Query callers cannot
+/// install a second controller or bypass registered-project root selection.
+pub struct ControllerReadPort<D> {
+    pub controller: Arc<Mutex<NativeController<D>>>,
+}
+impl<D: RenewalDriver + Send> AtlasReadPort for ControllerReadPort<D> {
+    fn summary(&self, project: &ProjectId, root: Option<&RootId>) -> Result<IndexSummary> {
+        let controller=self.controller.try_lock().map_err(|_|se_core::scope::unreadable("Atlas owner controller", "the owner is busy or its controller lock is poisoned; retry after the active finite quantum"))?;
+        let root = controller.registered_root(project, root)?;
+        controller.summary(&root)
+    }
+    fn with_reader(
+        &self,
+        project: &ProjectId,
+        root: Option<&RootId>,
+        read: &mut AtlasReadCallback<'_>,
+    ) -> Result<()> {
+        let controller = self.controller.try_lock().map_err(|_| se_core::scope::unreadable("Atlas owner controller", "the owner is busy or its controller lock is poisoned; retry after the active finite quantum"))?;
+        let root = controller.registered_root(project, root)?;
+        controller.with_reader(root, |cache, source| read(cache, source, false))
+    }
+}
+#[cfg(all(test, feature = "listener"))]
+mod availability_tests {
+    use super::*;
+    struct Stub(bool);
+    impl AtlasReadPort for Stub {
+        fn is_enabled(&self) -> bool {
+            self.0
+        }
+        fn summary(&self, _: &ProjectId, _: Option<&RootId>) -> Result<IndexSummary> {
+            Err(se_core::scope::unreadable("stub", "no summary"))
+        }
+        fn with_reader(
+            &self,
+            _: &ProjectId,
+            _: Option<&RootId>,
+            _: &mut AtlasReadCallback<'_>,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+    /// Bug: PR 186 — a retained disabled controller advertised Atlas tools.
+    #[test]
+    fn availability_follows_installation_and_the_controller_switch() -> Result<()> {
+        let absent = AtlasOwnerPort::default();
+        assert!(!absent.is_available(), "no controller installed");
+        let disabled = AtlasOwnerPort::default();
+        disabled.install(Arc::new(Stub(false)))?;
+        assert!(!disabled.is_available(), "disabled controller advertised");
+        let enabled = AtlasOwnerPort::default();
+        enabled.install(Arc::new(Stub(true)))?;
+        assert!(enabled.is_available(), "enabled controller hidden");
+        Ok(())
+    }
+}

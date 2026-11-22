@@ -22,6 +22,14 @@ impl LaunchCoordinator {
             }
             _ => (),
         }
+        // Every host read ends here, so each row's state is settled from its
+        // final merged observations, for the CLI and the MCP door alike.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| se_types::SeError::invalid("host clock", "after the Unix epoch"))?;
+        let now = i64::try_from(now.as_micros())
+            .map_err(|_| se_types::SeError::invalid("host clock", "representable microseconds"))?;
+        se_core::ops::agent_state::settle(&mut output, now)?;
         Ok(output)
     }
     fn observe_provider_page(&self, page: &Page<AgentRow>) -> Result<Page<AgentRow>> {
@@ -51,7 +59,9 @@ impl LaunchCoordinator {
         row: &AgentRow,
         job: &supervisor::Job,
         mut value: ProviderActivityView,
+        paced: Option<String>,
     ) -> Read<ProviderActivityView> {
+        value.mail_paced_until = paced;
         if let Some(next) = &mut value.next_step {
             match (
                 AgentCommand::history_in_home(&row.id, &self.options.home, &job.target.0),
@@ -75,7 +85,8 @@ impl LaunchCoordinator {
         ) {
             return;
         }
-        let read = || -> Result<Read<ProviderActivityView>> {
+        let mut found = None;
+        let mut read = || -> Result<Read<ProviderActivityView>> {
             let Some(session) = &row.session.session_id else {
                 return Ok(Read::Absent {
                     checked: "This agent has no launched provider session".into(),
@@ -103,17 +114,24 @@ impl LaunchCoordinator {
                     "The runtime is handling provider setup or an accepted operation; turn activity cannot currently be read. Check provider sign-in and saved history; explicitly stop this agent to cancel setup rather than resubmitting uncertain input."
                 }.into() });
             };
+            let paced = self.mail_paced_until(&state, &job);
+            found = state.process.clone();
             let Some(binding) = &state.binding else {
                 return Ok(Read::Unknown { what: "Waiting for a provider connection; check provider sign-in. Explicitly stop this agent to cancel setup before retrying launch.".into() });
             };
             if let Some(binding) = binding.get::<crate::codex_rpc::Binding>() {
-                return Ok(self.with_provider_recovery(row, &job, binding.activity()?));
+                return Ok(self.with_provider_recovery(row, &job, binding.activity()?, paced));
             }
             if let Some(binding) = binding.get::<crate::harness::ClaudeBinding>() {
                 if binding.attended {
                     return Ok(Read::Unknown { what: "The provider owns its terminal; turn progress is not observed on this connection. Inspect the existing window for sign-in, trust or permission prompts and read saved history before resubmitting input.".into() });
                 }
-                return Ok(self.with_provider_recovery(row, &job, binding.completion.activity()?));
+                return Ok(self.with_provider_recovery(
+                    row,
+                    &job,
+                    binding.completion.activity()?,
+                    paced,
+                ));
             }
             Ok(Read::Unknown { what: "The retained lifecycle has no matching provider turn connection; check saved history and provider sign-in.".into() })
         };
@@ -125,6 +143,7 @@ impl LaunchCoordinator {
                 error: Some(Box::new(error.body)),
             },
         });
+        row.background = crate::agent_observation::background(row.provider, &self.native, found);
         if row.provider == se_types::Provider::Codex {
             row.codex_login = Some(match &row.session.session_id {
                 Some(session) => self.recorded_codex_login(session),
@@ -137,6 +156,16 @@ impl LaunchCoordinator {
 }
 
 impl LaunchCoordinator {
+    /// The wall-clock time paced mail may next wake this agent, while mail waits.
+    fn mail_paced_until(&self, state: &owned::Work, job: &supervisor::Job) -> Option<String> {
+        if !job.mail_pending.load(Ordering::Acquire) {
+            return None;
+        }
+        let wait = self.mail_pace(state, job)? - tokio::time::Instant::now();
+        let at = std::time::SystemTime::now().checked_add(wait)?;
+        let micros = at.duration_since(std::time::UNIX_EPOCH).ok()?.as_micros();
+        se_core::ops::receipt::timestamp(i64::try_from(micros).ok()?).ok()
+    }
     /// The login recorded for this agent at launch, and the account it is
     /// signed in to now. Only the folder and account identifier leave the file.
     fn recorded_codex_login(

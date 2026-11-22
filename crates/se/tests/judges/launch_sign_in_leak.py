@@ -42,6 +42,17 @@ def child_lines(fixture):
     return path.read_text().splitlines() if path.exists() else []
 
 
+def regular_files(root):
+    """Every regular, non-link file below root. A directory removed during the
+    walk holds nothing to scan; any other walk failure is raised."""
+    def unreadable(error):
+        if not isinstance(error, FileNotFoundError):
+            raise error
+    return [path for directory, _, names in os.walk(root, onerror=unreadable)
+            for path in (Path(directory) / name for name in names)
+            if path.is_file() and not path.is_symlink()]
+
+
 def files_with_token(fixture, locked=None):
     """Files holding the token. A running Windows host locks some of its files;
     with `locked` given they are listed there instead of read, and only the
@@ -49,10 +60,14 @@ def files_with_token(fixture, locked=None):
     roots = [fixture.home, *fixture.root.glob("call-*")]
     found = []
     for root in roots:
-        paths = [root] if root.is_file() else [p for p in root.rglob("*") if p.is_file() and not p.is_symlink()]
+        paths = [root] if root.is_file() else regular_files(root)
         for path in paths:
             try:
                 data = path.read_bytes()
+            except FileNotFoundError:
+                # Removed between the walk and the read, such as a temporary
+                # edit backup; a file that no longer exists holds no token.
+                continue
             except PermissionError:
                 if locked is None:
                     raise

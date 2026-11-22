@@ -388,6 +388,17 @@ pub fn endpoint_name(endpoint: &se_host::EndpointRecord) -> Result<String> {
 
 /// Carry host self-accounting alongside the CLI's independent native status.
 /// A changed process or generation cannot lend its counters to the earlier view.
+/// An agent caller's peer list from the host answer this read merged.
+pub(super) fn host_peers(
+    output: &mut AnyOutput,
+    observed: Option<&Result<AnyOutput>>,
+    admission: &Admission,
+) {
+    if let AnyOutput::ProjectStatus(status) = output {
+        let agent = matches!(admission.actor, se_store::Actor::Agent(_));
+        se_core::ops::agent_state::host_peers(&mut status.value.peers, observed, agent);
+    }
+}
 pub(super) fn merge_resources(runtime: &mut RuntimeView, observed: &Result<AnyOutput>) {
     let hosted = match observed {
         Ok(AnyOutput::ProjectStatus(status)) => Ok(&status.value.runtime),
@@ -434,6 +445,7 @@ pub(super) fn finish<R: ReadStore>(
     mut output: AnyOutput,
     admission: &Admission,
 ) -> Result<AnyOutput> {
+    se_core::ops::agent_state::settle(&mut output, super::execute::now_us()?)?;
     let AnyOutput::ProjectStatus(status) = &mut output else {
         return Ok(output);
     };

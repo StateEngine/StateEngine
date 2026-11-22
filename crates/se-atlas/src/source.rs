@@ -12,6 +12,12 @@ pub trait SourceAccess {
     fn physical_root(&self) -> AtlasResult<[u8; 32]>;
     fn case_mode(&self) -> CaseMode;
     fn open(&self, path: &RelativePath) -> AtlasResult<Option<Box<dyn SourceFile + '_>>>;
+    fn open_scan(&self) -> AtlasResult<Box<dyn SourceScan<'_> + '_>>
+    where
+        Self: Sized,
+    {
+        Ok(Box::new(DefaultScan(self)))
+    }
     fn open_directory(
         &self,
         _path: Option<&RelativePath>,
@@ -20,6 +26,62 @@ pub trait SourceAccess {
             "Atlas source enumeration",
             "a native retained-directory adapter",
         ))
+    }
+}
+/// Scoped multi-file read session under one verified physical root.
+pub trait SourceScan<'a> {
+    fn open(&mut self, path: &RelativePath) -> AtlasResult<Option<Box<dyn SourceFile + 'a>>>;
+    fn finish(self: Box<Self>) -> AtlasResult<()>;
+}
+pub trait LiveSource: AtlasSource {
+    fn open_stream(&self, path: &RelativePath) -> AtlasResult<Option<Box<dyn SourceFile + '_>>>;
+    fn open_scan(&self) -> AtlasResult<Box<dyn SourceScan<'_> + '_>> {
+        Ok(Box::new(StreamScan(self)))
+    }
+}
+struct DefaultScan<'a, A>(&'a A);
+impl<'a, A: SourceAccess> SourceScan<'a> for DefaultScan<'a, A> {
+    fn open(&mut self, path: &RelativePath) -> AtlasResult<Option<Box<dyn SourceFile + 'a>>> {
+        self.0.open(path)
+    }
+    fn finish(self: Box<Self>) -> AtlasResult<()> {
+        Ok(())
+    }
+}
+struct StreamScan<'a, S: ?Sized>(&'a S);
+impl<'a, S: LiveSource + ?Sized> SourceScan<'a> for StreamScan<'a, S> {
+    fn open(&mut self, path: &RelativePath) -> AtlasResult<Option<Box<dyn SourceFile + 'a>>> {
+        self.0.open_stream(path)
+    }
+    fn finish(self: Box<Self>) -> AtlasResult<()> {
+        Ok(())
+    }
+}
+impl<A: SourceAccess> LiveSource for RegisteredSource<A> {
+    fn open_stream(&self, path: &RelativePath) -> AtlasResult<Option<Box<dyn SourceFile + '_>>> {
+        self.open(path)
+    }
+    fn open_scan(&self) -> AtlasResult<Box<dyn SourceScan<'_> + '_>> {
+        RegisteredSource::open_scan(self)
+    }
+}
+struct RegisteredScan<'a, A> {
+    source: &'a RegisteredSource<A>,
+    inner: Box<dyn SourceScan<'a> + 'a>,
+}
+impl<'a, A: SourceAccess> SourceScan<'a> for RegisteredScan<'a, A> {
+    fn open(&mut self, path: &RelativePath) -> AtlasResult<Option<Box<dyn SourceFile + 'a>>> {
+        self.inner.open(path)
+    }
+    fn finish(self: Box<Self>) -> AtlasResult<()> {
+        self.inner.finish()?;
+        if self.source.access.physical_root()? != self.source.scope.physical_root {
+            return Err(SeError::invalid(
+                "Atlas source scan",
+                "the unchanged registered physical root",
+            ));
+        }
+        Ok(())
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,6 +137,18 @@ impl<A: SourceAccess> RegisteredSource<A> {
             ));
         }
         self.access.open(path)
+    }
+    pub fn open_scan(&self) -> AtlasResult<Box<dyn SourceScan<'_> + '_>> {
+        if self.access.physical_root()? != self.scope.physical_root {
+            return Err(SeError::invalid(
+                "Atlas source scan",
+                "the registered physical root",
+            ));
+        }
+        Ok(Box::new(RegisteredScan {
+            source: self,
+            inner: self.access.open_scan()?,
+        }))
     }
     /// Observe a deferred file with fixed streaming scratch, retaining no body.
     /// The hash is accepted only after identity and root/path custody revalidation.

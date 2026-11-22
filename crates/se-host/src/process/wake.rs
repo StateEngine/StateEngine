@@ -77,45 +77,15 @@ fn offers_for<R: Snapshot>(
     ))
 }
 impl LaunchCoordinator {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) async fn agent_wake(
         &self,
         plan: WakePlan,
         _admission: se_store::Admission,
         deadline: &Deadline,
     ) -> Result<WakeResult> {
-        let jobs: Vec<Arc<super::supervisor::Job>> = {
-            let registry = self
-                .jobs
-                .0
-                .lock()
-                .map_err(|_| error("wake registry", "launch registry is poisoned"))?;
-            registry
-                .values()
-                .filter(|job| {
-                    !job.settled.load(Ordering::Acquire)
-                        && job.target == (plan.project.id.clone(), plan.agent.id.clone())
-                })
-                .cloned()
-                .collect()
-        };
-        let name = plan.agent.name.clone();
+        let jobs = self.running_jobs(&plan)?;
         if jobs.is_empty() {
-            return Ok(WakeResult {
-                outcome: WakeOutcome::Refused,
-                agent: plan.agent.clone(),
-                lifecycle: WakeLifecycle {
-                    state: "not_running".into(),
-                    session: None,
-                    lifecycle: None,
-                },
-                offer: None,
-                detail: Some(format!("agent {name} has no running process on this host")),
-                remedy: Some(format!("Launch {name} so it can read its pending mail.")),
-            });
+            return Ok(wake_refused(&plan.agent));
         }
         let job = jobs[0].clone();
         let lifecycle = WakeLifecycle {
@@ -150,13 +120,44 @@ impl LaunchCoordinator {
         }
         let stage = deadline.stage(Duration::from_secs(5))?;
         let notified = std::time::Instant::now();
+        self.await_offer(&WakeWait {
+            plan: &plan,
+            job: &job,
+            lifecycle,
+            agent,
+            session,
+            baseline,
+            admission,
+            stage,
+            notified,
+        })
+        .await
+    }
+    fn running_jobs(&self, plan: &WakePlan) -> Result<Vec<Arc<super::supervisor::Job>>> {
+        let registry = self
+            .jobs
+            .0
+            .lock()
+            .map_err(|_| error("wake registry", "launch registry is poisoned"))?;
+        Ok(registry
+            .values()
+            .filter(|job| {
+                !job.settled.load(Ordering::Acquire)
+                    && job.target == (plan.project.id.clone(), plan.agent.id.clone())
+            })
+            .cloned()
+            .collect())
+    }
+    /// Wait for a positive mail offer from the admitted target session,
+    /// reporting the committed evidence or the elapsed wait window.
+    async fn await_offer(&self, wait: &WakeWait<'_>) -> Result<WakeResult> {
         let mut latest_negative: Option<OfferReport> = None;
         loop {
-            let loop_agent = agent.clone();
-            let loop_session = session.clone();
+            let loop_agent = wait.agent.clone();
+            let loop_session = wait.session.clone();
             let newest: Option<StoredEvent> = match self
                 .store
-                .read(admission.clone(), &stage, move |cx| {
+                .read(wait.admission.clone(), &wait.stage, move |cx| {
                     offers_for(cx, &loop_agent, &loop_session)
                 })
                 .await
@@ -164,17 +165,17 @@ impl LaunchCoordinator {
                 Ok(events) => events.into_iter().last(),
                 // The stage clock ended inside the read: report the elapsed
                 // window instead of an error.
-                Err(_) if stage.at() <= std::time::Instant::now() => break,
+                Err(_) if wait.stage.at() <= std::time::Instant::now() => break,
                 Err(error) => return Err(error),
             }
-            .filter(|event| !baseline.contains(&event.position));
+            .filter(|event| !wait.baseline.contains(&event.position));
             if let Some(event) = newest {
                 let offer = classify_offer(&event);
                 if let Some(offer) = offer.positive {
                     return Ok(WakeResult {
                         outcome: WakeOutcome::Offered,
-                        agent: plan.agent.clone(),
-                        lifecycle,
+                        agent: wait.plan.agent.clone(),
+                        lifecycle: wait.lifecycle.clone(),
                         offer: Some(offer),
                         detail: None,
                         remedy: None,
@@ -184,13 +185,13 @@ impl LaunchCoordinator {
                     latest_negative = Some(report);
                 }
             }
-            if job.settled.load(Ordering::Acquire) {
+            if wait.job.settled.load(Ordering::Acquire) {
                 return Ok(pending(
-                    plan.agent.clone(),
+                    wait.plan.agent.clone(),
                     WakeLifecycle {
                         state: "not_running".into(),
-                        session: Some(session.clone()),
-                        lifecycle: Some(job.lifecycle.clone()),
+                        session: Some(wait.session.clone()),
+                        lifecycle: Some(wait.job.lifecycle.clone()),
                     },
                     latest_negative,
                     "the agent process ended before a positive offer was committed; the mail stays queued for its next launch",
@@ -199,27 +200,53 @@ impl LaunchCoordinator {
             // The supervisor clears the flag when its delivery pass finishes.
             // A second without a committed offer then proves this window will
             // not produce one.
-            if !job.mail_pending.load(Ordering::Acquire)
-                && notified.elapsed() >= Duration::from_millis(1000)
+            if !wait.job.mail_pending.load(Ordering::Acquire)
+                && wait.notified.elapsed() >= Duration::from_millis(1000)
             {
                 return Ok(pending(
-                    plan.agent.clone(),
-                    lifecycle.clone(),
+                    wait.plan.agent.clone(),
+                    wait.lifecycle.clone(),
                     latest_negative,
                     "no positive mail offer was committed after the delivery pass finished; the mail stays queued for the agent's next read",
                 ));
             }
-            match stage.remaining() {
+            match wait.stage.remaining() {
                 Ok(_) => tokio::time::sleep(Duration::from_millis(100)).await,
                 Err(_) => break,
             }
         }
         Ok(pending(
-            plan.agent.clone(),
-            lifecycle,
+            wait.plan.agent.clone(),
+            wait.lifecycle.clone(),
             latest_negative,
             "no positive mail offer was committed within the wait window; the mail stays queued for the agent's next read",
         ))
+    }
+}
+struct WakeWait<'a> {
+    plan: &'a WakePlan,
+    job: &'a Arc<super::supervisor::Job>,
+    lifecycle: WakeLifecycle,
+    agent: se_types::AgentId,
+    session: se_types::SessionId,
+    baseline: Vec<se_store::StorePosition>,
+    admission: se_store::Admission,
+    stage: Deadline,
+    notified: std::time::Instant,
+}
+fn wake_refused(agent: &se_types::Named<se_types::AgentId>) -> WakeResult {
+    let name = agent.name.clone();
+    WakeResult {
+        outcome: WakeOutcome::Refused,
+        agent: agent.clone(),
+        lifecycle: WakeLifecycle {
+            state: "not_running".into(),
+            session: None,
+            lifecycle: None,
+        },
+        offer: None,
+        detail: Some(format!("agent {name} has no running process on this host")),
+        remedy: Some(format!("Launch {name} so it can read its pending mail.")),
     }
 }
 struct Classified {

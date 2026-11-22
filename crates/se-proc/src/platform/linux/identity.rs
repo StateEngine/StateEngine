@@ -123,13 +123,6 @@ pub(crate) fn verify_live_identity(expected: &ProcessIdentity) -> ProcResult<()>
         )
     })?;
     let after = stat(expected.pid)?.ok_or_else(|| changed(expected, None))?;
-    let final_image = fs::read_link(format!("/proc/{}/exe", expected.pid.0)).map_err(|e| {
-        native(
-            ProcErrorCode::IdentityUnreadable,
-            "recheck birth-time executable",
-            e,
-        )
-    })?;
     let found = ProcessIdentity {
         machine: expected.machine.clone(),
         boot,
@@ -142,8 +135,7 @@ pub(crate) fn verify_live_identity(expected: &ProcessIdentity) -> ProcResult<()>
     if before.state == NativeState::ExitedAwaitingReap
         || after.state == NativeState::ExitedAwaitingReap
         || before.start != after.start
-        || found.image != final_image
-        || &found != expected
+        || !found.same_birth(expected)
     {
         return Err(changed(expected, Some(&found)));
     }
@@ -374,7 +366,7 @@ pub(super) fn observe(expected: &ProcessIdentity) -> ProcResult<ProcessObservati
                 observed_at_unix_ns,
             })
         }
-        ProcessRead::Present(live) if live.identity == *expected => {
+        ProcessRead::Present(live) if live.identity.same_birth(expected) => {
             Ok(ProcessObservation::Live(live))
         }
         ProcessRead::Present(live)

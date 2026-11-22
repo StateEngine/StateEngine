@@ -20,7 +20,7 @@ pub fn read_process_descendants(
 ) -> ProcResult<Vec<ProcessIdentity>> {
     let verify_root = || match crate::read_process_until(root.machine.clone(), root.pid, deadline)?
     {
-        ProcessRead::Present(live) if live.identity == *root => Ok(()),
+        ProcessRead::Present(live) if live.identity.same_birth(root) => Ok(()),
         ProcessRead::Present(live) => Err(changed(root, Some(&live.identity))),
         _ => Err(input(
             "process ancestry",

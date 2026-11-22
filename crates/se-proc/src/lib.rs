@@ -15,10 +15,10 @@ mod windows_directory;
 pub use windows_directory::windows_directory;
 #[cfg(windows)]
 mod windows_package;
+#[cfg(unix)]
+pub use se_state_files::advisory_lock;
 #[cfg(windows)]
 pub use windows_package::process_has_package_identity;
-#[cfg(unix)]
-pub mod advisory_lock;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod allocator;
 pub mod atlas_worker;
@@ -34,8 +34,7 @@ pub use checkpoint::{
 };
 pub use command::background_command;
 mod error;
-mod file_identity;
-pub use file_identity::NativeFileIdentity;
+pub use se_state_files::NativeFileIdentity;
 mod identity;
 mod reboot_proof;
 pub use reboot_proof::{
@@ -43,7 +42,7 @@ pub use reboot_proof::{
     observe_reboot_boot, prove_reboot,
 };
 mod launch;
-mod native_error;
+pub(crate) use se_state_files::native_error;
 #[cfg(windows)]
 mod native_file_revision;
 pub mod native_ipc;
@@ -72,10 +71,10 @@ pub use source_root::{
     NativeWatchEvents, NativeWatchRegistration,
 };
 mod executable;
-mod state_files;
+pub(crate) use se_state_files::state_files;
 pub use source_root::{
     NativeFileRevision, NativeRootDirectory, NativeRootFile, NativeSourceEntry, NativeSourceKind,
-    NativeSourceRoot, observe_file_revision,
+    NativeSourceRoot, NativeSourceScan, observe_file_revision,
 };
 pub use state_files::{
     NativeProfileFiles, NativeStateFiles, PermissionKind, PermissionProtection,
@@ -136,8 +135,7 @@ pub use runtime::{read_process, read_process_until};
 mod macos_process;
 #[cfg(target_os = "macos")]
 pub use platform::process_attach_entry;
-mod creation_owner;
-pub use creation_owner::{FileOwnerError, FileOwnerInitialization, initialize_file_creation_owner};
+pub use se_state_files::{FileOwnerError, FileOwnerInitialization, initialize_file_creation_owner};
 
 pub use executable::{NativeExecutableCreation, NativeExecutableInvocation, NativeExecutablePin};
 pub use state_files::NativeMetadataPin;
@@ -151,8 +149,7 @@ pub use state_files::user_path::{
     NativeUserPath, PathKind, PathObservation, PathUpdateError, PathUpdatePhase, PathWriteWitness,
 };
 
-mod entropy;
-pub use entropy::{NativeEntropyError, fill_entropy, random_secret};
+pub use se_state_files::{NativeEntropyError, fill_entropy, random_secret};
 
 mod monotonic;
 pub use monotonic::monotonic_micros;

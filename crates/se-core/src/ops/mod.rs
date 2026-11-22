@@ -10,6 +10,7 @@ pub use assignment::{
     AssignmentAction, AssignmentList, AssignmentPage, AssignmentWrite, AssignmentWriteOutput,
 };
 pub mod captain;
+pub mod captain_nudge;
 pub use captain::{
     CaptainClear, CaptainClearOutput, CaptainSet, CaptainSetOutput, CaptainShow, CaptainShowOutput,
 };
@@ -34,20 +35,25 @@ pub mod remove_commit;
 pub mod session_commit;
 pub mod session_reference;
 pub mod stop_plan;
+pub mod store_forget;
+pub mod store_restore;
 pub use agent_launch::{AgentLaunch, LaunchPending, LaunchPendingState, LaunchReply, LaunchResult};
 pub use agent_stop::{AgentStop, StopResult};
 pub use agent_wake::{AgentWake, WakeResult};
 pub use project_remove::{ProjectRemove, RemoveResult};
+pub use store_forget::{ErasureReceipt, StoreForget};
+pub use store_restore::{RestoreResult, StoreRestore};
 pub mod agent_config;
 pub mod agent_config_receipt;
 mod agent_session;
+pub mod agent_state;
 pub use agent_session::{process_from_record, unobserved_session};
-pub use cli::parse_remote_target;
+mod agent_command;
 pub mod agent_status;
-mod cli;
+mod cli_selections;
 pub mod config_listing;
-pub(crate) use cli::command_name;
 pub mod diagnostic_bundle;
+mod reopen;
 pub use diagnostic_bundle::{DiagnosticBundle, DiagnosticBundleOutput};
 pub mod doctor;
 pub use doctor::{Diagnosis, DoctorInspect, DoctorRepair, RepairOutput};
@@ -55,7 +61,7 @@ pub mod event;
 mod guide;
 pub mod history;
 pub use guide::{GuideOutput, GuideTopicSummary, MetaGuide};
-pub use history::{HistoryList, HistoryPage};
+pub use history::{HistoryList, HistoryPage, HistorySearch, SearchHit, SearchPage};
 pub mod identity;
 pub use identity::{
     IdentityWhoami, PrincipalAgent, PrincipalBinding, PrincipalOutput, PrincipalProject,
@@ -90,10 +96,8 @@ pub mod receipt;
 pub mod status;
 pub use crate::commit::{MessageSend, WorkingStateSet};
 use crate::registry::*;
-pub use cli::{
-    AgentCommand, CliSelections, CommonArgs, cli_command, diagnostic_word, from_matches,
-    from_matches_with_key, selected_meta,
-};
+pub use agent_command::AgentCommand;
+pub use cli_selections::{CliSelections, command_name, diagnostic_word, unknown_flag};
 pub use event::{EventOutput, EventRead, HistoryEvent};
 pub use hook::{HookClaude, HookEvent, HookResult};
 pub use inputs::*;
@@ -242,6 +246,7 @@ ops! {
     ProjectStatus => ProjectStatus, StatusOutput, ("project.status",leaf(&["status"]),tool("stateengine_status","Project status","Read project setup, agents and runtime facts."),Either,false,Never,Read,ProjectOrAll,None,"se.status",Status,&["J1","J2"]);
     EventRead => EventRead, EventOutput, ("history.event_read",CliExposure::Leaf {path:&["history"],hidden:false,select:Selector::Flag("event")},tool("stateengine_event_read","Read a committed event","Read one committed project event and its provenance."),Either,false,Never,Read,Project,None,"se.event",Event,&["E3","J3","J4"]);
     HistoryList => HistoryList, HistoryPage, ("history.list",leaf(&["history"]),no_mcp("Sessions use event_read for exact public records; owner CLI history is read-only inspection."),Either,false,Never,Read,Project,None,"se.history-page",HistoryPage,&["J3"]);
+    HistorySearch => HistorySearch, SearchPage, ("history.search",leaf(&["search"]),tool("stateengine_search","Search history","Search authorized project history case-insensitively with bounded candidate scanning and erasure awareness."),Either,false,Never,Read,Project,None,"se.search-page",SearchPage,&["J3","J4"]);
     MessageSend => MessageSend, MessageOutput, ("message.send",leaf(&["msg","send"]),tool("stateengine_msg_send","Send a message","Send direct or floor mail. Crew questions, blockers and done reports can omit to for the captain. Floor requires work.action/addressees. quiet suppresses notification, not unread state."),Either,false,Never,Write,Project,HostForWrites,"se.message-receipt",MessageReceipt,&["J4"]);
     MessageRead => MessageRead, MessageReadOutput, ("message.read",leaf(&["msg","read"]),tool("stateengine_msg_read","Read one complete message","Read a complete message and mark it read as recipient. msg_id aliases message_id. If a reply is needed, use stateengine_msg_send to the verified from.id with reply_to the original message ID; follow channel_reply or remote_reply when present. Final conversation text alone does not reach the sender."),Either,false,Never,Write,Project,HostForWrites,"se.message-read",MessagePage,&["J4"]);
     MessageAck => MessageAck, DispositionReceipt, ("message.ack",leaf(&["msg","ack"]),tool("stateengine_msg_ack","Acknowledge a message","Mark your message read without its body. msg_id aliases message_id."),Either,false,Never,Write,Project,HostForWrites,"se.disposition-receipt",MessageReceipt,&["J4"]);
@@ -262,6 +267,8 @@ ops! {
     AgentLaunch => AgentLaunch, LaunchReply, ("agent.launch",leaf(&["launch"]),tool("stateengine_agent_launch","Launch an agent","Start self or your controlled child fresh with StateEngine context; resume:true reopens the latest conversation, resume:session-ID selects one. Same-key retry for pending; force consents to stop existing jobs."),Either,false,Never,Custody,Project,HostAutoStart,"se.launch",Launch,&["J2","J3"]);
     AgentStop => AgentStop, StopResult, ("agent.stop",leaf(&["stop"]),tool("stateengine_agent_stop","Stop an agent","Stop self or your controlled child; returns original-conversation resume command."),Either,false,Never,Custody,ProjectOrAll,HostAutoStart,"se.stop",Stop,&["J3","J5"]);
     AgentWake => AgentWake, WakeResult, ("agent.wake",leaf(&["agent","wake"]),tool("stateengine_agent_wake","Wake an agent","Arm this running agent's pending mail delivery and report the committed offer; never launches a process."),Either,false,Never,Custody,Project,Host,"se.wake",Wake,&["J4"]);
+    StoreRestore => StoreRestore, RestoreResult, ("store.restore",leaf(&["restore"]),no_mcp("Restoring history replaces the store; it needs the verified owner at a human terminal."),Owner,false,Always,Custody,Home,None,"se.restore-result",Restore,&["J3","J5"]);
+    StoreForget => StoreForget, ErasureReceipt, ("store.forget",leaf(&["forget"]),no_mcp("Forgetting is irreversible; it needs the verified owner at a human terminal."),Owner,false,Always,Custody,Home,HostAutoStart,"se.erasure-receipt",Erasure,&["J3","J5"]);
     ProjectRemove => ProjectRemove, RemoveResult, ("project.remove",leaf(&["remove"]),no_mcp("Project removal requires the verified owner at a human terminal."),Owner,false,Always,Custody,ProjectOrAll,HostAutoStart,"se.remove",Remove,&["J5"]);
     AgentShow => AgentShow, AgentStatusOutput, ("agent.show",leaf(&["agent","show"]),no_mcp("This owner CLI read inspects saved agent metadata."),Owner,false,Never,Read,Project,None,"se.agent-status",AgentStatus,&["E3","J2"]);
     ConfigGet => ConfigGet, ConfigValueOutput, ("config.get",leaf(&["config","get"]),no_mcp("Saved agent settings are inspected by the owner CLI."),Owner,false,Never,Read,Project,None,"se.config-value",ConfigValue,&["E3"]);
@@ -321,6 +328,8 @@ impl AnyOp {
             Self::AgentLaunch(v) => Some(&v.idempotency_key),
             Self::AgentStop(v) => Some(&v.idempotency_key),
             Self::ProjectRemove(v) => Some(&v.idempotency_key),
+            Self::StoreForget(v) => Some(&v.idempotency_key),
+            Self::StoreRestore(v) => Some(&v.idempotency_key),
             Self::ConfigSet(v) => Some(&v.idempotency_key),
             Self::AssignmentWrite(v) => Some(&v.idempotency_key),
             Self::CaptainSet(v) => Some(&v.idempotency_key),
@@ -406,6 +415,8 @@ impl AnyOutput {
                 2
             }
             Self::RuntimeDown(v) if !v.value.complete => 2,
+            Self::StoreForget(v) if v.value.outcome == "incomplete" => 2,
+            Self::StoreRestore(v) if v.value.outcome == "refused" => 1,
             Self::RuntimeUp(v) if v.value.state == "pending" => 2,
             Self::EventRead(v) => match &v.value {
                 EventOutput::Present(_) => 0,
@@ -419,6 +430,7 @@ impl AnyOutput {
             Self::SessionContext(v) if v.value.truncated || !v.value.failures.is_empty() => 2,
             Self::AgentList(v) => v.value.page.window().exit_code(false),
             Self::HistoryList(v) => v.value.page.window().exit_code(false),
+            Self::HistorySearch(v) => v.value.page.window().exit_code(false),
             Self::ProjectStatus(v) => {
                 let project = v.value.project.exit_code();
                 if project != 0 {

@@ -113,7 +113,7 @@ pub(crate) fn search_with_terms(
         .zip(request.pointer.content_hash)
         .is_some_and(|(live, indexed)| live != indexed);
     let after = file.identity()?;
-    output.changed = before != after || !file.validate_path()?;
+    output.changed = before != after;
     if let Err(error) = result {
         output.time_limited = error.kind() == io::ErrorKind::TimedOut;
         output.line_limited = error.to_string().contains("configured allocation limit")
@@ -140,13 +140,22 @@ pub(crate) fn search_with_terms(
     // matches remain labelled incomplete and carry no invented lexical score.
     output.lexical = output.complete.then_some(lexical).flatten();
     output.omitted_matches = sink.omitted;
-    for (span, text, _) in &sink.items {
-        file.seek(SeekFrom::Start(span.start_byte))
-            .map_err(|e| se_types::SeError::invalid("Atlas source verification", &e.to_string()))?;
-        let mut again = vec![0; text.len()];
-        file.read_exact(&mut again)
-            .map_err(|e| se_types::SeError::invalid("Atlas source verification", &e.to_string()))?;
-        if again != text.as_bytes() || file.identity()? != before || !file.validate_path()? {
+    if !sink.items.is_empty() {
+        for (span, text, _) in &sink.items {
+            file.seek(SeekFrom::Start(span.start_byte)).map_err(|e| {
+                se_types::SeError::invalid("Atlas source verification", &e.to_string())
+            })?;
+            let mut again = vec![0; text.len()];
+            file.read_exact(&mut again).map_err(|e| {
+                se_types::SeError::invalid("Atlas source verification", &e.to_string())
+            })?;
+            if again != text.as_bytes() {
+                output.changed = true;
+                output.complete = false;
+                return Ok(output);
+            }
+        }
+        if file.identity()? != before || !file.validate_path()? {
             output.changed = true;
             output.complete = false;
             return Ok(output);

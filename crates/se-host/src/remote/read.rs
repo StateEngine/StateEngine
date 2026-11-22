@@ -4,12 +4,38 @@ use se_core::{
     ops::{AgentRow, ConversationView, ResumeCommand},
     scope,
 };
-use se_store::{EventBody, RecordedIdentity, remote::TargetFacts};
-use se_types::{Read, Result};
+use se_store::{EventBody, ProjectionRecord, RecordedIdentity, remote::TargetFacts};
+use se_types::{AgentId, Read, Result};
 use std::time::Instant;
 
-impl SecurityStore {
-    pub(crate) fn watch_position(
+pub(crate) trait SecurityStoreRead {
+    fn watch_position(
+        &self,
+        request: &view_request::ViewRequest,
+        target: &RemoteTarget,
+    ) -> Result<Option<se_store::StorePosition>>;
+    fn changes(
+        &self,
+        request: &view_request::ViewRequest,
+        target: &RemoteTarget,
+        query: se_store::remote::ChangeRequest<'_>,
+    ) -> Result<se_store::remote::ChangePage>;
+    fn targets(
+        &self,
+        request: &view_request::ViewRequest,
+        deadline: Instant,
+    ) -> Result<Vec<RemoteAgentView>>;
+    fn target_page(
+        &self,
+        request: &view_request::ViewRequest,
+        after: Option<&RemoteTarget>,
+        limit: u16,
+        deadline: Instant,
+    ) -> Result<Vec<RemoteAgentView>>;
+}
+
+impl SecurityStoreRead for SecurityStore {
+    fn watch_position(
         &self,
         request: &view_request::ViewRequest,
         target: &RemoteTarget,
@@ -24,7 +50,7 @@ impl SecurityStore {
         self.read(|phase| request.position(phase, target, now))
     }
 
-    pub(crate) fn changes(
+    fn changes(
         &self,
         request: &view_request::ViewRequest,
         target: &RemoteTarget,
@@ -58,7 +84,7 @@ impl SecurityStore {
                 timed.with_cause(error)
             })
     }
-    pub(crate) fn targets(
+    fn targets(
         &self,
         request: &view_request::ViewRequest,
         deadline: Instant,
@@ -82,23 +108,34 @@ impl SecurityStore {
             .map(|facts| observe(facts, deadline, self.home.as_deref()))
             .collect()
     }
-}
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-fn observe(
-    facts: TargetFacts,
-    deadline: Instant,
-    home: Option<&std::path::Path>,
-) -> Result<RemoteAgentView> {
-    if Instant::now() >= deadline {
-        return Err(scope::unreadable(
-            "remote metadata",
-            "original read deadline expired",
-        ));
+    fn target_page(
+        &self,
+        request: &view_request::ViewRequest,
+        after: Option<&RemoteTarget>,
+        limit: u16,
+        deadline: Instant,
+    ) -> Result<Vec<RemoteAgentView>> {
+        let now = super::session::now()?;
+        let facts = self.read(|phase| {
+            request
+                .page_targets(phase, after, limit, now)?
+                .iter()
+                .map(|target| request.target(phase, target, RemoteVerb::List, now))
+                .collect::<se_store::StoreResult<Vec<_>>>()
+        })?;
+        facts
+            .into_iter()
+            .map(|facts| observe(facts, deadline, self.home.as_deref()))
+            .collect()
     }
-    let name = match facts.principal.current.body {
+}
+struct Identity {
+    name: String,
+    profile: se_store::Profile,
+    provider: se_types::Provider,
+}
+fn identity(principal: ProjectionRecord, profile: Read<ProjectionRecord>) -> Result<Identity> {
+    let name = match principal.current.body {
         EventBody::PrincipalRegistered { name, .. } | EventBody::PrincipalRenamed { name, .. } => {
             name
         }
@@ -110,7 +147,7 @@ fn observe(
         }
     };
     let profile = scope::require_present(
-        facts.profile,
+        profile,
         "remote saved provider",
         "Save a supported Claude or Codex agent profile locally.",
     )?;
@@ -130,9 +167,19 @@ fn observe(
             ));
         }
     };
+    Ok(Identity {
+        name,
+        profile,
+        provider,
+    })
+}
+fn session_view(
+    record: &Read<ProjectionRecord>,
+    target_agent: &AgentId,
+) -> Result<se_core::ops::SessionView> {
     let mut session = se_core::ops::unobserved_session();
     session.state = "never-launched".into();
-    if let Read::Present { value: head } = &facts.session {
+    if let Read::Present { value: head } = record {
         let first = head.original.as_deref().unwrap_or(&head.current);
         let EventBody::SessionPrepared {
             session: id, agent, ..
@@ -143,7 +190,7 @@ fn observe(
                 "original session preparation absent",
             ));
         };
-        if agent != &facts.target.agent {
+        if agent != target_agent {
             return Err(scope::unreadable("remote session", "agent differs"));
         }
         session.session_id = Some(id.clone());
@@ -164,46 +211,93 @@ fn observe(
         );
         session.state = "unknown".into();
     }
-    let recorded_exit = match &facts.process {
-        Read::Present { value } => {
-            crate::agent_observation::RecordedExit::from_event(&value.current.body)
-        }
-        _ => crate::agent_observation::RecordedExit::Other,
-    };
-    let process = match facts.process {
-        Read::Present { value: head } => match session.session_id.clone() {
+    Ok(session)
+}
+fn process_state(
+    record: Read<ProjectionRecord>,
+    session: &Read<ProjectionRecord>,
+    agent: &AgentId,
+    view: &mut se_core::ops::SessionView,
+) -> Result<Read<se_store::ProcessIdentityRecord>> {
+    match record {
+        Read::Present { value: head } => match view.session_id.clone() {
             Some(id) => {
-                let expected = match &facts.session {
+                let expected = match session {
                     Read::Present { value } => match &value.current.body {
                         EventBody::SessionActivated { process, .. } => process.as_ref(),
                         _ => None,
                     },
                     _ => None,
                 };
-                se_core::ops::process_from_record(
-                    &facts.target.agent,
-                    &id,
-                    expected,
-                    head,
-                    &mut session,
-                )?
+                se_core::ops::process_from_record(agent, &id, expected, head, view)
             }
-            None => Read::Absent {
+            None => Ok(Read::Absent {
                 checked: "no session selected for this process".into(),
-            },
+            }),
         },
-        Read::Absent { checked } => Read::Absent { checked },
-        Read::Unknown { what } => Read::Unknown { what },
+        Read::Absent { checked } => Ok(Read::Absent { checked }),
+        Read::Unknown { what } => Ok(Read::Unknown { what }),
         Read::Unreadable {
             source,
             reason,
             error,
-        } => Read::Unreadable {
+        } => Ok(Read::Unreadable {
             source,
             reason,
             error,
-        },
+        }),
+    }
+}
+fn status_of(
+    recovering: bool,
+    row: &AgentRow,
+    lifecycle: Option<se_types::LifecycleId>,
+) -> Read<RemoteAgentStatus> {
+    if recovering || row.session.state == "recovery-pending" {
+        Read::Present {
+            value: RemoteAgentStatus::Recovering,
+        }
+    } else {
+        match (&row.session.liveness,&row.session.session_id,lifecycle) {
+            (Read::Present {value},Some(session),Some(lifecycle)) if value=="live" && row.session.state=="running" => Read::Present {value:RemoteAgentStatus::Running {session:session.clone(),lifecycle}},
+            (_,None,_)=>Read::Present {value:RemoteAgentStatus::Stopped},
+            (Read::Unreadable {source,reason,error},_,_)=>Read::Unreadable {source:source.clone(),reason:reason.clone(),error:error.clone()},
+            (_,_,_) if row.session.recorded_state.as_deref()==Some("prepared")=>Read::Present {value:RemoteAgentStatus::Starting},
+            (Read::Present {value},_,_) if value=="exited" && matches!(&row.session.process_state,Read::Present {value} if value=="exited")=>Read::Present {value:RemoteAgentStatus::Stopped},
+            (Read::Absent {checked},_,_) if !checked.is_empty() && matches!(&row.session.process_state,Read::Present {value} if value=="exited")=>Read::Present {value:RemoteAgentStatus::Stopped},
+            _=>Read::Unknown {what:"native custody/readback is incomplete; local Owner must reconcile the original session".into()},
+        }
+    }
+}
+fn observe(
+    facts: TargetFacts,
+    deadline: Instant,
+    home: Option<&std::path::Path>,
+) -> Result<RemoteAgentView> {
+    if Instant::now() >= deadline {
+        return Err(scope::unreadable(
+            "remote metadata",
+            "original read deadline expired",
+        ));
+    }
+    let Identity {
+        name,
+        profile,
+        provider,
+    } = identity(facts.principal, facts.profile)?;
+    let mut session = session_view(&facts.session, &facts.target.agent)?;
+    let recorded_exit = match &facts.process {
+        Read::Present { value } => {
+            crate::agent_observation::RecordedExit::from_event(&value.current.body)
+        }
+        _ => crate::agent_observation::RecordedExit::Other,
     };
+    let process = process_state(
+        facts.process,
+        &facts.session,
+        &facts.target.agent,
+        &mut session,
+    )?;
     let recovering = matches!(&session.process_state,Read::Present {value} if matches!(value.as_str(),"lost"|"stop-unproved"|"stop-requested"|"leader-exited"));
     let lifecycle = match &process {
         Read::Present { value } if matches!(value.instance, RecordedIdentity::Present(_)) => {
@@ -235,6 +329,9 @@ fn observe(
         },
         unread: Some(facts.pending),
         last_activity_at: None,
+        state: None,
+        working_note: None,
+        background: None,
         // This view's provider filter admits Claude/Codex, not managed services.
         secode_binding: None,
         secode_runtime: None,
@@ -259,21 +356,7 @@ fn observe(
         plan
     };
     crate::observe_agent(plan, deadline)?.apply(&mut row)?;
-    let status = if recovering || row.session.state == "recovery-pending" {
-        Read::Present {
-            value: RemoteAgentStatus::Recovering,
-        }
-    } else {
-        match (&row.session.liveness,&row.session.session_id,lifecycle) {
-            (Read::Present {value},Some(session),Some(lifecycle)) if value=="live" && row.session.state=="running" => Read::Present {value:RemoteAgentStatus::Running {session:session.clone(),lifecycle}},
-            (_,None,_)=>Read::Present {value:RemoteAgentStatus::Stopped},
-            (Read::Unreadable {source,reason,error},_,_)=>Read::Unreadable {source:source.clone(),reason:reason.clone(),error:error.clone()},
-            (_,_,_) if row.session.recorded_state.as_deref()==Some("prepared")=>Read::Present {value:RemoteAgentStatus::Starting},
-            (Read::Present {value},_,_) if value=="exited" && matches!(&row.session.process_state,Read::Present {value} if value=="exited")=>Read::Present {value:RemoteAgentStatus::Stopped},
-            (Read::Absent {checked},_,_) if !checked.is_empty() && matches!(&row.session.process_state,Read::Present {value} if value=="exited")=>Read::Present {value:RemoteAgentStatus::Stopped},
-            _=>Read::Unknown {what:"native custody/readback is incomplete; local Owner must reconcile the original session".into()},
-        }
-    };
+    let status = status_of(recovering, &row, lifecycle);
     Ok(RemoteAgentView {
         target: facts.target,
         project_name: facts.project_name,
@@ -284,27 +367,4 @@ fn observe(
             value: facts.pending,
         },
     })
-}
-
-impl SecurityStore {
-    pub(crate) fn target_page(
-        &self,
-        request: &view_request::ViewRequest,
-        after: Option<&RemoteTarget>,
-        limit: u16,
-        deadline: Instant,
-    ) -> Result<Vec<RemoteAgentView>> {
-        let now = super::session::now()?;
-        let facts = self.read(|phase| {
-            request
-                .page_targets(phase, after, limit, now)?
-                .iter()
-                .map(|target| request.target(phase, target, RemoteVerb::List, now))
-                .collect::<se_store::StoreResult<Vec<_>>>()
-        })?;
-        facts
-            .into_iter()
-            .map(|facts| observe(facts, deadline, self.home.as_deref()))
-            .collect()
-    }
 }

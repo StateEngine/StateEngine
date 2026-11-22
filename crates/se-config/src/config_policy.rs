@@ -40,8 +40,44 @@ pub struct RuntimeConfig {
     /// and the original independent maintenance slot.
     #[serde(default)]
     pub blocking_jobs: Option<u32>,
+    /// Seconds between wakes for mail, 0 (off, the default) through 3600. Mail
+    /// is always delivered; this only paces how often a busy agent is woken.
+    #[serde(default)]
+    pub mail_wake_interval_seconds: Option<u32>,
+    /// Under a captain, how long a crew member with open work may sit idle
+    /// before the engine nudges it: 1200 by default, 0 off, at most 86400.
+    #[serde(default)]
+    pub captain_nudge_idle_seconds: Option<u32>,
+    /// Nudges without progress before the captain gets one stuck alert: 3 by
+    /// default, 1 through 20.
+    #[serde(default)]
+    pub captain_nudge_attempts: Option<u32>,
 }
 impl RuntimeConfig {
+    /// The captain nudge's idle interval and attempt cap, or None when off.
+    /// Host start calls this so an out-of-range value refuses loudly.
+    pub fn captain_nudge(&self) -> Result<Option<(std::time::Duration, u32)>> {
+        let attempts = match self.captain_nudge_attempts.unwrap_or(3) {
+            value @ 1..=20 => value,
+            _ => {
+                return Err(invalid(
+                    "runtime.captain_nudge_attempts",
+                    "expected 1 through 20",
+                ));
+            }
+        };
+        match self.captain_nudge_idle_seconds.unwrap_or(1_200) {
+            0 => Ok(None),
+            seconds @ 1..=86_400 => Ok(Some((
+                std::time::Duration::from_secs(u64::from(seconds)),
+                attempts,
+            ))),
+            _ => Err(invalid(
+                "runtime.captain_nudge_idle_seconds",
+                "expected 0 (off) through 86400 seconds",
+            )),
+        }
+    }
     pub fn resolve_blocking_jobs(&self, cores: Option<NonZeroUsize>) -> Result<NonZeroU32> {
         if self
             .blocking_jobs
@@ -396,7 +432,7 @@ pub fn key_metadata(key: &str) -> Result<ConfigKeyMeta> {
     let parts: Vec<_> = key.split('.').collect();
     let (human_only, agent_record) = match parts.as_slice() {
         ["default_project"] | ["launch", "provider" | "terminal"] | ["atlas", "enabled" | "hooks"] => (false, false),
-        ["runtime", "listen_port" | "blocking_jobs"] | ["capture", "enabled"] => (true, false),
+        ["runtime", "listen_port" | "blocking_jobs" | "mail_wake_interval_seconds" | "captain_nudge_idle_seconds" | "captain_nudge_attempts"] | ["capture", "enabled"] => (true, false),
         ["providers", "claude" | "codex" | "secode" | "acp", "command" | "model" | "profile"] => (matches!(parts[2], "command" | "profile"), false),
         ["providers", "secode", "seed_profile"] => (true, false),
         ["acp", "arguments" | "environment" | "mode"] => (true, false),

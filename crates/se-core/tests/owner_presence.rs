@@ -1,4 +1,4 @@
-#[path = "../../se/src/render/error.rs"]
+#[path = "../../se-render/src/error.rs"]
 mod render_error;
 
 use se_core::admission::{AgentTreeCheck, OwnerObservations, authorize_file_owner};

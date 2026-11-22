@@ -52,10 +52,6 @@ fn raw_endpoint(files: &Files) -> Result<Option<Vec<u8>>> {
         })?;
     Ok(Some(bytes))
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn observe<R: se_store::ReadStore>(
     cx: &Bootstrap,
     files: &Files,
@@ -63,61 +59,9 @@ fn observe<R: se_store::ReadStore>(
     extra: &[DiagnosisCheck],
 ) -> Result<Observed> {
     let at = se_core::ops::receipt::timestamp(super::execute::now_us()?)?;
-    // These two checks report measurements already required by dispatch:
-    // setup::inspect_phase opens NativeStateFiles and validates the store;
-    // admit::observe completes the owner inventory, then dispatch opens and
-    // closes its snapshot before calling execute here. Permission recovery
-    // and uninitialized diagnosis take their separate, unmeasured paths.
-    let home = if cfg!(any(target_os = "linux", target_os = "macos", windows)) {
-        check(
-            "home.permissions",
-            "Protected state home",
-            CheckState::Ok,
-            "Native owner-only root checks passed during protected setup admission".into(),
-            &at,
-        )
-    } else {
-        permissions::unsupported("home.permissions", "Protected state home", &at)
-    };
-    let mut checks = vec![
-        home,
-        check(
-            "store.open",
-            "Initialized store",
-            CheckState::Ok,
-            "Protected store and complete owner inventory opened successfully before diagnosis"
-                .into(),
-            &at,
-        ),
-    ];
-    if !cfg!(any(target_os = "linux", target_os = "macos", windows)) {
-        checks.push(permissions::unsupported(
-            "store.permissions",
-            "Protected database",
-            &at,
-        ));
-    }
-    let permission_checks = permissions::checks(cx, &at)?;
-    let loose_file = permission_checks
-        .iter()
-        .any(|check| check.state == CheckState::Failed);
-    checks.extend(permission_checks);
+    let (mut checks, loose_file) = observe_base_checks(cx, &at)?;
     if loose_file {
-        checks.push(check("runtime.endpoint", "Runtime endpoint", CheckState::Unmeasured,
-            "Restore the named file protection before inspecting endpoint contents; unreadable bytes are not an absent endpoint".into(), &at));
-        checks.extend(extra.iter().cloned());
-        checks.extend(installation::checks(cx, &at));
-        return Ok(Observed {
-            diagnosis: Diagnosis::new(
-                at,
-                DiagnosisScope {
-                    home: cx.home.display().to_string(),
-                    project: None,
-                },
-                checks,
-            )?,
-            endpoint: None,
-        });
+        return observe_loose_observation(cx, &at, checks, extra);
     }
     checks.extend(extra.iter().cloned());
     checks.push(configuration::check(cx, &at)?);
@@ -140,6 +84,92 @@ fn observe<R: se_store::ReadStore>(
         None => None,
     };
     checks.push(check("runtime.lock","Runtime lease",if free.is_some(){CheckState::Ok}else{CheckState::Failed},match free {Some(true)=>"Exclusive lease is available",Some(false)=>"Lease is held; doctor will not break it",None=>"The store is initialized, but runtime.lock is absent; its absence is not permission to create a replacement"}.into(),&at));
+    let (endpoint_check, endpoint) = observe_endpoint_check(cx, files, free, &at)?;
+    checks.push(endpoint_check);
+    drop(lock);
+    checks.extend(installation::checks(cx, &at));
+    Ok(Observed {
+        diagnosis: Diagnosis::new(
+            at,
+            DiagnosisScope {
+                home: cx.home.display().to_string(),
+                project: None,
+            },
+            checks,
+        )?,
+        endpoint,
+    })
+}
+fn observe_base_checks(cx: &Bootstrap, at: &str) -> Result<(Vec<DiagnosisCheck>, bool)> {
+    // These two checks report measurements already required by dispatch:
+    // setup::inspect_phase opens NativeStateFiles and validates the store;
+    // admit::observe completes the owner inventory, then dispatch opens and
+    // closes its snapshot before calling execute here. Permission recovery
+    // and uninitialized diagnosis take their separate, unmeasured paths.
+    let home = if cfg!(any(target_os = "linux", target_os = "macos", windows)) {
+        check(
+            "home.permissions",
+            "Protected state home",
+            CheckState::Ok,
+            "Native owner-only root checks passed during protected setup admission".into(),
+            at,
+        )
+    } else {
+        permissions::unsupported("home.permissions", "Protected state home", at)
+    };
+    let mut checks = vec![
+        home,
+        check(
+            "store.open",
+            "Initialized store",
+            CheckState::Ok,
+            "Protected store and complete owner inventory opened successfully before diagnosis"
+                .into(),
+            at,
+        ),
+    ];
+    if !cfg!(any(target_os = "linux", target_os = "macos", windows)) {
+        checks.push(permissions::unsupported(
+            "store.permissions",
+            "Protected database",
+            at,
+        ));
+    }
+    let permission_checks = permissions::checks(cx, at)?;
+    let loose_file = permission_checks
+        .iter()
+        .any(|check| check.state == CheckState::Failed);
+    checks.extend(permission_checks);
+    Ok((checks, loose_file))
+}
+fn observe_loose_observation(
+    cx: &Bootstrap,
+    at: &str,
+    mut checks: Vec<DiagnosisCheck>,
+    extra: &[DiagnosisCheck],
+) -> Result<Observed> {
+    checks.push(check("runtime.endpoint", "Runtime endpoint", CheckState::Unmeasured,
+        "Restore the named file protection before inspecting endpoint contents; unreadable bytes are not an absent endpoint".into(), at));
+    checks.extend(extra.iter().cloned());
+    checks.extend(installation::checks(cx, at));
+    Ok(Observed {
+        diagnosis: Diagnosis::new(
+            at.to_string(),
+            DiagnosisScope {
+                home: cx.home.display().to_string(),
+                project: None,
+            },
+            checks,
+        )?,
+        endpoint: None,
+    })
+}
+fn observe_endpoint_check(
+    cx: &Bootstrap,
+    files: &Files,
+    free: Option<bool>,
+    at: &str,
+) -> Result<(DiagnosisCheck, Option<Vec<u8>>)> {
     let endpoint = raw_endpoint(files)?;
     let mut endpoint_check = check(
         "runtime.endpoint",
@@ -166,7 +196,7 @@ fn observe<R: se_store::ReadStore>(
             }
         }
         .into(),
-        &at,
+        at,
     );
     if let Some(bytes) = &endpoint
         && let Err(error) = super::endpoint_diagnostic::decode(&cx.home, bytes)
@@ -197,20 +227,7 @@ fn observe<R: se_store::ReadStore>(
         ];
         endpoint_check.fix=Some(CheckFix{text:"Retain only the exact stale endpoint under an exclusive lease, then reopen both names".into(),command:None,argv:Some(argv)});
     }
-    checks.push(endpoint_check);
-    drop(lock);
-    checks.extend(installation::checks(cx, &at));
-    Ok(Observed {
-        diagnosis: Diagnosis::new(
-            at,
-            DiagnosisScope {
-                home: cx.home.display().to_string(),
-                project: None,
-            },
-            checks,
-        )?,
-        endpoint,
-    })
+    Ok((endpoint_check, endpoint))
 }
 /// Called only after the ordinary setup reader measured store absence. No
 /// endpoint observation or permission-repair failure supplies that fact.

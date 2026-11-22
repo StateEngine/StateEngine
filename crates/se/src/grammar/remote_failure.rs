@@ -1,19 +1,18 @@
 //! Failure-channel annotations only; no operation, store or remote admission.
 use super::RemoteFailure;
 use clap::{ArgMatches, Command};
-use se_core::ops;
 use se_types::IdempotencyKey;
 use std::ffi::OsString;
 
 pub(super) fn classify(args: &[OsString]) -> Option<RemoteFailure> {
-    let command = ops::cli_command();
+    let command = se_cli_spec::cli_command();
     let matches = command
         .clone()
         .ignore_errors(true)
         .try_get_matches_from(args)
         .ok()?;
     if !matches!(
-        ops::selected_meta(&matches).ok()?.name,
+        se_cli_spec::selected_meta(&matches).ok()?.name,
         "remote.list" | "remote.watch" | "remote.send"
     ) {
         return None;

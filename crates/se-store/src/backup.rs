@@ -102,6 +102,16 @@ impl Entry {
         })
     }
 }
+/// Generations an erasure must replace: every indexed copy predates it.
+pub(crate) fn generation_ids(
+    files: &dyn StateFiles,
+    home: &Path,
+    store: &StoreId,
+    deadline: Instant,
+) -> StoreResult<Vec<RecordId>> {
+    let (index, _) = read_index(files, &home.join("backups"), store, deadline)?;
+    Ok(index.generations.iter().map(|entry| entry.id).collect())
+}
 fn read_index(
     files: &dyn StateFiles,
     root: &Path,
@@ -380,7 +390,7 @@ pub(crate) fn run(
     (|| {
         let source = reader.connect()?;
         let pre = connection::info_at(&source, &reader.path)?;
-        let identity = connection::validate_lease(&pre, lease, LeaseMode::Host)?;
+        let identity = crate::open::validate_lease(&pre, lease, LeaseMode::Host)?;
         let pin = context.pin(&pre, &identity, &reader.path)?;
         let mut allocated_stage = None;
         let result = (|| {
@@ -506,4 +516,122 @@ pub(crate) fn run(
 
         result
     })()
+}
+/// The recorded store and generations; an absent backups folder lists none.
+fn listed_generations(
+    files: &se_proc::NativeStateFiles,
+    root: &Path,
+) -> StoreResult<(Option<StoreId>, Vec<Entry>)> {
+    let index = match files.readback(&root.join(INDEX)) {
+        Ok(index) => index,
+        // No backups folder yet means no generations, not an unreadable store.
+        Err(e)
+            if e.source
+                .as_ref()
+                .is_some_and(|s| s.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            None
+        }
+        Err(e) => return Err(fail(StoreErrorCode::Unreadable, e.to_string())),
+    };
+    let Some(file) = index else {
+        return Ok((None, Vec::new()));
+    };
+    let mut bytes = Vec::new();
+    file.take(65537).read_to_end(&mut bytes).map_err(invalid)?;
+    let index: Index = serde_json::from_slice(&bytes).map_err(invalid)?;
+    if bytes.len() > 65536 || index.version != 1 || index.generations.len() > 2 {
+        return Err(fail(
+            StoreErrorCode::BackupFailed,
+            "backup index has an unsupported form",
+        ));
+    }
+    Ok((Some(index.store), index.generations))
+}
+/// Every indexed automatic generation, each checked against its recorded size
+/// and digest; one that fails is reported unreadable, never dropped. It reads
+/// native files only, so it still answers when the live store is unreadable.
+pub(crate) fn inventory(
+    options: &StoreOptions,
+    budget: ReadBudget,
+) -> StoreResult<se_types::Page<se_types::Read<BackupGeneration>>> {
+    use se_types::{Omission, Read, Sequence, Source, StopReason, Window, WindowFields};
+    let deadline = Instant::now()
+        .checked_add(budget.deadline)
+        .ok_or_else(|| invalid("backup inventory deadline overflow"))?;
+    let unreadable = |e: se_proc::StateFileError| fail(StoreErrorCode::Unreadable, e.to_string());
+    let home = &options.state_directory;
+    let root = home.join("backups");
+    let files = se_proc::NativeStateFiles::open(home).map_err(unreadable)?;
+    let (store, entries) = listed_generations(&files, &root)?;
+    if entries.len() > budget.page.limit.get() as usize {
+        return Err(fail(
+            StoreErrorCode::ReadBudgetTooSmall,
+            format!(
+                "the backup inventory needs room for {} generations",
+                entries.len()
+            ),
+        ));
+    }
+    let mut items = Vec::with_capacity(entries.len());
+    for entry in &entries {
+        check(deadline)?;
+        let verified = entry.generation(&root).and_then(|generation| {
+            let file = files
+                .readback(&generation.path)
+                .map_err(unreadable)?
+                .ok_or_else(|| {
+                    fail(
+                        StoreErrorCode::BackupFailed,
+                        "the generation file is absent",
+                    )
+                })?;
+            let (bytes, sha256) = digest(file, deadline)?;
+            if (bytes, sha256) != (generation.bytes, generation.sha256) {
+                return Err(fail(
+                    StoreErrorCode::BackupFailed,
+                    "the generation no longer matches its recorded digest",
+                ));
+            }
+            Ok(generation)
+        });
+        items.push(match verified {
+            Ok(value) => Read::Present { value },
+            Err(error) => Read::Unreadable {
+                source: root.join(&entry.file).display().to_string(),
+                reason: error.cause,
+                error: None,
+            },
+        });
+    }
+    let failed = items
+        .iter()
+        .filter(|i| !matches!(i, Read::Present { .. }))
+        .count() as u64;
+    let window = Window::new(WindowFields {
+        // With no index yet, the backups folder itself is what was read.
+        source: match store {
+            Some(store) => Source::Store {
+                store,
+                project: None,
+            },
+            None => Source::Configuration {
+                location: root.display().to_string(),
+            },
+        },
+        from: Sequence::new(0).map_err(invalid)?,
+        to: Sequence::new(items.len() as u64).map_err(invalid)?,
+        start_cursor: None,
+        end_cursor: None,
+        returned: items.len() as u64,
+        limit: budget.page.limit,
+        bytes: 0,
+        max_bytes: budget.page.max_bytes,
+        omitted_before: Omission::None,
+        omitted_after: Omission::None,
+        unreadable: failed,
+        stop_reason: StopReason::Exhausted,
+    })
+    .map_err(invalid)?;
+    se_types::Page::new(items, window, None).map_err(invalid)
 }

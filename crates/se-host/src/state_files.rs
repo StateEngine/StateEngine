@@ -151,10 +151,20 @@ pub struct Files(pub NativeStateFiles, FilePolicy);
 impl Files {
     /// Open for direct CLI access. Hosts must select `FilePolicy::Host` explicitly.
     pub fn open(path: &Path) -> StoreResult<Self> {
-        Self::open_with_policy(path, FilePolicy::Direct)
-    }
-    pub fn open_with_policy(path: &Path, policy: FilePolicy) -> StoreResult<Self> {
         NativeStateFiles::open(path)
+            .map(Self::from_native)
+            .map_err(native_error)
+    }
+    /// Open for direct access with a retained verified root parent.
+    pub fn open_retained(path: &Path) -> StoreResult<Self> {
+        NativeStateFiles::open_retained(path)
+            .map(Self::from_native)
+            .map_err(native_error)
+    }
+    /// A long-lived holder retains the verified root parent; see
+    /// `NativeStateFiles::open_retained` for how often ancestry is rechecked.
+    pub fn open_with_policy(path: &Path, policy: FilePolicy) -> StoreResult<Self> {
+        NativeStateFiles::open_retained(path)
             .map(|native| Self(native, policy))
             .map_err(native_error)
     }
@@ -265,13 +275,14 @@ impl StateFiles for Files {
             && path != self.0.root().join("remote-keys")
             && path != self.0.root().join("remote-bindings")
             && path != self.0.root().join("remote-sessions")
+            && path != self.0.root().join("preserved")
             && !(self.1 == FilePolicy::Host && path == self.0.root().join("transcripts"))
         {
             return Err(self.1.fail(
                 StoreErrorCode::LocationUnsafe,
                 match self.1 {
-                    FilePolicy::Direct => "only the fixed state backups/staging/remote-keys/remote-bindings/remote-sessions directories may be prepared",
-                    FilePolicy::Host => "only the fixed state backups/staging/transcripts/remote-keys/remote-bindings/remote-sessions directories may be prepared",
+                    FilePolicy::Direct => "only the fixed state backups/staging/remote-keys/remote-bindings/remote-sessions/preserved directories may be prepared",
+                    FilePolicy::Host => "only the fixed state backups/staging/transcripts/remote-keys/remote-bindings/remote-sessions/preserved directories may be prepared",
                 },
             ));
         }

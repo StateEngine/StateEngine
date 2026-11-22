@@ -43,6 +43,24 @@ fn mac(key: &[u8], text: &str) -> Result<[u8; 32]> {
 pub(crate) fn hex(bytes: &[u8]) -> String {
     se_types::hex_lower(bytes)
 }
+impl se_harness::BellRegistry for Bells {
+    fn register(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        bearer: &Secret,
+        origin: String,
+        hold_file: PathBuf,
+    ) -> Result<String> {
+        Bells::register(self, session, agent, bearer, origin, hold_file)
+    }
+    fn connected(&self, session: &SessionId) -> Result<bool> {
+        Bells::connected(self, session)
+    }
+    fn retire(&self, session: &SessionId) -> Result<()> {
+        Bells::retire(self, session)
+    }
+}
 impl Bells {
     pub(crate) fn new(maximum: usize) -> Arc<Self> {
         Arc::new(Self {

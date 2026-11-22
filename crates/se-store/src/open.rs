@@ -149,7 +149,8 @@ impl SqliteFactory {
                     reader.validate_connection(db)
                 })?;
                 let info = connection::info_at(&db, &reader.path)?;
-                let identity = connection::validate_lease(&info, lease, LeaseMode::Host)?;
+                let identity = crate::open::validate_lease(&info, lease, LeaseMode::Host)?;
+                crate::erasure::permit::install(&db)?;
                 let context = BackupContext::bound(
                     &info,
                     identity.generation,
@@ -204,7 +205,7 @@ impl StoreFactory for SqliteFactory {
                     reader.validate_connection(db)
                 })?;
                 let info = connection::info_at(&db, &reader.path)?;
-                let identity = connection::validate_lease(&info, lease, LeaseMode::DirectClient)?;
+                let identity = crate::open::validate_lease(&info, lease, LeaseMode::DirectClient)?;
                 let reader_path = reader.path.clone();
                 Ok(Read::Present {
                     value: SqliteDirect {
@@ -261,34 +262,41 @@ impl StoreFactory for SqliteFactory {
         crate::backup::run(options, &*lease, context, deadline)
     }
     fn erasure_plan(
-        _: &StoreOptions,
-        _: Vec<EraseTarget>,
-        _: &dyn RuntimeLease,
+        options: &StoreOptions,
+        targets: Vec<EraseTarget>,
+        lease: &dyn RuntimeLease,
     ) -> StoreResult<ErasurePlan> {
-        later("erasure planning")
+        crate::erasure::plan(options, targets, lease)
     }
     fn inspect_backups(
-        _: &StoreOptions,
-        _: ReadBudget,
+        options: &StoreOptions,
+        budget: ReadBudget,
     ) -> StoreResult<Page<Read<BackupGeneration>>> {
-        later("backup inventory")
+        crate::backup::inventory(options, budget)
     }
     fn recovery_receipt(
-        _: &StoreOptions,
-        _: &RequestIdentity,
-        _: &Admission,
+        options: &StoreOptions,
+        request: &RequestIdentity,
+        admission: &Admission,
     ) -> StoreResult<Read<RestoreReceipt>> {
-        later("restore receipt")
+        crate::restore::receipt(options, request, admission)
     }
     fn restore_backup(
-        _: &StoreOptions,
-        _: BackupGeneration,
-        _: &RequestIdentity,
-        _: StoreId,
-        _: &Admission,
-        _: &dyn RuntimeLease,
+        options: &StoreOptions,
+        backup: BackupGeneration,
+        request: &RequestIdentity,
+        target: StoreId,
+        admission: &Admission,
+        lease: &dyn RuntimeLease,
     ) -> StoreResult<RestoreOutcome<Self::Host>> {
-        later("backup restore")
+        crate::restore::restore(options, backup, request, target, admission, lease)
+    }
+    fn backup_owners(
+        options: &StoreOptions,
+        files: &dyn StateFiles,
+        backup: &BackupGeneration,
+    ) -> StoreResult<Vec<se_types::HumanId>> {
+        crate::restore::owners(options, files, backup)
     }
 }
 impl ReadStore for SqliteReader {
@@ -394,7 +402,7 @@ impl DirectStore for SqliteDirect {
     ) -> StoreResult<CommitReceipt> {
         self.engine
             .reopen(&self.reader.path, self.reader.timeout, lease)?;
-        let identity = connection::validate_lease(
+        let identity = crate::open::validate_lease(
             &connection::info(&self.engine.db)?,
             lease,
             LeaseMode::DirectClient,
@@ -451,7 +459,7 @@ impl HostStore for SqliteHost {
     ) -> StoreResult<CommitReceipt> {
         self.engine
             .reopen(&self.reader.path, self.reader.timeout, lease)?;
-        connection::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
+        crate::open::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
         if b.events.len() != 1
             || !matches!(b.events[0].body, EventBody::RuntimeOwnerEstablished { .. })
         {
@@ -470,7 +478,7 @@ impl HostStore for SqliteHost {
     ) -> StoreResult<FirstBindingReceipt> {
         self.engine
             .reopen(&self.reader.path, self.reader.timeout, lease)?;
-        connection::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
+        crate::open::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
         self.engine.first_binding(binding)
     }
     fn checkpoint(
@@ -478,7 +486,7 @@ impl HostStore for SqliteHost {
         mode: CheckpointMode,
         lease: &dyn RuntimeLease,
     ) -> StoreResult<CheckpointReport> {
-        connection::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
+        crate::open::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
         let gate = self.engine.checkpoints.gate.clone();
         let _permit = gate.acquire(self.engine.timeout)?;
         let report = self
@@ -510,11 +518,11 @@ impl HostStore for SqliteHost {
     }
     fn erase(
         &mut self,
-        _: ErasurePlan,
-        _: ErasureApproval,
-        _: &dyn RuntimeLease,
+        plan: ErasurePlan,
+        approval: ErasureApproval,
+        lease: &dyn RuntimeLease,
     ) -> StoreResult<ErasureReport> {
-        later("body erasure")
+        crate::erasure::erase(self, plan, approval, lease)
     }
     fn close_clean(
         mut self,
@@ -525,7 +533,7 @@ impl HostStore for SqliteHost {
         self.engine.require_resolved()?;
         self.engine
             .reopen(&self.reader.path, self.reader.timeout, lease)?;
-        connection::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
+        crate::open::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
         if deadline.is_zero() {
             return Err(fail(
                 StoreErrorCode::BackupFailed,
@@ -572,4 +580,14 @@ impl HostStore for SqliteHost {
         }
         Ok(report)
     }
+}
+/// The held runtime lease must name this store, in the mode the opening needs.
+pub(crate) fn validate_lease(
+    info: &StoreInfo,
+    lease: &dyn RuntimeLease,
+    mode: LeaseMode,
+) -> StoreResult<LeaseIdentity> {
+    let identity = lease.identity()?;
+    connection::validate_lease_state(&info.id, info.state, &identity, mode)?;
+    Ok(identity)
 }

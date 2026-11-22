@@ -62,10 +62,12 @@ impl RuntimeLease for HostLease {
 pub struct HostedRuntime {
     #[cfg(any(target_os = "linux", windows))]
     pub(super) atlas_owner: Option<Arc<super::atlas_owner::Service>>,
+    #[cfg(feature = "channels")]
     pub(crate) channels: Arc<std::sync::OnceLock<Arc<crate::channels::Channels>>>,
+    #[cfg(feature = "channels")]
     pub(crate) channel_transport: Option<Arc<dyn crate::channels::ChannelTransport>>,
     /// Set only by the in-process test hook before Channels construction.
-    #[cfg(feature = "listener")]
+    #[cfg(feature = "channels")]
     pub(crate) receiver_intervals: crate::channels::ReceiverIntervals,
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     pub(super) memory_reclaim: Option<super::memory::MemoryReclaim>,
@@ -375,9 +377,11 @@ fn prepare(
     Ok(HostedRuntime {
         #[cfg(any(target_os = "linux", windows))]
         atlas_owner: None,
+        #[cfg(feature = "channels")]
         channels: Arc::default(),
+        #[cfg(feature = "channels")]
         channel_transport: None,
-        #[cfg(feature = "listener")]
+        #[cfg(feature = "channels")]
         receiver_intervals: Default::default(),
         #[cfg(unix)]
         socket_paths: Default::default(),

@@ -1,7 +1,7 @@
 //! Protected, bounded text handles. The native name is retired while empty;
 //! only the held file contains text, and dropping any queued/rejected handle
 //! reclaims it without a pathname race or a persistent orphan.
-use crate::{connection, error::*, *};
+use crate::{error::*, *};
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
@@ -84,7 +84,7 @@ pub(crate) fn stage(
     maximum: u64,
     lease: &dyn RuntimeLease,
 ) -> StoreResult<StagedText> {
-    let actual = connection::validate_lease(info, lease, identity.mode)?;
+    let actual = crate::open::validate_lease(info, lease, identity.mode)?;
     if actual.generation != identity.generation {
         return Err(fail(
             StoreErrorCode::GenerationChanged,

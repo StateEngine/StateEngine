@@ -16,7 +16,7 @@ pub(super) async fn commit(
     let reader = context.reader.clone();
     let info = context
         .blocking
-        .run_owned(&session::control::deadline()?, move || {
+        .run_owned(&crate::remote::remote_deadline()?, move || {
             reader.info().map_err(|e| store_error(&e))
         })
         .await?;
@@ -61,5 +61,11 @@ pub(super) async fn commit(
         natural_key: None,
         natural_events: Vec::new(),
     };
-    crate::runtime::submit::submit(context, batch, &identity, &session::control::deadline()?).await
+    crate::runtime::submit::submit(
+        context,
+        batch,
+        &identity,
+        &crate::remote::remote_deadline()?,
+    )
+    .await
 }

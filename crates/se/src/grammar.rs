@@ -3,7 +3,8 @@ use clap::{
     Command,
     error::{ContextKind, ContextValue, ErrorKind},
 };
-use se_core::ops::{self, AnyOp, CommonArgs};
+use se_cli_spec::{self as cli_spec, CommonArgs};
+use se_core::ops::{self, AnyOp};
 use se_types::{Detail, IdempotencyKey, SeError, details};
 use std::ffi::{OsStr, OsString};
 
@@ -33,7 +34,7 @@ pub fn parse(args: Vec<OsString>) -> std::result::Result<Invocation, Failure> {
         if let Some(error) = crate::compat::refusal(arguments) {
             return Err(error);
         }
-        let mut command = ops::cli_command();
+        let mut command = cli_spec::cli_command();
         let matches = match command.try_get_matches_from_mut(&args) {
             Ok(matches) => matches,
             Err(error)
@@ -49,12 +50,12 @@ pub fn parse(args: Vec<OsString>) -> std::result::Result<Invocation, Failure> {
             Err(error) => return Err(usage_error(error, &args)),
         };
         let common = CommonArgs::from_matches(&matches)?;
-        let generated = if ops::selected_meta(&matches)?.mutates() && common.key.is_none() {
+        let generated = if cli_spec::selected_meta(&matches)?.mutates() && common.key.is_none() {
             Some(IdempotencyKey::new(uuid::Uuid::new_v4().to_string())?)
         } else {
             None
         };
-        let operation = ops::from_matches_with_key(&matches, generated)?;
+        let operation = cli_spec::from_matches_with_key(&matches, generated)?;
         Ok(Invocation { operation, common })
     };
     parse().map_err(|error| Failure {
@@ -155,7 +156,7 @@ pub(crate) fn usage_error(error: clap::Error, args: &[OsString]) -> SeError {
 /// subcommand cannot be mistaken for the help target. Its matches never execute.
 fn error_command(args: &[OsString]) -> String {
     let mut path = vec!["se".to_owned()];
-    if let Ok(matches) = ops::cli_command()
+    if let Ok(matches) = cli_spec::cli_command()
         .ignore_errors(true)
         .try_get_matches_from(args)
     {
@@ -202,7 +203,7 @@ fn edit_distance(left: &str, right: &str) -> usize {
 /// Streaming transport entry uses the same generated clap tree and global
 /// syntax. Metadata/help stays on the ordinary store-free presentation path.
 pub fn mcp_options(args: &[OsString]) -> Option<se_types::Result<Option<std::path::PathBuf>>> {
-    let matches = ops::cli_command().try_get_matches_from(args).ok()?;
+    let matches = cli_spec::cli_command().try_get_matches_from(args).ok()?;
     let m = matches.subcommand_matches("mcp")?;
     if m.get_flag("help") || m.get_flag("version") {
         return None;
@@ -315,7 +316,7 @@ mod tests {
                 Ok(invocation) => invocation,
                 Err(_) => panic!("explicit help must reach the metadata reader"),
             };
-            let error = ops::metadata_output(&invocation.operation)
+            let error = cli_spec::metadata_output(&invocation.operation)
                 .err()
                 .ok_or("unknown help target must refuse")?;
             let Detail::UsageUnknownCommand(detail) = error.body.detail() else {
@@ -413,7 +414,7 @@ mod tests {
                 Err(_) => return Err("help invocation must parse".into()),
             };
             let Some(se_core::ops::AnyOutput::MetaHelp(envelope)) =
-                ops::metadata_output(&invocation.operation)?
+                cli_spec::metadata_output(&invocation.operation)?
             else {
                 return Err("help must produce help output".into());
             };

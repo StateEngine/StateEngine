@@ -14,6 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 mod atlas;
+mod erase;
 use crate::checkpoint_task;
 #[expect(
     clippy::struct_excessive_bools,
@@ -47,6 +48,7 @@ struct Request {
 enum Command {
     Append(Request),
     Atlas(atlas::AtlasRequest),
+    Erase(Box<erase::EraseRequest>),
     Flush(Instant, Reply<FlushReport>),
     Drain(Instant),
     Recover,
@@ -190,7 +192,7 @@ pub(crate) fn start(
     options: WriterOptions,
     lease: Arc<dyn RuntimeLease>,
 ) -> StoreResult<SqliteWriter> {
-    let identity = connection::validate_lease(
+    let identity = crate::open::validate_lease(
         &connection::info(&host.engine.db)?,
         &*lease,
         LeaseMode::Host,
@@ -457,6 +459,7 @@ fn run(
         };
         match command {
             Command::Atlas(request) => atlas::execute(&mut host, &*lease, &shared, request)?,
+            Command::Erase(request) => erase::execute(&mut host, &*lease, &shared, *request)?,
             Command::Append(first) => {
                 let mut group = vec![first];
                 let mut bytes = group[0].materialized;
@@ -492,7 +495,7 @@ fn run(
                     .engine
                     .reopen(&host.reader.path, host.reader.timeout, &*lease)
                     .and_then(|_| connection::info(&host.engine.db))
-                    .and_then(|i| connection::validate_lease(&i, &*lease, LeaseMode::Host))
+                    .and_then(|i| crate::open::validate_lease(&i, &*lease, LeaseMode::Host))
                     .and_then(|_| host.engine.group(batches, false));
                 shared
                     .admission

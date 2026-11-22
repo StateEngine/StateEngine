@@ -1,0 +1,673 @@
+use super::*;
+#[cfg(target_os = "macos")]
+mod acl;
+mod ancestors;
+#[cfg(target_os = "macos")]
+mod created_acl;
+use ancestors::open_component;
+#[cfg(target_os = "macos")]
+pub(super) use created_acl::clear as clear_created_acl;
+#[path = "effects/unix.rs"]
+pub(super) mod effects;
+use std::{
+    ffi::{CString, OsStr},
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::{ffi::OsStrExt, fs::MetadataExt},
+    },
+    path::Component,
+};
+
+pub(super) struct Directory {
+    file: File,
+    identity: (u64, u64),
+    retained: Option<RetainedParent>,
+}
+fn name(value: &OsStr, path: &Path) -> Result<CString> {
+    CString::new(value.as_bytes()).map_err(|_| unsafe_path("NUL in native path", path))
+}
+fn owned(raw: i32, operation: &'static str, path: &Path) -> Result<File> {
+    if raw < 0 {
+        return Err(io_error(operation, path, io::Error::last_os_error()));
+    }
+    // SAFETY: native allocation succeeded and supplies one uniquely owned FD.
+    Ok(unsafe { File::from_raw_fd(raw) })
+}
+fn metadata(file: &File, path: &Path, directory: bool) -> Result<std::fs::Metadata> {
+    let meta = file
+        .metadata()
+        .map_err(|e| io_error("read pinned metadata", path, e))?;
+    // SAFETY: geteuid has no pointers or process-wide mutation.
+    let euid = unsafe { libc::geteuid() };
+    let mut observed = Vec::new();
+    if meta.uid() != euid {
+        observed.push(format!(
+            "owner uid {} differs from the effective uid {euid}",
+            meta.uid()
+        ));
+    }
+    if meta.mode() & 0o077 != 0 {
+        observed.push(format!(
+            "mode {:04o} grants group or other access",
+            meta.mode()
+        ));
+    }
+    if !directory && meta.nlink() != 1 {
+        observed.push(format!("{} hard links on one name", meta.nlink()));
+    }
+    if directory && !meta.is_dir() {
+        observed.push("not a directory".to_owned());
+    }
+    if !directory && !meta.is_file() {
+        observed.push("not a regular file".to_owned());
+    }
+    if !observed.is_empty() {
+        return Err(unsafe_path_observed(
+            "require owner-only native regular file/directory",
+            path,
+            observed.join("; "),
+        ));
+    }
+    #[cfg(target_os = "macos")]
+    acl::verify(file, meta.uid(), path)?;
+    Ok(meta)
+}
+fn components(path: &Path) -> Result<Vec<&OsStr>> {
+    if !path.is_absolute() {
+        return Err(unsafe_path("absolute state path required", path));
+    }
+    path.components()
+        .filter(|c| !matches!(c, Component::RootDir))
+        .map(|c| match c {
+            Component::Normal(n) => Ok(n),
+            _ => Err(unsafe_path("normalized state path required", path)),
+        })
+        .collect()
+}
+fn walk(path: &Path, create: bool) -> Result<File> {
+    walk_with_private_root(path, create, true, false)
+}
+pub(super) fn walk_effect_parent(path: &Path) -> Result<File> {
+    walk_with_private_root(path, false, false, false)
+}
+// Preparation may hold an existing search-only ancestor as its last anchor.
+// The final installation target is separately opened readably before acceptance.
+pub(super) fn walk_effect_parent_for_creation(path: &Path) -> Result<File> {
+    walk_with_private_root(path, false, false, true)
+}
+fn walk_with_private_root(
+    path: &Path,
+    create: bool,
+    private_root: bool,
+    sticky_final: bool,
+) -> Result<File> {
+    walk_with_parent(path, create, private_root, sticky_final, false).map(|(file, _)| file)
+}
+/// Create one missing directory component; true when this call created it.
+fn create_component(
+    parent: &File,
+    component: &CString,
+    traversed: &Path,
+    path: &Path,
+) -> Result<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (parent, component, path);
+        // Clear inheritance on an exclusively named staging directory,
+        // before publishing it. Never clear an incumbent opened later.
+        let mut custody = Vec::new();
+        effects::prepare_created_directory(traversed, &mut custody)?;
+        Ok(!custody.is_empty())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = traversed;
+        // SAFETY: single literal component relative to the held parent FD.
+        let rc = unsafe { libc::mkdirat(parent.as_raw_fd(), component.as_ptr(), 0o700) };
+        if rc != 0 && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists {
+            return Err(io_error(
+                "create private directory",
+                path,
+                io::Error::last_os_error(),
+            ));
+        }
+        Ok(rc == 0)
+    }
+}
+fn walk_with_parent(
+    path: &Path,
+    create: bool,
+    private_root: bool,
+    sticky_final: bool,
+    retain_parent: bool,
+) -> Result<(File, Option<File>)> {
+    let root = CString::new("/").map_err(|_| unsafe_path("native root", path))?;
+    // SAFETY: constant path, successful open supplies an independently owned FD.
+    let mut parent = owned(
+        unsafe {
+            libc::open(
+                root.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        },
+        "open filesystem root",
+        path,
+    )?;
+    let parts = components(path)?;
+    if !private_root {
+        effects::trusted_directory(&parent, path, parts.is_empty() && !sticky_final)?;
+    }
+    let mut private = false;
+    let mut root_parent = None;
+    let mut traversed = PathBuf::from("/");
+    for (index, value) in parts.iter().enumerate() {
+        if retain_parent && index + 1 == parts.len() {
+            root_parent = Some(
+                parent
+                    .try_clone()
+                    .map_err(|e| io_error("duplicate root parent", path, e))?,
+            );
+        }
+        traversed.push(value);
+        let component = name(value, path)?;
+        let created = create && create_component(&parent, &component, &traversed, path)?;
+        private |= created || (private_root && index + 1 == parts.len());
+        // SAFETY: initialized writable stat output and held parent/component.
+        let mut link: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: no-follow stat inspects the actual named directory entry.
+        if unsafe {
+            libc::fstatat(
+                parent.as_raw_fd(),
+                component.as_ptr(),
+                &mut link,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } < 0
+        {
+            return Err(io_error(
+                "inspect directory entry",
+                path,
+                io::Error::last_os_error(),
+            ));
+        }
+        let symlink = link.st_mode & libc::S_IFMT == libc::S_IFLNK;
+        // SAFETY: geteuid reads the current native user without side effects.
+        let user = unsafe { libc::geteuid() };
+        if symlink && (private || (link.st_uid != 0 && link.st_uid != user)) {
+            return Err(unsafe_path("untrusted or private-directory symlink", path));
+        }
+        let next = open_component(
+            parent.as_raw_fd(),
+            &component,
+            symlink,
+            path,
+            index + 1 == parts.len() && !sticky_final,
+        )?;
+        if created {
+            // mkdirat's mode is already owner-only. Do not broaden a later
+            // opened incumbent, including restrictive owner permissions.
+            let meta = metadata(&next, path, true)?;
+            if meta.mode() & 0o700 != 0o700 {
+                return Err(unsafe_path(
+                    "new directory lacks owner read/write/search permission; preserve it unchanged",
+                    path,
+                ));
+            }
+            parent
+                .sync_all()
+                .map_err(|e| io_error("sync newly created directory parent", path, e))?;
+        }
+        if private {
+            metadata(&next, &traversed, true)?;
+        } else {
+            super::validate_existing_ancestor(&next, &traversed)?;
+        }
+        if !private_root {
+            effects::trusted_directory(&next, path, index + 1 == parts.len() && !sticky_final)?;
+        }
+        parent = next;
+    }
+    Ok((parent, root_parent))
+}
+
+pub(super) fn pin_directory(path: &Path) -> Result<File> {
+    let file = walk(path, false)?;
+    metadata(&file, path, true)?;
+    Ok(file)
+}
+
+pub(super) fn random(path: &Path) -> Result<[u8; 16]> {
+    let mut bytes = [0; 16];
+    crate::fill_entropy(&mut bytes).map_err(|e| {
+        let source = match e.native_code.and_then(|code| i32::try_from(code).ok()) {
+            Some(code) => io::Error::from_raw_os_error(code),
+            None => io::Error::other(e),
+        };
+        io_error("native staging entropy", path, source)
+    })?;
+    Ok(bytes)
+}
+pub(super) fn identity(file: &File, path: &Path) -> Result<(u64, u64)> {
+    let meta = metadata(file, path, false)?;
+    Ok((meta.dev(), meta.ino()))
+}
+pub(super) fn create_directories(path: &Path) -> Result<()> {
+    let file = walk(path, true)?;
+    metadata(&file, path, true)?;
+    file.sync_all()
+        .map_err(|e| io_error("sync private directory", path, e))
+}
+impl Directory {
+    pub fn identity(&self, file: &File, path: &Path) -> Result<(u64, u64)> {
+        identity(file, path)
+    }
+    pub fn available_bytes(&self, path: &Path) -> Result<u64> {
+        let mut value = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        // SAFETY: the retained directory owns this descriptor; value provides
+        // writable storage for the native result and escapes only on success.
+        if unsafe { libc::fstatvfs(self.file.as_raw_fd(), value.as_mut_ptr()) } != 0 {
+            return Err(io_error(
+                "measure available volume space",
+                path,
+                io::Error::last_os_error(),
+            ));
+        }
+        // SAFETY: successful fstatvfs initialized the entire result above.
+        let value = unsafe { value.assume_init() };
+        let block = if value.f_frsize == 0 {
+            value.f_bsize
+        } else {
+            value.f_frsize
+        };
+        if block == 0 {
+            return Err(unsafe_path("native volume block size is zero", path));
+        }
+        u64::try_from(u128::from(value.f_bavail) * u128::from(block))
+            .map_err(|_| unsafe_path("native available space exceeds u64", path))
+    }
+    pub fn open(path: &Path) -> Result<Self> {
+        let file = walk(path, false)?;
+        let meta = metadata(&file, path, true)?;
+        Ok(Self {
+            file,
+            identity: (meta.dev(), meta.ino()),
+            retained: None,
+        })
+    }
+    pub fn open_retained(path: &Path) -> Result<Self> {
+        let (file, parent) = walk_with_parent(path, false, true, false, true)?;
+        let meta = metadata(&file, path, true)?;
+        Ok(Self {
+            file,
+            identity: (meta.dev(), meta.ino()),
+            retained: parent.map(RetainedParent::new),
+        })
+    }
+    pub fn is_retained(&self) -> bool {
+        self.retained.is_some()
+    }
+    pub fn check_name(&self, path: &Path) -> Result<()> {
+        let Some(retained) = &self.retained else {
+            return self.same_root(&walk(path, false)?, path);
+        };
+        if let Some(checked) = retained.fresh(|parent| self.check_relative(parent, path)) {
+            return checked;
+        }
+        let (found, parent) = walk_with_parent(path, false, true, false, true)?;
+        self.same_root(&found, path)?;
+        if let Some(parent) = parent {
+            retained.refresh(parent);
+        }
+        Ok(())
+    }
+    fn check_relative(&self, parent: &File, path: &Path) -> Result<()> {
+        let leaf = name(
+            path.file_name()
+                .ok_or_else(|| unsafe_path("state root name missing", path))?,
+            path,
+        )?;
+        // SAFETY: one no-follow name relative to the retained verified parent.
+        let named = owned(
+            unsafe {
+                libc::openat(
+                    parent.as_raw_fd(),
+                    leaf.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            },
+            "reopen state root",
+            path,
+        )?;
+        self.same_root(&named, path)
+    }
+    fn same_root(&self, found: &File, path: &Path) -> Result<()> {
+        let meta = metadata(found, path, true)?;
+        if (meta.dev(), meta.ino()) != self.identity {
+            return Err(failure(
+                StateFileErrorCode::SourceChanged,
+                "held state root was replaced",
+                path,
+            ));
+        }
+        metadata(&self.file, path, true)?;
+        Ok(())
+    }
+    fn directory(&self, path: &Path, root: &Path) -> Result<File> {
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| unsafe_path("directory outside root", path))?;
+        let mut file = self
+            .file
+            .try_clone()
+            .map_err(|e| io_error("duplicate directory pin", path, e))?;
+        for component in relative.components() {
+            let Component::Normal(component) = component else {
+                return Err(unsafe_path("normalized relative directory required", path));
+            };
+            let component = name(component, path)?;
+            // SAFETY: single normal component relative to a pinned private FD; links refused.
+            file = owned(
+                unsafe {
+                    libc::openat(
+                        file.as_raw_fd(),
+                        component.as_ptr(),
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    )
+                },
+                "open protected subdirectory",
+                path,
+            )?;
+            metadata(&file, path, true)?;
+        }
+        Ok(file)
+    }
+    fn parent(&self, path: &Path, root: &Path) -> Result<(File, CString)> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| unsafe_path("file parent missing", path))?;
+        let name = name(
+            path.file_name()
+                .ok_or_else(|| unsafe_path("file name missing", path))?,
+            path,
+        )?;
+        Ok((self.directory(parent, root)?, name))
+    }
+    pub fn prepare_directory(&self, path: &Path, root: &Path) -> Result<()> {
+        self.prepare_directory_impl(path, root, false)
+    }
+    pub fn prepare_new_directory(&self, path: &Path, root: &Path) -> Result<()> {
+        self.prepare_directory_impl(path, root, true)
+    }
+    fn prepare_directory_impl(&self, path: &Path, root: &Path, exclusive: bool) -> Result<()> {
+        let (parent, name) = self.parent(path, root)?;
+        if exclusive {
+            let mut custody = Vec::new();
+            effects::prepare_created_directory(path, &mut custody)?;
+            if custody.is_empty() {
+                return Err(failure(
+                    StateFileErrorCode::AlreadyExists,
+                    "fresh directory already exists; preserve it",
+                    path,
+                ));
+            }
+            self.directory(path, root)?;
+            return Ok(());
+        }
+        #[cfg(target_os = "macos")]
+        let created = {
+            let mut custody = Vec::new();
+            effects::prepare_created_directory(path, &mut custody)?;
+            !custody.is_empty()
+        };
+        #[cfg(not(target_os = "macos"))]
+        let created = {
+            // SAFETY: one normal component relative to the retained private parent.
+            let created = unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } == 0;
+            if !created && io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
+                return Err(io_error(
+                    "create protected child directory",
+                    path,
+                    io::Error::last_os_error(),
+                ));
+            }
+            created
+        };
+        // SAFETY: retained parent and literal child; never follow a final link.
+        let file = owned(
+            unsafe {
+                libc::openat(
+                    parent.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            },
+            "pin protected child directory",
+            path,
+        )?;
+        // The opened inode may be an incumbent substituted after mkdirat.
+        // Validate it without changing either privacy or owner permissions.
+        let before = metadata(&file, path, true)?;
+        if created && before.mode() & 0o700 != 0o700 {
+            return Err(unsafe_path(
+                "new directory lacks owner read/write/search permission; preserve it unchanged",
+                path,
+            ));
+        }
+        file.sync_all()
+            .map_err(|e| io_error("sync protected child directory", path, e))?;
+        parent
+            .sync_all()
+            .map_err(|e| io_error("sync protected child parent", path, e))?;
+        let observed = metadata(&self.directory(path, root)?, path, true)?;
+        if (observed.dev(), observed.ino()) != (before.dev(), before.ino()) {
+            return Err(failure(
+                StateFileErrorCode::SourceChanged,
+                "prepared directory changed on readback",
+                path,
+            ));
+        }
+        Ok(())
+    }
+    pub fn create_staging_at(&self, path: &Path, root: &Path) -> Result<File> {
+        let (parent, name) = self.parent(path, root)?;
+        // SAFETY: private held parent, one native name, atomic exclusive creation.
+        let raw = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o600,
+            )
+        };
+        let file = owned(raw, "create protected staging file", path)?;
+        #[cfg(target_os = "macos")]
+        clear_created_acl(&file, path, false)?;
+        // SAFETY: newly created unique regular-file descriptor, no path mutation.
+        if unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } < 0 {
+            return Err(io_error(
+                "protect staging mode",
+                path,
+                io::Error::last_os_error(),
+            ));
+        }
+        metadata(&file, path, false)?;
+        parent
+            .sync_all()
+            .map_err(|e| io_error("sync staging parent", path, e))?;
+        Ok(file)
+    }
+    pub fn open_for_publication(&self, path: &Path, root: &Path) -> Result<File> {
+        self.readback(path, root)?
+            .ok_or_else(|| io_error("staging file absent", path, io::ErrorKind::NotFound.into()))
+    }
+    #[cfg(target_os = "macos")]
+    pub fn inspect_metadata(&self, path: &Path, root: &Path) -> Result<Option<std::fs::Metadata>> {
+        use std::os::macos::fs::MetadataExt as _;
+        let (parent, name) = match self.parent(path, root) {
+            Ok(value) => value,
+            Err(error)
+                if error
+                    .source
+                    .as_ref()
+                    .is_some_and(|e| e.kind() == io::ErrorKind::NotFound) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        let observed = match std::fs::symlink_metadata(path) {
+            Ok(value) => value,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(io_error(
+                    "inspect database metadata without opening",
+                    path,
+                    error,
+                ));
+            }
+        };
+        // SAFETY: geteuid reads the native current account.
+        let current_user = unsafe { libc::geteuid() };
+        if !observed.is_file()
+            || observed.uid() != current_user
+            || observed.mode() & 0o077 != 0
+            || observed.nlink() != 1
+        {
+            return Err(unsafe_path(
+                "require owner-only native regular file metadata",
+                path,
+            ));
+        }
+        acl::verify_path(path, observed.uid())?;
+        // SAFETY: stat is a plain native output structure initialized before fstatat.
+        let mut named: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: retained parent, one native component, initialized no-follow stat output.
+        if unsafe {
+            libc::fstatat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                &mut named,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } < 0
+        {
+            return Err(io_error(
+                "recheck database metadata name",
+                path,
+                io::Error::last_os_error(),
+            ));
+        }
+        if named.st_dev as u64 != observed.dev()
+            || named.st_ino != observed.ino()
+            || named.st_uid != observed.uid()
+            || named.st_gid != observed.gid()
+            || named.st_mode as u32 != observed.mode()
+            || named.st_nlink as u64 != observed.nlink()
+            || named.st_birthtime != observed.st_birthtime()
+            || named.st_birthtime_nsec != observed.st_birthtime_nsec()
+        {
+            return Err(failure(
+                StateFileErrorCode::SourceChanged,
+                "database metadata changed during no-open observation",
+                path,
+            ));
+        }
+        Ok(Some(observed))
+    }
+    pub fn readback(&self, path: &Path, root: &Path) -> Result<Option<File>> {
+        self.open_file(path, root, libc::O_RDONLY | libc::O_NONBLOCK)
+    }
+    #[cfg(target_os = "linux")]
+    pub fn pin_metadata(&self, path: &Path, root: &Path) -> Result<Option<File>> {
+        self.open_file(path, root, libc::O_PATH)
+    }
+    fn open_file(&self, path: &Path, root: &Path, flags: i32) -> Result<Option<File>> {
+        let (parent, name) = match self.parent(path, root) {
+            Ok(v) => v,
+            Err(e)
+                if e.source
+                    .as_ref()
+                    .is_some_and(|e| e.kind() == io::ErrorKind::NotFound) =>
+            {
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
+        };
+        // SAFETY: pinned parent and native component. NOFOLLOW plus metadata
+        // rejects links; NONBLOCK or O_PATH prevents a FIFO from blocking.
+        let raw = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if raw < 0 && io::Error::last_os_error().kind() == io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        let file = owned(raw, "open published file without following links", path)?;
+        metadata(&file, path, false)?;
+        Ok(Some(file))
+    }
+    pub fn publish(
+        &self,
+        staged: &Path,
+        destination: &Path,
+        root: &Path,
+        _source: &File,
+    ) -> Result<()> {
+        let (from, from_name) = self.parent(staged, root)?;
+        let (to, to_name) = self.parent(destination, root)?;
+        let from_metadata = metadata(&from, staged, true)?;
+        let to_metadata = metadata(&to, destination, true)?;
+        let same_parent =
+            (from_metadata.dev(), from_metadata.ino()) == (to_metadata.dev(), to_metadata.ino());
+        #[cfg(target_os = "linux")]
+        // SAFETY: held parent FDs and NUL-terminated single names; no replacement.
+        let renamed = unsafe {
+            libc::syscall(
+                libc::SYS_renameat2,
+                from.as_raw_fd(),
+                from_name.as_ptr(),
+                to.as_raw_fd(),
+                to_name.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        #[cfg(target_os = "macos")]
+        // SAFETY: descriptor-relative native rename, RENAME_EXCL is atomic no-replace.
+        let renamed = unsafe {
+            libc::renameatx_np(
+                from.as_raw_fd(),
+                from_name.as_ptr(),
+                to.as_raw_fd(),
+                to_name.as_ptr(),
+                libc::RENAME_EXCL,
+            )
+        } as i64;
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let renamed: i64 = {
+            compile_error!("se-proc native state files support Linux and macOS Unix targets only");
+            0
+        };
+        if renamed < 0 {
+            return Err(io_error(
+                "native no-replace publication",
+                destination,
+                io::Error::last_os_error(),
+            ));
+        }
+        to.sync_all()
+            .map_err(|e| io_error("sync publication parent", destination, e))?;
+        if !same_parent {
+            from.sync_all()
+                .map_err(|e| io_error("sync staging parent after rename", staged, e))?;
+        }
+        Ok(())
+    }
+}
+
+/// Shared with the native creator; callers retain the directory being checked.
+pub(super) fn validate_ancestor(file: &File, path: &Path) -> Result<()> {
+    ancestors::validate(file, path)
+}

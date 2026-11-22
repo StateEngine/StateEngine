@@ -44,6 +44,8 @@ mod process;
 mod project_move;
 #[path = "route/remove.rs"]
 mod remove;
+#[path = "route/restore.rs"]
+mod restore;
 mod retained;
 #[path = "route/runtime.rs"]
 mod runtime_control;

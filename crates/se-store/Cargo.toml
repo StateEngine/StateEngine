@@ -8,6 +8,8 @@ publish.workspace = true
 
 [dependencies]
 se-store-contract = { path = "../se-store-contract" }
+se-store-codec = { path = "../se-store-codec" }
+se-store-sql = { path = "../se-store-sql" }
 se-proc = { path = "../se-proc" }
 se-types = { path = "../se-types" }
 se-trusted-path = { path = "../se-trusted-path" }

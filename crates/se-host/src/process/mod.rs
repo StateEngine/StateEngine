@@ -20,6 +20,7 @@ pub(crate) mod launch_util;
 mod mail;
 mod monitor;
 mod native_record;
+mod nudge;
 mod owned;
 mod provider_status;
 #[cfg(unix)]
@@ -49,6 +50,7 @@ mod wake;
 mod window;
 #[cfg(target_os = "linux")]
 mod window_join;
+pub use monitor::mail_wake_interval;
 pub use recovery::Reconciliation;
 pub use shutdown::ProcessDrain;
 
@@ -124,6 +126,13 @@ pub struct LaunchCoordinator {
     stopping: std::sync::atomic::AtomicBool,
     orphans: std::sync::Mutex<std::collections::BTreeSet<se_types::LifecycleId>>,
 }
+struct ProviderHarnesses {
+    claude: Arc<ClaudeHarness>,
+    codex: Arc<CodexHarness>,
+    secode: Arc<crate::harness::secode_process::SecodeHarness>,
+    acp: Arc<crate::harness::acp::AcpHarness>,
+}
+
 impl LaunchCoordinator {
     pub fn prepared_request_proofs(&self) -> PreparedRequestProofs {
         self.proofs.clone()
@@ -157,75 +166,31 @@ impl LaunchCoordinator {
     }
     /// Called once, after loopback listener publication selected its actual
     /// port and before accepting process operations. All native setup is finite.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub async fn open(
         host_runtime: &crate::HostedRuntime,
         requested: ProcessOptions,
         deadline: &crate::client::lease::Deadline,
     ) -> Result<Arc<Self>> {
         let context = host_runtime.execution_context();
-        let options = ProcessConfiguration {
-            home: host_runtime.state_directory.clone(),
-            helper_executable: requested.helper_executable,
-            epoch: host_runtime.epoch.clone(),
-            configuration: host_runtime.configuration().cloned().ok_or_else(|| {
-                se_core::scope::unreadable(
-                    "process configuration",
-                    "load the data home's validated configuration before launch",
-                )
-            })?,
-            http_port: host_runtime.http_port().ok_or_else(|| {
-                se_core::scope::unreadable(
-                    "process coordinator",
-                    "bind the real loopback listener before installation",
-                )
-            })?,
-            linux_delegation: requested.linux_delegation,
-            maximum_sessions: requested.maximum_sessions,
-            restore_deadline_ms: requested.restore_deadline_ms,
-            stop_grace_ms: requested.stop_grace_ms,
-        };
+        let options = Self::process_configuration(host_runtime, requested)?;
         let pool = context.blocking.clone();
-        #[cfg(unix)]
-        let runtime = pool.handle();
-        #[cfg(unix)]
-        let (fault, fence) = (context.ownership_fault.clone(), host_runtime.fenced.clone());
-        let machine = options.epoch.owner.fields().machine.clone();
-        let helper = options.helper_executable.to_local()?;
-        let delegation = options.linux_delegation.clone();
         let maximum = options.maximum_sessions;
+        let helper = options.helper_executable.to_local()?;
         let mut host = [0; 16];
         se_proc::fill_entropy(&mut host).map_err(|e| error("host process identity", e))?;
         let host = se_proc::HostInstanceId(host);
-        let (native, owner) = pool
-            .run_owned(deadline, move || {
-                let identity = se_proc::current_runtime_identity(machine.clone())
-                    .map_err(|e| error("native host identity", e))?;
-                let native = NativeProcessRuntime::open(se_proc::HostConfig {
-                    machine,
-                    instance: host,
-                    helper_executable: helper,
-                    linux_delegation: delegation,
-                    limits: se_proc::ResourceLimits {
-                        max_lifecycles: maximum,
-                        max_diagnostic_members: 128,
-                        max_observation_bytes: 1024 * 1024,
-                        max_stdio_buffer_bytes: 4 * 1024 * 1024,
-                    },
-                    #[cfg(unix)]
-                    reactor: Arc::new(events::Reactor {
-                        runtime,
-                        fault,
-                        fence,
-                    }),
-                })
-                .map_err(|e| error("native process arena", e))?;
-                Ok((Arc::new(native), identity.process))
-            })
-            .await?;
+        let (native, owner) = Self::open_native_runtime(
+            &pool,
+            &options,
+            #[cfg(unix)]
+            &context,
+            helper,
+            #[cfg(unix)]
+            host_runtime.fenced.clone(),
+            deadline,
+            host,
+        )
+        .await?;
         #[cfg(unix)]
         let io: Arc<dyn ProviderIoPlatform> = Arc::new(crate::UnixProviderIo);
         #[cfg(windows)]
@@ -237,59 +202,25 @@ impl LaunchCoordinator {
                 max_buffer_bytes: 4 * 1024 * 1024,
             },
         ));
-        let harness = Arc::new(
-            ClaudeHarness::new(
-                io.clone(),
-                options.helper_executable.to_local()?,
-                options.home.clone(),
-                options.http_port,
-            )
-            .with_bells(context.mail_waits.bells.clone())
-            .with_atlas_hooks(
-                options.configuration.atlas.enabled && options.configuration.atlas.hooks,
-            ),
-        );
-        #[cfg(unix)]
-        let socket_root = host_runtime
-            .socket_paths
-            .runtime_directory
-            .clone()
-            .or_else(|| host_runtime.socket_paths.temporary_directory.clone())
-            .unwrap_or_else(std::env::temp_dir);
-        #[cfg(not(unix))]
-        let socket_root = options.home.clone();
-        let codex = Arc::new(
-            CodexHarness::new(
-                io.clone(),
-                pool.clone(),
-                options.home.clone(),
-                socket_root,
-                options.http_port,
-                options.configuration.clone(),
-            )
-            .with_forwarder(options.helper_executable.to_local()?)
-            .with_atlas_helper(options.helper_executable.to_local()?),
-        );
-        let secode = Arc::new(crate::harness::secode_process::SecodeHarness::new(
+        let providers = Self::provider_harnesses(
+            #[cfg(unix)]
+            host_runtime,
             io.clone(),
-            options.home.clone(),
+            &pool,
+            &options,
+            &context,
             maximum,
-        ));
-        let acp = Arc::new(crate::harness::acp::AcpHarness::new(
-            io.clone(),
-            options.configuration.clone(),
-            options.home.clone(),
-        ));
+        )?;
         Ok(Arc::new(Self {
             #[cfg(any(windows, target_os = "macos"))]
             repository_watches: std::sync::Mutex::new(Vec::new()),
             kind: host_runtime.kind,
             native,
             io,
-            harness,
-            codex,
-            secode,
-            acp,
+            harness: providers.claude,
+            codex: providers.codex,
+            secode: providers.secode,
+            acp: providers.acp,
             secode_services: secode::Services::default(),
             codex_server: codex_server::CodexServer::default(),
             // Installation precedes readiness; retain admission without opening a router.
@@ -309,6 +240,140 @@ impl LaunchCoordinator {
             stopping: std::sync::atomic::AtomicBool::new(false),
             orphans: std::sync::Mutex::default(),
         }))
+    }
+
+    /// Compose the process configuration from the runtime and requested options.
+    fn process_configuration(
+        host_runtime: &crate::HostedRuntime,
+        requested: ProcessOptions,
+    ) -> Result<ProcessConfiguration> {
+        Ok(ProcessConfiguration {
+            home: host_runtime.state_directory.clone(),
+            helper_executable: requested.helper_executable,
+            epoch: host_runtime.epoch.clone(),
+            configuration: host_runtime.configuration().cloned().ok_or_else(|| {
+                se_core::scope::unreadable(
+                    "process configuration",
+                    "load the data home's validated configuration before launch",
+                )
+            })?,
+            http_port: host_runtime.http_port().ok_or_else(|| {
+                se_core::scope::unreadable(
+                    "process coordinator",
+                    "bind the real loopback listener before installation",
+                )
+            })?,
+            linux_delegation: requested.linux_delegation,
+            maximum_sessions: requested.maximum_sessions,
+            restore_deadline_ms: requested.restore_deadline_ms,
+            stop_grace_ms: requested.stop_grace_ms,
+        })
+    }
+    /// Open the native process arena and read the live runtime identity.
+    async fn open_native_runtime(
+        pool: &crate::BlockingPool,
+        options: &ProcessConfiguration,
+        #[cfg(unix)] context: &crate::runtime::ExecutionContext,
+        helper: PathBuf,
+        #[cfg(unix)] fence: Arc<std::sync::atomic::AtomicBool>,
+        deadline: &crate::client::lease::Deadline,
+        host: se_proc::HostInstanceId,
+    ) -> Result<(Arc<NativeProcessRuntime>, se_proc::ProcessIdentity)> {
+        let machine = options.epoch.owner.fields().machine.clone();
+        let delegation = options.linux_delegation.clone();
+        let maximum = options.maximum_sessions;
+        #[cfg(unix)]
+        let runtime = pool.handle();
+        #[cfg(unix)]
+        let fault = context.ownership_fault.clone();
+        pool.run_owned(deadline, move || {
+            let identity = se_proc::current_runtime_identity(machine.clone())
+                .map_err(|e| error("native host identity", e))?;
+            let native = NativeProcessRuntime::open(se_proc::HostConfig {
+                machine,
+                instance: host,
+                helper_executable: helper,
+                linux_delegation: delegation,
+                limits: se_proc::ResourceLimits {
+                    max_lifecycles: maximum,
+                    max_diagnostic_members: 128,
+                    max_observation_bytes: 1024 * 1024,
+                    max_stdio_buffer_bytes: 4 * 1024 * 1024,
+                },
+                #[cfg(unix)]
+                reactor: Arc::new(events::Reactor {
+                    runtime,
+                    fault,
+                    fence,
+                }),
+            })
+            .map_err(|e| error("native process arena", e))?;
+            Ok((Arc::new(native), identity.process))
+        })
+        .await
+    }
+    /// Build the provider harnesses over the shared IO platform.
+    fn provider_harnesses(
+        #[cfg(unix)] host_runtime: &crate::HostedRuntime,
+        io: Arc<dyn ProviderIoPlatform>,
+        pool: &crate::BlockingPool,
+        options: &ProcessConfiguration,
+        context: &crate::runtime::ExecutionContext,
+        maximum: u32,
+    ) -> Result<ProviderHarnesses> {
+        #[cfg(unix)]
+        let socket_root = host_runtime
+            .socket_paths
+            .runtime_directory
+            .clone()
+            .or_else(|| host_runtime.socket_paths.temporary_directory.clone())
+            .unwrap_or_else(std::env::temp_dir);
+        #[cfg(not(unix))]
+        let socket_root = options.home.clone();
+        let claude = Arc::new(
+            ClaudeHarness::new(
+                io.clone(),
+                options.helper_executable.to_local()?,
+                options.home.clone(),
+                options.http_port,
+            )
+            .with_bells(context.mail_waits.bells.clone())
+            .with_atlas_hooks(
+                (options.configuration.atlas.enabled && options.configuration.atlas.hooks)
+                    .then_some(crate::atlas_hooks::hook_configuration),
+            ),
+        );
+        let codex = Arc::new(
+            CodexHarness::new(
+                io.clone(),
+                pool.clone(),
+                options.home.clone(),
+                socket_root,
+                options.http_port,
+                options.configuration.clone(),
+            )
+            .with_forwarder(options.helper_executable.to_local()?)
+            .with_atlas_helper(
+                options.helper_executable.to_local()?,
+                crate::atlas_hooks::hook_configuration,
+            ),
+        );
+        let secode = Arc::new(crate::harness::secode_process::SecodeHarness::new(
+            io.clone(),
+            options.home.clone(),
+            maximum,
+        ));
+        let acp = Arc::new(crate::harness::acp::AcpHarness::new(
+            io.clone(),
+            options.configuration.clone(),
+            options.home.clone(),
+        ));
+        Ok(ProviderHarnesses {
+            claude,
+            codex,
+            secode,
+            acp,
+        })
     }
 }
 impl LaunchCoordinator {

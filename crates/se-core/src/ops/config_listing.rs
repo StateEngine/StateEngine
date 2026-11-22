@@ -70,6 +70,21 @@ pub fn list(
         "runtime.blocking_jobs",
         option(&configuration.runtime.blocking_jobs),
     );
+    row(
+        &mut rows,
+        "runtime.mail_wake_interval_seconds",
+        option(&configuration.runtime.mail_wake_interval_seconds),
+    );
+    row(
+        &mut rows,
+        "runtime.captain_nudge_idle_seconds",
+        option(&configuration.runtime.captain_nudge_idle_seconds),
+    );
+    row(
+        &mut rows,
+        "runtime.captain_nudge_attempts",
+        option(&configuration.runtime.captain_nudge_attempts),
+    );
     for registration in se_types::HARNESS_REGISTRY {
         let name = registration.id;
         let provider = configuration.provider(registration.provider);
@@ -291,6 +306,9 @@ mod list_tests {
         "launch.terminal",
         "runtime.listen_port",
         "runtime.blocking_jobs",
+        "runtime.mail_wake_interval_seconds",
+        "runtime.captain_nudge_idle_seconds",
+        "runtime.captain_nudge_attempts",
         "providers.claude.command",
         "providers.claude.model",
         "providers.claude.profile",

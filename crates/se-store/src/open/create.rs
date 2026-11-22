@@ -1,10 +1,7 @@
 //! Publish a fresh protected store through verified same-volume staging.
 use super::*;
+use std::path::Path;
 impl SqliteFactory {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) fn create_engine(
         o: &StoreOptions,
         lease: &dyn RuntimeLease,
@@ -18,7 +15,7 @@ impl SqliteFactory {
                 "bootstrap requires measured-absent store and held runtime lease",
             ));
         }
-        let mut reader = SqliteReader::with_slots(o, crate::read_slots::ReadSlots::default())?;
+        let reader = SqliteReader::with_slots(o, crate::read_slots::ReadSlots::default())?;
         match lease.files().inspect_metadata(&reader.path)? {
             Read::Absent { .. } => {}
             Read::Present { .. } => {
@@ -46,99 +43,118 @@ impl SqliteFactory {
         let staged = stage.path;
         drop(stage.file);
         let created_at = connection::now()?;
-        let result = (|| {
-            let c = connection::open(
-                &staged,
-                OpenFlags::SQLITE_OPEN_READ_WRITE
-                    | OpenFlags::SQLITE_OPEN_NOFOLLOW
-                    | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-            )?;
-            c.execute_batch("PRAGMA page_size=4096")
-                .map_err(|error| sqlite_context(error, &staged, StoreIoStage::PragmaReadback))?;
-            connection::configure(&c, &staged, true, o.busy_timeout)?;
-            c.execute_batch("PRAGMA synchronous=FULL; BEGIN EXCLUSIVE")
-                .map_err(sql)?;
-            c.execute_batch(include_str!(concat!(env!("OUT_DIR"), "/fresh-schema.sql")))
-                .map_err(sql)?;
-            c.execute("INSERT INTO store_info(singleton,store_id,incarnation,created_at_us,state) VALUES(1,?,1,?,'ready')",crate::sql_value::sql_params![crate::identity::canonical(id.as_str()).ok_or_else(||invalid("canonical store identity required"))?,created_at]).map_err(sql)?;
-            c.execute_batch("COMMIT; PRAGMA wal_checkpoint(TRUNCATE)")
-                .map_err(sql)?;
-            let info = connection::info(&c)?;
-            if info.id != id {
-                return Err(invalid("created StoreId readback differs"));
-            }
-            if info.schema_version != connection::SCHEMA {
-                return Err(invalid("created schema version readback differs"));
-            }
-            c.close().map_err(|(_, e)| sql(e))?;
-            match lease.files().readback(&staged)? {
-                Read::Present { .. } => {}
-                _ => {
-                    return Err(fail(
-                        StoreErrorCode::Unreadable,
-                        "protected staging readback failed",
-                    ));
-                }
-            }
-            lease.files().publish_no_replace(&staged, &reader.path)?;
-            match lease.files().inspect_metadata(&reader.path)? {
-                Read::Present { .. } => {}
-                _ => {
-                    return Err(fail(
-                        StoreErrorCode::CommitOutcomeUnknown,
-                        "published store name not readable; preserve original init identity",
-                    ));
-                }
-            }
-            reader.bind_identity()?;
-            let db = connection::connect_checked(&reader.path, true, o.busy_timeout, |db| {
-                reader.validate_connection(db)
-            })?;
-            reader.validate_identity()?;
-            let identity = LeaseIdentity {
-                store: Some(id),
-                ..identity
-            };
-            let reader_path = reader.path.clone();
-            Ok((
-                reader,
-                Engine {
-                    db,
-                    path: reader_path,
-                    timeout: o.busy_timeout,
-                    identity,
-                    poisoned: false,
-                    pending: Vec::new(),
-                    maintenance: None,
-                    backup: None,
-                    checkpoints: Default::default(),
-                    channel_delay_us: crate::CHANNEL_DELAY_US,
-                },
-            ))
-        })();
+        let result = build_staged(o, lease, &staged, id, reader, identity, created_at);
         match result {
-            Err(mut error) => {
-                for suffix in ["-journal", "-wal", "-shm", ""] {
-                    let name = staged
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .ok_or_else(|| invalid("native staging name"))?;
-                    let path = staged.with_file_name(format!("{name}{suffix}"));
-                    if let Err(cleanup) = crate::backup::remove_if_present(
-                        lease.files(),
-                        &path,
-                        std::time::Instant::now() + Duration::from_secs(1),
-                    ) {
-                        error.cause.push_str(&format!(
-                            "; retained staging {}: {}",
-                            path.display(),
-                            cleanup.cause
-                        ));
-                    }
-                }
-                Err(error)
-            }
+            Err(error) => Err(retained_staging(lease.files(), &staged, error)?),
             success => success,
         }
     }
+}
+
+fn build_staged(
+    o: &StoreOptions,
+    lease: &dyn RuntimeLease,
+    staged: &Path,
+    id: StoreId,
+    mut reader: SqliteReader,
+    identity: LeaseIdentity,
+    created_at: i64,
+) -> StoreResult<(SqliteReader, Engine)> {
+    let c = connection::open(
+        staged,
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    c.execute_batch("PRAGMA page_size=4096")
+        .map_err(|error| sqlite_context(error, staged, StoreIoStage::PragmaReadback))?;
+    connection::configure(&c, staged, true, o.busy_timeout)?;
+    c.execute_batch("PRAGMA synchronous=FULL; BEGIN EXCLUSIVE")
+        .map_err(sql)?;
+    c.execute_batch(include_str!(concat!(env!("OUT_DIR"), "/fresh-schema.sql")))
+        .map_err(sql)?;
+    c.execute("INSERT INTO store_info(singleton,store_id,incarnation,created_at_us,state) VALUES(1,?,1,?,'ready')",crate::sql_value::sql_params![crate::identity::canonical(id.as_str()).ok_or_else(||invalid("canonical store identity required"))?,created_at]).map_err(sql)?;
+    c.execute_batch("COMMIT; PRAGMA wal_checkpoint(TRUNCATE)")
+        .map_err(sql)?;
+    let info = connection::info(&c)?;
+    if info.id != id {
+        return Err(invalid("created StoreId readback differs"));
+    }
+    if info.schema_version != connection::SCHEMA {
+        return Err(invalid("created schema version readback differs"));
+    }
+    c.close().map_err(|(_, e)| sql(e))?;
+    match lease.files().readback(staged)? {
+        Read::Present { .. } => {}
+        _ => {
+            return Err(fail(
+                StoreErrorCode::Unreadable,
+                "protected staging readback failed",
+            ));
+        }
+    }
+    lease.files().publish_no_replace(staged, &reader.path)?;
+    match lease.files().inspect_metadata(&reader.path)? {
+        Read::Present { .. } => {}
+        _ => {
+            return Err(fail(
+                StoreErrorCode::CommitOutcomeUnknown,
+                "published store name not readable; preserve original init identity",
+            ));
+        }
+    }
+    reader.bind_identity()?;
+    let db = connection::connect_checked(&reader.path, true, o.busy_timeout, |db| {
+        reader.validate_connection(db)
+    })?;
+    reader.validate_identity()?;
+    if identity.mode == LeaseMode::Host {
+        crate::erasure::permit::install(&db)?;
+    }
+    let identity = LeaseIdentity {
+        store: Some(id),
+        ..identity
+    };
+    let reader_path = reader.path.clone();
+    Ok((
+        reader,
+        Engine {
+            db,
+            path: reader_path,
+            timeout: o.busy_timeout,
+            identity,
+            poisoned: false,
+            pending: Vec::new(),
+            maintenance: None,
+            backup: None,
+            checkpoints: Default::default(),
+            channel_delay_us: crate::CHANNEL_DELAY_US,
+        },
+    ))
+}
+
+fn retained_staging(
+    files: &dyn StateFiles,
+    staged: &Path,
+    mut error: Box<StoreError>,
+) -> StoreResult<Box<StoreError>> {
+    for suffix in ["-journal", "-wal", "-shm", ""] {
+        let name = staged
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| invalid("native staging name"))?;
+        let path = staged.with_file_name(format!("{name}{suffix}"));
+        if let Err(cleanup) = crate::backup::remove_if_present(
+            files,
+            &path,
+            std::time::Instant::now() + Duration::from_secs(1),
+        ) {
+            error.cause.push_str(&format!(
+                "; retained staging {}: {}",
+                path.display(),
+                cleanup.cause
+            ));
+        }
+    }
+    Ok(error)
 }

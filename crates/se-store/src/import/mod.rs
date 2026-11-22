@@ -3,11 +3,11 @@
 use crate::{apply::expected, codec, connection::project_id, error::*, identity::*, *};
 use rusqlite::{Connection, OptionalExtension};
 pub use se_store_contract::imports::LegacyTarget;
-use serde_json::{Value, json};
+use serde_json::Value;
 mod apply;
 mod wire;
 pub(crate) use apply::apply;
-pub(crate) use wire::{decode, metadata};
+pub(crate) use wire::decode;
 
 fn target_key(
     c: &Connection,

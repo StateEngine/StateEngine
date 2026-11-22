@@ -7,18 +7,25 @@ pub fn read_process_command(
     expected: &ProcessIdentity,
     deadline: Instant,
 ) -> ProcResult<Option<String>> {
-    let live = || -> ProcResult<bool> {
+    // The live identity carries the image the process reports now, which an
+    // in-place update or rename can change under the same birth.
+    let live = || -> ProcResult<Option<ProcessIdentity>> {
         match read_process_until(expected.machine.clone(), expected.pid, deadline)? {
-            ProcessRead::Present(value) if value.identity == *expected => Ok(true),
+            ProcessRead::Present(value) if value.identity.same_birth(expected) => {
+                Ok(Some(value.identity))
+            }
             ProcessRead::Present(value) => {
                 Err(crate::support::changed(expected, Some(&value.identity)))
             }
-            ProcessRead::Absent { .. } | ProcessRead::ExitedRecord { .. } => Ok(false),
+            ProcessRead::Absent { .. } | ProcessRead::ExitedRecord { .. } => Ok(None),
         }
     };
-    if !live()? {
+    let Some(current) = live()? else {
         return Ok(None);
-    }
+    };
+    // Linux reports the full command line from procfs instead.
+    #[cfg(target_os = "linux")]
+    let _ = current;
     #[cfg(target_os = "linux")]
     let command = {
         use std::io::Read;
@@ -30,7 +37,7 @@ pub fn read_process_command(
         });
         let bytes = match result {
             Ok(bytes) => bytes,
-            Err(_) if !live()? => return Ok(None),
+            Err(_) if live()?.is_none() => return Ok(None),
             Err(cause) => {
                 return Err(crate::support::native(
                     crate::ProcErrorCode::IdentityUnreadable,
@@ -43,7 +50,7 @@ pub fn read_process_command(
             return Err(crate::support::capacity("process command bytes", 65536));
         }
         if bytes.iter().all(|byte| *byte == 0) {
-            if !live()? {
+            if live()?.is_none() {
                 return Ok(None);
             }
             return Err(crate::support::input(
@@ -64,9 +71,9 @@ pub fn read_process_command(
     #[cfg(any(windows, target_os = "macos"))]
     let command = format!(
         "executable only: {}",
-        expected.image.display().to_string().escape_debug()
+        current.image.display().to_string().escape_debug()
     );
-    if !live()? {
+    if live()?.is_none() {
         return Ok(None);
     }
     Ok(Some(command))

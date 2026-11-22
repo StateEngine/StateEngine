@@ -1,5 +1,7 @@
-use super::*;
+use crate::state_files::effects::install_hold::run;
 use crate::windows_policy_fixture::*;
+use std::{fs::File, os::windows::io::AsRawHandle};
+use windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT;
 #[test]
 fn install_hold_spawn_keeps_claim_and_stdio_but_excludes_other_handles() -> Check {
     let home = Home::new()?;

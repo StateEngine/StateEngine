@@ -1,5 +1,40 @@
 //! Install attribution only from the already owned native lifecycle and binding.
 use super::*;
+
+struct HarnessLivePublisher(crate::remote::publish::LiveSource);
+
+impl se_harness::LivePublisher for HarnessLivePublisher {
+    fn delta_at(
+        &self,
+        vendor: &str,
+        role: se_harness::LiveTurnRole,
+        delta: &str,
+        observed_at: std::time::Instant,
+    ) {
+        let role = match role {
+            se_harness::LiveTurnRole::User => crate::remote::RemoteTurnRole::User,
+            se_harness::LiveTurnRole::Assistant => crate::remote::RemoteTurnRole::Assistant,
+            se_harness::LiveTurnRole::Tool => crate::remote::RemoteTurnRole::Tool,
+        };
+        self.0.delta_at(vendor, role, delta, observed_at);
+    }
+
+    fn complete_at(
+        &self,
+        vendor: &str,
+        role: se_harness::LiveTurnRole,
+        text: &str,
+        observed_at: std::time::Instant,
+    ) {
+        let role = match role {
+            se_harness::LiveTurnRole::User => crate::remote::RemoteTurnRole::User,
+            se_harness::LiveTurnRole::Assistant => crate::remote::RemoteTurnRole::Assistant,
+            se_harness::LiveTurnRole::Tool => crate::remote::RemoteTurnRole::Tool,
+        };
+        self.0.complete_at(vendor, role, text, observed_at);
+    }
+}
+
 impl LaunchCoordinator {
     pub(super) fn attach_remote_live(&self, work: &mut owned::Work) {
         let Some(control) = self.store.mail_waits.remote_control() else {
@@ -25,7 +60,7 @@ impl LaunchCoordinator {
             .and_then(|b| b.get::<crate::codex_rpc::Binding>())
             && let Ok(mut live) = binding.live.lock()
         {
-            *live = Some(source.clone());
+            *live = Some(Arc::new(HarnessLivePublisher(source.clone())));
         }
         work.remote_live = Some(source);
     }

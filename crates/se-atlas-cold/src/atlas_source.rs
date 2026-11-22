@@ -7,9 +7,12 @@ use se_atlas::{
     scope::Scope,
     source::{
         RegisteredSource, SourceAccess, SourceDirectory, SourceEntry, SourceEntryKind, SourceFile,
+        SourceScan,
     },
 };
-use se_proc::{NativeRootDirectory, NativeRootFile, NativeSourceKind, NativeSourceRoot};
+use se_proc::{
+    NativeRootDirectory, NativeRootFile, NativeSourceKind, NativeSourceRoot, NativeSourceScan,
+};
 use se_types::{Detail, SeError, code::AtlasText, details};
 use std::io::{self, Read, Seek, SeekFrom};
 
@@ -50,6 +53,13 @@ impl SourceAccess for NativeAtlasSource {
             .map_err(|e| error(path.as_str(), e))?
             .map(|file| Box::new(PinnedSource(file)) as Box<dyn SourceFile>))
     }
+    fn open_scan(&self) -> AtlasResult<Box<dyn SourceScan<'_> + '_>> {
+        let scan = self
+            .root
+            .begin_scan()
+            .map_err(|e| error("registered source root", e))?;
+        Ok(Box::new(PinnedScan(scan)))
+    }
     fn open_directory(
         &self,
         path: Option<&RelativePath>,
@@ -61,6 +71,22 @@ impl SourceAccess for NativeAtlasSource {
             .open_directory(path.map_or("", AtlasText::as_str))
             .map(|d| d.map(|d| Box::new(PinnedDirectory(d)) as Box<dyn SourceDirectory>))
             .map_err(|e| error("retained source directory", e))
+    }
+}
+struct PinnedScan<'a>(NativeSourceScan<'a>);
+impl<'a> SourceScan<'a> for PinnedScan<'a> {
+    fn open(&mut self, path: &RelativePath) -> AtlasResult<Option<Box<dyn SourceFile + 'a>>> {
+        private_path(path)?;
+        Ok(self
+            .0
+            .open_relative(path.as_str())
+            .map_err(|e| error(path.as_str(), e))?
+            .map(|file| Box::new(PinnedSource(file)) as Box<dyn SourceFile + 'a>))
+    }
+    fn finish(self: Box<Self>) -> AtlasResult<()> {
+        self.0
+            .finish()
+            .map_err(|e| error("registered source root", e))
     }
 }
 struct PinnedDirectory<'a>(NativeRootDirectory<'a>);

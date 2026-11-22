@@ -476,7 +476,7 @@ pub(crate) fn observe(expected: &ProcessIdentity) -> ProcResult<ProcessObservati
     };
     let (evidence, status, at) = match crate::read_process(expected.machine.clone(), expected.pid)?
     {
-        ProcessRead::Present(live) if live.identity == *expected => {
+        ProcessRead::Present(live) if live.identity.same_birth(expected) => {
             return Ok(ProcessObservation::Live(live));
         }
         ProcessRead::Present(live)

@@ -110,38 +110,42 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
         }
     };
     let (life, at) = match observation {
-        ProcessRead::Present(actual) if actual.identity == record.root => match actual.state {
-            NativeState::Running | NativeState::Stopped => {
-                match se_proc::observe_process_birth(&record.root, deadline) {
-                    Ok(born) => {
-                        plan.row.session.process = Some(se_core::ops::ProcessView {
-                            pid: record.root.pid.0,
-                            started_at: se_core::ops::receipt::timestamp(born.unix_micros())?,
-                            exe: record.root.image.to_string_lossy().into_owned(),
-                            machine_id: record.root.machine.to_string(),
-                        })
+        // Birth is identity. The executable path is reported as the process now
+        // reports it, so an in-place update or rename shows here, not as loss.
+        ProcessRead::Present(actual) if actual.identity.same_birth(&record.root) => {
+            match actual.state {
+                NativeState::Running | NativeState::Stopped => {
+                    match se_proc::observe_process_birth(&record.root, deadline) {
+                        Ok(born) => {
+                            plan.row.session.process = Some(se_core::ops::ProcessView {
+                                pid: record.root.pid.0,
+                                started_at: se_core::ops::receipt::timestamp(born.unix_micros())?,
+                                exe: actual.identity.image.to_string_lossy().into_owned(),
+                                machine_id: record.root.machine.to_string(),
+                            })
+                        }
+                        Err(error) => {
+                            plan.row.session.state = "unknown".into();
+                            plan.row.session.liveness =
+                                unreadable("pinned native process birth", format!("{error:?}"));
+                            return Ok(());
+                        }
                     }
-                    Err(error) => {
-                        plan.row.session.state = "unknown".into();
-                        plan.row.session.liveness =
-                            unreadable("pinned native process birth", format!("{error:?}"));
-                        return Ok(());
-                    }
+                    (
+                        Read::Present {
+                            value: "live".into(),
+                        },
+                        actual.observed_at_unix_ns,
+                    )
                 }
-                (
+                NativeState::Exited | NativeState::ExitedAwaitingReap => (
                     Read::Present {
-                        value: "live".into(),
+                        value: "exited".into(),
                     },
                     actual.observed_at_unix_ns,
-                )
+                ),
             }
-            NativeState::Exited | NativeState::ExitedAwaitingReap => (
-                Read::Present {
-                    value: "exited".into(),
-                },
-                actual.observed_at_unix_ns,
-            ),
-        },
+        }
         ProcessRead::Absent {
             observed_at_unix_ns,
             ..
@@ -167,7 +171,7 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
             plan.row.session.state = "unknown".into();
             plan.row.session.liveness = unreadable(
                 "native process identity",
-                "PID now names a different birth, boot or image; no successor is attributed to this session",
+                "PID now names a different birth or boot; no successor is attributed to this session",
             );
             return Ok(());
         }

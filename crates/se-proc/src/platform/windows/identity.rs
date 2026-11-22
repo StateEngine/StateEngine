@@ -158,7 +158,7 @@ pub(super) fn observe(
             return Err(original);
         }
     };
-    if found != *expected {
+    if !found.same_birth(expected) {
         return Err(changed(expected, Some(&found)));
     }
     Ok(ProcessObservation::Live(LiveObservation {
@@ -173,7 +173,7 @@ pub(super) fn observe(
 pub(crate) fn verify_live_identity(expected: &ProcessIdentity) -> ProcResult<()> {
     let pin = lookup(expected.pid)?.ok_or_else(|| changed(expected, None))?;
     let found = identity(expected.machine.clone(), expected.pid, &pin)?;
-    if &found != expected || exit_status(&pin)?.is_some() {
+    if !found.same_birth(expected) || exit_status(&pin)?.is_some() {
         return Err(changed(expected, Some(&found)));
     }
     Ok(())

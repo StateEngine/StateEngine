@@ -3,7 +3,7 @@
 #[cfg(test)]
 extern crate self as se_host;
 #[cfg(feature = "listener")]
-pub mod acp;
+pub use se_harness::acp;
 #[cfg(all(test, feature = "listener"))]
 #[path = "../tests/support/acp_session_independent.rs"]
 mod acp_session_independent;
@@ -13,9 +13,10 @@ mod acp_transport_independent;
 pub mod adoption;
 #[cfg(feature = "runtime")]
 mod agent_observation;
+#[cfg(feature = "channels")]
 pub mod channels;
 #[cfg(feature = "listener")]
-mod child_io;
+pub(crate) use se_harness::child_io;
 pub mod client;
 pub mod host_process;
 pub mod remote;
@@ -30,7 +31,7 @@ mod test_directory;
 pub use agent_observation::{
     AgentObservation, AgentObservationPlan, observe_agent, prepare_agent_observation,
 };
-mod harness;
+pub(crate) use se_harness::harness;
 pub mod harness_setup;
 mod owner_inventory;
 pub use owner_inventory::decode_owner_inventory;
@@ -52,19 +53,17 @@ pub use mcp::{McpBackend, McpReply};
 pub mod mcp {
     pub use se_mcp::{McpBackend, McpPrincipal, McpReply, dispatch};
 }
-mod model;
+pub(crate) use se_harness::model;
 #[cfg(all(
     feature = "listener",
     any(target_os = "linux", target_os = "macos", windows)
 ))]
 mod process;
 #[cfg(feature = "listener")]
-mod process_io;
+pub(crate) use se_harness::process_io;
 #[cfg(feature = "listener")]
 pub mod provider_mcp;
 mod runtime;
-#[cfg(feature = "listener")]
-mod startup_timing;
 #[cfg(all(
     feature = "listener",
     any(target_os = "linux", target_os = "macos", windows)
@@ -74,32 +73,24 @@ pub use process::launch_util::resolve_provider as resolve_provider_executable;
     feature = "listener",
     any(target_os = "linux", target_os = "macos", windows)
 ))]
-pub use process::{ProcessConfiguration, ProcessDrain, ProcessOptions, Reconciliation};
+pub use process::{
+    ProcessConfiguration, ProcessDrain, ProcessOptions, Reconciliation, mail_wake_interval,
+};
 #[cfg(all(unix, feature = "listener"))]
 pub use process_io::UnixProviderIo;
 #[cfg(all(windows, feature = "listener"))]
 pub use process_io::WindowsProviderIo;
 pub use se_atlas_cold::atlas_cache;
-pub mod atlas_cold;
-#[cfg(feature = "listener")]
-mod atlas_continuity;
-#[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
-mod atlas_git_watch;
-pub mod atlas_hooks;
-#[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
-use se_atlas_cold::atlas_ignore;
-#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
-mod atlas_parse;
-pub mod atlas_queries;
-pub mod atlas_records;
-#[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
-pub mod atlas_renewal;
-pub mod atlas_runtime;
 pub use se_atlas_cold::atlas_source;
+#[cfg(feature = "listener")]
+use se_atlas_host::atlas_continuity;
 #[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
-use se_atlas_cold::atlas_watch_error;
-pub mod codex_forward;
-mod session;
+pub use se_atlas_host::atlas_renewal;
+pub use se_atlas_host::{atlas_cold, atlas_hooks, atlas_queries, atlas_records, atlas_runtime};
+pub use se_harness::codex_forward;
+pub(crate) use se_harness::session;
+#[cfg(feature = "listener")]
+pub(crate) use se_harness::startup_timing;
 pub mod state_files;
 pub use harness::*;
 pub use ipc::*;
@@ -108,7 +99,7 @@ pub use runtime::*;
 pub use session::*;
 
 #[cfg(feature = "secode")]
-pub mod linked;
+pub use se_harness::linked;
 
 #[cfg(all(test, feature = "listener"))]
 #[path = "../tests/support/acp_correction_independent.rs"]

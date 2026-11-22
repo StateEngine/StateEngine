@@ -16,7 +16,7 @@ mod grammar;
 mod host_fixture;
 #[path = "../src/ipc.rs"]
 mod ipc;
-#[path = "../src/render/error.rs"]
+#[path = "../../se-render/src/error.rs"]
 mod render_error;
 #[path = "support/host_route.rs"]
 mod route;

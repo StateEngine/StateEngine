@@ -71,6 +71,17 @@ pub struct AgentRow {
     pub resume: ResumeCommand,
     pub unread: Option<u64>,
     pub last_activity_at: Option<String>,
+    /// What the agent is doing, derived from observed facts; absent on rows
+    /// no status read has settled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<AgentStateView>,
+    /// The agent's own short working note, saved without notifying anyone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_note: Option<Read<WorkingNoteView>>,
+    /// Processes the agent keeps running beside its provider, such as a build
+    /// or test it started in the background. Own row only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<Read<BackgroundView>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secode_binding: Option<Read<super::SecodeBindingView>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -85,13 +96,80 @@ pub struct CodexLoginView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
 }
+/// An agent's state, derived from facts StateEngine observes, never from the
+/// agent's own label.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct AgentStateView {
+    /// `working`, `attention`, `blocked`, `idle`, `running` (alive, turn not
+    /// observed), `turn-unreadable`, `starting`, `stopping`, `stopped` or
+    /// `unreachable`.
+    pub state: String,
+    /// When the state began, when StateEngine can say.
+    pub since: Option<String>,
+    pub elapsed_seconds: Option<u64>,
+    /// The agent's latest question that has no reply yet.
+    pub waiting_on: Option<WaitingOnView>,
+}
+/// What another agent in the same project may see of a peer: its identity,
+/// derived state and working note. No session, provider, resume, mail or
+/// unread field exists here, so none can be shown.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PeerRow {
+    pub id: AgentId,
+    pub name: String,
+    pub role: Option<String>,
+    pub provider: Provider,
+    pub state: Option<AgentStateView>,
+    pub working_note: Option<Read<WorkingNoteView>>,
+}
+/// The agent's own processes other than its provider and StateEngine's
+/// connection to it. Only the program name is shown, never its arguments.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct BackgroundView {
+    pub processes: u32,
+    /// The longest-running one: its program name and start.
+    pub oldest: Option<BackgroundProcessView>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct BackgroundProcessView {
+    pub command: String,
+    pub started_at: String,
+    /// The recorded time `started_at` shows, in Unix microseconds.
+    pub started_at_us: i64,
+}
+/// The first line of an agent's working state, for a status row.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WorkingNoteView {
+    pub text: String,
+    /// True when the row shows only part of the saved note.
+    pub truncated: bool,
+    pub saved_at: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WaitingOnView {
+    pub message_id: se_types::MessageId,
+    pub to: String,
+    pub asked_at: String,
+    /// The recorded time `asked_at` shows, in Unix microseconds.
+    pub asked_at_us: i64,
+}
 /// A retained provider turn observation, not native liveness or task success.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderActivityView {
     pub activity: String,
     pub detail: String,
     pub quiet_seconds: Option<u64>,
+    /// When this activity began, such as the start of an active turn, and how
+    /// long ago that was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_seconds: Option<u64>,
     pub next_step: Option<String>,
+    /// While mail waits for the configured wake interval, when it may next
+    /// wake this agent. The mail itself is already delivered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_paced_until: Option<String>,
 }
 /// Single-agent readback reuses the status/list row without flattening Read.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
