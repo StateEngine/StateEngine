@@ -80,10 +80,6 @@ fn symbol(db: &Connection, id: Option<i64>) -> StoreResult<Vec<u8>> {
     )
     .map_err(sql)
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(crate) fn identity(
     db: &Connection,
     seq: i64,
@@ -108,8 +104,35 @@ pub(crate) fn identity(
         )
     })?;
     let blob = |name: &str| row.get::<_, Vec<u8>>(name).map_err(sql);
+    head_consistent(row, project, id, expected_revision, expected_state)?;
+    let principal = blob("principal_id")?;
+    principal_registered(db, &principal, project)?;
+    let scope = [&[1u8][..], project].concat();
+    let root_identity = root_identity_state(row)?;
+    let instance = identity_instance(db, row, owner_only)?;
+    identity_consistent(&root_identity, &instance, owner_only, expected_state)?;
+    let containment = containment_fact(db, row, &scope)?;
+    identity_record(
+        db,
+        row,
+        id,
+        &scope,
+        &principal,
+        root_identity,
+        instance,
+        containment,
+    )
+}
+
+fn head_consistent(
+    row: &rusqlite::Row,
+    project: &[u8],
+    id: &[u8],
+    expected_revision: u64,
+    expected_state: &str,
+) -> StoreResult<()> {
+    let blob = |name: &str| row.get::<_, Vec<u8>>(name).map_err(sql);
     let text = |name: &str| row.get::<_, String>(name).map_err(sql);
-    let number = |name: &str| row.get::<_, Option<i64>>(name).map_err(sql);
     if blob("project_id")? != project
         || blob("process_id")? != id
         || u64::try_from(row.get::<_, i64>("entity_revision").map_err(sql)?).map_err(invalid)?
@@ -126,11 +149,13 @@ pub(crate) fn identity(
             "process projection differs from its immutable head",
         ));
     }
-    let principal = blob("principal_id")?;
+    Ok(())
+}
+fn principal_registered(db: &Connection, principal: &[u8], project: &[u8]) -> StoreResult<()> {
     let registered: bool = db
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM principals WHERE project_id=? AND principal_id=?)",
-            rusqlite::params![project, &principal],
+            rusqlite::params![project, principal],
             |r| r.get(0),
         )
         .map_err(sql)?;
@@ -140,15 +165,27 @@ pub(crate) fn identity(
             "recorded process principal is not registered in its project",
         ));
     }
-    let scope = [&[1u8][..], project].concat();
-    let root_identity = match text("root_identity")?.as_str() {
+    Ok(())
+}
+fn root_identity_state(row: &rusqlite::Row) -> StoreResult<RootIdentityState> {
+    let text = |name: &str| row.get::<_, String>(name).map_err(sql);
+    Ok(match text("root_identity")?.as_str() {
         "no-child-created" => RootIdentityState::NoChildCreated,
         "unpublished" => RootIdentityState::Unpublished,
         "identified" => RootIdentityState::Identified,
         "unknown" => RootIdentityState::Unknown,
         _ => return Err(invalid("process root identity state")),
-    };
-    let instance = match text("identity_state")?.as_str() {
+    })
+}
+fn identity_instance(
+    db: &Connection,
+    row: &rusqlite::Row,
+    owner_only: bool,
+) -> StoreResult<RecordedIdentity> {
+    let blob = |name: &str| row.get::<_, Vec<u8>>(name).map_err(sql);
+    let text = |name: &str| row.get::<_, String>(name).map_err(sql);
+    let number = |name: &str| row.get::<_, Option<i64>>(name).map_err(sql);
+    Ok(match text("identity_state")?.as_str() {
         "present" => {
             let birth = blob("birth_identity")?;
             let started: StartIdentity = serde_json::from_slice(&birth).map_err(invalid)?;
@@ -198,9 +235,16 @@ pub(crate) fn identity(
             cause: text("identity_cause")?,
         },
         _ => return Err(invalid("process identity state")),
-    };
+    })
+}
+fn identity_consistent(
+    root_identity: &RootIdentityState,
+    instance: &RecordedIdentity,
+    owner_only: bool,
+    expected_state: &str,
+) -> StoreResult<()> {
     if !matches!(
-        (&root_identity, &instance),
+        (root_identity, instance),
         (RootIdentityState::Identified, RecordedIdentity::Present(_))
             | (
                 RootIdentityState::NoChildCreated | RootIdentityState::Unpublished,
@@ -208,7 +252,7 @@ pub(crate) fn identity(
             )
     ) && (owner_only
         || !matches!(
-            (&root_identity, &instance, expected_state),
+            (root_identity, instance, expected_state),
             (
                 RootIdentityState::Unknown,
                 RecordedIdentity::Absent { .. } | RecordedIdentity::Unreadable { .. },
@@ -221,11 +265,20 @@ pub(crate) fn identity(
             "unresolved process has unknown or inconsistent root identity",
         ));
     }
+    Ok(())
+}
+fn containment_fact(
+    db: &Connection,
+    row: &rusqlite::Row,
+    scope: &[u8],
+) -> StoreResult<ContainmentFact> {
+    let text = |name: &str| row.get::<_, String>(name).map_err(sql);
+    let number = |name: &str| row.get::<_, Option<i64>>(name).map_err(sql);
     let observed = || {
         number("containment_observed_at_us")?
             .ok_or_else(|| invalid("containment observation missing"))
     };
-    let containment = match text("containment")?.as_str() {
+    Ok(match text("containment")?.as_str() {
         "not-launched" => ContainmentFact::NotLaunched,
         "unknown" => ContainmentFact::Unknown {
             reason: text("containment_unknown_reason")?,
@@ -252,13 +305,25 @@ pub(crate) fn identity(
                 .get::<_, Option<Vec<u8>>>("containment_probe")
                 .map_err(sql)?
                 .map(|id| {
-                    identity::wire(db, "event", &id, &scope)
-                        .and_then(|v| v.parse().map_err(invalid))
+                    identity::wire(db, "event", &id, scope).and_then(|v| v.parse().map_err(invalid))
                 })
                 .transpose()?,
         },
         _ => return Err(invalid("containment state")),
-    };
+    })
+}
+#[allow(clippy::too_many_arguments)]
+fn identity_record(
+    db: &Connection,
+    row: &rusqlite::Row,
+    id: &[u8],
+    scope: &[u8],
+    principal: &[u8],
+    root_identity: RootIdentityState,
+    instance: RecordedIdentity,
+    containment: ContainmentFact,
+) -> StoreResult<ProcessIdentityRecord> {
+    let blob = |name: &str| row.get::<_, Vec<u8>>(name).map_err(sql);
     let version: u16 = row.get("custody_version").map_err(sql)?;
     let record = blob("custody")?;
     if version != 1 || record.is_empty() || record.len() > 1024 * 1024 {
@@ -268,15 +333,15 @@ pub(crate) fn identity(
         ));
     }
     Ok(ProcessIdentityRecord {
-        record: identity::wire(db, "lifecycle", id, &scope)?
+        record: identity::wire(db, "lifecycle", id, scope)?
             .parse()
             .map_err(invalid)?,
-        principal: identity::actor(db, &principal, &scope)?,
+        principal: identity::actor(db, principal, scope)?,
         session: row
             .get::<_, Option<Vec<u8>>>("target_session_id")
             .map_err(sql)?
             .map(|id| {
-                identity::wire(db, "session", &id, &scope).and_then(|v| v.parse().map_err(invalid))
+                identity::wire(db, "session", &id, scope).and_then(|v| v.parse().map_err(invalid))
             })
             .transpose()?,
         root_identity,
