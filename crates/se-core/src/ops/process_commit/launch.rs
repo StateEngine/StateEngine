@@ -3,10 +3,6 @@ use super::*;
 
 /// C1: process reservation and both prepared credentials precede all native
 /// creation. Hashes bind the exact delivered sec1 and sels token bytes.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn reserve<R: Snapshot>(
     kernel: &Kernel,
     plan: &LaunchPlan,
@@ -22,7 +18,52 @@ pub fn reserve<R: Snapshot>(
     let expires = now
         .checked_add(86_400_000_000)
         .ok_or_else(|| scope::unreadable("credential expiry", "clock overflow"))?;
-    let mut bodies = vec![
+    let mut bodies = initial_bodies(plan, identity, cx.admission.generation)?;
+    if let Some((connection, action)) = &plan.channel_resume {
+        // The normal SessionPrepared remains primary for launch replay. The
+        // grant is consumed in this same C1 transaction before native creation.
+        bodies.insert(
+            1,
+            EventBody::ChannelRecorded {
+                change: se_store::channel::Change::ResumeReleased {
+                    connection: connection.clone(),
+                    action: action.clone(),
+                    session: plan.session.clone(),
+                },
+            },
+        );
+    }
+    // Re-read the control grant and preparations in the same finite planning
+    // snapshot. No new native effect may coexist with an unreleased lifecycle.
+    let current = current_control(cx, plan)?;
+    revoke_sessions(current, &mut bodies)?;
+    issue_credentials(
+        plan,
+        session_hash,
+        http_hash,
+        deadline,
+        expires,
+        &mut bodies,
+    )?;
+    if let Some(body) = remote_body(plan)? {
+        bodies.push(body);
+    }
+    let intent = plan.input.intent(&plan.agent.id)?;
+    batch(
+        kernel,
+        "agent.launch",
+        plan.input.idempotency_key.clone(),
+        intent,
+        bodies,
+        cx,
+    )
+}
+fn initial_bodies(
+    plan: &LaunchPlan,
+    identity: ProcessIdentityRecord,
+    generation: u64,
+) -> Result<Vec<EventBody<InputText>>> {
+    Ok(vec![
         super::super::session_commit::prepare(super::super::session_commit::SessionPreparation {
             session: plan.session.clone(),
             agent: plan.agent.id.clone(),
@@ -56,30 +97,19 @@ pub fn reserve<R: Snapshot>(
             } else {
                 se_store::Consent::Suppressed
             },
-            generation: cx.admission.generation,
+            generation,
             expected: Expected::Absent,
         })?,
         EventBody::ProcessRegistered {
             identity: Box::new(identity),
             initial: ProcessState::Reserved,
         },
-    ];
-    if let Some((connection, action)) = &plan.channel_resume {
-        // The normal SessionPrepared remains primary for launch replay. The
-        // grant is consumed in this same C1 transaction before native creation.
-        bodies.insert(
-            1,
-            EventBody::ChannelRecorded {
-                change: se_store::channel::Change::ResumeReleased {
-                    connection: connection.clone(),
-                    action: action.clone(),
-                    session: plan.session.clone(),
-                },
-            },
-        );
-    }
-    // Re-read the control grant and preparations in the same finite planning
-    // snapshot. No new native effect may coexist with an unreleased lifecycle.
+    ])
+}
+fn current_control<R: Snapshot>(
+    cx: &mut Cx<'_, R>,
+    plan: &LaunchPlan,
+) -> Result<se_store::ControlTarget> {
     let current = scope::require_present(
         cx.read
             .control_target(plan.agent.id.clone())
@@ -93,6 +123,12 @@ pub fn reserve<R: Snapshot>(
             "stop or reconcile the target's owned lifecycle before launching again",
         ));
     }
+    Ok(current)
+}
+fn revoke_sessions(
+    current: se_store::ControlTarget,
+    bodies: &mut Vec<EventBody<InputText>>,
+) -> Result<()> {
     for old in current.sessions {
         let session = match &old.current.body {
             EventBody::SessionPrepared { session, .. } => session,
@@ -120,6 +156,16 @@ pub fn reserve<R: Snapshot>(
             reason: InputText::Inline("superseded by a newer managed launch preparation".into()),
         });
     }
+    Ok(())
+}
+fn issue_credentials(
+    plan: &LaunchPlan,
+    session_hash: [u8; 32],
+    http_hash: [u8; 32],
+    deadline: i64,
+    expires: i64,
+    bodies: &mut Vec<EventBody<InputText>>,
+) -> Result<()> {
     for (purpose, hash) in [("session", session_hash), ("http", http_hash)] {
         bodies.push(EventBody::CredentialIssued {
             credential: credential_id(plan, purpose)?,
@@ -131,6 +177,9 @@ pub fn reserve<R: Snapshot>(
             expected: Expected::Absent,
         });
     }
+    Ok(())
+}
+fn remote_body(plan: &LaunchPlan) -> Result<Option<EventBody<InputText>>> {
     if let Some(attribution) = &plan.remote {
         let se_types::Read::Present { value: profile } = &plan.control.profile else {
             return Err(scope::unreadable(
@@ -138,7 +187,7 @@ pub fn reserve<R: Snapshot>(
                 "the exact saved profile revision is unavailable",
             ));
         };
-        bodies.push(EventBody::RemoteLaunchAttributed {
+        return Ok(Some(EventBody::RemoteLaunchAttributed {
             record: se_store::remote::LaunchAttribution {
                 target: se_types::remote::RemoteTarget {
                     project: plan.project.id.clone(),
@@ -150,18 +199,11 @@ pub fn reserve<R: Snapshot>(
                 attribution: attribution.clone(),
                 details: Some(plan.details()),
             },
-        });
+        }));
     }
-    let intent = plan.input.intent(&plan.agent.id)?;
-    batch(
-        kernel,
-        "agent.launch",
-        plan.input.idempotency_key.clone(),
-        intent,
-        bodies,
-        cx,
-    )
+    Ok(None)
 }
+
 /// C2 and the tracked-helper RootCheckpoint: the previous protected revision
 /// and observation event come from the same admitted finite control read.
 pub fn transition<R: Snapshot>(

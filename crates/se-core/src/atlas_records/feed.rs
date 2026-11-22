@@ -1,6 +1,8 @@
 //! One committed record per chunk bounds transient bodies and preserves source order.
 use super::*;
-use se_store::{EventKind, HistoryDirection, HistoryQuery, ReadBudget, TranscriptFilter};
+use se_store::{
+    EventKind, HistoryDirection, HistoryQuery, ReadBudget, StorePosition, TranscriptFilter,
+};
 use std::{num::NonZeroU32, time::Duration};
 
 /// Only the host's admitted owner maintenance read feeds an index. Ordinary
@@ -26,15 +28,11 @@ pub fn next_with_paths<R: Snapshot>(
 type PathResolver<'a> = Option<
     &'a mut dyn FnMut(&crate::ops::transcript::tool::ObservedPath) -> Result<Option<RelativePath>>,
 >;
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn next_scoped<R: Snapshot>(
     read: &mut R,
     admission: &Admission,
     after: Option<se_types::EventId>,
-    mut resolve: PathResolver<'_>,
+    resolve: PathResolver<'_>,
 ) -> Result<Option<RecordFeed>> {
     if !matches!(admission.actor, Actor::Human(_)) {
         return Err(SeError::invalid(
@@ -43,59 +41,9 @@ fn next_scoped<R: Snapshot>(
         ));
     }
     let project = scope::project(admission)?;
-    let since = if let Some(after) = &after {
-        let value = scope::require_present(
-            read.event(after.clone()).map_err(|e| store_error(&e))?,
-            "Atlas feed cursor",
-            "Rebuild this project's record index from the retained authoritative history.",
-        )?;
-        if value.header.scope != Scope::Project(project.clone()) {
-            return Err(scope::unreadable(
-                "Atlas feed cursor",
-                "event belongs to another project",
-            ));
-        }
-        Some(value.position)
-    } else {
-        None
-    };
-    let mut kinds = vec![
-        EventKind::MessageSent,
-        EventKind::WorkMessageSent,
-        EventKind::MessageErased,
-        EventKind::WorkingStateSet,
-        EventKind::DecisionProposed,
-        EventKind::DecisionRatified,
-        EventKind::DecisionRejected,
-        EventKind::DecisionRetracted,
-        EventKind::DecisionSuperseded,
-    ];
-    if resolve.is_some() {
-        kinds.push(EventKind::SessionTurn);
-    }
-    let page = read
-        .history(
-            HistoryQuery {
-                agent: None,
-                session: None,
-                kinds,
-                families: vec![],
-                transcript: TranscriptFilter::Metadata,
-                since,
-                direction: HistoryDirection::OldestFirst,
-            },
-            ReadBudget {
-                page: se_types::PageRequest {
-                    after: None,
-                    limit: NonZeroU32::new(1)
-                        .ok_or_else(|| SeError::invalid("feed limit", "positive"))?,
-                    max_bytes: NonZeroU32::new(131072)
-                        .ok_or_else(|| SeError::invalid("feed bytes", "positive"))?,
-                },
-                deadline: Duration::from_millis(100),
-            },
-        )
-        .map_err(|e| store_error(&e))?;
+    let since = feed_cursor(read, &after, &project)?;
+    let kinds = feed_kinds(&resolve);
+    let page = feed_page(read, kinds, since)?;
     let complete = page.window().complete();
     let mut events = page.into_items();
     if events.is_empty() {
@@ -116,41 +64,147 @@ fn next_scoped<R: Snapshot>(
         ));
     }
     let mut changes = Vec::with_capacity(2);
-    let key = match &event.body {
-        EventBody::SessionTurn { .. } => {
-            if let Some(tool) = super::captured::successful(&event)? {
-                tool.validate_source(read, &project)?;
-                let mut mentions = Vec::new();
-                if let Some(resolve) = &mut resolve {
-                    for path in tool.paths() {
-                        if let Some(path) = resolve(path)? {
-                            let target = MentionTarget::File(path);
-                            if !mentions.contains(&target) {
-                                mentions.push(target);
-                            }
-                        }
+    let key = feed_change(read, &event, &project, &through, resolve, &mut changes)?;
+    if let Some((kind, key)) = key {
+        let pointer = RecordPointer {
+            key: RecordKey::new(key)?,
+            kind,
+            source_event: through.clone(),
+        };
+        feed_upsert(read, admission, &project, &event, pointer, &mut changes)?;
+    }
+    let feed = RecordFeed {
+        project,
+        after,
+        through,
+        changes,
+        complete,
+    };
+    feed.validate()?;
+    Ok(Some(feed))
+}
+
+fn feed_cursor<R: Snapshot>(
+    read: &mut R,
+    after: &Option<se_types::EventId>,
+    project: &ProjectId,
+) -> Result<Option<StorePosition>> {
+    if let Some(after) = after {
+        let value = scope::require_present(
+            read.event(after.clone()).map_err(|e| store_error(&e))?,
+            "Atlas feed cursor",
+            "Rebuild this project's record index from the retained authoritative history.",
+        )?;
+        if value.header.scope != Scope::Project(project.clone()) {
+            return Err(scope::unreadable(
+                "Atlas feed cursor",
+                "event belongs to another project",
+            ));
+        }
+        Ok(Some(value.position))
+    } else {
+        Ok(None)
+    }
+}
+fn feed_kinds(resolve: &PathResolver<'_>) -> Vec<EventKind> {
+    let mut kinds = vec![
+        EventKind::MessageSent,
+        EventKind::WorkMessageSent,
+        EventKind::MessageErased,
+        EventKind::WorkingStateSet,
+        EventKind::DecisionProposed,
+        EventKind::DecisionRatified,
+        EventKind::DecisionRejected,
+        EventKind::DecisionRetracted,
+        EventKind::DecisionSuperseded,
+    ];
+    if resolve.is_some() {
+        kinds.push(EventKind::SessionTurn);
+    }
+    kinds
+}
+fn feed_page<R: Snapshot>(
+    read: &mut R,
+    kinds: Vec<EventKind>,
+    since: Option<StorePosition>,
+) -> Result<se_types::Page<StoredEvent>> {
+    read.history(
+        HistoryQuery {
+            agent: None,
+            session: None,
+            kinds,
+            families: vec![],
+            transcript: TranscriptFilter::Metadata,
+            since,
+            direction: HistoryDirection::OldestFirst,
+        },
+        ReadBudget {
+            page: se_types::PageRequest {
+                after: None,
+                limit: NonZeroU32::new(1)
+                    .ok_or_else(|| SeError::invalid("feed limit", "positive"))?,
+                max_bytes: NonZeroU32::new(131072)
+                    .ok_or_else(|| SeError::invalid("feed bytes", "positive"))?,
+            },
+            deadline: Duration::from_millis(100),
+        },
+    )
+    .map_err(|e| store_error(&e))
+}
+fn feed_edit_change<R: Snapshot>(
+    read: &mut R,
+    event: &StoredEvent,
+    project: &ProjectId,
+    through: &se_types::EventId,
+    mut resolve: PathResolver<'_>,
+    changes: &mut Vec<RecordFeedChange>,
+) -> Result<()> {
+    if let Some(tool) = super::captured::successful(event)? {
+        tool.validate_source(read, project)?;
+        let mut mentions = Vec::new();
+        if let Some(resolve) = &mut resolve {
+            for path in tool.paths() {
+                if let Some(path) = resolve(path)? {
+                    let target = MentionTarget::File(path);
+                    if !mentions.contains(&target) {
+                        mentions.push(target);
                     }
                 }
-                if !mentions.is_empty() {
-                    let record = FeedRecord {
-                        pointer: RecordPointer {
-                            key: tool.key()?,
-                            kind: RecordKind::Edit,
-                            source_event: through.clone(),
-                        },
-                        project: project.clone(),
-                        actor: Some(tool.actor()),
-                        occurred_unix_ms: receipt::event_time(&event) / 1000,
-                        title: tool.description(),
-                        body: tool.description(),
-                        body_truncated: false,
-                        visibility: audience(&event),
-                        mentions,
-                    };
-                    record.validate()?;
-                    changes.push(RecordFeedChange::Upsert(record));
-                }
             }
+        }
+        if !mentions.is_empty() {
+            let record = FeedRecord {
+                pointer: RecordPointer {
+                    key: tool.key()?,
+                    kind: RecordKind::Edit,
+                    source_event: through.clone(),
+                },
+                project: project.clone(),
+                actor: Some(tool.actor()),
+                occurred_unix_ms: receipt::event_time(event) / 1000,
+                title: tool.description(),
+                body: tool.description(),
+                body_truncated: false,
+                visibility: audience(event),
+                mentions,
+            };
+            record.validate()?;
+            changes.push(RecordFeedChange::Upsert(record));
+        }
+    }
+    Ok(())
+}
+fn feed_change<'a, R: Snapshot>(
+    read: &mut R,
+    event: &'a StoredEvent,
+    project: &ProjectId,
+    through: &se_types::EventId,
+    resolve: PathResolver<'_>,
+    changes: &mut Vec<RecordFeedChange>,
+) -> Result<Option<(RecordKind, &'a str)>> {
+    Ok(match &event.body {
+        EventBody::SessionTurn { .. } => {
+            feed_edit_change(read, event, project, through, resolve, changes)?;
             None
         }
         EventBody::MessageSent {
@@ -216,66 +270,60 @@ fn next_scoped<R: Snapshot>(
                 "history returned an unrequested record kind",
             ));
         }
+    })
+}
+fn feed_upsert<R: Snapshot>(
+    read: &mut R,
+    admission: &Admission,
+    project: &ProjectId,
+    event: &StoredEvent,
+    pointer: RecordPointer,
+    changes: &mut Vec<RecordFeedChange>,
+) -> Result<()> {
+    let viewer = match &admission.actor {
+        Actor::Human(id) => AtlasPrincipal::Human(id.clone()),
+        _ => {
+            return Err(SeError::invalid(
+                "Atlas feed owner",
+                "a human maintenance principal",
+            ));
+        }
     };
-    if let Some((kind, key)) = key {
-        let pointer = RecordPointer {
-            key: RecordKey::new(key)?,
-            kind,
-            source_event: through.clone(),
-        };
-        let viewer = match &admission.actor {
-            Actor::Human(id) => AtlasPrincipal::Human(id.clone()),
-            _ => {
-                return Err(SeError::invalid(
-                    "Atlas feed owner",
-                    "a human maintenance principal",
-                ));
-            }
-        };
-        let document = RecordAccess::new(read, admission).load(&project, &viewer, &pointer)?;
-        match document {
-            Read::Present { value } => {
-                let mut body = value.body;
-                let truncated = body.len() > 65536;
-                if truncated {
-                    let mut end = 65536;
-                    while !body.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    body.truncate(end);
+    let document = RecordAccess::new(read, admission).load(project, &viewer, &pointer)?;
+    match document {
+        Read::Present { value } => {
+            let mut body = value.body;
+            let truncated = body.len() > 65536;
+            if truncated {
+                let mut end = 65536;
+                while !body.is_char_boundary(end) {
+                    end -= 1;
                 }
-                let record = FeedRecord {
-                    pointer,
-                    project: project.clone(),
-                    actor: value.actor,
-                    occurred_unix_ms: value.at,
-                    title: excerpt::line(&body, None),
-                    visibility: audience(&event),
-                    body,
-                    body_truncated: truncated,
-                    mentions: explicit_mentions(read, &event, &project)?,
-                };
-                record.validate()?;
-                changes.push(RecordFeedChange::Upsert(record));
+                body.truncate(end);
             }
-            // Historical revisions already replaced by a later committed record
-            // are skipped. They never remove a newer cache entry on replay.
-            Read::Absent { .. } => (),
-            Read::Unknown { what } => return Err(scope::unreadable("Atlas record feed", &what)),
-            Read::Unreadable { source, reason, .. } => {
-                return Err(scope::unreadable(&source, &reason));
-            }
+            let record = FeedRecord {
+                pointer,
+                project: project.clone(),
+                actor: value.actor,
+                occurred_unix_ms: value.at,
+                title: excerpt::line(&body, None),
+                visibility: audience(event),
+                body,
+                body_truncated: truncated,
+                mentions: explicit_mentions(read, event, project)?,
+            };
+            record.validate()?;
+            changes.push(RecordFeedChange::Upsert(record));
+        }
+        // Historical revisions already replaced by a later committed record
+        // are skipped. They never remove a newer cache entry on replay.
+        Read::Absent { .. } => (),
+        Read::Unknown { what } => return Err(scope::unreadable("Atlas record feed", &what)),
+        Read::Unreadable { source, reason, .. } => {
+            return Err(scope::unreadable(&source, &reason));
         }
     }
-    let feed = RecordFeed {
-        project,
-        after,
-        through,
-        changes,
-        complete,
-    };
-    feed.validate()?;
-    Ok(Some(feed))
+    Ok(())
 }
 
 fn explicit_mentions<R: Snapshot>(
