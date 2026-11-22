@@ -16,20 +16,6 @@ impl LaunchCoordinator {
             plan.profile.model.as_deref(),
             plan.profile.harness.as_deref(),
         )?;
-        let harness = plan.profile.harness.clone();
-        let configuration = self.options.configuration.clone();
-        let selected_file = self.configuration_file.clone();
-        self.store
-            .pool
-            .run_owned(deadline, move || {
-                super::launch_util::resolve_provider(
-                    &configuration,
-                    se_types::Provider::Acp,
-                    selected_file.as_deref(),
-                    harness.as_deref(),
-                )
-            })
-            .await?;
         // Refuse known capture/budget failures before stopping an incumbent.
         // Launch reads again after final capture; a live tail is never frozen here.
         if let Err(failure) = self.canonical_replay(plan, admission, deadline).await {

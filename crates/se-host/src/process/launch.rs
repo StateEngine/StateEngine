@@ -3,13 +3,21 @@
 use super::launch_util::{call, policy, resolve_provider_launch, token, wait};
 use super::*;
 use crate::{HarnessRequest, ProbeRequest, SessionIdentity, client::lease::Deadline};
-use se_core::ops::{LaunchResult, process_commit};
+use se_core::ops::{LaunchResult, agent_launch::LaunchPlan, process_commit};
 use se_proc::{CheckpointKind, LaunchProgress, LaunchStart, ProcessRuntime};
 use se_store::{ProcessState, ProjectionRecord, Snapshot};
 use se_types::{Body, Result};
 use sha2::{Digest, Sha256};
 
 pub(super) use super::owned::Work;
+/// What a launch would refuse before any native effect, checked by a forced
+/// relaunch before it stops the live agent.
+pub(super) struct Qualified {
+    pub command: super::launch_util::ProviderExecutable,
+    pub window: Option<se_proc::WindowSpec>,
+    pub mode: se_proc::LaunchMode,
+    pub policy: se_proc::LaunchPolicy,
+}
 /// Proof that a new launch is choosing a Codex login. Its private field means
 /// only this file can make one, so no later reader can consult the host.
 pub(super) struct NewLaunch(());
@@ -29,22 +37,6 @@ impl LaunchCoordinator {
                 "a recovered lifecycle cannot create another provider",
             )
         })?;
-        let configuration = self.options.configuration.clone();
-        let selected = plan.clone();
-        let window = self
-            .store
-            .pool
-            .run_owned(deadline, move || {
-                super::window::select(&selected, &configuration)
-            })
-            .await?;
-        let mode = if window.is_some() {
-            se_proc::LaunchMode::Window
-        } else if plan.profile.provider == se_store::Provider::SeCode {
-            se_proc::LaunchMode::HeadlessConsole
-        } else {
-            se_proc::LaunchMode::Headless
-        };
         let harness = self.harness_for(plan.profile.provider)?;
         if !plan.control.processes.is_empty()
             || plan
@@ -68,91 +60,12 @@ impl LaunchCoordinator {
         }
         self.check_resume_source(&plan, &work.admission, deadline)
             .await?;
-        let provider = match plan.profile.provider {
-            se_store::Provider::Codex => se_types::Provider::Codex,
-            se_store::Provider::Claude => se_types::Provider::Claude,
-            se_store::Provider::SeCode => se_types::Provider::SeCode,
-            se_store::Provider::Acp => se_types::Provider::Acp,
-        };
-        let configuration = self.options.configuration.clone();
-        let configuration_file = self.configuration_file.clone();
-        let harness_name = plan.profile.harness.clone();
-        let (executable, qualification, package) = self
-            .store
-            .pool
-            .run_owned(deadline, move || {
-                let command = resolve_provider_launch(
-                    &configuration,
-                    provider,
-                    configuration_file.as_deref(),
-                    harness_name.as_deref(),
-                )?;
-                // Reuse this existing filesystem job instead of adding queue
-                // round trips to the warm qualification path.
-                let qualification = if provider == se_types::Provider::Codex {
-                    se_proc::native_ipc::ExecutableStamp::observe(&command.executable)
-                        .map_err(|e| error("Codex qualification image", e))?
-                } else {
-                    None
-                };
-                Ok((command.executable, qualification, command.package))
-            })
-            .await?;
+        let provider = plan.details().provider;
+        let qualified = self.qualify(&plan, deadline).await?;
+        let mode = qualified.mode;
         #[cfg(unix)]
-        let alias_parent = {
-            let selected = executable.clone();
-            let (image, script) = self
-                .store
-                .pool
-                .run_owned(deadline, move || {
-                    let image = se_proc::canonicalize_path(&selected)
-                        .map_err(|e| error("provider alias image", e))?;
-                    let script = super::launch_util::script_launcher(&selected)?;
-                    Ok((image, script))
-                })
-                .await?;
-            if script {
-                // A successful version probe does not make a script's image
-                // stable: its shebang interpreter can exec another runtime.
-                true
-            } else if image == executable {
-                false
-            } else {
-                // A plain native-provider symlink qualifies through its image
-                // too. Multicall dispatch still needs its invoked path.
-                match harness
-                    .probe(
-                        ProbeRequest {
-                            kind: harness.kind(),
-                            command: image,
-                        },
-                        call(self.store.generation, deadline)?,
-                    )
-                    .await
-                {
-                    Ok(_) => false,
-                    Err(error)
-                        if matches!(
-                            error.body.detail(),
-                            se_types::Detail::ProviderIncompatible(_)
-                                | se_types::Detail::UsageInvalidValue(_)
-                        ) =>
-                    {
-                        true
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-        };
-        harness
-            .probe_direct(
-                ProbeRequest {
-                    kind: harness.kind(),
-                    command: executable.clone(),
-                },
-                qualification,
-                call(self.store.generation, deadline)?,
-            )
+        let alias_parent = self
+            .alias_parent(harness, &qualified.command.executable, deadline)
             .await?;
         let identity = SessionIdentity {
             project: plan.project.id.clone(),
@@ -163,21 +76,12 @@ impl LaunchCoordinator {
         let bearer = token("sels-")?;
         let session_hash = Sha256::digest(pin.expose()).into();
         let http_hash = Sha256::digest(bearer.expose()).into();
-        let policy = {
-            let selected = plan.clone();
-            let home = self.options.home.clone();
-            let configuration = self.options.configuration.clone();
-            self.store
-                .pool
-                .run_owned(deadline, move || policy(&selected, &home, &configuration))
-                .await?
-        };
         let request = HarnessRequest {
             identity,
-            executable: NativePath::from_local(executable)?,
+            executable: NativePath::from_local(qualified.command.executable)?,
             cwd: plan.cwd.clone(),
             profile: plan.profile.clone(),
-            policy: policy.clone(),
+            policy: qualified.policy.clone(),
             mode,
             resume: plan.conversation.clone(),
             transcript_roots: plan.control.moved_from_roots.clone(),
@@ -209,7 +113,7 @@ impl LaunchCoordinator {
         let mut invocation = harness
             .invocation(&request, call(self.store.generation, deadline)?)
             .await?;
-        super::launch_util::route_temporary_files(&mut invocation.environment, &policy);
+        super::launch_util::route_temporary_files(&mut invocation.environment, &qualified.policy);
         // A Codex agent's own process is a forwarder; the Codex executable, its
         // package environment and any alias supervisor belong to the login's
         // shared server instead.
@@ -229,7 +133,7 @@ impl LaunchCoordinator {
                     entries: settings.environment,
                 },
             };
-            if let Some(package) = package {
+            if let Some(package) = qualified.command.package {
                 package
                     .apply(&mut server.environment)
                     .map_err(|cause| error("Codex package environment", cause))?;
@@ -389,8 +293,8 @@ impl LaunchCoordinator {
                 stderr: None,
             },
             mode,
-            window,
-            policy,
+            window: qualified.window,
+            policy: qualified.policy,
             deadline: deadline.at(),
             notifications: work.wake.clone(),
         };
@@ -702,5 +606,124 @@ impl LaunchCoordinator {
             })
             .await?;
         Ok(receipt.primary_event)
+    }
+    pub(super) async fn qualify(
+        &self,
+        plan: &LaunchPlan,
+        deadline: &Deadline,
+    ) -> Result<Qualified> {
+        let (selected, home) = (plan.clone(), self.options.home.clone());
+        let configuration = self.options.configuration.clone();
+        let (window, policy) = self
+            .store
+            .pool
+            .run_owned(deadline, move || {
+                let window = super::window::select(&selected, &configuration)?;
+                Ok((window, policy(&selected, &home, &configuration)?))
+            })
+            .await?;
+        let mode = if window.is_some() {
+            se_proc::LaunchMode::Window
+        } else if plan.profile.provider == se_store::Provider::SeCode {
+            se_proc::LaunchMode::HeadlessConsole
+        } else {
+            se_proc::LaunchMode::Headless
+        };
+        let harness = self.harness_for(plan.profile.provider)?;
+        let provider = plan.details().provider;
+        let configuration = self.options.configuration.clone();
+        let configuration_file = self.configuration_file.clone();
+        let harness_name = plan.profile.harness.clone();
+        let (command, qualification) = self
+            .store
+            .pool
+            .run_owned(deadline, move || {
+                let command = resolve_provider_launch(
+                    &configuration,
+                    provider,
+                    configuration_file.as_deref(),
+                    harness_name.as_deref(),
+                )?;
+                // Reuse this existing filesystem job instead of adding queue
+                // round trips to the warm qualification path.
+                let qualification = if provider == se_types::Provider::Codex {
+                    se_proc::native_ipc::ExecutableStamp::observe(&command.executable)
+                        .map_err(|e| error("Codex qualification image", e))?
+                } else {
+                    None
+                };
+                Ok((command, qualification))
+            })
+            .await?;
+        harness
+            .probe_direct(
+                ProbeRequest {
+                    kind: harness.kind(),
+                    command: command.executable.clone(),
+                },
+                qualification,
+                call(self.store.generation, deadline)?,
+            )
+            .await?;
+        Ok(Qualified {
+            command,
+            window,
+            mode,
+            policy,
+        })
+    }
+
+    /// Whether the provider's invoked path must be kept as an alias: a script,
+    /// or a link whose resolved image does not qualify on its own.
+    #[cfg(unix)]
+    pub(super) async fn alias_parent(
+        &self,
+        harness: &dyn crate::Harness,
+        executable: &std::path::Path,
+        deadline: &Deadline,
+    ) -> Result<bool> {
+        let selected = executable.to_path_buf();
+        let (image, script) = self
+            .store
+            .pool
+            .run_owned(deadline, move || {
+                let image = se_proc::canonicalize_path(&selected)
+                    .map_err(|e| error("provider alias image", e))?;
+                let script = super::launch_util::script_launcher(&selected)?;
+                Ok((image, script))
+            })
+            .await?;
+        if script {
+            // A successful version probe does not make a script's image
+            // stable: its shebang interpreter can exec another runtime.
+            Ok(true)
+        } else if image == executable {
+            Ok(false)
+        } else {
+            // A plain native-provider symlink qualifies through its image
+            // too. Multicall dispatch still needs its invoked path.
+            match harness
+                .probe(
+                    ProbeRequest {
+                        kind: harness.kind(),
+                        command: image,
+                    },
+                    call(self.store.generation, deadline)?,
+                )
+                .await
+            {
+                Ok(_) => Ok(false),
+                Err(error)
+                    if matches!(
+                        error.body.detail(),
+                        se_types::Detail::ProviderIncompatible(_)
+                            | se_types::Detail::UsageInvalidValue(_)
+                    ) =>
+                {
+                    Ok(true)
+                }
+                Err(error) => Err(error),
+            }
+        }
     }
 }
