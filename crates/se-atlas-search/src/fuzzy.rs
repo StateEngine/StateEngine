@@ -134,7 +134,9 @@ pub fn spellings(snapshot: &ReadSnapshot<'_>, word: &str) -> Result<Vec<(i64, St
     })?;
     for row in rows {
         let (id, text) = row?;
-        out.matches.push(found(id, &text, MatchKind::Compact));
+        if is_live(snapshot, id)? {
+            out.matches.push(found(id, &text, MatchKind::Compact));
+        }
     }
     if typo_eligible(word) {
         typo_candidates(snapshot, word, &compact, &mut out)?;

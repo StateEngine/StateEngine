@@ -254,7 +254,7 @@ fn callers(
         next.sort_unstable();
         found.extend(next.iter().map(|file| (level, via, *file)));
         if found.len() >= MAX_WALK || out.deadline_reached {
-            out.callers.more_is_floor = found.len() >= MAX_WALK;
+            out.callers.more_is_floor = true;
             break;
         }
         frontier = next;
