@@ -46,10 +46,6 @@ fn same_paths(
     let observed: BTreeSet<_> = actual.map(PathBuf::from).collect();
     expected == observed && observed.len() == actual_count
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn check_readback(plan: &ValidatedUninstallPlan, effects: &UninstallEffects) -> Result<bool> {
     let recovery_directories = plan.recovery_directories();
     if !same_paths(
@@ -62,6 +58,30 @@ fn check_readback(plan: &ValidatedUninstallPlan, effects: &UninstallEffects) -> 
             "one finite native recovery-sibling inventory for every exact planned parent directory",
         ));
     }
+    check_recovery_inventories(plan, effects)?;
+    check_outcomes(plan, effects)?;
+    let (files_complete, directories_complete, integrations_complete, recovery_complete) =
+        outcome_completes(effects);
+    Ok(files_complete
+        && recovery_complete
+        && directories_complete
+        && integrations_complete
+        && effects
+            .stops
+            .iter()
+            .all(|stop| stop.complete && stop.witness.state == WitnessState::Witnessed)
+        && effects
+            .revocations
+            .iter()
+            .all(|revocation| revocation.witness.state == WitnessState::Witnessed)
+        && effects.path_complete
+        && effects.path.witness.state == WitnessState::Witnessed)
+}
+
+fn check_recovery_inventories(
+    plan: &ValidatedUninstallPlan,
+    effects: &UninstallEffects,
+) -> Result<()> {
     let targets: BTreeSet<_> = plan
         .files()
         .iter()
@@ -123,26 +143,9 @@ fn check_readback(plan: &ValidatedUninstallPlan, effects: &UninstallEffects) -> 
             }
         }
     }
-    let recovery_complete = effects.recovery.iter().all(|entry| {
-        entry.witness.state == WitnessState::Witnessed
-            && match &entry.temporary_files {
-                se_types::Read::Absent { .. } => true,
-                se_types::Read::Present { value: files } => files.iter().all(|file| {
-                    matches!(
-                        file.outcome,
-                        FileOutcome::Removed | FileOutcome::AlreadyAbsent
-                    ) && file.witness.state == WitnessState::Witnessed
-                }),
-                _ => false,
-            }
-            && match &entry.copies {
-                se_types::Read::Absent { .. } => true,
-                se_types::Read::Present { value } => value.iter().all(|copy| {
-                    copy.restored_to.is_some() && copy.witness.state == WitnessState::Witnessed
-                }),
-                _ => false,
-            }
-    });
+    Ok(())
+}
+fn check_outcomes(plan: &ValidatedUninstallPlan, effects: &UninstallEffects) -> Result<()> {
     if !same_paths(
         plan.files().iter().map(|file| PathBuf::from(&file.path)),
         effects.install_files.iter().map(|file| file.path.clone()),
@@ -171,6 +174,9 @@ fn check_readback(plan: &ValidatedUninstallPlan, effects: &UninstallEffects) -> 
             },
         )));
     }
+    Ok(())
+}
+fn outcome_completes(effects: &UninstallEffects) -> (bool, bool, bool, bool) {
     let files_complete = effects.install_files.iter().all(|file| {
         matches!(
             file.outcome,
@@ -191,20 +197,32 @@ fn check_readback(plan: &ValidatedUninstallPlan, effects: &UninstallEffects) -> 
             FileOutcome::Removed | FileOutcome::AlreadyAbsent
         ) && entry.witness.state == WitnessState::Witnessed
     });
-    Ok(files_complete
-        && recovery_complete
-        && directories_complete
-        && integrations_complete
-        && effects
-            .stops
-            .iter()
-            .all(|stop| stop.complete && stop.witness.state == WitnessState::Witnessed)
-        && effects
-            .revocations
-            .iter()
-            .all(|revocation| revocation.witness.state == WitnessState::Witnessed)
-        && effects.path_complete
-        && effects.path.witness.state == WitnessState::Witnessed)
+    let recovery_complete = effects.recovery.iter().all(|entry| {
+        entry.witness.state == WitnessState::Witnessed
+            && match &entry.temporary_files {
+                se_types::Read::Absent { .. } => true,
+                se_types::Read::Present { value: files } => files.iter().all(|file| {
+                    matches!(
+                        file.outcome,
+                        FileOutcome::Removed | FileOutcome::AlreadyAbsent
+                    ) && file.witness.state == WitnessState::Witnessed
+                }),
+                _ => false,
+            }
+            && match &entry.copies {
+                se_types::Read::Absent { .. } => true,
+                se_types::Read::Present { value } => value.iter().all(|copy| {
+                    copy.restored_to.is_some() && copy.witness.state == WitnessState::Witnessed
+                }),
+                _ => false,
+            }
+    });
+    (
+        files_complete,
+        directories_complete,
+        integrations_complete,
+        recovery_complete,
+    )
 }
 
 fn unobserved() -> Witness {

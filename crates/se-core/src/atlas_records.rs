@@ -4,7 +4,8 @@ mod excerpt;
 pub mod feed;
 use crate::{ops::receipt, scope, store_error::store_error};
 use se_store::{
-    Actor, Admission, EventBody, Scope, Snapshot, StoreErrorCode, StoredEvent, StoredText,
+    Actor, Admission, EventBody, EventHeader, Scope, Snapshot, StoreErrorCode, StoredEvent,
+    StoredText,
 };
 use se_types::{ProjectId, Read, Result, SeError, code::*};
 
@@ -115,36 +116,14 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
             }),
         }
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     fn load(
         &mut self,
         project: &ProjectId,
         viewer: &AtlasPrincipal,
         pointer: &RecordPointer,
     ) -> Result<Read<Document>> {
-        let expected = match viewer {
-            AtlasPrincipal::Agent(id) => Actor::Agent(id.clone()),
-            AtlasPrincipal::Human(id) => Actor::Human(id.clone()),
-            AtlasPrincipal::Guest => Actor::Guest,
-            AtlasPrincipal::Remote(_) => {
-                return Err(SeError::invalid(
-                    "Atlas record viewer",
-                    "an admitted local Owner or agent; remote grants cover list, watch and send only",
-                ));
-            }
-        };
-        if self.admission.scope != Scope::Project(project.clone())
-            || self.admission.actor != expected
-        {
-            return Err(SeError::invalid(
-                "Atlas record viewer",
-                "the same admitted project and principal",
-            ));
-        }
-        let source = match visible(self.read.event(pointer.source_event.clone()))? {
+        admitted_viewer(self.admission, viewer, project)?;
+        let source = match self.source_event(pointer, project)? {
             Read::Present { value } => value,
             Read::Absent { checked } => return Ok(Read::Absent { checked }),
             Read::Unknown { what } => return Ok(Read::Unknown { what }),
@@ -160,14 +139,6 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
                 });
             }
         };
-        if source.header.scope != Scope::Project(project.clone())
-            || source.header.event != pointer.source_event
-        {
-            return Err(scope::unreadable(
-                "Atlas record authority",
-                "source event differs from its project or ID",
-            ));
-        }
         if matches!(
             &source.body,
             EventBody::MessageSent {
@@ -225,20 +196,7 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
                 text(body)?
             }
             (EventBody::SessionTurn { .. }, RecordKind::Edit) => {
-                let Some(tool) = captured else {
-                    return Ok(stale());
-                };
-                tool.validate_source(self.read, project)?;
-                if tool.key()? != pointer.key {
-                    return Ok(stale());
-                }
-                return Ok(Read::Present {
-                    value: Document {
-                        actor: Some(tool.actor()),
-                        at,
-                        body: tool.description(),
-                    },
-                });
+                return self.edit_document(project, pointer, captured, at);
             }
             // Chat/transcript text is never an edit record. Git commit bodies
             // are supplied by Atlas's separately labelled history adapter.
@@ -248,7 +206,56 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
                 });
             }
         };
-        let principal = match &source.header.actor {
+        self.record_document(&source.header, at, body)
+    }
+    fn source_event(
+        &mut self,
+        pointer: &RecordPointer,
+        project: &ProjectId,
+    ) -> Result<Read<StoredEvent>> {
+        let source = match visible(self.read.event(pointer.source_event.clone()))? {
+            Read::Present { value } => value,
+            read => return Ok(read),
+        };
+        if source.header.scope != Scope::Project(project.clone())
+            || source.header.event != pointer.source_event
+        {
+            return Err(scope::unreadable(
+                "Atlas record authority",
+                "source event differs from its project or ID",
+            ));
+        }
+        Ok(Read::Present { value: source })
+    }
+    fn edit_document(
+        &mut self,
+        project: &ProjectId,
+        pointer: &RecordPointer,
+        captured: Option<captured::Successful>,
+        at: i64,
+    ) -> Result<Read<Document>> {
+        let Some(tool) = captured else {
+            return Ok(stale());
+        };
+        tool.validate_source(self.read, project)?;
+        if tool.key()? != pointer.key {
+            return Ok(stale());
+        }
+        Ok(Read::Present {
+            value: Document {
+                actor: Some(tool.actor()),
+                at,
+                body: tool.description(),
+            },
+        })
+    }
+    fn record_document(
+        &mut self,
+        header: &EventHeader,
+        at: i64,
+        body: String,
+    ) -> Result<Read<Document>> {
+        let principal = match &header.actor {
             Actor::Guest => return Err(scope::unreadable("Atlas record", "guest cannot author")),
             Actor::Agent(id) => AtlasPrincipal::Agent(id.clone()),
             Actor::Human(id) => AtlasPrincipal::Human(id.clone()),
@@ -265,7 +272,7 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
                 });
             }
         };
-        let actor = match visible(self.read.principal(source.header.actor.clone()))? {
+        let actor = match visible(self.read.principal(header.actor.clone()))? {
             Read::Present { value } => {
                 let name = match value.current.body {
                     EventBody::PrincipalRegistered { name, .. }
@@ -317,4 +324,28 @@ fn stale<T>() -> Read<T> {
     Read::Absent {
         checked: "cached pointer was superseded by the authoritative record revision".into(),
     }
+}
+fn admitted_viewer(
+    admission: &Admission,
+    viewer: &AtlasPrincipal,
+    project: &ProjectId,
+) -> Result<()> {
+    let expected = match viewer {
+        AtlasPrincipal::Agent(id) => Actor::Agent(id.clone()),
+        AtlasPrincipal::Human(id) => Actor::Human(id.clone()),
+        AtlasPrincipal::Guest => Actor::Guest,
+        AtlasPrincipal::Remote(_) => {
+            return Err(SeError::invalid(
+                "Atlas record viewer",
+                "an admitted local Owner or agent; remote grants cover list, watch and send only",
+            ));
+        }
+    };
+    if admission.scope != Scope::Project(project.clone()) || admission.actor != expected {
+        return Err(SeError::invalid(
+            "Atlas record viewer",
+            "the same admitted project and principal",
+        ));
+    }
+    Ok(())
 }
