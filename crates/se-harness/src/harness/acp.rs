@@ -78,6 +78,18 @@ impl AcpHarness {
         }
         Ok(profile)
     }
+    fn attach_servers(&self, request: &HarnessRequest) -> Result<Vec<serde_json::Value>> {
+        let servers = vec![json!({
+            "name": "stateengine",
+            "command": "se",
+            "args": ["mcp"],
+            "env": [
+                {"name": "SE_SESSION", "value": request.identity.session.as_str()},
+                {"name": "SE_HOME", "value": self.home.to_str().ok_or_else(|| error("the state home path is not valid UTF-8"))?}
+            ]
+        })];
+        Ok(servers)
+    }
 }
 pub fn bound(binding: &HarnessBinding) -> Result<&Arc<Binding>> {
     binding
@@ -182,10 +194,6 @@ impl Harness for AcpHarness {
             })
         })
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     fn attach<'a>(
         &'a self,
         attach: HarnessAttach,
@@ -231,26 +239,8 @@ impl Harness for AcpHarness {
                 cancellation: cx.cancellation.clone(),
             };
             binding.session.initialize(remaining()).await?;
-            let servers = vec![json!({
-                "name": "stateengine",
-                "command": "se",
-                "args": ["mcp"],
-                "env": [
-                    {"name": "SE_SESSION", "value": request.identity.session.as_str()},
-                    {"name": "SE_HOME", "value": self.home.to_str().ok_or_else(|| error("the state home path is not valid UTF-8"))?}
-                ]
-            })];
-            let replay: Option<(&str, Vec<CapturedMessage>)> = match &request.resume {
-                Read::Present { value } => Some((
-                    value.as_str(),
-                    request.replay.clone().ok_or_else(|| {
-                        error("complete committed replay is required before resuming")
-                    })?,
-                )),
-                Read::Absent { .. } => None,
-                Read::Unreadable { reason, .. } => return Err(error(reason)),
-                Read::Unknown { what } => return Err(error(what)),
-            };
+            let servers = self.attach_servers(&request)?;
+            let replay = attach_replay(&request)?;
             let settings = self.configuration.acp_settings(
                 request.profile.harness.as_deref(),
                 &request.profile.named_profile,
@@ -419,4 +409,20 @@ impl AdapterBinding for Arc<Binding> {
     fn policy_notice(&self) -> Result<Option<String>> {
         Ok(Some(self.session.observe()?.policy_notice.into()))
     }
+}
+
+fn attach_replay(request: &HarnessRequest) -> Result<Option<(&str, Vec<CapturedMessage>)>> {
+    let replay: Option<(&str, Vec<CapturedMessage>)> = match &request.resume {
+        Read::Present { value } => Some((
+            value.as_str(),
+            request
+                .replay
+                .clone()
+                .ok_or_else(|| error("complete committed replay is required before resuming"))?,
+        )),
+        Read::Absent { .. } => None,
+        Read::Unreadable { reason, .. } => return Err(error(reason)),
+        Read::Unknown { what } => return Err(error(what)),
+    };
+    Ok(replay)
 }
