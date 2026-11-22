@@ -39,7 +39,7 @@ pub(super) fn reconcile_paths(plan: &ValidatedUninstallPlan, effects: &mut Unins
         None,
     );
 }
-fn converted(edit: &UninstallPathEdit) -> Result<PathEdit> {
+pub(super) fn converted(edit: &UninstallPathEdit) -> Result<PathEdit> {
     Ok(PathEdit {
         target: edit.target.clone(),
         before_sha256: edit

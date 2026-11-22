@@ -6,12 +6,9 @@ pub(super) fn resolved(entry: &RecoveryDirectoryEffect) -> bool {
     entry.witness.state == WitnessState::Witnessed
         && match &entry.temporary_files {
             Read::Absent { .. } => true,
-            Read::Present { value } => value.iter().all(|file| {
-                matches!(
-                    file.outcome,
-                    FileOutcome::Removed | FileOutcome::AlreadyAbsent
-                ) && file.witness.state == WitnessState::Witnessed
-            }),
+            Read::Present { value } => value
+                .iter()
+                .all(|file| gone(&file.outcome) && file.witness.state == WitnessState::Witnessed),
             _ => false,
         }
         && match &entry.copies {
@@ -137,16 +134,7 @@ fn associate(plan: &ValidatedUninstallPlan, source: &str) -> Result<Option<(Stri
         let Ok(text) = std::str::from_utf8(&bytes) else {
             continue;
         };
-        let edit = PathEdit {
-            target: edit.target.clone(),
-            before_sha256: edit
-                .before_sha256
-                .as_ref()
-                .map(|value| Sha256::parse_hex(value))
-                .transpose()?,
-            block: edit.block.clone(),
-            before_bytes: edit.before_bytes,
-        };
+        let edit = super::path::converted(edit)?;
         // Only an exact inserted block plus the manifest's recorded prior bytes
         // proves this profile association; later user edits make proof unavailable.
         let Ok(change) = remove_profile_block(&edit.target, Some(text), &edit) else {
@@ -195,12 +183,10 @@ pub(super) fn merge(
             && let Read::Present { value: previous } = &old.temporary_files
             && let Read::Present { value: current } = &mut directory.temporary_files
         {
-            for file in previous.iter().filter(|file| {
-                matches!(
-                    file.outcome,
-                    FileOutcome::Removed | FileOutcome::AlreadyAbsent
-                ) && file.witness.state == WitnessState::Witnessed
-            }) {
+            for file in previous
+                .iter()
+                .filter(|file| gone(&file.outcome) && file.witness.state == WitnessState::Witnessed)
+            {
                 if !current.iter().any(|fresh| fresh.path == file.path) {
                     current.push(file.clone());
                 }

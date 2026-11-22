@@ -19,10 +19,13 @@ use effects::*;
 use image::remove_image;
 #[path = "uninstall/recovery.rs"]
 mod recovery;
+#[path = "uninstall/settle.rs"]
+mod settle;
 #[path = "uninstall/shutdown.rs"]
 mod shutdown;
 use path::reconcile_paths;
 use recovery::recover;
+use settle::{remove_owned_files, settle};
 
 pub(super) fn execute(
     cx: &Bootstrap,
@@ -38,17 +41,22 @@ pub(super) fn execute(
 mod reinstall;
 pub(crate) use reinstall::remove_for_reinstall;
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-#[cfg_attr(
-    windows,
-    expect(
-        clippy::cognitive_complexity,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )
-)]
+/// The exact owned installation record, held from admission until its
+/// witnessed removal or the end of this attempt.
+struct HeldRecord {
+    file: Option<OwnedFile>,
+    path: PathBuf,
+    digest: [u8; 32],
+}
+
+/// The running image the admitted plan uniquely owns.
+struct RunningImage<'p> {
+    installed: &'p UninstallFile,
+    /// The record's Windows image was natively proved absent, not unreadable.
+    #[cfg(windows)]
+    missing: bool,
+}
+
 fn execute_inner(
     cx: &Bootstrap,
     key: &se_types::IdempotencyKey,
@@ -56,53 +64,12 @@ fn execute_inner(
     reinstall: Option<(&se_proc::NativeInstallationClaim, &Path)>,
     confirmed: bool,
 ) -> Result<(ValidatedUninstallPlan, UninstallEffects, std::fs::File)> {
-    // Store absence and a complete inventory with no unresolved custody are
-    // distinct observations. Retained exit history is never live custody;
-    // endpoint absence never supplies an empty-process proof.
-    let observe = |require_closed: bool| -> Result<_> {
-        Ok(match route::setup::inspect(&cx.home, clock())? {
-            route::setup::Setup::Absent(_) => (
-                route::owner::observe(&[])?,
-                "runtime store absence measured",
-            ),
-            route::setup::Setup::Present(reader) => {
-                let files = route::files::Files::open(&cx.home)
-                    .map_err(|e| se_core::store_error::store_error(&e))?;
-                let inventory = route::owner::inventory(&reader, &files)?;
-                if require_closed && let Some(first) = inventory.processes.first() {
-                    return Err(SeError::new(Detail::StateConflict(details::StateConflict {
-                    subject: "uninstall unresolved process custody".into(),
-                    reason: format!("The complete home-wide inventory contains {} unresolved custody records; process {} in project {} {}. Retained completed exit history does not block uninstall.",
-                        inventory.processes.len(), first.identity.record, first.project,
-                        if first.state == se_store::ProcessState::Exited {
-                            "has a durable exit but its session or capture cleanup is unfinished"
-                        } else {
-                            "has not durably completed or released its native custody"
-                        }),
-                    next_step: "Run se down with this same --home to finish ordinary stop and session/capture cleanup, then retry se uninstall; if down reports unproved custody, resolve that named process through se stop before retrying. No installation effects were attempted".into(),
-                })));
-                }
-                (
-                    route::owner::from_inventory(&inventory)?,
-                    if inventory.has_process_records {
-                        "initialized store; complete protected home-wide inventory has no unresolved custody; completed process history is retained"
-                    } else {
-                        "initialized store; complete protected home-wide process inventory is empty"
-                    },
-                )
-            }
-        })
-    };
     // Standalone installation accepts the native owner without a console. Keep
     // ancestry/session/provider-marker checks. Explicit unattended confirmation
     // waives only the console requirement, never any native owner check.
-    let (owner, _) = observe(false)?;
-    owner.authorize(
-        "installation.uninstall",
-        owner.os_owner(),
-        cx.session.is_some(),
-        reinstall.is_none() && !confirmed,
-    )?;
+    let human_only = reinstall.is_none() && !confirmed;
+    let (owner, _) = observe(cx, false)?;
+    authorize(&owner, owner.os_owner(), cx, human_only)?;
     let installation_claim = if reinstall.is_none() {
         Some(se_proc::NativeInstallationClaim::acquire().map_err(native_error)?)
     } else {
@@ -117,7 +84,155 @@ fn execute_inner(
     // including when no store exists yet, then re-observe under exclusion.
     let files =
         route::files::Files::open(&cx.home).map_err(|e| se_core::store_error::store_error(&e))?;
-    let record_path = cx.home.join("standalone-install.json");
+    let (mut held, parsed) = hold_record(cx.home.join("standalone-install.json"))?;
+    authorize(&owner, &parsed.owner, cx, human_only)?;
+    let owned_plan = Installation {
+        record_path: held.path.clone(),
+        record: parsed,
+    }
+    .plan()?;
+    let plan = &owned_plan;
+    let running = running_image(plan, reinstall.map(|(_, expected)| expected))?;
+    let installed = running.installed;
+
+    // The account claim and exact installation record stay held across ordinary
+    // down. Do not take the home writer lease until down has released it.
+    let stops = if reinstall.is_some() {
+        Vec::new()
+    } else {
+        shutdown::execute(cx, key, diagnostic)?
+    };
+    let runtime_lease = lock_runtime(&files)?;
+    let (owner, store_observation) = observe(cx, true)?;
+    authorize(&owner, plan.owner(), cx, human_only)?;
+
+    #[cfg(windows)]
+    super::helper_cleanup::retry(
+        &se_proc::NativeStateFiles::open(&cx.home).map_err(native_error)?,
+        claim,
+    )?;
+    let mut effects = initial_effects(&cx.home, stops);
+    let completion = if reinstall.is_some() {
+        None
+    } else {
+        super::uninstall_completion::request()?
+    };
+    let parents = plan.recovery_directories();
+    effects.recovery = scan(plan, parents);
+    // Diagnostics flush before recovery restoration, PATH edits or file removal.
+    announce(plan, store_observation, diagnostic)?;
+    // Preparation must finish before recovery, PATH changes or removal. A policy
+    // refusal here preserves every installed payload and the user's PATH.
+    #[cfg(windows)]
+    let carrier = if running.missing || reinstall.is_some() {
+        None
+    } else {
+        Some(prepare_carrier(cx, claim, &held, plan)?)
+    };
+    recover(plan, &mut effects.recovery);
+    cleanup_temporary(plan, claim, &mut effects.recovery);
+    let clean = effects.recovery.iter().all(recovery::resolved);
+    if !clean {
+        pending_assets(
+            plan,
+            &mut effects,
+            "recovery inventory is unreadable or contains unresolved copies",
+        );
+        return Ok((owned_plan, effects, runtime_lease));
+    }
+    let safe = remove_owned_files(plan, installed, parents, &mut effects);
+    // Never strand a partially removed installation without its retry entry point.
+    if safe {
+        // Preserve the already achieved native facts and original request key
+        // across parent exit. Missing post-exit outcomes remain pending here.
+        let achieved =
+            se_core::ops::installation::finish_uninstall(plan, key.clone(), effects.clone())?;
+        #[cfg(windows)]
+        let result = if reinstall.is_some() {
+            Ok(remove_file(installed))
+        } else {
+            remove_image(
+                cx,
+                plan,
+                installed,
+                held.digest,
+                completion,
+                achieved,
+                carrier,
+            )
+        };
+        #[cfg(not(windows))]
+        let result = remove_image(cx, plan, installed, held.digest, completion, achieved);
+        effects.install_files.push(image_outcome(installed, result));
+    } else {
+        effects.install_files.push(file_effect(
+            &installed.path,
+            FileOutcome::Pending,
+            WitnessState::Unknown,
+            "installed image preserved so unresolved effects can be retried",
+        ));
+    }
+    settle(plan, parents, &mut held, safe, &mut effects);
+    Ok((owned_plan, effects, runtime_lease))
+}
+
+fn authorize(
+    owner: &route::owner::FileOwner,
+    expected: &str,
+    cx: &Bootstrap,
+    human_only: bool,
+) -> Result<()> {
+    owner.authorize(
+        "installation.uninstall",
+        expected,
+        cx.session.is_some(),
+        human_only,
+    )
+}
+
+/// Store absence and a complete inventory with no unresolved custody are
+/// distinct observations. Retained exit history is never live custody;
+/// endpoint absence never supplies an empty-process proof.
+fn observe(
+    cx: &Bootstrap,
+    require_closed: bool,
+) -> Result<(route::owner::FileOwner, &'static str)> {
+    Ok(match route::setup::inspect(&cx.home, clock())? {
+        route::setup::Setup::Absent(_) => (
+            route::owner::observe(&[])?,
+            "runtime store absence measured",
+        ),
+        route::setup::Setup::Present(reader) => {
+            let files = route::files::Files::open(&cx.home)
+                .map_err(|e| se_core::store_error::store_error(&e))?;
+            let inventory = route::owner::inventory(&reader, &files)?;
+            if require_closed && let Some(first) = inventory.processes.first() {
+                return Err(SeError::new(Detail::StateConflict(details::StateConflict {
+                subject: "uninstall unresolved process custody".into(),
+                reason: format!("The complete home-wide inventory contains {} unresolved custody records; process {} in project {} {}. Retained completed exit history does not block uninstall.",
+                    inventory.processes.len(), first.identity.record, first.project,
+                    if first.state == se_store::ProcessState::Exited {
+                        "has a durable exit but its session or capture cleanup is unfinished"
+                    } else {
+                        "has not durably completed or released its native custody"
+                    }),
+                next_step: "Run se down with this same --home to finish ordinary stop and session/capture cleanup, then retry se uninstall; if down reports unproved custody, resolve that named process through se stop before retrying. No installation effects were attempted".into(),
+            })));
+            }
+            (
+                route::owner::from_inventory(&inventory)?,
+                if inventory.has_process_records {
+                    "initialized store; complete protected home-wide inventory has no unresolved custody; completed process history is retained"
+                } else {
+                    "initialized store; complete protected home-wide process inventory is empty"
+                },
+            )
+        }
+    })
+}
+
+/// Claims the owned installation record and proves the bytes it holds.
+fn hold_record(record_path: PathBuf) -> Result<(HeldRecord, InstallRecord)> {
     match std::fs::symlink_metadata(&record_path) {
         Ok(_) => (),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -141,19 +256,18 @@ fn execute_inner(
             "the held installation record has a different schema or owner",
         ));
     }
-    owner.authorize(
-        "installation.uninstall",
-        &parsed.owner,
-        cx.session.is_some(),
-        reinstall.is_none() && !confirmed,
-    )?;
-    let owned_plan = Installation {
-        record_path: record_path.clone(),
-        record: parsed,
-    }
-    .plan()?;
-    let plan = &owned_plan;
-    let mut record = Some(record);
+    let held = HeldRecord {
+        file: Some(record),
+        path: record_path,
+        digest: record_digest,
+    };
+    Ok((held, parsed))
+}
+
+fn running_image<'p>(
+    plan: &'p ValidatedUninstallPlan,
+    reinstall: Option<&Path>,
+) -> Result<RunningImage<'p>> {
     let current = std::env::current_exe()
         .map_err(|error| unreadable(Path::new("running executable"), error))?;
     let canonical =
@@ -167,14 +281,14 @@ fn execute_inner(
             Err(error) => return Err(unreadable(Path::new(&file.path), error)),
         }
     }
-    if let Some((_, expected)) = reinstall {
+    if let Some(expected) = reinstall {
         matches.push(reinstall::image(plan, &matches, expected)?);
     }
     // A quarantined/missing installed image cannot run its own uninstaller.
     // An owner may use a working archive's CLI, but only after native proof
     // that the record's unique Windows image is actually absent, not unreadable.
     #[cfg(windows)]
-    let missing_image = if matches.is_empty() {
+    let missing = if matches.is_empty() {
         let images: Vec<_> = plan
             .files()
             .iter()
@@ -209,35 +323,25 @@ fn execute_inner(
         .iter()
         .find(|file| file.path == image)
         .ok_or_else(|| invalid("running image disappeared from the plan"))?;
+    Ok(RunningImage {
+        installed,
+        #[cfg(windows)]
+        missing,
+    })
+}
 
-    // The account claim and exact installation record stay held across ordinary
-    // down. Do not take the home writer lease until down has released it.
-    let stops = if reinstall.is_some() {
-        Vec::new()
-    } else {
-        shutdown::execute(cx, key, diagnostic)?
-    };
-    let runtime_lease = route::files::setup_lock(&files)
+fn lock_runtime(files: &route::files::Files) -> Result<std::fs::File> {
+    route::files::setup_lock(files)
         .map_err(|e| se_core::store_error::store_error(&e))?
         .ok_or_else(|| SeError::new(Detail::StateConflict(details::StateConflict {
             subject: "uninstall runtime custody".into(),
             reason: "setup, another writer or a live runtime holds this home's exclusive lease".into(),
             next_step: "Run se down with this same --home, or wait for the named writer to finish, then retry the current installer or se uninstall; no installation effects were attempted".into(),
-        })))?;
-    let (owner, store_observation) = observe(true)?;
-    owner.authorize(
-        "installation.uninstall",
-        plan.owner(),
-        cx.session.is_some(),
-        reinstall.is_none() && !confirmed,
-    )?;
+        })))
+}
 
-    #[cfg(windows)]
-    super::helper_cleanup::retry(
-        &se_proc::NativeStateFiles::open(&cx.home).map_err(native_error)?,
-        claim,
-    )?;
-    let mut effects = UninstallEffects {
+fn initial_effects(home: &Path, stops: Vec<StopFact>) -> UninstallEffects {
+    UninstallEffects {
         install_files: Vec::new(),
         directories: Vec::new(),
         integrations: Vec::new(),
@@ -259,17 +363,16 @@ fn execute_inner(
             ),
         },
         path_complete: false,
-        preserved: preserved(&cx.home),
+        preserved: preserved(home),
         recovery: Vec::new(),
-    };
-    let completion = if reinstall.is_some() {
-        None
-    } else {
-        super::uninstall_completion::request()?
-    };
-    let parents = plan.recovery_directories();
-    effects.recovery = scan(plan, parents);
-    // Diagnostics flush before recovery restoration, PATH edits or file removal.
+    }
+}
+
+fn announce(
+    plan: &ValidatedUninstallPlan,
+    store_observation: &str,
+    diagnostic: &mut dyn FnMut(&str) -> io::Result<()>,
+) -> Result<()> {
     let mut diagnosis = format!(
         "Uninstall: {store_observation}. Runtime shutdown verified; events and retained credentials are preserved. User repositories, retained history/configuration and provider login are preserved.\n",
     );
@@ -290,210 +393,39 @@ fn execute_inner(
     }
     diagnosis.push_str("Recovery: restore only a uniquely proved owned backup to an absent planned target in its original directory; preserve every unresolved copy.\n");
     diagnostic(&diagnosis)
-        .map_err(|error| se_core::scope::unreadable("uninstall diagnostic", &error.to_string()))?;
-    // Preparation must finish before recovery, PATH changes or removal. A policy
-    // refusal here preserves every installed payload and the user's PATH.
-    #[cfg(windows)]
-    let carrier = if missing_image || reinstall.is_some() {
-        None
-    } else {
-        Some(
-            se_proc::NativeUninstallCarrier::prepare(
-                &se_proc::NativeStateFiles::open(&cx.home).map_err(native_error)?,
-                claim,
-                record
-                    .as_ref()
-                    .ok_or_else(|| invalid("installation record custody missing"))?,
-                &record_path,
-                record_digest,
-                plan.created_directories(),
-            )
-            .map_err(|error| {
-                se_core::scope::unreadable(
-                    "Windows uninstall carrier preparation",
-                    &error.to_string(),
-                )
-            })?,
-        )
-    };
-    recover(plan, &mut effects.recovery);
-    cleanup_temporary(plan, claim, &mut effects.recovery);
-    let clean = effects.recovery.iter().all(recovery::resolved);
-    if !clean {
-        pending_assets(
-            plan,
-            &mut effects,
-            "recovery inventory is unreadable or contains unresolved copies",
-        );
-        return Ok((owned_plan, effects, runtime_lease));
-    }
-    let mut safe = true;
-    reconcile_paths(plan, &mut effects);
-    safe &= effects.path_complete;
-    for file in plan.files().iter().filter(|file| file.path != image) {
-        let result = remove_file(file);
-        safe &= matches!(
-            result.outcome,
-            FileOutcome::Removed | FileOutcome::AlreadyAbsent
-        );
-        effects.install_files.push(result);
-    }
-    effects.recovery = recovery::merge(effects.recovery, scan(plan, parents));
-    safe &= effects.recovery.iter().all(recovery::resolved);
-    // Never strand a partially removed installation without its retry entry point.
-    if safe {
-        // Preserve the already achieved native facts and original request key
-        // across parent exit. Missing post-exit outcomes remain pending here.
-        let achieved =
-            se_core::ops::installation::finish_uninstall(plan, key.clone(), effects.clone())?;
-        #[cfg(windows)]
-        let result = if reinstall.is_some() {
-            Ok(remove_file(installed))
-        } else {
-            remove_image(
-                cx,
-                plan,
-                installed,
-                record_digest,
-                completion,
-                achieved,
-                carrier,
-            )
-        };
-        #[cfg(not(windows))]
-        let result = remove_image(cx, plan, installed, record_digest, completion, achieved);
-        let result = result.unwrap_or_else(|error| {
-            file_effect(
-                &installed.path,
-                FileOutcome::Pending,
-                WitnessState::Failed,
-                &error.to_string(),
-            )
-        });
-        effects.install_files.push(result);
-    } else {
-        effects.install_files.push(file_effect(
+        .map_err(|error| se_core::scope::unreadable("uninstall diagnostic", &error.to_string()))
+}
+
+#[cfg(windows)]
+fn prepare_carrier(
+    cx: &Bootstrap,
+    claim: &se_proc::NativeInstallationClaim,
+    held: &HeldRecord,
+    plan: &ValidatedUninstallPlan,
+) -> Result<se_proc::NativeUninstallCarrier> {
+    se_proc::NativeUninstallCarrier::prepare(
+        &se_proc::NativeStateFiles::open(&cx.home).map_err(native_error)?,
+        claim,
+        held.file
+            .as_ref()
+            .ok_or_else(|| invalid("installation record custody missing"))?,
+        &held.path,
+        held.digest,
+        plan.created_directories(),
+    )
+    .map_err(|error| {
+        se_core::scope::unreadable("Windows uninstall carrier preparation", &error.to_string())
+    })
+}
+
+/// A failed image removal stays pending and names its failure.
+fn image_outcome(installed: &UninstallFile, result: Result<FileEffect>) -> FileEffect {
+    result.unwrap_or_else(|error| {
+        file_effect(
             &installed.path,
             FileOutcome::Pending,
-            WitnessState::Unknown,
-            "installed image preserved so unresolved effects can be retried",
-        ));
-    }
-    let image_removed = effects.install_files.iter().all(|file| {
-        matches!(
-            file.outcome,
-            FileOutcome::Removed | FileOutcome::AlreadyAbsent
+            WitnessState::Failed,
+            &error.to_string(),
         )
-    });
-    if safe && image_removed {
-        match (|| {
-            record
-                .take()
-                .ok_or_else(|| conflict(&record_path.to_string_lossy()))?
-                .remove(record_digest)
-                .map_err(native_error)
-        })() {
-            Ok(()) => effects.integrations.push(IntegrationEffect {
-                path: record_path.display().to_string(),
-                entry: "owned installation record".into(),
-                action: FileOutcome::Removed,
-                witness: witness(
-                    WitnessState::Witnessed,
-                    "native owned record removal and outside absence",
-                    None,
-                ),
-            }),
-            Err(error) => effects.integrations.push(IntegrationEffect {
-                path: record_path.display().to_string(),
-                entry: "owned installation record".into(),
-                action: FileOutcome::Unreadable,
-                witness: witness(
-                    WitnessState::Failed,
-                    "owned installation record removal failed",
-                    Some(error.to_string()),
-                ),
-            }),
-        }
-    } else {
-        effects.integrations.push(IntegrationEffect {
-            path: record_path.display().to_string(),
-            entry: "owned installation record".into(),
-            action: FileOutcome::Pending,
-            witness: witness(
-                WitnessState::Unknown,
-                "record removal awaits witnessed image and installation effects",
-                None,
-            ),
-        });
-    }
-    let mut directories: Vec<_> = plan.created_directories().iter().collect();
-    directories.sort_by_key(|path| std::cmp::Reverse(Path::new(path).components().count()));
-    for path in directories {
-        let (outcome, state, detail) = if !safe || !image_removed {
-            (
-                DirectoryOutcome::Pending,
-                WitnessState::Unknown,
-                Some("installed image or another effect remains unresolved".into()),
-            )
-        } else {
-            match se_proc::remove_empty_directory(Path::new(path)) {
-                Ok(DirectoryRemoval::Removed) => {
-                    (DirectoryOutcome::Removed, WitnessState::Witnessed, None)
-                }
-                Ok(DirectoryRemoval::AlreadyAbsent) => (
-                    DirectoryOutcome::AlreadyAbsent,
-                    WitnessState::Witnessed,
-                    None,
-                ),
-                Ok(DirectoryRemoval::NotEmpty) => (
-                    DirectoryOutcome::NotEmptyPreserved,
-                    WitnessState::Witnessed,
-                    None,
-                ),
-                Err(error) => (
-                    if error.code == StateFileErrorCode::LocationUnsafe {
-                        DirectoryOutcome::Unsafe
-                    } else {
-                        DirectoryOutcome::Unreadable
-                    },
-                    WitnessState::Failed,
-                    Some(error.to_string()),
-                ),
-            }
-        };
-        effects.directories.push(DirectoryEffect {
-            path: path.clone(),
-            outcome,
-            witness: witness(
-                state,
-                "native empty-directory removal and outside readback",
-                detail,
-            ),
-        });
-    }
-    // Only a successful native removal of a planned ancestor can explain why
-    // a directory scanned before effects is now absent. Other failures stay visible.
-    for entry in recovery::merge(effects.recovery.clone(), scan(plan, parents)) {
-        let removed = effects.directories.iter().any(|directory| {
-            matches!(directory.outcome, DirectoryOutcome::Removed)
-                && directory.witness.state == WitnessState::Witnessed
-                && Path::new(&entry.directory).starts_with(&directory.path)
-        });
-        if let Some(before) = effects
-            .recovery
-            .iter_mut()
-            .find(|old| old.directory == entry.directory)
-        {
-            if removed {
-                before.witness = witness(
-                    WitnessState::Witnessed,
-                    "finite pre-effect inventory followed by native empty-directory removal and absence",
-                    None,
-                );
-            } else {
-                *before = entry;
-            }
-        }
-    }
-    Ok((owned_plan, effects, runtime_lease))
+    })
 }
