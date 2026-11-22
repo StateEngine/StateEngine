@@ -22,12 +22,13 @@ use se_atlas::{
     model::*,
     parse::ParserProfile,
     scheduler::Scheduled,
+    scope::Scope,
     source::RegisteredSource,
     update::{batch, file, observation},
 };
 use se_proc::{
     NativeSourceKind, NativeSourceRoot, NativeSourceWatch, NativeWatchAction, NativeWatchDirectory,
-    NativeWatchEvents,
+    NativeWatchEvent, NativeWatchEvents,
 };
 use se_types::{Detail, SeError, code::AtlasText, details};
 #[cfg(target_os = "linux")]
@@ -90,6 +91,11 @@ struct PendingEvents {
     next: usize,
     hints: Vec<SourceHint>,
 }
+struct SourcePolicy<'a> {
+    source: &'a Source,
+    policy: &'a AtlasPolicy,
+}
+
 struct Cycle {
     root: RootId,
     serial: u64,
@@ -177,10 +183,6 @@ impl NativeRenewal {
     pub fn signal(&self) -> std::sync::Arc<tokio::sync::Notify> {
         self.signal.clone()
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     fn root(
         &mut self,
         source: &Source,
@@ -206,59 +208,7 @@ impl NativeRenewal {
         {
             index
         } else {
-            let slot = if self.roots.len() < 2 {
-                self.roots.len()
-            } else {
-                self.roots
-                    .iter()
-                    .position(|r| r.native.is_none())
-                    .ok_or_else(|| limit("live renewal watch slots", 3, 2))?
-            };
-            let previous: Coverage = connection.read(deadline, |sql| {
-                let json: String = sql
-                    .prepare("SELECT coverage_json FROM meta WHERE singleton=1")?
-                    .query_row([], |r| r.get(0))
-                    .map_err(sql_error)?;
-                serde_json::from_str(&json).map_err(sql_error)
-            })?;
-            let same_process =
-                self.started.is_some() && previous.watch_stats_started == self.started;
-            let root = Root {
-                id: scope.registration.root.clone(),
-                epoch: connection.identity().epoch.clone(),
-                native: None,
-                attempts: if same_process {
-                    previous.watch_activation_attempts
-                } else {
-                    0
-                },
-                limited: if same_process {
-                    previous.watch_limited_activations
-                } else {
-                    0
-                },
-                limited_this_activation: false,
-                started: self.started,
-                cap: 0,
-                observed: None,
-                limit_error: None,
-                unwatched: 0,
-                discovery_complete: false,
-                requires_reconcile: true,
-                pending_events: None,
-                #[cfg(windows)]
-                catching_up: Catchup::Complete,
-                last_lock: None,
-                pending_lock: None,
-                reasons: Vec::new(),
-            };
-            if slot == self.roots.len() {
-                self.roots.push(root);
-            } else {
-                self.mappings.retain(|m| m.root != slot as u32);
-                self.roots[slot] = root;
-            }
-            slot
+            self.slot_for_root(connection, deadline, scope)?
         };
         #[cfg(windows)]
         if self.roots[index]
@@ -281,6 +231,79 @@ impl NativeRenewal {
             }
         }
         #[cfg(windows)]
+        self.activate_cold_capture(index, connection, scope, policy, deadline)?;
+        self.activate_native(index, connection, scope, policy, deadline)?;
+        Ok(index)
+    }
+    fn slot_for_root(
+        &mut self,
+        connection: &mut CacheConnection<'_>,
+        deadline: Instant,
+        scope: &Scope,
+    ) -> AtlasResult<usize> {
+        let slot = if self.roots.len() < 2 {
+            self.roots.len()
+        } else {
+            self.roots
+                .iter()
+                .position(|r| r.native.is_none())
+                .ok_or_else(|| limit("live renewal watch slots", 3, 2))?
+        };
+        let previous: Coverage = connection.read(deadline, |sql| {
+            let json: String = sql
+                .prepare("SELECT coverage_json FROM meta WHERE singleton=1")?
+                .query_row([], |r| r.get(0))
+                .map_err(sql_error)?;
+            serde_json::from_str(&json).map_err(sql_error)
+        })?;
+        let same_process = self.started.is_some() && previous.watch_stats_started == self.started;
+        let root = Root {
+            id: scope.registration.root.clone(),
+            epoch: connection.identity().epoch.clone(),
+            native: None,
+            attempts: if same_process {
+                previous.watch_activation_attempts
+            } else {
+                0
+            },
+            limited: if same_process {
+                previous.watch_limited_activations
+            } else {
+                0
+            },
+            limited_this_activation: false,
+            started: self.started,
+            cap: 0,
+            observed: None,
+            limit_error: None,
+            unwatched: 0,
+            discovery_complete: false,
+            requires_reconcile: true,
+            pending_events: None,
+            #[cfg(windows)]
+            catching_up: Catchup::Complete,
+            last_lock: None,
+            pending_lock: None,
+            reasons: Vec::new(),
+        };
+        if slot == self.roots.len() {
+            self.roots.push(root);
+        } else {
+            self.mappings.retain(|m| m.root != slot as u32);
+            self.roots[slot] = root;
+        }
+        Ok(slot)
+    }
+
+    #[cfg(windows)]
+    fn activate_cold_capture(
+        &mut self,
+        index: usize,
+        connection: &mut CacheConnection<'_>,
+        scope: &Scope,
+        policy: &AtlasPolicy,
+        deadline: Instant,
+    ) -> AtlasResult<()> {
         if self.roots[index].native.is_none()
             && self
                 .cold_capture
@@ -344,6 +367,17 @@ impl NativeRenewal {
             root.requires_reconcile = false;
             root.catching_up = Catchup::Pending;
         }
+        Ok(())
+    }
+
+    fn activate_native(
+        &mut self,
+        index: usize,
+        connection: &mut CacheConnection<'_>,
+        scope: &Scope,
+        policy: &AtlasPolicy,
+        deadline: Instant,
+    ) -> AtlasResult<()> {
         if self.roots[index].native.is_none() {
             self.mappings.retain(|m| m.root != index as u32);
             let native = NativeSourceRoot::open(&scope.registration.canonical_source_root)
@@ -399,8 +433,9 @@ impl NativeRenewal {
                 state: WatchState::Active,
             });
         }
-        Ok(index)
+        Ok(())
     }
+
     pub fn close(
         &mut self,
         root: &RootId,
