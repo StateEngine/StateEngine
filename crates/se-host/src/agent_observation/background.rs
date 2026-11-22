@@ -11,29 +11,22 @@ use std::{path::Path, time::Instant};
 /// infrastructure, not work the agent started.
 const CONSOLE_HOSTS: [&str; 2] = ["conhost.exe", "openconsole.exe"];
 
-/// This agent's background processes, if the runtime retains its owned scope.
-pub(crate) fn scope(
-    native: &NativeProcessRuntime,
-    process: &Option<std::sync::Arc<OwnedProcess>>,
-) -> Option<Read<BackgroundView>> {
-    let deadline = Instant::now() + std::time::Duration::from_secs(2);
-    process
-        .as_ref()
-        .map(|process| observe(native, process, deadline))
-}
-
-/// The row's field: Codex runs tool commands in its shared app-server, so they
-/// are never attributed to one agent and the row says so instead of zero.
+/// The row's field, read after the agent's lock is released: none without a
+/// retained live scope. Codex runs tool commands in its shared app-server, so
+/// they are never attributed to one agent and the row says so instead of zero.
 pub(crate) fn row(
     provider: se_types::Provider,
-    observed: Option<Read<BackgroundView>>,
+    native: &NativeProcessRuntime,
+    process: Option<std::sync::Arc<OwnedProcess>>,
 ) -> Option<Read<BackgroundView>> {
-    match provider {
-        se_types::Provider::Codex => Some(Read::Unknown {
+    let process = process?;
+    if provider == se_types::Provider::Codex {
+        return Some(Read::Unknown {
             what: "Codex runs commands in its shared app-server, outside this agent's own processes, so they are not attributed to one agent.".into(),
-        }),
-        _ => observed,
+        });
     }
+    let deadline = Instant::now() + std::time::Duration::from_secs(2);
+    Some(observe(native, &process, deadline))
 }
 
 fn observe(
@@ -99,9 +92,11 @@ fn observe(
     }
 }
 
+/// The provider process itself, matched by birth: a child sharing its image is
+/// not excluded, because a script-launched provider's image is its interpreter
+/// and a dev server the agent left running can run on that same interpreter.
 fn infrastructure(member: &ProcessIdentity, root: &ProcessIdentity, engine: Option<&Path>) -> bool {
     (member.pid == root.pid && member.start == root.start)
-        || member.image == root.image
         || engine.is_some_and(|engine| member.image == engine)
         || CONSOLE_HOSTS
             .iter()

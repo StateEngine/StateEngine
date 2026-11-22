@@ -118,10 +118,10 @@ fn derive(row: &AgentRow, now_us: i64) -> Result<AgentStateView> {
                 ("turn-unreadable", None)
             }
             // Idle between turns, but a process it started is still running.
-            Some("turn-completed" | "idle") if background(row, now_us).is_some() => {
-                ("background", background(row, now_us))
-            }
-            Some("turn-completed" | "idle") => ("idle", phase),
+            Some("turn-completed" | "idle") => match background(row, now_us) {
+                Some(oldest) => ("background", Some(oldest)),
+                None => ("idle", phase),
+            },
             // Alive, but no host observed its turns: not claimed idle.
             _ => ("running", None),
         },

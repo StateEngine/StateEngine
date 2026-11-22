@@ -115,7 +115,7 @@ impl LaunchCoordinator {
                 }.into() });
             };
             let paced = self.mail_paced_until(&state, &job);
-            found = crate::agent_observation::background::scope(&self.native, &state.process);
+            found = state.process.clone();
             let Some(binding) = &state.binding else {
                 return Ok(Read::Unknown { what: "Waiting for a provider connection; check provider sign-in. Explicitly stop this agent to cancel setup before retrying launch.".into() });
             };
@@ -143,7 +143,7 @@ impl LaunchCoordinator {
                 error: Some(Box::new(error.body)),
             },
         });
-        row.background = crate::agent_observation::background::row(row.provider, found);
+        row.background = crate::agent_observation::background(row.provider, &self.native, found);
         if row.provider == se_types::Provider::Codex {
             row.codex_login = Some(match &row.session.session_id {
                 Some(session) => self.recorded_codex_login(session),
