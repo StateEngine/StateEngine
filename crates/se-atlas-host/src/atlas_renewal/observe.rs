@@ -222,9 +222,6 @@ fn skip_unchanged(
             Ok(false)
         }
     })?;
-    if unchanged && !matches!(mode, Mode::Repair(_)) {
-        return Ok(true);
-    }
     Ok(unchanged && !matches!(mode, Mode::Repair(_)))
 }
 

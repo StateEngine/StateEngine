@@ -5,10 +5,6 @@ struct CycleOutcome {
 }
 
 impl NativeRenewal {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub fn step(
         &mut self,
         source: &Source,
@@ -17,44 +13,7 @@ impl NativeRenewal {
         work: &Scheduled,
         deadline: Instant,
     ) -> AtlasResult<Step> {
-        if work.root != source.scope.registration.root {
-            return Err(SeError::invalid(
-                "renewal work",
-                "the bound registered root",
-            ));
-        }
-        let index = self.root(source, connection, policy, deadline)?;
-        let head_change = matches!(
-            work.hint,
-            SourceHint::Reconcile(ReconcileReason::GitHeadChanged)
-        );
-        connection.write(65536, deadline, |sql| {
-            batch::begin(
-                sql,
-                work.serial,
-                if head_change {
-                    BulkReason::HeadChange
-                } else {
-                    BulkReason::FilesystemBurst
-                },
-                head_change,
-            )
-        })?;
-        let full_reconcile =
-            matches!(work.hint, SourceHint::Reconcile(_)) || self.roots[index].requires_reconcile;
-        let subtree = match &work.hint {
-            SourceHint::DirectoryChanged(path) if !full_reconcile => Some(path.clone()),
-            _ => None,
-        };
-        let reconcile = full_reconcile || subtree.is_some();
-        if self.cycle.as_ref().is_none_or(|c| {
-            c.root != work.root
-                || c.serial != work.serial
-                || c.reconcile != reconcile
-                || c.subtree != subtree
-        }) {
-            self.begin_cycle(source, connection, index, work, deadline, subtree)?;
-        }
+        let (index, reconcile) = self.prepare_step(source, connection, policy, work, deadline)?;
         let mut cycle = self
             .cycle
             .take()
@@ -148,6 +107,55 @@ impl NativeRenewal {
             deadline,
         )
     }
+    fn prepare_step(
+        &mut self,
+        source: &Source,
+        connection: &mut CacheConnection<'_>,
+        policy: &AtlasPolicy,
+        work: &Scheduled,
+        deadline: Instant,
+    ) -> AtlasResult<(usize, bool)> {
+        if work.root != source.scope.registration.root {
+            return Err(SeError::invalid(
+                "renewal work",
+                "the bound registered root",
+            ));
+        }
+        let index = self.root(source, connection, policy, deadline)?;
+        let head_change = matches!(
+            work.hint,
+            SourceHint::Reconcile(ReconcileReason::GitHeadChanged)
+        );
+        connection.write(65536, deadline, |sql| {
+            batch::begin(
+                sql,
+                work.serial,
+                if head_change {
+                    BulkReason::HeadChange
+                } else {
+                    BulkReason::FilesystemBurst
+                },
+                head_change,
+            )
+        })?;
+        let full_reconcile =
+            matches!(work.hint, SourceHint::Reconcile(_)) || self.roots[index].requires_reconcile;
+        let subtree = match &work.hint {
+            SourceHint::DirectoryChanged(path) if !full_reconcile => Some(path.clone()),
+            _ => None,
+        };
+        let reconcile = full_reconcile || subtree.is_some();
+        if self.cycle.as_ref().is_none_or(|c| {
+            c.root != work.root
+                || c.serial != work.serial
+                || c.reconcile != reconcile
+                || c.subtree != subtree
+        }) {
+            self.begin_cycle(source, connection, index, work, deadline, subtree)?;
+        }
+        Ok((index, reconcile))
+    }
+
     fn begin_cycle(
         &mut self,
         source: &Source,
@@ -278,6 +286,9 @@ impl NativeRenewal {
         let mut completed = 0;
         if cycle.cursor.is_none() {
             self.open_directory_cursor(scan, connection, index, cycle, work_deadline)?;
+            if cycle.cursor.is_none() {
+                return Ok(completed);
+            }
         }
         if cycle.rules.is_none() {
             let path = cycle
