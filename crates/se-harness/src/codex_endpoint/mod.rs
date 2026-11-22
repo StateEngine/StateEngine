@@ -78,7 +78,7 @@ pub(crate) fn socket_path(
     Ok(Some(selected))
 }
 
-/// No private local socket on other platforms; the provider uses stdio.
+/// No private local socket on other platforms.
 #[cfg(not(any(unix, windows)))]
 pub(crate) fn socket_path(
     _launch: PathBuf,
