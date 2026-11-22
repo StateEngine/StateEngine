@@ -8,7 +8,9 @@ pub mod observation;
 use crate::{
     cache::connection::SqlView,
     errors::{AtlasResult, cache_error},
+    model::ContentHash,
 };
+use rusqlite::params;
 pub(crate) fn execute<P: rusqlite::Params>(
     sql: &SqlView<'_>,
     statement: &str,
@@ -58,4 +60,27 @@ pub(crate) fn column(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<
             Box::new(e),
         )
     })
+}
+/// The generation this write transaction publishes once it commits.
+pub(crate) fn next_generation(sql: &SqlView<'_>) -> AtlasResult<u64> {
+    unsigned(
+        sql,
+        "SELECT index_generation+1 FROM meta WHERE singleton=1",
+        [],
+    )
+}
+pub(crate) fn advance(sql: &SqlView<'_>, generation: u64, serial: u64) -> AtlasResult<()> {
+    execute(
+        sql,
+        "UPDATE meta SET index_generation=?1,observed_serial=max(observed_serial,?2) WHERE singleton=1",
+        params![n(generation), n(serial)],
+    )?;
+    Ok(())
+}
+/// A stored indexed hash of the wrong width is cache corruption, not absence.
+pub(crate) fn indexed_hash(bytes: Option<&[u8]>) -> AtlasResult<Option<ContentHash>> {
+    bytes
+        .map(|v| v.try_into().map(ContentHash))
+        .transpose()
+        .map_err(|_| cache_error("invalid indexed hash"))
 }

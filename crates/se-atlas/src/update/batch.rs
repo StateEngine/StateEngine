@@ -119,11 +119,7 @@ pub fn publish(
     }
     let (serial,files,bulk,summary):(u64,u64,bool,String)=sql.prepare("SELECT last_serial,distinct_files,bulk,summary_json FROM active_batch WHERE singleton=1")?.query_row([],|r|Ok((column(r,0)?,column(r,1)?,r.get(2)?,r.get(3)?))).map_err(cache_error)?;
     let summary: Summary = serde_json::from_str(&summary).map_err(cache_error)?;
-    let generation: u64 = unsigned(
-        sql,
-        "SELECT index_generation+1 FROM meta WHERE singleton=1",
-        [],
-    )?;
+    let generation = next_generation(sql)?;
     execute(
         sql,
         "INSERT INTO generations VALUES(?1,?2,?3,?4)",

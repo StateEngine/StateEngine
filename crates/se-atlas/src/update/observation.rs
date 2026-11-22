@@ -21,10 +21,6 @@ pub enum UnparsedObservation<'a> {
 }
 /// Preserve the last good semantic baseline without inventing a content hash,
 /// zero-byte file or code edit when a source read could not observe the bytes.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn unparsed(
     sql: &SqlView<'_>,
     scope: &Scope,
@@ -43,11 +39,7 @@ pub fn unparsed(
         })
         .optional()
         .map_err(cache_error)?;
-    let generation = unsigned(
-        sql,
-        "SELECT index_generation+1 FROM meta WHERE singleton=1",
-        [],
-    )?;
+    let generation = next_generation(sql)?;
     let (identity, observed_hash, reason, diagnostic, cold) = match observation {
         UnparsedObservation::Hashed {
             identity,
@@ -70,35 +62,12 @@ pub fn unparsed(
         && !cold
     {
         batch::observe_file(sql, file, path)?;
-        let prior = previous
-            .as_ref()
-            .and_then(|p| p.3.as_ref())
-            .map(|bytes| {
-                bytes
-                    .as_slice()
-                    .try_into()
-                    .map(ContentHash)
-                    .map_err(|_| cache_error("invalid indexed hash"))
-            })
-            .transpose()?;
+        let prior = indexed_hash(previous.as_ref().and_then(|p| p.3.as_deref()))?;
         if prior != Some(current) {
-            batch::stage(
-                sql,
-                diff::Fact {
-                    file,
-                    symbol: None,
-                    path: path.clone(),
-                    span: None,
-                    kind: ChangeKind::FileOnly,
-                    previous: prior,
-                    current: Some(current),
-                    baseline_reset: false,
-                },
-            )?;
+            file::stage_file_only(sql, file, path, prior, current)?;
         }
     }
-    let baseline = previous.as_ref().and_then(|p| p.1);
-    let coverage = if let Some(baseline) = baseline {
+    let coverage = if let Some(baseline) = previous.as_ref().and_then(|p| p.1) {
         FileCoverage::Stale {
             reason,
             last_good_generation: Generation(u64::try_from(baseline).map_err(cache_error)?),
@@ -114,50 +83,30 @@ pub fn unparsed(
         .map(serde_json::to_vec)
         .transpose()
         .map_err(cache_error)?;
-    if previous.is_some() {
-        execute(
-            sql,
-            "UPDATE files SET observed_hash=?6,bytes=?2,identity=?3,coverage_json=?4,last_code_generation=?5 WHERE key=?1",
-            params![
-                file.0.as_slice(),
-                identity.map(|id| n(id.size)),
-                identity_bytes,
-                json(&coverage)?,
-                n(generation),
-                observed_hash.as_ref().map(|hash| hash.0.as_slice())
-            ],
-        )?;
+    let statement = if previous.is_some() {
+        "UPDATE files SET observed_hash=?8,bytes=?4,identity=?5,coverage_json=?6,last_code_generation=?7 WHERE key=?1"
     } else {
-        execute(
-            sql,
-            "INSERT INTO files(key,path,path_key,language,indexed_hash,observed_hash,bytes,identity,coverage_json,last_good_generation,last_code_generation,last_author_generation,baseline_reset) VALUES(?1,?2,?2,?3,NULL,?8,?4,?5,?6,NULL,?7,0,0)",
-            params![
-                file.0.as_slice(),
-                path.as_str(),
-                language.map(|l| format!("{l:?}")),
-                identity.map(|id| n(id.size)),
-                identity_bytes,
-                json(&coverage)?,
-                n(generation),
-                observed_hash.as_ref().map(|hash| hash.0.as_slice())
-            ],
-        )?;
-    }
+        "INSERT INTO files(key,path,path_key,language,indexed_hash,observed_hash,bytes,identity,coverage_json,last_good_generation,last_code_generation,last_author_generation,baseline_reset) VALUES(?1,?2,?2,?3,NULL,?8,?4,?5,?6,NULL,?7,0,0)"
+    };
+    execute(
+        sql,
+        statement,
+        params![
+            file.0.as_slice(),
+            path.as_str(),
+            language.map(|l| format!("{l:?}")),
+            identity.map(|id| n(id.size)),
+            identity_bytes,
+            json(&coverage)?,
+            n(generation),
+            observed_hash.as_ref().map(|hash| hash.0.as_slice())
+        ],
+    )?;
     if let Some((row, _, was_indexed, _)) = previous {
         if was_indexed {
             file::invalidate(sql, row, serial)?;
         }
-        crate::cache::reference_counts::outgoing(sql, row)?;
-        execute(
-            sql,
-            "UPDATE refs SET accuracy='NameOnly',target=NULL WHERE file=?1",
-            [row],
-        )?;
-        execute(
-            sql,
-            "UPDATE imports SET target_symbol=NULL,resolution='NameOnly' WHERE file=?1",
-            [row],
-        )?;
+        file::demote_outgoing(sql, row)?;
     }
     advance(sql, generation, serial)?;
     Ok(Generation(generation))
@@ -183,13 +132,7 @@ pub fn removed(
     let Some((row, hash, coverage)) = previous else {
         return Ok(false);
     };
-    let hash = hash
-        .map(|v| {
-            v.try_into()
-                .map(ContentHash)
-                .map_err(|_| cache_error("invalid indexed hash"))
-        })
-        .transpose()?;
+    let hash = indexed_hash(hash.as_deref())?;
     if !cold {
         batch::observe_file(sql, file, path)?;
         diff::retire(
@@ -208,11 +151,7 @@ pub fn removed(
     queue_candidates(sql, path, serial)?;
     file::invalidate(sql, row, serial)?;
     write::delete_file(sql, file)?;
-    let generation = unsigned(
-        sql,
-        "SELECT index_generation+1 FROM meta WHERE singleton=1",
-        [],
-    )?;
+    let generation = next_generation(sql)?;
     advance(sql, generation, serial)?;
     Ok(true)
 }
@@ -236,11 +175,7 @@ pub fn excluded(
     queue_candidates(sql, path, serial)?;
     file::invalidate(sql, row, serial)?;
     write::delete_file(sql, file)?;
-    let generation = unsigned(
-        sql,
-        "SELECT index_generation+1 FROM meta WHERE singleton=1",
-        [],
-    )?;
+    let generation = next_generation(sql)?;
     advance(sql, generation, serial)?;
     Ok(true)
 }
@@ -249,14 +184,6 @@ fn queue_candidates(sql: &SqlView<'_>, path: &RelativePath, serial: u64) -> Atla
         sql,
         "INSERT INTO pending_paths(path_key,serial) SELECT DISTINCT f.path_key,?1 FROM import_candidates c JOIN imports i ON i.id=c.import_id JOIN files f ON f.id=i.file WHERE c.path_key=?2 AND f.path_key<>?2 ON CONFLICT(path_key) DO UPDATE SET serial=max(serial,excluded.serial)",
         params![n(serial), path.as_str()],
-    )?;
-    Ok(())
-}
-fn advance(sql: &SqlView<'_>, generation: u64, serial: u64) -> AtlasResult<()> {
-    execute(
-        sql,
-        "UPDATE meta SET index_generation=?1,observed_serial=max(observed_serial,?2) WHERE singleton=1",
-        params![n(generation), n(serial)],
     )?;
     Ok(())
 }

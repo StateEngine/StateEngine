@@ -7,7 +7,7 @@ use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkMatch};
 use se_types::code::*;
 use std::{
-    io::{self, Read, SeekFrom},
+    io::{self, SeekFrom},
     time::Instant,
 };
 
@@ -62,10 +62,6 @@ pub(crate) fn build_searcher() -> Searcher {
         .bom_sniffing(false)
         .build()
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(crate) fn search_with_terms(
     mut file: Box<dyn SourceFile + '_>,
     request: TextRequest<'_>,
@@ -118,15 +114,13 @@ pub(crate) fn search_with_terms(
     let after = file.identity()?;
     output.changed = before != after;
     if let Err(error) = result {
-        output.time_limited = error.kind() == io::ErrorKind::TimedOut;
-        output.line_limited = error.to_string().contains("configured allocation limit")
+        let limited = error.to_string().contains("configured allocation limit")
             || error.to_string().contains("heap limit");
+        output.time_limited = error.kind() == io::ErrorKind::TimedOut;
+        output.line_limited = limited;
         // Work/line-buffer limits are explicit incompleteness; actual source IO
         // remains a typed source failure instead of a successful empty result.
-        if error.kind() != io::ErrorKind::TimedOut
-            && !error.to_string().contains("configured allocation limit")
-            && !error.to_string().contains("heap limit")
-        {
+        if !output.time_limited && !limited {
             return Err(se_types::SeError::new(
                 se_types::Detail::AtlasSourceUnreadable(se_types::details::AtlasSourceUnreadable {
                     path: request.pointer.path.as_str().into(),
@@ -143,61 +137,81 @@ pub(crate) fn search_with_terms(
     // matches remain labelled incomplete and carry no invented lexical score.
     output.lexical = output.complete.then_some(lexical).flatten();
     output.omitted_matches = sink.omitted;
-    if !sink.items.is_empty() {
-        for (span, text, _) in &sink.items {
-            file.seek(SeekFrom::Start(span.start_byte)).map_err(|e| {
-                se_types::SeError::invalid("Atlas source verification", &e.to_string())
-            })?;
-            let mut again = vec![0; text.len()];
-            file.read_exact(&mut again).map_err(|e| {
-                se_types::SeError::invalid("Atlas source verification", &e.to_string())
-            })?;
-            if again != text.as_bytes() {
-                output.changed = true;
-                output.complete = false;
-                return Ok(output);
-            }
-        }
-        if file.identity()? != before || !file.validate_path()? {
-            output.changed = true;
-            output.complete = false;
-            return Ok(output);
-        }
+    if !sink.items.is_empty() && !still_matches(&mut *file, &sink.items, &before)? {
+        output.changed = true;
+        output.complete = false;
+        return Ok(output);
     }
     for (span, text, complete) in sink.items {
-        let mut pointer = request.pointer.clone();
-        pointer.span = Some(span);
-        pointer.content_hash = hash;
-        pointer.freshness = if output.stale_index {
-            SnapshotFreshness::Stale
-        } else {
-            SnapshotFreshness::Unknown
-        };
-        let body = HitBody::new(
-            BodyOrigin::LiveSource {
-                file: pointer.file,
-                path: pointer.path.clone(),
-                span,
-                range_hash: ContentHash(*blake3::hash(text.as_bytes()).as_bytes()),
-                content_hash: hash,
-                matches_index: hash.zip(request.pointer.content_hash).map(|(a, b)| a == b),
-            },
-            text.clone(),
+        let hit = live_hit(
+            request.pointer,
+            span,
+            text,
             complete,
+            hash,
+            output.stale_index,
         )?;
-        output.hits.push((
-            CodeHit {
-                pointer,
-                symbol: None,
-                name: excerpt(&text, 160),
-                kind: None,
-                method: FindMethod::Text,
-                accuracy: None,
-            },
-            body,
-        ));
+        output.hits.push(hit);
     }
     Ok(output)
+}
+/// Re-reads every matched range and the file identity after the scan, so a
+/// write racing the search is reported as a change rather than served.
+fn still_matches(
+    file: &mut (dyn SourceFile + '_),
+    items: &[(Span, String, bool)],
+    before: &crate::lifecycle::FileIdentity,
+) -> AtlasResult<bool> {
+    let unreadable =
+        |e: io::Error| se_types::SeError::invalid("Atlas source verification", &e.to_string());
+    for (span, text, _) in items {
+        file.seek(SeekFrom::Start(span.start_byte))
+            .map_err(unreadable)?;
+        let mut again = vec![0; text.len()];
+        file.read_exact(&mut again).map_err(unreadable)?;
+        if again != text.as_bytes() {
+            return Ok(false);
+        }
+    }
+    Ok(file.identity()? == *before && file.validate_path()?)
+}
+fn live_hit(
+    indexed: &CodePointer,
+    span: Span,
+    text: String,
+    complete: bool,
+    hash: Option<ContentHash>,
+    stale_index: bool,
+) -> AtlasResult<(CodeHit, HitBody)> {
+    let mut pointer = indexed.clone();
+    pointer.span = Some(span);
+    pointer.content_hash = hash;
+    pointer.freshness = if stale_index {
+        SnapshotFreshness::Stale
+    } else {
+        SnapshotFreshness::Unknown
+    };
+    let body = HitBody::new(
+        BodyOrigin::LiveSource {
+            file: pointer.file,
+            path: pointer.path.clone(),
+            span,
+            range_hash: ContentHash(*blake3::hash(text.as_bytes()).as_bytes()),
+            content_hash: hash,
+            matches_index: hash.zip(indexed.content_hash).map(|(a, b)| a == b),
+        },
+        text.clone(),
+        complete,
+    )?;
+    let hit = CodeHit {
+        pointer,
+        symbol: None,
+        name: excerpt(&text, 160),
+        kind: None,
+        method: FindMethod::Text,
+        accuracy: None,
+    };
+    Ok((hit, body))
 }
 struct Matches<'a, 'b> {
     request: &'a TextRequest<'b>,
