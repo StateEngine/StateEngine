@@ -522,12 +522,11 @@ fn initial_write_failure(
             )),
             Err(error) => Some(error),
         };
-    let write_failure = match (write_failure, close) {
+    match (write_failure, close) {
         (Some(write), Err(close)) => Some(close.with_cause(write)),
         (failure, Ok(())) => failure,
         (None, Err(close)) => Some(close),
-    };
-    write_failure
+    }
 }
 
 async fn await_initial_acceptance(
