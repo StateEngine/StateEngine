@@ -9,7 +9,7 @@ pub fn read_process_command(
 ) -> ProcResult<Option<String>> {
     let live = || -> ProcResult<bool> {
         match read_process_until(expected.machine.clone(), expected.pid, deadline)? {
-            ProcessRead::Present(value) if value.identity == *expected => Ok(true),
+            ProcessRead::Present(value) if value.identity.same_birth(expected) => Ok(true),
             ProcessRead::Present(value) => {
                 Err(crate::support::changed(expected, Some(&value.identity)))
             }

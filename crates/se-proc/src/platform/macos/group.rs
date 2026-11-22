@@ -67,17 +67,11 @@ fn members(group: ProcessId, max: usize, max_bytes: u64) -> ProcResult<Vec<Proce
     }
 }
 
-fn live_member(
-    expected: &ProcessIdentity,
-    root: &ProcessIdentity,
-) -> ProcResult<Option<LiveObservation>> {
+fn live_member(expected: &ProcessIdentity) -> ProcResult<Option<LiveObservation>> {
     match crate::read_process(expected.machine.clone(), expected.pid)? {
         ProcessRead::Present(live)
             if live.identity.boot == expected.boot && live.identity.start == expected.start =>
         {
-            if expected.pid == root.pid && live.identity.image != root.image {
-                return Err(changed(root, Some(&live.identity)));
-            }
             Ok(Some(live))
         }
         _ => Ok(None),
@@ -94,14 +88,10 @@ fn live_group(live: &LiveObservation) -> ProcResult<Option<ProcessId>> {
 }
 
 pub(super) fn in_group(expected: &ProcessIdentity, group: ProcessId) -> ProcResult<bool> {
-    matches_group(expected, group, true)
+    matches_group(expected, group)
 }
 
-fn matches_group(
-    expected: &ProcessIdentity,
-    group: ProcessId,
-    require_image: bool,
-) -> ProcResult<bool> {
+fn matches_group(expected: &ProcessIdentity, group: ProcessId) -> ProcResult<bool> {
     let deadline = Instant::now() + std::time::Duration::from_secs(5);
     let Some(info) = crate::macos_process::info(expected.pid, deadline)? else {
         return Ok(false);
@@ -112,8 +102,7 @@ fn matches_group(
     Ok(
         matches!(crate::read_process(expected.machine.clone(), expected.pid)?,
         ProcessRead::Present(live) if live.identity.boot == expected.boot
-            && live.identity.start == expected.start
-            && (!require_image || live.identity.image == expected.image)),
+            && live.identity.start == expected.start),
     )
 }
 
@@ -237,8 +226,8 @@ impl Scope {
         let mut anchored = false;
         let mut retained = Vec::with_capacity(self.tracked.len());
         for expected in &self.tracked {
-            if let Some(live) = live_member(expected, &root)? {
-                anchored |= matches_group(&live.identity, group, live.identity.pid == root.pid)?;
+            if let Some(live) = live_member(expected)? {
+                anchored |= matches_group(&live.identity, group)?;
                 retained.push(expected.clone());
             }
         }
@@ -252,13 +241,10 @@ impl Scope {
             else {
                 continue;
             };
-            // Descendants may legitimately exec. Membership is pinned by
-            // birth and native group; only the reserved root pins its image.
-            if !matches_group(&found.identity, group, found.identity.pid == root.pid)? {
+            // Any member, the root included, may exec or have its executable
+            // replaced in place. Membership is pinned by birth and native group.
+            if !matches_group(&found.identity, group)? {
                 continue;
-            }
-            if found.identity.pid == root.pid && found.identity.image != root.image {
-                return Err(changed(&root, Some(&found.identity)));
             }
             if anchored {
                 if let Some(previous) = self.tracked.iter_mut().find(|p| {
@@ -278,7 +264,7 @@ impl Scope {
             }
             live.push(found.identity);
         }
-        self.observe_tracked_members(&root, group, &mut live)?;
+        self.observe_tracked_members(group, &mut live)?;
         for registration in self
             .registrations
             .iter()
@@ -290,12 +276,11 @@ impl Scope {
     }
     fn observe_tracked_members(
         &mut self,
-        root: &ProcessIdentity,
         group: ProcessId,
         live: &mut Vec<ProcessIdentity>,
     ) -> ProcResult<()> {
         for expected in &self.tracked {
-            let Some(found) = live_member(expected, root)? else {
+            let Some(found) = live_member(expected)? else {
                 continue;
             };
             let Some(current_group) = live_group(&found)? else {
@@ -341,16 +326,15 @@ impl Scope {
         if observed.remaining.population == Population::Empty {
             return Ok(StopDispatch::NotNeeded);
         }
-        let root = self
-            .root_identity()
+        self.root_identity()
             .ok_or_else(|| input("group stop", "original root unavailable"))?;
         let group = self
             .group
             .ok_or_else(|| input("group stop", "native group unavailable"))?;
         let mut tied = false;
         for expected in &self.tracked {
-            if let Some(live) = live_member(expected, &root)?
-                && matches_group(&live.identity, group, live.identity.pid == root.pid)?
+            if let Some(live) = live_member(expected)?
+                && matches_group(&live.identity, group)?
             {
                 tied = true;
                 break;

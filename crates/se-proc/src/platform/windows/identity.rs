@@ -158,7 +158,7 @@ pub(super) fn observe(
             return Err(original);
         }
     };
-    if found != *expected {
+    if !found.same_birth(expected) {
         return Err(changed(expected, Some(&found)));
     }
     Ok(ProcessObservation::Live(LiveObservation {
