@@ -33,10 +33,6 @@ fn string(bytes: &[u8], offset: usize) -> io::Result<String> {
         .map(str::to_owned)
         .map_err(|_| invalid("non-UTF8 Git ELF dependency"))
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn dependencies(path: &Path) -> io::Result<Vec<PathBuf>> {
     let file = File::open(path)?;
     let h = bytes(&file, 0, 64)?;
@@ -52,13 +48,39 @@ pub(super) fn dependencies(path: &Path) -> io::Result<Vec<PathBuf>> {
         return Err(invalid("Git ELF program-header bound exceeded"));
     }
     let headers = bytes(&file, offset, width * count)?;
+    let (interpreter, dynamic) = program_parts(&file, &headers, width)?;
+    let (needed, table, size) = dynamic_parts(&dynamic)?;
+    let mut result = interpreter.into_iter().collect::<Vec<_>>();
+    if needed.is_empty() {
+        return Ok(result);
+    }
+    let address = table.ok_or_else(|| invalid("Git ELF has no dynamic string table"))?;
+    let size = size.ok_or_else(|| invalid("Git ELF has no dynamic string-table size"))?;
+    let strings = bytes(
+        &file,
+        strings_offset(&headers, width, address, size)?,
+        size.try_into()
+            .map_err(|_| invalid("Git ELF string size overflow"))?,
+    )?;
+    for offset in needed {
+        result.push(resolve_library(&strings, offset)?);
+    }
+    Ok(result)
+}
+
+/// Scan program headers for the interpreter path and the dynamic-section bytes.
+fn program_parts(
+    file: &File,
+    headers: &[u8],
+    width: usize,
+) -> io::Result<(Option<PathBuf>, Vec<u8>)> {
     let mut interpreter = None;
     let mut dynamic = Vec::new();
     for p in headers.chunks_exact(width) {
         match number(p, 0, 4)? {
             2 => {
                 dynamic = bytes(
-                    &file,
+                    file,
                     number(p, 8, 8)?,
                     number(p, 32, 8)?
                         .try_into()
@@ -67,13 +89,19 @@ pub(super) fn dependencies(path: &Path) -> io::Result<Vec<PathBuf>> {
             }
             3 => {
                 interpreter = Some(PathBuf::from(string(
-                    &bytes(&file, number(p, 8, 8)?, number(p, 32, 8)? as usize)?,
+                    &bytes(file, number(p, 8, 8)?, number(p, 32, 8)? as usize)?,
                     0,
                 )?))
             }
             _ => (),
         }
     }
+    Ok((interpreter, dynamic))
+}
+
+/// Walk the dynamic table: the needed names capped at 32, the string-table
+/// address and size; custom search paths refuse outright.
+fn dynamic_parts(dynamic: &[u8]) -> io::Result<(Vec<u64>, Option<u64>, Option<u64>)> {
     let mut table = None;
     let mut size = None;
     let mut needed = Vec::new();
@@ -98,12 +126,11 @@ pub(super) fn dependencies(path: &Path) -> io::Result<Vec<PathBuf>> {
             _ => (),
         }
     }
-    let mut result = interpreter.into_iter().collect::<Vec<_>>();
-    if needed.is_empty() {
-        return Ok(result);
-    }
-    let address = table.ok_or_else(|| invalid("Git ELF has no dynamic string table"))?;
-    let size = size.ok_or_else(|| invalid("Git ELF has no dynamic string-table size"))?;
+    Ok((needed, table, size))
+}
+
+/// Locate the string table's file offset inside a load segment containing it.
+fn strings_offset(headers: &[u8], width: usize, address: u64, size: u64) -> io::Result<u64> {
     let mut table_offset = None;
     for p in headers.chunks_exact(width) {
         if number(p, 0, 4)? == 1 {
@@ -118,50 +145,45 @@ pub(super) fn dependencies(path: &Path) -> io::Result<Vec<PathBuf>> {
             }
         }
     }
-    let strings = bytes(
-        &file,
-        table_offset.ok_or_else(|| invalid("Git ELF strings are outside file segments"))?,
-        size.try_into()
-            .map_err(|_| invalid("Git ELF string size overflow"))?,
+    table_offset.ok_or_else(|| invalid("Git ELF strings are outside file segments"))
+}
+
+/// Resolve one needed name to a canonical path inside the qualified system
+/// library directories; nothing else is granted.
+fn resolve_library(strings: &[u8], offset: u64) -> io::Result<PathBuf> {
+    let name = string(
+        strings,
+        offset
+            .try_into()
+            .map_err(|_| invalid("Git ELF name offset overflow"))?,
     )?;
-    for offset in needed {
-        let name = string(
-            &strings,
-            offset
-                .try_into()
-                .map_err(|_| invalid("Git ELF name offset overflow"))?,
-        )?;
-        if name.is_empty() || name.contains('/') {
-            return Err(invalid("Git ELF dependency must be a system library name"));
-        }
-        #[cfg(target_arch = "x86_64")]
-        const MULTIARCH: &str = "x86_64-linux-gnu";
-        #[cfg(target_arch = "aarch64")]
-        const MULTIARCH: &str = "aarch64-linux-gnu";
-        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-        const MULTIARCH: &str = "unsupported";
-        let mut found = None;
-        for directory in [
-            format!("/lib/{MULTIARCH}"),
-            format!("/usr/lib/{MULTIARCH}"),
-            "/lib64".into(),
-            "/usr/lib64".into(),
-            "/lib".into(),
-            "/usr/lib".into(),
-        ] {
-            let candidate = Path::new(&directory).join(&name);
-            match candidate.canonicalize() {
-                Ok(path) => {
-                    found = Some(path);
-                    break;
-                }
-                Err(e) if e.kind() == io::ErrorKind::NotFound => (),
-                Err(e) => return Err(e),
-            }
-        }
-        result.push(found.ok_or_else(|| {
-            invalid("Git ELF dependency is outside qualified system library paths")
-        })?);
+    if name.is_empty() || name.contains('/') {
+        return Err(invalid("Git ELF dependency must be a system library name"));
     }
-    Ok(result)
+    #[cfg(target_arch = "x86_64")]
+    const MULTIARCH: &str = "x86_64-linux-gnu";
+    #[cfg(target_arch = "aarch64")]
+    const MULTIARCH: &str = "aarch64-linux-gnu";
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    const MULTIARCH: &str = "unsupported";
+    let mut found = None;
+    for directory in [
+        format!("/lib/{MULTIARCH}"),
+        format!("/usr/lib/{MULTIARCH}"),
+        "/lib64".into(),
+        "/usr/lib64".into(),
+        "/lib".into(),
+        "/usr/lib".into(),
+    ] {
+        let candidate = Path::new(&directory).join(&name);
+        match candidate.canonicalize() {
+            Ok(path) => {
+                found = Some(path);
+                break;
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+            Err(e) => return Err(e),
+        }
+    }
+    found.ok_or_else(|| invalid("Git ELF dependency is outside qualified system library paths"))
 }
