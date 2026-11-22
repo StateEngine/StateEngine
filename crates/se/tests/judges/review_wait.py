@@ -11,6 +11,7 @@ from pathlib import Path
 import time
 import uuid
 
+from background_status import script_provider
 from judge_records import wait_json
 from mail_cli import Fixture
 
@@ -68,6 +69,9 @@ def handoff(fixture, reviewer):
 
 
 def run(fixture):
+    # A script provider runs under StateEngine's own supervisor, as an npm
+    # Claude Code does, so an idle agent counts no background processes.
+    script_provider(fixture)
     reviewer, reviewer_session = launch_reviewer(fixture)
     fixture.launch()
     until(lambda: (fixture.repo / "launch-turn-complete").exists(), 30, "the author's launch turn")
@@ -97,7 +101,7 @@ def main():
     parser.add_argument("--se", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    fixture = Fixture(args.se, args.output, provider_helper=Path(__file__).with_name("burst_provider.py"))
+    fixture = Fixture(args.se, args.output, provider_helper=Path(__file__).with_name("background_provider.py"))
     print("1..5", flush=True)
     try:
         run(fixture)
