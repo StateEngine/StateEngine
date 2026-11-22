@@ -136,6 +136,15 @@ fn agents_section(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> 
                 let more = if note.truncated { " …" } else { "" };
                 writeln!(out, "    Note: {}{more}", note.text)?;
             }
+            if let Some(se_types::Read::Present { value: background }) = &agent.background
+                && let Some(oldest) = &background.oldest
+            {
+                writeln!(
+                    out,
+                    "    Background: {} process(es), oldest {} since {}",
+                    background.processes, oldest.command, oldest.started_at
+                )?;
+            }
             if let Some(harness) = &agent.harness {
                 writeln!(out, "    Harness: {harness}")?;
             }
@@ -212,6 +221,7 @@ fn crew_state(state: &se_core::ops::AgentStateView) -> String {
         "attention" => "needs attention",
         "running" => "running (turns not observed)",
         "turn-unreadable" => "running (turn state unreadable)",
+        "background" => "idle, background process running",
         other => other,
     };
     match state.elapsed_seconds {

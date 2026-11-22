@@ -286,6 +286,7 @@ fn from_principal<R: Snapshot>(
                     waiting_on,
                 }),
                 working_note: Some(working_note),
+                background: None,
             },
         },
     })

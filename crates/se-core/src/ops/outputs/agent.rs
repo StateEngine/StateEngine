@@ -76,6 +76,10 @@ pub struct AgentRow {
     /// The agent's own short working note, saved without notifying anyone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_note: Option<Read<WorkingNoteView>>,
+    /// Processes the agent keeps running beside its provider, such as a build
+    /// or test it started in the background. Own row only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<Read<BackgroundView>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secode_binding: Option<Read<super::SecodeBindingView>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,6 +119,21 @@ pub struct PeerRow {
     pub provider: Provider,
     pub state: Option<AgentStateView>,
     pub working_note: Option<Read<WorkingNoteView>>,
+}
+/// The agent's own processes other than its provider and StateEngine's
+/// connection to it. Only the program name is shown, never its arguments.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct BackgroundView {
+    pub processes: u32,
+    /// The longest-running one: its program name and start.
+    pub oldest: Option<BackgroundProcessView>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct BackgroundProcessView {
+    pub command: String,
+    pub started_at: String,
+    /// The recorded time `started_at` shows, in Unix microseconds.
+    pub started_at_us: i64,
 }
 /// The first line of an agent's working state, for a status row.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
