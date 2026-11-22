@@ -20,10 +20,6 @@ pub struct Applied {
 }
 /// Installs a complete parse or preserves exactly one last-good semantic set.
 /// Failed/partial/deferred work never replaces that set with a smaller graph.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn apply(
     sql: &SqlView<'_>,
     scope: &Scope,
@@ -41,78 +37,22 @@ pub fn apply(
             "SELECT id,indexed_hash,last_good_generation,coverage_json FROM files WHERE key=?1",
         )?
         .query_row([parsed.file.0.as_slice()], |r| {
-            Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get::<_, Option<i64>>(2)?
-                    .map(|v| {
-                        u64::try_from(v).map_err(|e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                2,
-                                rusqlite::types::Type::Integer,
-                                Box::new(e),
-                            )
-                        })
-                    })
-                    .transpose()?,
-                r.get(3)?,
-            ))
+            let baseline = r.get::<_, Option<i64>>(2)?.map(|_| column(r, 2));
+            Ok((r.get(0)?, r.get(1)?, baseline.transpose()?, r.get(3)?))
         })
         .optional()
         .map_err(cache_error)?;
-    let generation: u64 = unsigned(
-        sql,
-        "SELECT index_generation+1 FROM meta WHERE singleton=1",
-        [],
-    )?;
+    let generation = next_generation(sql)?;
     let good = matches!(parsed.coverage, FileCoverage::Indexed);
     let baseline = previous.as_ref().and_then(|p| p.2);
     let prior_good = previous.as_ref().is_some_and(|p| p.3 == "\"Indexed\"");
     let reset = good && previous.is_some() && !prior_good;
-    let old_hash = previous
-        .as_ref()
-        .and_then(|p| p.1.as_ref())
-        .map(|v| {
-            v.as_slice()
-                .try_into()
-                .map(ContentHash)
-                .map_err(|_| cache_error("invalid indexed hash"))
-        })
-        .transpose()?;
-    let coverage = if !good && baseline.is_some() {
-        FileCoverage::Stale {
-            reason: failure_reason(&parsed.coverage),
-            last_good_generation: Generation(baseline.unwrap_or(0)),
-            observed_hash: Some(snapshot.content_hash),
-            diagnostic: match &parsed.coverage {
-                FileCoverage::Failed { error } => Some(error.clone()),
-                _ => None,
-            },
-        }
-    } else {
-        parsed.coverage.clone()
-    };
+    let old_hash = indexed_hash(previous.as_ref().and_then(|p| p.1.as_deref()))?;
+    let coverage = stored_coverage(snapshot, parsed, baseline);
     let row = if let Some((row, ..)) = &previous {
         *row
     } else {
-        execute(
-            sql,
-            "INSERT INTO files(key,path,path_key,language,indexed_hash,observed_hash,bytes,identity,coverage_json,last_good_generation,last_code_generation,last_author_generation,baseline_reset) VALUES(?1,?2,?2,?3,NULL,?4,?5,?6,?7,NULL,0,0,0)",
-            params![
-                parsed.file.0.as_slice(),
-                snapshot.path.as_str(),
-                format!("{:?}", parsed.language),
-                snapshot.content_hash.0.as_slice(),
-                n(snapshot.identity.size),
-                serde_json::to_vec(&snapshot.identity).map_err(cache_error)?,
-                json(&coverage)?
-            ],
-        )?;
-        value(
-            sql,
-            "SELECT id FROM files WHERE key=?1",
-            [parsed.file.0.as_slice()],
-        )?
+        insert_row(sql, snapshot, parsed, &coverage)?
     };
     if !cold {
         batch::observe_file(sql, parsed.file, &snapshot.path)?;
@@ -123,18 +63,14 @@ pub fn apply(
         None
     };
     if good {
-        diff::compare(
-            sql,
-            row,
-            &snapshot.path,
-            parsed,
-            diff::Baseline {
-                hash: old_hash,
-                reset,
-                cold,
-            },
-            |fact| batch::stage(sql, fact),
-        )?;
+        let baseline = diff::Baseline {
+            hash: old_hash,
+            reset,
+            cold,
+        };
+        diff::compare(sql, row, &snapshot.path, parsed, baseline, |fact| {
+            batch::stage(sql, fact)
+        })?;
         let changed = old_hash != Some(parsed.content_hash) || !prior_good;
         if changed {
             invalidate(sql, row, serial)?;
@@ -149,30 +85,14 @@ pub fn apply(
         if prior_good {
             invalidate(sql, row, serial)?;
         }
-        crate::cache::reference_counts::outgoing(sql, row)?;
-        execute(
-            sql,
-            "UPDATE refs SET accuracy='NameOnly',target=NULL WHERE file=?1",
-            [row],
-        )?;
-        execute(
-            sql,
-            "UPDATE imports SET target_symbol=NULL,resolution='NameOnly' WHERE file=?1",
-            [row],
-        )?;
+        demote_outgoing(sql, row)?;
         if !cold && old_hash != Some(parsed.content_hash) {
-            batch::stage(
+            stage_file_only(
                 sql,
-                diff::Fact {
-                    file: parsed.file,
-                    symbol: None,
-                    path: snapshot.path.clone(),
-                    span: None,
-                    kind: ChangeKind::FileOnly,
-                    previous: old_hash,
-                    current: Some(parsed.content_hash),
-                    baseline_reset: false,
-                },
+                parsed.file,
+                &snapshot.path,
+                old_hash,
+                parsed.content_hash,
             )?;
         }
     }
@@ -192,11 +112,7 @@ pub fn apply(
             row
         ],
     )?;
-    execute(
-        sql,
-        "UPDATE meta SET index_generation=?1,observed_serial=max(observed_serial,?2) WHERE singleton=1",
-        params![n(generation), n(serial)],
-    )?;
+    advance(sql, generation, serial)?;
     // Re-resolving unchanged importers must converge, including cycles. Source
     // hashes alone miss unchanged re-export text acquiring a new target.
     if before != Some(bindings::fingerprint(sql, row)?) {
@@ -211,6 +127,51 @@ pub fn apply(
         baseline_reset: reset,
         stale: !good && baseline.is_some(),
     })
+}
+/// A failed parse over a last-good baseline is stored as stale, not as failure.
+fn stored_coverage(
+    snapshot: &SourceSnapshot,
+    parsed: &ParsedFile,
+    baseline: Option<u64>,
+) -> FileCoverage {
+    let Some(baseline) = baseline.filter(|_| !matches!(parsed.coverage, FileCoverage::Indexed))
+    else {
+        return parsed.coverage.clone();
+    };
+    FileCoverage::Stale {
+        reason: failure_reason(&parsed.coverage),
+        last_good_generation: Generation(baseline),
+        observed_hash: Some(snapshot.content_hash),
+        diagnostic: match &parsed.coverage {
+            FileCoverage::Failed { error } => Some(error.clone()),
+            _ => None,
+        },
+    }
+}
+fn insert_row(
+    sql: &SqlView<'_>,
+    snapshot: &SourceSnapshot,
+    parsed: &ParsedFile,
+    coverage: &FileCoverage,
+) -> AtlasResult<i64> {
+    execute(
+        sql,
+        "INSERT INTO files(key,path,path_key,language,indexed_hash,observed_hash,bytes,identity,coverage_json,last_good_generation,last_code_generation,last_author_generation,baseline_reset) VALUES(?1,?2,?2,?3,NULL,?4,?5,?6,?7,NULL,0,0,0)",
+        params![
+            parsed.file.0.as_slice(),
+            snapshot.path.as_str(),
+            format!("{:?}", parsed.language),
+            snapshot.content_hash.0.as_slice(),
+            n(snapshot.identity.size),
+            serde_json::to_vec(&snapshot.identity).map_err(cache_error)?,
+            json(coverage)?
+        ],
+    )?;
+    value(
+        sql,
+        "SELECT id FROM files WHERE key=?1",
+        [parsed.file.0.as_slice()],
+    )
 }
 fn failure_reason(coverage: &FileCoverage) -> CoverageReason {
     match coverage {
@@ -246,6 +207,40 @@ pub(super) fn invalidate(sql: &SqlView<'_>, row: i64, serial: u64) -> AtlasResul
     )?;
     Ok(())
 }
+/// Keeps a file's outgoing rows but drops their bindings to name-only accuracy.
+pub(super) fn demote_outgoing(sql: &SqlView<'_>, row: i64) -> AtlasResult<()> {
+    crate::cache::reference_counts::outgoing(sql, row)?;
+    execute(
+        sql,
+        "UPDATE refs SET accuracy='NameOnly',target=NULL WHERE file=?1",
+        [row],
+    )?;
+    execute(
+        sql,
+        "UPDATE imports SET target_symbol=NULL,resolution='NameOnly' WHERE file=?1",
+        [row],
+    )?;
+    Ok(())
+}
+pub(super) fn stage_file_only(
+    sql: &SqlView<'_>,
+    file: FileId,
+    path: &RelativePath,
+    previous: Option<ContentHash>,
+    current: ContentHash,
+) -> AtlasResult<()> {
+    let fact = diff::Fact {
+        file,
+        symbol: None,
+        path: path.clone(),
+        span: None,
+        kind: ChangeKind::FileOnly,
+        previous,
+        current: Some(current),
+        baseline_reset: false,
+    };
+    batch::stage(sql, fact)
+}
 fn name(sql: &SqlView<'_>, name: &str) -> AtlasResult<i64> {
     execute(sql, "INSERT OR IGNORE INTO names(text) VALUES(?1)", [name])?;
     value(sql, "SELECT id FROM names WHERE text=?1", [name])
@@ -260,10 +255,6 @@ fn symbol(sql: &SqlView<'_>, id: Option<SymbolId>) -> AtlasResult<Option<i64>> {
     .transpose()
     .map(Option::flatten)
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn install(
     sql: &SqlView<'_>,
     file: i64,
@@ -271,7 +262,20 @@ fn install(
     parsed: &ParsedFile,
     replace_symbols: bool,
 ) -> AtlasResult<()> {
-    for record in parsed.symbols.iter().filter(|_| replace_symbols) {
+    if replace_symbols {
+        install_symbols(sql, file, snapshot, parsed)?;
+    }
+    install_imports(sql, file, snapshot, parsed)?;
+    install_references(sql, file, parsed)?;
+    crate::cache::reference_counts::installed(sql, file)
+}
+fn install_symbols(
+    sql: &SqlView<'_>,
+    file: i64,
+    snapshot: &SourceSnapshot,
+    parsed: &ParsedFile,
+) -> AtlasResult<()> {
+    for record in &parsed.symbols {
         let name = name(sql, &record.name)?;
         let parent = symbol(sql, record.parent)?;
         if record.parent.is_some() && parent.is_none() {
@@ -316,6 +320,14 @@ fn install(
             ],
         )?;
     }
+    Ok(())
+}
+fn install_imports(
+    sql: &SqlView<'_>,
+    file: i64,
+    snapshot: &SourceSnapshot,
+    parsed: &ParsedFile,
+) -> AtlasResult<()> {
     for import in &parsed.imports {
         let local = import
             .local_name
@@ -371,6 +383,9 @@ fn install(
             )?;
         }
     }
+    Ok(())
+}
+fn install_references(sql: &SqlView<'_>, file: i64, parsed: &ParsedFile) -> AtlasResult<()> {
     for reference in &parsed.references {
         let record = &reference.site;
         let Some(span) = record.site.span else {
@@ -403,5 +418,5 @@ fn install(
             ],
         )?;
     }
-    crate::cache::reference_counts::installed(sql, file)
+    Ok(())
 }
