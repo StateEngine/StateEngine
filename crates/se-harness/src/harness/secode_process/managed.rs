@@ -380,10 +380,6 @@ impl Harness for SecodeHarness {
             })
         })
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     fn attach<'a>(
         &'a self,
         attach: crate::HarnessAttach,
@@ -435,74 +431,8 @@ impl Harness for SecodeHarness {
                 .io
                 .finish_input(&binding.transport, copy(&cx, &deadline)?)
                 .await;
-            // A write failure, including a partial write, has no replay path.
-            // Original keyed readback is the only acceptance authority.
-            let write_failure = match write {
-                Ok(written)
-                    if written.completed_bytes as usize == text.len()
-                        && written.failure.is_none() =>
-                {
-                    None
-                }
-                Ok(written) => Some(written.failure.map(se_types::SeError::from).unwrap_or_else(
-                    || unreadable("SE Code initial stdin", "partial write; pending/no-replay"),
-                )),
-                Err(error) => Some(error),
-            };
-            let mut write_failure = match (write_failure, close) {
-                (Some(write), Err(close)) => Some(close.with_cause(write)),
-                (failure, Ok(())) => failure,
-                (None, Err(close)) => Some(close),
-            };
-            loop {
-                let receipt = binding
-                    .managed
-                    .control
-                    .acceptance(
-                        &binding.managed.service,
-                        &binding.managed.session,
-                        &binding.managed.initial_input,
-                        &deadline,
-                    )
-                    .await
-                    .map_err(|read| match write_failure.take() {
-                        Some(original) => read.with_cause(original),
-                        None => read,
-                    })?;
-                match receipt.verify_initial(
-                    &binding.managed.service,
-                    &binding.managed.session,
-                    &binding.managed.initial_input,
-                    text,
-                )? {
-                    Read::Present { .. } => break,
-                    Read::Absent { .. } if write_failure.is_some() => {
-                        return Err(write_failure.unwrap_or_else(|| {
-                            unreadable("SE Code initial input", "pending/no-replay")
-                        }));
-                    }
-                    Read::Absent { .. } => {
-                        tokio::time::sleep(
-                            deadline
-                                .remaining()?
-                                .min(std::time::Duration::from_millis(25)),
-                        )
-                        .await
-                    }
-                    _ => {
-                        return Err(unreadable(
-                            "SE Code initial input",
-                            "unreadable keyed acceptance; pending/no-replay",
-                        ));
-                    }
-                }
-            }
-            if let Some(failure) = write_failure {
-                return Err(unreadable(
-                    "SE Code initial stdin",
-                    "original keyed input is accepted, but writing or closing its original stdin failed; acceptance is retained and must not be replayed",
-                ).with_cause(failure));
-            }
+            let write_failure = initial_write_failure(write, close, text);
+            await_initial_acceptance(&binding, write_failure, text, &deadline).await?;
             let notice = binding
                 .managed
                 .control
@@ -573,6 +503,89 @@ impl Harness for SecodeHarness {
         Box::pin(async move { stream::close(bound(binding)?, &cx).await })
     }
 }
+fn initial_write_failure(
+    write: Result<crate::StreamWrite>,
+    close: Result<()>,
+    text: &str,
+) -> Option<se_types::SeError> {
+    // A write failure, including a partial write, has no replay path.
+    // Original keyed readback is the only acceptance authority.
+    let write_failure =
+        match write {
+            Ok(written)
+                if written.completed_bytes as usize == text.len() && written.failure.is_none() =>
+            {
+                None
+            }
+            Ok(written) => Some(written.failure.map(se_types::SeError::from).unwrap_or_else(
+                || unreadable("SE Code initial stdin", "partial write; pending/no-replay"),
+            )),
+            Err(error) => Some(error),
+        };
+    match (write_failure, close) {
+        (Some(write), Err(close)) => Some(close.with_cause(write)),
+        (failure, Ok(())) => failure,
+        (None, Err(close)) => Some(close),
+    }
+}
+
+async fn await_initial_acceptance(
+    binding: &Arc<Binding>,
+    mut write_failure: Option<se_types::SeError>,
+    text: &str,
+    deadline: &crate::Deadline,
+) -> Result<()> {
+    loop {
+        let receipt = binding
+            .managed
+            .control
+            .acceptance(
+                &binding.managed.service,
+                &binding.managed.session,
+                &binding.managed.initial_input,
+                deadline,
+            )
+            .await
+            .map_err(|read| match write_failure.take() {
+                Some(original) => read.with_cause(original),
+                None => read,
+            })?;
+        match receipt.verify_initial(
+            &binding.managed.service,
+            &binding.managed.session,
+            &binding.managed.initial_input,
+            text,
+        )? {
+            Read::Present { .. } => break,
+            Read::Absent { .. } if write_failure.is_some() => {
+                return Err(write_failure
+                    .unwrap_or_else(|| unreadable("SE Code initial input", "pending/no-replay")));
+            }
+            Read::Absent { .. } => {
+                tokio::time::sleep(
+                    deadline
+                        .remaining()?
+                        .min(std::time::Duration::from_millis(25)),
+                )
+                .await
+            }
+            _ => {
+                return Err(unreadable(
+                    "SE Code initial input",
+                    "unreadable keyed acceptance; pending/no-replay",
+                ));
+            }
+        }
+    }
+    if let Some(failure) = write_failure {
+        return Err(unreadable(
+            "SE Code initial stdin",
+            "original keyed input is accepted, but writing or closing its original stdin failed; acceptance is retained and must not be replayed",
+        ).with_cause(failure));
+    }
+    Ok(())
+}
+
 fn copy(cx: &crate::CallContext, deadline: &crate::Deadline) -> Result<crate::CallContext> {
     Ok(crate::CallContext {
         generation: cx.generation,

@@ -3,10 +3,6 @@
 use super::*;
 
 impl ClaudeHarness {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) async fn attach_attended(&self, request: HarnessAttach) -> Result<LaunchOutcome> {
         let provider = self
             .probed
@@ -30,60 +26,11 @@ impl ClaudeHarness {
             // stop requests. Reading welcome/trust screens is not a timeout.
             let path = transcript.clone();
             let wanted = conversation.clone();
-            let (returned, position, tail, ready) =
-                tokio::task::spawn_blocking(move || -> Result<_> {
-                    if source.is_none() {
-                        source = se_proc::NativeSourcePin::open(&path).map_err(|e| {
-                            se_core::scope::unreadable("attended Claude transcript", &e.to_string())
-                        })?;
-                    }
-                    let Some(pin) = &mut source else {
-                        return Ok((source, offset, pending, false));
-                    };
-                    let chunk = pin.read_at(offset, 256 * 1024).map_err(|e| {
-                        se_core::scope::unreadable("attended Claude transcript", &e.to_string())
-                    })?;
-                    pending.extend_from_slice(&chunk.bytes);
-                    let mut start = 0;
-                    let mut ready = false;
-                    for (index, byte) in pending.iter().enumerate() {
-                        if *byte != b'\n' {
-                            continue;
-                        }
-                        let row: serde_json::Value = serde_json::from_slice(&pending[start..index])
-                            .map_err(|e| {
-                                se_core::scope::unreadable(
-                                    "Claude readiness record",
-                                    &e.to_string(),
-                                )
-                            })?;
-                        if let Some(id) = row.get("sessionId").and_then(serde_json::Value::as_str) {
-                            if id != wanted.as_str() {
-                                return Err(SeError::invalid(
-                                    "Claude window conversation",
-                                    "the selected conversation in the provider-written transcript",
-                                ));
-                            }
-                            ready = true;
-                        }
-                        start = index + 1;
-                    }
-                    pending.drain(..start);
-                    if pending.len() > completion::MAX_LINE
-                        || chunk.next_offset > 4 * 1024 * 1024 && !ready
-                    {
-                        return Err(SeError::too_large(
-                            "Claude window readiness scan",
-                            4 * 1024 * 1024,
-                            chunk.next_offset as usize,
-                        ));
-                    }
-                    Ok((source, chunk.next_offset, pending, ready))
-                })
-                .await
-                .map_err(|e| {
-                    se_core::scope::unreadable("Claude readiness worker", &e.to_string())
-                })??;
+            let (returned, position, tail, ready) = tokio::task::spawn_blocking(move || {
+                scan_attended_transcript(source, offset, pending, path, &wanted)
+            })
+            .await
+            .map_err(|e| se_core::scope::unreadable("Claude readiness worker", &e.to_string()))??;
             source = returned;
             offset = position;
             pending = tail;
@@ -112,4 +59,53 @@ impl ClaudeHarness {
             binding: HarnessBinding::new(binding),
         })
     }
+}
+
+fn scan_attended_transcript(
+    mut source: Option<se_proc::NativeSourcePin>,
+    offset: u64,
+    mut pending: Vec<u8>,
+    path: PathBuf,
+    wanted: &ProviderSessionId,
+) -> Result<(Option<se_proc::NativeSourcePin>, u64, Vec<u8>, bool)> {
+    if source.is_none() {
+        source = se_proc::NativeSourcePin::open(&path).map_err(|e| {
+            se_core::scope::unreadable("attended Claude transcript", &e.to_string())
+        })?;
+    }
+    let Some(pin) = &mut source else {
+        return Ok((source, offset, pending, false));
+    };
+    let chunk = pin
+        .read_at(offset, 256 * 1024)
+        .map_err(|e| se_core::scope::unreadable("attended Claude transcript", &e.to_string()))?;
+    pending.extend_from_slice(&chunk.bytes);
+    let mut start = 0;
+    let mut ready = false;
+    for (index, byte) in pending.iter().enumerate() {
+        if *byte != b'\n' {
+            continue;
+        }
+        let row: serde_json::Value = serde_json::from_slice(&pending[start..index])
+            .map_err(|e| se_core::scope::unreadable("Claude readiness record", &e.to_string()))?;
+        if let Some(id) = row.get("sessionId").and_then(serde_json::Value::as_str) {
+            if id != wanted.as_str() {
+                return Err(SeError::invalid(
+                    "Claude window conversation",
+                    "the selected conversation in the provider-written transcript",
+                ));
+            }
+            ready = true;
+        }
+        start = index + 1;
+    }
+    pending.drain(..start);
+    if pending.len() > completion::MAX_LINE || chunk.next_offset > 4 * 1024 * 1024 && !ready {
+        return Err(SeError::too_large(
+            "Claude window readiness scan",
+            4 * 1024 * 1024,
+            chunk.next_offset as usize,
+        ));
+    }
+    Ok((source, chunk.next_offset, pending, ready))
 }
