@@ -1,10 +1,5 @@
 use super::*;
 impl State {
-    #[expect(
-        clippy::cognitive_complexity,
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) fn work(
         &mut self,
         context: &dyn AtlasHost,
@@ -12,10 +7,7 @@ impl State {
         wake: Wake,
     ) -> Result<Plan> {
         if matches!(wake, Wake::Core) {
-            for root in &mut self.roots {
-                root.feed_pending = true;
-                root.feed_stalled = false;
-            }
+            self.refeed();
         }
         // A native parse deadline takes priority over registry scans and SQL
         // work. The child cannot read source until this owner arms that clock.
@@ -24,16 +16,42 @@ impl State {
                 eprintln!("Code index child cancellation pending: {error}");
             }
             if self.controller.runtime().child_pid().is_none() {
-                for root in &mut self.roots {
-                    root.feed_pending = true;
-                    root.feed_stalled = false;
-                }
+                self.refeed();
             }
             if let Some(plan) = self.parse_plan()? {
                 return Ok(plan);
             }
         }
-        let mut again = false;
+        self.absorb_activity(context, owner)?;
+        for id in self.due_sources(wake) {
+            self.drive_source(&id)?;
+        }
+        let mut again = self.scan_page(context, owner);
+        again |= self.advance_project(context, owner)?;
+        self.drive_work()?;
+        let before = self.controller.runtime().child_pid();
+        if let Err(error) = crate::atlas_runtime::drive_child(&mut self.controller) {
+            eprintln!("Code index child work paused: {error}");
+        }
+        if let Some(plan) = self.parse_plan()? {
+            return Ok(plan);
+        }
+        let child = self.controller.runtime().child_pid();
+        if before.is_some() && child.is_none() {
+            self.adopt_exit()?;
+        }
+        if child.is_none() {
+            again |= self.feed_records(context, owner)?;
+        }
+        self.next_plan(child, again)
+    }
+    fn refeed(&mut self) {
+        for root in &mut self.roots {
+            root.feed_pending = true;
+            root.feed_stalled = false;
+        }
+    }
+    fn absorb_activity(&mut self, context: &dyn AtlasHost, owner: &HumanId) -> Result<()> {
         if let Some(activity) = context.records().take_activity()? {
             if self.enabled {
                 // Revalidate only the bounded live pool on committed activity.
@@ -65,6 +83,9 @@ impl State {
             self.registry_dirty = false;
             self.reconcile_all = false;
         }
+        Ok(())
+    }
+    fn due_sources(&self, wake: Wake) -> Vec<RootId> {
         let now = Instant::now();
         let mut sources: Vec<RootId> = self
             .roots
@@ -96,150 +117,143 @@ impl State {
             }
             _ => (),
         }
-        for id in sources {
-            let previous = self
-                .roots
-                .iter()
-                .find(|root| root.registration.root == id)
-                .and_then(|root| {
-                    root.event_retry
-                        .map(|(_, delay, draining)| (delay, draining))
-                });
-            let result = drive_events(
-                &mut self.controller,
-                &id,
-                Instant::now() + Duration::from_millis(100),
-            );
-            let pending = self.controller.watch_pending(&id);
-            let drain =
-                result.is_ok() && !pending && previous.is_some_and(|(_, draining)| !draining);
-            if drain {
-                self.controller.set_watch_pending(&id, true)?;
-            }
-            if let Some(root) = self
-                .roots
-                .iter_mut()
-                .find(|root| root.registration.root == id)
-            {
-                root.event_retry = match result {
-                    Ok(_) if pending => Some((
-                        Instant::now() + Duration::from_millis(1),
-                        Duration::from_millis(1),
-                        false,
-                    )),
-                    Ok(_) if drain => Some((
-                        Instant::now() + Duration::from_millis(1),
-                        Duration::from_millis(1),
-                        true,
-                    )),
-                    Ok(_) => None,
-                    Err(error) if pending => {
-                        eprintln!("Code index source event delayed: {error}");
-                        let delay = previous.map_or(Duration::from_millis(50), |(delay, _)| {
-                            (delay * 2).clamp(Duration::from_millis(50), Duration::from_secs(1))
-                        });
-                        Some((Instant::now() + delay, delay, false))
-                    }
-                    Err(error) => {
-                        eprintln!("Code index source reconciliation required: {error}");
-                        None
-                    }
-                };
-            }
+        sources
+    }
+    fn drive_source(&mut self, id: &RootId) -> Result<()> {
+        let previous = self
+            .roots
+            .iter()
+            .find(|root| root.registration.root == *id)
+            .and_then(|root| root.event_retry);
+        let result = drive_events(
+            &mut self.controller,
+            id,
+            Instant::now() + Duration::from_millis(100),
+        );
+        let pending = self.controller.watch_pending(id);
+        let drain =
+            result.is_ok() && !pending && previous.is_some_and(|(_, _, draining)| !draining);
+        if drain {
+            self.controller.set_watch_pending(id, true)?;
         }
-        if let Some(scan) = &mut self.scan {
-            match scan.page(context, owner, &self.home, &self.work) {
-                Ok(false) => again = true,
-                Ok(true) => {
-                    self.scan = None;
-                    again = true;
+        if let Some(root) = self
+            .roots
+            .iter_mut()
+            .find(|root| root.registration.root == *id)
+        {
+            root.event_retry = match result {
+                Ok(_) if pending || drain => Some((
+                    Instant::now() + Duration::from_millis(1),
+                    Duration::from_millis(1),
+                    drain,
+                )),
+                Ok(_) => None,
+                Err(error) if pending => {
+                    eprintln!("Code index source event delayed: {error}");
+                    let delay = previous.map_or(Duration::from_millis(50), |(_, delay, _)| {
+                        (delay * 2).clamp(Duration::from_millis(50), Duration::from_secs(1))
+                    });
+                    Some((Instant::now() + delay, delay, false))
                 }
                 Err(error) => {
-                    self.scan = None;
-                    eprintln!("Code index project registration paused: {error}");
+                    eprintln!("Code index source reconciliation required: {error}");
+                    None
                 }
+            };
+        }
+        Ok(())
+    }
+    fn scan_page(&mut self, context: &dyn AtlasHost, owner: &HumanId) -> bool {
+        let Some(scan) = &mut self.scan else {
+            return false;
+        };
+        match scan.page(context, owner, &self.home, &self.work) {
+            Ok(false) => true,
+            Ok(true) => {
+                self.scan = None;
+                true
+            }
+            Err(error) => {
+                self.scan = None;
+                eprintln!("Code index project registration paused: {error}");
+                false
             }
         }
-        again |= self.advance_project(context, owner)?;
+    }
+    fn drive_work(&mut self) -> Result<()> {
         // The same controller supplies both event and quantum paths; checkout
         // locks discovered by the driver reach the scheduler before publication.
-        let retry_wait = self
-            .work_retry_after
-            .and_then(|end| end.checked_duration_since(Instant::now()));
-        if self.controller.runtime().child_pid().is_none() && retry_wait.is_none() {
-            self.work_retry_after = None;
-            match drive_quantum(&mut self.controller, MAX_WORK_QUANTUM) {
-                Ok(Some(report))
-                    if self
-                        .controller
-                        .summary(&report.root)?
-                        .coverage
-                        .reasons
-                        .contains(&CoverageReason::SchedulingStall) =>
-                {
-                    self.work_retry_after = Some(Instant::now() + Duration::from_secs(1));
-                }
-                Ok(_) => (),
-                Err(error) => eprintln!("Code index source work paused: {error}"),
-            }
+        if self.controller.runtime().child_pid().is_some() || self.retry_wait().is_some() {
+            return Ok(());
         }
-        let before = self.controller.runtime().child_pid();
-        if let Err(error) = crate::atlas_runtime::drive_child(&mut self.controller) {
-            eprintln!("Code index child work paused: {error}");
-        }
-        if let Some(plan) = self.parse_plan()? {
-            return Ok(plan);
-        }
-        let child = self.controller.runtime().child_pid();
-        if before.is_some() && child.is_none() {
-            for root in &mut self.roots {
-                root.feed_pending = true;
-                root.feed_stalled = false;
+        self.work_retry_after = None;
+        match drive_quantum(&mut self.controller, MAX_WORK_QUANTUM) {
+            Ok(Some(report))
                 if self
                     .controller
-                    .summary(&root.registration.root)?
+                    .summary(&report.root)?
                     .coverage
                     .reasons
-                    .contains(&CoverageReason::SchedulingStall)
-                {
-                    self.work_retry_after = Some(Instant::now() + Duration::from_secs(1));
-                }
+                    .contains(&CoverageReason::SchedulingStall) =>
+            {
+                self.work_retry_after = Some(Instant::now() + Duration::from_secs(1));
+            }
+            Ok(_) => (),
+            Err(error) => eprintln!("Code index source work paused: {error}"),
+        }
+        Ok(())
+    }
+    fn retry_wait(&self) -> Option<Duration> {
+        self.work_retry_after
+            .and_then(|end| end.checked_duration_since(Instant::now()))
+    }
+    fn adopt_exit(&mut self) -> Result<()> {
+        for root in &mut self.roots {
+            root.feed_pending = true;
+            root.feed_stalled = false;
+            if self
+                .controller
+                .summary(&root.registration.root)?
+                .coverage
+                .reasons
+                .contains(&CoverageReason::SchedulingStall)
+            {
+                self.work_retry_after = Some(Instant::now() + Duration::from_secs(1));
             }
         }
-        if child.is_none() {
-            for root in &mut self.roots {
-                if root.feed_pending
-                    && !root.feed_stalled
-                    && self.enabled
-                    && self
-                        .controller
-                        .summary(&root.registration.root)?
-                        .epoch
-                        .is_some()
-                {
-                    match records::chunk(context, owner, &self.controller, &root.registration.root)
-                    {
-                        Ok(true) => root.feed_pending = false,
-                        Ok(false) => {
-                            again |= context.records().ticket()?.is_some();
-                        }
-                        Err(error) => {
-                            root.feed_stalled = true;
-                            eprintln!("Code index record feed paused: {error}");
-                        }
+        Ok(())
+    }
+    fn feed_records(&mut self, context: &dyn AtlasHost, owner: &HumanId) -> Result<bool> {
+        let mut again = false;
+        for root in &mut self.roots {
+            if root.feed_pending
+                && !root.feed_stalled
+                && self.enabled
+                && self
+                    .controller
+                    .summary(&root.registration.root)?
+                    .epoch
+                    .is_some()
+            {
+                match records::chunk(context, owner, &self.controller, &root.registration.root) {
+                    Ok(true) => root.feed_pending = false,
+                    Ok(false) => again |= context.records().ticket()?.is_some(),
+                    Err(error) => {
+                        root.feed_stalled = true;
+                        eprintln!("Code index record feed paused: {error}");
                     }
                 }
             }
         }
+        Ok(again)
+    }
+    fn next_plan(&mut self, child: Option<u32>, again: bool) -> Result<Plan> {
         let (ready, mut delay) = match if child.is_some() {
             NextWork::Park
         } else {
             self.controller.next_work()
         } {
-            NextWork::Ready => match self
-                .work_retry_after
-                .and_then(|end| end.checked_duration_since(Instant::now()))
-            {
+            NextWork::Ready => match self.retry_wait() {
                 Some(wait) => (false, Some(wait)),
                 None => (true, None),
             },
@@ -607,40 +621,29 @@ impl State {
             let policy = roots::policy(self.enabled);
             self.controller
                 .register(registration.clone(), policy.clone())?;
-            if let Err(error) = metadata {
+            let prepared = metadata.and_then(|_| {
+                self.controller.runtime_mut().prepare_registered(
+                    &registration,
+                    &policy,
+                    // Activation checks the whole retained graph in owned
+                    // background work, just as post-reap cold adoption does.
+                    Instant::now() + Duration::from_secs(900),
+                )
+            });
+            let feed_stalled = if let Err(error) = prepared {
                 self.controller.suspend(&registration.root, error)?;
-                self.roots.push(Root {
-                    registration,
-                    feed_pending: true,
-                    feed_stalled: true,
-                    event_retry: None,
-                });
-                continue;
-            }
-            if let Err(error) = self.controller.runtime_mut().prepare_registered(
-                &registration,
-                &policy,
-                // Activation checks the whole retained graph in owned
-                // background work, just as post-reap cold adoption does.
-                Instant::now() + Duration::from_secs(900),
-            ) {
-                self.controller.suspend(&registration.root, error)?;
-                self.roots.push(Root {
-                    registration,
-                    feed_pending: true,
-                    feed_stalled: true,
-                    event_retry: None,
-                });
-                continue;
-            }
-            if self.enabled {
-                self.controller
-                    .activate(registration.root.clone(), ReconcileReason::HostRestart)?;
-            }
+                true
+            } else {
+                if self.enabled {
+                    self.controller
+                        .activate(registration.root.clone(), ReconcileReason::HostRestart)?;
+                }
+                false
+            };
             self.roots.push(Root {
                 registration,
                 feed_pending: true,
-                feed_stalled: false,
+                feed_stalled,
                 event_retry: None,
             });
         }
