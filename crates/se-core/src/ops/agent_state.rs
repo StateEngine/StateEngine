@@ -117,6 +117,10 @@ fn derive(row: &AgentRow, now_us: i64) -> Result<AgentStateView> {
             _ if matches!(row.provider_activity, Some(Read::Unreadable { .. })) => {
                 ("turn-unreadable", None)
             }
+            // Idle between turns, but a process it started is still running.
+            Some("turn-completed" | "idle") if background(row, now_us).is_some() => {
+                ("background", background(row, now_us))
+            }
             Some("turn-completed" | "idle") => ("idle", phase),
             // Alive, but no host observed its turns: not claimed idle.
             _ => ("running", None),
@@ -138,6 +142,36 @@ fn derive(row: &AgentRow, now_us: i64) -> Result<AgentStateView> {
         elapsed_seconds: elapsed,
         waiting_on,
     })
+}
+
+/// When the agent's oldest background process started and how long ago, if it
+/// has any.
+fn background(row: &AgentRow, now_us: i64) -> Option<(String, u64)> {
+    let Some(Read::Present { value }) = &row.background else {
+        return None;
+    };
+    let oldest = value.oldest.as_ref().filter(|_| value.processes > 0)?;
+    let seconds = (now_us - oldest.started_at_us).max(0) / 1_000_000;
+    Some((oldest.started_at.clone(), u64::try_from(seconds).ok()?))
+}
+
+/// An agent row's background processes as its owning runtime reported them for
+/// this exact session; a failed runtime read is unreadable, not none.
+pub fn host_background(
+    row: &AgentRow,
+    observed: &std::result::Result<Vec<&AgentRow>, &se_types::SeError>,
+) -> Option<Read<BackgroundView>> {
+    match observed {
+        Ok(rows) => rows
+            .iter()
+            .find(|other| other.id == row.id && other.session.session_id == row.session.session_id)
+            .and_then(|other| other.background.clone()),
+        Err(error) => row.session.session_id.as_ref().map(|_| Read::Unreadable {
+            source: "agent process scope".into(),
+            reason: error.to_string(),
+            error: Some(Box::new(error.body.clone())),
+        }),
+    }
 }
 
 /// The most of a working note a status row shows.

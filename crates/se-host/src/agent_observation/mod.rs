@@ -5,6 +5,7 @@ use se_store::{ProcessIdentityRecord, SourceEvidence};
 use se_types::{ProjectId, Read, Result, SeError};
 use std::time::Instant;
 mod approval;
+pub(crate) mod background;
 mod capture;
 mod native;
 pub(crate) mod output;

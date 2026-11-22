@@ -85,7 +85,8 @@ impl LaunchCoordinator {
         ) {
             return;
         }
-        let read = || -> Result<Read<ProviderActivityView>> {
+        let mut found = None;
+        let mut read = || -> Result<Read<ProviderActivityView>> {
             let Some(session) = &row.session.session_id else {
                 return Ok(Read::Absent {
                     checked: "This agent has no launched provider session".into(),
@@ -114,6 +115,7 @@ impl LaunchCoordinator {
                 }.into() });
             };
             let paced = self.mail_paced_until(&state, &job);
+            found = crate::agent_observation::background::scope(&self.native, &state.process);
             let Some(binding) = &state.binding else {
                 return Ok(Read::Unknown { what: "Waiting for a provider connection; check provider sign-in. Explicitly stop this agent to cancel setup before retrying launch.".into() });
             };
@@ -141,6 +143,7 @@ impl LaunchCoordinator {
                 error: Some(Box::new(error.body)),
             },
         });
+        row.background = crate::agent_observation::background::row(row.provider, found);
         if row.provider == se_types::Provider::Codex {
             row.codex_login = Some(match &row.session.session_id {
                 Some(session) => self.recorded_codex_login(session),
