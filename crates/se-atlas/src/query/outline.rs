@@ -28,12 +28,7 @@ impl QueryReader<'_, '_, '_> {
                 let start = key.map_or(0, |k| k.integers[1]);
                 let stop = key.map_or(u64::MAX, |k| k.integers[2]);
                 let symbol_key = key.map_or(&[][..], |k| k.bytes.as_slice());
-                let ids={
-                    let mut stmt=sql.prepare("SELECT id FROM symbols WHERE file=?1 AND (?2=0 OR start_byte>?3 OR (start_byte=?3 AND (end_byte<?4 OR (end_byte=?4 AND key>?5)))) ORDER BY start_byte,end_byte DESC,key LIMIT ?6")?;
-                    let mut rows=stmt.query(params![file.rowid,key.is_some(),signed(start)?,i64::try_from(stop).unwrap_or(i64::MAX),symbol_key,u32::from(query.budget.max_results)+1]).map_err(cache_error)?;
-                    let mut ids=Vec::with_capacity(query.budget.max_results as usize+1);
-                    while let Some(row)=rows.next().map_err(cache_error)?{ids.push(get::<i64>(row,0)?);}ids
-                };
+                let ids=id_column(sql,"SELECT id FROM symbols WHERE file=?1 AND (?2=0 OR start_byte>?3 OR (start_byte=?3 AND (end_byte<?4 OR (end_byte=?4 AND key>?5)))) ORDER BY start_byte,end_byte DESC,key LIMIT ?6",params![file.rowid,key.is_some(),signed(start)?,i64::try_from(stop).unwrap_or(i64::MAX),symbol_key,u32::from(query.budget.max_results)+1],query.budget.max_results as usize+1)?;
                 for id in ids {
                     let symbol=symbol_by_id(sql,id)?.0.value;
                     if output.symbols.len() >= query.budget.max_results as usize { more = true; break; }

@@ -1,4 +1,5 @@
 //! Bounded reverse BFS is recomputed per page; no graph frontier enters a cursor.
+use super::impact_files::FileGraph;
 use super::target::*;
 use super::*;
 #[derive(Clone, Copy)]
@@ -8,12 +9,31 @@ struct Node {
     via: Option<i64>,
     depth: u8,
 }
+impl Node {
+    fn root(symbol: i64) -> Self {
+        Self {
+            symbol,
+            parent: None,
+            via: None,
+            depth: 0,
+        }
+    }
+}
 #[derive(Clone)]
 struct ResultRow {
     node: usize,
     file: [u8; 16],
     symbol: [u8; 32],
     site: u64,
+}
+/// One response page: entries strictly after the cursor key, within the query budget.
+struct Page<'k> {
+    output: Impact,
+    after: Option<&'k Key>,
+    last: Option<Key>,
+    more: bool,
+    budget: QueryBudget,
+    index_bytes: usize,
 }
 impl QueryReader<'_, '_, '_> {
     pub fn impact(&mut self, query: &ImpactQuery) -> AtlasResult<Answer<Read<Impact>>> {
@@ -43,11 +63,6 @@ impl QueryReader<'_, '_, '_> {
         )
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        clippy::cognitive_complexity,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     fn impact_page(
         identity: &CacheIdentity,
         env: &QueryEnv<'_>,
@@ -73,14 +88,8 @@ impl QueryReader<'_, '_, '_> {
         }
         let mut nodes = Vec::with_capacity(32);
         let mut root_files = Vec::new();
-        let mut limited = seed(
-            env,
-            sql,
-            &snapshot,
-            &query.target,
-            &mut nodes,
-            &mut root_files,
-        )?;
+        let target = &query.target;
+        let mut limited = seed(env, sql, &snapshot, target, &mut nodes, &mut root_files)?;
         if nodes.is_empty() && root_files.is_empty() {
             return Ok(snapshot.unknown(
                 "no indexed impact target; inspect coverage and explicit file/record links",
@@ -92,75 +101,7 @@ impl QueryReader<'_, '_, '_> {
         }
         let root_symbols = matches!(query.target, AtlasTarget::Symbol(_))
             .then(|| nodes.iter().map(|n| n.symbol).collect::<Vec<_>>());
-        let mut results = Vec::with_capacity(32);
-        let mut examined = 0;
-        let mut exhausted = false;
-        let mut at = 0;
-        while at < nodes.len() {
-            if crate::clock::now() >= end {
-                exhausted = true;
-                break;
-            }
-            let node = nodes[at];
-            if node.depth >= query.depth {
-                at += 1;
-                continue;
-            }
-            let (edges, partial) = super::impact_edges::read(
-                sql,
-                node.symbol,
-                query.include_name_only,
-                1024usize.saturating_sub(examined),
-                end,
-            )?;
-            exhausted |= partial;
-            examined += edges.len();
-            for edge in edges {
-                if crate::clock::now() >= end {
-                    exhausted = true;
-                    break;
-                }
-                let Some(child) = edge.enclosing else {
-                    continue;
-                };
-                let (symbol, _) = symbol_by_id(sql, child)?;
-                if symbol.value.kind == SymbolKind::Module && symbol.value.parent.is_none() {
-                    continue;
-                }
-                let file = file_by_id(sql, edge.file)?;
-                if crate::policy::built_in_denied(&file.pointer.path)
-                    || !matches!(file.coverage, FileCoverage::Indexed)
-                {
-                    limited = true;
-                    continue;
-                }
-                if nodes.iter().any(|n| n.symbol == child) {
-                    continue;
-                }
-                if nodes.len() == 512 {
-                    exhausted = true;
-                    break;
-                }
-                let position = nodes.len();
-                nodes.push(Node {
-                    symbol: child,
-                    parent: Some(at),
-                    via: Some(edge.id),
-                    depth: node.depth + 1,
-                });
-                results.push(ResultRow {
-                    node: position,
-                    file: file.pointer.file.0,
-                    symbol: symbol.value.id.0,
-                    site: edge.start,
-                });
-            }
-            if exhausted {
-                break;
-            }
-            at += 1;
-        }
-        limited |= exhausted;
+        let (results, examined, at) = walk(sql, query, &mut nodes, &mut limited, end)?;
         let files = super::impact_files::collect(
             sql,
             root_files.clone(),
@@ -171,123 +112,43 @@ impl QueryReader<'_, '_, '_> {
             root_symbols.as_deref(),
         )?;
         limited |= files.limited;
-        for result in &results {
-            if crate::clock::now() >= end {
-                limited = true;
-                break;
-            }
-            let mut statement = sql.prepare("SELECT id FROM files WHERE key=?1")?;
-            let id: i64 = statement
-                .query_row([result.file.as_slice()], |r| r.get(0))
-                .map_err(cache_error)?;
-            if !root_files.contains(&id) {
-                root_files.push(id);
-            }
-        }
-        for id in files.file_rows() {
-            if !root_files.contains(&id) {
-                root_files.push(id);
-            }
-        }
-        let mut positions = Vec::with_capacity(results.len() + files.results.len());
-        for at in 0..results.len() {
-            positions.push((false, at));
-        }
-        for &at in &files.results {
-            positions.push((true, at));
-        }
-        let order = |(file, at): (bool, usize)| {
-            if file {
-                files.order(at)
-            } else {
-                let result = &results[at];
-                let mut bytes = [0; 48];
-                bytes[..32].copy_from_slice(&result.symbol);
-                bytes[32..].copy_from_slice(&result.file);
-                (nodes[result.node].depth, bytes, result.site, 0)
-            }
+        limited |= merge_root_files(sql, &results, &files, &mut root_files, end)?;
+        let mut page = Page {
+            output: Impact {
+                dependents: Vec::new(),
+                tests: Vec::new(),
+                records: Vec::new(),
+                omitted_frontier: 0,
+                frontier_count_complete: !limited,
+                next: None,
+                complete: !limited && snapshot.negative_complete() && !advanced,
+            },
+            after,
+            last: None,
+            more: false,
+            budget: query.budget,
+            index_bytes: size(&snapshot.index)?,
         };
-        positions.sort_by_key(|at| order(*at));
-        let mut output = Impact {
-            dependents: Vec::new(),
-            tests: Vec::new(),
-            records: Vec::new(),
-            omitted_frontier: 0,
-            frontier_count_complete: !limited,
-            next: None,
-            complete: !limited && snapshot.negative_complete() && !advanced,
-        };
-        let mut last = None;
-        let mut more = false;
-        for (file, position) in positions {
-            let (depth, bytes, site, kind) = order((file, position));
-            let key = Key {
-                integers: vec![u64::from(depth), u64::from(kind), site],
-                bytes: bytes.to_vec(),
-            };
-            if after.is_some_and(|a| compare(&key, a).is_le()) {
-                continue;
-            }
-            if output.dependents.len() + output.tests.len() == query.budget.max_results as usize {
-                more = true;
-                break;
-            }
-            let dependent = if file {
-                files.dependent(sql, position)?
-            } else {
-                dependent(sql, &nodes, results[position].node)?
-            };
-            let is_test = test_path(dependent.pointer.path.as_str());
-            if size(&output)? + size(&dependent)? + size(&snapshot.index)? + 1200
-                > query.budget.max_bytes as usize
-            {
-                more = true;
-                break;
-            }
-            if is_test {
-                output.tests.push(dependent);
-            } else {
-                output.dependents.push(dependent);
-            }
-            last = Some(key);
-        }
+        fill_dependents(sql, &nodes, &results, &files, &mut page)?;
         let frontier = nodes.len().saturating_sub(at) as u64;
         drop(nodes);
         drop(results);
         drop(files);
-        if !more {
-            let records = super::impact_records::collect(
-                env,
-                sql,
-                &snapshot,
-                &root_files,
-                end - Duration::from_millis(2),
-            )?;
-            limited |= records.limited;
-            for record in records.rows {
-                if after.is_some_and(|a| compare(&record.key, a).is_le()) {
-                    continue;
-                }
-                if output.dependents.len() + output.tests.len() + output.records.len()
-                    == query.budget.max_results as usize
-                    || size(&output)? + size(&record.hit)? + size(&snapshot.index)? + 1200
-                        > query.budget.max_bytes as usize
-                {
-                    more = true;
-                    break;
-                }
-                last = Some(record.key);
-                output.records.push(record.hit);
-            }
+        if !page.more {
+            let end = end - Duration::from_millis(2);
+            limited |= fill_records(env, sql, &snapshot, &root_files, end, &mut page)?;
         }
+        let mut output = page.output;
         output.frontier_count_complete = !limited;
         output.complete &= !limited;
         // An exhausted graph budget cannot offer a cursor claiming complete traversal.
         if limited {
             output.omitted_frontier = frontier;
             output.complete = false;
-        } else if more {
-            let key = last.ok_or_else(|| capacity("Atlas impact response bytes", 1, 0))?;
+        } else if page.more {
+            let key = page
+                .last
+                .ok_or_else(|| capacity("Atlas impact response bytes", 1, 0))?;
             output.next =
                 Some(PositionCursor::new(&snapshot.index, "impact", digest, key, None)?.encode()?);
             output.complete = false;
@@ -298,6 +159,197 @@ impl QueryReader<'_, '_, '_> {
             query.budget,
         )
     }
+}
+/// Reverse BFS: dependents found, edges examined, and the first node left unexpanded.
+fn walk(
+    sql: &SqlView<'_>,
+    query: &ImpactQuery,
+    nodes: &mut Vec<Node>,
+    limited: &mut bool,
+    end: Instant,
+) -> AtlasResult<(Vec<ResultRow>, usize, usize)> {
+    let mut results = Vec::with_capacity(32);
+    let mut examined = 0;
+    let mut exhausted = false;
+    let mut at = 0;
+    while at < nodes.len() {
+        if crate::clock::now() >= end {
+            exhausted = true;
+            break;
+        }
+        let node = nodes[at];
+        if node.depth >= query.depth {
+            at += 1;
+            continue;
+        }
+        let (edges, partial) = super::impact_edges::read(
+            sql,
+            node.symbol,
+            query.include_name_only,
+            1024usize.saturating_sub(examined),
+            end,
+        )?;
+        exhausted |= partial;
+        examined += edges.len();
+        for edge in edges {
+            if crate::clock::now() >= end {
+                exhausted = true;
+                break;
+            }
+            let Some(child) = edge.enclosing else {
+                continue;
+            };
+            let (symbol, _) = symbol_by_id(sql, child)?;
+            if symbol.value.kind == SymbolKind::Module && symbol.value.parent.is_none() {
+                continue;
+            }
+            let file = file_by_id(sql, edge.file)?;
+            if crate::policy::built_in_denied(&file.pointer.path)
+                || !matches!(file.coverage, FileCoverage::Indexed)
+            {
+                *limited = true;
+                continue;
+            }
+            if nodes.iter().any(|n| n.symbol == child) {
+                continue;
+            }
+            if nodes.len() == 512 {
+                exhausted = true;
+                break;
+            }
+            results.push(ResultRow {
+                node: nodes.len(),
+                file: file.pointer.file.0,
+                symbol: symbol.value.id.0,
+                site: edge.start,
+            });
+            nodes.push(Node {
+                symbol: child,
+                parent: Some(at),
+                via: Some(edge.id),
+                depth: node.depth + 1,
+            });
+        }
+        if exhausted {
+            break;
+        }
+        at += 1;
+    }
+    *limited |= exhausted;
+    Ok((results, examined, at))
+}
+/// Records are linked from the roots and from every file a dependent lives in.
+fn merge_root_files(
+    sql: &SqlView<'_>,
+    results: &[ResultRow],
+    files: &FileGraph,
+    root_files: &mut Vec<i64>,
+    end: Instant,
+) -> AtlasResult<bool> {
+    let mut limited = false;
+    for result in results {
+        if crate::clock::now() >= end {
+            limited = true;
+            break;
+        }
+        let mut statement = sql.prepare("SELECT id FROM files WHERE key=?1")?;
+        let id: i64 = statement
+            .query_row([result.file.as_slice()], |r| r.get(0))
+            .map_err(cache_error)?;
+        if !root_files.contains(&id) {
+            root_files.push(id);
+        }
+    }
+    for id in files.file_rows() {
+        if !root_files.contains(&id) {
+            root_files.push(id);
+        }
+    }
+    Ok(limited)
+}
+fn fill_dependents(
+    sql: &SqlView<'_>,
+    nodes: &[Node],
+    results: &[ResultRow],
+    files: &FileGraph,
+    page: &mut Page<'_>,
+) -> AtlasResult<()> {
+    let mut positions = Vec::with_capacity(results.len() + files.results.len());
+    positions.extend((0..results.len()).map(|at| (false, at)));
+    positions.extend(files.results.iter().map(|&at| (true, at)));
+    let order = |(file, at): (bool, usize)| {
+        if file {
+            files.order(at)
+        } else {
+            let result = &results[at];
+            let mut bytes = [0; 48];
+            bytes[..32].copy_from_slice(&result.symbol);
+            bytes[32..].copy_from_slice(&result.file);
+            (nodes[result.node].depth, bytes, result.site, 0)
+        }
+    };
+    positions.sort_by_key(|at| order(*at));
+    for (file, position) in positions {
+        let (depth, bytes, site, kind) = order((file, position));
+        let key = Key {
+            integers: vec![u64::from(depth), u64::from(kind), site],
+            bytes: bytes.to_vec(),
+        };
+        if page.after.is_some_and(|a| compare(&key, a).is_le()) {
+            continue;
+        }
+        let output = &mut page.output;
+        if output.dependents.len() + output.tests.len() == page.budget.max_results as usize {
+            page.more = true;
+            break;
+        }
+        let dependent = if file {
+            files.dependent(sql, position)?
+        } else {
+            dependent(sql, nodes, results[position].node)?
+        };
+        let is_test = test_path(dependent.pointer.path.as_str());
+        if size(output)? + size(&dependent)? + page.index_bytes + 1200
+            > page.budget.max_bytes as usize
+        {
+            page.more = true;
+            break;
+        }
+        if is_test {
+            output.tests.push(dependent);
+        } else {
+            output.dependents.push(dependent);
+        }
+        page.last = Some(key);
+    }
+    Ok(())
+}
+fn fill_records(
+    env: &QueryEnv<'_>,
+    sql: &SqlView<'_>,
+    snapshot: &Snapshot,
+    root_files: &[i64],
+    end: Instant,
+    page: &mut Page<'_>,
+) -> AtlasResult<bool> {
+    let records = super::impact_records::collect(env, sql, snapshot, root_files, end)?;
+    for record in records.rows {
+        if page.after.is_some_and(|a| compare(&record.key, a).is_le()) {
+            continue;
+        }
+        let output = &mut page.output;
+        if output.dependents.len() + output.tests.len() + output.records.len()
+            == page.budget.max_results as usize
+            || size(output)? + size(&record.hit)? + page.index_bytes + 1200
+                > page.budget.max_bytes as usize
+        {
+            page.more = true;
+            break;
+        }
+        page.last = Some(record.key);
+        output.records.push(record.hit);
+    }
+    Ok(records.limited)
 }
 fn validate_key(key: &Key) -> AtlasResult<()> {
     if key.integers.len() != 3 {
@@ -335,28 +387,10 @@ fn seed(
             if let Some(target) = resolve(sql, target)? {
                 files.push(target.file.rowid);
                 if let Some(symbol) = target.symbol {
-                    nodes.push(Node {
-                        symbol: symbol.rowid,
-                        parent: None,
-                        via: None,
-                        depth: 0,
-                    });
+                    nodes.push(Node::root(symbol.rowid));
                     return Ok(false);
                 }
-                let mut stmt =
-                    sql.prepare("SELECT id FROM symbols WHERE file=?1 ORDER BY key LIMIT 513")?;
-                let mut rows = stmt.query([target.file.rowid]).map_err(cache_error)?;
-                while let Some(row) = rows.next().map_err(cache_error)? {
-                    if nodes.len() == 512 {
-                        return Ok(true);
-                    }
-                    nodes.push(Node {
-                        symbol: get(row, 0)?,
-                        parent: None,
-                        via: None,
-                        depth: 0,
-                    });
-                }
+                return file_symbols(sql, target.file.rowid, nodes);
             }
         }
         AtlasTarget::Commit(oid) => {
@@ -408,27 +442,22 @@ fn seed_links(
         files.push(file);
     }
     for &file in files.iter() {
-        let mut stmt =
-            sql.prepare("SELECT id FROM symbols WHERE file=?1 ORDER BY key LIMIT 513")?;
-        let mut rows = stmt.query([file]).map_err(cache_error)?;
-        while let Some(row) = rows.next().map_err(cache_error)? {
-            if nodes.len() == 512 {
-                limited = true;
-                break;
-            }
-            let symbol = get(row, 0)?;
-            if nodes.iter().any(|n| n.symbol == symbol) {
-                continue;
-            }
-            nodes.push(Node {
-                symbol,
-                parent: None,
-                via: None,
-                depth: 0,
-            });
-        }
+        limited |= file_symbols(sql, file, nodes)?;
     }
     Ok(limited)
+}
+/// Adds a file's symbols as roots; true when the 512-node cap cut them short.
+fn file_symbols(sql: &SqlView<'_>, file: i64, nodes: &mut Vec<Node>) -> AtlasResult<bool> {
+    let statement = "SELECT id FROM symbols WHERE file=?1 ORDER BY key LIMIT 513";
+    for symbol in id_column(sql, statement, [file], 0)? {
+        if nodes.len() == 512 {
+            return Ok(true);
+        }
+        if !nodes.iter().any(|n| n.symbol == symbol) {
+            nodes.push(Node::root(symbol));
+        }
+    }
+    Ok(false)
 }
 
 fn dependent(sql: &SqlView<'_>, nodes: &[Node], position: usize) -> AtlasResult<Dependent> {
@@ -444,14 +473,7 @@ fn dependent(sql: &SqlView<'_>, nodes: &[Node], position: usize) -> AtlasResult<
         let to = reference
             .enclosing
             .ok_or_else(|| cache_error("impact edge lost enclosing symbol"))?;
-        let mut target = sql.prepare("SELECT key FROM symbols WHERE id=?1")?;
-        let from = SymbolId(
-            target
-                .query_row([nodes[parent].symbol], |r| r.get::<_, Vec<u8>>(0))
-                .map_err(cache_error)?
-                .try_into()
-                .map_err(|_| cache_error("invalid symbol key"))?,
-        );
+        let from = symbol_key(sql, nodes[parent].symbol)?;
         if pointer.is_none() {
             pointer = Some(reference.site.clone());
             symbol = Some(to);

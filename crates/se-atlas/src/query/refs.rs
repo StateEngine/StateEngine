@@ -101,17 +101,9 @@ fn collect_references(
         }
         let (statement, values) =
             reference_plan(query, target, key.filter(|k| k.integers[0] == phase), phase)?;
-        let ids = {
-            let mut stmt = sql.prepare(&statement)?;
-            let mut rows = stmt
-                .query(rusqlite::params_from_iter(values))
-                .map_err(cache_error)?;
-            let mut ids = Vec::with_capacity(query.budget.max_results as usize + 1);
-            while let Some(row) = rows.next().map_err(cache_error)? {
-                ids.push(get::<i64>(row, 0)?);
-            }
-            ids
-        };
+        let values = rusqlite::params_from_iter(values);
+        let reserve = query.budget.max_results as usize + 1;
+        let ids = id_column(sql, &statement, values, reserve)?;
         for id in ids.iter().take(512) {
             let reference = reference_by_id(sql, *id)?;
             if crate::policy::built_in_denied(&reference.site.path) {
