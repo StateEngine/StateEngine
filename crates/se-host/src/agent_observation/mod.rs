@@ -6,7 +6,7 @@ use se_types::{ProjectId, Read, Result, SeError};
 use std::time::Instant;
 mod approval;
 mod background;
-pub(crate) use background::row as background;
+pub(crate) use background::{busy, row as background};
 mod capture;
 mod native;
 pub(crate) mod output;

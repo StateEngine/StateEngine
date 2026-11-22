@@ -23,20 +23,18 @@ impl LaunchCoordinator {
         if job.mail_pending.load(Ordering::Acquire) || state.mail.flight.is_some() {
             return None;
         }
-        let due = state
-            .mail
-            .idle_since?
-            .max(state.mail.last_nudge.unwrap_or(idle_since))
-            + interval;
+        let since = state.mail.idle_since?;
+        let due = since.max(state.mail.last_nudge.unwrap_or(idle_since)) + interval;
         if due > now {
             return Some(due);
         }
         state.mail.last_nudge = Some(now);
-        let result = match deadline.stage(Duration::from_secs(10)) {
-            Ok(bound) => self.send_nudge(state, attempts, &bound).await,
-            Err(error) => Err(error),
-        };
-        if let Err(error) = result {
+        // A process the agent left running is work in progress, not a stall.
+        if crate::agent_observation::busy(state.meta.provider, &self.native, state.process.clone())
+        {
+            return Some(now + interval);
+        }
+        if let Err(error) = self.send_nudge(state, attempts, deadline).await {
             mail::diagnostic::report(state, &error);
         }
         Some(now + interval)
@@ -48,6 +46,7 @@ impl LaunchCoordinator {
         attempts: u32,
         deadline: &Deadline,
     ) -> Result<()> {
+        let deadline = &deadline.stage(Duration::from_secs(10))?;
         let admission = se_store::Admission {
             scope: state.admission.scope.clone(),
             actor: se_store::Actor::Human(self.capability_admission.owner.clone()),
