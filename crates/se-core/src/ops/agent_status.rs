@@ -245,6 +245,7 @@ fn from_principal<R: Snapshot>(
     // The open question is a stored fact; the state itself is settled once the
     // runtime's observations are merged.
     let waiting_on = super::agent_state::open_question(&agent, cx)?;
+    let review = super::agent_state::open_review(&agent, cx)?;
     let working_note = super::agent_state::working_note(&agent, cx)?;
     Ok(AgentStatusOutput {
         agent: Read::Present {
@@ -284,6 +285,7 @@ fn from_principal<R: Snapshot>(
                     since: None,
                     elapsed_seconds: None,
                     waiting_on,
+                    review,
                 }),
                 working_note: Some(working_note),
                 background: None,

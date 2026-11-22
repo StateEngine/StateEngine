@@ -14,34 +14,8 @@ pub(crate) fn open_question<R: Snapshot>(
     agent: &AgentId,
     cx: &mut Cx<'_, R>,
 ) -> Result<Option<WaitingOnView>> {
-    let budget = || -> Result<ReadBudget> {
-        Ok(ReadBudget {
-            page: PageRequest {
-                after: None,
-                limit: NonZeroU32::MIN,
-                max_bytes: NonZeroU32::new(64 * 1024)
-                    .ok_or_else(|| SeError::invalid("question bytes", "positive"))?,
-            },
-            deadline: Duration::from_secs(2),
-        })
-    };
-    let newest = |recipient: Option<Actor>, sender: Actor| MessageQuery {
-        recipient,
-        sender: Some(sender),
-        kind: None,
-        unread_only: false,
-        full_body: false,
-        direction: MailDirection::NewestFirst,
-    };
     let me = Actor::Agent(agent.clone());
-    let Some(last) = cx
-        .read
-        .messages(newest(None, me.clone()), budget()?)
-        .map_err(|e| store_error(&e))?
-        .into_items()
-        .into_iter()
-        .next()
-    else {
+    let Some(last) = newest_one(cx, None, me.clone())? else {
         return Ok(None);
     };
     // A superseded question, or one its recipient dismissed, is resolved
@@ -53,13 +27,7 @@ pub(crate) fn open_question<R: Snapshot>(
     {
         return Ok(None);
     }
-    let answered = cx
-        .read
-        .messages(newest(Some(me), last.recipient.clone()), budget()?)
-        .map_err(|e| store_error(&e))?
-        .into_items()
-        .into_iter()
-        .next()
+    let answered = newest_one(cx, Some(me), last.recipient.clone())?
         .is_some_and(|reply| reply.sent.sequence() > last.sent.sequence());
     if answered {
         return Ok(None);
@@ -75,6 +43,88 @@ pub(crate) fn open_question<R: Snapshot>(
         asked_at: super::receipt::timestamp(asked_at_us)?,
         asked_at_us,
     }))
+}
+
+/// The agent's last outgoing message, when it is a shared work message handing
+/// work to named agents for review (admit) or back to them (return), and none
+/// of them has sent this agent anything since. One read for the handoff and
+/// one per addressee; no network and no pull-request service is consulted.
+pub(crate) fn open_review<R: Snapshot>(
+    agent: &AgentId,
+    cx: &mut Cx<'_, R>,
+) -> Result<Option<ReviewWaitView>> {
+    let me = Actor::Agent(agent.clone());
+    let Some(last) = newest_one(cx, None, me.clone())? else {
+        return Ok(None);
+    };
+    let Some(work) = last.work.as_ref().filter(|work| {
+        matches!(
+            work.action,
+            se_types::WorkAction::Admit | se_types::WorkAction::Return
+        )
+    }) else {
+        return Ok(None);
+    };
+    if last.superseded_by.is_some() {
+        return Ok(None);
+    }
+    let mut to = Vec::new();
+    for addressee in &work.addressees {
+        let reviewer = Actor::Agent(addressee.clone());
+        let replied = newest_one(cx, Some(me.clone()), reviewer.clone())?
+            .is_some_and(|reply| reply.sent.sequence() > last.sent.sequence());
+        if replied {
+            return Ok(None);
+        }
+        to.push(super::receipt::actor_ref(cx.read, &reviewer)?.name);
+    }
+    let handed_at_us = match cx.read.event(last.event).map_err(|e| store_error(&e))? {
+        Read::Present { value } => value.header.occurred_at_us,
+        _ => return Ok(None),
+    };
+    Ok(Some(ReviewWaitView {
+        message_id: last.message,
+        to,
+        handed_at: super::receipt::timestamp(handed_at_us)?,
+        handed_at_us,
+        summary: match &last.body {
+            se_store::StoredText::Present(text) => first_line(text).0,
+            se_store::StoredText::Erased { .. } => String::new(),
+        },
+        refs: last.refs.iter().map(ToString::to_string).collect(),
+    }))
+}
+
+/// The newest message from `sender`, to `recipient` when given.
+fn newest_one<R: Snapshot>(
+    cx: &mut Cx<'_, R>,
+    recipient: Option<Actor>,
+    sender: Actor,
+) -> Result<Option<se_store::MessageRecord>> {
+    let query = MessageQuery {
+        recipient,
+        sender: Some(sender),
+        kind: None,
+        unread_only: false,
+        full_body: false,
+        direction: MailDirection::NewestFirst,
+    };
+    let budget = ReadBudget {
+        page: PageRequest {
+            after: None,
+            limit: NonZeroU32::MIN,
+            max_bytes: NonZeroU32::new(64 * 1024)
+                .ok_or_else(|| SeError::invalid("question bytes", "positive"))?,
+        },
+        deadline: Duration::from_secs(2),
+    };
+    Ok(cx
+        .read
+        .messages(query, budget)
+        .map_err(|e| store_error(&e))?
+        .into_items()
+        .into_iter()
+        .next())
 }
 
 /// Set every row's state from its final, observed facts. Run once after all
@@ -100,6 +150,8 @@ pub fn settle(output: &mut AnyOutput, now_us: i64) -> Result<()> {
 
 fn derive(row: &AgentRow, now_us: i64) -> Result<AgentStateView> {
     let waiting_on = row.state.as_ref().and_then(|s| s.waiting_on.clone());
+    let review = row.state.as_ref().and_then(|s| s.review.clone());
+    let local = background(row, now_us);
     let activity = match &row.provider_activity {
         Some(Read::Present { value }) => Some(value),
         _ => None,
@@ -113,15 +165,14 @@ fn derive(row: &AgentRow, now_us: i64) -> Result<AgentStateView> {
             Some("awaiting-provider" | "waiting" | "retrying-authentication") => ("working", phase),
             Some("interrupted" | "failed" | "authentication-required") => ("attention", phase),
             _ if waiting_on.is_some() => ("blocked", None),
+            // Local work still running outranks waiting on a reviewer.
+            Some("turn-completed" | "idle") if local.is_some() => ("background", local),
+            _ if review.is_some() => ("review", None),
             // An unreadable observation is not an absent one.
             _ if matches!(row.provider_activity, Some(Read::Unreadable { .. })) => {
                 ("turn-unreadable", None)
             }
-            // Idle between turns, but a process it started is still running.
-            Some("turn-completed" | "idle") => match background(row, now_us) {
-                Some(oldest) => ("background", Some(oldest)),
-                None => ("idle", phase),
-            },
+            Some("turn-completed" | "idle") => ("idle", phase),
             // Alive, but no host observed its turns: not claimed idle.
             _ => ("running", None),
         },
@@ -134,14 +185,34 @@ fn derive(row: &AgentRow, now_us: i64) -> Result<AgentStateView> {
             (Some(question.asked_at.clone()), seconds)
         }
         (_, _, Some((started, seconds))) => (Some(started), Some(seconds)),
-        _ => (None, None),
+        _ => match (state, &review) {
+            ("review", Some(handoff)) => {
+                let seconds = (now_us - handoff.handed_at_us).max(0) / 1_000_000;
+                (Some(handoff.handed_at.clone()), u64::try_from(seconds).ok())
+            }
+            _ => (None, None),
+        },
     };
     Ok(AgentStateView {
         state: state.into(),
         since,
         elapsed_seconds: elapsed,
         waiting_on,
+        review,
     })
+}
+
+/// A text's first non-empty line, at most `NOTE_CHARS` characters, and
+/// whether anything was left out.
+fn first_line(text: &str) -> (String, bool) {
+    let first = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    let short: String = first.chars().take(NOTE_CHARS).collect();
+    let truncated = short.len() < first.len() || text.trim() != first;
+    (short, truncated)
 }
 
 /// When the agent's oldest background process started and how long ago, if it
@@ -217,13 +288,7 @@ pub(crate) fn working_note<R: Snapshot>(
             error: None,
         });
     };
-    let first = text
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("")
-        .trim();
-    let short: String = first.chars().take(NOTE_CHARS).collect();
-    let truncated = short.len() < first.len() || text.trim() != first;
+    let (short, truncated) = first_line(text);
     Ok(Read::Present {
         value: WorkingNoteView {
             text: short,
