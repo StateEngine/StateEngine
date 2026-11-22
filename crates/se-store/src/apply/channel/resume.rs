@@ -80,10 +80,37 @@ fn target(
     }
     Ok(())
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+/// Records a fresh offer against original saved mail and queues its prompt.
+fn offer(
+    c: &Connection,
+    h: &EventHeader,
+    state: &ChannelConnection,
+    value: &ResumeAction,
+    now: i64,
+    seq: i64,
+) -> StoreResult<()> {
+    target(c, state, value, None)?;
+    let Pairing::Paired { phone } = &state.pairing else {
+        return Err(invalid("phone is unpaired"));
+    };
+    if value.state != "offered"
+        || value.code.is_some()
+        || value.expires_at_us <= now
+        || value.expires_at_us > now.saturating_add(600000000)
+        || value.subject != phone.subject
+        || value.private_chat != phone.private_chat
+    {
+        return Err(invalid("phone lifecycle action bounds or subject"));
+    }
+    let s = scope_key(c, &h.scope, false)?;
+    let m = key(c, "message", value.message.as_str(), &s, false)?;
+    let saved:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM channel_updates WHERE connection_id=? AND message_id=? AND receipt_id IS NOT NULL)",crate::sql_value::sql_params![state.id.as_str(),m],|r|crate::sql_value::value(r,0)).map_err(sql)?;
+    if !saved {
+        return Err(invalid("phone lifecycle requires original saved mail"));
+    }
+    c.execute("INSERT INTO channel_actions(id,connection_id,original_id,state,action_json,last_seq) VALUES(?,?,?,'offered',?,?)",crate::sql_value::sql_params![value.id.as_str(),state.id.as_str(),m,codec::encode(value)?,seq]).map_err(sql)?;
+    update::enqueue(c, state, Some(&m), None, "resume", seq)
+}
 pub(super) fn apply(
     c: &Connection,
     h: &EventHeader,
@@ -109,30 +136,7 @@ pub(super) fn apply(
         return Err(invalid("phone lifecycle action is outside connection"));
     }
     match change {
-        Change::ResumeOffered { .. } => {
-            target(c, state, &value, None)?;
-            let Pairing::Paired { phone } = &state.pairing else {
-                return Err(invalid("phone is unpaired"));
-            };
-            if value.state != "offered"
-                || value.code.is_some()
-                || value.expires_at_us <= now
-                || value.expires_at_us > now.saturating_add(600000000)
-                || value.subject != phone.subject
-                || value.private_chat != phone.private_chat
-            {
-                return Err(invalid("phone lifecycle action bounds or subject"));
-            }
-            let s = scope_key(c, &h.scope, false)?;
-            let m = key(c, "message", value.message.as_str(), &s, false)?;
-            let saved:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM channel_updates WHERE connection_id=? AND message_id=? AND receipt_id IS NOT NULL)",crate::sql_value::sql_params![state.id.as_str(),m],|r|crate::sql_value::value(r,0)).map_err(sql)?;
-            if !saved {
-                return Err(invalid("phone lifecycle requires original saved mail"));
-            }
-            c.execute("INSERT INTO channel_actions(id,connection_id,original_id,state,action_json,last_seq) VALUES(?,?,?,'offered',?,?)",crate::sql_value::sql_params![value.id.as_str(),state.id.as_str(),m,codec::encode(&value)?,seq]).map_err(sql)?;
-            update::enqueue(c, state, Some(&m), None, "resume", seq)?;
-            return Ok(());
-        }
+        Change::ResumeOffered { .. } => return offer(c, h, state, &value, now, seq),
         Change::ResumeConfirmed {
             subject,
             private_chat,

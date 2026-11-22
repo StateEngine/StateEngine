@@ -299,10 +299,35 @@ impl SqliteSnapshot {
             false,
         )
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
+    /// The recipient a work message is read for: the selected delivery row's
+    /// recipient, else the viewing addressee, else the first addressee.
+    fn work_recipient(
+        &self,
+        scope: &Scope,
+        work: &se_types::WorkAddressing,
+        selected_recipient: Option<&[u8]>,
+    ) -> StoreResult<AgentId> {
+        if let Some(selected) = selected_recipient {
+            let agent = typed_wire(
+                &self.db,
+                "agent",
+                selected,
+                &scope_key(&self.db, scope, false)?,
+            )?;
+            if !work.addressees.contains(&agent) {
+                return Err(invalid("work delivery names an unaddressed recipient"));
+            }
+            return Ok(agent);
+        }
+        match &self.scope.visibility {
+            Visibility::SelfOnly(agent) if work.addressees.contains(agent) => Ok(agent.clone()),
+            _ => work
+                .addressees
+                .first()
+                .cloned()
+                .ok_or_else(|| invalid("work message has no addressees")),
+        }
+    }
     pub(super) fn message_at(
         &self,
         sent: i64,
@@ -332,35 +357,7 @@ impl SqliteSnapshot {
                 reply_to,
                 quiet,
             } => {
-                let preview = match &self.scope.visibility {
-                    Visibility::SelfOnly(agent) => Some(Actor::Agent(agent.clone())),
-                    _ => None,
-                };
-                let agent = if let Some(selected) = selected_recipient {
-                    let agent = wire(
-                        &self.db,
-                        "agent",
-                        selected,
-                        &scope_key(&self.db, &e.header.scope, false)?,
-                    )?
-                    .try_into()
-                    .map_err(invalid)?;
-                    if !work.addressees.contains(&agent) {
-                        return Err(invalid("work delivery names an unaddressed recipient"));
-                    }
-                    agent
-                } else {
-                    match preview.as_ref() {
-                        Some(Actor::Agent(agent)) if work.addressees.contains(agent) => {
-                            agent.clone()
-                        }
-                        _ => work
-                            .addressees
-                            .first()
-                            .cloned()
-                            .ok_or_else(|| invalid("work message has no addressees"))?,
-                    }
-                };
+                let agent = self.work_recipient(&e.header.scope, &work, selected_recipient)?;
                 (
                     message,
                     Actor::Agent(agent),
@@ -401,11 +398,7 @@ impl SqliteSnapshot {
             .map_err(sql)?;
         let scope = scope_key(&self.db, &e.header.scope, false)?;
         let superseded_by = replacement
-            .map(|bytes| {
-                wire(&self.db, "message", &bytes, &scope)?
-                    .try_into()
-                    .map_err(invalid)
-            })
+            .map(|bytes| typed_wire(&self.db, "message", &bytes, &scope))
             .transpose()?;
         let notifications =
             self.notification_rows(sent, &e.header.actor, &recipient, work.as_ref(), quiet)?;

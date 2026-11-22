@@ -135,9 +135,7 @@ impl SqliteSnapshot {
             return Ok(false);
         };
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
-        let session = crate::identity::wire(&self.db, "session", &session, &scope)?
-            .try_into()
-            .map_err(invalid)?;
+        let session = typed_wire(&self.db, "session", &session, &scope)?;
         self.remote_session_visible(&session)
     }
     fn remote_session_visible(&self, session: &SessionId) -> StoreResult<bool> {
@@ -154,9 +152,7 @@ impl SqliteSnapshot {
             .optional()
             .map_err(sql)?;
         let Some(a) = a else { return Ok(false) };
-        let agent = crate::identity::wire(&self.db, "agent", &a, &scope)?
-            .try_into()
-            .map_err(invalid)?;
+        let agent = typed_wire(&self.db, "agent", &a, &scope)?;
         self.require_remote_target(&agent)?;
         Ok(true)
     }

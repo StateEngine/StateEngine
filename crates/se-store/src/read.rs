@@ -180,5 +180,14 @@ impl se_types::LegacyIdRegistry for LegacyRegistry<'_> {
     }
 }
 
+/// Decodes an interned key into its typed identifier, refusing a malformed one.
+fn typed_wire<T>(db: &Connection, kind: &str, bytes: &[u8], scope: &[u8]) -> StoreResult<T>
+where
+    T: TryFrom<String>,
+    T::Error: std::fmt::Display,
+{
+    wire(db, kind, bytes, scope)?.try_into().map_err(invalid)
+}
+
 pub(crate) use crate::codec::event::load_event;
 pub(crate) use cursor::checked_window_end;

@@ -202,9 +202,7 @@ impl SqliteSnapshot {
                 ordinal,
                 receipt: receipt.clone(),
                 connection: id.clone(),
-                message: wire(&self.db, "message", &message, &scope)?
-                    .try_into()
-                    .map_err(invalid)?,
+                message: typed_wire(&self.db, "message", &message, &scope)?,
                 event: event.header.event,
                 at_us,
             },
@@ -238,9 +236,7 @@ impl SqliteSnapshot {
                 ordinal: seq,
                 receipt: ReceiptId::new(receipt).map_err(invalid)?,
                 connection: id.clone(),
-                message: wire(&self.db, "message", &message, &scope)?
-                    .try_into()
-                    .map_err(invalid)?,
+                message: typed_wire(&self.db, "message", &message, &scope)?,
                 event: event.header.event,
                 at_us,
             });

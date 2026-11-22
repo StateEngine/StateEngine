@@ -4,10 +4,6 @@ use super::*;
 impl SqliteSnapshot {
     /// The newest turns after `since`, oldest first, with the older turns
     /// this bounded tail left out counted exactly in `omitted_before`.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) fn read_recent_turns(
         &mut self,
         agent: AgentId,
@@ -75,48 +71,14 @@ impl SqliteSnapshot {
         items.reverse();
         let oldest = items.first().map(|(seq, _)| *seq as u64);
         let newest = items.last().map(|(seq, _)| *seq as u64).unwrap_or(floor);
-        // Exact count of the older turns the tail left out, from the same index.
-        let older: u64 = match oldest {
+        let older = match oldest {
             None => 0,
-            Some(oldest) => {
-                let counts = self.query_seqs_before(
-                    "SELECT 1,count(*),1 FROM turn_data INDEXED BY turn_data_agent_seq WHERE NOT (role='system' AND vendor_ref LIKE 'se.notice.v1/%') AND project_id=? AND agent_id=? AND event_seq>? AND event_seq<?",
-                    vec![rusqlite::types::Value::Blob(p), rusqlite::types::Value::Blob(a),
-                        rusqlite::types::Value::Integer(floor as i64), rusqlite::types::Value::Integer(oldest as i64)], deadline)?;
-                u64::try_from(
-                    counts
-                        .first()
-                        .ok_or_else(|| invalid("recent-turn count absent"))?
-                        .1,
-                )
-                .map_err(invalid)?
-            }
+            Some(oldest) => self.count_turns_between(p, a, floor, oldest, deadline)?,
         };
-        let omitted_before = match std::num::NonZeroU64::new(older) {
-            None => Omission::None,
-            Some(count) => {
-                if stop == StopReason::Exhausted {
-                    stop = StopReason::ItemLimit;
-                }
-                Omission::Known {
-                    count,
-                    reason: if stop == StopReason::ByteLimit {
-                        OmissionReason::Budget
-                    } else {
-                        OmissionReason::Limit
-                    },
-                }
-            }
-        };
+        let omitted_before = omitted_older(older, &mut stop);
         query::check_deadline(deadline)?;
         let window = Window::new(WindowFields {
-            source: Source::Store {
-                store: self.info.id.clone(),
-                project: match &self.scope.admission.scope {
-                    Scope::Project(p) => Some(p.clone()),
-                    _ => None,
-                },
-            },
+            source: self.store_source(),
             from: Sequence::new(floor).map_err(invalid)?,
             to: Sequence::new(h).map_err(invalid)?,
             start_cursor: None,
@@ -133,6 +95,42 @@ impl SqliteSnapshot {
         .map_err(invalid)?;
         Page::new(items.into_iter().map(|(_, e)| e).collect(), window, None).map_err(invalid)
     }
+    /// Exact count of the older turns the tail left out, from the same index.
+    fn count_turns_between(
+        &mut self,
+        p: Vec<u8>,
+        a: Vec<u8>,
+        floor: u64,
+        oldest: u64,
+        deadline: Instant,
+    ) -> StoreResult<u64> {
+        let counts = self.query_seqs_before(
+            "SELECT 1,count(*),1 FROM turn_data INDEXED BY turn_data_agent_seq WHERE NOT (role='system' AND vendor_ref LIKE 'se.notice.v1/%') AND project_id=? AND agent_id=? AND event_seq>? AND event_seq<?",
+            vec![rusqlite::types::Value::Blob(p), rusqlite::types::Value::Blob(a),
+                rusqlite::types::Value::Integer(floor as i64), rusqlite::types::Value::Integer(oldest as i64)], deadline)?;
+        u64::try_from(
+            counts
+                .first()
+                .ok_or_else(|| invalid("recent-turn count absent"))?
+                .1,
+        )
+        .map_err(invalid)
+    }
+}
+/// Older turns left out of the tail; a known omission turns an exhausted stop into a limit.
+fn omitted_older(older: u64, stop: &mut StopReason) -> Omission {
+    let Some(count) = std::num::NonZeroU64::new(older) else {
+        return Omission::None;
+    };
+    if *stop == StopReason::Exhausted {
+        *stop = StopReason::ItemLimit;
+    }
+    let reason = if *stop == StopReason::ByteLimit {
+        OmissionReason::Budget
+    } else {
+        OmissionReason::Limit
+    };
+    Omission::Known { count, reason }
 }
 
 impl SqliteSnapshot {
