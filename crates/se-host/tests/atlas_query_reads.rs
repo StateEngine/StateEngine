@@ -13,6 +13,8 @@ mod scan_deadline;
 mod scope_queries;
 #[path = "../../test-support/atlas_clock.rs"]
 mod test_clock;
+#[path = "atlas_query_reads/text_batches.rs"]
+mod text_batches;
 #[path = "atlas_query_reads/text.rs"]
 mod text_queries;
 use fixture::*;
@@ -472,6 +474,23 @@ fn five_native_reads_and_streaming_text_share_one_scoped_snapshot() -> Check {
     );
     drop(reader);
     let mut text = text_queries::check(
+        &mut cache,
+        &viewer,
+        &records,
+        &source,
+        feed.complete,
+        &query,
+    )?;
+    text_batches::encodings(&mut cache, &viewer, &records, &source, &query)?;
+    text_batches::batches(
+        &mut cache,
+        &viewer,
+        &records,
+        &source,
+        feed.complete,
+        &query,
+    )?;
+    text_batches::ranked(
         &mut cache,
         &viewer,
         &records,
