@@ -15,12 +15,12 @@ impl QueryReader<'_, '_, '_> {
             let key = previous.as_ref().map(|p| &p.last_key);
             if let Some(k) = key { validate_key(k)?; }
             let Some(file) = file_by_path(sql, &query.path)? else {
-                return if snapshot.negative_complete() {
+                return if snapshot.index.negative_complete() {
                     Ok(snapshot.answer(Read::Absent { checked: format!("registered cache path {} in epoch {}", query.path.as_str(), identity.epoch) }, advanced))
                 } else { Ok(snapshot.unknown("path is not indexed; discovery or semantics are incomplete")) };
             };
             let mut output = Outline { file: file.pointer, language: file.language, coverage: file.coverage,
-                symbols: Vec::new(), records: Vec::new(), complete: snapshot.negative_complete() && !advanced, next: None };
+                symbols: Vec::new(), records: Vec::new(), complete: snapshot.index.negative_complete() && !advanced, next: None };
             let phase = key.map_or(0, |k| k.integers[0]);
             let mut last = key.cloned().unwrap_or_default();
             let mut more = false;

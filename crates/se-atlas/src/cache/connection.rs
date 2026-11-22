@@ -701,10 +701,6 @@ fn finite<T>(
         result => result,
     }
 }
-pub(crate) fn timeout(budget_ms: u64) -> se_types::SeError {
-    stage_timeout("query admission", budget_ms)
-}
-
 pub(crate) fn stage_timeout(stage: &str, budget_ms: u64) -> se_types::SeError {
     se_types::SeError::new(se_types::Detail::DeadlineExceeded(
         se_types::details::DeadlineExceeded {

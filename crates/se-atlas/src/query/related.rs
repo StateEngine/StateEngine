@@ -22,7 +22,9 @@ pub(super) fn collect(
     let identities = expand(sql, &seeds, &mut output.truncated, end)?;
     let mut resident = 0;
     for identity in identities {
-        super::candidates::admission_time(end)?;
+        if super::candidates::expired(end, &mut output.truncated) {
+            break;
+        }
         let truncated = &mut output.truncated;
         let Some(candidate) = admit(env, sql, snapshot, query, &seeds, identity, truncated)? else {
             continue;
@@ -69,7 +71,9 @@ fn expand(
                 identities.push((kind, id, true));
             }
         }
-        super::candidates::admission_time(end)?;
+        if super::candidates::expired(end, truncated) {
+            break;
+        }
     }
     Ok(identities)
 }
@@ -241,8 +245,7 @@ fn file_neighbors(
             *limited = true;
             continue;
         }
-        super::candidates::admission_time(end)?;
-        if output.len() >= 256 {
+        if super::candidates::expired(end, limited) || output.len() >= 256 {
             *limited = true;
             break;
         }

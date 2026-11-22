@@ -52,7 +52,7 @@ fn resume_page(
         items: Vec::new(),
         omitted: Some(0),
         unattributed_omitted: Some(0),
-        complete: snapshot.negative_complete(),
+        complete: snapshot.index.negative_complete(),
         omitted_since: None,
         advance: None,
         diagnostic: None,
@@ -112,7 +112,9 @@ fn resume_page(
     }
     if output.items.is_empty() && output.complete {
         output.state = ResumeCodeState::Zero;
-    } else if !snapshot.negative_complete() && matches!(output.state, ResumeCodeState::Available) {
+    } else if !snapshot.index.negative_complete()
+        && matches!(output.state, ResumeCodeState::Available)
+    {
         output.state = ResumeCodeState::Updating;
     }
     let next = range_cursor(&snapshot, env.viewer, snapshot.published.0, None)?.encode()?;

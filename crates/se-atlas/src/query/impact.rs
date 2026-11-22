@@ -84,7 +84,9 @@ impl QueryReader<'_, '_, '_> {
         }
         let mut nodes = Vec::with_capacity(32);
         let mut root_files = Vec::new();
-        let target = &concrete(sql, &query.target)?;
+        let Some(target) = &concrete(sql, &query.target)? else {
+            return snapshot.missing(&query.target);
+        };
         let mut limited = seed(env, sql, &snapshot, target, &mut nodes, &mut root_files)?;
         if nodes.is_empty() && root_files.is_empty() {
             return Ok(snapshot.unknown(
@@ -117,7 +119,7 @@ impl QueryReader<'_, '_, '_> {
                 omitted_frontier: 0,
                 frontier_count_complete: !limited,
                 next: None,
-                complete: !limited && snapshot.negative_complete() && !advanced,
+                complete: !limited && snapshot.index.negative_complete() && !advanced,
             },
             after,
             last: None,

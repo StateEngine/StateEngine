@@ -8,21 +8,19 @@ pub(super) fn finish<'a, 'r, 'c, 'x, T: Verified + Serialize>(
     reader: &'a QueryReader<'r, 'c, 'x>,
     answer: Answer<Read<T>>,
     budget: QueryBudget,
-    (end, hard): (Instant, Instant),
+    deadlines: (Instant, Instant),
 ) -> AtlasResult<Answer<Read<T>>> {
-    let mut answer = verify(reader, answer, hard)?;
-    // Past its soft budget a read keeps what it collected; say so structurally.
-    if crate::clock::now() >= end {
-        answer.index.note(CoverageReason::TimeLimit);
-    }
-    check_output(answer, budget)
+    check_output(verify(reader, answer, deadlines)?, budget)
 }
-
+/// Verify by the hard bound; only collection past its soft budget notes TimeLimit.
 pub(super) fn verify<T: Verified>(
     reader: &QueryReader<'_, '_, '_>,
     mut answer: Answer<Read<T>>,
-    end: Instant,
+    (soft, end): (Instant, Instant),
 ) -> AtlasResult<Answer<Read<T>>> {
+    if crate::clock::now() >= soft {
+        answer.index.note(CoverageReason::TimeLimit);
+    }
     let mut verifier = Verifier {
         reader,
         end,

@@ -20,8 +20,6 @@ fn escape_with(text: &str, lines: bool) -> String {
     let mut output = String::with_capacity(text.len());
     for c in text.chars() {
         match c {
-            // A byte-order mark is encoding residue, not content.
-            '\u{feff}' => (),
             '\n' | '\t' if lines => output.push(c),
             c if c.is_control() => output.extend(c.escape_default()),
             c => output.push(c),

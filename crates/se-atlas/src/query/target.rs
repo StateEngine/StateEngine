@@ -8,26 +8,28 @@ pub(super) fn resolve(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Op
     Ok(resolve_inner(sql, target)?
         .filter(|t| !crate::policy::built_in_denied(&t.file.pointer.path)))
 }
-/// The explicit target a positional one names, so callers see one shape.
-pub(super) fn concrete(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<AtlasTarget> {
-    let AtlasTarget::Auto(text) = target else {
-        return Ok(target.clone());
+/// The explicit target a positional one names, so callers see one shape;
+/// `None` when nothing indexed matches it.
+pub(super) fn concrete(sql: &SqlView<'_>, given: &AtlasTarget) -> AtlasResult<Option<AtlasTarget>> {
+    let AtlasTarget::Auto(text) = given else {
+        return Ok(Some(given.clone()));
     };
-    let found = auto(sql, text.as_str())?;
-    Ok(match found.symbol {
+    Ok(auto(sql, text.as_str())?.map(|found| match found.symbol {
         Some(symbol) => AtlasTarget::Symbol(SymbolSelector::Id(symbol.value.id)),
         None => AtlasTarget::File(found.file.pointer.path),
-    })
+    }))
 }
 /// An indexed path, then `path:line` for the symbol spanning that line (or the
-/// file), then one exact symbol name; anything else is a usage error.
-fn auto(sql: &SqlView<'_>, text: &str) -> AtlasResult<Target> {
-    let mut found = match RelativePath::new(text) {
+/// file), then one exact symbol name.
+fn auto(sql: &SqlView<'_>, text: &str) -> AtlasResult<Option<Target>> {
+    // Windows shells complete paths with backslashes; indexed paths use `/`.
+    let slashed = text.replace('\\', "/");
+    let mut found = match RelativePath::new(slashed.as_str()) {
         Ok(path) => resolve_inner(sql, &AtlasTarget::File(path))?,
         Err(_) => None,
     };
     if found.is_none()
-        && let Some((path, line)) = text.rsplit_once(':')
+        && let Some((path, line)) = slashed.rsplit_once(':')
         && let (Ok(path), Ok(line @ 1..)) = (RelativePath::new(path), line.parse::<u32>())
     {
         // The widest column picks the smallest symbol open across the whole line.
@@ -44,19 +46,14 @@ fn auto(sql: &SqlView<'_>, text: &str) -> AtlasResult<Target> {
     if found.is_none() {
         found = resolve_name(sql, &QueryText::new(text)?, None, None, None, None)?;
     }
-    found.ok_or_else(|| {
-        se_types::SeError::invalid(
-            "Atlas target",
-            "an indexed path, path:line or exact symbol name; search with atlas find first",
-        )
-    })
+    Ok(found)
 }
 fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<Target>> {
     if let AtlasTarget::File(path) = target {
         return Ok(file_by_path(sql, path)?.map(|file| Target { file, symbol: None }));
     }
     if let AtlasTarget::Auto(text) = target {
-        return auto(sql, text.as_str()).map(Some);
+        return auto(sql, text.as_str());
     }
     let AtlasTarget::Symbol(selector) = target else {
         return Err(se_types::SeError::invalid(

@@ -10,9 +10,9 @@ impl QueryReader<'_, '_, '_> {
         max_bytes: usize,
         explain: bool,
     ) -> AtlasResult<Answer<Read<SearchResults>>> {
-        if !(1024..=32768).contains(&max_bytes) {
+        if !(1024..=ATLAS_MAX_BYTES as usize).contains(&max_bytes) {
             return Err(cache_error(
-                "compact search budget must be 1024..32768 bytes",
+                "compact search budget must be 1024..262144 bytes",
             ));
         }
         let saved = self.ctx.compact.take();
@@ -101,8 +101,7 @@ impl QueryReader<'_, '_, '_> {
                 .map(|p| super::modes::from_key(p.last_key.integers.get(2)))
                 .transpose()?
                 .unwrap_or(initial);
-            let mut collected =
-                collect_phase(&ranking, sql, &snapshot, query, mode, (started, end))?;
+            let mut collected = collect_phase(&ranking, sql, &snapshot, query, mode, end)?;
             if query.mode.is_none()
                 && previous.is_none()
                 && collected.values.is_empty()
@@ -110,8 +109,7 @@ impl QueryReader<'_, '_, '_> {
             {
                 for &next in super::modes::fallbacks(initial) {
                     mode = next;
-                    collected =
-                        collect_phase(&ranking, sql, &snapshot, query, mode, (started, end))?;
+                    collected = collect_phase(&ranking, sql, &snapshot, query, mode, end)?;
                     if !collected.values.is_empty() || collected.truncated {
                         break;
                     }
@@ -234,7 +232,7 @@ impl QueryReader<'_, '_, '_> {
                     items,
                     super::search_page::staging_budget(query.budget),
                     next,
-                    collected.truncated || advanced || !snapshot.negative_complete(),
+                    collected.truncated || advanced || !snapshot.index.negative_complete(),
                     bytes,
                     previous
                         .as_ref()
@@ -258,7 +256,7 @@ impl QueryReader<'_, '_, '_> {
             "metadata search",
             started,
             hard,
-            answer.finish(self, query, hard),
+            answer.finish(self, query, (end, hard)),
         )
     }
 }

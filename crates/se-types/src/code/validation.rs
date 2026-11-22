@@ -14,17 +14,12 @@ impl AtlasValidation for Validate {
         AtlasCursor::new(value)
     }
     fn query_budget(&self, results: u16, bytes: u32) -> Result<QueryBudget> {
-        if !(1..=ATLAS_MAX_RESULTS).contains(&results) || !(1..=ATLAS_MAX_BYTES).contains(&bytes) {
-            return Err(SeError::invalid(
-                "Atlas budget",
-                "1..2000 results and 1..262144 output bytes",
-            ));
-        }
-        Ok(QueryBudget {
+        QueryBudget {
             max_results: results,
             max_bytes: bytes,
             work: ATLAS_SOFT_WORK,
-        })
+        }
+        .checked()
     }
     fn selector(&self, value: SymbolSelector) -> Result<SymbolSelector> {
         if matches!(&value, SymbolSelector::At {position, ..} if position.line == 0) {

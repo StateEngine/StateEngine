@@ -1,4 +1,6 @@
-//! Protects: the public Atlas adapter retries one expired read, never errors or writes.
+//! Protects: the public Atlas adapter never replays a read or writes. A soft
+//! expiry returns a partial page marked TimeLimit; a hard SQL expiry is an
+//! explicit error with a retry delay.
 //! Real native SQLite; explicit clock advances model preemption, not memory qualification.
 #[path = "../../test-support/atlas_clock.rs"]
 mod test_clock;
@@ -15,7 +17,7 @@ use std::{
     fs,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -33,6 +35,8 @@ struct Fault {
     selects: AtomicUsize,
     writes: AtomicUsize,
     expiry_count: AtomicUsize,
+    /// Milliseconds one injected expiry advances the clock.
+    expiry_step: AtomicU64,
     deny: AtomicBool,
     expire_write: AtomicBool,
 }
@@ -66,7 +70,8 @@ impl CacheFiles for ControlledCache {
                 {
                     fault.expired_transaction.store(true, Ordering::SeqCst);
                     fault.expiries.fetch_add(1, Ordering::SeqCst);
-                    test_clock::advance(Duration::from_millis(250));
+                    let step = fault.expiry_step.load(Ordering::SeqCst);
+                    test_clock::advance(Duration::from_millis(step));
                 }
             }
             if matches!(
@@ -152,8 +157,8 @@ fn end() -> Instant {
     se_atlas::clock::now() + Duration::from_secs(60)
 }
 enum Case {
-    Once,
-    Twice,
+    Soft,
+    Hard,
     Denied,
     Write,
 }
@@ -279,14 +284,14 @@ fn exercise(case: Case) -> Check {
     )?
     .ok_or("published read-only epoch absent")?;
     fault.selects.store(0, Ordering::SeqCst);
-    fault.expiry_count.store(
-        match case {
-            Case::Once => 1,
-            Case::Twice => 2,
-            _ => 0,
-        },
-        Ordering::SeqCst,
-    );
+    // Two armed expiries: a replayed read would trip the second one.
+    let (count, step) = match case {
+        Case::Soft => (2, 250),
+        Case::Hard => (2, 1_000),
+        _ => (0, 0),
+    };
+    fault.expiry_count.store(count, Ordering::SeqCst);
+    fault.expiry_step.store(step, Ordering::SeqCst);
     fault
         .deny
         .store(matches!(case, Case::Denied), Ordering::SeqCst);
@@ -313,15 +318,26 @@ fn exercise(case: Case) -> Check {
     let answer =
         se_host::atlas_queries::execute(&mut reader, &se_core::ops::AtlasRead::Find(input));
     match case {
-        Case::Once => {
+        Case::Soft => {
             let se_core::ops::AnyOutput::AtlasFind(output) = answer? else {
                 return Err("output family mismatch".into());
             };
-            assert!(present(output.value.answer.data)?.page.items().is_empty());
-            assert_eq!(fault.expiries.load(Ordering::SeqCst), 1);
+            let reasons = output.value.answer.index.coverage.reasons.clone();
+            let page = present(output.value.answer.data)?.page;
+            assert!(page.items().is_empty());
+            assert!(
+                !page.window().complete(),
+                "soft expiry claimed a complete page"
+            );
+            assert!(reasons.contains(&CoverageReason::TimeLimit), "{reasons:?}");
+            assert_eq!(
+                fault.expiries.load(Ordering::SeqCst),
+                1,
+                "read was replayed"
+            );
         }
-        Case::Twice => {
-            let error = answer.err().ok_or("repeated timeout was hidden")?;
+        Case::Hard => {
+            let error = answer.err().ok_or("hard timeout was hidden")?;
             assert!(
                 matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op.starts_with("Atlas SQL")),
                 "{error}"
@@ -332,8 +348,8 @@ fn exercise(case: Case) -> Check {
             );
             assert_eq!(
                 fault.expiries.load(Ordering::SeqCst),
-                2,
-                "read was retried other than once"
+                1,
+                "hard-expired read was replayed"
             );
         }
         Case::Denied => {
@@ -353,12 +369,12 @@ fn exercise(case: Case) -> Check {
     Ok(())
 }
 #[test]
-fn one_expired_public_read_gets_one_fresh_slice() -> Check {
-    exercise(Case::Once)
+fn soft_expired_read_returns_partial_page_without_replay() -> Check {
+    exercise(Case::Soft)
 }
 #[test]
-fn repeated_expiry_remains_explicit_with_retry_delay() -> Check {
-    exercise(Case::Twice)
+fn hard_expiry_remains_explicit_with_retry_delay() -> Check {
+    exercise(Case::Hard)
 }
 #[test]
 fn non_timeout_failure_is_not_replayed() -> Check {

@@ -47,7 +47,7 @@ impl QueryReader<'_, '_, '_> {
             more|=scan_limited;
             if more&&key==*last{return Err(capacity("Atlas change response bytes",1,0));}
             let next = more.then(|| PositionCursor::new(&snapshot.index, "changes", digest, key, Some(fence)).and_then(|p| p.encode())).transpose()?;
-            let page = page(&snapshot, items, query.budget, next, !snapshot.negative_complete() || advanced || incomplete || pruned,
+            let page = page(&snapshot, items, query.budget, next, !snapshot.index.negative_complete() || advanced || incomplete || pruned,
                 bytes, query.next.as_ref())?;
             check_output(snapshot.answer(Read::Present { value: page }, advanced), query.budget)
         });

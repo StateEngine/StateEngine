@@ -10,6 +10,15 @@ use std::{
     io::{self, SeekFrom},
     time::Instant,
 };
+/// The widest source excerpt a compact hit carries; a page clips longer ones first.
+pub(crate) const HIT_LINE_BYTES: usize = 160;
+/// A UTF-8 byte-order mark at file start is encoding residue, never content:
+/// hits and bodies start after it, and their spans say so.
+pub(crate) fn bom_len(offset: u64, bytes: &[u8]) -> usize {
+    const BOM: &[u8] = "\u{feff}".as_bytes();
+    let leading = offset == 0 && bytes.starts_with(BOM);
+    if leading { BOM.len() } else { 0 }
+}
 
 pub struct TextRequest<'a> {
     pub pointer: &'a CodePointer,
@@ -206,7 +215,7 @@ fn live_hit(
     let hit = CodeHit {
         pointer,
         symbol: None,
-        name: excerpt(&text, 160),
+        name: excerpt(&text, HIT_LINE_BYTES),
         kind: None,
         method: FindMethod::Text,
         accuracy: None,
@@ -241,17 +250,19 @@ impl Sink for Matches<'_, '_> {
             .find(text.as_bytes())
             .map_err(io::Error::other)?
             .ok_or_else(|| io::Error::other("matched source line no longer matches"))?;
-        let mut start = matched.start().saturating_sub(40);
+        let bom = bom_len(found.absolute_byte_offset(), text.as_bytes());
+        let mut start = matched.start().saturating_sub(40).max(bom);
         while !text.is_char_boundary(start) {
             start -= 1;
         }
+        let full = self.request.full;
         let mut end = text
             .len()
-            .min(start + if self.request.full { 12 * 1024 } else { 160 });
+            .min(start + if full { 12 * 1024 } else { HIT_LINE_BYTES });
         while !text.is_char_boundary(end) {
             end -= 1;
         }
-        let complete = start == 0 && end == text.len();
+        let complete = start == bom && end == text.len();
         let text = &text[start..end];
         let line = u32::try_from(found.line_number().unwrap_or(1))
             .map_err(|_| io::Error::other("source line exceeds position range"))?;

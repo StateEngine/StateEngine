@@ -36,7 +36,7 @@ pub struct AtlasOptions {
     pub require_complete: bool,
 }
 impl AtlasOptions {
-    /// `(default, max)` is the family's page size.
+    /// `(default, max)` is the family's page size, one of the `ATLAS_*_PAGE` pairs.
     pub fn budget(&self, (default, max): (u16, u16)) -> Result<QueryBudget> {
         let limit = self.limit.unwrap_or(default);
         if !(1024..=ATLAS_MAX_BYTES).contains(&self.byte_budget) || !(1..=max).contains(&limit) {
@@ -49,7 +49,6 @@ impl AtlasOptions {
         se_types::code::Validate.query_budget(limit, self.byte_budget - 192)
     }
 }
-const PAGE: (u16, u16) = (50, 500);
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AtlasFind {
@@ -84,7 +83,7 @@ impl AtlasFind {
             regex: self.regex,
             next: self.options.cursor.clone(),
             budget: {
-                let mut budget = self.options.budget((20, 200))?;
+                let mut budget = self.options.budget(ATLAS_FIND_PAGE)?;
                 if self.options.format == AtlasFormat::Compact
                     && matches!(
                         self.kind,
@@ -98,11 +97,6 @@ impl AtlasFind {
                 budget
             },
         })
-    }
-}
-impl Validate for AtlasFind {
-    fn validate(&self) -> Result<()> {
-        self.query().map(|_| ())
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -134,13 +128,8 @@ impl AtlasRefs {
             kinds: self.kinds.clone(),
             include_name_only: self.include_name_only,
             next: self.options.cursor.clone(),
-            budget: self.options.budget(PAGE)?,
+            budget: self.options.budget(ATLAS_LIST_PAGE)?,
         })
-    }
-}
-impl Validate for AtlasRefs {
-    fn validate(&self) -> Result<()> {
-        self.query().map(|_| ())
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -165,13 +154,8 @@ impl AtlasImpact {
             depth: self.depth,
             include_name_only: self.include_name_only,
             next: self.options.cursor.clone(),
-            budget: self.options.budget(PAGE)?,
+            budget: self.options.budget(ATLAS_LIST_PAGE)?,
         })
-    }
-}
-impl Validate for AtlasImpact {
-    fn validate(&self) -> Result<()> {
-        self.query().map(|_| ())
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -191,13 +175,8 @@ impl AtlasChanges {
             since: self.since.clone(),
             scope: scope(&self.paths, &self.languages)?,
             next: self.options.cursor.clone(),
-            budget: self.options.budget(PAGE)?,
+            budget: self.options.budget(ATLAS_LIST_PAGE)?,
         })
-    }
-}
-impl Validate for AtlasChanges {
-    fn validate(&self) -> Result<()> {
-        self.query().map(|_| ())
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -212,15 +191,27 @@ impl AtlasOutline {
         Ok(OutlineQuery {
             path: self.path.clone(),
             next: self.options.cursor.clone(),
-            budget: self.options.budget((300, 2000))?,
+            budget: self.options.budget(ATLAS_OUTLINE_PAGE)?,
         })
     }
 }
-impl Validate for AtlasOutline {
-    fn validate(&self) -> Result<()> {
-        self.query().map(|_| ())
-    }
+/// Each Atlas input is valid exactly when it builds its bounded query.
+macro_rules! validate_by_query {
+    ($($op:ty),+) => {$(
+        impl Validate for $op {
+            fn validate(&self) -> Result<()> {
+                self.query().map(|_| ())
+            }
+        }
+    )+};
 }
+validate_by_query!(
+    AtlasFind,
+    AtlasRefs,
+    AtlasImpact,
+    AtlasChanges,
+    AtlasOutline
+);
 fn scope(paths: &[RelativePath], languages: &[Language]) -> Result<SearchScope> {
     if paths.len() > 32 || languages.len() > 32 {
         return Err(SeError::invalid(
@@ -297,45 +288,54 @@ impl super::AnyOp {
     }
 }
 impl super::AnyOutput {
-    /// Atlas exits, scoped to Atlas: any real hit is 0 in every index state; an
-    /// empty answer is 0 only when complete and current, else 2. Loose fallback
-    /// guesses are never real hits; `require_complete` turns any gap into 2.
+    /// Atlas exits: any real hit is 0 in every index state, and an empty answer
+    /// is 0 only when complete. `require_complete` makes any gap 2, even with
+    /// hits. Pagination is never a gap: a page or byte limit leaves a cursor,
+    /// not missing results. Loose fallback guesses are never real hits.
     pub fn atlas_exit(&self, require_complete: bool) -> Option<u8> {
-        let r = require_complete;
         Some(match self {
-            Self::AtlasFind(v) => exit(&v.value.answer, r, |s| {
-                let guess = matches!(s.mode, SearchMode::Broad | SearchMode::Related);
-                let hits = if guess && s.fallback_from.is_some() {
-                    0
-                } else {
-                    s.page.items().len()
-                };
-                (hits, s.page.window().complete())
+            Self::AtlasFind(v) => exit(&v.value.answer, require_complete, |s| {
+                let (hits, gap) = page_facts(&s.page);
+                let loose = matches!(s.mode, SearchMode::Broad | SearchMode::Related);
+                let guess = loose && s.fallback_from.is_some();
+                (if guess { 0 } else { hits }, gap)
             }),
-            Self::AtlasRefs(v) => exit(&v.value.answer, r, page_hits),
-            Self::AtlasChanges(v) => exit(&v.value.answer, r, page_hits),
-            Self::AtlasImpact(v) => exit(&v.value.answer, r, |i| {
+            Self::AtlasRefs(v) => exit(&v.value.answer, require_complete, page_facts),
+            Self::AtlasChanges(v) => exit(&v.value.answer, require_complete, page_facts),
+            Self::AtlasImpact(v) => exit(&v.value.answer, require_complete, |i| {
                 let hits = i.dependents.len() + i.tests.len() + i.records.len();
-                (hits, i.complete)
+                (hits, !i.frontier_count_complete)
             }),
-            Self::AtlasOutline(v) => exit(&v.value.answer, r, |o| {
-                (o.symbols.len() + o.records.len(), o.complete)
+            Self::AtlasOutline(v) => exit(&v.value.answer, require_complete, |o| {
+                (o.symbols.len() + o.records.len(), false)
             }),
             _ => return None,
         })
     }
 }
-fn page_hits<T>(page: &Page<T>) -> (usize, bool) {
-    (page.items().len(), page.window().complete())
+/// Hits, and whether the page misses results its sources hold (unreadable or
+/// incomplete), as opposed to one a page or byte limit cut short.
+fn page_facts<T>(page: &Page<T>) -> (usize, bool) {
+    (page.items().len(), page.window().exit_code(false) != 0)
 }
-fn exit<T>(answer: &Answer<Read<T>>, require: bool, facts: impl Fn(&T) -> (usize, bool)) -> u8 {
-    let Read::Present { value } = &answer.data else {
-        return answer.data.exit_code();
+/// `facts` gives the hit count and whether the family itself left a gap.
+fn exit<T>(answer: &Answer<Read<T>>, required: bool, facts: impl Fn(&T) -> (usize, bool)) -> u8 {
+    let index = &answer.index;
+    let value = match &answer.data {
+        Read::Present { value } => value,
+        // An unknown target may still appear while the index builds: incomplete.
+        // On a complete index it stays a refusal (unavailable or policy-denied).
+        Read::Unknown { .. } if !index.negative_complete() => return 2,
+        other => return other.exit_code(),
     };
-    let (hits, complete) = facts(value);
-    let gaps = &answer.index.coverage.reasons;
-    let complete = complete
-        && matches!(answer.index.state, IndexState::Current)
-        && !gaps.contains(&CoverageReason::TimeLimit);
-    2 * u8::from(!complete && (hits == 0 || require))
+    let (hits, gap) = facts(value);
+    let complete = !gap
+        && !answer.snapshot_advanced
+        && index.negative_complete()
+        && !index.coverage.reasons.contains(&CoverageReason::TimeLimit);
+    if complete || (hits > 0 && !required) {
+        0
+    } else {
+        2
+    }
 }

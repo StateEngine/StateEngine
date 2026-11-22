@@ -5,20 +5,15 @@ use super::text_files::file_window;
 use super::text_rank::{Hit, RankedWindow};
 use super::*;
 const MAX_MATCHING_FILES: usize = 200;
-// The one-second source query also pays for authoritative hit metadata,
-// compact rendering and the final native cache-custody check. Reserve one
-// quarter for those steps rather than spending nearly the entire snapshot on IO.
-pub(super) const FINALIZE_ALLOWANCE: Duration = Duration::from_millis(250);
-pub(super) const SOURCE_WINDOW: Duration = Duration::from_millis(750);
 impl QueryReader<'_, '_, '_> {
     pub(super) fn text_mode(
         &mut self,
         query: &FindQuery,
         mode: SearchMode,
         initial: SearchMode,
-        end: Instant,
+        (work_end, hard): (Instant, Instant),
     ) -> AtlasResult<Answer<Read<SearchResults>>> {
-        let work_end = end - FINALIZE_ALLOWANCE;
+        // Scanning stops at the soft budget; the rest finishes by the hard bound.
         let digest = cursor::digest(&(
             "text",
             crate::rank::VERSION,
@@ -33,20 +28,20 @@ impl QueryReader<'_, '_, '_> {
         ))?;
         let identity = self.cache.identity().clone();
         let env = self.ctx.split();
-        let started = end - SOURCE_WINDOW - FINALIZE_ALLOWANCE;
+        let started = work_end - query.budget.work;
         let answer = phase_timeout(
             "source search",
             started,
-            end,
-            self.cache.read(end, |sql| {
+            hard,
+            self.cache.read(hard, |sql| {
                 Self::text_page(&identity, &env, query, mode, initial, work_end, digest, sql)
             }),
         )?;
         phase_timeout(
             "source search",
             started,
-            end,
-            answer.finish(self, query, end),
+            hard,
+            answer.finish(self, query, (work_end, hard)),
         )
     }
 
@@ -117,8 +112,7 @@ impl QueryReader<'_, '_, '_> {
                     query.query.as_str().chars().any(char::is_uppercase),
                 )
             });
-        let mut ranked =
-            RankedWindow::new(terms.is_some(), query.budget.max_results, after.clone());
+        let mut ranked = RankedWindow::new(terms.is_some(), query.budget, after.clone());
         let mut matching = 0;
         let mut more_window = false;
         let mut range_incomplete = false;
@@ -511,7 +505,7 @@ impl QueryReader<'_, '_, '_> {
                 items,
                 super::search_page::staging_budget(query.budget),
                 next,
-                range_incomplete || advanced || !snapshot.negative_complete(),
+                range_incomplete || advanced || !snapshot.index.negative_complete(),
                 bytes,
                 previous
                     .as_ref()

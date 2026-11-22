@@ -23,8 +23,7 @@ impl QueryReader<'_, '_, '_> {
         let result = self.cache.read(hard, |sql| {
             let snapshot = snapshot(&identity, &env, sql)?;
             let Some(target) = resolve(sql, &query.target)? else {
-                return Ok(snapshot
-                    .unknown("target not indexed; search by name or path and inspect coverage"));
+                return snapshot.missing(&query.target);
             };
             let previous = query
                 .next
@@ -62,7 +61,7 @@ impl QueryReader<'_, '_, '_> {
                 items,
                 query.budget,
                 next,
-                !snapshot.negative_complete() || advanced,
+                !snapshot.index.negative_complete() || advanced,
                 bytes,
                 query.next.as_ref(),
             )?;

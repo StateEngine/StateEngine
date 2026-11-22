@@ -5,9 +5,7 @@ impl QueryReader<'_, '_, '_> {
         &mut self,
         query: &FindQuery,
     ) -> AtlasResult<Answer<Read<SearchResults>>> {
-        deadline(query.budget)?;
-        let end =
-            crate::clock::now() + super::text::SOURCE_WINDOW + super::text::FINALIZE_ALLOWANCE;
+        let deadlines = deadline(query.budget)?;
         let initial = query.mode.unwrap_or_else(|| {
             if query.regex || query.kind == SearchKind::Text {
                 SearchMode::Literal
@@ -26,14 +24,14 @@ impl QueryReader<'_, '_, '_> {
             .transpose()?
             .unwrap_or(initial);
         loop {
-            let answer = self.text_mode(query, mode, initial, end)?;
+            let answer = self.text_mode(query, mode, initial, deadlines)?;
             if let Read::Present { value } = &answer.data {
                 if query.mode.is_some()
                     || query.regex
                     || query.next.is_some()
                     || !value.page.items().is_empty()
                     || value.page.next().is_some()
-                    || crate::clock::now() >= end - super::text::FINALIZE_ALLOWANCE
+                    || crate::clock::now() >= deadlines.0
                 {
                     return Ok(answer);
                 }

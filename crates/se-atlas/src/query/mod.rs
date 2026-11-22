@@ -171,10 +171,11 @@ impl<'a, 'c, 'x> QueryReader<'a, 'c, 'x> {
         self.ctx.source_state = Some(state);
         self
     }
+    /// Status keeps its own tight 25 ms bound so `se status` stays fast.
     pub fn summary(&mut self) -> AtlasResult<IndexSummary> {
-        let identity = self.cache.identity().clone();
-        let env = self.ctx.split();
-        self.cache.read(crate::clock::now() + HARD, |sql| {
+        let (identity, env) = (self.cache.identity().clone(), self.ctx.split());
+        let bound = crate::clock::now() + Duration::from_millis(25);
+        self.cache.read(bound, |sql| {
             snapshot(&identity, &env, sql).map(|value| value.index)
         })
     }
@@ -238,15 +239,6 @@ struct Snapshot {
     epoch_retired: bool,
 }
 impl Snapshot {
-    fn negative_complete(&self) -> bool {
-        let c = &self.index.coverage;
-        matches!(self.index.state, IndexState::Current)
-            && c.discovery_complete
-            && c.partial_files == 0
-            && c.stale_files == 0
-            && c.failed_files == 0
-            && c.deferred_files == 0
-    }
     fn answer<T>(&self, data: Read<T>, snapshot_advanced: bool) -> Answer<Read<T>> {
         Answer {
             index: self.index.clone(),
@@ -258,21 +250,23 @@ impl Snapshot {
     fn unknown<T>(&self, what: &str) -> Answer<Read<T>> {
         self.answer(Read::Unknown { what: what.into() }, false)
     }
+    /// No indexed match: a positional target is a usage error once the index is
+    /// complete, and unknown while it builds (the target may still appear).
+    fn missing<T>(&self, target: &AtlasTarget) -> AtlasResult<Answer<Read<T>>> {
+        if matches!(target, AtlasTarget::Auto(_)) && self.index.negative_complete() {
+            return Err(se_types::SeError::invalid(
+                "Atlas target",
+                "an indexed path, path:line or exact symbol name; search with atlas find first",
+            ));
+        }
+        Ok(self.unknown("target not indexed; search by name or path and inspect coverage"))
+    }
 }
 /// The SQLite interrupt. Reads stop collecting at the soft `budget.work` and
 /// return a partial page; only this later bound rolls a read back.
 const HARD: Duration = Duration::from_millis(1000);
 fn deadline(budget: QueryBudget) -> AtlasResult<(Instant, Instant)> {
-    if !(1..=ATLAS_MAX_RESULTS).contains(&budget.max_results)
-        || !(1..=ATLAS_MAX_BYTES).contains(&budget.max_bytes)
-        || budget.work.is_zero()
-        || budget.work > ATLAS_SOFT_WORK
-    {
-        return Err(se_types::SeError::invalid(
-            "Atlas query budget",
-            "1..2000 results, 1..262144 bytes, 1..250 ms",
-        ));
-    }
+    let budget = budget.checked()?;
     let now = crate::clock::now();
     Ok((now + budget.work, now + HARD))
 }

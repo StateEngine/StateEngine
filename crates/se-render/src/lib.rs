@@ -35,14 +35,15 @@ pub fn output_at(
     atlas: Option<&se_core::ops::AtlasOptions>,
     out: &mut impl Write,
 ) -> io::Result<u8> {
+    // Atlas exits honor --require-complete in compact and JSON output alike.
+    let atlas_code = atlas.and_then(|options| value.atlas_exit(options.require_complete));
     if !json
         && let Some(options) = atlas
         && let Some(text) =
             se_host::atlas_queries::compact(value, options.byte_budget as usize, options.explain)
                 .map_err(io::Error::other)?
     {
-        let code =
-            (value.atlas_exit(options.require_complete)).unwrap_or_else(|| value.exit_code());
+        let code = atlas_code.unwrap_or_else(|| value.exit_code());
         if !quiet || code != 0 {
             write!(out, "{text}")?;
         }
@@ -57,7 +58,8 @@ pub fn output_at(
         out.flush()?;
         return Ok(value.exit_code());
     }
-    output(value, json, quiet, out)
+    let code = output(value, json, quiet, out)?;
+    Ok(atlas_code.unwrap_or(code))
 }
 
 pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) -> io::Result<u8> {

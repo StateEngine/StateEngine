@@ -258,79 +258,6 @@ fn target(m: &ArgMatches) -> Result<AtlasTarget> {
         line: None,
     }))
 }
-/// `--since`: Unix milliseconds, a duration back from now (`30s`, `10m`, `2h`,
-/// `7d`), an ISO-8601 UTC time, a commit SHA or 7+ hex prefix, or a cursor.
-fn since(text: &str, now: i64) -> Result<ChangeBaseline> {
-    let invalid = || {
-        SeError::invalid(
-            "since",
-            "a duration such as 10m, an ISO UTC time such as 2026-11-20T09:30Z, a commit SHA, an Atlas cursor or Unix milliseconds",
-        )
-    };
-    if text.bytes().all(|b| b.is_ascii_digit()) {
-        return text
-            .parse()
-            .map(ChangeBaseline::ObservedUnixMillis)
-            .map_err(|_| invalid());
-    }
-    if text.len() >= 7 && text.len() <= 64 && text.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Ok(match text.len() {
-            40 | 64 => ChangeBaseline::ObservedCommit(oid(text)?),
-            _ => ChangeBaseline::ObservedCommitPrefix(text.to_ascii_lowercase()),
-        });
-    }
-    if let Some(count) = text.strip_suffix(['s', 'm', 'h', 'd'])
-        && !count.is_empty()
-        && count.bytes().all(|b| b.is_ascii_digit())
-    {
-        let scale = match text.as_bytes()[text.len() - 1] {
-            b's' => 1_000,
-            b'm' => 60_000,
-            b'h' => 3_600_000,
-            _ => 86_400_000,
-        };
-        let ago = count.parse::<i64>().ok().and_then(|n| n.checked_mul(scale));
-        return Ok(ChangeBaseline::ObservedUnixMillis(
-            now.saturating_sub(ago.ok_or_else(invalid)?),
-        ));
-    }
-    if let Some(time) = iso_millis(text) {
-        return Ok(ChangeBaseline::ObservedUnixMillis(time));
-    }
-    // Cursors carry a 32-byte digest, so a short word is a typo, not a cursor.
-    let cursor = (text.len() >= 43)
-        .then(|| AtlasCursor::new(text).ok())
-        .flatten();
-    cursor.map(ChangeBaseline::Cursor).ok_or_else(invalid)
-}
-/// `YYYY-MM-DD[THH:MM[:SS]][Z]`, read as UTC.
-fn iso_millis(text: &str) -> Option<i64> {
-    let text = text.strip_suffix('Z').unwrap_or(text);
-    let (date, time) = text.split_once(['T', ' ']).unwrap_or((text, "00:00"));
-    let num = |s: &str, len: usize| {
-        (s.len() == len && s.bytes().all(|b| b.is_ascii_digit())).then(|| s.parse::<i64>().ok())?
-    };
-    let (mut d, mut t) = (date.split('-'), time.split(':'));
-    let (y, m, day) = (num(d.next()?, 4)?, num(d.next()?, 2)?, num(d.next()?, 2)?);
-    let (h, min) = (num(t.next()?, 2)?, num(t.next()?, 2)?);
-    let s = t.next().map_or(Some(0), |s| num(s, 2))?;
-    if d.next().is_some()
-        || t.next().is_some()
-        || !(1..=12).contains(&m)
-        || !(1..=31).contains(&day)
-        || h > 23
-        || min > 59
-        || s > 60
-    {
-        return None;
-    }
-    // Days from the civil calendar, March-based so leap days fall last.
-    let y = if m <= 2 { y - 1 } else { y };
-    let (era, yoe) = (y.div_euclid(400), y.rem_euclid(400));
-    let doy = (153 * ((m + 9) % 12) + 2) / 5 + day - 1;
-    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
-    Some(((days * 24 + h) * 60 + min) * 60_000 + s * 1_000)
-}
 pub(super) fn decode(name: &str, m: &ArgMatches, json: bool) -> Result<AnyOp> {
     let options = options(m, json)?;
     let op = match name {
@@ -376,11 +303,8 @@ pub(super) fn decode(name: &str, m: &ArgMatches, json: bool) -> Result<AnyOp> {
         }),
         "atlas.changes" => {
             let (paths, languages) = scope(m)?;
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
             AnyOp::AtlasChanges(AtlasChanges {
-                since: since(&required(m, "since")?, now)?,
+                since: ChangeBaseline::from_text(&required(m, "since")?)?,
                 paths,
                 languages,
                 options,
