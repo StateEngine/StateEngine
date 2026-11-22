@@ -1638,6 +1638,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "se-atlas-index"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "blake3",
+ "ignore",
+ "libc",
+ "rusqlite",
+ "se-proc",
+ "se-trusted-path",
+ "serde_json",
+]
+
+[[package]]
 name = "se-channels"
 version = "0.0.1-alpha.1"
 dependencies = [
