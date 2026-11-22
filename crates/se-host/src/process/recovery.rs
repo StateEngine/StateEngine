@@ -290,7 +290,8 @@ impl LaunchCoordinator {
                 Ok(RecoveryOutcome::Exited(witness)) => {
                     work.native_already_reconciled = true;
                     work.last_witness = Some((*witness).clone());
-                    work.stop_method = Some(crate::reboot::exit_reason(&witness, "native-reconciliation").into());
+                    let reason = crate::reboot::exit_reason(&witness, "native-reconciliation");
+                    work.stop_method = Some(reason.into());
                     // Trusted capture opens at listener publication. Keep the
                     // exited lifecycle until its monitor can capture the tail;
                     // startup must not retire it behind the readiness fence.

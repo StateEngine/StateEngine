@@ -59,6 +59,10 @@ pub(crate) use se_harness::model;
     any(target_os = "linux", target_os = "macos", windows)
 ))]
 mod process;
+#[cfg(all(
+    feature = "listener",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 mod reboot;
 #[cfg(feature = "listener")]
 pub(crate) use se_harness::process_io;
