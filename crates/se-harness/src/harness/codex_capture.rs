@@ -19,10 +19,6 @@ fn id<'a>(value: &'a Value, name: &str) -> Result<&'a str> {
         .filter(|s| !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control))
         .ok_or_else(|| invalid("a bounded actual thread, turn or item ID"))
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn item(item: &Value, turn: &str, native: bool) -> Result<Option<Completed>> {
     let item_id = id(item, "id")?;
     let kind = item
@@ -93,42 +89,7 @@ pub fn item(item: &Value, turn: &str, native: bool) -> Result<Option<Completed>>
             .ok_or_else(|| invalid("the completed assistant text"))?
             .to_owned()
     } else {
-        let parts = item
-            .get("content")
-            .and_then(Value::as_array)
-            .filter(|parts| parts.len() <= 256)
-            .ok_or_else(|| invalid("bounded completed message blocks"))?;
-        let mut text = String::new();
-        for part in parts {
-            let kind = part.get("type").and_then(Value::as_str);
-            match kind {
-                Some("text" | "Text") => {
-                    let value = part
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| invalid("a text block string"))?;
-                    let separator = role == se_store::Role::User && !text.is_empty();
-                    if text
-                        .len()
-                        .saturating_add(value.len())
-                        .saturating_add(usize::from(separator))
-                        > Body::MAX_BYTES
-                    {
-                        return Err(invalid("completed text within the body limit"));
-                    }
-                    if separator {
-                        text.push('\n');
-                    }
-                    text.push_str(value);
-                }
-                // Non-text inputs remain in native evidence. Never reinterpret
-                // image bytes or references as user conversation prose.
-                Some("image" | "localImage" | "skill" | "mention")
-                    if role == se_store::Role::User => {}
-                _ => return Err(invalid("supported completed message content")),
-            }
-        }
-        text
+        assembled_text(item, role)?
     };
     if text.is_empty() {
         return Ok(None);
@@ -140,6 +101,44 @@ pub fn item(item: &Value, turn: &str, native: bool) -> Result<Option<Completed>>
         role,
         text: Body::new(text)?,
     }))
+}
+
+fn assembled_text(item: &Value, role: se_store::Role) -> Result<String> {
+    let parts = item
+        .get("content")
+        .and_then(Value::as_array)
+        .filter(|parts| parts.len() <= 256)
+        .ok_or_else(|| invalid("bounded completed message blocks"))?;
+    let mut text = String::new();
+    for part in parts {
+        let kind = part.get("type").and_then(Value::as_str);
+        match kind {
+            Some("text" | "Text") => {
+                let value = part
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid("a text block string"))?;
+                let separator = role == se_store::Role::User && !text.is_empty();
+                if text
+                    .len()
+                    .saturating_add(value.len())
+                    .saturating_add(usize::from(separator))
+                    > Body::MAX_BYTES
+                {
+                    return Err(invalid("completed text within the body limit"));
+                }
+                if separator {
+                    text.push('\n');
+                }
+                text.push_str(value);
+            }
+            // Non-text inputs remain in native evidence. Never reinterpret
+            // image bytes or references as user conversation prose.
+            Some("image" | "localImage" | "skill" | "mention") if role == se_store::Role::User => {}
+            _ => return Err(invalid("supported completed message content")),
+        }
+    }
+    Ok(text)
 }
 /// Only canonical item/completed notifications are accepted. A terminal turn
 /// has no chat body but must still carry its actual thread, turn and status.
