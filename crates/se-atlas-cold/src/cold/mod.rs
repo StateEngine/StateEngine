@@ -141,20 +141,12 @@ pub fn private_entry_with(
     })
 }
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(crate) fn run_child(
     request: &protocol::Request,
     mut notify: impl FnMut(protocol::Reply) -> AtlasResult<()>,
 ) -> AtlasResult<IndexSummary> {
     request.validate()?;
-    notify(protocol::Reply::Working {
-        job: request.job,
-        path: None,
-        phase: protocol::Phase::Startup,
-    })?;
+    notify(working(request, None, protocol::Phase::Startup))?;
     let deadline = Instant::now() + Duration::from_secs(899);
     // Coverage and publication scale with the captured prefix too. Reserve a
     // third of the existing job clock for finishing rather than spending it
@@ -162,35 +154,8 @@ pub(crate) fn run_child(
     let work_deadline = deadline - Duration::from_secs(300);
     let source = request.source()?;
     let scope = source.scope.clone();
-    let cache = NativeAtlasCache::create(&request.home.to_local()?, scope.clone())?;
-    let expected = cache.read_pointer()?;
-    let expected_epoch = expected
-        .as_ref()
-        .map(|v| se_atlas::cache::pointer::decode(v, &scope).map(|p| p.epoch))
-        .transpose()?;
-    if expected_epoch != request.expected_epoch {
-        return Err(failure("old epoch changed before child reservation"));
-    }
-    let seed = CacheSeed {
-        identity: CacheIdentity {
-            scope: scope.clone(),
-            epoch: request.epoch.clone(),
-        },
-        extractor_version: EXTRACTOR.into(),
-        ignore_digest: request.ignore_digest,
-        coverage: {
-            let mut coverage = empty_coverage();
-            coverage.history_unavailable = request.history_unavailable.clone();
-            if coverage.history_unavailable.is_some() {
-                coverage.reasons.push(CoverageReason::HistoryUnavailable);
-            }
-            coverage
-        },
-        state: IndexState::ColdIndexing {
-            job: request.job,
-            discovered_files: 0,
-        },
-    };
+    let cache = reserve(request, &scope)?;
+    let seed = cold_seed(request, &scope);
     let mut db = CacheConnection::create(
         &cache,
         &seed,
@@ -202,11 +167,7 @@ pub(crate) fn run_child(
     parser.set_resource_guard(parser_memory_guard);
     let mut completed = 0u64;
     let mut coverage = seed.coverage.clone();
-    notify(protocol::Reply::Working {
-        job: request.job,
-        path: None,
-        phase: protocol::Phase::Discovery,
-    })?;
+    notify(working(request, None, protocol::Phase::Discovery))?;
     let discovery_complete = walk::files(&source, request, work_deadline, |entry| {
         let path = match entry {
             walk::Entry::Directory {
@@ -221,11 +182,7 @@ pub(crate) fn run_child(
                         .map_err(failure)?;
                     Ok(())
                 })?;
-                return notify(protocol::Reply::Working {
-                    job: request.job,
-                    path,
-                    phase: protocol::Phase::Discovery,
-                });
+                return notify(working(request, path, protocol::Phase::Discovery));
             }
             walk::Entry::File(path) => path,
         };
@@ -235,43 +192,18 @@ pub(crate) fn run_child(
             ));
         }
         coverage.discovered_files += 1;
-        ingest::file(
-            &source,
-            &mut db,
-            &mut parser,
-            &path,
-            request,
-            &mut |phase| {
-                notify(protocol::Reply::Working {
-                    job: request.job,
-                    path: Some(path.clone()),
-                    phase,
-                })
-            },
-        )?;
+        ingest_one(&source, &mut db, &mut parser, request, &path, &mut notify)?;
         completed += 1;
-        if completed.is_multiple_of(16) {
-            notify(protocol::Reply::Progress {
-                job: request.job,
-                discovered: coverage.discovered_files,
-                completed,
-            })?;
-        }
-        notify(protocol::Reply::Working {
-            job: request.job,
-            path: Some(path.clone()),
-            phase: protocol::Phase::Checkpoint,
-        })?;
-        // This private, exclusively owned epoch has no foreground readers.
-        // A disk checkpoint uses the existing whole-job wall allowance, not
-        // the short SQL query allowance; fsync can finish after that allowance
-        // without SQLite's VM progress handler being able to interrupt it.
-        if !db.checkpoint(deadline)? {
-            return Err(failure("unpublished cold epoch checkpoint remains busy"));
-        }
-        db.release_cold_memory(sql_deadline())?;
-        se_proc::atlas_worker::release_allocator_pages();
-        Ok(())
+        let discovered = coverage.discovered_files;
+        settle_file(
+            &mut db,
+            request,
+            &mut notify,
+            completed,
+            discovered,
+            path,
+            deadline,
+        )
     })?;
     // Resolve against the completed catalog. Walking SQL in small key windows
     // avoids retaining a source inventory or reparsing once per graph edge.
@@ -285,60 +217,27 @@ pub(crate) fn run_child(
             finish::limited_resolution(&mut db, after, deadline)?;
             break;
         }
-        let next = db.read(sql_deadline(), |sql| {
-            let mut statement =
-                sql.prepare("SELECT id,path FROM files WHERE id>?1 ORDER BY id LIMIT 1")?;
-            let mut rows = statement.query([after]).map_err(failure)?;
-            let Some(row) = rows.next().map_err(failure)? else {
-                return Ok(None);
-            };
-            Ok(Some((
-                row.get::<_, i64>(0).map_err(failure)?,
-                row.get::<_, String>(1).map_err(failure)?,
-            )))
-        })?;
-        let Some((id, path)) = next else { break };
+        let Some((id, path)) = next_file(&mut db, after)? else {
+            break;
+        };
         after = id;
-        ingest::file(
-            &source,
-            &mut db,
-            &mut parser,
-            &RelativePath::new(&path)?,
-            request,
-            &mut |phase| {
-                notify(protocol::Reply::Working {
-                    job: request.job,
-                    path: Some(RelativePath::new(&path)?),
-                    phase,
-                })
-            },
-        )?;
+        let path = RelativePath::new(&path)?;
+        ingest_one(&source, &mut db, &mut parser, request, &path, &mut notify)?;
         se_proc::atlas_worker::release_allocator_pages();
         completed += 1;
-        if completed.is_multiple_of(16) {
-            notify(protocol::Reply::Progress {
-                job: request.job,
-                discovered: coverage.discovered_files,
-                completed,
-            })?;
-        }
-        notify(protocol::Reply::Working {
-            job: request.job,
-            path: Some(RelativePath::new(&path)?),
-            phase: protocol::Phase::Checkpoint,
-        })?;
-        if !db.checkpoint(deadline)? {
-            return Err(failure("unpublished cold epoch checkpoint remains busy"));
-        }
-        db.release_cold_memory(sql_deadline())?;
-        se_proc::atlas_worker::release_allocator_pages();
+        let discovered = coverage.discovered_files;
+        settle_file(
+            &mut db,
+            request,
+            &mut notify,
+            completed,
+            discovered,
+            path,
+            deadline,
+        )?;
     }
     coverage.discovery_complete = discovery_complete;
-    notify(protocol::Reply::Working {
-        job: request.job,
-        path: None,
-        phase: protocol::Phase::Finalize,
-    })?;
+    notify(working(request, None, protocol::Phase::Finalize))?;
     db.prepare_cold_publication()?;
     let summary = finish::finish(&mut db, coverage, deadline)?;
     db.finish_cold_publication(deadline)?;
@@ -352,4 +251,115 @@ pub(crate) fn run_child(
         completed,
     })?;
     Ok(summary)
+}
+/// Open the cache and refuse unless its published epoch is still the one the
+/// parent expected when it reserved this child.
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+fn reserve(
+    request: &protocol::Request,
+    scope: &se_atlas::scope::Scope,
+) -> AtlasResult<NativeAtlasCache> {
+    let cache = NativeAtlasCache::create(&request.home.to_local()?, scope.clone())?;
+    let expected = cache.read_pointer()?;
+    let expected_epoch = expected
+        .as_ref()
+        .map(|v| se_atlas::cache::pointer::decode(v, scope).map(|p| p.epoch))
+        .transpose()?;
+    if expected_epoch != request.expected_epoch {
+        return Err(failure("old epoch changed before child reservation"));
+    }
+    Ok(cache)
+}
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+fn working(
+    request: &protocol::Request,
+    path: Option<RelativePath>,
+    phase: protocol::Phase,
+) -> protocol::Reply {
+    protocol::Reply::Working {
+        job: request.job,
+        path,
+        phase,
+    }
+}
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+fn cold_seed(request: &protocol::Request, scope: &se_atlas::scope::Scope) -> CacheSeed {
+    let mut coverage = empty_coverage();
+    coverage.history_unavailable = request.history_unavailable.clone();
+    if coverage.history_unavailable.is_some() {
+        coverage.reasons.push(CoverageReason::HistoryUnavailable);
+    }
+    CacheSeed {
+        identity: CacheIdentity {
+            scope: scope.clone(),
+            epoch: request.epoch.clone(),
+        },
+        extractor_version: EXTRACTOR.into(),
+        ignore_digest: request.ignore_digest,
+        coverage,
+        state: IndexState::ColdIndexing {
+            job: request.job,
+            discovered_files: 0,
+        },
+    }
+}
+/// Index one file, reporting each of its phases against that path.
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+fn ingest_one(
+    source: &RegisteredSource<NativeAtlasSource>,
+    db: &mut CacheConnection<'_>,
+    parser: &mut SemanticParser,
+    request: &protocol::Request,
+    path: &RelativePath,
+    notify: &mut impl FnMut(protocol::Reply) -> AtlasResult<()>,
+) -> AtlasResult<()> {
+    ingest::file(source, db, parser, path, request, &mut |phase| {
+        notify(working(request, Some(path.clone()), phase))
+    })
+}
+/// Report progress every sixteen files, then checkpoint and release memory.
+/// This private, exclusively owned epoch has no foreground readers. A disk
+/// checkpoint uses the whole-job wall allowance, not the short SQL query
+/// allowance; fsync can finish after that allowance without SQLite's VM
+/// progress handler being able to interrupt it.
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+fn settle_file(
+    db: &mut CacheConnection<'_>,
+    request: &protocol::Request,
+    notify: &mut impl FnMut(protocol::Reply) -> AtlasResult<()>,
+    completed: u64,
+    discovered: u64,
+    path: RelativePath,
+    deadline: Instant,
+) -> AtlasResult<()> {
+    if completed.is_multiple_of(16) {
+        notify(protocol::Reply::Progress {
+            job: request.job,
+            discovered,
+            completed,
+        })?;
+    }
+    notify(working(request, Some(path), protocol::Phase::Checkpoint))?;
+    if !db.checkpoint(deadline)? {
+        return Err(failure("unpublished cold epoch checkpoint remains busy"));
+    }
+    db.release_cold_memory(sql_deadline())?;
+    se_proc::atlas_worker::release_allocator_pages();
+    Ok(())
+}
+/// The next captured file after `after` by id, or none once the catalog ends.
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+fn next_file(db: &mut CacheConnection<'_>, after: i64) -> AtlasResult<Option<(i64, String)>> {
+    db.read(sql_deadline(), |sql| {
+        let mut statement =
+            sql.prepare("SELECT id,path FROM files WHERE id>?1 ORDER BY id LIMIT 1")?;
+        let mut rows = statement.query([after]).map_err(failure)?;
+        let Some(row) = rows.next().map_err(failure)? else {
+            return Ok(None);
+        };
+        Ok(Some((
+            row.get::<_, i64>(0).map_err(failure)?,
+            row.get::<_, String>(1).map_err(failure)?,
+        )))
+    })
 }
