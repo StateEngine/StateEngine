@@ -13,7 +13,6 @@ pub(super) fn collect(
     end: Instant,
 ) -> AtlasResult<Metadata> {
     // Metadata keeps the soft query budget; text uses the remaining scan budget.
-    // An expired window is refused by candidate admission itself.
     let started = crate::clock::now();
     let metadata_end = end.min(started + query.budget.work);
     let candidates = super::phase_timeout(

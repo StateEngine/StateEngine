@@ -200,7 +200,8 @@ fn baseline(
                 found => found.ok_or_else(unobserved)? as u64,
             }
         }
-        ChangeBaseline::ObservedUnixMillis(time) => {
+        ChangeBaseline::ObservedUnixMillis(_) | ChangeBaseline::RelativeMillis(_) => {
+            let time = since.resolve_unix_millis().unwrap_or(0);
             let regressed = "SELECT EXISTS(SELECT 1 FROM (SELECT observed_unix_ms,lag(observed_unix_ms) OVER (ORDER BY generation) previous FROM generations) WHERE previous>observed_unix_ms)";
             if scalar(sql, regressed, [])? {
                 return Err(cursor::invalid(

@@ -171,6 +171,8 @@ pub enum ChangeBaseline {
     /// A short lowercase hexadecimal commit prefix, resolved against observed commits.
     ObservedCommitPrefix(String),
     ObservedUnixMillis(i64),
+    /// A relative lookback duration in milliseconds (resolved at query time so cursors stay stable).
+    RelativeMillis(u64),
 }
 /// A typed baseline, or the text a person types: `10m`, `2026-11-20T09:30Z`, a
 /// commit SHA or 7+ hex prefix, an Atlas cursor, or 13+ digit Unix milliseconds.
@@ -188,6 +190,7 @@ enum TypedBaseline {
     ObservedCommit(GitObjectId),
     ObservedCommitPrefix(String),
     ObservedUnixMillis(i64),
+    RelativeMillis(u64),
 }
 impl TryFrom<BaselineWire> for ChangeBaseline {
     type Error = crate::SeError;
@@ -199,16 +202,9 @@ impl TryFrom<BaselineWire> for ChangeBaseline {
     }
 }
 impl ChangeBaseline {
-    /// [`Self::parse`] against the wall clock, for the CLI and MCP alike.
-    pub fn from_text(text: &str) -> crate::Result<Self> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
-        Self::parse(text, now)
-    }
-    /// Read a baseline as typed by a person, relative to `now_ms` for durations.
+    /// Read a baseline as typed by a person, for the CLI and MCP alike.
     /// Digit runs of 7..=12 are commit prefixes; Unix milliseconds have 13+ digits.
-    pub fn parse(text: &str, now_ms: i64) -> crate::Result<Self> {
+    pub fn from_text(text: &str) -> crate::Result<Self> {
         let invalid = || {
             crate::SeError::invalid(
                 "since",
@@ -232,7 +228,7 @@ impl ChangeBaseline {
             return full.map(Self::ObservedCommit).ok_or_else(invalid);
         }
         let scale = match text.as_bytes().last() {
-            Some(b's') => 1_000,
+            Some(b's') => 1_000u64,
             Some(b'm') => 60_000,
             Some(b'h') => 3_600_000,
             Some(b'd') => 86_400_000,
@@ -240,10 +236,8 @@ impl ChangeBaseline {
         };
         let count = &text[..text.len().saturating_sub(1)];
         if scale > 0 && digits(count) {
-            let ago = count.parse::<i64>().ok().and_then(|n| n.checked_mul(scale));
-            return Ok(Self::ObservedUnixMillis(
-                now_ms.saturating_sub(ago.ok_or_else(invalid)?),
-            ));
+            let ago = count.parse::<u64>().ok().and_then(|n| n.checked_mul(scale));
+            return Ok(Self::RelativeMillis(ago.ok_or_else(invalid)?));
         }
         if let Some(time) = iso_millis(text) {
             return Ok(Self::ObservedUnixMillis(time));
@@ -251,6 +245,19 @@ impl ChangeBaseline {
         // Cursors carry a 32-byte digest, so a short word is a typo, not a cursor.
         let cursor = (text.len() >= 43).then(|| AtlasCursor::new(text).ok());
         cursor.flatten().map(Self::Cursor).ok_or_else(invalid)
+    }
+    /// Resolve an absolute or relative time baseline against the wall clock.
+    pub fn resolve_unix_millis(&self) -> Option<i64> {
+        match *self {
+            Self::ObservedUnixMillis(ms) => Some(ms),
+            Self::RelativeMillis(ago) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+                Some(now.saturating_sub(i64::try_from(ago).unwrap_or(i64::MAX)))
+            }
+            _ => None,
+        }
     }
 }
 /// `YYYY-MM-DD[THH:MM[:SS]][Z]`, read as UTC.
