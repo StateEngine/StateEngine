@@ -229,34 +229,16 @@ pub(crate) fn named_project<R: Snapshot>(
     };
     Ok(Named { id, name })
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-pub fn message<R: Snapshot>(
-    output: commit::MessageSendOutput,
-    cx: &mut commit::Cx<'_, R>,
-) -> Result<MessageOutput> {
-    let event = committed_event(cx.read, &output.commit)?;
-    let project = scope::project(cx.admission)?;
-    let record = scope::require_present(
-        cx.read
-            .project(project.clone())
-            .map_err(|e| store_error(&e))?,
-        "receipt project",
-        "Verify the event's recorded project in this data home; when completing a write, preserve its original request key and event IDs.",
-    )?;
-    let project_name = match record.current.body {
-        EventBody::ProjectRegistered { name, .. }
-        | EventBody::ProjectUpdated { name, .. }
-        | EventBody::ProjectMoved { name, .. } => name,
-        _ => {
-            return Err(scope::unreadable(
-                "message project",
-                "current registration is not active",
-            ));
-        }
-    };
+struct MessageFields {
+    message: se_types::MessageId,
+    recipient: Option<Actor>,
+    work: Option<se_types::WorkAddressing>,
+    kind: String,
+    body: StoredText,
+    refs: Vec<se_types::EventId>,
+    reply_to: Option<se_types::MessageId>,
+}
+fn message_fields(event: StoredEvent, output: &commit::MessageSendOutput) -> Result<MessageFields> {
     let (message, recipient, work, kind, body, refs, reply_to) = match event.body {
         EventBody::MessageSent {
             message,
@@ -289,6 +271,50 @@ pub fn message<R: Snapshot>(
             "stored primary event/message differs",
         ));
     }
+    Ok(MessageFields {
+        message,
+        recipient,
+        work,
+        kind,
+        body,
+        refs,
+        reply_to,
+    })
+}
+pub fn message<R: Snapshot>(
+    output: commit::MessageSendOutput,
+    cx: &mut commit::Cx<'_, R>,
+) -> Result<MessageOutput> {
+    let event = committed_event(cx.read, &output.commit)?;
+    let project = scope::project(cx.admission)?;
+    let record = scope::require_present(
+        cx.read
+            .project(project.clone())
+            .map_err(|e| store_error(&e))?,
+        "receipt project",
+        "Verify the event's recorded project in this data home; when completing a write, preserve its original request key and event IDs.",
+    )?;
+    let project_name = match record.current.body {
+        EventBody::ProjectRegistered { name, .. }
+        | EventBody::ProjectUpdated { name, .. }
+        | EventBody::ProjectMoved { name, .. } => name,
+        _ => {
+            return Err(scope::unreadable(
+                "message project",
+                "current registration is not active",
+            ));
+        }
+    };
+    let recorded_at = event.recorded_at_us;
+    let MessageFields {
+        message,
+        recipient,
+        work,
+        kind,
+        body,
+        refs,
+        reply_to,
+    } = message_fields(event, &output)?;
     let StoredText::Present(body) = body else {
         return Err(scope::unreadable(
             "committed message body",
@@ -310,7 +336,7 @@ pub fn message<R: Snapshot>(
         state: commit_state(&output.commit),
         message_id: message,
         event_id: output.commit.primary_event.clone(),
-        recorded_at: timestamp(event.recorded_at_us)?,
+        recorded_at: timestamp(recorded_at)?,
         project: Named {
             id: project,
             name: project_name,
@@ -382,8 +408,13 @@ pub fn working_state_get<R: Snapshot>(
     cx: &mut commit::Cx<'_, R>,
 ) -> Result<WorkingStateOutput> {
     let name = named_agent(cx.read, &agent)?;
-    let value = match cx.read.working_state(agent).map_err(|e| store_error(&e))? {
-        Read::Present { value } => {
+    let value = match cx
+        .read
+        .working_state(agent)
+        .map_err(|e| store_error(&e))?
+        .into_present()
+    {
+        Ok(value) => {
             let updated_at = timestamp(event_time(&value.current))?;
             match value.current.body {
                 EventBody::WorkingStateSet {
@@ -413,17 +444,7 @@ pub fn working_state_get<R: Snapshot>(
                 }
             }
         }
-        Read::Absent { checked } => Read::Absent { checked },
-        Read::Unknown { what } => Read::Unknown { what },
-        Read::Unreadable {
-            source,
-            reason,
-            error,
-        } => Read::Unreadable {
-            source,
-            reason,
-            error,
-        },
+        Err(other) => other,
     };
     Ok(WorkingStateOutput { agent: name, value })
 }

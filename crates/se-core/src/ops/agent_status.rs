@@ -94,31 +94,9 @@ pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentSt
             .principal(Actor::Agent(agent.clone()))
             .map_err(|error| store_error(&error))?
     };
-    let principal = match principal {
-        Read::Present { value } => value,
-        Read::Absent { checked } => {
-            return Ok(AgentStatusOutput {
-                agent: Read::Absent { checked },
-            });
-        }
-        Read::Unknown { what } => {
-            return Ok(AgentStatusOutput {
-                agent: Read::Unknown { what },
-            });
-        }
-        Read::Unreadable {
-            source,
-            reason,
-            error,
-        } => {
-            return Ok(AgentStatusOutput {
-                agent: Read::Unreadable {
-                    source,
-                    reason,
-                    error,
-                },
-            });
-        }
+    let principal = match principal.into_present() {
+        Ok(value) => value,
+        Err(agent) => return Ok(AgentStatusOutput { agent }),
     };
     from_principal(agent, principal, controlled_profile, cx)
 }
@@ -131,33 +109,16 @@ fn from_principal<R: Snapshot>(
 ) -> Result<AgentStatusOutput> {
     let (name, role) = principal_name_role(&principal)?;
     let profile = saved_profile_record(&agent, controlled_profile, cx)?;
-    let saved = match profile {
-        Read::Present { value } => value,
-        Read::Absent { checked } => {
+    let saved = match profile.into_present() {
+        Ok(value) => value,
+        Err(Read::Absent { checked }) => {
             return Ok(AgentStatusOutput {
                 agent: Read::Unknown {
                     what: format!("saved agent exists but its profile is absent: {checked}"),
                 },
             });
         }
-        Read::Unknown { what } => {
-            return Ok(AgentStatusOutput {
-                agent: Read::Unknown { what },
-            });
-        }
-        Read::Unreadable {
-            source,
-            reason,
-            error,
-        } => {
-            return Ok(AgentStatusOutput {
-                agent: Read::Unreadable {
-                    source,
-                    reason,
-                    error,
-                },
-            });
-        }
+        Err(agent) => return Ok(AgentStatusOutput { agent }),
     };
     let profile = profile_saved(saved)?;
     let provider = provider_view(profile.provider);
@@ -347,21 +308,10 @@ fn retained_secode_binding<R: Snapshot>(
         .read
         .capture_source(source)
         .map_err(|error| store_error(&error))?
+        .into_present()
     {
-        Read::Present { value } => value,
-        Read::Absent { checked } => return Ok(Read::Absent { checked }),
-        Read::Unreadable {
-            source,
-            reason,
-            error,
-        } => {
-            return Ok(Read::Unreadable {
-                source,
-                reason,
-                error,
-            });
-        }
-        Read::Unknown { what } => return Ok(Read::Unknown { what }),
+        Ok(value) => value,
+        Err(other) => return Ok(other),
     };
     let EventBody::CaptureSource {
         session: found,

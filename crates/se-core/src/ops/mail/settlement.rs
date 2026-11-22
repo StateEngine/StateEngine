@@ -25,10 +25,6 @@ pub struct SettleResolved {
 
 /// The host calls this before reusing/selecting a pending notice after real
 /// read/dismiss triggers. Transport or capture alone cannot resolve debt.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn settle_resolved<S: MailSnapshot>(
     kernel: &Kernel,
     cx: &mut Cx<'_, S>,
@@ -86,73 +82,11 @@ pub fn settle_resolved<S: MailSnapshot>(
             "at most 32 original message disposition events",
         ));
     }
-    let mut markers = Vec::new();
-    for id in evidence {
-        let event = scope::require_present(
-            cx.read
-                .mail_disposition(id, then.target.agent.clone())
-                .map_err(|error| store_error(&error))?,
-            "committed recipient disposition",
-            scope::COMMITTED_READ_RECOVERY,
-        )?;
-        if markers
-            .iter()
-            .any(|old: &se_store::StoredEvent| old.header.event == event.header.event)
-        {
-            return Err(SeError::invalid(
-                "mail resolution evidence",
-                "distinct committed marker identities",
-            ));
-        }
-        match &event.body {
-            EventBody::MessageRead { message, recipient }
-            | EventBody::MessageDismissed { message, recipient }
-                if recipient == &cx.admission.actor && notice.ids.contains(message) => {}
-            _ => {
-                return Err(SeError::invalid(
-                    "mail resolution evidence",
-                    "actual recipient read/dismiss events for original notice IDs",
-                ));
-            }
-        }
-        markers.push(event);
-    }
-    for id in &notice.ids {
-        let message = scope::require_present(
-            cx.read
-                .message(id.clone())
-                .map_err(|error| store_error(&error))?,
-            "reserved message disposition",
-            scope::COMMITTED_READ_RECOVERY,
-        )?;
-        if message.recipient != cx.admission.actor {
-            return Err(SeError::invalid(
-                "mail settlement",
-                "all original messages belong to this actual recipient",
-            ));
-        }
-        if message.read.is_none() && message.dismissed.is_none() {
-            return Ok(OpStep::Complete(Read::Absent {
-                checked:
-                    "The original notice still has unresolved recipient messages; preserve its debt"
-                        .into(),
-            }));
-        }
-        let verified = markers.iter().any(|event| match &event.body {
-            EventBody::MessageRead {
-                message: actual, ..
-            } => actual == id && message.read.as_ref() == Some(&event.position),
-            EventBody::MessageDismissed {
-                message: actual, ..
-            } => actual == id && message.dismissed.as_ref() == Some(&event.position),
-            _ => false,
-        });
-        if !verified {
-            return Err(scope::unreadable(
-                "mail resolution evidence",
-                "a resolved message has no matching original committed marker; reread recipient dispositions instead of inferring success",
-            ));
-        }
+    let markers = verify_markers(cx, notice, evidence, &then.target)?;
+    if let Some(checked) = verify_messages(cx, notice, &markers)? {
+        return Ok(OpStep::Complete(Read::Absent {
+            checked: checked.into(),
+        }));
     }
     // All original IDs were independently verified above. One actual disposition
     // anchors this completion within the legacy bounded settlement receipt;
@@ -198,6 +132,87 @@ pub fn settle_resolved<S: MailSnapshot>(
         cx,
     )?;
     Ok(OpStep::Commit { batch, then })
+}
+fn verify_markers<S: MailSnapshot>(
+    cx: &mut Cx<'_, S>,
+    notice: &MailNotice,
+    evidence: Vec<EventId>,
+    target: &MailTarget,
+) -> Result<Vec<se_store::StoredEvent>> {
+    let mut markers = Vec::new();
+    for id in evidence {
+        let event = scope::require_present(
+            cx.read
+                .mail_disposition(id, target.agent.clone())
+                .map_err(|error| store_error(&error))?,
+            "committed recipient disposition",
+            scope::COMMITTED_READ_RECOVERY,
+        )?;
+        if markers
+            .iter()
+            .any(|old: &se_store::StoredEvent| old.header.event == event.header.event)
+        {
+            return Err(SeError::invalid(
+                "mail resolution evidence",
+                "distinct committed marker identities",
+            ));
+        }
+        match &event.body {
+            EventBody::MessageRead { message, recipient }
+            | EventBody::MessageDismissed { message, recipient }
+                if recipient == &cx.admission.actor && notice.ids.contains(message) => {}
+            _ => {
+                return Err(SeError::invalid(
+                    "mail resolution evidence",
+                    "actual recipient read/dismiss events for original notice IDs",
+                ));
+            }
+        }
+        markers.push(event);
+    }
+    Ok(markers)
+}
+fn verify_messages<S: MailSnapshot>(
+    cx: &mut Cx<'_, S>,
+    notice: &MailNotice,
+    markers: &[se_store::StoredEvent],
+) -> Result<Option<&'static str>> {
+    for id in &notice.ids {
+        let message = scope::require_present(
+            cx.read
+                .message(id.clone())
+                .map_err(|error| store_error(&error))?,
+            "reserved message disposition",
+            scope::COMMITTED_READ_RECOVERY,
+        )?;
+        if message.recipient != cx.admission.actor {
+            return Err(SeError::invalid(
+                "mail settlement",
+                "all original messages belong to this actual recipient",
+            ));
+        }
+        if message.read.is_none() && message.dismissed.is_none() {
+            return Ok(Some(
+                "The original notice still has unresolved recipient messages; preserve its debt",
+            ));
+        }
+        let verified = markers.iter().any(|event| match &event.body {
+            EventBody::MessageRead {
+                message: actual, ..
+            } => actual == id && message.read.as_ref() == Some(&event.position),
+            EventBody::MessageDismissed {
+                message: actual, ..
+            } => actual == id && message.dismissed.as_ref() == Some(&event.position),
+            _ => false,
+        });
+        if !verified {
+            return Err(scope::unreadable(
+                "mail resolution evidence",
+                "a resolved message has no matching original committed marker; reread recipient dispositions instead of inferring success",
+            ));
+        }
+    }
+    Ok(None)
 }
 pub fn settlement_committed<S: MailSnapshot>(
     cx: &mut Cx<'_, S>,

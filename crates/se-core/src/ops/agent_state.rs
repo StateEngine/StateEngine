@@ -257,21 +257,10 @@ pub(crate) fn working_note<R: Snapshot>(
         .read
         .working_state(agent.clone())
         .map_err(|e| store_error(&e))?
+        .into_present()
     {
-        Read::Present { value } => value,
-        Read::Absent { checked } => return Ok(Read::Absent { checked }),
-        Read::Unknown { what } => return Ok(Read::Unknown { what }),
-        Read::Unreadable {
-            source,
-            reason,
-            error,
-        } => {
-            return Ok(Read::Unreadable {
-                source,
-                reason,
-                error,
-            });
-        }
+        Ok(value) => value,
+        Err(other) => return Ok(other),
     };
     let saved_at = super::receipt::timestamp(super::receipt::event_time(&record.current))?;
     let se_store::EventBody::WorkingStateSet { text, .. } = &record.current.body else {

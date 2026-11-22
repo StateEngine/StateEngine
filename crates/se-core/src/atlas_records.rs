@@ -44,8 +44,8 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
         pointer: &RecordPointer,
         query: &QueryText,
     ) -> Result<Read<RecordHit>> {
-        Ok(match self.load(project, viewer, pointer)? {
-            Read::Present { value } => {
+        Ok(match self.load(project, viewer, pointer)?.into_present() {
+            Ok(value) => {
                 let smart = query.as_str().chars().any(char::is_uppercase);
                 let found = if smart {
                     value.body.contains(query.as_str())
@@ -72,17 +72,7 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
                     }
                 }
             }
-            Read::Absent { checked } => Read::Absent { checked },
-            Read::Unknown { what } => Read::Unknown { what },
-            Read::Unreadable {
-                source,
-                reason,
-                error,
-            } => Read::Unreadable {
-                source,
-                reason,
-                error,
-            },
+            Err(other) => other,
         })
     }
     pub fn body(
@@ -123,21 +113,9 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
         pointer: &RecordPointer,
     ) -> Result<Read<Document>> {
         admitted_viewer(self.admission, viewer, project)?;
-        let source = match self.source_event(pointer, project)? {
-            Read::Present { value } => value,
-            Read::Absent { checked } => return Ok(Read::Absent { checked }),
-            Read::Unknown { what } => return Ok(Read::Unknown { what }),
-            Read::Unreadable {
-                source,
-                reason,
-                error,
-            } => {
-                return Ok(Read::Unreadable {
-                    source,
-                    reason,
-                    error,
-                });
-            }
+        let source = match self.source_event(pointer, project)?.into_present() {
+            Ok(value) => value,
+            Err(other) => return Ok(other),
         };
         if matches!(
             &source.body,
@@ -174,21 +152,9 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
                 },
                 RecordKind::Working,
             ) if agent.as_str() == pointer.key.as_str() => {
-                let current = match visible(self.read.working_state(agent.clone()))? {
-                    Read::Present { value } => value,
-                    Read::Absent { checked } => return Ok(Read::Absent { checked }),
-                    Read::Unknown { what } => return Ok(Read::Unknown { what }),
-                    Read::Unreadable {
-                        source,
-                        reason,
-                        error,
-                    } => {
-                        return Ok(Read::Unreadable {
-                            source,
-                            reason,
-                            error,
-                        });
-                    }
+                let current = match visible(self.read.working_state(agent.clone()))?.into_present() {
+                    Ok(value) => value,
+                    Err(other) => return Ok(other),
                 };
                 if current.current.header.event != pointer.source_event {
                     return Ok(stale());
