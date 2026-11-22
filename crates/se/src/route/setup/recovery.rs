@@ -230,10 +230,6 @@ fn backup_remedy(root: &Path, damaged: bool) -> Result<std::result::Result<Strin
         backup.through.sequence()
     )))
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn remedy(root: &Path, damaged: bool) -> Result<String> {
     use se_core::ops::AgentCommand;
     if AgentCommand::home_argument(root).is_none() {
@@ -252,26 +248,39 @@ fn remedy(root: &Path, damaged: bool) -> Result<String> {
             .unwrap_or("stateengine")
     ));
     let preserved = root.join(format!("recovery-sidecars-{stamp}"));
-    let q = |path: &Path| {
-        path.to_str()
-            .and_then(AgentCommand::quoted_word)
-            .ok_or_else(|| SeError::invalid("recovery path", AgentCommand::HOME_UNAVAILABLE))
-    };
+    let restore = restore_commands(root, &preserved, damaged)?;
+    Ok(format!(
+        "{why}Stop all writers first. Restore exactly state.db and its matching state.db-wal from a CLOSED retained copy; {}old WAL/SHM are preserved and SHM is never restored. Restoring replaces active history with the selected copy, so changes newer than that copy are no longer active. No automatic backup selection or salvage is performed.\nBEGIN SE RESTORE COMMANDS\n{restore}\nEND SE RESTORE COMMANDS\nNo backup? Keep this home intact and create fresh identities and empty history in a separate home:\nBEGIN SE FRESH COMMAND\nse --home {} init --repo .\nEND SE FRESH COMMAND\nThe recorded human identity cannot be reconstructed from the machine credential alone.",
+        if damaged {
+            "the damaged database and "
+        } else {
+            ""
+        },
+        quote(&fresh)?
+    ))
+}
+fn quote(path: &Path) -> Result<String> {
+    use se_core::ops::AgentCommand;
+    path.to_str()
+        .and_then(AgentCommand::quoted_word)
+        .ok_or_else(|| SeError::invalid("recovery path", AgentCommand::HOME_UNAVAILABLE))
+}
+fn restore_commands(root: &Path, preserved: &Path, damaged: bool) -> Result<String> {
     #[cfg(not(windows))]
     let database_guard = if damaged {
         format!(
             "test -f {db}\ntest ! -L {db}",
-            db = q(&root.join("state.db"))?
+            db = quote(&root.join("state.db"))?
         )
     } else {
-        format!("test ! -e {}", q(&root.join("state.db"))?)
+        format!("test ! -e {}", quote(&root.join("state.db"))?)
     };
     #[cfg(not(windows))]
     let preserve_database = if damaged {
         format!(
             "mv -- {} {}\n",
-            q(&root.join("state.db"))?,
-            q(&preserved.join("state.db"))?
+            quote(&root.join("state.db"))?,
+            quote(&preserved.join("state.db"))?
         )
     } else {
         String::new()
@@ -291,13 +300,13 @@ umask 077
 cp -n -- "$COPY_DIR/state.db" {db}
 if [ ! -f "$COPY_DIR/state.db-wal" ]; then :; else cp -n -- "$COPY_DIR/state.db-wal" {wal}; fi
 se --home {home} status"#,
-        db = q(&root.join("state.db"))?,
-        preserved = q(&preserved)?,
-        wal = q(&root.join("state.db-wal"))?,
-        saved_wal = q(&preserved.join("state.db-wal"))?,
-        shm = q(&root.join("state.db-shm"))?,
-        saved_shm = q(&preserved.join("state.db-shm"))?,
-        home = q(root)?,
+        db = quote(&root.join("state.db"))?,
+        preserved = quote(preserved)?,
+        wal = quote(&root.join("state.db-wal"))?,
+        saved_wal = quote(&preserved.join("state.db-wal"))?,
+        shm = quote(&root.join("state.db-shm"))?,
+        saved_shm = quote(&preserved.join("state.db-shm"))?,
+        home = quote(root)?,
     );
     #[cfg(windows)]
     let database_guard = if damaged {
@@ -341,16 +350,8 @@ foreach ($leaf in @({leaves})) {{
 $sourceWal = Join-Path $COPY_DIR 'state.db-wal'
 if (Test-Path -LiteralPath $sourceWal -PathType Leaf) {{ [System.IO.File]::Copy($sourceWal, (Join-Path $homePath 'state.db-wal'), $false) }}
 se --home {home} status"#,
-        home = q(root)?,
-        preserved = q(&preserved)?,
+        home = quote(root)?,
+        preserved = quote(preserved)?,
     );
-    Ok(format!(
-        "{why}Stop all writers first. Restore exactly state.db and its matching state.db-wal from a CLOSED retained copy; {}old WAL/SHM are preserved and SHM is never restored. Restoring replaces active history with the selected copy, so changes newer than that copy are no longer active. No automatic backup selection or salvage is performed.\nBEGIN SE RESTORE COMMANDS\n{restore}\nEND SE RESTORE COMMANDS\nNo backup? Keep this home intact and create fresh identities and empty history in a separate home:\nBEGIN SE FRESH COMMAND\nse --home {} init --repo .\nEND SE FRESH COMMAND\nThe recorded human identity cannot be reconstructed from the machine credential alone.",
-        if damaged {
-            "the damaged database and "
-        } else {
-            ""
-        },
-        q(&fresh)?
-    ))
+    Ok(restore)
 }

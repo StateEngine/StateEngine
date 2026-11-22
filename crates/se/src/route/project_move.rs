@@ -13,7 +13,8 @@ use se_core::{
     store_error::{store_error, write_error},
 };
 use se_store::{
-    DirectStore, ReadStore, Snapshot, SqliteFactory, SqliteReader, StoreFactory, StoreOptions,
+    DirectStore, ReadStore, Snapshot, SqliteDirect, SqliteFactory, SqliteReader, StoreFactory,
+    StoreOptions,
 };
 use se_types::{EventId, NativePath, Read, Result, SeError, details};
 use std::{
@@ -21,10 +22,6 @@ use std::{
     time::Duration,
 };
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn execute(
     cx: &Bootstrap,
     reader: &SqliteReader,
@@ -59,44 +56,7 @@ pub(super) fn execute(
     preflight.close().map_err(|e| store_error(&e))?;
     match replayed {
         Read::Present { value: receipt } => {
-            // The key is retained by an earlier committed call. Return that
-            // call's output. The original target may have been moved on since,
-            // so the retry must not require the folder to remain: canonicalize
-            // only while the folder still exists, so equivalent spellings of a
-            // live target still match, and resolve a gone spelling against its
-            // existing prefix, so equivalent spellings of a moved-on target
-            // still identify the same request.
-            let requested = PathBuf::from(&input.root);
-            let absolute = if requested.is_absolute() {
-                requested
-            } else {
-                cx.cwd.join(requested)
-            };
-            let target = match se_proc::canonicalize_path(&absolute) {
-                Ok(path) => path,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    resolve_moved_target(&absolute)
-                        .map_err(|e| scope::unreadable("move target identity", &e.to_string()))?
-                }
-                Err(e) => {
-                    return Err(scope::unreadable("move target identity", &e.to_string()));
-                }
-            };
-            let to_path = NativePath::from_local(target)
-                .map_err(|e| scope::unreadable("move target identity", &e.to_string()))?;
-            let mut readback = super::select::open_snapshot(reader, &caller.admission)?;
-            let output: MoveOutput = project::move_replay(
-                &project_id,
-                &input.idempotency_key,
-                &to_path,
-                receipt,
-                &mut Cx {
-                    read: &mut readback,
-                    admission: &caller.admission,
-                },
-            )?;
-            readback.close().map_err(|e| store_error(&e))?;
-            return Ok(AnyOutput::from(output));
+            return replay(cx, reader, caller, &project_id, &input, receipt);
         }
         Read::Absent { .. } => {}
         Read::Unreadable { reason, .. } => {
@@ -115,11 +75,131 @@ pub(super) fn execute(
         ));
     }
     let (head, branch) = git_identity::verify(&target, &project_id.to_string())?;
+    refuse_registered_roots(&from_roots, &target)?;
+    let to_path = NativePath::from_local(target)?;
+    let canonical_key = serde_json::to_vec(&to_path)
+        .map_err(|e| scope::unreadable("move target identity", &e.to_string()))?;
+    let to = se_store::Root {
+        path: to_path,
+        canonical_key,
+    };
+    let lease = writer_lease(cx, reader, caller)?;
+    let store_options = StoreOptions {
+        state_directory: cx.home.clone(),
+        busy_timeout: Duration::from_millis(250),
+    };
+    let mut store = scope::require_present(
+        SqliteFactory::open_direct(&store_options, &lease).map_err(|e| store_error(&e))?,
+        "initialized direct store",
+        "Restore access to the initialized store in this same data home, then retry the move with the original --key.",
+    )?;
+    let kernel = Kernel::new(execute::facts()?)?.with_configuration(cx.config.value.clone())?;
+    let mut snapshot = super::select::open_snapshot(&store, &caller.admission)?;
+    let (batch, then) = project::move_root(
+        &kernel,
+        &input,
+        &record,
+        from_roots,
+        to,
+        &project::MoveIdentity {
+            head: Some(head),
+            branch,
+        },
+        &mut Cx {
+            read: &mut snapshot,
+            admission: &caller.admission,
+        },
+    )?;
+    snapshot.close().map_err(|e| store_error(&e))?;
+    let receipt = commit(&mut store, &lease, batch)?;
+    let mut readback = super::select::open_snapshot(&store, &caller.admission)?;
+    let output: MoveOutput = project::move_committed(
+        then,
+        receipt,
+        &mut Cx {
+            read: &mut readback,
+            admission: &caller.admission,
+        },
+    )?;
+    let closed = readback.close().map_err(|e| store_error(&e));
+    closed?;
+    Ok(AnyOutput::from(output))
+}
+/// Return the output an earlier committed call with this key retained.
+fn replay(
+    cx: &Bootstrap,
+    reader: &SqliteReader,
+    caller: &Caller,
+    project_id: &se_types::ProjectId,
+    input: &ProjectMove,
+    receipt: se_store::CommitReceipt,
+) -> Result<AnyOutput> {
+    // The key is retained by an earlier committed call. Return that
+    // call's output. The original target may have been moved on since,
+    // so the retry must not require the folder to remain: canonicalize
+    // only while the folder still exists, so equivalent spellings of a
+    // live target still match, and resolve a gone spelling against its
+    // existing prefix, so equivalent spellings of a moved-on target
+    // still identify the same request.
+    let requested = PathBuf::from(&input.root);
+    let absolute = if requested.is_absolute() {
+        requested
+    } else {
+        cx.cwd.join(requested)
+    };
+    let target = match se_proc::canonicalize_path(&absolute) {
+        Ok(path) => path,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => resolve_moved_target(&absolute)
+            .map_err(|e| scope::unreadable("move target identity", &e.to_string()))?,
+        Err(e) => {
+            return Err(scope::unreadable("move target identity", &e.to_string()));
+        }
+    };
+    let to_path = NativePath::from_local(target)
+        .map_err(|e| scope::unreadable("move target identity", &e.to_string()))?;
+    let mut readback = super::select::open_snapshot(reader, &caller.admission)?;
+    let output: MoveOutput = project::move_replay(
+        project_id,
+        &input.idempotency_key,
+        &to_path,
+        receipt,
+        &mut Cx {
+            read: &mut readback,
+            admission: &caller.admission,
+        },
+    )?;
+    readback.close().map_err(|e| store_error(&e))?;
+    Ok(AnyOutput::from(output))
+}
+fn writer_lease(cx: &Bootstrap, reader: &SqliteReader, caller: &Caller) -> Result<DirectLease> {
+    let identity = reader
+        .info()
+        .map_err(|e| store_error(&e))?
+        .direct_lease_identity(caller.admission.generation);
+    match DirectLease::acquire(
+        Files::open(&cx.home).map_err(|e| store_error(&e))?,
+        &cx.home.join("runtime.lock"),
+        identity,
+    )
+    .map_err(|e| store_error(&e))?
+    {
+        Some(lease) => Ok(lease),
+        None => Err(SeError::new(se_types::Detail::SourceUnreadable(
+            details::SourceUnreadable {
+                subject: "move writer lease".into(),
+                reason: "the state home's runtime is holding the writer lease".into(),
+                next_step:
+                    "Stop the runtime with se down, then retry the move from the new folder.".into(),
+            },
+        ))),
+    }
+}
+fn refuse_registered_roots(from_roots: &[se_store::Root], target: &Path) -> Result<()> {
     // A move re-attaches a repository whose registered folder is gone. A copy
     // with the old folder still present is refused so one registration can
     // never point at two locations of the same history.
     let mut present = Vec::new();
-    for root in &from_roots {
+    for root in from_roots {
         let path = root
             .path
             .to_local()
@@ -148,7 +228,7 @@ pub(super) fn execute(
             "Move the repository folder to the new location first, then retry; a copy is not a move. To keep both locations, register the copy as a new project with se init.",
         ));
     }
-    for root in &from_roots {
+    for root in from_roots {
         let path = root
             .path
             .to_local()
@@ -161,86 +241,7 @@ pub(super) fn execute(
             ));
         }
     }
-    let to_path = NativePath::from_local(target)?;
-    let canonical_key = serde_json::to_vec(&to_path)
-        .map_err(|e| scope::unreadable("move target identity", &e.to_string()))?;
-    let to = se_store::Root {
-        path: to_path,
-        canonical_key,
-    };
-    let identity = reader
-        .info()
-        .map_err(|e| store_error(&e))?
-        .direct_lease_identity(caller.admission.generation);
-    let lease =
-        match DirectLease::acquire(
-            Files::open(&cx.home).map_err(|e| store_error(&e))?,
-            &cx.home.join("runtime.lock"),
-            identity,
-        )
-        .map_err(|e| store_error(&e))?
-        {
-            Some(lease) => lease,
-            None => return Err(SeError::new(se_types::Detail::SourceUnreadable(
-                details::SourceUnreadable {
-                    subject: "move writer lease".into(),
-                    reason: "the state home's runtime is holding the writer lease".into(),
-                    next_step:
-                        "Stop the runtime with se down, then retry the move from the new folder."
-                            .into(),
-                },
-            ))),
-        };
-    let store_options = StoreOptions {
-        state_directory: cx.home.clone(),
-        busy_timeout: Duration::from_millis(250),
-    };
-    let mut store = scope::require_present(
-        SqliteFactory::open_direct(&store_options, &lease).map_err(|e| store_error(&e))?,
-        "initialized direct store",
-        "Restore access to the initialized store in this same data home, then retry the move with the original --key.",
-    )?;
-    let kernel = Kernel::new(execute::facts()?)?.with_configuration(cx.config.value.clone())?;
-    let mut snapshot = super::select::open_snapshot(&store, &caller.admission)?;
-    let (batch, then) = project::move_root(
-        &kernel,
-        &input,
-        &record,
-        from_roots,
-        to,
-        &project::MoveIdentity {
-            head: Some(head),
-            branch,
-        },
-        &mut Cx {
-            read: &mut snapshot,
-            admission: &caller.admission,
-        },
-    )?;
-    snapshot.close().map_err(|e| store_error(&e))?;
-    let key = batch.request.as_ref().map(|request| request.key.clone());
-    let natural_events: Vec<EventId> = key.as_ref().map(|_| Vec::new()).unwrap_or_else(|| {
-        batch
-            .events
-            .iter()
-            .map(|e| e.header.event.clone())
-            .collect()
-    });
-    let receipt = store
-        .append(batch, &lease)
-        .map_err(|error| write_error(&error, "project.move", key.as_ref(), &natural_events))?;
-    let mut readback = super::select::open_snapshot(&store, &caller.admission)?;
-    let output: MoveOutput = project::move_committed(
-        then,
-        receipt,
-        &mut Cx {
-            read: &mut readback,
-            admission: &caller.admission,
-        },
-    )?;
-    let closed = readback.close().map_err(|e| store_error(&e));
-    closed?;
-    Ok(AnyOutput::from(output))
+    Ok(())
 }
 fn resolve_target(cx: &Bootstrap, root: &str) -> Result<PathBuf> {
     let requested = PathBuf::from(root);
@@ -363,4 +364,21 @@ fn refusal(subject: &str, reason: &str, next_step: &str) -> SeError {
         reason: reason.into(),
         next_step: next_step.into(),
     }))
+}
+fn commit(
+    store: &mut SqliteDirect,
+    lease: &DirectLease,
+    batch: se_store::AtomicBatch,
+) -> Result<se_store::CommitReceipt> {
+    let key = batch.request.as_ref().map(|request| request.key.clone());
+    let natural_events: Vec<EventId> = key.as_ref().map(|_| Vec::new()).unwrap_or_else(|| {
+        batch
+            .events
+            .iter()
+            .map(|e| e.header.event.clone())
+            .collect()
+    });
+    store
+        .append(batch, lease)
+        .map_err(|error| write_error(&error, "project.move", key.as_ref(), &natural_events))
 }
