@@ -365,6 +365,9 @@ impl AnyOp {
 }
 impl AnyOutput {
     pub fn exit_code(&self) -> u8 {
+        if let Some(code) = self.atlas_exit(false) {
+            return code;
+        }
         match self {
             Self::RemoteLaunch(v) => {
                 if matches!(
@@ -390,14 +393,6 @@ impl AnyOutput {
                 || v.value.captured.exit_code(),
                 |failure| failure.class().exit_code(),
             ),
-            Self::AtlasFind(v) => match &v.value.answer.data {
-                se_types::Read::Present { value } => value.page.window().exit_code(false),
-                other => other.exit_code(),
-            },
-            Self::AtlasRefs(v) => atlas::page_exit(&v.value.answer.data),
-            Self::AtlasChanges(v) => atlas::page_exit(&v.value.answer.data),
-            Self::AtlasImpact(v) => atlas::complete_exit(&v.value.answer.data, |v| v.complete),
-            Self::AtlasOutline(v) => atlas::complete_exit(&v.value.answer.data, |v| v.complete),
             Self::DiagnosticBundle(v) if !v.value.complete => 2,
             Self::DoctorInspect(v) => v.value.exit_code(),
             Self::DoctorRepair(v) if !v.value.complete => 2,

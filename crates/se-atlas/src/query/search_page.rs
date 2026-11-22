@@ -21,9 +21,9 @@ impl SearchPage {
         self,
         reader: &QueryReader<'_, '_, '_>,
         query: &FindQuery,
-        end: Instant,
+        deadlines: (Instant, Instant),
     ) -> AtlasResult<Answer<Read<SearchResults>>> {
-        let mut answer = super::freshness::verify(reader, self.answer, end)?;
+        let mut answer = super::freshness::verify(reader, self.answer, deadlines)?;
         let mut keys = self.keys;
         let mut continuation = self.continuation;
         let budget = QueryBudget {
@@ -106,6 +106,12 @@ impl SearchPage {
 }
 
 fn shrink(items: &mut Vec<SearchHit>, keys: &mut Vec<Key>, omitted: &mut u16) -> bool {
+    // Clip a long source line before dropping a whole hit from the page.
+    let width = crate::text::HIT_LINE_BYTES;
+    let long = |h: &&mut SearchHit| matches!(&h.target, HitTarget::Code(c) if c.name.len() > width);
+    if let Some(hit) = items.iter_mut().find(long) {
+        return clip_hit(hit);
+    }
     if items.len() > 1 {
         items.pop();
         keys.pop();

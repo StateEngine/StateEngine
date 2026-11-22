@@ -1,4 +1,4 @@
-use se_types::code::{AtlasText, QueryText};
+use se_types::code::{AtlasText, QueryText, RECORD_LINE_BYTES as LINE_BYTES};
 fn best(text: &str, query: Option<&QueryText>) -> usize {
     let Some(query) = query else {
         return 0;
@@ -33,7 +33,7 @@ pub(super) fn line(text: &str, query: Option<&QueryText>) -> String {
     let start = best(text, query);
     let line = text[start..].lines().next().unwrap_or("");
     // Center a long matching line on an actual query term rather than returning
-    // its unrelated first 160 bytes. ASCII folding preserves byte positions.
+    // its unrelated first bytes. ASCII folding preserves byte positions.
     let found = query.and_then(|q| {
         q.as_str().split_whitespace().find_map(|word| {
             if q.as_str().chars().any(char::is_uppercase) {
@@ -50,10 +50,10 @@ pub(super) fn line(text: &str, query: Option<&QueryText>) -> String {
         left -= 1;
     }
     let line = &line[left..];
-    let mut output = String::with_capacity(160);
+    let mut output = String::with_capacity(LINE_BYTES);
     for c in line.chars() {
         let size = if c.is_control() { 1 } else { c.len_utf8() };
-        if output.len() + size > 160 {
+        if output.len() + size > LINE_BYTES {
             break;
         }
         output.push(if c.is_control() { ' ' } else { c });
@@ -83,7 +83,7 @@ mod tests {
         let query = QueryText::new("packet budget")?;
         let line = line(&text, Some(&query));
         assert!(line.contains("packet budget"));
-        assert!(line.len() <= 160);
+        assert!(line.len() <= LINE_BYTES);
         Ok(())
     }
 }

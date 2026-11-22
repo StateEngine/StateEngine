@@ -4,9 +4,14 @@ use se_types::code::*;
 fn common(c: Command) -> Command {
     c.arg(value("root").help("Registered worktree ID when the project has several"))
         .arg(value("cursor"))
-        .arg(value("limit").default_value("10"))
-        .arg(value("budget").default_value("4096"))
+        .arg(value("limit").help("Page size; find 20, refs/impact/changes 50, outline 300"))
+        .arg(value("budget").default_value("16384"))
         .arg(toggle("explain"))
+        .arg(
+            toggle("require_complete")
+                .long("require-complete")
+                .help("Exit 2 when the answer is incomplete or stale, even with hits"),
+        )
 }
 fn scoped(c: Command) -> Command {
     c.arg(
@@ -54,6 +59,11 @@ fn targeted(c: Command) -> Command {
         .arg(value("line").requires("path"))
         .arg(value("column").requires("line").default_value("0"))
         .arg(toggle("file").conflicts_with_all(["record", "commit", "symbol_id", "line"]))
+        .arg(
+            toggle("symbol")
+                .help("Treat the target as a symbol name, not a path")
+                .conflicts_with_all(["file", "record", "commit", "symbol_id"]),
+        )
         .arg(toggle("record").conflicts_with_all(["file", "commit", "symbol_id", "line"]))
         .arg(toggle("commit").conflicts_with_all(["file", "record", "symbol_id", "line"]))
         .arg(
@@ -94,9 +104,7 @@ pub(super) fn command(name: &str, c: Command) -> Command {
             .arg(value("depth").default_value("2"))
             .arg(toggle("include_name_only").long("include-name-only")),
         "atlas.changes" => scoped(c)
-            .about(
-                "Read changes from an Atlas cursor, observed Git commit or Unix millisecond time",
-            )
+            .about("Read changes since a duration (10m), ISO UTC time, commit SHA, cursor or Unix ms")
             .arg(value("since").required(true)),
         "atlas.outline" => c
             .about("Show declarations and project records linked to this file")
@@ -112,18 +120,22 @@ fn options(m: &ArgMatches, json: bool) -> Result<AtlasOptions> {
     Ok(AtlasOptions {
         root: text(m, "root").map(|s| s.parse()).transpose()?,
         cursor: text(m, "cursor").map(AtlasCursor::new).transpose()?,
-        limit: required(m, "limit")?
-            .parse()
-            .map_err(|_| SeError::invalid("limit", "1..50"))?,
+        limit: text(m, "limit")
+            .map(|s| {
+                s.parse()
+                    .map_err(|_| SeError::invalid("limit", "a positive page size"))
+            })
+            .transpose()?,
         byte_budget: required(m, "budget")?
             .parse()
-            .map_err(|_| SeError::invalid("budget", "1024..32768"))?,
+            .map_err(|_| SeError::invalid("budget", "1024..262144"))?,
         format: if json {
             AtlasFormat::Json
         } else {
             AtlasFormat::Compact
         },
         explain: flag(m, "explain"),
+        require_complete: flag(m, "require_complete"),
     })
 }
 fn scope(m: &ArgMatches) -> Result<(Vec<RelativePath>, Vec<Language>)> {
@@ -229,6 +241,15 @@ fn target(m: &ArgMatches) -> Result<AtlasTarget> {
                 .map_err(|_| SeError::invalid("symbol ID", "64 hex characters"))?,
         ))));
     }
+    // A bare positional resolves as a path, then path:line, then a symbol name;
+    // --symbol or any symbol narrowing keeps it a name.
+    if !flag(m, "symbol")
+        && ["path", "container", "kind"]
+            .iter()
+            .all(|id| text(m, id).is_none())
+    {
+        return Ok(AtlasTarget::Auto(QueryText::new(value)?));
+    }
     Ok(AtlasTarget::Symbol(SymbolSelector::Name {
         name: QueryText::new(value)?,
         path: text(m, "path").map(RelativePath::new).transpose()?,
@@ -282,21 +303,8 @@ pub(super) fn decode(name: &str, m: &ArgMatches, json: bool) -> Result<AnyOp> {
         }),
         "atlas.changes" => {
             let (paths, languages) = scope(m)?;
-            let since = required(m, "since")?;
-            let since = if since.bytes().all(|b| b.is_ascii_digit()) {
-                ChangeBaseline::ObservedUnixMillis(
-                    since.parse().map_err(|_| {
-                        SeError::invalid("since", "representable Unix milliseconds")
-                    })?,
-                )
-            } else if matches!(since.len(), 40 | 64) && since.bytes().all(|b| b.is_ascii_hexdigit())
-            {
-                ChangeBaseline::ObservedCommit(oid(&since)?)
-            } else {
-                ChangeBaseline::Cursor(AtlasCursor::new(since)?)
-            };
             AnyOp::AtlasChanges(AtlasChanges {
-                since,
+                since: ChangeBaseline::from_text(&required(m, "since")?)?,
                 paths,
                 languages,
                 options,

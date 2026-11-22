@@ -12,18 +12,21 @@ pub(super) struct RankedWindow {
     corpus: Corpus,
     broad: bool,
     retained: usize,
+    /// Staged bytes: the page byte budget, never below the historic 32 KiB.
+    cap: usize,
     limit: usize,
     more: bool,
     after: Option<Key>,
 }
 impl RankedWindow {
-    pub fn new(broad: bool, limit: u16, after: Option<Key>) -> Self {
+    pub fn new(broad: bool, budget: QueryBudget, after: Option<Key>) -> Self {
         Self {
             hits: Vec::new(),
             corpus: Corpus::default(),
             broad,
             retained: 0,
-            limit: usize::from(limit),
+            cap: (budget.max_bytes as usize).max(32 * 1024),
+            limit: usize::from(budget.max_results),
             more: false,
             after,
         }
@@ -39,7 +42,7 @@ impl RankedWindow {
         let cost = |hit: &Hit| hit.bytes + hit.key.bytes.len() + 192;
         if self.broad {
             let additional: usize = hits.iter().map(cost).sum();
-            if self.retained + additional > 32768 {
+            if self.retained + additional > self.cap {
                 return false;
             }
             self.retained += additional;
@@ -57,10 +60,10 @@ impl RankedWindow {
                 let position = self
                     .hits
                     .partition_point(|(old, _)| super::find::compare(&old.key, &hit.key).is_lt());
-                if position < self.limit && cost(&hit) <= 32768 {
+                if position < self.limit && cost(&hit) <= self.cap {
                     self.retained += cost(&hit);
                     self.hits.insert(position, (hit, None));
-                    while self.retained > 32768 || self.hits.len() > self.limit {
+                    while self.retained > self.cap || self.hits.len() > self.limit {
                         if let Some((old, _)) = self.hits.pop() {
                             self.retained -= cost(&old);
                             self.more = true;
@@ -92,6 +95,15 @@ impl RankedWindow {
             .sort_by(|(a, _), (b, _)| super::find::compare(&a.key, &b.key));
         self.hits
             .retain(|(hit, _)| after.is_none_or(|key| super::find::compare(&hit.key, key).is_gt()));
+        // One hit per source line; symbol tiers sort before text, so they win.
+        let mut seen = std::collections::HashSet::new();
+        self.hits.retain(|(hit, _)| match &hit.value.target {
+            HitTarget::Code(c) => c
+                .pointer
+                .span
+                .is_none_or(|s| seen.insert((c.pointer.file, s.start.line))),
+            _ => true,
+        });
         self.more |= self.hits.len() > self.limit;
         self.hits.truncate(self.limit);
         (

@@ -46,7 +46,7 @@ use std::{
     num::NonZeroU32,
     time::{Duration, Instant},
 };
-use timing::{collect_phase, minimum_phase, phase_timeout};
+use timing::{collect_phase, phase_timeout};
 
 /// Supplied by core for this verified viewer. Every record and derived count is
 /// rechecked against its authoritative event; cached audiences are only hints.
@@ -171,13 +171,13 @@ impl<'a, 'c, 'x> QueryReader<'a, 'c, 'x> {
         self.ctx.source_state = Some(state);
         self
     }
+    /// Status keeps its own tight 25 ms bound so `se status` stays fast.
     pub fn summary(&mut self) -> AtlasResult<IndexSummary> {
-        let identity = self.cache.identity().clone();
-        let env = self.ctx.split();
-        self.cache
-            .read(crate::clock::now() + Duration::from_millis(25), |sql| {
-                snapshot(&identity, &env, sql).map(|value| value.index)
-            })
+        let (identity, env) = (self.cache.identity().clone(), self.ctx.split());
+        let bound = crate::clock::now() + Duration::from_millis(25);
+        self.cache.read(bound, |sql| {
+            snapshot(&identity, &env, sql).map(|value| value.index)
+        })
     }
 }
 fn snapshot(
@@ -207,13 +207,7 @@ fn snapshot(
         if matches!(index.state, IndexState::Current) {
             index.state = state.clone();
         }
-        if !index
-            .coverage
-            .reasons
-            .contains(&CoverageReason::StaleSnapshot)
-        {
-            index.coverage.reasons.push(CoverageReason::StaleSnapshot);
-        }
+        index.note(CoverageReason::StaleSnapshot);
     }
     for (limited, reason) in [
         (
@@ -224,21 +218,11 @@ fn snapshot(
         (record_body_limited, CoverageReason::RecordBodyLimit),
     ] {
         if limited {
-            if matches!(index.state, IndexState::Current) {
-                index.state = IndexState::VerificationNeeded { reason };
-            }
-            if !index.coverage.reasons.contains(&reason) {
-                index.coverage.reasons.push(reason);
-            }
+            index.degrade(reason);
         }
     }
     if let Some(reason) = crate::history::limitation(sql)? {
-        if matches!(index.state, IndexState::Current) {
-            index.state = IndexState::VerificationNeeded { reason };
-        }
-        if !index.coverage.reasons.contains(&reason) {
-            index.coverage.reasons.push(reason);
-        }
+        index.degrade(reason);
     }
     Ok(Snapshot {
         index,
@@ -255,15 +239,6 @@ struct Snapshot {
     epoch_retired: bool,
 }
 impl Snapshot {
-    fn negative_complete(&self) -> bool {
-        let c = &self.index.coverage;
-        matches!(self.index.state, IndexState::Current)
-            && c.discovery_complete
-            && c.partial_files == 0
-            && c.stale_files == 0
-            && c.failed_files == 0
-            && c.deferred_files == 0
-    }
     fn answer<T>(&self, data: Read<T>, snapshot_advanced: bool) -> Answer<Read<T>> {
         Answer {
             index: self.index.clone(),
@@ -275,21 +250,25 @@ impl Snapshot {
     fn unknown<T>(&self, what: &str) -> Answer<Read<T>> {
         self.answer(Read::Unknown { what: what.into() }, false)
     }
-}
-fn deadline(budget: QueryBudget) -> AtlasResult<Instant> {
-    if budget.max_results == 0
-        || budget.max_results > 50
-        || budget.max_bytes == 0
-        || budget.max_bytes > 32768
-        || budget.work.is_zero()
-        || budget.work > Duration::from_millis(40)
-    {
-        return Err(se_types::SeError::invalid(
-            "Atlas query budget",
-            "1..50 results, 1..32768 bytes, 1..40 ms",
-        ));
+    /// No indexed match: a positional target is a usage error once the index is
+    /// complete, and unknown while it builds (the target may still appear).
+    fn missing<T>(&self, target: &AtlasTarget) -> AtlasResult<Answer<Read<T>>> {
+        if matches!(target, AtlasTarget::Auto(_)) && self.index.negative_complete() {
+            return Err(se_types::SeError::invalid(
+                "Atlas target",
+                "an indexed path, path:line or exact symbol name; search with atlas find first",
+            ));
+        }
+        Ok(self.unknown("target not indexed; search by name or path and inspect coverage"))
     }
-    Ok(crate::clock::now() + budget.work)
+}
+/// The SQLite interrupt. Reads stop collecting at the soft `budget.work` and
+/// return a partial page; only this later bound rolls a read back.
+const HARD: Duration = Duration::from_millis(1000);
+fn deadline(budget: QueryBudget) -> AtlasResult<(Instant, Instant)> {
+    let budget = budget.checked()?;
+    let now = crate::clock::now();
+    Ok((now + budget.work, now + HARD))
 }
 fn size(value: &impl Serialize) -> AtlasResult<usize> {
     struct Counter(usize);
@@ -318,13 +297,14 @@ fn page<T>(
     bytes: usize,
     after: Option<&AtlasCursor>,
 ) -> AtlasResult<Page<T>> {
-    let omission = if next.is_some() {
-        Omission::Unknown {
-            reason: OmissionReason::Limit,
-        }
-    } else if partial {
+    // An incomplete source outranks a page limit: a cursor never hides a gap.
+    let omission = if partial {
         Omission::Unknown {
             reason: OmissionReason::SourceIncomplete,
+        }
+    } else if next.is_some() {
+        Omission::Unknown {
+            reason: OmissionReason::Limit,
         }
     } else {
         Omission::None

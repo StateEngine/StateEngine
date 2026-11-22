@@ -37,7 +37,7 @@ struct Page<'k> {
 }
 impl QueryReader<'_, '_, '_> {
     pub fn impact(&mut self, query: &ImpactQuery) -> AtlasResult<Answer<Read<Impact>>> {
-        let end = deadline(query.budget)?;
+        let (end, hard) = deadline(query.budget)?;
         let started = end - query.budget.work;
         if !(1..=3).contains(&query.depth) {
             return Err(se_types::SeError::invalid("impact depth", "1..3"));
@@ -51,16 +51,12 @@ impl QueryReader<'_, '_, '_> {
         ))?;
         let identity = self.cache.identity().clone();
         let env = self.ctx.split();
-        let result = self.cache.read(end, |sql| {
+        let result = self.cache.read(hard, |sql| {
             Self::impact_page(&identity, &env, query, end, digest, sql)
         });
-        let answer = phase_timeout("impact query", started, end, result)?;
-        phase_timeout(
-            "impact query",
-            started,
-            end,
-            super::freshness::finish(self, answer, query.budget, end),
-        )
+        let answer = phase_timeout("impact query", started, hard, result)?;
+        let answer = super::freshness::finish(self, answer, query.budget, (end, hard));
+        phase_timeout("impact query", started, hard, answer)
     }
 
     fn impact_page(
@@ -88,7 +84,9 @@ impl QueryReader<'_, '_, '_> {
         }
         let mut nodes = Vec::with_capacity(32);
         let mut root_files = Vec::new();
-        let target = &query.target;
+        let Some(target) = &concrete(sql, &query.target)? else {
+            return snapshot.missing(&query.target);
+        };
         let mut limited = seed(env, sql, &snapshot, target, &mut nodes, &mut root_files)?;
         if nodes.is_empty() && root_files.is_empty() {
             return Ok(snapshot.unknown(
@@ -99,7 +97,7 @@ impl QueryReader<'_, '_, '_> {
             nodes.truncate(512);
             limited = true;
         }
-        let root_symbols = matches!(query.target, AtlasTarget::Symbol(_))
+        let root_symbols = matches!(target, AtlasTarget::Symbol(_))
             .then(|| nodes.iter().map(|n| n.symbol).collect::<Vec<_>>());
         let (results, examined, at) = walk(sql, query, &mut nodes, &mut limited, end)?;
         let files = super::impact_files::collect(
@@ -121,7 +119,7 @@ impl QueryReader<'_, '_, '_> {
                 omitted_frontier: 0,
                 frontier_count_complete: !limited,
                 next: None,
-                complete: !limited && snapshot.negative_complete() && !advanced,
+                complete: !limited && snapshot.index.negative_complete() && !advanced,
             },
             after,
             last: None,
@@ -252,10 +250,11 @@ fn merge_root_files(
             limited = true;
             break;
         }
-        let mut statement = sql.prepare("SELECT id FROM files WHERE key=?1")?;
-        let id: i64 = statement
-            .query_row([result.file.as_slice()], |r| r.get(0))
-            .map_err(cache_error)?;
+        let id: i64 = scalar(
+            sql,
+            "SELECT id FROM files WHERE key=?1",
+            [result.file.as_slice()],
+        )?;
         if !root_files.contains(&id) {
             root_files.push(id);
         }
@@ -383,7 +382,7 @@ fn seed(
     files: &mut Vec<i64>,
 ) -> AtlasResult<bool> {
     match target {
-        AtlasTarget::Symbol(_) | AtlasTarget::File(_) => {
+        AtlasTarget::Symbol(_) | AtlasTarget::File(_) | AtlasTarget::Auto(_) => {
             if let Some(target) = resolve(sql, target)? {
                 files.push(target.file.rowid);
                 if let Some(symbol) = target.symbol {

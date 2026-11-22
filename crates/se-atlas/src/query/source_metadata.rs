@@ -78,11 +78,13 @@ impl<'a> Pool<'a> {
         }
         // Names are much smaller than symbols. Probe their indexed symbol list
         // without sorting every matching symbol by activity before the live scan.
-        for plan in super::candidate_sql::plans(query, mode)? {
+        'plans: for plan in super::candidate_sql::plans(query, mode)? {
             if !matches!(plan.kind, Kind::Symbol | Kind::File) {
                 continue;
             }
-            super::candidates::admission_time(end)?;
+            if super::candidates::expired(end, &mut pool.truncated) {
+                break;
+            }
             let (condition, _) = plan
                 .sql
                 .split_once(" WHERE ")
@@ -117,7 +119,9 @@ impl<'a> Pool<'a> {
                 if !bm25.is_finite() || bm25 > 0.0 {
                     return Err(cache_error("invalid source metadata BM25 score"));
                 }
-                super::candidates::admission_time(end)?;
+                if super::candidates::expired(end, &mut pool.truncated) {
+                    break 'plans;
+                }
                 if plan.kind == Kind::Symbol && plan.tier == 2 {
                     let (_, name) = super::candidates::metadata(sql, plan.kind, rowid)?;
                     if !crate::rank::split_matches(&name, query.query.as_str()) {

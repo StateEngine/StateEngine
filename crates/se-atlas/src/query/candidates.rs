@@ -54,8 +54,10 @@ pub(super) fn collect(
         truncated: false,
     };
     let mut resident = 0;
-    for plan in super::candidate_sql::plans(query, mode)? {
-        admission_time(end)?;
+    'plans: for plan in super::candidate_sql::plans(query, mode)? {
+        if expired(end, &mut output.truncated) {
+            break;
+        }
         let values = rusqlite::params_from_iter(plan.values);
         let mut ids = all(sql, &plan.sql, values, 513, |row| {
             let bm25 = if plan.lexical {
@@ -75,8 +77,10 @@ pub(super) fn collect(
             if !bm25.is_finite() || bm25 > 0.0 {
                 return Err(cache_error("invalid BM25 score"));
             }
-            // An unfinished traversal prefix cannot provide a ranked continuation.
-            admission_time(end)?;
+            // An unfinished traversal prefix is partial, never a ranked continuation.
+            if expired(end, &mut output.truncated) {
+                break 'plans;
+            }
             let kind = plan.kind;
             // An earlier tier has already validated and retained this row in
             // the same snapshot; avoid repeating its metadata and authority reads.
@@ -180,12 +184,11 @@ pub(super) fn collect(
         .sort_by_cached_key(|candidate| super::find::key(candidate, query.order));
     Ok(output)
 }
-pub(super) fn admission_time(end: Instant) -> AtlasResult<()> {
-    if crate::clock::now() < end {
-        return Ok(());
-    }
-    // An expired checkpoint has no allowance left, as in SQL preparation.
-    Err(crate::cache::connection::timeout(0))
+/// Past the soft deadline admission stops: keep what was collected, marked partial.
+pub(super) fn expired(end: Instant, truncated: &mut bool) -> bool {
+    let late = crate::clock::now() >= end;
+    *truncated |= late;
+    late
 }
 pub(super) fn record_pointer(sql: &SqlView<'_>, id: i64) -> AtlasResult<RecordPointer> {
     let mut stmt = sql.prepare("SELECT record_id,kind,source_event FROM records WHERE id=?1")?;

@@ -1,4 +1,5 @@
-//! Atlas has one compact representation by default; JSON is explicit.
+//! Atlas is compact by default, JSON when asked. Either way an answer that
+//! `require_complete` rejects is an error result, as the CLI exits 2.
 use super::*;
 use se_types::code::AtlasFormat;
 pub(super) async fn call(
@@ -11,21 +12,18 @@ pub(super) async fn call(
         return rpc_error(id, -32603, "Atlas operation required");
     };
     let expected = operation.meta().family;
-    let format = options.format;
-    let explain = options.explain;
+    let (format, explain, required) = (options.format, options.explain, options.require_complete);
     let limit = (options.byte_budget as usize).min(backend.response_limit());
     let outcome = backend.call(capability, operation).await;
     let result = match outcome {
         Ok(value) => {
-            let output = match serde_json::from_value::<se_core::ops::AnyOutput>(value.clone()) {
-                Ok(output) => output,
-                Err(_) => {
-                    return rpc_error(
-                        id,
-                        -32603,
-                        "Atlas backend returned an invalid typed output family",
-                    );
-                }
+            let Ok(output) = serde_json::from_value::<se_core::ops::AnyOutput>(value.clone())
+            else {
+                return rpc_error(
+                    id,
+                    -32603,
+                    "Atlas backend returned an invalid typed output family",
+                );
             };
             if output.family() == expected {
                 let text = if format == AtlasFormat::Json {
@@ -39,8 +37,9 @@ pub(super) async fn call(
                         })
                     })
                 };
+                let rejected = required && output.atlas_exit(true) != Some(0);
                 match text {
-                    Ok(text) => json!({"content":[{"type":"text","text":text}],"isError":false}),
+                    Ok(text) => json!({"content":[{"type":"text","text":text}],"isError":rejected}),
                     Err(error) => return failure(id, &error, limit),
                 }
             } else {
@@ -60,7 +59,7 @@ pub(super) async fn call(
         rpc_error(
             Value::Null,
             -32602,
-            "Atlas response exceeds the requested wire budget; narrow the query or increase byte_budget (at most 32768)",
+            "Atlas response exceeds the requested wire budget; narrow the query or increase byte_budget (at most 262144)",
         )
     }
 }

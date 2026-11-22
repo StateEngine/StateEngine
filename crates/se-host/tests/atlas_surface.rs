@@ -24,13 +24,13 @@ fn five_tools_and_cli_routes_share_closed_bounded_inputs() -> Check {
     }
     let minimal = decode_tool("stateengine_atlas_find", json!({"query":"alpha"}))?;
     let options = minimal.atlas_options().ok_or("options absent")?;
-    assert_eq!(options.limit, 10);
-    assert_eq!(options.byte_budget, 4096);
+    assert_eq!(options.limit, None);
+    assert_eq!(options.byte_budget, 16384);
     assert_eq!(options.format, AtlasFormat::Compact);
     for bad in [
         json!({"query":"alpha","actor":"other"}),
         json!({"query":"alpha","byte_budget":1}),
-        json!({"query":"alpha","limit":51}),
+        json!({"query":"alpha","limit":201}),
         json!({"query":"alpha","kind":"All"}),
     ] {
         assert!(decode_tool("stateengine_atlas_find", bad).is_err());
@@ -142,11 +142,11 @@ fn mcp_compact_and_json_each_have_one_honest_budgeted_representation() -> Check 
             assert_eq!(value["schema"], "se.code-hits/v1");
             assert!(text.contains("fixture has no verified index"));
         } else {
-            assert!(text.starts_with(&format!(
-                "[atlas current; anonymous cap {} B; shared grammar pages unqualified; joined unqualified]",
-                se_atlas::model::ANONYMOUS_BYTES
-            )));
-            assert!(text.contains("unknown: fixture has no verified index"));
+            assert!(text.starts_with("unknown: fixture has no verified index"));
+            assert!(text.ends_with(
+                "index: current · 0 files
+"
+            ));
         }
     }
     assert_eq!(backend.calls, 2);
