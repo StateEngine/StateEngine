@@ -11,18 +11,59 @@ pub(super) struct Identity {
     pub model: Option<String>,
     pub conversation: Option<String>,
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn resolve<R: Snapshot>(
     preview: Option<&AgentId>,
     cx: &mut Cx<'_, R>,
 ) -> Result<Identity> {
     let project = crate::ops::receipt::named_project(cx)?;
-    let (agent, session, is_preview) = match (&cx.admission.actor, preview, &cx.admission.session) {
-        (Actor::Agent(agent), None, Some(session)) => (agent.clone(), Some(session.clone()), false),
-        (Actor::Human(_), Some(agent), None) => (agent.clone(), None, true),
+    let (agent, session, is_preview) = admit(preview, cx, &project)?;
+    let principal = scope::require_present(
+        cx.read
+            .principal(Actor::Agent(agent.clone()))
+            .map_err(|e| store_error(&e))?,
+        "continuity agent",
+        "Select a registered agent in this admitted project.",
+    )?;
+    let (name, role) = principal_name_role(&principal)?;
+    let profile = if is_preview {
+        preview_profile(&agent, cx)?
+    } else {
+        None
+    };
+    let (provider, conversation, saved_session) =
+        session_binding(&agent, &session, is_preview, &profile, cx)?;
+    let harness = match provider {
+        se_store::Provider::Claude => "claude",
+        se_store::Provider::Codex => "codex",
+        se_store::Provider::SeCode => "secode",
+        se_store::Provider::Acp => "acp",
+    }
+    .into();
+    Ok(Identity {
+        command_home: None,
+        principal: ContinuityPrincipal {
+            project,
+            agent: se_types::Named { id: agent, name },
+            session_id: saved_session,
+            preview: is_preview,
+        },
+        role,
+        harness,
+        model: profile.and_then(|profile| profile.model),
+        conversation,
+    })
+}
+
+fn admit<R: Snapshot>(
+    preview: Option<&AgentId>,
+    cx: &mut Cx<'_, R>,
+    project: &se_types::Named<se_types::ProjectId>,
+) -> Result<(AgentId, Option<se_types::SessionId>, bool)> {
+    match (&cx.admission.actor, preview, &cx.admission.session) {
+        (Actor::Agent(agent), None, Some(session)) => {
+            Ok((agent.clone(), Some(session.clone()), false))
+        }
+        (Actor::Human(_), Some(agent), None) => Ok((agent.clone(), None, true)),
         (Actor::Human(_), None, None) => {
             let mut error = SeError::new(se_types::Detail::UsageMissingArgument(
                 se_types::details::UsageMissingArgument {
@@ -36,34 +77,26 @@ pub(super) fn resolve<R: Snapshot>(
                     argv: se_types::Argv::from_op(&OwnerResumeChoices(&project.id))?,
                 }),
             });
-            return Err(error);
+            Err(error)
         }
-        (Actor::Agent(_), Some(_), _) => {
-            return Err(SeError::new(se_types::Detail::OwnerRequired(
-                se_types::details::OwnerRequired {
-                    op: "continuity preview".into(),
-                },
-            )));
-        }
-        _ => {
-            return Err(SeError::invalid(
-                "continuity authority",
-                "a bound session, or owner CLI --preview AGENT without a session",
-            ));
-        }
-    };
-    let principal = scope::require_present(
-        cx.read
-            .principal(Actor::Agent(agent.clone()))
-            .map_err(|e| store_error(&e))?,
-        "continuity agent",
-        "Select a registered agent in this admitted project.",
-    )?;
-    let (name, role) = match &principal.current.body {
+        (Actor::Agent(_), Some(_), _) => Err(SeError::new(se_types::Detail::OwnerRequired(
+            se_types::details::OwnerRequired {
+                op: "continuity preview".into(),
+            },
+        ))),
+        _ => Err(SeError::invalid(
+            "continuity authority",
+            "a bound session, or owner CLI --preview AGENT without a session",
+        )),
+    }
+}
+
+fn principal_name_role(principal: &se_store::ProjectionRecord) -> Result<(String, Option<String>)> {
+    match &principal.current.body {
         EventBody::PrincipalRegistered { name, role, .. } => {
-            (name.clone(), (!role.is_empty()).then(|| role.clone()))
+            Ok((name.clone(), (!role.is_empty()).then(|| role.clone())))
         }
-        EventBody::PrincipalRenamed { name, .. } => (
+        EventBody::PrincipalRenamed { name, .. } => Ok((
             name.clone(),
             principal.original.as_deref().and_then(|e| match &e.body {
                 EventBody::PrincipalRegistered { role, .. } if !role.is_empty() => {
@@ -71,35 +104,48 @@ pub(super) fn resolve<R: Snapshot>(
                 }
                 _ => None,
             }),
-        ),
-        _ => {
-            return Err(scope::unreadable(
-                "continuity identity",
-                "agent registration has an invalid current head",
-            ));
-        }
-    };
+        )),
+        _ => Err(scope::unreadable(
+            "continuity identity",
+            "agent registration has an invalid current head",
+        )),
+    }
+}
+
+fn preview_profile<R: Snapshot>(
+    agent: &AgentId,
+    cx: &mut Cx<'_, R>,
+) -> Result<Option<se_store::Profile>> {
     // The provider/model of a bound session comes from its saved session and
     // verified harness binding, never an unrelated owner's profile event.
-    let profile = if is_preview {
-        let saved = scope::require_present(
-            cx.read
-                .profile(agent.clone())
-                .map_err(|e| store_error(&e))?,
+    let saved = scope::require_present(
+        cx.read
+            .profile(agent.clone())
+            .map_err(|e| store_error(&e))?,
+        "continuity profile",
+        "Restore the saved provider profile before previewing context.",
+    )?;
+    let EventBody::ProfileSaved { profile, .. } = saved.current.body else {
+        return Err(scope::unreadable(
             "continuity profile",
-            "Restore the saved provider profile before previewing context.",
-        )?;
-        let EventBody::ProfileSaved { profile, .. } = saved.current.body else {
-            return Err(scope::unreadable(
-                "continuity profile",
-                "current profile is not a saved profile",
-            ));
-        };
-        Some(profile)
-    } else {
-        None
+            "current profile is not a saved profile",
+        ));
     };
-    let record = match &session {
+    Ok(Some(profile))
+}
+
+fn session_binding<R: Snapshot>(
+    agent: &AgentId,
+    session: &Option<se_types::SessionId>,
+    is_preview: bool,
+    profile: &Option<se_store::Profile>,
+    cx: &mut Cx<'_, R>,
+) -> Result<(
+    se_store::Provider,
+    Option<String>,
+    Option<se_types::SessionId>,
+)> {
+    let record = match session {
         Some(id) => cx.read.session(id.clone()),
         None => cx.read.latest_session(agent.clone()),
     }
@@ -133,17 +179,17 @@ pub(super) fn resolve<R: Snapshot>(
                     "original preparation is unavailable",
                 ));
             };
-            if target != &agent {
+            if target != agent {
                 return Err(scope::unreadable(
                     "continuity session",
                     "preparation names another agent",
                 ));
             }
-            if let Some(id) = &session
+            if let Some(id) = session
                 && (id != prepared
                     || (*generation != cx.admission.generation
                         && !(*generation < cx.admission.generation
-                            && reconciled(&saved, &agent, id, cx)?))
+                            && reconciled(&saved, agent, id, cx)?))
                     || !matches!(&saved.current.body, EventBody::SessionActivated {session: active, ..} if active==id))
             {
                 return Err(SeError::invalid(
@@ -167,26 +213,7 @@ pub(super) fn resolve<R: Snapshot>(
             (*provider, reference, Some(prepared.clone()))
         }
     };
-    let harness = match provider {
-        se_store::Provider::Claude => "claude",
-        se_store::Provider::Codex => "codex",
-        se_store::Provider::SeCode => "secode",
-        se_store::Provider::Acp => "acp",
-    }
-    .into();
-    Ok(Identity {
-        command_home: None,
-        principal: ContinuityPrincipal {
-            project,
-            agent: se_types::Named { id: agent, name },
-            session_id: saved_session,
-            preview: is_preview,
-        },
-        role,
-        harness,
-        model: profile.and_then(|profile| profile.model),
-        conversation,
-    })
+    Ok((provider, conversation, saved_session))
 }
 
 fn reconciled<R: Snapshot>(
