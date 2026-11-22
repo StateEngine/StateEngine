@@ -122,7 +122,8 @@ impl LaunchCoordinator {
             se_proc::RecoveryOutcome::Exited(witness) => {
                 work.native_already_reconciled = true;
                 work.last_witness = Some((*witness).clone());
-                work.stop_method = Some(super::reboot::recovery_method(&witness).into());
+                work.stop_method =
+                    Some(crate::reboot::exit_reason(&witness, "native-reconciliation").into());
                 if let Err(error) = self.finish(work, *witness, deadline).await {
                     work.cleanup_failure = Some(error.body);
                 }

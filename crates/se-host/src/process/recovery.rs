@@ -290,7 +290,7 @@ impl LaunchCoordinator {
                 Ok(RecoveryOutcome::Exited(witness)) => {
                     work.native_already_reconciled = true;
                     work.last_witness = Some((*witness).clone());
-                    work.stop_method = Some(super::reboot::recovery_method(&witness).into());
+                    work.stop_method = Some(crate::reboot::exit_reason(&witness, "native-reconciliation").into());
                     // Trusted capture opens at listener publication. Keep the
                     // exited lifecycle until its monitor can capture the tail;
                     // startup must not retire it behind the readiness fence.
@@ -338,6 +338,19 @@ impl LaunchCoordinator {
             report.unproved.push(format!("{lifecycle}: {reason}"));
         }
         Ok(report)
+    }
+    /// The reboot-aware recovery decision, run on the worker pool.
+    pub(super) async fn observe_recovery(
+        &self,
+        checkpoint: se_proc::Checkpoint,
+        retained: &OwnerGuardProcess,
+        deadline: &Deadline,
+    ) -> Result<RecoveryOutcome> {
+        let (native, machine) = (self.native.clone(), self.owner.machine.clone());
+        let (generation, retained) = (self.options.epoch.generation, retained.clone());
+        let job =
+            move || crate::reboot::recover(&native, machine, generation, checkpoint, &retained);
+        self.store.pool.run_owned(deadline, job).await
     }
     fn retain_orphan(&self, lifecycle: &se_types::LifecycleId) -> Result<()> {
         let mut orphans = self

@@ -144,11 +144,7 @@ impl LaunchCoordinator {
                 let event = self
                     .change(
                         work,
-                        if witness.ended_by_reboot() {
-                            process_commit::ENDED_BY_REBOOT
-                        } else {
-                            "exited"
-                        },
+                        crate::reboot::exit_reason(&witness, "exited"),
                         identity,
                         (from, ProcessState::Exited),
                         deadline,
@@ -160,11 +156,7 @@ impl LaunchCoordinator {
             }
         }
         if !work.session_retired {
-            let reason = if witness.ended_by_reboot() {
-                process_commit::ENDED_BY_REBOOT
-            } else {
-                "native scope exit witnessed"
-            };
+            let reason = crate::reboot::exit_reason(&witness, "native scope exit witnessed");
             self.retire_session(work, reason, deadline).await?;
         } else if work.capture_failure.is_some()
             && let Err(error) = self.flush_capture(work, deadline).await

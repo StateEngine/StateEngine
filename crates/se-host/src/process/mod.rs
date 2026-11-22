@@ -26,8 +26,6 @@ mod provider_status;
 #[cfg(unix)]
 mod reactor;
 mod readiness;
-#[path = "../reboot/mod.rs"]
-mod reboot;
 mod recovery;
 mod release;
 #[cfg(feature = "remote")]

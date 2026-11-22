@@ -14,8 +14,7 @@ mod replacement;
 mod selection;
 type Stopped =
     Arc<tokio::sync::Mutex<std::collections::BTreeMap<se_types::LifecycleId, TakeoverReport>>>;
-use selection::combine_reports;
-pub(in crate::process) use selection::process_identity;
+use selection::{combine_reports, process_identity};
 
 impl LaunchCoordinator {
     pub async fn launch(
@@ -27,11 +26,7 @@ impl LaunchCoordinator {
         self.harness_for(plan.profile.provider)?;
         if !plan.replayed {
             self.require_force_selection(&plan)?;
-            if plan.input.force_selection.is_none()
-                && self.finish_rebooted_launch(&plan, deadline).await?
-            {
-                plan = self.replan_launch(&plan, &admission, deadline).await?;
-            }
+            plan = crate::reboot::after_reboot(self, plan, &admission, deadline).await?;
         }
         if plan.replayed || (plan.control.processes.is_empty() && plan.control.sessions.is_empty())
         {
@@ -102,6 +97,35 @@ impl LaunchCoordinator {
         }
     }
 
+    /// Close one lifecycle of this launch target that a reboot already ended.
+    pub(crate) async fn close_rebooted(
+        &self,
+        plan: &LaunchPlan,
+        record: &se_store::ProjectionRecord,
+        pending: bool,
+        deadline: &Deadline,
+    ) -> Result<bool> {
+        let lifecycle = &process_identity(record)?.record;
+        let Some(job) = self
+            .find_lifecycle_job(&plan.project.id, &plan.agent.id, lifecycle)?
+            .filter(|job| job.ended_by_reboot && (pending || !job.settled.load(Ordering::Acquire)))
+        else {
+            return Ok(false);
+        };
+        let mut work = crate::runtime::pool::within(deadline, job.state.lock()).await?;
+        let Some(witness) = work.last_witness.clone().filter(|w| w.ended_by_reboot()) else {
+            return Ok(false);
+        };
+        if !work.released {
+            work.admission = work.cleanup_admission.clone();
+            self.finish(&mut work, witness, deadline).await?;
+            if !job.settled.swap(true, Ordering::AcqRel) {
+                self.activity
+                    .send_modify(|count| *count = count.saturating_sub(1));
+            }
+        }
+        Ok(true)
+    }
     #[expect(
         clippy::too_many_lines,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"

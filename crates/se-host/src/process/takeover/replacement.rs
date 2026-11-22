@@ -85,7 +85,7 @@ impl LaunchCoordinator {
         .map_err(|failure| successor_failure(&report, failure))
         .map(AnyOutput::from)
     }
-    pub(super) async fn replan_launch(
+    pub(crate) async fn replan_launch(
         &self,
         plan: &LaunchPlan,
         admission: &Admission,
