@@ -105,16 +105,10 @@ impl<'a> Pool<'a> {
             };
             let statement =
                 format!("SELECT {id},{file}{score} FROM {from} WHERE {condition} LIMIT 513");
-            let mut ids: Vec<(i64, i64, f64)> = Vec::new();
-            {
-                let mut statement = sql.prepare(&statement)?;
-                let mut rows = statement
-                    .query(rusqlite::params_from_iter(plan.values))
-                    .map_err(cache_error)?;
-                while let Some(row) = rows.next().map_err(cache_error)? {
-                    ids.push((get(row, 0)?, get(row, 1)?, get(row, 2)?));
-                }
-            }
+            let values = rusqlite::params_from_iter(plan.values);
+            let mut ids: Vec<(i64, i64, f64)> = all(sql, &statement, values, 0, |row| {
+                Ok((get(row, 0)?, get(row, 1)?, get(row, 2)?))
+            })?;
             if ids.len() > 512 {
                 ids.pop();
                 pool.truncated = true;

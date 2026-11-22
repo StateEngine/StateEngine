@@ -39,18 +39,15 @@ pub(super) fn collect(
                 } else {
                     "m.target_kind='file' AND m.target_key=?2"
                 };
-                let mut stmt=sql.prepare(&format!("SELECT r.id FROM records r LEFT JOIN activity a ON a.target_kind='record' AND a.target_key=CAST(r.record_id AS BLOB) WHERE EXISTS(SELECT 1 FROM mentions m WHERE m.source_kind='record' AND m.source_id=r.id AND {condition}) ORDER BY a.last_touch_unix_ms DESC,r.record_id LIMIT 513"))?;
-                let mut rows = if symbol {
-                    stmt.query([file])
+                let statement = format!(
+                    "SELECT r.id FROM records r LEFT JOIN activity a ON a.target_kind='record' AND a.target_key=CAST(r.record_id AS BLOB) WHERE EXISTS(SELECT 1 FROM mentions m WHERE m.source_kind='record' AND m.source_id=r.id AND {condition}) ORDER BY a.last_touch_unix_ms DESC,r.record_id LIMIT 513"
+                );
+                if symbol {
+                    id_column(sql, &statement, [file], 0)?
                 } else {
-                    stmt.query(params![rusqlite::types::Null, pointer.file.0.as_slice()])
+                    let key = pointer.file.0.as_slice();
+                    id_column(sql, &statement, params![rusqlite::types::Null, key], 0)?
                 }
-                .map_err(cache_error)?;
-                let mut ids = Vec::new();
-                while let Some(row) = rows.next().map_err(cache_error)? {
-                    ids.push(get::<i64>(row, 0)?);
-                }
-                ids
             };
             for id in ids {
                 if seen.contains(&id) {

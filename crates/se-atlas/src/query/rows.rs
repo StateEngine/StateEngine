@@ -12,6 +12,31 @@ pub(super) fn get<T: rusqlite::types::FromSql>(row: &Row<'_>, column: usize) -> 
     }
     row.get(column).map_err(cache_error)
 }
+/// Decodes every row of a bounded statement; the statement closes before return.
+pub(super) fn all<T>(
+    sql: &SqlView<'_>,
+    statement: &str,
+    params: impl rusqlite::Params,
+    reserve: usize,
+    mut decode: impl FnMut(&Row<'_>) -> AtlasResult<T>,
+) -> AtlasResult<Vec<T>> {
+    let mut statement = sql.prepare(statement)?;
+    let mut rows = statement.query(params).map_err(cache_error)?;
+    let mut output = Vec::with_capacity(reserve);
+    while let Some(row) = rows.next().map_err(cache_error)? {
+        output.push(decode(row)?);
+    }
+    Ok(output)
+}
+/// The integer first column of every row of a bounded statement.
+pub(super) fn id_column(
+    sql: &SqlView<'_>,
+    statement: &str,
+    params: impl rusqlite::Params,
+    reserve: usize,
+) -> AtlasResult<Vec<i64>> {
+    all(sql, statement, params, reserve, |row| get(row, 0))
+}
 pub(super) fn json<T: DeserializeOwned>(text: &str) -> AtlasResult<T> {
     serde_json::from_str(text).map_err(cache_error)
 }

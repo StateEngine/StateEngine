@@ -225,16 +225,11 @@ fn edges(
     let symbols = if let Some(targets) = targets {
         targets.to_vec()
     } else {
-        let mut statement =
-            sql.prepare("SELECT id FROM symbols WHERE file=?1 ORDER BY key LIMIT 513")?;
-        let mut rows = statement.query([file]).map_err(cache_error)?;
-        let mut ids = Vec::new();
-        while let Some(row) = rows.next().map_err(cache_error)? {
-            if ids.len() == 512 {
-                limited = true;
-                break;
-            }
-            ids.push(get::<i64>(row, 0)?);
+        let statement = "SELECT id FROM symbols WHERE file=?1 ORDER BY key LIMIT 513";
+        let mut ids = id_column(sql, statement, [file], 0)?;
+        if ids.len() > 512 {
+            ids.truncate(512);
+            limited = true;
         }
         ids
     };
@@ -284,25 +279,18 @@ pub(super) fn linked_files(
         } else {
             "SELECT id FROM commits WHERE oid=?1"
         };
-        let mut stmt = sql.prepare(statement)?;
-        let mut rows = stmt.query([key]).map_err(cache_error)?;
-        rows.next()
-            .map_err(cache_error)?
-            .map(|r| get::<i64>(r, 0))
-            .transpose()?
+        id_column(sql, statement, [key], 1)?.first().copied()
     };
     let Some(source) = source else {
         return Ok((Vec::new(), false));
     };
-    let targets = {
-        let mut stmt=sql.prepare("SELECT target_kind,target_key FROM mentions WHERE source_kind=?1 AND source_id=?2 AND target_kind IN ('file','symbol') ORDER BY target_kind,target_key LIMIT 257")?;
-        let mut rows = stmt.query(params![kind, source]).map_err(cache_error)?;
-        let mut output = Vec::new();
-        while let Some(row) = rows.next().map_err(cache_error)? {
-            output.push((get::<String>(row, 0)?, get::<Vec<u8>>(row, 1)?));
-        }
-        output
-    };
+    let targets = all(
+        sql,
+        "SELECT target_kind,target_key FROM mentions WHERE source_kind=?1 AND source_id=?2 AND target_kind IN ('file','symbol') ORDER BY target_kind,target_key LIMIT 257",
+        params![kind, source],
+        0,
+        |row| Ok((get::<String>(row, 0)?, get::<Vec<u8>>(row, 1)?)),
+    )?;
     let mut files = Vec::new();
     let mut limited = targets.len() == 257;
     for (kind, key) in targets.into_iter().take(256) {
@@ -311,14 +299,7 @@ pub(super) fn linked_files(
         } else {
             "SELECT file FROM symbols WHERE key=?1"
         };
-        let file = {
-            let mut stmt = sql.prepare(statement)?;
-            let mut rows = stmt.query([key]).map_err(cache_error)?;
-            rows.next()
-                .map_err(cache_error)?
-                .map(|r| get::<i64>(r, 0))
-                .transpose()?
-        };
+        let file = id_column(sql, statement, [key], 1)?.first().copied();
         if let Some(file) = file {
             if files.contains(&file) {
                 continue;

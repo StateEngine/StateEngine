@@ -8,6 +8,16 @@ pub(super) enum Kind {
     Record,
     Commit,
 }
+impl Kind {
+    pub(super) fn tag(self) -> &'static str {
+        match self {
+            Kind::Symbol => "symbol",
+            Kind::File => "file",
+            Kind::Record => "record",
+            Kind::Commit => "commit",
+        }
+    }
+}
 pub(super) struct Candidate {
     pub kind: Kind,
     pub rowid: i64,
@@ -46,24 +56,15 @@ pub(super) fn collect(
     let mut resident = 0;
     for plan in super::candidate_sql::plans(query, mode)? {
         admission_time(end)?;
-        let mut ids = Vec::with_capacity(513);
-        {
-            let mut stmt = sql.prepare(&plan.sql)?;
-            let mut rows = stmt
-                .query(rusqlite::params_from_iter(plan.values))
-                .map_err(cache_error)?;
-            while let Some(row) = rows.next().map_err(cache_error)? {
-                ids.push((
-                    get::<i64>(row, 0)?,
-                    get::<Option<i64>>(row, 1)?,
-                    if plan.lexical {
-                        get::<f64>(row, 2)?
-                    } else {
-                        0.0
-                    },
-                ));
-            }
-        }
+        let values = rusqlite::params_from_iter(plan.values);
+        let mut ids = all(sql, &plan.sql, values, 513, |row| {
+            let bm25 = if plan.lexical {
+                get::<f64>(row, 2)?
+            } else {
+                0.0
+            };
+            Ok((get::<i64>(row, 0)?, get::<Option<i64>>(row, 1)?, bm25))
+        })?;
         if ids.len() > 512 {
             ids.pop();
             output.truncated = true;
@@ -160,14 +161,8 @@ pub(super) fn collect(
     }
     let mut activity = crate::rank::ActivityReader::new(sql)?;
     for candidate in &mut output.values {
-        let tag = match candidate.kind {
-            Kind::Symbol => "symbol",
-            Kind::File => "file",
-            Kind::Record => "record",
-            Kind::Commit => "commit",
-        };
         candidate.activity = activity.read(
-            tag,
+            candidate.kind.tag(),
             &candidate.key,
             crate::rank::ActivityQuery {
                 project: &snapshot.index.project,

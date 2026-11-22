@@ -20,11 +20,7 @@ impl QueryReader<'_, '_, '_> {
                 return Err(cursor::invalid("invalid changes fence"));
             }
             check_retention(&snapshot, last.integers[0], env.viewer)?;
-            let ids={
-                let mut stmt=sql.prepare("SELECT generation,ordinal FROM changes WHERE (generation,ordinal)>(?1,?2) AND generation<=?3 ORDER BY generation,ordinal LIMIT 513")?;
-                let mut rows=stmt.query(params![signed(last.integers[0])?,signed(last.integers[1])?,signed(fence.0)?]).map_err(cache_error)?;
-                let mut ids=Vec::with_capacity(513);while let Some(row)=rows.next().map_err(cache_error)?{ids.push((number(row,0)?,get::<u32>(row,1)?));}ids
-            };
+            let ids=all(sql,"SELECT generation,ordinal FROM changes WHERE (generation,ordinal)>(?1,?2) AND generation<=?3 ORDER BY generation,ordinal LIMIT 513",params![signed(last.integers[0])?,signed(last.integers[1])?,signed(fence.0)?],513,|row|Ok((number(row,0)?,get::<u32>(row,1)?)))?;
             let scan_limited=ids.len()==513;
             let mut incomplete=false;let mut items=Vec::new();let mut bytes=0;let mut key=last.clone();let mut more=false;
             for (generation,ordinal) in ids.into_iter().take(512){
