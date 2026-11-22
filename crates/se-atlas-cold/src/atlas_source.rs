@@ -14,7 +14,10 @@ use se_proc::{
     NativeRootDirectory, NativeRootFile, NativeSourceKind, NativeSourceRoot, NativeSourceScan,
 };
 use se_types::{Detail, SeError, code::AtlasText, details};
-use std::io::{self, Read, Seek, SeekFrom};
+use std::{
+    cell::Cell,
+    io::{self, Read, Seek, SeekFrom},
+};
 
 pub struct NativeAtlasSource {
     root: NativeSourceRoot,
@@ -51,7 +54,7 @@ impl SourceAccess for NativeAtlasSource {
             .root
             .open_relative(path.as_str())
             .map_err(|e| error(path.as_str(), e))?
-            .map(|file| Box::new(PinnedSource(file)) as Box<dyn SourceFile>))
+            .map(|file| Box::new(PinnedSource::new(file)) as Box<dyn SourceFile>))
     }
     fn open_scan(&self) -> AtlasResult<Box<dyn SourceScan<'_> + '_>> {
         let scan = self
@@ -81,7 +84,7 @@ impl<'a> SourceScan<'a> for PinnedScan<'a> {
             .0
             .open_relative(path.as_str())
             .map_err(|e| error(path.as_str(), e))?
-            .map(|file| Box::new(PinnedSource(file)) as Box<dyn SourceFile + 'a>))
+            .map(|file| Box::new(PinnedSource::new(file)) as Box<dyn SourceFile + 'a>))
     }
     fn finish(self: Box<Self>) -> AtlasResult<()> {
         self.0
@@ -119,20 +122,39 @@ impl SourceDirectory for PinnedDirectory<'_> {
             .map_err(|e| error("source directory identity", e))
     }
 }
-struct PinnedSource<'a>(NativeRootFile<'a>);
+/// The first identity is the before-read baseline the open already observed;
+/// every later one, including each after-read check, is a fresh native query.
+struct PinnedSource<'a> {
+    file: NativeRootFile<'a>,
+    baseline_taken: Cell<bool>,
+}
+impl<'a> PinnedSource<'a> {
+    fn new(file: NativeRootFile<'a>) -> Self {
+        Self {
+            file,
+            baseline_taken: Cell::new(false),
+        }
+    }
+}
 impl Read for PinnedSource<'_> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        self.0.read(bytes)
+        self.file.read(bytes)
     }
 }
 impl Seek for PinnedSource<'_> {
     fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
-        self.0.seek(position)
+        self.file.seek(position)
     }
 }
 impl SourceFile for PinnedSource<'_> {
     fn identity(&self) -> AtlasResult<FileIdentity> {
-        let native = self.0.revision().map_err(|e| error("retained source", e))?;
+        let native = if self.baseline_taken.replace(true) {
+            self.file
+                .revision()
+                .map_err(|e| error("retained source", e))?
+        } else {
+            self.file.opened_revision().clone()
+        };
         Ok(FileIdentity {
             volume: native.volume,
             file: native.file,
@@ -146,7 +168,7 @@ impl SourceFile for PinnedSource<'_> {
         })
     }
     fn validate_path(&self) -> AtlasResult<bool> {
-        self.0
+        self.file
             .validate_name()
             .map_err(|e| error("retained source", e))
     }

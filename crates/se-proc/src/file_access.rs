@@ -20,7 +20,7 @@ pub fn with_readable_regular_file<T>(
     let mut file = root
         .open_relative(name)?
         .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
-    let before = file.revision()?;
+    let before = file.opened_revision().clone();
     let value = read(&mut file)?;
     if before != file.revision()? || !file.validate_name()? {
         return Err(io::Error::other("installed file changed while being read"));

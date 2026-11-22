@@ -49,7 +49,7 @@ impl NativeWatchDirectory {
         let named = if self.path.is_empty() {
             os::open_root(&self.root.path)
         } else {
-            os::open_directory(&self.root.directory, &self.path)
+            os::open_directory(&self.root.directory, &self.path).map(|(file, _)| file)
         };
         let named = match named {
             Ok(file) => file,
