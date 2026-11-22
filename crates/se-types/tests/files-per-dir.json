@@ -11,6 +11,7 @@
   "crates/se-state-files/src/state_files": 41,
   "crates/se-atlas/src/query": 32,
   "crates/se-atlas-index/src/extract": 15,
+  "crates/se-atlas-index/src/search": 10,
   "crates/se-atlas-index/src/store": 11,
   "crates/se-store/src/read": 31,
   "crates/se-proc/src/platform": 29,

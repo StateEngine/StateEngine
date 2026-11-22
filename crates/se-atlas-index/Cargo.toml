@@ -11,9 +11,14 @@ se-proc = { path = "../se-proc" }
 se-trusted-path = { path = "../se-trusted-path" }
 serde_json.workspace = true
 blake3 = { version = "=1.8.7", default-features = false, features = ["std"] }
+# Line confirmation inside index candidates and the bounded live scan.
+grep-regex = "=0.1.14"
+grep-searcher = "=0.1.17"
 # Ignore-file rule matching only; every source open goes through se-proc custody.
 ignore = "=0.4.33"
 rusqlite = { version = "0.41", features = ["bundled"] }
+# Literal anchors of a regex query, already built for grep-regex.
+regex-syntax = "=0.8.11"
 
 [target.'cfg(unix)'.dependencies]
 # Only to name ELOOP, the no-follow open's link refusal.

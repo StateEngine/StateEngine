@@ -1642,8 +1642,11 @@ name = "se-atlas-index"
 version = "0.0.1-alpha.1"
 dependencies = [
  "blake3",
+ "grep-regex",
+ "grep-searcher",
  "ignore",
  "libc",
+ "regex-syntax",
  "rusqlite",
  "se-proc",
  "se-trusted-path",

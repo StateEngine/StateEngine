@@ -39,6 +39,33 @@ impl SymbolKind {
         self as i64
     }
 
+    /// The kind stored as `code`, if this version knows it.
+    pub fn from_code(code: i64) -> Option<Self> {
+        const ALL: [SymbolKind; 20] = [
+            SymbolKind::Module,
+            SymbolKind::Function,
+            SymbolKind::Method,
+            SymbolKind::Struct,
+            SymbolKind::Enum,
+            SymbolKind::Interface,
+            SymbolKind::Impl,
+            SymbolKind::Class,
+            SymbolKind::Type,
+            SymbolKind::Const,
+            SymbolKind::Variable,
+            SymbolKind::Macro,
+            SymbolKind::Namespace,
+            SymbolKind::Section,
+            SymbolKind::Table,
+            SymbolKind::Key,
+            SymbolKind::Item,
+            SymbolKind::Target,
+            SymbolKind::Stage,
+            SymbolKind::Test,
+        ];
+        ALL.into_iter().find(|kind| kind.code() == code)
+    }
+
     fn holds_methods(self) -> bool {
         matches!(
             self,
