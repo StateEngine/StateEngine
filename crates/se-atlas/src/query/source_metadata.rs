@@ -9,19 +9,34 @@ struct Entry {
     lexical: f64,
     related: bool,
 }
-type LiteralLookup<'a> = (crate::cache::connection::BudgetStatement<'a>, bool, String);
-fn prepare_literal<'a>(sql: &'a SqlView<'a>, text: &str) -> AtlasResult<LiteralLookup<'a>> {
-    let smart = text.chars().any(char::is_uppercase);
+struct LiteralLookup<'a> {
+    statement: Option<crate::cache::connection::BudgetStatement<'a>>,
+    smart: bool,
+    needle: String,
+}
+impl LiteralLookup<'_> {
+    fn new(text: &str) -> Self {
+        let smart = text.chars().any(char::is_uppercase);
+        let needle = if smart {
+            text.to_owned()
+        } else {
+            text.to_ascii_lowercase()
+        };
+        Self {
+            statement: None,
+            smart,
+            needle,
+        }
+    }
+}
+fn prepare_literal_statement<'a>(
+    sql: &'a SqlView<'_>,
+    smart: bool,
+) -> AtlasResult<crate::cache::connection::BudgetStatement<'a>> {
     let name = if smart { "n.text" } else { "lower(n.text)" };
-    let statement = sql.prepare(&format!(
+    sql.prepare(&format!(
         "SELECT s.key,n.text,s.kind,s.start_byte,s.end_byte,s.start_line,s.start_column,s.end_line,s.end_column,CASE WHEN {name}=?2 THEN 1 WHEN instr({name},?2)=1 THEN 2 ELSE 4 END AS tier FROM symbols s INDEXED BY symbols_file JOIN names n ON n.id=s.name WHERE s.file=?1 AND instr({name},?2)>0 ORDER BY tier,s.start_byte,s.id LIMIT 1"
-    ))?;
-    let needle = if smart {
-        text.to_owned()
-    } else {
-        text.to_ascii_lowercase()
-    };
-    Ok((statement, smart, needle))
+    ))
 }
 #[derive(Default)]
 pub(super) struct Pool<'a> {
@@ -32,7 +47,7 @@ pub(super) struct Pool<'a> {
 impl<'a> Pool<'a> {
     pub fn collect(
         env: &QueryEnv<'_>,
-        sql: &'a SqlView<'a>,
+        sql: &'a SqlView<'_>,
         snapshot: &Snapshot,
         query: &FindQuery,
         mode: SearchMode,
@@ -46,7 +61,7 @@ impl<'a> Pool<'a> {
             return Ok(pool);
         }
         if mode == SearchMode::Literal {
-            pool.literal = Some(prepare_literal(sql, query.query.as_str())?);
+            pool.literal = Some(LiteralLookup::new(query.query.as_str()));
             return Ok(pool);
         }
         if mode == SearchMode::Related {
@@ -156,17 +171,22 @@ impl<'a> Pool<'a> {
         }
         self.entries.push(entry);
     }
+    pub fn release_literal(&mut self) {
+        if let Some(lookup) = &mut self.literal {
+            lookup.statement = None;
+        }
+    }
     pub fn best(
         &mut self,
         env: &QueryEnv<'_>,
-        sql: &SqlView<'_>,
+        sql: &'a SqlView<'_>,
         snapshot: &Snapshot,
         file: &FileRow,
         query: &FindQuery,
         mode: SearchMode,
     ) -> AtlasResult<Option<(CodeHit, u8, f64, bool)>> {
         if let Some(lookup) = &mut self.literal {
-            return literal_best(lookup, file);
+            return literal_best(lookup, sql, file);
         }
         let Some(entry) = self.entries.iter().find(|e| e.file == file.rowid) else {
             return Ok(None);
@@ -193,12 +213,22 @@ impl<'a> Pool<'a> {
     }
 }
 
-fn literal_best(
-    (statement, smart, needle): &mut LiteralLookup<'_>,
+// Resolve only this file, and materialize its winning symbol in the same
+// statement. Re-reading symbol/name/parent/file rows discards the already
+// admitted file and amplifies cold IO inside the source scan allowance.
+fn literal_best<'a>(
+    lookup: &mut LiteralLookup<'a>,
+    sql: &'a SqlView<'_>,
     file: &FileRow,
 ) -> AtlasResult<Option<(CodeHit, u8, f64, bool)>> {
+    let statement = match &mut lookup.statement {
+        Some(statement) => statement,
+        None => lookup
+            .statement
+            .insert(prepare_literal_statement(sql, lookup.smart)?),
+    };
     let mut rows = statement
-        .query((file.rowid, needle.as_str()))
+        .query((file.rowid, lookup.needle.as_str()))
         .map_err(cache_error)?;
     let mut best = rows
         .next()
@@ -223,8 +253,8 @@ fn literal_best(
         })
         .transpose()?;
     let path = file.pointer.path.as_str();
-    let path_match = (*smart && path.contains(needle.as_str()))
-        || (!*smart && crate::policy::contains_ascii_ci(path, needle));
+    let path_match = (lookup.smart && path.contains(lookup.needle.as_str()))
+        || (!lookup.smart && crate::policy::contains_ascii_ci(path, &lookup.needle));
     if path_match && best.as_ref().is_none_or(|(_, tier, _, _)| *tier > 3) {
         best = Some((
             CodeHit {

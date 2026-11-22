@@ -196,10 +196,10 @@ impl QueryReader<'_, '_, '_> {
                 more_window = true;
                 break;
             }
+            metadata_pool.release_literal();
             let (files_batch, has_more) = file_window(
                 sql,
-                position.0,
-                &position.2,
+                position.0.then_some(position.2.as_slice()),
                 &mut last_path_key,
                 &query.scope,
             )?;
@@ -333,6 +333,7 @@ impl QueryReader<'_, '_, '_> {
                     more_window = true;
                     break 'scan;
                 }
+                metadata_pool.release_literal();
                 let mut activity = crate::rank::activity(
                     sql,
                     "file",
@@ -416,6 +417,7 @@ impl QueryReader<'_, '_, '_> {
                 break;
             }
         }
+        metadata_pool.release_literal();
         if let Some(scan) = scan {
             scan.finish()?;
         }

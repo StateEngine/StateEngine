@@ -3,12 +3,13 @@ use super::*;
 use rusqlite::{OptionalExtension, params};
 pub(super) fn file_window(
     sql: &SqlView<'_>,
-    started: bool,
-    key: &[u8],
+    resume_key: Option<&[u8]>,
     last_path_key: &mut Option<String>,
     scope: &SearchScope,
 ) -> AtlasResult<(Vec<FileRow>, bool)> {
-    if started && last_path_key.is_none() {
+    if last_path_key.is_none()
+        && let Some(key) = resume_key
+    {
         *last_path_key = Some(
             sql.prepare("SELECT path_key FROM files WHERE key=?1")?
                 .query_row([key], |r| r.get(0))
@@ -21,7 +22,11 @@ pub(super) fn file_window(
                 })?,
         );
     }
-    let filter = if started { "f.path_key>?3 AND " } else { "" };
+    let filter = if last_path_key.is_some() {
+        "f.path_key>?3 AND "
+    } else {
+        ""
+    };
     let mut statement = sql.prepare(&format!(
         "SELECT {FILE_COLUMNS},f.path_key FROM files f WHERE {filter}atlas_scope(f.path,f.language,?1,?2) ORDER BY f.path_key LIMIT 257"
     ))?;
