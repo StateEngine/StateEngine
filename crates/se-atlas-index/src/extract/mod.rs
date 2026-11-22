@@ -6,6 +6,7 @@
 //! is contained to that file and reported as `EXTRACT_FAILED`.
 mod c_family;
 pub mod covers;
+mod declared;
 mod go;
 pub mod imports;
 mod js_ts;
@@ -16,8 +17,9 @@ mod python;
 mod rust;
 pub mod tokens;
 
+pub use declared::display_name;
 pub(crate) use outline::parents_first;
-pub use outline::{Accuracy, Symbol, SymbolKind};
+pub use outline::{Accuracy, Symbol, SymbolKind, find_word};
 use std::{borrow::Cow, collections::HashMap, fmt};
 
 /// File flag bits stored in `files.flags`.
@@ -33,7 +35,7 @@ pub mod flags {
 }
 
 /// Raised whenever extraction changes its output, so stored indexes rebuild.
-pub const EXTRACTOR_VERSION: i64 = 1;
+pub const EXTRACTOR_VERSION: i64 = 2;
 const BINARY_SNIFF: usize = 8 * 1024;
 const MAX_LINE: usize = 4 * 1024;
 const MINIFIED_AVERAGE_LINE: usize = 300;

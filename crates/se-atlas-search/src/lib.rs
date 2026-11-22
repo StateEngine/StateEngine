@@ -29,6 +29,8 @@ mod read;
 mod regex;
 mod symbols;
 
+pub use confirm::{FileRead, LiteralLines, hit_text};
+pub use fuzzy::spellings;
 use query::Parsed;
 use rusqlite::OptionalExtension;
 use se_atlas_index::{
@@ -338,13 +340,13 @@ fn index_is_cold(conn: &rusqlite::Connection) -> Result<bool> {
 }
 
 /// The soft deadline shared by every phase of one search.
-pub(crate) struct Budget {
+pub struct Budget {
     /// `None` when the deadline is too far away to represent.
     until: Option<Instant>,
 }
 
 impl Budget {
-    fn start(deadline: Duration) -> Self {
+    pub fn start(deadline: Duration) -> Self {
         Self {
             until: Instant::now().checked_add(deadline),
         }

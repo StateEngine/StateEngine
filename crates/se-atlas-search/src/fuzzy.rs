@@ -119,6 +119,35 @@ pub(crate) fn resolve(snapshot: &ReadSnapshot<'_>, word: &str) -> Result<Resolut
     Ok(out)
 }
 
+/// Close indexed spellings of a word that is not itself the answer, such as
+/// a symbol name with no definition, as `(vocab id, token)`: separator-
+/// stripped matches, then typo matches, then near misses, best first. Never
+/// the word itself.
+pub fn spellings(snapshot: &ReadSnapshot<'_>, word: &str) -> Result<Vec<(i64, String)>> {
+    let compact = tokens::compact(word);
+    let mut out = Resolution::default();
+    let mut select = snapshot
+        .connection()
+        .prepare_cached("SELECT id, tok FROM vocab WHERE compact=?1 ORDER BY id LIMIT ?2")?;
+    let rows = select.query_map(params![compact, COMPACT_LIMIT], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (id, text) = row?;
+        out.matches.push(found(id, &text, MatchKind::Compact));
+    }
+    if typo_eligible(word) {
+        typo_candidates(snapshot, word, &compact, &mut out)?;
+    }
+    out.matches.extend(out.near);
+    Ok(out
+        .matches
+        .into_iter()
+        .filter(|found| found.text != word)
+        .map(|found| (found.id, found.text))
+        .collect())
+}
+
 fn found(id: i64, text: &str, kind: MatchKind) -> TokenMatch {
     TokenMatch {
         id,

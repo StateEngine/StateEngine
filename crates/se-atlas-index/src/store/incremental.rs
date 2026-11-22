@@ -4,15 +4,18 @@
 //! here, only by compaction. Symbols are diffed by stable key, so an edit
 //! rewrites only the rows it changed.
 use super::{
-    Store, varint,
+    Store,
+    history::{self, ChangeKind, FileChange, SymbolChange},
+    varint,
     write::{self, FileRecord},
 };
 use crate::{
     IndexError, Result,
     custody::{GuardedRead, IndexSourceRoot, SourceFile},
     extract::{
-        self,
+        self, SymbolKind,
         covers::{self, CoverFile, CoverGraph},
+        display_name, file_key,
         imports::Resolver,
         parents_first,
     },
@@ -38,6 +41,9 @@ pub struct UpdateReport {
     pub delta_rows: usize,
     pub flags: u32,
     pub symbols: SymbolDiff,
+    /// The generation this update recorded its changes under; `None` when
+    /// nothing changed.
+    pub generation: Option<i64>,
 }
 
 /// What `index_path` did with one path. `removed` is true when the path had
@@ -62,6 +68,8 @@ pub enum PathOutcome {
 
 struct Existing {
     id: i64,
+    name: String,
+    kind: Option<SymbolKind>,
     parent: Option<i64>,
     line: i64,
     end_line: i64,
@@ -114,20 +122,31 @@ impl Store {
         let mut record = FileRecord::new(path, source, extracted);
         let tx = self.connection_mut().transaction()?;
         record.targets = resolve_targets(&tx, resolver, &record)?;
-        let created = file_id(&tx, path)?.is_none();
+        let previous = file_hash(&tx, path)?;
         let file = write::upsert_file(&tx, None, &record)?;
         let (new_tokens, delta_rows) = diff_tokens(&tx, file, &record)?;
-        let symbols = diff_symbols(&tx, file, &record)?;
+        let (symbols, changed) = diff_symbols(&tx, file, &record)?;
         sync_imports(&tx, file, &record)?;
         refresh_covers(&tx, file)?;
+        let generation = history::record(
+            &tx,
+            &FileChange {
+                path,
+                key: file_key(path),
+                previous,
+                current: Some(record.extracted.hash),
+                symbols: changed,
+            },
+        )?;
         tx.commit()?;
         Ok(UpdateReport {
             file,
-            created,
+            created: previous.is_none(),
             new_tokens,
             delta_rows,
             flags: record.extracted.flags,
             symbols,
+            generation,
         })
     }
 
@@ -137,6 +156,21 @@ impl Store {
         let Some(file) = file_id(&tx, path)? else {
             return Ok(false);
         };
+        let previous = file_hash(&tx, path)?;
+        let removed = in_line_order(existing_symbols(&tx, file)?)
+            .into_iter()
+            .filter_map(|(key, old)| removed_change(&key, old))
+            .collect();
+        history::record(
+            &tx,
+            &FileChange {
+                path,
+                key: file_key(path),
+                previous,
+                current: None,
+                symbols: removed,
+            },
+        )?;
         let mut tombstone = tx.prepare_cached(
             "INSERT OR REPLACE INTO post_delta(tok, file, tf) VALUES (?1, ?2, 0)",
         )?;
@@ -164,6 +198,18 @@ fn file_id(tx: &Transaction<'_>, path: &str) -> Result<Option<i64>> {
         .prepare_cached("SELECT id FROM files WHERE path=?1")?
         .query_row([path], |row| row.get(0))
         .optional()?)
+}
+
+fn file_hash(tx: &Transaction<'_>, path: &str) -> Result<Option<[u8; 32]>> {
+    let hash: Option<Vec<u8>> = tx
+        .prepare_cached("SELECT hash FROM files WHERE path=?1")?
+        .query_row([path], |row| row.get(0))
+        .optional()?;
+    hash.map(|hash| {
+        <[u8; 32]>::try_from(hash.as_slice())
+            .map_err(|_| IndexError::Corrupt("files.hash is not 32 bytes"))
+    })
+    .transpose()
 }
 
 fn resolve_targets(
@@ -240,7 +286,8 @@ fn diff_tokens(tx: &Transaction<'_>, file: i64, record: &FileRecord) -> Result<(
 
 fn existing_symbols(tx: &Transaction<'_>, file: i64) -> Result<HashMap<Vec<u8>, Existing>> {
     let mut select = tx.prepare_cached(
-        "SELECT key, id, parent, line, end_line, sig_hash, body_hash FROM sym WHERE file=?1",
+        "SELECT s.key, s.id, s.parent, s.line, s.end_line, s.sig_hash, s.body_hash, v.tok, s.kind,
+           s.sig FROM sym s JOIN vocab v ON v.id = s.name WHERE s.file=?1",
     )?;
     let rows = select.query_map([file], |row| {
         Ok((
@@ -252,15 +299,54 @@ fn existing_symbols(tx: &Transaction<'_>, file: i64) -> Result<HashMap<Vec<u8>, 
                 end_line: row.get(4)?,
                 sig_hash: row.get(5)?,
                 body_hash: row.get(6)?,
+                name: display_name(
+                    row.get::<_, Option<String>>(9)?.as_deref(),
+                    &row.get::<_, String>(7)?,
+                ),
+                kind: row
+                    .get::<_, Option<i64>>(8)?
+                    .and_then(SymbolKind::from_code),
             },
         ))
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-fn diff_symbols(tx: &Transaction<'_>, file: i64, record: &FileRecord) -> Result<SymbolDiff> {
+/// Symbols by line, then id, so removals are recorded in a stable order.
+fn in_line_order(symbols: HashMap<Vec<u8>, Existing>) -> Vec<(Vec<u8>, Existing)> {
+    let mut symbols: Vec<_> = symbols.into_iter().collect();
+    symbols.sort_by_key(|(_, old)| (old.line, old.id));
+    symbols
+}
+
+/// The history row of a symbol that left the file.
+fn removed_change(key: &[u8], old: Existing) -> Option<SymbolChange> {
+    Some(SymbolChange {
+        key: <[u8; 32]>::try_from(key).ok()?,
+        kind: ChangeKind::Removed,
+        name: old.name,
+        symbol_kind: old.kind,
+        line: u32::try_from(old.line).unwrap_or(0),
+        end_line: u32::try_from(old.end_line).unwrap_or(0),
+    })
+}
+
+fn diff_symbols(
+    tx: &Transaction<'_>,
+    file: i64,
+    record: &FileRecord,
+) -> Result<(SymbolDiff, Vec<SymbolChange>)> {
     let mut existing = existing_symbols(tx, file)?;
     let mut diff = SymbolDiff::default();
+    let mut changed = Vec::new();
+    let change = |symbol: &extract::Symbol, kind| SymbolChange {
+        key: symbol.key,
+        kind,
+        name: symbol.name.clone(),
+        symbol_kind: Some(symbol.kind),
+        line: symbol.line,
+        end_line: symbol.end_line,
+    };
     let symbols = &record.extracted.symbols;
     let mut ids: Vec<Option<i64>> = vec![None; symbols.len()];
     let accuracy = record.extracted.accuracy as i64;
@@ -277,12 +363,15 @@ fn diff_symbols(tx: &Transaction<'_>, file: i64, record: &FileRecord) -> Result<
             write::insert_symbol(&mut insert, symbol, file, parent, name, accuracy)?;
             ids[index] = Some(tx.last_insert_rowid());
             diff.added.push(symbol.key);
+            changed.push(change(symbol, ChangeKind::Added));
             continue;
         };
         if old.sig_hash != symbol.sig_hash {
             diff.signature_changed.push(symbol.key);
+            changed.push(change(symbol, ChangeKind::SignatureChanged));
         } else if old.body_hash != symbol.body_hash {
             diff.body_changed.push(symbol.key);
+            changed.push(change(symbol, ChangeKind::BodyChanged));
         }
         let moved = old.parent != parent
             || old.line != i64::from(symbol.line)
@@ -303,13 +392,14 @@ fn diff_symbols(tx: &Transaction<'_>, file: i64, record: &FileRecord) -> Result<
         ids[index] = Some(old.id);
     }
     let mut delete = tx.prepare_cached("DELETE FROM sym WHERE id=?1")?;
-    for (key, old) in existing {
+    for (key, old) in in_line_order(existing) {
         delete.execute([old.id])?;
-        if let Ok(key) = <[u8; 32]>::try_from(key.as_slice()) {
-            diff.removed.push(key);
+        if let Some(removed) = removed_change(&key, old) {
+            diff.removed.push(removed.key);
+            changed.push(removed);
         }
     }
-    Ok(diff)
+    Ok((diff, changed))
 }
 
 /// Write only the import rows that changed.

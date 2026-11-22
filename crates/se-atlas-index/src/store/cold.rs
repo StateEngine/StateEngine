@@ -10,7 +10,7 @@
 //! written once, sorted, when the build ends; until then readers find
 //! committed files through `file_tok` (see [`super::read`]).
 use super::{
-    Store, varint,
+    Store, history, varint,
     write::{self, FileRecord},
 };
 use crate::{
@@ -327,9 +327,10 @@ impl<'c> ColdWriter<'c> {
             [],
         )?;
         tx.execute(
-            "UPDATE meta SET discovery_complete=?1, generation=generation+1 WHERE singleton=1",
+            "UPDATE meta SET discovery_complete=?1 WHERE singleton=1",
             [complete],
         )?;
+        history::record_rebuild(&tx, self.covers.len())?;
         write::set_state(&tx, &serde_json::json!({}))?;
         tx.commit()?;
         self.report.tokens = self.vocab.ids.len();
