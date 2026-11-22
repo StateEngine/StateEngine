@@ -1,0 +1,19 @@
+[package]
+name = "se-atlas-index"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+se-proc = { path = "../se-proc" }
+se-trusted-path = { path = "../se-trusted-path" }
+serde_json.workspace = true
+blake3 = { version = "=1.8.7", default-features = false, features = ["std"] }
+# Ignore-file rule matching only; every source open goes through se-proc custody.
+ignore = "=0.4.33"
+rusqlite = { version = "0.41", features = ["bundled"] }
+
+[lints]
+workspace = true
