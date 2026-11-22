@@ -130,6 +130,15 @@ fn agents_section(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> 
                     question.to, question.message_id, question.asked_at
                 )?;
             }
+            if let Some(review) = agent.state.as_ref().and_then(|s| s.review.as_ref()) {
+                writeln!(
+                    out,
+                    "    Waiting on review by {} since {}: {}",
+                    review.to.join(", "),
+                    review.handed_at,
+                    review.summary
+                )?;
+            }
             if let Some(se_types::Read::Present { value: note }) = &agent.working_note
                 && !note.text.is_empty()
             {
@@ -212,6 +221,7 @@ fn crew_state(state: &se_core::ops::AgentStateView) -> String {
         "attention" => "needs attention",
         "running" => "running (turns not observed)",
         "turn-unreadable" => "running (turn state unreadable)",
+        "review" => "waiting on review",
         other => other,
     };
     match state.elapsed_seconds {
