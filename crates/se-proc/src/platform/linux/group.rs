@@ -2,19 +2,13 @@
 use super::*;
 use std::fs;
 
-// A descendant may legitimately exec in the retained group. Its birth and
-// membership supply group continuity; the published root image stays strict.
-fn live_member(
-    expected: &ProcessIdentity,
-    root: &ProcessIdentity,
-) -> ProcResult<Option<LiveObservation>> {
+// Any member, the root included, may legitimately exec or have its executable
+// replaced in place. Birth and membership supply group continuity.
+fn live_member(expected: &ProcessIdentity) -> ProcResult<Option<LiveObservation>> {
     match read_process(expected.machine.clone(), expected.pid)? {
         ProcessRead::Present(live)
             if live.identity.boot == expected.boot && live.identity.start == expected.start =>
         {
-            if expected.pid == root.pid && live.identity.image != root.image {
-                return Err(changed(root, Some(&live.identity)));
-            }
             Ok(Some(live))
         }
         _ => Ok(None),
@@ -119,7 +113,7 @@ impl Scope {
         let mut anchored = false;
         let mut retained = Vec::with_capacity(self.tracked.len());
         for expected in &self.tracked {
-            if let Some(live) = live_member(expected, &root)? {
+            if let Some(live) = live_member(expected)? {
                 anchored |= in_group(&live, group)?;
                 retained.push(expected.clone());
             }
@@ -163,9 +157,6 @@ impl Scope {
                 {
                     continue;
                 }
-                if member.identity.pid == root.pid && member.identity.image != root.image {
-                    return Err(changed(&root, Some(&member.identity)));
-                }
                 if live.len() == self.max_members {
                     return Err(capacity("tracked group members", self.max_members as u64));
                 }
@@ -190,7 +181,7 @@ impl Scope {
             }
         }
         for tracked in &self.tracked {
-            if let Some(member) = live_member(tracked, &root)? {
+            if let Some(member) = live_member(tracked)? {
                 let Some(current_group) = live_group(&member)? else {
                     continue;
                 };
@@ -293,12 +284,11 @@ impl Scope {
         if before.remaining.population == Population::Empty {
             return Ok(StopDispatch::NotNeeded);
         }
-        let root = self
-            .root_identity()
+        self.root_identity()
             .ok_or_else(|| input("scope", "missing root"))?;
         let mut tied = false;
         for member in &self.tracked {
-            if let Some(live) = live_member(member, &root)?
+            if let Some(live) = live_member(member)?
                 && in_group(&live, group)?
             {
                 tied = true;

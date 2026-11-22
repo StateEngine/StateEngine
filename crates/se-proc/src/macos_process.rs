@@ -292,7 +292,7 @@ fn read_process_once(
 
 pub(crate) fn exact(expected: &ProcessIdentity, deadline: Instant) -> ProcResult<()> {
     match read_process_once(expected.machine.clone(), expected.pid, deadline)? {
-        ProcessRead::Present(live) if live.identity == *expected => Ok(()),
+        ProcessRead::Present(live) if live.identity.same_birth(expected) => Ok(()),
         ProcessRead::Present(live) => Err(changed(expected, Some(&live.identity))),
         ProcessRead::Absent { .. } | ProcessRead::ExitedRecord { .. } => {
             Err(changed(expected, None))
