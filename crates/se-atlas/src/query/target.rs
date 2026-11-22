@@ -22,26 +22,23 @@ pub(super) fn concrete(sql: &SqlView<'_>, given: &AtlasTarget) -> AtlasResult<Op
 /// An indexed path, then `path:line` for the symbol spanning that line (or the
 /// file), then one exact symbol name.
 fn auto(sql: &SqlView<'_>, text: &str) -> AtlasResult<Option<Target>> {
-    // Windows shells complete paths with backslashes; indexed paths use `/`.
     let slashed = text.replace('\\', "/");
-    let mut found = match RelativePath::new(slashed.as_str()) {
-        Ok(path) => resolve_inner(sql, &AtlasTarget::File(path))?,
-        Err(_) => None,
-    };
+    let mut found = None;
+    if let Ok(path) = RelativePath::new(slashed.as_str()) {
+        found = resolve_inner(sql, &AtlasTarget::File(path))?;
+    }
     if found.is_none()
         && let Some((path, line)) = slashed.rsplit_once(':')
         && let (Ok(path), Ok(line @ 1..)) = (RelativePath::new(path), line.parse::<u32>())
+        && let Some(file) = file_by_path(sql, &path)?
     {
-        // The widest column picks the smallest symbol open across the whole line.
-        let position = Position {
-            line,
-            byte_column: u32::MAX,
-        };
-        let at = AtlasTarget::Symbol(SymbolSelector::At {
-            path: path.clone(),
-            position,
+        let q = "SELECT id FROM symbols WHERE file=?1 AND start_line<=?2 AND end_line>=?2 ORDER BY (end_byte-start_byte),key LIMIT 1";
+        let ids = id_column(sql, q, params![file.rowid, line], 1)?;
+        let sym = ids.first().map(|&id| symbol_by_id(sql, id));
+        found = Some(Target {
+            file,
+            symbol: sym.transpose()?.map(|(s, _)| s),
         });
-        found = resolve_inner(sql, &at)?.or(resolve_inner(sql, &AtlasTarget::File(path))?);
     }
     if found.is_none() {
         found = resolve_name(sql, &QueryText::new(text)?, None, None, None, None)?;
