@@ -9,12 +9,7 @@ impl<B: Budget> RemoteBroker<B> {
         source: Option<&VerifiedSourceSession>,
         deadline: &B,
     ) -> Result<AnyOutput> {
-        let context = || {
-            source.map_or_else(
-                RemoteCallContext::human_device,
-                VerifiedSourceSession::context,
-            )
-        };
+        let context = || call_context(source);
         let binding = self
             .resolve(&input.host, context(), admission, terminal, deadline)
             .await?;
@@ -55,18 +50,14 @@ impl<B: Budget> RemoteBroker<B> {
                 }
                 _ => return Err(refused("remote launch changed the original request key")),
             };
-            let actual = &result.attribution;
             if result.schema != RemoteLaunchResult::SCHEMA
                 || target != &input.request.target
-                || actual.host != binding.config.device.host
-                || actual.grant != binding.config.device.grant
-                || actual.device != binding.config.device.device
-                || if replayed {
-                    actual.source.as_ref().map(RemoteSourceSession::address)
-                        != source.map(|s| s.source().address())
-                } else {
-                    actual.source.as_ref() != source.map(VerifiedSourceSession::source)
-                }
+                || !attributed(
+                    &result.attribution,
+                    &binding.config.device,
+                    source,
+                    replayed,
+                )
             {
                 return Err(refused(
                     "remote launch returned a mismatched destination or authenticated source",
@@ -74,16 +65,7 @@ impl<B: Budget> RemoteBroker<B> {
             }
             check_size(&result, REMOTE_FRAME_BYTES as u32)
         })();
-        if let Err(cause) = checked {
-            return Err(SeError::new(se_types::Detail::CommitOutcomeUnknown(
-                se_types::details::CommitOutcomeUnknown {
-                    operation: "remote.launch".into(),
-                    key: Some(key.to_string()),
-                    natural_events: vec![],
-                },
-            ))
-            .with_cause(cause));
-        }
+        checked.map_err(|cause| outcome_unknown("remote.launch", &key, cause))?;
         Ok(result.body.into())
     }
 }
