@@ -265,9 +265,7 @@ fn absent_project_projects_exist<R: ReadStore>(
     admission: &Admission,
     input: &ProjectRemove,
 ) -> Result<bool> {
-    let mut snapshot = reader
-        .snapshot(se_core::admission::read_scope(admission))
-        .map_err(|e| store_error(&e))?;
+    let mut snapshot = super::select::open_snapshot(reader, admission)?;
     let plan = project_remove::plan(
         input.clone(),
         &mut se_core::commit::Cx {
@@ -275,19 +273,7 @@ fn absent_project_projects_exist<R: ReadStore>(
             admission,
         },
     );
-    let closed = snapshot.close().map_err(|e| store_error(&e));
-    let plan = match plan {
-        Ok(plan) => {
-            closed?;
-            plan
-        }
-        Err(error) => {
-            return Err(match closed {
-                Ok(()) => error,
-                Err(close) => error.with_cause(close),
-            });
-        }
-    };
+    let plan = super::execute::finish_read(plan, snapshot.close().map_err(|e| store_error(&e)))?;
     Ok(!plan.projects.is_empty())
 }
 fn absent_project_runtime_action(state: &str) -> Result<&'static str> {

@@ -1,6 +1,6 @@
 //! Real store reads retain a broken project row alongside usable projects.
 use super::*;
-use se_store::{DirectStore, Expected, Root};
+use se_store::{DirectStore, EventBody, Expected, Root};
 use se_types::{NativePath, ProjectId};
 #[path = "../../../../../se-store/tests/support/store_fixture.rs"]
 mod fixture;

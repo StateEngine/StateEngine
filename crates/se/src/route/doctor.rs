@@ -7,7 +7,7 @@ use se_core::{
     scope,
     store_error::store_error,
 };
-use se_store::{EventBody, ReadStore, Snapshot, SqliteFactory, StoreFactory, StoreOptions};
+use se_store::{Snapshot, SqliteFactory, StoreFactory, StoreOptions};
 use se_types::Result;
 use sha2::{Digest, Sha256};
 use std::{fs::TryLockError, io::Read, time::Duration};
@@ -251,9 +251,7 @@ fn project_root_checks(
         "doctor store",
         "Restore access to the initialized store in this data home, then rerun se doctor.",
     )?;
-    let mut snapshot = reader
-        .snapshot(se_core::admission::read_scope(admission))
-        .map_err(|e| store_error(&e))?;
+    let mut snapshot = super::select::open_snapshot(&reader, admission)?;
     let mut checks = Vec::new();
     let mut after = None;
     for _ in 0..64 {
@@ -296,20 +294,15 @@ fn project_root_check_one(
     record: &se_store::ProjectionRecord,
     at: &str,
 ) -> Result<DiagnosisCheck> {
-    let (name, roots) = match &record.current.body {
-        EventBody::ProjectRegistered { name, roots, .. } => (name, roots.clone()),
-        EventBody::ProjectUpdated { name, roots, .. } => (name, roots.clone()),
-        EventBody::ProjectMoved { name, to, .. } => (name, vec![to.clone()]),
-        _ => {
-            return Err(scope::unreadable(
-                "doctor project metadata",
-                "project projection carries no root body",
-            ));
-        }
+    let Some((_, name, roots)) = super::select::active_project(&record.current.body) else {
+        return Err(scope::unreadable(
+            "doctor project metadata",
+            "project projection carries no root body",
+        ));
     };
     let mut present = 0usize;
     let mut missing = Vec::new();
-    for root in &roots {
+    for root in roots {
         let path = root
             .path
             .to_local()
@@ -361,7 +354,7 @@ fn project_root_check_one(
                 "--home".into(),
                 cx.home.display().to_string(),
                 "--project".into(),
-                name.clone(),
+                name.to_owned(),
                 "project".into(),
                 "move".into(),
                 "<new-folder>".into(),

@@ -21,9 +21,7 @@ fn saved_agent(
     admission: &Admission,
     agent_name: &str,
 ) -> Result<Option<AgentId>> {
-    let mut snap = store
-        .snapshot(read_scope(admission))
-        .map_err(|e| store_error(&e))?;
+    let mut snap = super::super::select::open_snapshot(store, admission)?;
     let mut after = None;
     let mut found = None;
     let mut complete = false;
@@ -126,9 +124,7 @@ fn saved_agent_row(
     admission: &Admission,
     agent: &AgentId,
 ) -> Result<AgentRow> {
-    let mut snap = store
-        .snapshot(read_scope(admission))
-        .map_err(|e| store_error(&e))?;
+    let mut snap = super::super::select::open_snapshot(store, admission)?;
     let output = agent_status::show(
         AgentShow {
             target_agent_id: Some(agent.clone()),

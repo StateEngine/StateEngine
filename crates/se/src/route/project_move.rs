@@ -6,7 +6,6 @@
 use super::{admit::Caller, execute, files::DirectLease, files::Files, git_identity};
 use crate::bootstrap::Bootstrap;
 use se_core::{
-    admission::read_scope,
     commit::Cx,
     dispatch::Kernel,
     ops::{AnyOutput, MoveOutput, ProjectMove, inputs::Validate, project},
@@ -14,8 +13,7 @@ use se_core::{
     store_error::{store_error, write_error},
 };
 use se_store::{
-    DirectStore, EventBody, ReadStore, Snapshot, SqliteFactory, SqliteReader, StoreFactory,
-    StoreOptions,
+    DirectStore, ReadStore, Snapshot, SqliteFactory, SqliteReader, StoreFactory, StoreOptions,
 };
 use se_types::{EventId, NativePath, Read, Result, SeError, details};
 use std::{
@@ -35,9 +33,7 @@ pub(super) fn execute(
 ) -> Result<AnyOutput> {
     input.validate()?;
     let project_id = scope::project(&caller.admission)?;
-    let mut preflight = reader
-        .snapshot(read_scope(&caller.admission))
-        .map_err(|e| store_error(&e))?;
+    let mut preflight = super::select::open_snapshot(reader, &caller.admission)?;
     let record = scope::require_present(
         preflight
             .project(project_id.clone())
@@ -45,24 +41,8 @@ pub(super) fn execute(
         "moved project",
         "Select the project by name or exact ID, then retry se project move with the new folder.",
     )?;
-    let from_roots = match &record.current.body {
-        EventBody::ProjectRegistered {
-            project,
-            name,
-            roots,
-            ..
-        }
-        | EventBody::ProjectUpdated {
-            project,
-            name,
-            roots,
-            ..
-        } if *project == project_id => roots.clone(),
-        EventBody::ProjectMoved {
-            project, name, to, ..
-        } if *project == project_id => {
-            vec![to.clone()]
-        }
+    let from_roots = match super::select::active_project(&record.current.body) {
+        Some((project, _, roots)) if *project == project_id => roots.to_vec(),
         _ => {
             return Err(scope::unreadable(
                 "moved project",
@@ -104,9 +84,7 @@ pub(super) fn execute(
             };
             let to_path = NativePath::from_local(target)
                 .map_err(|e| scope::unreadable("move target identity", &e.to_string()))?;
-            let mut readback = reader
-                .snapshot(read_scope(&caller.admission))
-                .map_err(|e| store_error(&e))?;
+            let mut readback = super::select::open_snapshot(reader, &caller.admission)?;
             let output: MoveOutput = project::move_replay(
                 &project_id,
                 &input.idempotency_key,
@@ -223,9 +201,7 @@ pub(super) fn execute(
         "Restore access to the initialized store in this same data home, then retry the move with the original --key.",
     )?;
     let kernel = Kernel::new(execute::facts()?)?.with_configuration(cx.config.value.clone())?;
-    let mut snapshot = store
-        .snapshot(se_core::admission::read_scope(&caller.admission))
-        .map_err(|e| store_error(&e))?;
+    let mut snapshot = super::select::open_snapshot(&store, &caller.admission)?;
     let (batch, then) = project::move_root(
         &kernel,
         &input,
@@ -253,9 +229,7 @@ pub(super) fn execute(
     let receipt = store
         .append(batch, &lease)
         .map_err(|error| write_error(&error, "project.move", key.as_ref(), &natural_events))?;
-    let mut readback = store
-        .snapshot(se_core::admission::read_scope(&caller.admission))
-        .map_err(|e| store_error(&e))?;
+    let mut readback = super::select::open_snapshot(&store, &caller.admission)?;
     let output: MoveOutput = project::move_committed(
         then,
         receipt,
