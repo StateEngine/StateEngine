@@ -3,7 +3,7 @@
 //! alone. Discovery and every read go through the same custody and policy
 //! as indexing. The scan stops at the soft deadline, a byte cap or a hit
 //! cap, and says so; it never turns a stop into an error.
-use super::{
+use crate::{
     Budget, HitField, HitSource, KindFilter, MatchKind, Scope, SearchOutcome, SearchRequest,
     confirm,
     confirm::{Covers, FileRead, LineText, Pattern},
@@ -11,7 +11,7 @@ use super::{
     query::Parsed,
     rank::{self, Candidate, Candidates, TermHit},
 };
-use crate::{Result, custody::IndexSourceRoot, extract::LanguageTag, walk};
+use se_atlas_index::{Result, custody::IndexSourceRoot, extract::LanguageTag, walk};
 
 /// Bytes read before the scan stops.
 const BYTE_CAP: u64 = 64 << 20;
@@ -156,7 +156,14 @@ pub(crate) fn scan(
         return Ok(outcome);
     }
     let matching = Matching::new(parsed)?;
-    let discovery = walk::discover(root, &request.walk)?;
+    let mut options = request.walk.clone();
+    // The walk stops at the soft deadline too, not only the reads after it.
+    options.deadline = [options.deadline, budget.until()]
+        .into_iter()
+        .flatten()
+        .min();
+    let discovery = walk::discover(root, &options)?;
+    outcome.deadline_reached = budget.expired();
     let scope = Scope::new(request);
     outcome.scan_incomplete = !discovery.complete;
     let read_text = request.kind != KindFilter::Path;
@@ -169,7 +176,7 @@ pub(crate) fn scan(
             continue;
         }
         if budget.expired() || bytes >= BYTE_CAP || candidates.len() >= HIT_CAP {
-            outcome.deadline_reached = budget.expired();
+            outcome.deadline_reached |= budget.expired();
             stopped = true;
             break;
         }

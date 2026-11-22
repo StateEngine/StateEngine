@@ -6,14 +6,14 @@
 //! checked pattern by pattern with [`LineText::contains`], which requires the
 //! match to start and end where the tokenizer would split an identifier, so
 //! `id` matches `user_id` and `userId` but not `valid`.
-use super::{SearchOutcome, rank::TermHit};
-use crate::{
+use crate::{SearchOutcome, rank::TermHit};
+use grep_regex::{RegexMatcher, RegexMatcherBuilder};
+use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, sinks::Lossy};
+use se_atlas_index::{
     IndexError, Result,
     custody::{FULL_READ_LIMIT, GuardedOpen, IndexSourceRoot},
     extract::{char_prefix, tokens::boundary},
 };
-use grep_regex::{RegexMatcher, RegexMatcherBuilder};
-use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, sinks::Lossy};
 use std::io::Read;
 
 /// Confirmed lines kept per file.
@@ -235,7 +235,7 @@ pub(crate) fn hit_text(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::MatchKind;
+    use crate::MatchKind;
 
     fn pattern(text: &str) -> Pattern {
         let hit = TermHit {

@@ -1,0 +1,19 @@
+[package]
+name = "se-atlas-search"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+se-atlas-index = { path = "../se-atlas-index" }
+# Line confirmation inside index candidates and the bounded live scan.
+grep-regex = "=0.1.14"
+grep-searcher = "=0.1.17"
+# Literal anchors of a regex query, already built for grep-regex.
+regex-syntax = "=0.8.11"
+rusqlite = { version = "0.41", features = ["bundled"] }
+
+[lints]
+workspace = true

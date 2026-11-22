@@ -367,7 +367,7 @@ fn generated(path: &str, text: &str) -> bool {
 }
 
 /// The longest prefix of at most `limit` bytes that ends on a char boundary.
-pub(crate) fn char_prefix(text: &str, limit: usize) -> &str {
+pub fn char_prefix(text: &str, limit: usize) -> &str {
     if text.len() <= limit {
         return text;
     }

@@ -6,8 +6,8 @@
 //! score, then path and line. The score adds per-term evidence and live idf,
 //! subtracts a field penalty, and adds bonuses for a full separator-stripped
 //! match and for matching every term.
-use super::{Hit, HitField, HitSource, MatchKind, PageEnd};
-use crate::extract::SymbolKind;
+use crate::{Hit, HitField, HitSource, MatchKind, PageEnd};
+use se_atlas_index::extract::SymbolKind;
 use std::collections::HashMap;
 
 const FULL_COMPACT_BONUS: i64 = 500;

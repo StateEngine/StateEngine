@@ -6,9 +6,9 @@
 //! quoted is a literal: the index narrows the files by the literal's
 //! identifier parts, then each candidate line must contain it. A literal is
 //! never split into OR'd fragments.
-use super::QueryMode;
-use crate::{IndexError, Result, extract::tokens};
-use regex_syntax::hir::{Hir, HirKind};
+use crate::QueryMode;
+use regex_syntax::hir::{Class, Hir, HirKind};
+use se_atlas_index::{IndexError, Result, extract::tokens};
 
 /// One plain word.
 #[derive(Debug)]
@@ -160,7 +160,10 @@ fn push_unique(list: &mut Vec<String>, item: String) {
 ///
 /// A piece is cut at the same places the tokenizer splits identifiers, so it
 /// lies inside one indexed part. The last piece is dropped when it ends in two
-/// capitals, because a following lowercase letter would move that split.
+/// capitals, because a following lowercase letter would move that split. A
+/// case-insensitive letter (`(?i)r`) counts as its lowercase spelling, which
+/// is how the index stores it; text written in any case may split such a
+/// piece, which the regex search covers by also looking at whole tokens.
 pub(crate) fn regex_pieces(pattern: &str) -> Result<Vec<String>> {
     let hir = regex_syntax::ParserBuilder::new()
         .build()
@@ -184,6 +187,10 @@ pub(crate) fn regex_pieces(pattern: &str) -> Result<Vec<String>> {
 fn required_literals(hir: &Hir, run: &mut Vec<u8>, out: &mut Vec<String>) {
     match hir.kind() {
         HirKind::Literal(literal) => run.extend_from_slice(&literal.0),
+        HirKind::Class(class) => match folded_letter(class) {
+            Some(letter) => run.push(letter),
+            None => flush(run, out),
+        },
         HirKind::Concat(children) => {
             for child in children {
                 required_literals(child, run, out);
@@ -200,6 +207,32 @@ fn required_literals(hir: &Hir, run: &mut Vec<u8>, out: &mut Vec<String>) {
         }
         _ => flush(run, out),
     }
+}
+
+/// The one lowercase ASCII letter every member of `class` lowercases to, as
+/// `(?i)` makes of a letter (`[Kk]` plus the Kelvin sign gives `k`).
+fn folded_letter(class: &Class) -> Option<u8> {
+    const MAX_MEMBERS: usize = 4;
+    let Class::Unicode(class) = class else {
+        return None;
+    };
+    let mut letter = None;
+    let mut members = 0usize;
+    for range in class.ranges() {
+        for member in range.start()..=range.end() {
+            members += 1;
+            let mut lower = member.to_lowercase();
+            let (Some(folded), None) = (lower.next(), lower.next()) else {
+                return None;
+            };
+            let same = letter.is_none_or(|known| known == folded);
+            if members > MAX_MEMBERS || !folded.is_ascii_lowercase() || !same {
+                return None;
+            }
+            letter = Some(folded);
+        }
+    }
+    letter.and_then(|folded| u8::try_from(folded).ok())
 }
 
 fn flush(run: &mut Vec<u8>, out: &mut Vec<String>) {
@@ -250,7 +283,9 @@ mod tests {
         assert_eq!(pieces(r"fn\s+scan_worktree\("), ["scan", "worktree"]);
         assert_eq!(pieces(r"QueryRead(er)?::new"), ["query", "read", "new"]);
         assert_eq!(pieces(r"foo|bar"), Vec::<String>::new());
-        assert_eq!(pieces(r"(?i)reader"), Vec::<String>::new());
+        assert_eq!(pieces(r"(?i)reader"), ["reader"]);
+        assert_eq!(pieces(r"(?i)QueryReader::new"), ["queryreader", "new"]);
+        assert_eq!(pieces(r"(?i)[a-z]ead"), ["ead"]);
         assert_eq!(pieces(r"\w+->\w+"), Vec::<String>::new());
         // A trailing acronym may split differently in the text.
         assert_eq!(pieces(r"loadHTTPS"), ["load"]);

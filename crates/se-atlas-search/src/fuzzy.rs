@@ -11,9 +11,13 @@
 //! distance is within the word's band (70 - 5 per edit), or when it extends
 //! the word as a prefix or subsequence (60). Near misses outside those bounds
 //! are kept apart, only for labelled guesses.
-use super::MatchKind;
-use crate::{Result, extract::tokens, store::ReadSnapshot};
+//!
+//! Only live tokens count: a removed or renamed word leaves its vocab row
+//! behind with no postings, and that row must neither match nor stop the
+//! typo fallback from finding the new spelling.
+use crate::MatchKind;
 use rusqlite::{OptionalExtension, params};
+use se_atlas_index::{Result, extract::tokens, store::ReadSnapshot};
 use std::collections::HashMap;
 
 /// Candidates read from the trigram index per word.
@@ -61,17 +65,40 @@ pub(crate) fn max_distance(len: usize) -> usize {
     }
 }
 
+/// Whether vocab token `id` still stands for something in the index: a live
+/// posting, or a symbol named by it.
+pub(crate) fn is_live(snapshot: &ReadSnapshot<'_>, id: i64) -> Result<bool> {
+    if snapshot.effective_df(id)? > 0 {
+        return Ok(true);
+    }
+    Ok(snapshot
+        .connection()
+        .prepare_cached("SELECT EXISTS(SELECT 1 FROM sym WHERE name=?1)")?
+        .query_row([id], |row| row.get(0))?)
+}
+
+/// The vocab id of `token`, when that token is live.
+pub(crate) fn live_token_id(snapshot: &ReadSnapshot<'_>, token: &str) -> Result<Option<i64>> {
+    match snapshot.token_id(token)? {
+        Some(id) if is_live(snapshot, id)? => Ok(Some(id)),
+        _ => Ok(None),
+    }
+}
+
 pub(crate) fn resolve(snapshot: &ReadSnapshot<'_>, word: &str) -> Result<Resolution> {
     let conn = snapshot.connection();
     let mut out = Resolution::default();
     if word.len() <= tokens::MAX_SHORT_TOKEN {
         let mut select = conn.prepare_cached("SELECT vocab_id FROM short WHERE tok=?1")?;
         for id in select.query_map([word], |row| row.get::<_, i64>(0))? {
-            out.matches.push(found(id?, word, MatchKind::Exact));
+            let id = id?;
+            if is_live(snapshot, id)? {
+                out.matches.push(found(id, word, MatchKind::Exact));
+            }
         }
         return Ok(out);
     }
-    if let Some(id) = snapshot.token_id(word)? {
+    if let Some(id) = live_token_id(snapshot, word)? {
         out.matches.push(found(id, word, MatchKind::Exact));
     }
     let compact = tokens::compact(word);
@@ -82,7 +109,7 @@ pub(crate) fn resolve(snapshot: &ReadSnapshot<'_>, word: &str) -> Result<Resolut
     })?;
     for row in rows {
         let (id, text) = row?;
-        if !out.matches.iter().any(|known| known.id == id) {
+        if !out.matches.iter().any(|known| known.id == id) && is_live(snapshot, id)? {
             out.matches.push(found(id, &text, MatchKind::Compact));
         }
     }
@@ -133,12 +160,12 @@ fn typo_candidates(
         let dice = dice(&query_grams, &padded_trigrams(&token_compact));
         let distance = osa_distance(compact, &token_compact, band + 1);
         match judge(compact, &token_compact, dice, distance, band) {
-            Some(kind) => out.matches.push(found(id, &text, kind)),
-            None if dice >= GUESS_DICE && distance.is_some() => {
+            Some(kind) if is_live(snapshot, id)? => out.matches.push(found(id, &text, kind)),
+            None if dice >= GUESS_DICE && distance.is_some() && is_live(snapshot, id)? => {
                 let distance = distance.unwrap_or(band + 1);
                 near.push((distance, found(id, &text, fuzzy(distance))));
             }
-            None => {}
+            _ => {}
         }
     }
     let mut prefix = conn.prepare_cached(
@@ -150,7 +177,7 @@ fn typo_candidates(
     })?;
     for row in rows {
         let (id, text) = row?;
-        if !out.matches.iter().any(|known| known.id == id) {
+        if !out.matches.iter().any(|known| known.id == id) && is_live(snapshot, id)? {
             out.matches.push(found(id, &text, MatchKind::Partial));
         }
     }

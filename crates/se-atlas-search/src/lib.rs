@@ -1,4 +1,5 @@
-//! Typo-tolerant code search over the v5 index, confirmed against the files.
+//! Typo-tolerant code search over the Atlas v5 index, confirmed against the
+//! files.
 //!
 //! The index answers first. Each query word resolves to vocabulary tokens
 //! (exact, separator-stripped, then typo matches; see [`fuzzy`]); punctuated
@@ -16,23 +17,27 @@
 //! No hit is invented: a literal that is not confirmed yields nothing, and
 //! close spellings found when nothing matched come back separately as
 //! [`MatchKind::Guess`].
+#![forbid(unsafe_code)]
+
 mod confirm;
 mod fuzzy;
 mod index;
 mod live;
 mod query;
 mod rank;
+mod read;
 mod regex;
+mod symbols;
 
-use crate::{
-    Result,
+use query::Parsed;
+use rusqlite::OptionalExtension;
+use se_atlas_index::{
+    IndexError, Result,
     custody::IndexSourceRoot,
     extract::{LanguageTag, SymbolKind},
     store::Reader,
     walk::WalkOptions,
 };
-use query::Parsed;
-use rusqlite::OptionalExtension;
 use std::time::{Duration, Instant};
 
 pub const DEFAULT_LIMIT: usize = 20;
@@ -282,7 +287,7 @@ pub fn search(
     if request.mode == QueryMode::Regex
         && matches!(request.kind, KindFilter::Symbol | KindFilter::Path)
     {
-        return Err(crate::IndexError::Invalid(
+        return Err(IndexError::Invalid(
             "a regex search matches lines of text; search with kind all or text",
         ));
     }
@@ -346,6 +351,11 @@ impl Budget {
 
     pub fn expired(&self) -> bool {
         self.until.is_some_and(|until| Instant::now() >= until)
+    }
+
+    /// The instant the deadline falls, for work that checks it itself.
+    pub fn until(&self) -> Option<Instant> {
+        self.until
     }
 }
 

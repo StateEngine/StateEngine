@@ -80,7 +80,7 @@ pub fn split_parts(token: &str) -> Vec<&str> {
 }
 
 /// Whether an identifier splits between `previous` and `current`.
-pub(crate) fn boundary(previous: char, current: char, next: Option<char>) -> bool {
+pub fn boundary(previous: char, current: char, next: Option<char>) -> bool {
     let camel = previous.is_lowercase() && current.is_uppercase();
     let acronym_end =
         previous.is_uppercase() && current.is_uppercase() && next.is_some_and(char::is_lowercase);

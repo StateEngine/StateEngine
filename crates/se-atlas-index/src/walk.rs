@@ -8,7 +8,7 @@ use crate::{
 };
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use se_proc::{NativeRootDirectory, NativeSourceEntry, NativeSourceKind};
-use std::{io, path::Path};
+use std::{io, path::Path, time::Instant};
 
 const MAX_DEPTH: usize = 128;
 const MAX_DIRECTORIES: u32 = 65_536;
@@ -22,6 +22,8 @@ pub struct WalkOptions {
     pub global_patterns: Vec<String>,
     /// Discovery stops, incomplete, once this many files are found.
     pub max_files: usize,
+    /// Discovery stops, incomplete, once this instant has passed.
+    pub deadline: Option<Instant>,
 }
 
 impl Default for WalkOptions {
@@ -29,6 +31,7 @@ impl Default for WalkOptions {
         Self {
             global_patterns: Vec::new(),
             max_files: 200_000,
+            deadline: None,
         }
     }
 }
@@ -81,6 +84,13 @@ pub fn discover(root: &IndexSourceRoot, options: &WalkOptions) -> Result<Discove
     let mut directories = 1u32;
     let mut skipped = false;
     while let Some(frame) = stack.last_mut() {
+        if options
+            .deadline
+            .is_some_and(|until| Instant::now() >= until)
+        {
+            out.files.sort_unstable();
+            return Ok(out);
+        }
         let entry = match next_entry(frame) {
             Ok(Some(entry)) => entry,
             Ok(None) => {

@@ -10,7 +10,6 @@
 pub mod custody;
 pub mod extract;
 pub mod policy;
-pub mod search;
 pub mod store;
 pub mod walk;
 

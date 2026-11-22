@@ -1,14 +1,26 @@
 //! Regex search: required literals of the expression narrow the files
-//! through the trigram index, and the best candidates are confirmed by
-//! running the expression over their lines.
-use super::{
+//! through the index, and the best candidates, densest first, are confirmed
+//! by running the expression over their lines.
+//!
+//! A piece narrows only through every indexed token that may hold it. The
+//! trigram index covers identifier tokens of 3 to 48 lowercase ASCII bytes;
+//! every other token holding the piece (a longer run such as a 64-digit hash,
+//! a joined name such as `a::b`, a part with other letters) is found by one
+//! scan of the vocabulary, so a match inside one is never dropped. A piece of
+//! the letters `a` to `f` alone never narrows: it may lie inside a hex run
+//! longer than the index's 128-byte token cap, which no row records.
+//!
+//! Not covered: a piece inside a single unbroken run of letters longer than
+//! 128 bytes, or a case-insensitive piece that the text's own casing splits
+//! inside a token longer than 128 bytes. The index records neither.
+use crate::{
     Budget, HitField, MatchKind, ScanReason, Scope, SearchOutcome, SearchRequest, confirm,
-    index::{FileRows, Reads, choose, page_into},
     rank::{Candidate, Candidates, TermHit},
+    read::{FileRows, Reads, choose, page_into},
 };
-use crate::{Result, custody::IndexSourceRoot, extract::tokens, store::ReadSnapshot};
 use rusqlite::{Connection, OptionalExtension};
-use std::collections::HashSet;
+use se_atlas_index::{Result, custody::IndexSourceRoot, extract::tokens, store::ReadSnapshot};
+use std::collections::HashMap;
 
 /// A piece found in more tokens than this does not narrow anything.
 const PIECE_TOKEN_CAP: usize = 1_024;
@@ -38,8 +50,9 @@ pub(crate) fn search(
     let scope = Scope::new(request);
     let mut rows = FileRows::new(conn);
     let mut outcome = SearchOutcome::default();
-    let mut ranked: Vec<i64> = holders.into_iter().collect();
-    ranked.sort_unstable();
+    let mut dense: Vec<(u32, i64)> = holders.into_iter().map(|(file, tf)| (tf, file)).collect();
+    dense.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let ranked: Vec<i64> = dense.into_iter().map(|(_, file)| file).collect();
     let chosen = choose(&ranked, &scope, &mut rows, budget, &mut outcome)?;
     let mut candidates = Candidates::default();
     let hit = TermHit {
@@ -75,43 +88,78 @@ fn cold_build_publishing(conn: &Connection) -> Result<bool> {
     Ok(watermark.is_some())
 }
 
-/// Files holding a token that contains every usable piece, using the
-/// pieces found in the fewest tokens. `None` when no piece is usable.
+/// Files holding a token that contains every usable piece, each with the
+/// smallest summed tf among the pieces, using the pieces found in the fewest
+/// tokens. `None` when no piece is usable.
 ///
-/// A piece no trigram-indexed token contains proves nothing: the text may
-/// hold it inside a part the trigram index leaves out (non-ASCII, longer
-/// than 48 bytes, or a long hex run). Such a piece is skipped, never read as
-/// an empty answer.
-fn regex_files(snapshot: &ReadSnapshot<'_>, pieces: &[String]) -> Result<Option<HashSet<i64>>> {
-    let mut narrowing: Vec<Vec<i64>> = Vec::new();
+/// A piece no indexed token contains proves nothing and is skipped, never
+/// read as an empty answer; so is a piece of hex letters alone.
+fn regex_files(
+    snapshot: &ReadSnapshot<'_>,
+    pieces: &[String],
+) -> Result<Option<HashMap<i64, u32>>> {
+    let mut narrowing: Vec<(&str, Vec<i64>)> = Vec::new();
     for piece in pieces {
+        if piece.bytes().all(|b| (b'a'..=b'f').contains(&b)) {
+            continue;
+        }
         if let Some(ids) = piece_tokens(snapshot, piece)?
             && !ids.is_empty()
         {
-            narrowing.push(ids);
+            narrowing.push((piece, ids));
         }
     }
     if narrowing.is_empty() {
         return Ok(None);
     }
-    narrowing.sort_by_key(Vec::len);
-    let mut holders: Option<HashSet<i64>> = None;
-    for ids in narrowing.into_iter().take(PIECES_USED) {
-        let mut files = HashSet::new();
+    narrowing.sort_by_key(|(_, ids)| ids.len());
+    narrowing.truncate(PIECES_USED);
+    add_untrigrammed(snapshot, &mut narrowing)?;
+    let mut holders: Option<HashMap<i64, u32>> = None;
+    for (_, ids) in narrowing {
+        let mut files: HashMap<i64, u32> = HashMap::new();
         for id in ids {
-            files.extend(
-                snapshot
-                    .read_postings(id)?
-                    .into_iter()
-                    .map(|(file, _)| file),
-            );
+            for (file, tf) in snapshot.read_postings(id)? {
+                let sum = files.entry(file).or_insert(0);
+                *sum = sum.saturating_add(tf);
+            }
         }
         holders = Some(match holders {
             None => files,
-            Some(known) => known.intersection(&files).copied().collect(),
+            Some(known) => files
+                .into_iter()
+                .filter_map(|(file, tf)| known.get(&file).map(|held| (file, tf.min(*held))))
+                .collect(),
         });
     }
     Ok(holders)
+}
+
+/// Add to each piece the indexed tokens holding it that the trigram index
+/// leaves out, found in one scan of the vocabulary.
+fn add_untrigrammed(snapshot: &ReadSnapshot<'_>, narrowing: &mut [(&str, Vec<i64>)]) -> Result<()> {
+    let tests: Vec<String> = (1..=narrowing.len())
+        .map(|n| format!("instr(tok, ?{n}) > 0"))
+        .collect();
+    let sql = format!("SELECT id, tok FROM vocab WHERE {}", tests.join(" OR "));
+    let mut select = snapshot.connection().prepare_cached(&sql)?;
+    let pieces: Vec<&str> = narrowing.iter().map(|(piece, _)| *piece).collect();
+    let rows = select.query_map(rusqlite::params_from_iter(pieces), |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (id, token) = row?;
+        // Trigram tokens were found already; the sets never overlap.
+        if tokens::is_gram_token(&token) {
+            continue;
+        }
+        for (piece, ids) in narrowing.iter_mut() {
+            if token.contains(*piece) {
+                ids.push(id);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Vocab ids of identifier tokens containing `piece`, or `None` when too
