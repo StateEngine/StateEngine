@@ -208,10 +208,6 @@ impl ColdJob {
         self.parse_deadline = Some((Instant::now() + Duration::from_millis(10)).min(end));
         Ok(())
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub fn poll(&mut self) -> AtlasResult<Option<IndexSummary>> {
         while let Some(bytes) = self
             .worker
@@ -220,108 +216,13 @@ impl ColdJob {
         {
             let reply: protocol::Reply = serde_json::from_slice(&bytes).map_err(failure)?;
             match reply {
-                protocol::Reply::Working { job, path, phase } => {
-                    if job != self.request.job {
-                        return Err(self.reject("foreign cold phase report"));
-                    }
-                    if let Some(path) = path {
-                        self.last_path = Some(path);
-                    }
-                    if matches!(phase, protocol::Phase::SourceRead) {
-                        if self.parse_cpu_start.is_some() {
-                            return Err(failure("duplicate source read phase"));
-                        }
-                        // The worker is waiting; setup CPU is outside the file budget.
-                        self.parse_cpu_start = Some(
-                            self.worker
-                                .cpu_time()
-                                .map_err(|error| self.native_io_failure(error))?,
-                        );
-                        let end = (Instant::now() + Duration::from_secs(5)).min(self.deadline);
-                        self.parse_stall_deadline = Some(end);
-                        self.parse_deadline =
-                            Some((Instant::now() + Duration::from_millis(10)).min(end));
-                        self.worker.send_control(b"source", end).map_err(|error| {
-                            crate::deadline::cleanup_error(
-                                error,
-                                end.saturating_duration_since(Instant::now()),
-                            )
-                        })?;
-                    } else if matches!(phase, protocol::Phase::Parse) {
-                        if self.parse_cpu_start.is_none() {
-                            return Err(failure("parse phase without source read authorization"));
-                        }
-                    } else {
-                        self.parse_deadline = None;
-                        self.parse_stall_deadline = None;
-                        self.parse_cpu_start = None;
-                        if matches!(phase, protocol::Phase::Resolve | protocol::Phase::Commit) {
-                            self.worker.send_control(b"source", self.deadline).map_err(
-                                |error| {
-                                    crate::deadline::cleanup_error(
-                                        error,
-                                        self.deadline.saturating_duration_since(Instant::now()),
-                                    )
-                                },
-                            )?;
-                        }
-                    }
-                    self.last_phase = phase;
-                }
+                protocol::Reply::Working { job, path, phase } => self.working(job, path, phase)?,
                 protocol::Reply::Progress {
                     job,
                     discovered,
                     completed,
-                } => {
-                    if job != self.request.job
-                        || discovered < self.discovered
-                        || completed < self.completed
-                        || discovered > u64::from(self.request.max_files)
-                        || completed > u64::from(self.request.max_files) * 2
-                    {
-                        return Err(
-                            self.reject("cold progress does not match the one-use job/bounds")
-                        );
-                    }
-                    self.discovered = discovered;
-                    self.completed = completed;
-                    self.peak_observed_bytes = self.worker.observe_memory().map_err(failure)?;
-                }
-                protocol::Reply::Completed { job, summary } => {
-                    if self.completion.is_some()
-                        || job != self.request.job
-                        || summary.project != self.request.project
-                        || summary.root != self.request.root
-                        || summary.epoch.as_ref() != Some(&self.request.epoch)
-                        || (!summary.coverage.discovery_complete
-                            && (!summary
-                                .coverage
-                                .reasons
-                                .contains(&CoverageReason::TimeLimit)
-                                || !matches!(
-                                    &summary.state,
-                                    IndexState::VerificationNeeded {
-                                        reason: CoverageReason::TimeLimit
-                                    }
-                                )))
-                    {
-                        return Err(self.reject("cold completion does not match job/root/epoch or explicit partial discovery"));
-                    }
-                    self.completion = Some(*summary);
-                    // A lost connection here is a worker failure, not a bare
-                    // socket error; only a timeout is a scheduling stall. The
-                    // acknowledgement waits at most 200 ms itself, so that is the
-                    // bound a stall reports, not the job's remaining deadline.
-                    self.worker
-                        .acknowledge_completion()
-                        .map_err(|error| match error.kind() {
-                            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {
-                                crate::deadline::cleanup_error(error, Duration::from_millis(200))
-                            }
-                            _ => self.native_failure(error),
-                        })?;
-                    self.peak_observed_bytes = self.worker.peak_observed_bytes();
-                }
+                } => self.progress(job, discovered, completed)?,
+                protocol::Reply::Completed { job, summary } => self.completed(job, *summary)?,
                 protocol::Reply::Failed { job, error } => {
                     // The runtime retains custody and performs exact cleanup.
                     // Return the worker's original reason before cleanup can fail.
@@ -349,10 +250,119 @@ impl ColdJob {
         if !status.success() {
             return Err(self.native_failure("cold child exited unsuccessfully"));
         }
-        let mut summary = self
+        let summary = self
             .completion
             .take()
             .ok_or_else(|| failure("cold child reaped without complete protocol"))?;
+        self.adopt(summary).map(Some)
+    }
+    /// A phase report opens the per-file CPU and stall budget at source read
+    /// and closes it at every later phase except parse.
+    fn working(
+        &mut self,
+        job: AtlasJobId,
+        path: Option<RelativePath>,
+        phase: protocol::Phase,
+    ) -> AtlasResult<()> {
+        if job != self.request.job {
+            return Err(self.reject("foreign cold phase report"));
+        }
+        if let Some(path) = path {
+            self.last_path = Some(path);
+        }
+        if matches!(phase, protocol::Phase::SourceRead) {
+            if self.parse_cpu_start.is_some() {
+                return Err(failure("duplicate source read phase"));
+            }
+            // The worker is waiting; setup CPU is outside the file budget.
+            self.parse_cpu_start = Some(
+                self.worker
+                    .cpu_time()
+                    .map_err(|error| self.native_io_failure(error))?,
+            );
+            let end = (Instant::now() + Duration::from_secs(5)).min(self.deadline);
+            self.parse_stall_deadline = Some(end);
+            self.parse_deadline = Some((Instant::now() + Duration::from_millis(10)).min(end));
+            self.worker.send_control(b"source", end).map_err(|error| {
+                crate::deadline::cleanup_error(error, end.saturating_duration_since(Instant::now()))
+            })?;
+        } else if matches!(phase, protocol::Phase::Parse) {
+            if self.parse_cpu_start.is_none() {
+                return Err(failure("parse phase without source read authorization"));
+            }
+        } else {
+            self.parse_deadline = None;
+            self.parse_stall_deadline = None;
+            self.parse_cpu_start = None;
+            if matches!(phase, protocol::Phase::Resolve | protocol::Phase::Commit) {
+                self.worker
+                    .send_control(b"source", self.deadline)
+                    .map_err(|error| {
+                        crate::deadline::cleanup_error(
+                            error,
+                            self.deadline.saturating_duration_since(Instant::now()),
+                        )
+                    })?;
+            }
+        }
+        self.last_phase = phase;
+        Ok(())
+    }
+    fn progress(&mut self, job: AtlasJobId, discovered: u64, completed: u64) -> AtlasResult<()> {
+        if job != self.request.job
+            || discovered < self.discovered
+            || completed < self.completed
+            || discovered > u64::from(self.request.max_files)
+            || completed > u64::from(self.request.max_files) * 2
+        {
+            return Err(self.reject("cold progress does not match the one-use job/bounds"));
+        }
+        self.discovered = discovered;
+        self.completed = completed;
+        self.peak_observed_bytes = self.worker.observe_memory().map_err(failure)?;
+        Ok(())
+    }
+    fn completed(&mut self, job: AtlasJobId, summary: IndexSummary) -> AtlasResult<()> {
+        if self.completion.is_some()
+            || job != self.request.job
+            || summary.project != self.request.project
+            || summary.root != self.request.root
+            || summary.epoch.as_ref() != Some(&self.request.epoch)
+            || (!summary.coverage.discovery_complete
+                && (!summary
+                    .coverage
+                    .reasons
+                    .contains(&CoverageReason::TimeLimit)
+                    || !matches!(
+                        &summary.state,
+                        IndexState::VerificationNeeded {
+                            reason: CoverageReason::TimeLimit
+                        }
+                    )))
+        {
+            return Err(self.reject(
+                "cold completion does not match job/root/epoch or explicit partial discovery",
+            ));
+        }
+        self.completion = Some(summary);
+        // A lost connection here is a worker failure, not a bare
+        // socket error; only a timeout is a scheduling stall. The
+        // acknowledgement waits at most 200 ms itself, so that is the
+        // bound a stall reports, not the job's remaining deadline.
+        self.worker
+            .acknowledge_completion()
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {
+                    crate::deadline::cleanup_error(error, Duration::from_millis(200))
+                }
+                _ => self.native_failure(error),
+            })?;
+        self.peak_observed_bytes = self.worker.peak_observed_bytes();
+        Ok(())
+    }
+    /// Reopen the reaped child's candidate independently, seed history, then
+    /// publish it and read the published epoch back before reporting it.
+    fn adopt(&mut self, mut summary: IndexSummary) -> AtlasResult<IndexSummary> {
         let source = self.request.source()?;
         let scope = source.scope.clone();
         let cache = NativeAtlasCache::resume_unpublished(
@@ -364,48 +374,8 @@ impl ColdJob {
             return Err(failure("old epoch changed before cold adoption"));
         }
         let profile = SqlProfile::contained_cold();
-        let mut candidate = CacheConnection::open(
-            &cache,
-            CacheIdentity {
-                scope: scope.clone(),
-                epoch: self.request.epoch.clone(),
-            },
-            ConnectionRole::CandidateWriter,
-            &profile,
-            // Full integrity traverses the captured graph after exact reap.
-            // It belongs to the remaining job clock, not a query allowance.
-            self.deadline,
-        )?
-        .ok_or_else(|| failure("staged candidate disappeared"))?;
-        let actual = metadata(&mut candidate, &self.request, self.deadline)?;
-        if actual != summary {
-            return Err(failure(
-                "child summary differs from independently reopened candidate",
-            ));
-        }
-        let mut candidate = if let Some(history) = self.history.take() {
-            drop(candidate);
-            let (generation, unavailable, notes) =
-                history.seed(&cache, &self.request, self.deadline)?;
-            summary.generation = Some(generation);
-            summary.coverage.history_commit_notes = notes;
-            if let Some(diagnostic) = unavailable {
-                summary.coverage.history_unavailable = Some(diagnostic);
-                if !summary
-                    .coverage
-                    .reasons
-                    .contains(&CoverageReason::HistoryUnavailable)
-                {
-                    summary
-                        .coverage
-                        .reasons
-                        .push(CoverageReason::HistoryUnavailable);
-                }
-                summary.state = IndexState::VerificationNeeded {
-                    reason: CoverageReason::HistoryUnavailable,
-                };
-            }
-            let mut candidate = CacheConnection::open(
+        let open_candidate = |reason: &str| {
+            CacheConnection::open(
                 &cache,
                 CacheIdentity {
                     scope: scope.clone(),
@@ -413,16 +383,28 @@ impl ColdJob {
                 },
                 ConnectionRole::CandidateWriter,
                 &profile,
+                // Full integrity traverses the captured graph after exact reap.
+                // It belongs to the remaining job clock, not a query allowance.
                 self.deadline,
             )?
-            .ok_or_else(|| failure("staged candidate disappeared after history"))?;
+            .ok_or_else(|| failure(reason))
+        };
+        let mut candidate = open_candidate("staged candidate disappeared")?;
+        let actual = metadata(&mut candidate, &self.request, self.deadline)?;
+        if actual != summary {
+            return Err(failure(
+                "child summary differs from independently reopened candidate",
+            ));
+        }
+        if let Some(history) = self.history.take() {
+            drop(candidate);
+            let seeded = history.seed(&cache, &self.request, self.deadline)?;
+            record_history(&mut summary, seeded);
+            candidate = open_candidate("staged candidate disappeared after history")?;
             if metadata(&mut candidate, &self.request, self.deadline)? != summary {
                 return Err(failure("history candidate differs before publication"));
             }
-            candidate
-        } else {
-            candidate
-        };
+        }
         pointer::publish(
             &cache,
             &mut candidate,
@@ -448,7 +430,29 @@ impl ColdJob {
                 "published cold epoch differs on independent readback",
             ));
         }
-        Ok(Some(summary))
+        Ok(summary)
+    }
+}
+/// Fold a history seed into the summary; unavailable history marks the epoch
+/// as needing verification.
+fn record_history(summary: &mut IndexSummary, (generation, unavailable, notes): HistorySeed) {
+    summary.generation = Some(generation);
+    summary.coverage.history_commit_notes = notes;
+    if let Some(diagnostic) = unavailable {
+        summary.coverage.history_unavailable = Some(diagnostic);
+        if !summary
+            .coverage
+            .reasons
+            .contains(&CoverageReason::HistoryUnavailable)
+        {
+            summary
+                .coverage
+                .reasons
+                .push(CoverageReason::HistoryUnavailable);
+        }
+        summary.state = IndexState::VerificationNeeded {
+            reason: CoverageReason::HistoryUnavailable,
+        };
     }
 }
 fn metadata(
