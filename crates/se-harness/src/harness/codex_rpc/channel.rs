@@ -1,16 +1,16 @@
-//! One transport connection. WebSocket framing runs over a private Unix socket;
-//! Windows uses the documented stock stdio baseline, never a TCP fallback.
+//! One transport connection. WebSocket framing runs over the agent's private
+//! local socket (AF_UNIX on Windows too), or over stdio; never a TCP fallback.
 use super::*;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use futures_util::{SinkExt, StreamExt};
 use std::num::NonZeroU32;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use tokio_tungstenite::{
     WebSocketStream,
     tungstenite::{Message as WsMessage, protocol::WebSocketConfig},
 };
-#[cfg(unix)]
-type Socket = WebSocketStream<tokio::net::UnixStream>;
+#[cfg(any(unix, windows))]
+type Socket = WebSocketStream<se_local_socket::Stream>;
 
 pub(super) enum Sender {
     Closed,
@@ -18,7 +18,7 @@ pub(super) enum Sender {
         io: Arc<dyn ProviderIoPlatform>,
         port: Arc<ProviderTransport>,
     },
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     Socket(futures_util::stream::SplitSink<Socket, WsMessage>),
 }
 pub(super) enum Receiver {
@@ -27,7 +27,7 @@ pub(super) enum Receiver {
         port: Arc<ProviderTransport>,
         reader: transport::Reader,
     },
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     Socket(futures_util::stream::SplitStream<Socket>),
 }
 pub(super) async fn open(
@@ -36,11 +36,11 @@ pub(super) async fn open(
     socket: Option<&Path>,
     cx: &CallContext,
 ) -> Result<(Sender, Receiver)> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     if let Some(path) = socket {
         let until = tokio::time::Instant::now() + cx.timeout;
         let stream = loop {
-            match tokio::net::UnixStream::connect(path).await {
+            match se_local_socket::connect(path).await {
                 Ok(stream) => break stream,
                 Err(error)
                     if matches!(
@@ -88,7 +88,7 @@ pub(super) async fn open(
         let (write, read) = socket.split();
         return Ok((Sender::Socket(write), Receiver::Socket(read)));
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     let _ = (socket, cx);
     Ok((
         Sender::Stdio {
@@ -110,7 +110,7 @@ impl Sender {
                 "the retained open connection",
             )),
             Self::Stdio { io, port } => transport::write(io.as_ref(), port, bytes, cx).await,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Socket(socket) => {
                 let text = std::str::from_utf8(bytes.strip_suffix(b"\n").unwrap_or(&bytes))
                     .map_err(|_| SeError::invalid("Codex request", "a UTF-8 JSON frame"))?;
@@ -135,7 +135,7 @@ impl Sender {
         match self {
             Self::Closed => Ok(()),
             Self::Stdio { io, port } => io.finish_input(port, cx).await,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Socket(socket) => tokio::time::timeout(cx.timeout, socket.close())
                 .await
                 .map_err(|_| {
@@ -158,7 +158,7 @@ impl Receiver {
                 Some(message) => Ok(Some((message, reader.observed_at()?))),
                 None => Ok(None),
             },
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Socket(socket) => loop {
                 match tokio::time::timeout(cx.timeout, socket.next())
                     .await

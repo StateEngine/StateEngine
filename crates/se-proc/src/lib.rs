@@ -134,6 +134,8 @@ pub use se_state_files::{FileOwnerError, FileOwnerInitialization, initialize_fil
 
 pub use executable::{NativeExecutableCreation, NativeExecutableInvocation, NativeExecutablePin};
 pub use state_files::NativeMetadataPin;
+#[cfg(windows)]
+pub use state_files::effects::remove_held;
 pub use state_files::effects::{
     CreatedDirectoryCleanup, DirectoryRemoval, NativeDirectoryCreation, NativeInstallationClaim,
     OwnedFile, installation_claim_path, remove_empty_directory, scan_recovery, scan_temporary,

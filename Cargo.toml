@@ -18,6 +18,7 @@ members = [
     "crates/se-native-path",
     "crates/se-fsevents",
     "crates/se-secode-image",
+    "crates/se-local-socket",
     "crates/se-channels",
     "crates/se-host",
     "crates/se-mcp",
