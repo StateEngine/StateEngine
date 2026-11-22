@@ -46,16 +46,20 @@ fn available<T>(value: &Read<T>) -> std::result::Result<&T, String> {
 }
 fn finish(
     mut output: String,
+    index: &IndexSummary,
     complete: bool,
     next: Option<&AtlasCursor>,
     max: usize,
 ) -> AtlasResult<String> {
-    if !complete {
+    if output.is_empty() {
+        output.push_str(none(complete));
+    } else if !complete {
         output.push_str("[partial; inspect coverage or narrow the query]\n");
     }
     if let Some(next) = next {
         output.push_str(&format!("more: {}\n", next.as_str()));
     }
+    output.push_str(&footer(index));
     if output.len() > max {
         return Err(capacity(
             "Atlas compact response bytes",
@@ -66,12 +70,12 @@ fn finish(
     Ok(output)
 }
 pub fn refs(answer: &Answer<Read<Page<ReferenceHit>>>, max: usize) -> AtlasResult<String> {
-    let mut output = state(&answer.index);
+    let mut output = String::new();
     let value = match available(&answer.data) {
         Ok(value) => value,
         Err(text) => {
             output.push_str(&text);
-            return finish(output, true, None, max);
+            return finish(output, &answer.index, true, None, max);
         }
     };
     for hit in value.items() {
@@ -90,6 +94,7 @@ pub fn refs(answer: &Answer<Read<Page<ReferenceHit>>>, max: usize) -> AtlasResul
     }
     finish(
         output,
+        &answer.index,
         value.window().complete(),
         value
             .next()
@@ -101,12 +106,12 @@ pub fn refs(answer: &Answer<Read<Page<ReferenceHit>>>, max: usize) -> AtlasResul
     )
 }
 pub fn impact(answer: &Answer<Read<Impact>>, max: usize) -> AtlasResult<String> {
-    let mut output = state(&answer.index);
+    let mut output = String::new();
     let value = match available(&answer.data) {
         Ok(value) => value,
         Err(text) => {
             output.push_str(&text);
-            return finish(output, true, None, max);
+            return finish(output, &answer.index, true, None, max);
         }
     };
     for (is_test, items) in [(false, &value.dependents), (true, &value.tests)] {
@@ -149,15 +154,21 @@ pub fn impact(answer: &Answer<Read<Impact>>, max: usize) -> AtlasResult<String> 
             value.omitted_frontier
         ));
     }
-    finish(output, value.complete, value.next.as_ref(), max)
+    finish(
+        output,
+        &answer.index,
+        value.complete,
+        value.next.as_ref(),
+        max,
+    )
 }
 pub fn changes(answer: &Answer<Read<Page<CodeChange>>>, max: usize) -> AtlasResult<String> {
-    let mut output = state(&answer.index);
+    let mut output = String::new();
     let value = match available(&answer.data) {
         Ok(value) => value,
         Err(text) => {
             output.push_str(&text);
-            return finish(output, true, None, max);
+            return finish(output, &answer.index, true, None, max);
         }
     };
     for change in value.items() {
@@ -189,6 +200,7 @@ pub fn changes(answer: &Answer<Read<Page<CodeChange>>>, max: usize) -> AtlasResu
     }
     finish(
         output,
+        &answer.index,
         value.window().complete(),
         value
             .next()
@@ -200,12 +212,12 @@ pub fn changes(answer: &Answer<Read<Page<CodeChange>>>, max: usize) -> AtlasResu
     )
 }
 pub fn outline(answer: &Answer<Read<Outline>>, max: usize) -> AtlasResult<String> {
-    let mut output = state(&answer.index);
+    let mut output = String::new();
     let value = match available(&answer.data) {
         Ok(value) => value,
         Err(text) => {
             output.push_str(&text);
-            return finish(output, true, None, max);
+            return finish(output, &answer.index, true, None, max);
         }
     };
     output.push_str(&format!(
@@ -225,5 +237,11 @@ pub fn outline(answer: &Answer<Read<Outline>>, max: usize) -> AtlasResult<String
         output.push_str(&record(hit));
         output.push('\n');
     }
-    finish(output, value.complete, value.next.as_ref(), max)
+    finish(
+        output,
+        &answer.index,
+        value.complete,
+        value.next.as_ref(),
+        max,
+    )
 }

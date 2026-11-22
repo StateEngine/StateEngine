@@ -572,11 +572,9 @@ fn open(pin: &DatabasePin, role: ConnectionRole, deadline: Instant) -> AtlasResu
         flags | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_EXRESCODE | symlink_guard,
     )
     .map_err(cache_error)?;
-    db.busy_timeout(
-        deadline
-            .saturating_duration_since(crate::clock::now())
-            .min(Duration::from_millis(25)),
-    )
+    db.busy_timeout(deadline.saturating_duration_since(crate::clock::now()).min(
+        Duration::from_millis(if role.writable() { 25 } else { 250 }),
+    ))
     .map_err(cache_error)?;
     if role == ConnectionRole::ColdWriter {
         // This epoch is unpublished and has exactly one contained writer.
@@ -685,8 +683,9 @@ fn finite<T>(
     if remaining.is_zero() {
         return Err(stage_timeout(stage, 0));
     }
-    // A busy wait (a reader's snapshot, a checkpoint) ends within this budget.
-    db.busy_timeout(remaining.min(Duration::from_millis(25)))
+    // Readers wait out a lock up to 250 ms; a writer keeps 25 ms, never parked behind a reader.
+    let reader = db.is_readonly(rusqlite::MAIN_DB).map_err(cache_error)?;
+    db.busy_timeout(remaining.min(Duration::from_millis(if reader { 250 } else { 25 })))
         .map_err(cache_error)?;
     let budget_ms = ceil_ms(remaining);
     db.progress_handler(1000, Some(move || crate::clock::now() >= deadline))

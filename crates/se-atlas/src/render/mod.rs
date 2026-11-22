@@ -9,12 +9,22 @@ pub use pages::{changes, impact, outline, refs};
 use pointer::{location, pointer};
 use se_types::{Read, code::*};
 pub fn escape(text: &str) -> String {
-    let mut output = String::new();
+    escape_with(text, false)
+}
+/// `--full` source keeps its lines and tabs (CRLF read as LF); ANSI escape and
+/// every other C0/C1 control are still shown escaped, never sent to a terminal.
+pub fn escape_body(text: &str) -> String {
+    escape_with(&text.replace("\r\n", "\n"), true)
+}
+fn escape_with(text: &str, lines: bool) -> String {
+    let mut output = String::with_capacity(text.len());
     for c in text.chars() {
-        if c.is_control() {
-            output.extend(c.escape_default());
-        } else {
-            output.push(c);
+        match c {
+            // A byte-order mark is encoding residue, not content.
+            '\u{feff}' => (),
+            '\n' | '\t' if lines => output.push(c),
+            c if c.is_control() => output.extend(c.escape_default()),
+            c => output.push(c),
         }
     }
     output
@@ -24,17 +34,22 @@ pub fn search(
     max_bytes: usize,
     explain: bool,
 ) -> AtlasResult<String> {
-    let mut output = state(&answer.index);
+    let mut output = String::new();
     match &answer.data {
         Read::Present { value } => {
-            if let Some(previous) = value.fallback_from {
-                output.push_str(&format!(
-                    "[{previous:?}: 0 hits → {:?}: {}]\n",
-                    value.mode,
-                    value.page.items().len()
-                ));
-            } else {
-                output.push_str(&format!("[{:?}]\n", value.mode));
+            match value.fallback_from {
+                _ if value.page.items().is_empty() => {
+                    output.push_str(none(value.page.window().complete()));
+                }
+                // Loose words are suggestions; they never count as matches.
+                Some(_) if matches!(value.mode, SearchMode::Broad | SearchMode::Related) => {
+                    output.push_str("no matches; loose guesses (did you mean):\n");
+                }
+                Some(previous) => output.push_str(&format!(
+                    "[no {previous:?} matches; showing {:?}]\n",
+                    value.mode
+                )),
+                None => (),
             }
             let mut bodies = 0;
             for hit in value.page.items() {
@@ -49,7 +64,7 @@ pub fn search(
                             12 * 1024,
                         ));
                     }
-                    output.push_str(&escape(&body.text));
+                    output.push_str(&escape_body(&body.text));
                     output.push('\n');
                     if !body.complete {
                         output.push_str("[body incomplete]\n");
@@ -59,7 +74,7 @@ pub fn search(
             if let Some(next) = value.page.next() {
                 output.push_str(&format!("more: {}\n", next.as_str()));
             }
-            if !value.page.window().complete() {
+            if !value.page.window().complete() && !value.page.items().is_empty() {
                 output.push_str("[partial; inspect coverage or narrow the query]\n");
             }
             if value.bodies_omitted > 0 {
@@ -87,6 +102,7 @@ pub fn search(
             escape(reason)
         )),
     }
+    output.push_str(&footer(&answer.index));
     if output.len() > max_bytes {
         return Err(capacity(
             "Atlas compact response bytes",
@@ -202,8 +218,17 @@ pub fn resume(code: &ResumeCode) -> AtlasResult<String> {
     }
     Ok(output)
 }
-fn state(index: &IndexSummary) -> String {
-    let label = match &index.state {
+/// An empty page: honest when complete, otherwise a gap with a next step.
+fn none(complete: bool) -> &'static str {
+    if complete {
+        "no matches\n"
+    } else {
+        "no matches (incomplete; retry shortly or narrow the query)\n"
+    }
+}
+/// One plain line: index state, file count, and any gap a reader should weigh.
+fn footer(index: &IndexSummary) -> String {
+    let state = match &index.state {
         IndexState::Current => "current",
         IndexState::Partial { .. } => "partial",
         IndexState::Disabled => "disabled",
@@ -211,7 +236,7 @@ fn state(index: &IndexSummary) -> String {
         IndexState::Dormant => "dormant",
         IndexState::Absent => "absent",
         IndexState::Opening => "opening",
-        IndexState::ColdIndexing { .. } => "building",
+        IndexState::ColdIndexing { .. } => "indexing",
         IndexState::Updating { .. } => "updating",
         IndexState::VerificationNeeded { .. } => "verification needed",
         IndexState::Suspended { .. } => "suspended",
@@ -219,52 +244,32 @@ fn state(index: &IndexSummary) -> String {
         IndexState::Draining => "draining",
         IndexState::Closed => "closed",
     };
-    let (anonymous, grammar, qualified) =
-        index
-            .memory
-            .as_ref()
-            .map_or((ANONYMOUS_BYTES, None, false), |memory| {
-                (
-                    memory.anonymous_ceiling_bytes,
-                    memory.shared_grammar_pages,
-                    memory.joined_qualified,
-                )
-            });
-    let grammar = grammar.map_or_else(
-        || "unqualified".into(),
-        |pages| {
-            format!(
-                "{} B observed, {} B reserved",
-                pages.observed_bytes, pages.reserved_bytes
-            )
-        },
-    );
-    let mut output = format!(
-        "[atlas {label}; anonymous cap {anonymous} B; shared grammar pages {grammar}; joined {}]\n",
-        if qualified {
-            "qualified"
-        } else {
-            "unqualified"
-        }
-    );
+    let c = &index.coverage;
+    let mut line = format!("index: {state} · {} files", c.indexed_files);
     if let IndexState::Suspended { reason } = &index.state {
-        output.push_str(&format!("reason: {}\n", escape(&reason.message())));
+        line.push_str(&format!(" · {}", escape(&reason.message())));
     }
-    for reason in &index.coverage.reasons {
-        let detail = match reason {
-            CoverageReason::StaleSnapshot => {
-                "cached declarations lack verified matching live bytes"
-            }
-            CoverageReason::ChangedDuringRead => "source bytes changed during the read",
-            CoverageReason::TimeLimit => "source work reached its time limit",
-            CoverageReason::SchedulingStall => "source work stalled while waiting for the worker",
-            CoverageReason::SourceBytesLimit => "source exceeds the admitted byte limit",
-            CoverageReason::ParseMemoryLimit => "source parse exceeded its memory reservation",
+    for (count, what) in [
+        (c.stale_files, "stale"),
+        (c.partial_files + c.failed_files, "incomplete"),
+        (c.deferred_files, "skipped"),
+    ] {
+        if count > 0 {
+            line.push_str(&format!(" · {count} {what}"));
+        }
+    }
+    for reason in &c.reasons {
+        line.push_str(match reason {
+            CoverageReason::TimeLimit => " · deadline reached",
+            CoverageReason::StaleSnapshot => " · unverified snapshot",
+            CoverageReason::ChangedDuringRead => " · source changed during the read",
+            CoverageReason::ReadFailure => " · some files unreadable",
+            CoverageReason::RetentionGap => " · retained since the oldest kept change",
             _ => continue,
-        };
-        output.push_str(&format!("source: {detail} ({reason:?})\n"));
+        });
     }
-    output
+    line.push('\n');
+    line
 }
 
 fn oid(id: &GitObjectId) -> String {

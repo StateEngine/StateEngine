@@ -40,11 +40,12 @@ impl QueryReader<'_, '_, '_> {
             } else {
                 return Ok(answer);
             }
+            let spaced = super::modes::automatic(query.query.as_str()) == SearchMode::Phrase;
             mode = match mode {
                 SearchMode::Exact => SearchMode::Literal,
-                SearchMode::Literal | SearchMode::Phrase => SearchMode::Broad,
+                SearchMode::Literal | SearchMode::Phrase if spaced => SearchMode::Broad,
                 SearchMode::Broad => SearchMode::Related,
-                SearchMode::Related => return Ok(answer),
+                _ => return Ok(answer),
             };
         }
     }

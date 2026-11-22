@@ -92,6 +92,15 @@ impl RankedWindow {
             .sort_by(|(a, _), (b, _)| super::find::compare(&a.key, &b.key));
         self.hits
             .retain(|(hit, _)| after.is_none_or(|key| super::find::compare(&hit.key, key).is_gt()));
+        // One hit per source line; symbol tiers sort before text, so they win.
+        let mut seen = std::collections::HashSet::new();
+        self.hits.retain(|(hit, _)| match &hit.value.target {
+            HitTarget::Code(c) => c
+                .pointer
+                .span
+                .is_none_or(|s| seen.insert((c.pointer.file, s.start.line))),
+            _ => true,
+        });
         self.more |= self.hits.len() > self.limit;
         self.hits.truncate(self.limit);
         (

@@ -1,7 +1,7 @@
 //! Bounded query phases and their SQL timeout diagnostics.
 use super::*;
 
-pub(super) fn minimum_phase(work: Duration) -> Duration {
+fn minimum_phase(work: Duration) -> Duration {
     (work / 8).clamp(Duration::from_nanos(1), Duration::from_millis(5))
 }
 /// Add the actual phase allowance and elapsed time to a generic SQL timeout.

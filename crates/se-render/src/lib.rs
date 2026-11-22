@@ -41,11 +41,13 @@ pub fn output_at(
             se_host::atlas_queries::compact(value, options.byte_budget as usize, options.explain)
                 .map_err(io::Error::other)?
     {
-        if !quiet || value.exit_code() != 0 {
+        let code =
+            (value.atlas_exit(options.require_complete)).unwrap_or_else(|| value.exit_code());
+        if !quiet || code != 0 {
             write!(out, "{text}")?;
         }
         out.flush()?;
-        return Ok(value.exit_code());
+        return Ok(code);
     }
     if !json
         && !quiet

@@ -106,6 +106,11 @@ impl SearchPage {
 }
 
 fn shrink(items: &mut Vec<SearchHit>, keys: &mut Vec<Key>, omitted: &mut u16) -> bool {
+    // Clip a long source line before dropping a whole hit from the page.
+    let long = |h: &&mut SearchHit| matches!(&h.target, HitTarget::Code(c) if c.name.len() > 160);
+    if let Some(hit) = items.iter_mut().find(long) {
+        return clip_hit(hit);
+    }
     if items.len() > 1 {
         items.pop();
         keys.pop();

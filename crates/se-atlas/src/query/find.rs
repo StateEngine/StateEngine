@@ -45,7 +45,7 @@ impl QueryReader<'_, '_, '_> {
         {
             return self.find_text(query);
         }
-        let end = deadline(query.budget)?;
+        let (end, hard) = deadline(query.budget)?;
         let started = end - query.budget.work;
         let digest = cursor::digest(&(
             "find",
@@ -60,7 +60,7 @@ impl QueryReader<'_, '_, '_> {
         ))?;
         let identity = self.cache.identity().clone();
         let env = self.ctx.split();
-        let result = self.cache.read(end, |sql| {
+        let result = self.cache.read(hard, |sql| {
             let snapshot = snapshot(&identity, &env, sql)?;
             let previous = query
                 .next
@@ -108,18 +108,7 @@ impl QueryReader<'_, '_, '_> {
                 && collected.values.is_empty()
                 && !collected.truncated
             {
-                for next in [
-                    if initial == SearchMode::Exact {
-                        SearchMode::Literal
-                    } else {
-                        SearchMode::Broad
-                    },
-                    SearchMode::Broad,
-                    SearchMode::Related,
-                ] {
-                    if mode == next {
-                        continue;
-                    }
+                for &next in super::modes::fallbacks(initial) {
                     mode = next;
                     collected =
                         collect_phase(&ranking, sql, &snapshot, query, mode, (started, end))?;
@@ -264,12 +253,12 @@ impl QueryReader<'_, '_, '_> {
                 continuation,
             })
         });
-        let answer = phase_timeout("metadata search", started, end, result)?;
+        let answer = phase_timeout("metadata search", started, hard, result)?;
         phase_timeout(
             "metadata search",
             started,
-            end,
-            answer.finish(self, query, end),
+            hard,
+            answer.finish(self, query, hard),
         )
     }
 }
@@ -301,14 +290,7 @@ pub(super) fn materialize(
             })
         }
         Kind::File => {
-            let mut stmt =
-                sql.prepare(&format!("SELECT {FILE_COLUMNS} FROM files f WHERE f.id=?1"))?;
-            let mut rows = stmt.query([candidate.rowid]).map_err(cache_error)?;
-            let row = rows
-                .next()
-                .map_err(cache_error)?
-                .ok_or_else(|| cache_error("file candidate disappeared in snapshot"))?;
-            let pointer = file(row, 0)?.pointer;
+            let pointer = file_by_id(sql, candidate.rowid)?.pointer;
             let name = pointer.path.as_str().to_owned();
             HitTarget::Code(CodeHit {
                 pointer,
@@ -327,7 +309,9 @@ pub(super) fn materialize(
                 &pointer,
                 Some(&query.query),
             )? {
-                Read::Present { value } if value.pointer == pointer && value.line.len() <= 160 => {
+                Read::Present { value }
+                    if value.pointer == pointer && value.line.len() <= RECORD_LINE_BYTES =>
+                {
                     HitTarget::Record(value)
                 }
                 Read::Absent { .. } => return Ok(None),

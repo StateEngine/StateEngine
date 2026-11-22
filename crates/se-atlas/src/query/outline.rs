@@ -2,12 +2,12 @@ use super::*;
 use rusqlite::params;
 impl QueryReader<'_, '_, '_> {
     pub fn outline(&mut self, query: &OutlineQuery) -> AtlasResult<Answer<Read<Outline>>> {
-        let end = deadline(query.budget)?;
+        let (end, hard) = deadline(query.budget)?;
         let started = end - query.budget.work;
         let digest = cursor::digest(&("outline", &query.path, &self.ctx.viewer))?;
         let identity = self.cache.identity().clone();
         let env = self.ctx.split();
-        let result = self.cache.read(end, |sql| {
+        let result = self.cache.read(hard, |sql| {
             let snapshot = snapshot(&identity, &env, sql)?;
             if crate::policy::built_in_denied(&query.path) {return Ok(snapshot.unknown("source path is excluded by the built-in private-file policy"));}
             let previous = query.next.as_ref().map(PositionCursor::decode).transpose()?;
@@ -59,13 +59,9 @@ impl QueryReader<'_, '_, '_> {
             }
             check_output(snapshot.answer(Read::Present { value: output }, advanced), query.budget)
         });
-        let answer = phase_timeout("outline query", started, end, result)?;
-        phase_timeout(
-            "outline query",
-            started,
-            end,
-            super::freshness::finish(self, answer, query.budget, end),
-        )
+        let answer = phase_timeout("outline query", started, hard, result)?;
+        let answer = super::freshness::finish(self, answer, query.budget, (end, hard));
+        phase_timeout("outline query", started, hard, answer)
     }
 }
 fn validate_key(key: &Key) -> AtlasResult<()> {

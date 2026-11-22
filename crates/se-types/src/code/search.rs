@@ -53,6 +53,8 @@ pub enum AtlasFormat {
 pub enum AtlasTarget {
     Symbol(SymbolSelector),
     File(RelativePath),
+    /// A positional target: an indexed path, `path:line`, then an exact symbol name.
+    Auto(QueryText),
     Commit(GitObjectId),
     Record(RecordKey),
 }

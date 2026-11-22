@@ -28,6 +28,16 @@ pub(super) fn all<T>(
     }
     Ok(output)
 }
+/// The first column of a statement's one row.
+pub(super) fn scalar<T: rusqlite::types::FromSql>(
+    sql: &SqlView<'_>,
+    statement: &str,
+    params: impl rusqlite::Params,
+) -> AtlasResult<T> {
+    sql.prepare(statement)?
+        .query_row(params, |r| r.get(0))
+        .map_err(cache_error)
+}
 /// The integer first column of every row of a bounded statement.
 pub(super) fn id_column(
     sql: &SqlView<'_>,
@@ -160,16 +170,9 @@ pub(super) fn symbol_by_id(sql: &SqlView<'_>, id: i64) -> AtlasResult<(SymbolRow
             },
         )
     };
-    result.value.name = {
-        let mut stmt = sql.prepare("SELECT text FROM names WHERE id=?1")?;
-        stmt.query_row([name], |row| row.get(0))
-            .map_err(cache_error)?
-    };
+    result.value.name = scalar(sql, "SELECT text FROM names WHERE id=?1", [name])?;
     if let Some(parent) = parent {
-        let mut stmt = sql.prepare("SELECT key FROM symbols WHERE id=?1")?;
-        let key: Vec<u8> = stmt
-            .query_row([parent], |row| row.get(0))
-            .map_err(cache_error)?;
+        let key: Vec<u8> = scalar(sql, "SELECT key FROM symbols WHERE id=?1", [parent])?;
         result.value.parent = Some(SymbolId(
             key.try_into()
                 .map_err(|_| cache_error("invalid parent symbol key"))?,

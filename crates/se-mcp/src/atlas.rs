@@ -60,7 +60,7 @@ pub(super) async fn call(
         rpc_error(
             Value::Null,
             -32602,
-            "Atlas response exceeds the requested wire budget; narrow the query or increase byte_budget (at most 32768)",
+            "Atlas response exceeds the requested wire budget; narrow the query or increase byte_budget (at most 262144)",
         )
     }
 }

@@ -46,7 +46,7 @@ use std::{
     num::NonZeroU32,
     time::{Duration, Instant},
 };
-use timing::{collect_phase, minimum_phase, phase_timeout};
+use timing::{collect_phase, phase_timeout};
 
 /// Supplied by core for this verified viewer. Every record and derived count is
 /// rechecked against its authoritative event; cached audiences are only hints.
@@ -174,10 +174,9 @@ impl<'a, 'c, 'x> QueryReader<'a, 'c, 'x> {
     pub fn summary(&mut self) -> AtlasResult<IndexSummary> {
         let identity = self.cache.identity().clone();
         let env = self.ctx.split();
-        self.cache
-            .read(crate::clock::now() + Duration::from_millis(25), |sql| {
-                snapshot(&identity, &env, sql).map(|value| value.index)
-            })
+        self.cache.read(crate::clock::now() + HARD, |sql| {
+            snapshot(&identity, &env, sql).map(|value| value.index)
+        })
     }
 }
 fn snapshot(
@@ -207,13 +206,7 @@ fn snapshot(
         if matches!(index.state, IndexState::Current) {
             index.state = state.clone();
         }
-        if !index
-            .coverage
-            .reasons
-            .contains(&CoverageReason::StaleSnapshot)
-        {
-            index.coverage.reasons.push(CoverageReason::StaleSnapshot);
-        }
+        index.note(CoverageReason::StaleSnapshot);
     }
     for (limited, reason) in [
         (
@@ -224,21 +217,11 @@ fn snapshot(
         (record_body_limited, CoverageReason::RecordBodyLimit),
     ] {
         if limited {
-            if matches!(index.state, IndexState::Current) {
-                index.state = IndexState::VerificationNeeded { reason };
-            }
-            if !index.coverage.reasons.contains(&reason) {
-                index.coverage.reasons.push(reason);
-            }
+            index.degrade(reason);
         }
     }
     if let Some(reason) = crate::history::limitation(sql)? {
-        if matches!(index.state, IndexState::Current) {
-            index.state = IndexState::VerificationNeeded { reason };
-        }
-        if !index.coverage.reasons.contains(&reason) {
-            index.coverage.reasons.push(reason);
-        }
+        index.degrade(reason);
     }
     Ok(Snapshot {
         index,
@@ -276,20 +259,22 @@ impl Snapshot {
         self.answer(Read::Unknown { what: what.into() }, false)
     }
 }
-fn deadline(budget: QueryBudget) -> AtlasResult<Instant> {
-    if budget.max_results == 0
-        || budget.max_results > 50
-        || budget.max_bytes == 0
-        || budget.max_bytes > 32768
+/// The SQLite interrupt. Reads stop collecting at the soft `budget.work` and
+/// return a partial page; only this later bound rolls a read back.
+const HARD: Duration = Duration::from_millis(1000);
+fn deadline(budget: QueryBudget) -> AtlasResult<(Instant, Instant)> {
+    if !(1..=ATLAS_MAX_RESULTS).contains(&budget.max_results)
+        || !(1..=ATLAS_MAX_BYTES).contains(&budget.max_bytes)
         || budget.work.is_zero()
-        || budget.work > Duration::from_millis(40)
+        || budget.work > ATLAS_SOFT_WORK
     {
         return Err(se_types::SeError::invalid(
             "Atlas query budget",
-            "1..50 results, 1..32768 bytes, 1..40 ms",
+            "1..2000 results, 1..262144 bytes, 1..250 ms",
         ));
     }
-    Ok(crate::clock::now() + budget.work)
+    let now = crate::clock::now();
+    Ok((now + budget.work, now + HARD))
 }
 fn size(value: &impl Serialize) -> AtlasResult<usize> {
     struct Counter(usize);
@@ -318,13 +303,14 @@ fn page<T>(
     bytes: usize,
     after: Option<&AtlasCursor>,
 ) -> AtlasResult<Page<T>> {
-    let omission = if next.is_some() {
-        Omission::Unknown {
-            reason: OmissionReason::Limit,
-        }
-    } else if partial {
+    // An incomplete source outranks a page limit: a cursor never hides a gap.
+    let omission = if partial {
         Omission::Unknown {
             reason: OmissionReason::SourceIncomplete,
+        }
+    } else if next.is_some() {
+        Omission::Unknown {
+            reason: OmissionReason::Limit,
         }
     } else {
         Omission::None

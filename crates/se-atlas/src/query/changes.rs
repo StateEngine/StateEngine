@@ -2,15 +2,18 @@ use super::*;
 use rusqlite::params;
 impl QueryReader<'_, '_, '_> {
     pub fn changes(&mut self, query: &ChangesQuery) -> AtlasResult<Answer<Read<Page<CodeChange>>>> {
-        let end = deadline(query.budget)?;
+        let (end, hard) = deadline(query.budget)?;
         let started = end - query.budget.work;
         let digest = cursor::digest(&("changes", &query.since, &query.scope, &self.ctx.viewer))?;
         query.scope.validate()?;
         let identity = self.cache.identity().clone();
         let env = self.ctx.split();
-        let result = self.cache.read(end, |sql| {
-            let snapshot = snapshot(&identity, &env, sql)?;
-            let baseline = baseline(&env, sql, &snapshot, &query.since)?;
+        let result = self.cache.read(hard, |sql| {
+            let mut snapshot = snapshot(&identity, &env, sql)?;
+            let (baseline, pruned) = baseline(&env, sql, &snapshot, &query.since)?;
+            if pruned {
+                snapshot.index.note(CoverageReason::RetentionGap);
+            }
             let previous = query.next.as_ref().map(PositionCursor::decode).transpose()?;
             let advanced = previous.as_ref().map(|p| p.validate(&snapshot.index, "changes", digest)).transpose()?.unwrap_or(false);
             let last = previous.as_ref().map_or(&baseline.last_key, |p| &p.last_key);
@@ -44,17 +47,13 @@ impl QueryReader<'_, '_, '_> {
             more|=scan_limited;
             if more&&key==*last{return Err(capacity("Atlas change response bytes",1,0));}
             let next = more.then(|| PositionCursor::new(&snapshot.index, "changes", digest, key, Some(fence)).and_then(|p| p.encode())).transpose()?;
-            let page = page(&snapshot, items, query.budget, next, !snapshot.negative_complete() || advanced || incomplete,
+            let page = page(&snapshot, items, query.budget, next, !snapshot.negative_complete() || advanced || incomplete || pruned,
                 bytes, query.next.as_ref())?;
             check_output(snapshot.answer(Read::Present { value: page }, advanced), query.budget)
         });
-        let answer = phase_timeout("changes query", started, end, result)?;
-        phase_timeout(
-            "changes query",
-            started,
-            end,
-            super::freshness::finish(self, answer, query.budget, end),
-        )
+        let answer = phase_timeout("changes query", started, hard, result)?;
+        let answer = super::freshness::finish(self, answer, query.budget, (end, hard));
+        phase_timeout("changes query", started, hard, answer)
     }
 }
 pub(super) fn change(row: &rusqlite::Row<'_>, author: AuthorHint) -> AtlasResult<CodeChange> {
@@ -159,12 +158,18 @@ pub(super) fn check_retention(
     }
     Ok(())
 }
+/// The range start, and whether a time before retention was raised to the
+/// oldest kept change rather than refused.
 fn baseline(
     env: &QueryEnv<'_>,
     sql: &SqlView<'_>,
     snapshot: &Snapshot,
     since: &ChangeBaseline,
-) -> AtlasResult<PositionCursor> {
+) -> AtlasResult<(PositionCursor, bool)> {
+    let commit = |what: &str| se_types::SeError::invalid("since commit", what);
+    let unobserved =
+        || commit("a commit Atlas observed; use a duration such as --since 1h instead");
+    let mut pruned = false;
     let generation = match since {
         ChangeBaseline::Cursor(value) => {
             let cursor = PositionCursor::decode(value)?;
@@ -175,47 +180,46 @@ fn baseline(
             )?;
             validate_key(&cursor.last_key)?;
             check_retention(snapshot, cursor.last_key.integers[0], env.viewer)?;
-            return Ok(cursor);
+            return Ok((cursor, false));
         }
         ChangeBaseline::ObservedCommit(oid) => {
             let oid = match oid {
                 GitObjectId::Sha1(v) => v.as_slice(),
                 GitObjectId::Sha256(v) => v.as_slice(),
             };
-            let mut stmt =
-                sql.prepare("SELECT min(generation) FROM observed_commits WHERE oid=?1")?;
-            stmt.query_row([oid], |r| r.get::<_, Option<i64>>(0))
-                .map_err(cache_error)?
-                .ok_or_else(|| {
-                    cursor::invalid(
-                        "BaselineUnavailable: commit was not retained as an observed baseline",
-                    )
-                })? as u64
+            let first = "SELECT min(generation) FROM observed_commits WHERE oid=?1";
+            scalar::<Option<i64>>(sql, first, [oid])?.ok_or_else(unobserved)? as u64
+        }
+        ChangeBaseline::ObservedCommitPrefix(prefix) => {
+            if !(4..=64).contains(&prefix.len()) || !prefix.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(commit("4..64 hex characters"));
+            }
+            let first = "SELECT CASE WHEN count(DISTINCT oid)>1 THEN -1 ELSE min(generation) END FROM observed_commits WHERE hex(oid) LIKE ?1";
+            match scalar::<Option<i64>>(sql, first, [format!("{prefix}%")])? {
+                Some(-1) => return Err(commit("an unambiguous SHA prefix")),
+                found => found.ok_or_else(unobserved)? as u64,
+            }
         }
         ChangeBaseline::ObservedUnixMillis(time) => {
-            let regressed: bool = {
-                let mut stmt=sql.prepare("SELECT EXISTS(SELECT 1 FROM (SELECT observed_unix_ms,lag(observed_unix_ms) OVER (ORDER BY generation) previous FROM generations) WHERE previous>observed_unix_ms)")?;
-                stmt.query_row([], |r| r.get(0)).map_err(cache_error)?
-            };
-            if regressed {
+            let regressed = "SELECT EXISTS(SELECT 1 FROM (SELECT observed_unix_ms,lag(observed_unix_ms) OVER (ORDER BY generation) previous FROM generations) WHERE previous>observed_unix_ms)";
+            if scalar(sql, regressed, [])? {
                 return Err(cursor::invalid(
                     "BaselineUnavailable: observation clock regressed",
                 ));
             }
-            let generation = {
-                let mut stmt = sql.prepare(
-                    "SELECT max(generation) FROM generations WHERE observed_unix_ms<=?1",
-                )?;
-                stmt.query_row([time], |r| r.get::<_, Option<i64>>(0))
-                    .map_err(cache_error)?
-            };
-            generation.ok_or_else(|| {
-                cursor::invalid("BaselineUnavailable: time predates retained observations")
-            })? as u64
+            let at = "SELECT max(generation) FROM generations WHERE observed_unix_ms<=?1";
+            match scalar::<Option<i64>>(sql, at, [time])? {
+                Some(generation) if generation as u64 >= snapshot.floor.0 => generation as u64,
+                _ => {
+                    pruned = true;
+                    snapshot.floor.0
+                }
+            }
         }
     };
     check_retention(snapshot, generation, env.viewer)?;
-    range_cursor(snapshot, env.viewer, generation, None)
+    let cursor = range_cursor(snapshot, env.viewer, generation, None)?;
+    Ok((cursor, pruned))
 }
 
 pub(super) fn public_change(change: &mut CodeChange) -> bool {

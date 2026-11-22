@@ -353,6 +353,21 @@ pub struct IndexSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<MemoryBudget>,
 }
+impl IndexSummary {
+    /// Record a coverage gap once.
+    pub fn note(&mut self, reason: CoverageReason) {
+        if !self.coverage.reasons.contains(&reason) {
+            self.coverage.reasons.push(reason);
+        }
+    }
+    /// Record a gap that also leaves a current index needing verification.
+    pub fn degrade(&mut self, reason: CoverageReason) {
+        if matches!(self.state, IndexState::Current) {
+            self.state = IndexState::VerificationNeeded { reason };
+        }
+        self.note(reason);
+    }
+}
 #[derive(
     Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]

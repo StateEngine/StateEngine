@@ -9,6 +9,13 @@ pub struct QueryBudget {
     pub max_bytes: u32,
     pub work: Duration,
 }
+/// Atlas page ceilings: results, response bytes and the soft work budget after
+/// which a query returns what it has collected instead of failing.
+pub const ATLAS_MAX_RESULTS: u16 = 2000;
+pub const ATLAS_MAX_BYTES: u32 = 262_144;
+pub const ATLAS_SOFT_WORK: Duration = Duration::from_millis(250);
+/// The longest inline record excerpt line an Atlas hit carries.
+pub const RECORD_LINE_BYTES: usize = 280;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "ScopeWire")]
@@ -109,15 +116,6 @@ pub enum SearchKind {
     Edit,
     Commit,
 }
-impl SearchKind {
-    /// Symbol plans may use the full bounded query work allowance.
-    pub fn query_budget(self, mut budget: QueryBudget) -> QueryBudget {
-        if matches!(self, Self::All | Self::Code | Self::Symbol) {
-            budget.work = Duration::from_millis(40);
-        }
-        budget
-    }
-}
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FindQuery {
@@ -165,6 +163,8 @@ pub enum GitObjectId {
 pub enum ChangeBaseline {
     Cursor(AtlasCursor),
     ObservedCommit(GitObjectId),
+    /// A short lowercase hexadecimal commit prefix, resolved against observed commits.
+    ObservedCommitPrefix(String),
     ObservedUnixMillis(i64),
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -193,14 +193,14 @@ struct BudgetWire {
 impl TryFrom<BudgetWire> for QueryBudget {
     type Error = crate::SeError;
     fn try_from(v: BudgetWire) -> crate::Result<Self> {
-        if !(1..=50).contains(&v.max_results)
-            || !(1..=32768).contains(&v.max_bytes)
+        if !(1..=ATLAS_MAX_RESULTS).contains(&v.max_results)
+            || !(1..=ATLAS_MAX_BYTES).contains(&v.max_bytes)
             || v.work.is_zero()
-            || v.work > Duration::from_millis(40)
+            || v.work > ATLAS_SOFT_WORK
         {
             return Err(crate::SeError::invalid(
                 "Atlas query budget",
-                "1..50 results, 1..32768 bytes and at most 40 ms finite index work",
+                "1..2000 results, 1..262144 bytes and at most 250 ms soft index work",
             ));
         }
         Ok(Self {

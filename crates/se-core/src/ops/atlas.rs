@@ -3,11 +3,8 @@ use super::inputs::Validate;
 use schemars::JsonSchema;
 use se_types::{Page, Read, Result, SeError, code::*};
 use serde::{Deserialize, Serialize};
-fn limit() -> u16 {
-    10
-}
 fn bytes() -> u32 {
-    4096
+    16384
 }
 fn all() -> SearchKind {
     SearchKind::All
@@ -25,27 +22,34 @@ pub struct AtlasOptions {
     pub root: Option<RootId>,
     #[serde(default)]
     pub cursor: Option<AtlasCursor>,
-    #[serde(default = "limit")]
-    pub limit: u16,
+    /// Page size; defaults: find 20, refs/impact/changes 50, outline 300.
+    #[serde(default)]
+    pub limit: Option<u16>,
     #[serde(default = "bytes")]
     pub byte_budget: u32,
     #[serde(default)]
     pub format: AtlasFormat,
     #[serde(default)]
     pub explain: bool,
+    /// Exit 2 whenever the answer is incomplete or stale, even with hits.
+    #[serde(default)]
+    pub require_complete: bool,
 }
 impl AtlasOptions {
-    pub fn budget(&self) -> Result<QueryBudget> {
-        if !(1024..=32768).contains(&self.byte_budget) {
+    /// `(default, max)` is the family's page size.
+    pub fn budget(&self, (default, max): (u16, u16)) -> Result<QueryBudget> {
+        let limit = self.limit.unwrap_or(default);
+        if !(1024..=ATLAS_MAX_BYTES).contains(&self.byte_budget) || !(1..=max).contains(&limit) {
             return Err(SeError::invalid(
-                "Atlas byte_budget",
-                "1024..32768 UTF-8 bytes including the response envelope",
+                "Atlas limit or byte_budget",
+                &format!("limit 1..{max}; budget 1024..262144 UTF-8 bytes including the envelope"),
             ));
         }
         // The reader measures Answer<Read<T>>; reserve the family's envelope.
-        se_types::code::Validate.query_budget(self.limit, self.byte_budget - 192)
+        se_types::code::Validate.query_budget(limit, self.byte_budget - 192)
     }
 }
+const PAGE: (u16, u16) = (50, 500);
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AtlasFind {
@@ -80,7 +84,7 @@ impl AtlasFind {
             regex: self.regex,
             next: self.options.cursor.clone(),
             budget: {
-                let mut budget = self.kind.query_budget(self.options.budget()?);
+                let mut budget = self.options.budget((20, 200))?;
                 if self.options.format == AtlasFormat::Compact
                     && matches!(
                         self.kind,
@@ -89,7 +93,7 @@ impl AtlasFind {
                 {
                     // Compact source hits need room for typed pointer metadata;
                     // the reader separately fits the exact rendered byte budget.
-                    budget.max_bytes = budget.max_bytes.saturating_mul(4).min(32768);
+                    budget.max_bytes = budget.max_bytes.saturating_mul(4).min(ATLAS_MAX_BYTES);
                 }
                 budget
             },
@@ -114,12 +118,14 @@ pub struct AtlasRefs {
 }
 impl AtlasRefs {
     pub fn query(&self) -> Result<RefsQuery> {
-        if !matches!(self.target, AtlasTarget::Symbol(_) | AtlasTarget::File(_))
-            || self.kinds.len() > 5
+        if !matches!(
+            self.target,
+            AtlasTarget::Symbol(_) | AtlasTarget::File(_) | AtlasTarget::Auto(_)
+        ) || self.kinds.len() > 5
         {
             return Err(SeError::invalid(
                 "Atlas refs target",
-                "a symbol or file and at most five reference kinds",
+                "a symbol, file or positional target and at most five reference kinds",
             ));
         }
         target(&self.target)?;
@@ -128,7 +134,7 @@ impl AtlasRefs {
             kinds: self.kinds.clone(),
             include_name_only: self.include_name_only,
             next: self.options.cursor.clone(),
-            budget: self.options.budget()?,
+            budget: self.options.budget(PAGE)?,
         })
     }
 }
@@ -159,7 +165,7 @@ impl AtlasImpact {
             depth: self.depth,
             include_name_only: self.include_name_only,
             next: self.options.cursor.clone(),
-            budget: self.options.budget()?,
+            budget: self.options.budget(PAGE)?,
         })
     }
 }
@@ -185,7 +191,7 @@ impl AtlasChanges {
             since: self.since.clone(),
             scope: scope(&self.paths, &self.languages)?,
             next: self.options.cursor.clone(),
-            budget: self.options.budget()?,
+            budget: self.options.budget(PAGE)?,
         })
     }
 }
@@ -206,7 +212,7 @@ impl AtlasOutline {
         Ok(OutlineQuery {
             path: self.path.clone(),
             next: self.options.cursor.clone(),
-            budget: self.options.budget()?,
+            budget: self.options.budget((300, 2000))?,
         })
     }
 }
@@ -290,21 +296,46 @@ impl super::AnyOp {
         }
     }
 }
-pub(super) fn page_exit<T>(data: &Read<Page<T>>) -> u8 {
-    match data {
-        Read::Present { value } => value.window().exit_code(false),
-        _ => data.exit_code(),
+impl super::AnyOutput {
+    /// Atlas exits, scoped to Atlas: any real hit is 0 in every index state; an
+    /// empty answer is 0 only when complete and current, else 2. Loose fallback
+    /// guesses are never real hits; `require_complete` turns any gap into 2.
+    pub fn atlas_exit(&self, require_complete: bool) -> Option<u8> {
+        let r = require_complete;
+        Some(match self {
+            Self::AtlasFind(v) => exit(&v.value.answer, r, |s| {
+                let guess = matches!(s.mode, SearchMode::Broad | SearchMode::Related);
+                let hits = if guess && s.fallback_from.is_some() {
+                    0
+                } else {
+                    s.page.items().len()
+                };
+                (hits, s.page.window().complete())
+            }),
+            Self::AtlasRefs(v) => exit(&v.value.answer, r, page_hits),
+            Self::AtlasChanges(v) => exit(&v.value.answer, r, page_hits),
+            Self::AtlasImpact(v) => exit(&v.value.answer, r, |i| {
+                let hits = i.dependents.len() + i.tests.len() + i.records.len();
+                (hits, i.complete)
+            }),
+            Self::AtlasOutline(v) => exit(&v.value.answer, r, |o| {
+                (o.symbols.len() + o.records.len(), o.complete)
+            }),
+            _ => return None,
+        })
     }
 }
-pub(super) fn complete_exit<T>(data: &Read<T>, complete: impl FnOnce(&T) -> bool) -> u8 {
-    match data {
-        Read::Present { value } => {
-            if complete(value) {
-                0
-            } else {
-                2
-            }
-        }
-        _ => data.exit_code(),
-    }
+fn page_hits<T>(page: &Page<T>) -> (usize, bool) {
+    (page.items().len(), page.window().complete())
+}
+fn exit<T>(answer: &Answer<Read<T>>, require: bool, facts: impl Fn(&T) -> (usize, bool)) -> u8 {
+    let Read::Present { value } = &answer.data else {
+        return answer.data.exit_code();
+    };
+    let (hits, complete) = facts(value);
+    let gaps = &answer.index.coverage.reasons;
+    let complete = complete
+        && matches!(answer.index.state, IndexState::Current)
+        && !gaps.contains(&CoverageReason::TimeLimit);
+    2 * u8::from(!complete && (hits == 0 || require))
 }

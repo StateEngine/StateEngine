@@ -127,16 +127,6 @@ impl QueryReader<'_, '_, '_> {
         let mut matched_bytes = 0;
         let mut window_end = None;
         let (pattern, regex) = super::modes::text_pattern(query.query.as_str(), mode, query.regex);
-        if work_end.saturating_duration_since(crate::clock::now())
-            < minimum_phase(query.budget.work)
-        {
-            return phase_timeout(
-                "source search before metadata admission",
-                work_end - SOURCE_WINDOW,
-                work_end,
-                Err(crate::cache::connection::timeout(0)),
-            );
-        }
         let metadata_started = crate::clock::now();
         let mut metadata_pool = phase_timeout(
             "source metadata candidates",
@@ -233,7 +223,7 @@ impl QueryReader<'_, '_, '_> {
                 let Some(stream) = scan.open(&file.pointer.path)? else {
                     range_incomplete = true;
                     stats.unavailable_files += 1;
-                    note_reason(&mut snapshot, CoverageReason::ReadFailure);
+                    snapshot.index.note(CoverageReason::ReadFailure);
                     continue;
                 };
                 let result = crate::text::search_with_terms(
@@ -262,7 +252,7 @@ impl QueryReader<'_, '_, '_> {
                     (result.line_limited, CoverageReason::ByteLimit),
                 ] {
                     if condition {
-                        note_reason(&mut snapshot, reason);
+                        snapshot.index.note(reason);
                     }
                 }
                 stats.binary_files += u32::from(result.binary);
@@ -511,7 +501,7 @@ impl QueryReader<'_, '_, '_> {
             } else {
                 CoverageReason::TimeLimit
             };
-            note_reason(&mut snapshot, reason);
+            snapshot.index.note(reason);
         }
         let output = SearchResults {
             mode,
@@ -543,12 +533,6 @@ impl QueryReader<'_, '_, '_> {
             keys,
             continuation,
         })
-    }
-}
-
-fn note_reason(snapshot: &mut Snapshot, reason: CoverageReason) {
-    if !snapshot.index.coverage.reasons.contains(&reason) {
-        snapshot.index.coverage.reasons.push(reason);
     }
 }
 
