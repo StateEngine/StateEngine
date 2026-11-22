@@ -50,6 +50,9 @@ impl LaunchCoordinator {
         let original_conversation = plan.conversation.clone();
         self.preflight_relaunch(&mut plan, &admission, deadline)
             .await?;
+        // Anything the successor's launch would refuse is refused here, while
+        // the original agent is still running.
+        self.qualify(&plan, deadline).await?;
         let fallback =
             (plan.conversation != original_conversation).then(|| plan.conversation.clone());
         let key = format!(
