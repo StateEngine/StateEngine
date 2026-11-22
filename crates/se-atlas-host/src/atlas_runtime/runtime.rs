@@ -8,10 +8,6 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
             .find(|r| &r.summary.root == root)
             .map(|r| r.summary.clone()))
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     fn step(
         &mut self,
         registration: &RootRegistration,
@@ -38,50 +34,12 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
                     started.elapsed(),
                 ));
             }
-            let root = self.root(&registration.root)?;
-            if (root.summary.epoch.is_none() || root.needs_rebuild) && self.active.is_none() {
-                let mut bytes = [0; 16];
-                se_proc::fill_entropy(&mut bytes).map_err(atlas_cold::failure)?;
-                let job = AtlasJobId(bytes);
-                self.pending = Some(WorkerRequest {
-                    job,
-                    root: registration.clone(),
-                    expected_epoch: root.summary.epoch.clone(),
-                    purpose: WorkerPurpose::ColdIndex,
-                    paths: Vec::new(),
-                    reservation: WorkerReservation {
-                        host_steady_ceiling_bytes: 25_000_000,
-                        child_peak_bytes: 64_000_000,
-                        wall_deadline: Duration::from_secs(900),
-                    },
-                    policy: policy.clone(),
-                });
-                self.active = Some((job, registration.root.clone()));
-            }
+            self.admit_cold_job(registration, policy)?;
             if let Some((job, id)) = &self.active
                 && id == &registration.root
             {
-                let root = self
-                    .roots
-                    .iter_mut()
-                    .find(|r| r.summary.root == registration.root)
-                    .ok_or_else(|| atlas_cold::failure("native root disappeared"))?;
-                root.summary.state = IndexState::ColdIndexing {
-                    job: *job,
-                    discovered_files: 0,
-                };
-                return Ok(Step {
-                    report: WorkReport {
-                        root: registration.root.clone(),
-                        phase: WorkPhase::Discover,
-                        completed_files: 0,
-                        remaining_known: 1,
-                        generation: None,
-                        state: root.summary.state.clone(),
-                    },
-                    summary: root.summary.clone(),
-                    complete: true,
-                });
+                let job = *job;
+                return self.cold_index_step(registration, job);
             }
             if self.active.is_some() {
                 if let Some(root) = self
@@ -152,38 +110,7 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
         })();
         match result {
             Err(error) if se_atlas::controller::quantum_expired(&error) => {
-                let reason = if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas scheduling stall")
-                {
-                    CoverageReason::SchedulingStall
-                } else {
-                    CoverageReason::TimeLimit
-                };
-                let root = self
-                    .roots
-                    .iter_mut()
-                    .find(|root| root.summary.root == work.root)
-                    .ok_or_else(|| atlas_cold::failure("paused native root disappeared"))?;
-                // No failed SQL transaction advances its cursor. Keep native
-                // readiness and the controller's unfinished work for the next
-                // finite slice, with an explicit non-current observation.
-                if !matches!(root.summary.state, IndexState::Partial { .. }) {
-                    root.summary.state = IndexState::VerificationNeeded { reason };
-                }
-                if !root.summary.coverage.reasons.contains(&reason) {
-                    root.summary.coverage.reasons.push(reason);
-                }
-                Ok(Step {
-                    report: WorkReport {
-                        root: work.root.clone(),
-                        phase: WorkPhase::Read,
-                        completed_files: 0,
-                        remaining_known: 1,
-                        generation: root.summary.generation,
-                        state: root.summary.state.clone(),
-                    },
-                    summary: root.summary.clone(),
-                    complete: false,
-                })
+                self.quantum_expired_step(error, work)
             }
             result => result,
         }
@@ -415,6 +342,104 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
         Ok((id, ScheduleReceipt::Coalesced))
     }
 }
+impl<D: RenewalDriver> NativeRuntime<D> {
+    fn admit_cold_job(
+        &mut self,
+        registration: &RootRegistration,
+        policy: &AtlasPolicy,
+    ) -> AtlasResult<()> {
+        let root = self.root(&registration.root)?;
+        if (root.summary.epoch.is_none() || root.needs_rebuild) && self.active.is_none() {
+            let mut bytes = [0; 16];
+            se_proc::fill_entropy(&mut bytes).map_err(atlas_cold::failure)?;
+            let job = AtlasJobId(bytes);
+            self.pending = Some(WorkerRequest {
+                job,
+                root: registration.clone(),
+                expected_epoch: root.summary.epoch.clone(),
+                purpose: WorkerPurpose::ColdIndex,
+                paths: Vec::new(),
+                reservation: WorkerReservation {
+                    host_steady_ceiling_bytes: 25_000_000,
+                    child_peak_bytes: 64_000_000,
+                    wall_deadline: Duration::from_secs(900),
+                },
+                policy: policy.clone(),
+            });
+            self.active = Some((job, registration.root.clone()));
+        }
+        Ok(())
+    }
+    fn cold_index_step(
+        &mut self,
+        registration: &RootRegistration,
+        job: AtlasJobId,
+    ) -> AtlasResult<Step> {
+        let root = self
+            .roots
+            .iter_mut()
+            .find(|r| r.summary.root == registration.root)
+            .ok_or_else(|| atlas_cold::failure("native root disappeared"))?;
+        root.summary.state = IndexState::ColdIndexing {
+            job,
+            discovered_files: 0,
+        };
+        Ok(Step {
+            report: WorkReport {
+                root: registration.root.clone(),
+                phase: WorkPhase::Discover,
+                completed_files: 0,
+                remaining_known: 1,
+                generation: None,
+                state: root.summary.state.clone(),
+            },
+            summary: root.summary.clone(),
+            complete: true,
+        })
+    }
+    fn quantum_expired_step(
+        &mut self,
+        error: se_types::SeError,
+        work: &Scheduled,
+    ) -> AtlasResult<Step> {
+        let reason = if matches!(
+        error.body.detail(),
+        se_types::Detail::DeadlineExceeded(detail)
+        if detail.op == "Atlas scheduling stall"
+        ) {
+            CoverageReason::SchedulingStall
+        } else {
+            CoverageReason::TimeLimit
+        };
+        let root = self
+            .roots
+            .iter_mut()
+            .find(|root| root.summary.root == work.root)
+            .ok_or_else(|| atlas_cold::failure("paused native root disappeared"))?;
+        // No failed SQL transaction advances its cursor. Keep native
+        // readiness and the controller's unfinished work for the next
+        // finite slice, with an explicit non-current observation.
+        if !matches!(root.summary.state, IndexState::Partial { .. }) {
+            root.summary.state = IndexState::VerificationNeeded { reason };
+        }
+        if !root.summary.coverage.reasons.contains(&reason) {
+            root.summary.coverage.reasons.push(reason);
+        }
+        Ok(Step {
+            report: WorkReport {
+                root: work.root.clone(),
+                phase: WorkPhase::Read,
+                completed_files: 0,
+                remaining_known: 1,
+                generation: root.summary.generation,
+                state: root.summary.state.clone(),
+            },
+            summary: root.summary.clone(),
+            complete: false,
+        })
+    }
+}
+
 fn durable_serial(base: u64, local: u64) -> AtlasResult<u64> {
     base.checked_add(local).filter(|serial|*serial<=i64::MAX as u64)
         .ok_or_else(||atlas_cold::failure("durable source serial exhausted; preserve the cache and perform explicit owned epoch repair"))
