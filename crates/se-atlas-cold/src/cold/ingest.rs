@@ -30,19 +30,11 @@ pub(super) fn file(
             }
             return Ok(());
         }
-        Ok(SourceRead::Bytes(snapshot)) => {
-            return unparsed(
-                source,
-                db,
-                path,
-                None,
-                phase,
-                observation::UnparsedObservation::Deferred {
-                    identity: &snapshot.identity,
-                    reason: CoverageReason::UnsupportedLanguage,
-                },
-            );
-        }
+        // The guard above failed, so `language` is `None` for this arm.
+        Ok(SourceRead::Bytes(snapshot)) => observation::UnparsedObservation::Deferred {
+            identity: &snapshot.identity,
+            reason: CoverageReason::UnsupportedLanguage,
+        },
         Ok(SourceRead::Hashed {
             identity,
             content_hash,
