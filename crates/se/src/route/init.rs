@@ -8,7 +8,6 @@ use super::{
 use crate::bootstrap::Bootstrap;
 use se_config::config_policy::ConfigFile;
 use se_core::{
-    admission::read_scope,
     commit::Cx,
     dispatch::Kernel,
     ops::*,
@@ -41,9 +40,7 @@ fn mcp_setup_error(mut error: SeError) -> SeError {
     error
 }
 fn present<R: ReadStore>(store: &R, admission: &Admission, actor: Actor) -> Result<bool> {
-    let mut snap = store
-        .snapshot(read_scope(admission))
-        .map_err(|e| store_error(&e))?;
+    let mut snap = super::select::open_snapshot(store, admission)?;
     let found = snap.principal(actor).map_err(|e| store_error(&e));
     let closed = snap.close().map_err(|e| store_error(&e));
     let found = found?;

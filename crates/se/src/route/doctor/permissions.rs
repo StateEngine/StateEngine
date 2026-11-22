@@ -339,10 +339,6 @@ fn installation(cx: &Bootstrap, owner: &str) -> Result<()> {
 }
 /// Some returns a complete bounded diagnosis or exactly one named tightening.
 /// None continues ordinary owner-human admission, including the full inventory.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(in crate::route) fn recover(
     cx: &Bootstrap,
     op: &AnyOp,
@@ -413,6 +409,46 @@ pub(in crate::route) fn recover(
             .into(),
         ));
     };
+    authorize(cx, id, &root)?;
+    let current = if id == "home.permissions" {
+        &mut root
+    } else {
+        database.as_mut().ok_or_else(|| {
+            refused(
+                id,
+                "state root protection must be restored before opening the database path",
+            )
+        })?
+    };
+    let (plan, fact, readback, changed) = tighten(current, id, &at, cx.json, diagnostic)?;
+    if id == "home.permissions" {
+        // The regular file reader is usable only after root protection has
+        // been independently witnessed. A failed record check leaves the
+        // tightening in place but grants no database or store authority.
+        installation(cx, &root.pin.snapshot().owner).map_err(|error| {
+            refused(
+                "installation.record",
+                &format!("the state root now has owner-only protection, but its installation record could not be verified; no database or store access was attempted: {error}"),
+            )
+        })?;
+    }
+    let remaining = resume_custody(cx, &at);
+    Ok(Some(
+        RepairOutput {
+            check_id: id.into(),
+            plan,
+            complete: remaining.is_empty(),
+            applied: if changed { vec![fact.clone()] } else { vec![] },
+            skipped: if changed { vec![] } else { vec![fact] },
+            readbacks: vec![readback],
+            remaining_checks: remaining,
+        }
+        .into(),
+    ))
+}
+/// Admits one named tightening only for an interactive owner at the selected
+/// installation; it never grants store or custody authority.
+fn authorize(cx: &Bootstrap, id: &str, root: &Target) -> Result<()> {
     if !matches!(id, "home.permissions" | "store.permissions") {
         return Err(refused(
             id,
@@ -441,53 +477,23 @@ pub(in crate::route) fn recover(
     } else {
         installation(cx, &root.pin.snapshot().owner)?;
     }
-    let current = if id == "home.permissions" {
-        &mut root
-    } else {
-        database.as_mut().ok_or_else(|| {
-            refused(
-                id,
-                "state root protection must be restored before opening the database path",
-            )
-        })?
-    };
-    let (plan, fact, readback, changed) = tighten(current, id, &at, cx.json, diagnostic)?;
-    if id == "home.permissions" {
-        // The regular file reader is usable only after root protection has
-        // been independently witnessed. A failed record check leaves the
-        // tightening in place but grants no database or store authority.
-        installation(cx, &root.pin.snapshot().owner).map_err(|error| {
-            refused(
-                "installation.record",
-                &format!("the state root now has owner-only protection, but its installation record could not be verified; no database or store access was attempted: {error}"),
-            )
-        })?;
-    }
+    Ok(())
+}
+/// Resumes the regular protected reader and completes the custody guard. Any
+/// failure remains an obligation; it never erases the achieved tightening.
+fn resume_custody(cx: &Bootstrap, at: &str) -> Vec<DiagnosisCheck> {
     let mut remaining = Vec::new();
-    // Resume the regular protected reader and complete custody guard now. Any
-    // failure remains an obligation; it never erases the achieved tightening.
-    match super::super::setup::inspect_phase(&cx.home, at.clone()) {
+    match super::super::setup::inspect_phase(&cx.home, at.to_owned()) {
         Ok(super::super::setup::Setup::Present((files, (reader, mut phase)))) => {
             let admission = super::super::admit::observe(cx, &mut phase, &files);
             drop(phase);
             drop(reader);
             if let Err(error) = admission {
-                remaining.push(unmeasured(&at, &error.to_string()));
+                remaining.push(unmeasured(at, &error.to_string()));
             }
         }
-        Ok(super::super::setup::Setup::Absent(_)) => remaining.push(super::setup_check(cx, &at)),
-        Err(error) => remaining.push(unmeasured(&at, &error.to_string())),
+        Ok(super::super::setup::Setup::Absent(_)) => remaining.push(super::setup_check(cx, at)),
+        Err(error) => remaining.push(unmeasured(at, &error.to_string())),
     }
-    Ok(Some(
-        RepairOutput {
-            check_id: id.into(),
-            plan,
-            complete: remaining.is_empty(),
-            applied: if changed { vec![fact.clone()] } else { vec![] },
-            skipped: if changed { vec![] } else { vec![fact] },
-            readbacks: vec![readback],
-            remaining_checks: remaining,
-        }
-        .into(),
-    ))
+    remaining
 }

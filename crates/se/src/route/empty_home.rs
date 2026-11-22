@@ -39,9 +39,7 @@ pub fn verify<R: ReadStore>(reader: &R, admission: &Admission, timeout: Duration
     let bound = se_host::client::lease::Deadline::from_options(&options)?;
     let mut admitted = admission.clone();
     admitted.scope = se_store::Scope::Registry;
-    let mut snapshot = reader
-        .snapshot(se_core::admission::read_scope(&admitted))
-        .map_err(|e| store_error(&e))?;
+    let mut snapshot = super::select::open_snapshot(reader, &admitted)?;
     let projects = snapshot
         .projects(se_store::ReadBudget {
             page: se_types::PageRequest {

@@ -686,7 +686,7 @@ fn dispatch_with_cold_recovery(
         }),
     }
 }
-fn finish_read<T>(result: Result<T>, closed: Result<()>) -> Result<T> {
+pub(super) fn finish_read<T>(result: Result<T>, closed: Result<()>) -> Result<T> {
     match result {
         Ok(value) => {
             closed?;

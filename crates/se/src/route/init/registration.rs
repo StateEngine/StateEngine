@@ -46,9 +46,7 @@ pub(super) fn finish(
     };
     if !present(store, &admission, admission.actor.clone())? {
         let kernel = Kernel::new(execute::facts()?)?;
-        let mut snap = store
-            .snapshot(read_scope(&admission))
-            .map_err(|e| store_error(&e))?;
+        let mut snap = super::super::select::open_snapshot(store, &admission)?;
         let batch = project::owner(
             &kernel,
             phase_key(&input.idempotency_key, "registry-owner")?,
@@ -64,23 +62,8 @@ pub(super) fn finish(
     let root = NativePath::from_local(repository.path.clone())?;
     let mut found = None;
     for record in select::projects(store, &admission)? {
-        let (id, registered, roots) = match &record.current.body {
-            EventBody::ProjectRegistered {
-                project,
-                name,
-                roots,
-                ..
-            }
-            | EventBody::ProjectUpdated {
-                project,
-                name,
-                roots,
-                ..
-            } => (project, name, roots.as_slice()),
-            EventBody::ProjectMoved {
-                project, name, to, ..
-            } => (project, name, std::slice::from_ref(to)),
-            _ => continue,
+        let Some((id, registered, roots)) = select::active_project(&record.current.body) else {
+            continue;
         };
         if roots.iter().any(|candidate| candidate.path == root) {
             if found.is_some() {
@@ -89,7 +72,7 @@ pub(super) fn finish(
                     "repository has more than one registration",
                 ));
             }
-            if input.name.is_some() && registered != &repository.name {
+            if input.name.is_some() && registered != repository.name {
                 return Err(SeError::invalid(
                     "project name",
                     "the existing registered name for this repository",
@@ -107,9 +90,7 @@ pub(super) fn finish(
                     || SeError::invalid("project identity", "fresh canonical UUID"),
                 )?)?;
             let kernel = Kernel::new(execute::facts()?)?;
-            let mut snap = store
-                .snapshot(read_scope(&admission))
-                .map_err(|e| store_error(&e))?;
+            let mut snap = super::super::select::open_snapshot(store, &admission)?;
             let canonical_key = serde_json::to_vec(&root)
                 .map_err(|e| scope::unreadable("repository native identity", &e.to_string()))?;
             let batch = project::register(
@@ -128,9 +109,7 @@ pub(super) fn finish(
             );
             snap.close().map_err(|e| store_error(&e))?;
             let committed = append(store, lease, batch?, &mut changed)?;
-            let mut snap = store
-                .snapshot(read_scope(&admission))
-                .map_err(|e| store_error(&e))?;
+            let mut snap = super::super::select::open_snapshot(store, &admission)?;
             let event = project::committed_registration(
                 &committed,
                 &mut Cx {
@@ -138,20 +117,7 @@ pub(super) fn finish(
                     admission: &admission,
                 },
             );
-            let closed = snap.close().map_err(|e| store_error(&e));
-            let event = match event {
-                Ok(event) => {
-                    closed?;
-                    event
-                }
-                Err(error) => {
-                    return Err(match closed {
-                        Ok(()) => error,
-                        Err(close) => error.with_cause(close),
-                    });
-                }
-            };
-            let project = event;
+            let project = execute::finish_read(event, snap.close().map_err(|e| store_error(&e)))?;
             if committed.state == se_store::CommitState::Committed {
                 changed.push("registered the project".into());
             }
@@ -189,9 +155,7 @@ pub(super) fn finish(
     admission.scope = Scope::Project(id.clone());
     if !present(store, &admission, admission.actor.clone())? {
         let kernel = Kernel::new(execute::facts()?)?;
-        let mut snap = store
-            .snapshot(read_scope(&admission))
-            .map_err(|e| store_error(&e))?;
+        let mut snap = super::super::select::open_snapshot(store, &admission)?;
         let batch = project::owner(
             &kernel,
             phase_key(&input.idempotency_key, &format!("project-owner-{id}"))?,
@@ -218,26 +182,20 @@ pub(super) fn finish(
     if config_changed {
         changed.push("persisted the setup configuration".into());
     }
-    let mut snap = store
-        .snapshot(read_scope(&admission))
-        .map_err(|e| store_error(&e))?;
+    let mut snap = super::super::select::open_snapshot(store, &admission)?;
     let metadata = scope::require_present(
         snap.project(id.clone()).map_err(|e| store_error(&e))?,
         "initialized project",
         "Read the original project metadata in this data home, then retry se init with its original --key; preserve existing project and machine identities.",
     )?;
     snap.close().map_err(|e| store_error(&e))?;
-    let project_name = match &metadata.current.body {
-        EventBody::ProjectRegistered { name, .. }
-        | EventBody::ProjectUpdated { name, .. }
-        | EventBody::ProjectMoved { name, .. } => name.clone(),
-        _ => {
-            return Err(scope::unreadable(
-                "initialized project",
-                "active project metadata is unavailable",
-            ));
-        }
+    let Some((_, project_name, _)) = select::active_project(&metadata.current.body) else {
+        return Err(scope::unreadable(
+            "initialized project",
+            "active project metadata is unavailable",
+        ));
     };
+    let project_name = project_name.to_owned();
     let command = AgentCommand::launch_in_home(&agent.id, &cx.home, &id, true)
         .ok_or_else(|| scope::unreadable("first launch command", AgentCommand::HOME_UNAVAILABLE))?;
     let node_source = repository.path.join(".stateengine/projects.jsonl");
