@@ -14,6 +14,7 @@ use crate::{
         self,
         covers::{self, CoverFile, CoverGraph},
         imports::Resolver,
+        parents_first,
     },
     policy,
 };
@@ -39,12 +40,24 @@ pub struct UpdateReport {
     pub symbols: SymbolDiff,
 }
 
-/// What `index_path` did with one path.
+/// What `index_path` did with one path. `removed` is true when the path had
+/// been indexed and its stale rows were dropped.
 #[derive(Clone, Debug)]
 pub enum PathOutcome {
     Indexed(UpdateReport),
-    /// The path is absent or denied; `true` when an indexed file was removed.
-    Removed(bool),
+    /// The private-file policy denies the name.
+    Denied {
+        removed: bool,
+    },
+    /// Custody refused what the name now denotes (a link, a device, a
+    /// directory, a Windows short-name alias).
+    Refused {
+        removed: bool,
+    },
+    /// No file exists at the name.
+    Absent {
+        removed: bool,
+    },
 }
 
 struct Existing {
@@ -70,11 +83,21 @@ impl Store {
                 self.update_file(resolver, path, &source)
                     .map(PathOutcome::Indexed)
             }
-            GuardedRead::Absent | GuardedRead::Denied => {
-                resolver.remove(path);
-                self.remove_file(path).map(PathOutcome::Removed)
-            }
+            GuardedRead::Denied => self
+                .forget(resolver, path)
+                .map(|removed| PathOutcome::Denied { removed }),
+            GuardedRead::Refused => self
+                .forget(resolver, path)
+                .map(|removed| PathOutcome::Refused { removed }),
+            GuardedRead::Absent => self
+                .forget(resolver, path)
+                .map(|removed| PathOutcome::Absent { removed }),
         }
+    }
+
+    fn forget(&mut self, resolver: &mut Resolver, path: &str) -> Result<bool> {
+        resolver.remove(path);
+        self.remove_file(path)
     }
 
     /// Re-index one file read through custody, in one transaction.
@@ -238,19 +261,21 @@ fn existing_symbols(tx: &Transaction<'_>, file: i64) -> Result<HashMap<Vec<u8>, 
 fn diff_symbols(tx: &Transaction<'_>, file: i64, record: &FileRecord) -> Result<SymbolDiff> {
     let mut existing = existing_symbols(tx, file)?;
     let mut diff = SymbolDiff::default();
-    let mut ids: Vec<i64> = Vec::with_capacity(record.extracted.symbols.len());
+    let symbols = &record.extracted.symbols;
+    let mut ids: Vec<Option<i64>> = vec![None; symbols.len()];
     let accuracy = record.extracted.accuracy as i64;
     let mut insert = tx.prepare_cached(write::INSERT_SYMBOL)?;
     let mut update = tx.prepare_cached(
         "UPDATE sym SET parent=?2, line=?3, end_line=?4, accuracy=?5, exported=?6, sig=?7,
            sig_hash=?8, body_hash=?9 WHERE id=?1",
     )?;
-    for symbol in &record.extracted.symbols {
-        let parent = symbol.parent.and_then(|index| ids.get(index).copied());
+    for index in parents_first(symbols) {
+        let symbol = &symbols[index];
+        let parent = write::parent_id(symbol, &ids);
         let Some(old) = existing.remove(symbol.key.as_slice()) else {
             let name = write::intern_token(tx, &symbol.name.to_lowercase(), true)?.0;
             write::insert_symbol(&mut insert, symbol, file, parent, name, accuracy)?;
-            ids.push(tx.last_insert_rowid());
+            ids[index] = Some(tx.last_insert_rowid());
             diff.added.push(symbol.key);
             continue;
         };
@@ -275,7 +300,7 @@ fn diff_symbols(tx: &Transaction<'_>, file: i64, record: &FileRecord) -> Result<
                 symbol.body_hash
             ])?;
         }
-        ids.push(old.id);
+        ids[index] = Some(old.id);
     }
     let mut delete = tx.prepare_cached("DELETE FROM sym WHERE id=?1")?;
     for (key, old) in existing {

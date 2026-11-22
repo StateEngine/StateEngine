@@ -268,25 +268,62 @@ impl<'t> Builder<'t> {
     }
 }
 
-/// Fill every symbol's stable key. Parents precede children in the list.
+/// Fill every symbol's stable key. A key hashes its parent's key, so parents
+/// are keyed first even when declared later (a Go method may precede its
+/// receiver type); ordinals count same-named siblings in declaration order.
 pub(crate) fn assign_keys(path: &str, symbols: &mut [Symbol]) {
-    let mut ordinals: HashMap<(Option<usize>, SymbolKind, String), u32> = HashMap::new();
-    for index in 0..symbols.len() {
+    let mut counts: HashMap<(Option<usize>, SymbolKind, &str), u32> = HashMap::new();
+    let ordinals: Vec<u32> = symbols
+        .iter()
+        .map(|symbol| {
+            let count = counts
+                .entry((symbol.parent, symbol.kind, symbol.name.as_str()))
+                .or_insert(0);
+            *count += 1;
+            *count - 1
+        })
+        .collect();
+    let mut keyed = vec![false; symbols.len()];
+    for index in parents_first(symbols) {
         let symbol = &symbols[index];
-        let ordinal = ordinals
-            .entry((symbol.parent, symbol.kind, symbol.name.clone()))
-            .or_insert(0);
         let mut hasher = blake3::Hasher::new();
-        match symbol.parent.and_then(|parent| symbols.get(parent)) {
-            Some(parent) if symbol.parent < Some(index) => hasher.update(&parent.key),
-            _ => hasher.update(path.as_bytes()),
+        match symbol
+            .parent
+            .filter(|parent| keyed.get(*parent) == Some(&true))
+        {
+            Some(parent) => hasher.update(&symbols[parent].key),
+            None => hasher.update(path.as_bytes()),
         };
         hasher.update(&[0, symbol.kind as u8]);
         hasher.update(symbol.name.as_bytes());
-        hasher.update(&ordinal.to_le_bytes());
-        *ordinal += 1;
+        hasher.update(&ordinals[index].to_le_bytes());
         symbols[index].key = *hasher.finalize().as_bytes();
+        keyed[index] = true;
     }
+}
+
+/// Symbol indexes ordered so every parent precedes its children. A parent
+/// chain that loops or leaves the list is cut where it does.
+pub(crate) fn parents_first(symbols: &[Symbol]) -> Vec<usize> {
+    const NEW: u8 = 0;
+    const OPEN: u8 = 1;
+    const PLACED: u8 = 2;
+    let mut state = vec![NEW; symbols.len()];
+    let mut order = Vec::with_capacity(symbols.len());
+    let mut chain = Vec::new();
+    for start in 0..symbols.len() {
+        let mut at = Some(start);
+        while let Some(index) = at.filter(|index| state.get(*index) == Some(&NEW)) {
+            state[index] = OPEN;
+            chain.push(index);
+            at = symbols[index].parent;
+        }
+        while let Some(index) = chain.pop() {
+            state[index] = PLACED;
+            order.push(index);
+        }
+    }
+    order
 }
 
 /// First 8 bytes of BLAKE3, as SQLite's signed integer.
@@ -534,6 +571,18 @@ pub(crate) fn ident(text: &str) -> &str {
         .find(|(_, c)| !(c.is_alphanumeric() || *c == '_' || *c == '$'))
         .map_or(text.len(), |(at, _)| at);
     &text[..end]
+}
+
+/// `text` after a leading keyword, only when the keyword ends at an
+/// identifier boundary (`fun` but not `function`, `enum` but not
+/// `enumerable`).
+pub(crate) fn keyword<'t>(text: &'t str, word: &str) -> Option<&'t str> {
+    let rest = text.strip_prefix(word)?;
+    let continues = rest
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '$');
+    (!continues).then_some(rest)
 }
 
 /// Strip a leading balanced group such as `#[...]`, `@Name(...)` or `[Attr]`

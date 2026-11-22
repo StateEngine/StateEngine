@@ -42,10 +42,20 @@ pub struct CompactReport {
 
 impl Store {
     /// Whether the policy calls for compaction after `idle` without writes.
+    /// Only rows a non-forced `compact_deltas` would fold count, so deferred
+    /// hot tokens can never keep this true while compaction folds nothing.
     pub fn compaction_due(&self, policy: &CompactPolicy, idle: Duration) -> Result<bool> {
-        let rows: i64 =
-            self.connection()
-                .query_row("SELECT count(*) FROM post_delta", [], |row| row.get(0))?;
+        let rows: i64 = self.connection().query_row(
+            "SELECT coalesce(sum(d.n), 0) FROM
+               (SELECT tok, count(*) AS n FROM post_delta GROUP BY tok) d
+               LEFT JOIN vocab v ON v.id = d.tok
+             WHERE coalesce(v.df, 0) <= ?1 OR d.n >= ?2",
+            params![
+                policy.hot_df,
+                i64::try_from(policy.hot_min_deltas).unwrap_or(i64::MAX)
+            ],
+            |row| row.get(0),
+        )?;
         let rows = rows.max(0) as u64;
         Ok(rows > policy.max_delta_rows || (idle >= policy.idle_after && rows > policy.idle_rows))
     }

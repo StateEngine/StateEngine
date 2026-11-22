@@ -3,12 +3,12 @@
 //! custody as source files, and the `ignore` crate only matches names.
 use crate::{
     IndexError, Result,
-    custody::{GuardedRead, IndexSourceRoot},
+    custody::{self, GuardedRead, IndexSourceRoot},
     policy,
 };
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use se_proc::{NativeRootDirectory, NativeSourceEntry, NativeSourceKind};
-use std::path::Path;
+use std::{io, path::Path};
 
 const MAX_DEPTH: usize = 128;
 const MAX_DIRECTORIES: u32 = 65_536;
@@ -49,6 +49,14 @@ pub struct Discovery {
     /// Ignore files that could not be read through custody (a link, a
     /// device, no permission); their rules were not applied.
     pub unreadable_ignore_files: u32,
+    /// Directories that disappeared or were replaced between listing and
+    /// entering them, or while they were listed.
+    pub vanished_dirs: u32,
+    /// Directories the walker had no permission to list.
+    pub unreadable_dirs: u32,
+    /// Directories custody refused to enter, such as one swapped for a link.
+    pub refused_dirs: u32,
+    /// False when a bound stopped the walk or any directory was skipped.
     pub complete: bool,
 }
 
@@ -65,12 +73,28 @@ pub fn discover(root: &IndexSourceRoot, options: &WalkOptions) -> Result<Discove
     let physical = root.physical_root();
     let global = build_rules(physical, options.global_patterns.iter().map(String::as_str))?;
     out.invalid_ignore_lines += global.1;
-    let mut stack = vec![open_frame(root, String::new(), &mut out)?];
+    let Some(top) = open_frame(root, String::new(), &mut out)? else {
+        let gone = io::Error::new(io::ErrorKind::NotFound, "the source root is gone");
+        return Err(gone.into());
+    };
+    let mut stack = vec![top];
     let mut directories = 1u32;
+    let mut skipped = false;
     while let Some(frame) = stack.last_mut() {
-        let Some(entry) = next_entry(frame)? else {
-            stack.pop();
-            continue;
+        let entry = match next_entry(frame) {
+            Ok(Some(entry)) => entry,
+            Ok(None) => {
+                stack.pop();
+                continue;
+            }
+            // The root itself is exempt: losing it is never a skip.
+            Err(error) if stack.len() > 1 => {
+                skip(root, &mut out, &error)?;
+                skipped = true;
+                stack.pop();
+                continue;
+            }
+            Err(error) => return Err(error.into()),
         };
         let Some(path) = child_path(&frame.path, &entry, &mut out) else {
             continue;
@@ -97,11 +121,37 @@ pub fn discover(root: &IndexSourceRoot, options: &WalkOptions) -> Result<Discove
             out.files.sort_unstable();
             return Ok(out);
         }
-        stack.push(open_frame(root, path, &mut out)?);
+        match open_frame(root, path, &mut out) {
+            Ok(Some(frame)) => stack.push(frame),
+            Ok(None) => {
+                out.vanished_dirs += 1;
+                skipped = true;
+            }
+            Err(IndexError::Io(error)) => {
+                skip(root, &mut out, &error)?;
+                skipped = true;
+            }
+            Err(error) => return Err(error),
+        }
     }
     out.files.sort_unstable();
-    out.complete = true;
+    out.complete = !skipped;
     Ok(out)
+}
+
+/// Count a directory that could not be entered or listed. Custody's verdict
+/// that a directory changed carries no portable kind, so the root is checked
+/// again: a changed root is still an error, never a skip.
+fn skip(root: &IndexSourceRoot, out: &mut Discovery, error: &io::Error) -> Result<()> {
+    root.check()?;
+    if error.kind() == io::ErrorKind::PermissionDenied {
+        out.unreadable_dirs += 1;
+    } else if custody::refusal(error) {
+        out.refused_dirs += 1;
+    } else {
+        out.vanished_dirs += 1;
+    }
+    Ok(())
 }
 
 fn denied(path: &str, directory: bool) -> bool {
@@ -112,7 +162,7 @@ fn denied(path: &str, directory: bool) -> bool {
     }
 }
 
-fn next_entry(frame: &mut Frame<'_>) -> Result<Option<NativeSourceEntry>> {
+fn next_entry(frame: &mut Frame<'_>) -> io::Result<Option<NativeSourceEntry>> {
     if let Some(entry) = frame.pending.next() {
         return Ok(Some(entry));
     }
@@ -164,15 +214,15 @@ fn ignored(
     ignored
 }
 
+/// `None` when the directory vanished before it could be opened.
 fn open_frame<'a>(
     root: &'a IndexSourceRoot,
     path: String,
     out: &mut Discovery,
-) -> Result<Frame<'a>> {
-    let cursor = root
-        .native()
-        .open_directory(&path)?
-        .ok_or(IndexError::Invalid("a discovered directory disappeared"))?;
+) -> Result<Option<Frame<'a>>> {
+    let Some(cursor) = root.native().open_directory(&path)? else {
+        return Ok(None);
+    };
     let base = root.physical_root().join(&path);
     let mut rules = Vec::new();
     for name in IGNORE_FILES {
@@ -184,9 +234,14 @@ fn open_frame<'a>(
         let file = match root.read_guarded_file(&relative) {
             Ok(GuardedRead::Source(file)) => file,
             Ok(GuardedRead::Absent | GuardedRead::Denied) => continue,
-            // `Other` is custody's own verdict that the root changed.
-            Err(error) if error.kind() == std::io::ErrorKind::Other => return Err(error.into()),
+            Ok(GuardedRead::Refused) => {
+                out.unreadable_ignore_files += 1;
+                continue;
+            }
             Err(_) => {
+                // A changed root is an error; anything else about this one
+                // file (no permission, edited mid-read) skips its rules.
+                root.check()?;
                 out.unreadable_ignore_files += 1;
                 continue;
             }
@@ -199,12 +254,12 @@ fn open_frame<'a>(
         out.invalid_ignore_lines += invalid;
         rules.push(built);
     }
-    Ok(Frame {
+    Ok(Some(Frame {
         path,
         cursor,
         pending: Vec::new().into_iter(),
         rules,
-    })
+    }))
 }
 
 fn build_rules<'l>(base: &Path, lines: impl Iterator<Item = &'l str>) -> Result<(Gitignore, u32)> {

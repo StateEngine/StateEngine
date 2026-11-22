@@ -1,6 +1,9 @@
 //! The parallel cold builder. Up to eight workers read through the shared
 //! custody and extract; one writer commits at most 500 files or 250 ms per
-//! transaction, so readers can query every committed batch.
+//! transaction, so readers can query every committed batch. Each worker
+//! re-verifies its scan's custody after every claim, before handing the
+//! claim's files to the writer, so no batch publishes an unverified read; a
+//! custody failure stops the build and clears what it committed.
 //!
 //! Files are numbered by sorted path before reading, so import targets get
 //! ids at once. Postings accumulate in memory as compact varints and are
@@ -64,6 +67,8 @@ pub struct BuildReport {
     pub indexed: usize,
     pub absent: usize,
     pub denied: usize,
+    /// Files custody refused: links, devices, Windows short-name aliases.
+    pub refused: usize,
     pub read_failed: usize,
     pub extract_failed: usize,
     pub binary: usize,
@@ -73,6 +78,9 @@ pub struct BuildReport {
     pub links: u32,
     pub unnameable: u32,
     pub unreadable_ignore_files: u32,
+    pub vanished_dirs: u32,
+    pub unreadable_dirs: u32,
+    pub refused_dirs: u32,
     pub tokens: usize,
     pub batches: usize,
     pub discovery_complete: bool,
@@ -83,6 +91,7 @@ enum Outcome {
     Indexed(i64, Box<FileRecord>),
     Absent,
     Denied,
+    Refused,
     ReadFailed,
     ScanFailed(io::Error),
 }
@@ -103,7 +112,7 @@ impl Store {
             .zip(1i64..)
             .map(|(p, id)| (p.as_str(), id))
             .collect();
-        reset_index(self.connection_mut())?;
+        clear_index(self.connection_mut())?;
         let workers = match options.workers {
             0 => thread::available_parallelism()
                 .map_or(4, |n| n.get())
@@ -122,8 +131,14 @@ impl Store {
             drop(sender);
             writer.consume(receiver)
         });
-        let scan_failure = consumed?;
-        let complete = discovery.complete && scan_failure.is_none();
+        if let Some(error) = consumed? {
+            // Lost custody: publish nothing further, and leave no partial
+            // build looking current.
+            drop(writer);
+            clear_index(self.connection_mut())?;
+            return Err(IndexError::Io(error));
+        }
+        let complete = discovery.complete;
         writer.finish(complete)?;
         let mut report = std::mem::take(&mut writer.report);
         report.discovered = paths.len();
@@ -132,24 +147,18 @@ impl Store {
         report.links = discovery.links;
         report.unnameable = discovery.unnameable;
         report.unreadable_ignore_files = discovery.unreadable_ignore_files;
+        report.vanished_dirs = discovery.vanished_dirs;
+        report.unreadable_dirs = discovery.unreadable_dirs;
+        report.refused_dirs = discovery.refused_dirs;
         report.discovery_complete = complete;
         report.elapsed = started.elapsed();
-        match scan_failure {
-            Some(error) => Err(IndexError::Io(error)),
-            None => Ok(report),
-        }
+        Ok(report)
     }
 }
 
-fn reset_index(conn: &mut Connection) -> Result<()> {
+fn clear_index(conn: &mut Connection) -> Result<()> {
     let tx = conn.transaction()?;
-    tx.execute_batch(
-        "DELETE FROM covers; DELETE FROM imp; DELETE FROM sym; DELETE FROM short;
-         DELETE FROM gram_delta; DELETE FROM gram; DELETE FROM file_tok; DELETE FROM post_delta;
-         DELETE FROM vocab_post; DELETE FROM vocab; DELETE FROM files;
-         UPDATE meta SET discovery_complete=0 WHERE singleton=1;",
-    )?;
-    write::set_state(&tx, &serde_json::json!({ "cold_posted_through": 0 }))?;
+    write::clear_index(&tx)?;
     tx.commit()?;
     Ok(())
 }
@@ -162,35 +171,36 @@ fn work(
     ids: &HashMap<&str, i64>,
     sender: SyncSender<Outcome>,
 ) {
-    let mut reads = match root.begin_reads() {
-        Ok(reads) => reads,
-        Err(error) => {
-            let _ = sender.send(Outcome::ScanFailed(error));
-            return;
-        }
-    };
+    let mut outcomes = Vec::with_capacity(CLAIM);
     loop {
         let start = next.fetch_add(CLAIM, Ordering::Relaxed);
         if start >= paths.len() {
-            break;
+            return;
         }
-        for (path, id) in paths[start..(start + CLAIM).min(paths.len())]
-            .iter()
-            .zip(start as i64 + 1..)
-        {
-            // Extraction contains its own panics; this guards the rest of
-            // the per-file path so one file can never take down the host.
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                read_one(&mut reads, path, id, resolver, ids)
-            }))
-            .unwrap_or(Outcome::ReadFailed);
+        let verified = root.begin_reads().and_then(|mut reads| {
+            for (path, id) in paths[start..(start + CLAIM).min(paths.len())]
+                .iter()
+                .zip(start as i64 + 1..)
+            {
+                // Extraction contains its own panics; this guards the rest of
+                // the per-file path so one file can never take down the host.
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    read_one(&mut reads, path, id, resolver, ids)
+                }))
+                .unwrap_or(Outcome::ReadFailed);
+                outcomes.push(outcome);
+            }
+            reads.finish()
+        });
+        if let Err(error) = verified {
+            let _ = sender.send(Outcome::ScanFailed(error));
+            return;
+        }
+        for outcome in outcomes.drain(..) {
             if sender.send(outcome).is_err() {
                 return;
             }
         }
-    }
-    if let Err(error) = reads.finish() {
-        let _ = sender.send(Outcome::ScanFailed(error));
     }
 }
 
@@ -219,6 +229,7 @@ fn read_one(
         }
         Ok(GuardedRead::Absent) => Outcome::Absent,
         Ok(GuardedRead::Denied) => Outcome::Denied,
+        Ok(GuardedRead::Refused) => Outcome::Refused,
         Err(_) => Outcome::ReadFailed,
     }
 }
@@ -244,12 +255,12 @@ impl<'c> ColdWriter<'c> {
         }
     }
 
-    /// Drain the workers, committing bounded batches. Returns a custody
-    /// failure reported by any worker.
+    /// Drain the workers, committing bounded batches. A custody failure
+    /// reported by any worker stops at once, before another batch commits;
+    /// dropping the receiver stops the other workers.
     fn consume(&mut self, receiver: Receiver<Outcome>) -> Result<Option<io::Error>> {
         let mut batch: Vec<(i64, Box<FileRecord>)> = Vec::new();
         let mut opened = Instant::now();
-        let mut failure = None;
         loop {
             let wait = self.batch_time.saturating_sub(opened.elapsed());
             match receiver.recv_timeout(wait) {
@@ -261,8 +272,9 @@ impl<'c> ColdWriter<'c> {
                 }
                 Ok(Outcome::Absent) => self.report.absent += 1,
                 Ok(Outcome::Denied) => self.report.denied += 1,
+                Ok(Outcome::Refused) => self.report.refused += 1,
                 Ok(Outcome::ReadFailed) => self.report.read_failed += 1,
-                Ok(Outcome::ScanFailed(error)) => failure = failure.or(Some(error)),
+                Ok(Outcome::ScanFailed(error)) => return Ok(Some(error)),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
@@ -275,7 +287,7 @@ impl<'c> ColdWriter<'c> {
         if !batch.is_empty() {
             self.flush(&mut batch)?;
         }
-        Ok(failure)
+        Ok(None)
     }
 
     fn flush(&mut self, batch: &mut Vec<(i64, Box<FileRecord>)>) -> Result<()> {
@@ -425,6 +437,9 @@ fn write_grams(tx: &Transaction<'_>, vocab: &HashMap<String, i64>) -> Result<()>
             grams.entry(gram).or_default().push(*id);
         }
     }
+    // Key order fills the WITHOUT ROWID pages densely.
+    let mut grams: Vec<_> = grams.into_iter().collect();
+    grams.sort_unstable_by_key(|(gram, _)| *gram);
     let mut insert = tx.prepare_cached("INSERT INTO gram(g, toks) VALUES (?1, ?2)")?;
     for (gram, mut ids) in grams {
         ids.sort_unstable();

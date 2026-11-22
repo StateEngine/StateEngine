@@ -1,15 +1,30 @@
 //! The built-in private-file boundary. It is applied to every name before any
 //! open, on every read path, and no ignore-file negation can override it.
 //!
-//! Secret locations are denied outright. Name-based secret guesses are
-//! extension-aware, so ordinary source such as `credentials.py`,
-//! `src/id_map.rs`, `config.ts` or `settings.py` stays indexable. A directory
-//! is a name without an extension, so `secrets/` is denied, except that a
-//! directory named exactly `credentials` holds source often enough to stay
-//! allowed (its files are still judged one by one).
+//! Secret dot-directories (`.git`, `.ssh`, `.aws`, ...) are denied outright,
+//! with everything beneath them. No other directory is denied by name, so
+//! source trees such as `src/secrets/` or `secret_store/` stay indexable.
+//! Files are judged by name and extension: keys, certificates and secret-named
+//! data files are denied, while source such as `credentials.py`,
+//! `src/id_map.rs`, `config.ts` or `src/secrets/provider.rs` stays allowed.
+//! Inside a directory named exactly `secret` or `secrets`, extensionless and
+//! data or configuration files are denied too (`deploy/secrets/db.yaml`).
+
+/// Dot-directories that hold credentials or repository internals, matched as
+/// any directory component.
+const SECRET_DIRS: &[&str] = &[
+    ".git",
+    ".stateengine",
+    ".ssh",
+    ".aws",
+    ".gnupg",
+    ".azure",
+    ".kube",
+    ".env",
+];
 
 /// Dot names that always hold credentials or repository internals, matched as
-/// any path component.
+/// the file name.
 const SECRET_NAMES: &[&str] = &[
     ".git",
     ".stateengine",
@@ -63,7 +78,11 @@ const DATA_EXTENSIONS: &[&str] = &[
     "properties",
     "plist",
     "dat",
+    "env",
 ];
+
+/// Directory names whose data and extensionless files are treated as secret.
+const SECRET_DATA_DIRS: &[&str] = &["secret", "secrets"];
 
 /// Source-code suffixes: an SSH key stem carrying one of these is a program,
 /// not a key.
@@ -82,47 +101,51 @@ pub fn directory_denied(path: &str) -> bool {
 
 /// Whether a root-relative file may be opened, observed or searched.
 pub fn file_denied(path: &str) -> bool {
-    let mut parts = path.split('/').peekable();
-    let mut previous: Option<&str> = None;
-    while let Some(part) = parts.next() {
-        let leaf = parts.peek().is_none();
-        if !leaf && secret_directory(part) {
-            return true;
-        }
-        if leaf {
-            let docker_config = previous.is_some_and(|dir| dir.eq_ignore_ascii_case(".docker"))
-                && part.eq_ignore_ascii_case("config.json");
-            return docker_config || secret_component(part) || secret_file_name(part);
-        }
-        previous = Some(part);
+    let (dirs, leaf) = match path.rsplit_once('/') {
+        Some((dirs, leaf)) => (Some(dirs), leaf),
+        None => (None, path),
+    };
+    let dirs = || dirs.into_iter().flat_map(|dirs| dirs.split('/'));
+    if dirs().any(secret_directory) {
+        return true;
     }
-    false
-}
-
-fn secret_component(part: &str) -> bool {
-    SECRET_NAMES
-        .iter()
-        .any(|name| part.eq_ignore_ascii_case(name))
-        || starts_with_ci(part, ".env.")
+    let parent = dirs().last();
+    let docker_config = parent.is_some_and(|dir| dir.eq_ignore_ascii_case(".docker"))
+        && leaf.eq_ignore_ascii_case("config.json");
+    let in_secret_dir = dirs().any(|dir| contains_ci(SECRET_DATA_DIRS, dir));
+    docker_config
+        || secret_name(leaf)
+        || secret_file_name(leaf)
+        || (in_secret_dir && data_or_bare(extension(leaf)))
 }
 
 fn secret_directory(name: &str) -> bool {
-    secret_component(name)
-        || (!name.eq_ignore_ascii_case("credentials") && secret_data_name(name, extension(name)))
+    contains_ci(SECRET_DIRS, name) || starts_with_ci(name, ".env.")
+}
+
+fn secret_name(name: &str) -> bool {
+    contains_ci(SECRET_NAMES, name) || starts_with_ci(name, ".env.")
+}
+
+fn data_or_bare(extension: Option<&str>) -> bool {
+    extension.is_none_or(|ext| contains_ci(DATA_EXTENSIONS, ext))
 }
 
 fn secret_data_name(name: &str, extension: Option<&str>) -> bool {
-    let data = extension.is_none_or(|ext| contains_ci(DATA_EXTENSIONS, ext));
-    data && SECRET_PREFIXES
-        .iter()
-        .any(|prefix| starts_with_ci(name, prefix))
+    data_or_bare(extension)
+        && SECRET_PREFIXES
+            .iter()
+            .any(|prefix| starts_with_ci(name, prefix))
 }
 
 fn secret_file_name(name: &str) -> bool {
-    let extension = extension(name);
-    if extension.is_some_and(|ext| contains_ci(KEY_EXTENSIONS, ext)) {
+    // A bare dotfile such as `.pem` has no stem, but its suffix still names
+    // a key format.
+    let suffix = name.rsplit_once('.').map(|(_, ext)| ext);
+    if suffix.is_some_and(|ext| contains_ci(KEY_EXTENSIONS, ext)) {
         return true;
     }
+    let extension = extension(name);
     let code = extension.is_some_and(|ext| contains_ci(CODE_EXTENSIONS, ext));
     let stem = name.split('.').next().unwrap_or(name);
     if !code && contains_ci(SSH_KEY_STEMS, stem) {
@@ -189,7 +212,7 @@ mod tests {
         }
         assert!(!directory_denied("credentials"));
         assert!(directory_denied("pkg/.aws"));
-        assert!(directory_denied("deploy/secrets"));
+        assert!(!directory_denied("deploy/secrets"));
         assert!(file_denied("deploy/secrets/db.yaml"));
     }
 }

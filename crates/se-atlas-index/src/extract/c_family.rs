@@ -1,6 +1,6 @@
 //! Outline rules for C, C++, Java, C#, Kotlin and Zig: type declarations,
 //! namespaces, functions and methods recognized by their parameter list.
-use super::outline::{Decl, Scope, SymbolKind, before_paren, ident, skip_group};
+use super::outline::{Decl, Scope, SymbolKind, before_paren, ident, keyword, skip_group};
 
 const MODIFIERS: &[&str] = &[
     "public",
@@ -118,7 +118,7 @@ pub(crate) fn classify_kotlin(header: &str, _raw: &str, scope: Scope) -> Option<
         .split_whitespace()
         .any(|w| w == "private" || w == "internal");
     let rest = skip_modifiers(text);
-    if let Some(after) = rest.strip_prefix("fun") {
+    if let Some(after) = keyword(rest, "fun") {
         let signature = before_paren(after)?;
         let signature = signature.trim();
         let signature = if signature.starts_with('<') {
@@ -130,7 +130,7 @@ pub(crate) fn classify_kotlin(header: &str, _raw: &str, scope: Scope) -> Option<
         let kind = method_or_function(scope);
         return Decl::new(name, kind, exported);
     }
-    if let Some(after) = rest.strip_prefix("companion") {
+    if let Some(after) = keyword(rest, "companion") {
         let name = ident(after.trim_start().trim_start_matches("object").trim_start());
         let name = if name.is_empty() { "Companion" } else { name };
         return Decl::new(name, SymbolKind::Class, exported);
@@ -148,7 +148,7 @@ pub(crate) fn classify_zig(header: &str, raw: &str, scope: Scope) -> Option<Decl
             exported,
         );
     }
-    if rest.starts_with("test") && !scope.statement {
+    if keyword(rest, "test").is_some() && !scope.statement {
         let name = raw.split('"').nth(1).unwrap_or("test");
         return Decl::new(name, SymbolKind::Test, false);
     }
@@ -205,7 +205,7 @@ fn strip_preamble(header: &str, preprocessor: bool) -> &str {
             };
         } else if text.starts_with('[') {
             text = skip_group(text, b'[', b']').trim_start();
-        } else if let Some(rest) = text.strip_prefix("template") {
+        } else if let Some(rest) = keyword(text, "template") {
             text = skip_group(rest.trim_start(), b'<', b'>').trim_start();
         } else {
             return text;

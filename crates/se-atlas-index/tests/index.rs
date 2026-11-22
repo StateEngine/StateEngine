@@ -7,7 +7,7 @@ use se_atlas_index::{
 };
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::atomic::{AtomicU32, Ordering},
 };
 
@@ -302,8 +302,11 @@ fn incremental_saves_write_only_deltas_and_compaction_folds_them() -> TestResult
 fn damaged_or_foreign_store_files_are_rebuilt_empty() -> TestResult {
     let state = TempDir::new("damaged")?;
     let db = state.0.join("atlas.db");
+    let (store, _) = Store::open(&db, &StoreIdentity::default())?;
+    let damaged = store.path().to_path_buf();
+    drop(store);
     fs::write(
-        &db,
+        &damaged,
         b"this is not a database file, padded well past one header page",
     )?;
     let (store, reason) = Store::open(&db, &StoreIdentity::default())?;
@@ -316,6 +319,6 @@ fn damaged_or_foreign_store_files_are_rebuilt_empty() -> TestResult {
     drop(store);
     let (_, reason) = Store::open(&db, &StoreIdentity::default())?;
     assert_eq!(reason, None);
-    assert!(!Path::new(&format!("{}.v5.db", db.with_extension("").display())).exists());
+    assert!(!damaged.exists());
     Ok(())
 }

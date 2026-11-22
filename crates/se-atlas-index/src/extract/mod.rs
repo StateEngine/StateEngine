@@ -16,6 +16,7 @@ mod python;
 mod rust;
 pub mod tokens;
 
+pub(crate) use outline::parents_first;
 pub use outline::{Accuracy, Symbol, SymbolKind};
 use std::{borrow::Cow, collections::HashMap, fmt};
 
@@ -307,7 +308,7 @@ fn extract_text(path: &str, text: &str, grammar: Grammar) -> FullText {
         .filter(|symbol| !symbol.name.is_empty())
         .map(|symbol| (symbol.name.to_lowercase(), 1))
         .collect();
-    let mut flags = covers::test_flags(path, text);
+    let mut flags = covers::test_flags(path, &masked);
     if truncated {
         flags |= self::flags::TRUNCATED;
     }

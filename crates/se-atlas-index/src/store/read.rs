@@ -4,25 +4,59 @@
 //! (tf 0 removes a file). While a cold build is still publishing, files
 //! numbered above the build's watermark are found through `file_tok`, so a
 //! reader sees every committed batch before the final postings land.
-use super::{open_connection, schema, varint};
+//!
+//! Every multi-statement read runs inside one deferred read transaction, so
+//! postings, deltas, the cold watermark and `file_tok` come from a single
+//! SQLite snapshot even while the writer compacts or finishes a cold build.
+use super::{current_database, open_connection, schema, still_current, varint};
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::path::Path;
 
-/// A read-only connection. It never opens a write transaction.
+/// Opens retried when a rebuild reaps the epoch between pointer and open.
+const OPEN_ATTEMPTS: usize = 3;
+
+/// A read-only connection to the store's current epoch. It never opens a
+/// write transaction. A rebuild after `open` leaves it on its old epoch, a
+/// consistent but stale view, until it is reopened.
 pub struct Reader {
     conn: Connection,
 }
 
+/// One consistent view of the store: every read through it sees the same
+/// committed state.
+pub struct ReadSnapshot<'r> {
+    tx: Transaction<'r>,
+}
+
 impl Reader {
+    /// Open the current epoch of the store named by `path`.
     pub fn open(path: &Path) -> Result<Self> {
-        let conn = open_connection(path, false)?;
-        schema::configure_reader(&conn)?;
-        Ok(Self { conn })
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let (files, epoch) = current_database(path)?;
+            let opened = open_connection(&files.epoch_path(epoch), false).and_then(|conn| {
+                schema::configure_reader(&conn)?;
+                Ok(conn)
+            });
+            match opened {
+                Ok(conn) => return Ok(Self { conn }),
+                Err(_) if attempt < OPEN_ATTEMPTS && !still_current(&files, epoch)? => {}
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     pub fn connection(&self) -> &Connection {
         &self.conn
+    }
+
+    /// Begin a snapshot; it ends when dropped. Only one can be open at a time.
+    pub fn snapshot(&self) -> Result<ReadSnapshot<'_>> {
+        Ok(ReadSnapshot {
+            tx: Transaction::new_unchecked(&self.conn, TransactionBehavior::Deferred)?,
+        })
     }
 
     pub fn token_id(&self, token: &str) -> Result<Option<i64>> {
@@ -30,15 +64,37 @@ impl Reader {
     }
 
     pub fn read_postings(&self, tok: i64) -> Result<Vec<(i64, u32)>> {
-        read_postings(&self.conn, tok)
+        self.snapshot()?.read_postings(tok)
     }
 
     pub fn effective_df(&self, tok: i64) -> Result<u64> {
-        effective_df(&self.conn, tok)
+        self.snapshot()?.effective_df(tok)
     }
 
     pub fn gram_tokens(&self, gram: u32) -> Result<Vec<i64>> {
-        gram_tokens(&self.conn, i64::from(gram))
+        self.snapshot()?.gram_tokens(gram)
+    }
+}
+
+impl ReadSnapshot<'_> {
+    pub fn connection(&self) -> &Connection {
+        &self.tx
+    }
+
+    pub fn token_id(&self, token: &str) -> Result<Option<i64>> {
+        token_id(&self.tx, token)
+    }
+
+    pub fn read_postings(&self, tok: i64) -> Result<Vec<(i64, u32)>> {
+        read_postings(&self.tx, tok)
+    }
+
+    pub fn effective_df(&self, tok: i64) -> Result<u64> {
+        effective_df(&self.tx, tok)
+    }
+
+    pub fn gram_tokens(&self, gram: u32) -> Result<Vec<i64>> {
+        gram_tokens(&self.tx, i64::from(gram))
     }
 }
 
@@ -49,7 +105,8 @@ pub fn token_id(conn: &Connection, token: &str) -> Result<Option<i64>> {
         .optional()?)
 }
 
-/// Every `(file, tf)` holding the token, sorted by file.
+/// Every `(file, tf)` holding the token, sorted by file. Several statements:
+/// call it inside a transaction (as [`ReadSnapshot`] does) for one snapshot.
 pub fn read_postings(conn: &Connection, tok: i64) -> Result<Vec<(i64, u32)>> {
     let mut merged = apply_deltas(base_postings(conn, tok)?, &deltas(conn, tok)?);
     if let Some(after) = cold_watermark(conn)? {

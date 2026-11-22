@@ -12,15 +12,22 @@ mod feature {
     pub const MULTILINE: u8 = 1 << 1;
     /// `"""` and `'''` strings.
     pub const TRIPLE: u8 = 1 << 2;
-    /// Backtick strings that may span lines.
+    /// Raw backtick strings that may span lines, with no escapes (Go).
     pub const BACKTICK: u8 = 1 << 3;
-    /// Raw strings `r#"..."#` and the character-literal/lifetime split.
+    /// Raw strings `r#"..."#`, `br"..."`, `cr"..."` and the
+    /// character-literal/lifetime split.
     pub const RUST: u8 = 1 << 4;
     /// Regular-expression literals after an operator.
     pub const REGEX: u8 = 1 << 5;
     /// `#` starts a comment only at line start or after whitespace.
     pub const HASH_AFTER_SPACE: u8 = 1 << 6;
+    /// Template literals: escapes, and `${...}` code that may nest strings
+    /// and templates of its own.
+    pub const TEMPLATE: u8 = 1 << 7;
 }
+
+/// Interpolations nested deeper than this blank the rest of the file.
+const MAX_TEMPLATE_DEPTH: usize = 32;
 use feature::*;
 
 #[derive(Clone, Copy)]
@@ -59,7 +66,7 @@ fn spec_for(grammar: Grammar) -> Option<LexSpec> {
             ..C_LIKE
         },
         Grammar::TypeScript | Grammar::JavaScript => LexSpec {
-            features: BACKTICK | REGEX,
+            features: TEMPLATE | REGEX,
             ..C_LIKE
         },
         Grammar::Go => LexSpec {
@@ -213,8 +220,13 @@ fn string_span(bytes: &[u8], i: usize, spec: &LexSpec, previous: u8) -> Option<S
         let end = (close + 3).min(bytes.len());
         return Some(((i, end), end));
     }
+    if spec.has(TEMPLATE) && b == b'`' {
+        let close = template_close(bytes, i + 1, 0).unwrap_or(bytes.len());
+        return Some(((i + 1, close), (close + 1).min(bytes.len())));
+    }
     if spec.has(BACKTICK) && b == b'`' {
-        return Some(quoted(bytes, i, b'`', true));
+        let close = find_from(bytes, i + 1, b"`").unwrap_or(bytes.len());
+        return Some(((i + 1, close), (close + 1).min(bytes.len())));
     }
     if spec.quotes.contains(&b) {
         return Some(quoted(bytes, i, b, spec.has(MULTILINE)));
@@ -236,6 +248,47 @@ fn quoted(bytes: &[u8], i: usize, quote: u8, multiline: bool) -> Span {
         }
     }
     ((i + 1, bytes.len()), bytes.len())
+}
+
+/// Offset of the backtick closing a template whose body starts at `j`.
+fn template_close(bytes: &[u8], mut j: usize, depth: usize) -> Option<usize> {
+    while j < bytes.len() {
+        match bytes[j] {
+            b'\\' => j += 2,
+            b'`' => return Some(j),
+            b'$' if bytes.get(j + 1) == Some(&b'{') => {
+                j = interpolation_end(bytes, j + 2, depth)?;
+            }
+            _ => j += 1,
+        }
+    }
+    None
+}
+
+/// Offset just past the `}` that closes an interpolation starting at `j`.
+fn interpolation_end(bytes: &[u8], mut j: usize, depth: usize) -> Option<usize> {
+    if depth >= MAX_TEMPLATE_DEPTH {
+        return None;
+    }
+    let mut braces = 0usize;
+    while j < bytes.len() {
+        match bytes[j] {
+            b'{' => braces += 1,
+            b'}' if braces == 0 => return Some(j + 1),
+            b'}' => braces -= 1,
+            b'`' => {
+                j = template_close(bytes, j + 1, depth + 1)? + 1;
+                continue;
+            }
+            quote @ (b'"' | b'\'') => {
+                j = quoted(bytes, j, quote, false).1;
+                continue;
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    None
 }
 
 fn find_escaped(bytes: &[u8], mut i: usize, needle: &[u8], escapes: bool) -> Option<usize> {
@@ -260,7 +313,7 @@ fn is_ident(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-/// `r"..."`, `r#"..."#` and `br"..."`, with no escapes inside.
+/// `r"..."`, `r#"..."#`, `br"..."` and `cr"..."`, with no escapes inside.
 fn rust_raw(bytes: &[u8], i: usize) -> Option<Span> {
     if bytes[i] != b'r' {
         return None;
@@ -268,7 +321,7 @@ fn rust_raw(bytes: &[u8], i: usize) -> Option<Span> {
     let before = i.checked_sub(1).map(|p| bytes[p]);
     let prefix_ok = match before {
         None => true,
-        Some(b'b') => i < 2 || !is_ident(bytes[i - 2]),
+        Some(b'b' | b'c') => i < 2 || !is_ident(bytes[i - 2]),
         Some(c) => !is_ident(c),
     };
     if !prefix_ok {
@@ -290,8 +343,13 @@ fn rust_raw(bytes: &[u8], i: usize) -> Option<Span> {
 fn rust_char(bytes: &[u8], i: usize) -> Option<Span> {
     let next = *bytes.get(i + 1)?;
     if next == b'\\' {
-        let close = bytes[i + 2..].iter().take(12).position(|b| *b == b'\'')?;
-        let end = i + 2 + close;
+        // The escaped character itself may be a quote, as in `'\''`.
+        let close = bytes
+            .get(i + 3..)?
+            .iter()
+            .take(12)
+            .position(|b| *b == b'\'')?;
+        let end = i + 3 + close;
         return Some(((i + 1, end), end + 1));
     }
     let width = match next {

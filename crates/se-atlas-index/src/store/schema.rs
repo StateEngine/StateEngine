@@ -1,12 +1,14 @@
 //! The v5 schema, its version stamp, and connection settings.
+use super::RebuildReason;
 use crate::{Result, extract::EXTRACTOR_VERSION};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 /// Stored in `PRAGMA user_version`; any other value rebuilds the store.
 pub const SCHEMA_VERSION: i64 = 5;
 const DDL: &str = include_str!("schema.sql");
 
-/// Who the store belongs to, written once into `meta`.
+/// Who the store belongs to, written once into `meta`. Reopening with a
+/// different identity rebuilds the store.
 #[derive(Clone, Debug, Default)]
 pub struct StoreIdentity {
     pub project: String,
@@ -74,24 +76,63 @@ pub(crate) fn configure_reader(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Why an existing file cannot be used as this version's store.
-pub(crate) fn mismatch(conn: &Connection) -> Result<Option<&'static str>> {
+/// Whether an existing file can serve as this version's store.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Verdict {
+    Usable,
+    /// Same schema, older extractor: keep history, clear the code index.
+    ExtractorChanged,
+    Rebuild(RebuildReason),
+}
+
+/// Judge an open store against this schema and the expected owner.
+pub(crate) fn verdict(conn: &Connection, identity: &StoreIdentity) -> Result<Verdict> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if version != SCHEMA_VERSION {
-        return Ok(Some("schema version differs"));
+        return Ok(Verdict::Rebuild(RebuildReason::Mismatch(
+            "schema version differs",
+        )));
     }
-    let extractor = match conn.query_row(
-        "SELECT extractor_version FROM meta WHERE singleton=1",
+    let has_meta: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='meta')",
         [],
-        |row| row.get::<_, i64>(0),
-    ) {
-        Ok(version) => Some(version),
-        Err(rusqlite::Error::QueryReturnedNoRows) => None,
-        Err(error) => return Err(error.into()),
+        |row| row.get(0),
+    )?;
+    if !has_meta {
+        return Ok(Verdict::Rebuild(RebuildReason::Corrupt));
+    }
+    let meta = conn
+        .query_row(
+            "SELECT project, root, physical_root, extractor_version FROM meta WHERE singleton=1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((project, root, physical_root, extractor)) = meta else {
+        return Ok(Verdict::Rebuild(RebuildReason::Corrupt));
     };
-    if extractor != Some(EXTRACTOR_VERSION) {
-        return Ok(Some("extractor version differs"));
+    if project != identity.project
+        || root != identity.root
+        || physical_root != identity.physical_root
+    {
+        return Ok(Verdict::Rebuild(RebuildReason::Mismatch(
+            "store identity differs",
+        )));
     }
     let check: String = conn.query_row("PRAGMA quick_check(1)", [], |row| row.get(0))?;
-    Ok((check != "ok").then_some("quick_check failed"))
+    if check != "ok" {
+        return Ok(Verdict::Rebuild(RebuildReason::Corrupt));
+    }
+    Ok(if extractor == EXTRACTOR_VERSION {
+        Verdict::Usable
+    } else {
+        Verdict::ExtractorChanged
+    })
 }

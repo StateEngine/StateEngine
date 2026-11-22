@@ -15,5 +15,9 @@ blake3 = { version = "=1.8.7", default-features = false, features = ["std"] }
 ignore = "=0.4.33"
 rusqlite = { version = "0.41", features = ["bundled"] }
 
+[target.'cfg(unix)'.dependencies]
+# Only to name ELOOP, the no-follow open's link refusal.
+libc = "0.2"
+
 [lints]
 workspace = true

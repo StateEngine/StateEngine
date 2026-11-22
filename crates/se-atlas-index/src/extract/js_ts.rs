@@ -1,7 +1,7 @@
 //! JavaScript and TypeScript outline rules: functions, classes and members,
 //! interfaces, type aliases, enums, namespaces, and arrow functions bound to
 //! `const`/`let`/`var`.
-use super::outline::{Decl, Scope, SymbolKind, ident, skip_group};
+use super::outline::{Decl, Scope, SymbolKind, ident, keyword, skip_group};
 
 const MODIFIERS: &[&str] = &[
     "export",
@@ -25,7 +25,7 @@ const NOT_MEMBERS: &[&str] = &[
 
 pub(crate) fn classify(header: &str, _raw: &str, scope: Scope) -> Option<Decl> {
     let text = strip_decorators(header);
-    let exported = text.starts_with("export") && scope.top_level;
+    let exported = keyword(text, "export").is_some() && scope.top_level;
     let mut rest = text;
     loop {
         let (word, after) = split_word(rest);
@@ -66,13 +66,15 @@ fn or_default(name: &str) -> &str {
 
 fn binding(word: &str, after: &str, scope: Scope, exported: bool) -> Option<Decl> {
     let after = after.trim_start();
-    if let Some(rest) = after.strip_prefix("enum") {
+    if let Some(rest) = keyword(after, "enum") {
         return Decl::new(ident(rest.trim_start()), SymbolKind::Enum, exported);
     }
     let name = ident(after);
     let value = after.find('=').map(|at| after[at + 1..].trim_start());
     let function = value.is_some_and(|value| {
-        value.starts_with("function") || value.starts_with("async") || after.contains("=>")
+        keyword(value, "function").is_some()
+            || keyword(value, "async").is_some()
+            || after.contains("=>")
     });
     let kind = if function {
         SymbolKind::Function

@@ -1643,6 +1643,7 @@ version = "0.0.1-alpha.1"
 dependencies = [
  "blake3",
  "ignore",
+ "libc",
  "rusqlite",
  "se-proc",
  "se-trusted-path",

@@ -87,20 +87,25 @@ fn boundary(previous: char, current: char, next: Option<char>) -> bool {
     camel || acronym_end || digit
 }
 
+/// Count a token and its identifier parts. A whole token over the byte cap
+/// is not stored, but its parts that fit still are, so a long joined name
+/// stays findable by its pieces.
 fn add_token(raw: &str, counts: &mut HashMap<String, u32>) {
-    if raw.len() > MAX_TOKEN_BYTES {
-        return;
-    }
-    let whole = raw.to_lowercase();
+    let whole = (raw.len() <= MAX_TOKEN_BYTES).then(|| raw.to_lowercase());
     // A long hex run is a hash or id: its digit/letter splits are noise.
     let hex = raw.len() >= 16 && raw.bytes().all(|b| b.is_ascii_hexdigit());
     for part in split_parts(raw).into_iter().filter(|_| !hex) {
+        if part.len() > MAX_TOKEN_BYTES {
+            continue;
+        }
         let part = part.to_lowercase();
-        if part != whole {
+        if whole.as_ref() != Some(&part) {
             bump(counts, part);
         }
     }
-    bump(counts, whole);
+    if let Some(whole) = whole {
+        bump(counts, whole);
+    }
 }
 
 fn bump(counts: &mut HashMap<String, u32>, token: String) {

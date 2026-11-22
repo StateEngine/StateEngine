@@ -21,10 +21,21 @@ pub(crate) fn extract_imports(grammar: Grammar, text: &str, masked: &str) -> Vec
         Grammar::Zig => zig_imports(text, masked, &mut out),
         _ => {}
     }
-    let mut seen = HashSet::new();
-    out.retain(|spec| seen.insert(spec.spelling.clone()));
-    out.truncate(MAX_IMPORTS);
-    out
+    // One row per spelling: a re-export anywhere keeps the merged row a
+    // re-export.
+    let mut first: HashMap<String, usize> = HashMap::new();
+    let mut merged: Vec<ImportSpec> = Vec::with_capacity(out.len());
+    for spec in out {
+        match first.get(&spec.spelling) {
+            Some(&at) => merged[at].reexport |= spec.reexport,
+            None => {
+                first.insert(spec.spelling.clone(), merged.len());
+                merged.push(spec);
+            }
+        }
+    }
+    merged.truncate(MAX_IMPORTS);
+    merged
 }
 
 fn push(out: &mut Vec<ImportSpec>, spelling: String, kind: ImportKind, reexport: bool) {
@@ -194,11 +205,23 @@ fn module_quote(masked: &str, start: usize, need_from: bool) -> Option<usize> {
                     return None;
                 }
             }
-            b'f' if depth == 0 && rest[i..].starts_with("from") => saw_from = true,
+            b'f' if depth == 0 && from_keyword(rest, i) => saw_from = true,
             _ => {}
         }
     }
     None
+}
+
+/// `from` as a whole word at `i`, not inside `fromCache` or `isfrom`.
+fn from_keyword(rest: &str, i: usize) -> bool {
+    let ident = |b: &u8| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'$';
+    let bytes = rest.as_bytes();
+    rest[i..].starts_with("from")
+        && !i
+            .checked_sub(1)
+            .and_then(|p| bytes.get(p))
+            .is_some_and(ident)
+        && !bytes.get(i + 4).is_some_and(ident)
 }
 
 fn js_imports(text: &str, masked: &str, out: &mut Vec<ImportSpec>) {

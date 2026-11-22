@@ -2,7 +2,7 @@
 use crate::{
     Result,
     custody::SourceFile,
-    extract::{Extracted, Symbol, covers::Cover, file_key},
+    extract::{Extracted, Symbol, covers::Cover, file_key, parents_first},
 };
 use rusqlite::{OptionalExtension, Transaction, params};
 
@@ -65,23 +65,33 @@ pub(crate) fn upsert_file(
 }
 
 /// Insert every symbol of a new file. `name_id` maps a lowercase name to its
-/// vocab id. Parents precede children, so parent ids are already known.
+/// vocab id. Parents are inserted before their children whatever the
+/// declaration order, so every parent id is known when a child is written.
 pub(crate) fn insert_symbols(
     tx: &Transaction<'_>,
     file: i64,
     record: &FileRecord,
     mut name_id: impl FnMut(&str) -> Result<i64>,
 ) -> Result<()> {
-    let mut ids: Vec<i64> = Vec::with_capacity(record.extracted.symbols.len());
+    let symbols = &record.extracted.symbols;
+    let mut ids: Vec<Option<i64>> = vec![None; symbols.len()];
     let mut insert = tx.prepare_cached(INSERT_SYMBOL)?;
     let accuracy = record.extracted.accuracy as i64;
-    for symbol in &record.extracted.symbols {
-        let parent = symbol.parent.and_then(|index| ids.get(index).copied());
+    for index in parents_first(symbols) {
+        let symbol = &symbols[index];
+        let parent = parent_id(symbol, &ids);
         let name = name_id(&symbol.name.to_lowercase())?;
         insert_symbol(&mut insert, symbol, file, parent, name, accuracy)?;
-        ids.push(tx.last_insert_rowid());
+        ids[index] = Some(tx.last_insert_rowid());
     }
     Ok(())
+}
+
+/// The row id of a symbol's parent, once that parent has been written.
+pub(crate) fn parent_id(symbol: &Symbol, ids: &[Option<i64>]) -> Option<i64> {
+    symbol
+        .parent
+        .and_then(|index| ids.get(index).copied().flatten())
 }
 
 pub(crate) const INSERT_SYMBOL: &str = "INSERT INTO sym(key, file, parent, name, kind, line,
@@ -185,6 +195,18 @@ pub(crate) fn index_new_token(
         }
     }
     Ok(())
+}
+
+/// Clear the code index, keeping history and records, and arm the cold
+/// watermark so readers find files through `file_tok` until a build ends.
+pub(crate) fn clear_index(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "DELETE FROM covers; DELETE FROM imp; DELETE FROM sym; DELETE FROM short;
+         DELETE FROM gram_delta; DELETE FROM gram; DELETE FROM file_tok; DELETE FROM post_delta;
+         DELETE FROM vocab_post; DELETE FROM vocab; DELETE FROM files;
+         UPDATE meta SET discovery_complete=0 WHERE singleton=1;",
+    )?;
+    set_state(tx, &serde_json::json!({ "cold_posted_through": 0 }))
 }
 
 pub(crate) fn set_state(tx: &Transaction<'_>, state: &serde_json::Value) -> Result<()> {
