@@ -34,11 +34,27 @@ async fn output(stream: impl tokio::io::AsyncRead + Unpin) -> Result<Vec<u8>> {
 
 /// Bound both pipes while the child is running: a full pipe cannot deadlock
 /// the probe. Timeout/error kills only this direct child and awaits its exit.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub async fn probe(command: &Path, budget: Duration) -> Result<ProviderVersion> {
+    let (end, run_end) = probe_deadlines(command, budget)?;
+    let mut child = crate::child_io::spawn(
+        Command::from(se_proc::background_command(command))
+            .arg("--version")
+            .env_clear()
+            .envs(provider_environment())
+            .stdin(Stdio::null())
+            .kill_on_drop(true),
+        crate::child_io::Pipes {
+            stdin: false,
+            stdout: true,
+            stderr: true,
+        },
+    )
+    .await
+    .map_err(|e| se_core::scope::unreadable("Codex executable probe", &e.to_string()))?;
+    let measured = read_probe(&mut child, run_end, end).await?;
+    parse_version(&measured, command)
+}
+fn probe_deadlines(command: &Path, budget: Duration) -> Result<(Instant, Instant)> {
     if !command.is_absolute() {
         return Err(incompatible(
             "probe executable is not absolute",
@@ -55,21 +71,14 @@ pub async fn probe(command: &Path, budget: Duration) -> Result<ProviderVersion> 
     let end = Instant::now() + budget;
     // Reserve part of the same five-second ceiling for killing and reaping.
     let run_end = end - (budget / 10).min(Duration::from_millis(500));
-    let mut child = crate::child_io::spawn(
-        Command::from(se_proc::background_command(command))
-            .arg("--version")
-            .env_clear()
-            .envs(provider_environment())
-            .stdin(Stdio::null())
-            .kill_on_drop(true),
-        crate::child_io::Pipes {
-            stdin: false,
-            stdout: true,
-            stderr: true,
-        },
-    )
-    .await
-    .map_err(|e| se_core::scope::unreadable("Codex executable probe", &e.to_string()))?;
+    Ok((end, run_end))
+}
+
+async fn read_probe(
+    child: &mut crate::child_io::Child,
+    run_end: Instant,
+    end: Instant,
+) -> Result<(Vec<u8>, Vec<u8>, ExitStatus)> {
     let stdout = child
         .stdout
         .take()
@@ -141,6 +150,13 @@ pub async fn probe(command: &Path, budget: Duration) -> Result<ProviderVersion> 
             return Err(error);
         }
     };
+    Ok(measured)
+}
+
+fn parse_version(
+    measured: &(Vec<u8>, Vec<u8>, ExitStatus),
+    command: &Path,
+) -> Result<ProviderVersion> {
     if !measured.2.success() {
         return Err(incompatible(
             "the version probe exited unsuccessfully",

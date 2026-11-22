@@ -233,31 +233,8 @@ impl State {
         }
         Ok(())
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     fn observe(&mut self, method: String, params: Value) -> Result<bool> {
-        if !self.restoring
-            && self.conversation.as_ref().is_some_and(|id| {
-                params.get("threadId").and_then(Value::as_str) == Some(id.as_str())
-            })
-            && self
-                .active_turn
-                .as_deref()
-                .is_some_and(|id| params.get("turnId").and_then(Value::as_str) == Some(id))
-        {
-            if method == "error" {
-                let auth = crate::harness::progress::codex_authentication(&params["error"]);
-                if auth && params.get("willRetry").and_then(Value::as_bool) == Some(true) {
-                    self.progress.retrying_authentication();
-                } else if auth || params.get("willRetry").and_then(Value::as_bool) == Some(false) {
-                    self.progress.terminal("failed", auth);
-                }
-            } else if method.starts_with("item/") {
-                self.progress.event();
-            }
-        }
+        self.observe_progress(&method, &params);
         if !matches!(
             method.as_str(),
             "turn/started" | "turn/completed" | "item/completed"
@@ -284,60 +261,8 @@ impl State {
             state.retain(json!({"method":method,"params":params}))?;
             return Ok(false);
         }
-        if method.starts_with("turn/") {
-            let id = params
-                .pointer("/turn/id")
-                .and_then(Value::as_str)
-                .filter(|id| !id.is_empty() && id.len() <= 512)
-                .ok_or_else(|| SeError::invalid("Codex event turn", "a bounded actual turn.id"))?
-                .to_owned();
-            if method == "turn/started" {
-                if state
-                    .active_turn
-                    .as_ref()
-                    .is_some_and(|active| active != &id)
-                {
-                    state.ignored.foreign_turns = state.ignored.foreign_turns.saturating_add(1);
-                    return Ok(false);
-                }
-                state.active_turn = Some(id);
-                state.progress.offered();
-            } else {
-                if !matches!(
-                    params.pointer("/turn/status").and_then(Value::as_str),
-                    Some("completed" | "interrupted" | "failed")
-                ) {
-                    return Err(SeError::invalid(
-                        "Codex turn completion",
-                        "an actual terminal provider status",
-                    ));
-                }
-                if state
-                    .active_turn
-                    .as_ref()
-                    .is_some_and(|active| active != &id)
-                {
-                    state.ignored.foreign_turns = state.ignored.foreign_turns.saturating_add(1);
-                    return Ok(false);
-                }
-                if state.active_turn.as_ref() != Some(&id) {
-                    state.ignored.untracked_own_turns =
-                        state.ignored.untracked_own_turns.saturating_add(1);
-                    return Ok(false);
-                }
-                state.active_turn = None;
-                state.progress.terminal(
-                    params
-                        .pointer("/turn/status")
-                        .and_then(Value::as_str)
-                        .unwrap_or("failed"),
-                    crate::harness::progress::codex_authentication(&params["turn"]["error"]),
-                );
-                if state.completed.len() >= 64 {
-                    state.completed.pop_front();
-                }
-                state.completed.push_back(id);
-            }
+        if method.starts_with("turn/") && !state.observe_turn(&method, &params)? {
+            return Ok(false);
         }
         if method == "item/completed" {
             let turn = params
@@ -359,6 +284,85 @@ impl State {
         }
         if state.capture && method != "turn/started" {
             state.retain(json!({"method":method,"params":params}))?;
+        }
+        Ok(true)
+    }
+    fn observe_progress(&mut self, method: &str, params: &Value) {
+        if !self.restoring
+            && self.conversation.as_ref().is_some_and(|id| {
+                params.get("threadId").and_then(Value::as_str) == Some(id.as_str())
+            })
+            && self
+                .active_turn
+                .as_deref()
+                .is_some_and(|id| params.get("turnId").and_then(Value::as_str) == Some(id))
+        {
+            if method == "error" {
+                let auth = crate::harness::progress::codex_authentication(&params["error"]);
+                if auth && params.get("willRetry").and_then(Value::as_bool) == Some(true) {
+                    self.progress.retrying_authentication();
+                } else if auth || params.get("willRetry").and_then(Value::as_bool) == Some(false) {
+                    self.progress.terminal("failed", auth);
+                }
+            } else if method.starts_with("item/") {
+                self.progress.event();
+            }
+        }
+    }
+    fn observe_turn(&mut self, method: &str, params: &Value) -> Result<bool> {
+        let state = self;
+        let id = params
+            .pointer("/turn/id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty() && id.len() <= 512)
+            .ok_or_else(|| SeError::invalid("Codex event turn", "a bounded actual turn.id"))?
+            .to_owned();
+        if method == "turn/started" {
+            if state
+                .active_turn
+                .as_ref()
+                .is_some_and(|active| active != &id)
+            {
+                state.ignored.foreign_turns = state.ignored.foreign_turns.saturating_add(1);
+                return Ok(false);
+            }
+            state.active_turn = Some(id);
+            state.progress.offered();
+        } else {
+            if !matches!(
+                params.pointer("/turn/status").and_then(Value::as_str),
+                Some("completed" | "interrupted" | "failed")
+            ) {
+                return Err(SeError::invalid(
+                    "Codex turn completion",
+                    "an actual terminal provider status",
+                ));
+            }
+            if state
+                .active_turn
+                .as_ref()
+                .is_some_and(|active| active != &id)
+            {
+                state.ignored.foreign_turns = state.ignored.foreign_turns.saturating_add(1);
+                return Ok(false);
+            }
+            if state.active_turn.as_ref() != Some(&id) {
+                state.ignored.untracked_own_turns =
+                    state.ignored.untracked_own_turns.saturating_add(1);
+                return Ok(false);
+            }
+            state.active_turn = None;
+            state.progress.terminal(
+                params
+                    .pointer("/turn/status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("failed"),
+                crate::harness::progress::codex_authentication(&params["turn"]["error"]),
+            );
+            if state.completed.len() >= 64 {
+                state.completed.pop_front();
+            }
+            state.completed.push_back(id);
         }
         Ok(true)
     }
