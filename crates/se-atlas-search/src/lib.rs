@@ -267,12 +267,13 @@ pub enum ScanReason {
 
 impl SearchOutcome {
     /// Whether the search left something unexamined: the deadline, unread
-    /// candidates, partly read files, or a stopped scan.
+    /// candidates, partly read files, a stopped scan, or a symbol row cap.
     pub fn stopped_early(&self) -> bool {
         self.deadline_reached
             || self.files_unread > 0
             || self.files_partly_read > 0
             || self.scan_incomplete
+            || self.omitted_at_least
     }
 }
 

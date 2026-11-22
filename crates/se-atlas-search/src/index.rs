@@ -108,7 +108,7 @@ pub(crate) fn text(
     let mut rows = FileRows::new(conn);
     let mut outcome = SearchOutcome::default();
     let mut candidates = Candidates::default();
-    let symbol_files = match request.kind {
+    let (symbol_files, symbols_truncated) = match request.kind {
         KindFilter::All | KindFilter::Symbol if plan.literal_terms.is_empty() => {
             symbols::token_hits(conn, &plan, &scope, &mut rows, &mut candidates)?
         }
@@ -120,30 +120,35 @@ pub(crate) fn text(
             &mut rows,
             &mut candidates,
         )?,
-        KindFilter::Text | KindFilter::Path => HashSet::new(),
+        KindFilter::Text | KindFilter::Path => (HashSet::new(), false),
     };
-    let ranked = rank_files(&plan, &symbol_files);
-    let chosen = choose(&ranked, &scope, &mut rows, budget, &mut outcome)?;
-    if matches!(request.kind, KindFilter::All | KindFilter::Path) {
-        let mut seen = HashSet::new();
-        for file in chosen.iter().map(|(id, _)| *id).chain(symbol_files) {
-            if seen.insert(file)
-                && let Some(row) = rows.get(file)?
-            {
-                path_hit(&plan, file, &row, &mut candidates);
+    outcome.omitted_at_least |= symbols_truncated;
+    if request.kind == KindFilter::Symbol {
+        outcome.candidate_files = symbol_files.len();
+    } else {
+        let ranked = rank_files(&plan, &symbol_files);
+        let chosen = choose(&ranked, &scope, &mut rows, budget, &mut outcome)?;
+        if matches!(request.kind, KindFilter::All | KindFilter::Path) {
+            let mut seen = HashSet::new();
+            for file in chosen.iter().map(|(id, _)| *id).chain(symbol_files) {
+                if seen.insert(file)
+                    && let Some(row) = rows.get(file)?
+                {
+                    path_hit(&plan, file, &row, &mut candidates);
+                }
             }
         }
-    }
-    if matches!(request.kind, KindFilter::All | KindFilter::Text) {
-        confirm_lines(
-            conn,
-            root,
-            &plan,
-            &chosen,
-            budget,
-            &mut outcome,
-            &mut candidates,
-        )?;
+        if matches!(request.kind, KindFilter::All | KindFilter::Text) {
+            confirm_lines(
+                conn,
+                root,
+                &plan,
+                &chosen,
+                budget,
+                &mut outcome,
+                &mut candidates,
+            )?;
+        }
     }
     page_into(request, &mut outcome, candidates);
     if outcome.hits.is_empty() {

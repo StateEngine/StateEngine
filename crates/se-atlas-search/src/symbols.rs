@@ -21,11 +21,25 @@ const SYMBOLS_PER_TOKEN: i64 = 512;
 const SCOPED_SYMBOLS_PER_TOKEN: i64 = 8_192;
 const BY_NAME: &str =
     "SELECT file, line, kind, sig FROM sym WHERE name=?1 ORDER BY file, line LIMIT ?2";
-/// Definitions named `?1` with their parent symbol's name, if any, and path.
+/// Definitions named `?1` whose parent matches `?2` (exact or trailing `::` / `.`
+/// segment), or top-level definitions whose path matches module name `?3` (empty
+/// when non-ASCII so Rust's Unicode check decides).
 const BY_NAME_IN_CONTEXT: &str = "SELECT s.file, s.line, s.kind, s.sig, v.tok, f.path
  FROM sym s JOIN files f ON f.id = s.file
  LEFT JOIN sym p ON p.id = s.parent LEFT JOIN vocab v ON v.id = p.name
- WHERE s.name=?1 ORDER BY s.file, s.line LIMIT ?2";
+ WHERE s.name=?1
+   AND (
+     v.tok = ?2
+     OR (length(v.tok) >= length(?2) + 2 AND substr(v.tok, -length(?2) - 2) = '::' || ?2)
+     OR (length(v.tok) >= length(?2) + 1 AND substr(v.tok, -length(?2) - 1) = '.' || ?2)
+     OR (s.parent IS NULL AND (
+       ?3 = ''
+       OR instr('/' || lower(f.path), '/' || ?3 || '.') > 0
+       OR instr('/' || lower(f.path), '/' || ?3 || '/') > 0
+       OR substr('/' || lower(f.path), -length(?3) - 1) = '/' || ?3
+     ))
+   )
+ ORDER BY s.file, s.line LIMIT ?4";
 
 /// The limit applies before the scope filter, so a filtered search reads
 /// further to find definitions inside its scope.
@@ -53,19 +67,30 @@ fn candidate(plan: &Plan, row: &FileRow, symbol: SymbolRow, file: i64) -> Candid
     candidate
 }
 
-/// Symbol definitions named by a matched token. Returns the files holding one.
+/// Symbol definitions named by a matched token. Returns the files holding one
+/// and whether any token hit the symbol row cap.
 pub(crate) fn token_hits(
     conn: &Connection,
     plan: &Plan,
     scope: &Scope,
     rows: &mut FileRows<'_>,
     candidates: &mut Candidates,
-) -> Result<HashSet<i64>> {
+) -> Result<(HashSet<i64>, bool)> {
     let mut files = HashSet::new();
+    let mut truncated = false;
+    let cap = limit(scope);
+    let cap_usize = usize::try_from(cap).unwrap_or(usize::MAX);
     let mut select = conn.prepare_cached(BY_NAME)?;
     for token in &plan.symbol_tokens {
-        for symbol in select.query_map(rusqlite::params![token.id, limit(scope)], symbol_row)? {
+        for (seen, symbol) in select
+            .query_map(rusqlite::params![token.id, cap + 1], symbol_row)?
+            .enumerate()
+        {
             let symbol = symbol?;
+            if seen >= cap_usize {
+                truncated = true;
+                break;
+            }
             let file = symbol.0;
             let Some(row) = rows.admitted(file, scope)? else {
                 continue;
@@ -77,7 +102,7 @@ pub(crate) fn token_hits(
             files.insert(file);
         }
     }
-    Ok(files)
+    Ok((files, truncated))
 }
 
 /// Symbol definitions a literal names: the literal as one name, or a
@@ -85,7 +110,7 @@ pub(crate) fn token_hits(
 /// in its parent's name. Only that last qualifier segment is compared; for a
 /// top-level definition it names the module, so it must match the file's
 /// stem or directory. A hit must satisfy every literal of the query.
-/// Returns the files holding one.
+/// Returns the files holding one and whether any symbol lookup hit its cap.
 pub(crate) fn literal_hits(
     snapshot: &ReadSnapshot<'_>,
     plan: &Plan,
@@ -93,11 +118,14 @@ pub(crate) fn literal_hits(
     scope: &Scope,
     rows: &mut FileRows<'_>,
     candidates: &mut Candidates,
-) -> Result<HashSet<i64>> {
+) -> Result<(HashSet<i64>, bool)> {
     let conn = snapshot.connection();
     let mut by_name = conn.prepare_cached(BY_NAME)?;
     let mut in_context = conn.prepare_cached(BY_NAME_IN_CONTEXT)?;
     let mut by_place: HashMap<(i64, i64), Candidate> = HashMap::new();
+    let mut truncated = false;
+    let cap = limit(scope);
+    let cap_usize = usize::try_from(cap).unwrap_or(usize::MAX);
     for (offset, literal) in literals.iter().enumerate() {
         let term = plan.words + offset;
         let Some(pattern) = plan
@@ -109,22 +137,38 @@ pub(crate) fn literal_hits(
         };
         let mut found: Vec<SymbolRow> = Vec::new();
         if let Some(id) = snapshot.token_id(&literal.text)? {
-            for symbol in by_name.query_map(rusqlite::params![id, limit(scope)], symbol_row)? {
-                found.push(symbol?);
+            for (seen, symbol) in by_name
+                .query_map(rusqlite::params![id, cap + 1], symbol_row)?
+                .enumerate()
+            {
+                let symbol = symbol?;
+                if seen >= cap_usize {
+                    truncated = true;
+                    break;
+                }
+                found.push(symbol);
             }
         }
         if let Some((parent, name)) = qualified(&literal.text)
             && let Some(id) = snapshot.token_id(name)?
         {
-            let named = in_context.query_map(rusqlite::params![id, limit(scope)], |row| {
-                Ok((
-                    symbol_row(row)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, String>(5)?,
-                ))
-            })?;
-            for symbol in named {
+            let path_needle = if parent.is_ascii() { parent } else { "" };
+            let named = in_context.query_map(
+                rusqlite::params![id, parent, path_needle, cap + 1],
+                |row| {
+                    Ok((
+                        symbol_row(row)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )?;
+            for (seen, symbol) in named.enumerate() {
                 let (symbol, parent_name, path) = symbol?;
+                if seen >= cap_usize {
+                    truncated = true;
+                    break;
+                }
                 if qualifies(parent, parent_name.as_deref(), &path) {
                     found.push(symbol);
                 }
@@ -153,7 +197,7 @@ pub(crate) fn literal_hits(
             candidates.add(candidate);
         }
     }
-    Ok(files)
+    Ok((files, truncated))
 }
 
 /// `(parent, name)` of a qualified literal such as `queryreader::new` or
@@ -284,5 +328,59 @@ mod tests {
         assert!(qualifies("store", None, "src/Store.rs"));
         assert!(qualifies("store", None, "src/store/mod.rs"));
         assert!(!qualifies("store", Some("reader"), "src/store.rs"));
+    }
+
+    #[test]
+    fn symbol_kind_codes_round_trip_exhaustively() {
+        let all = [
+            SymbolKind::Module,
+            SymbolKind::Function,
+            SymbolKind::Method,
+            SymbolKind::Struct,
+            SymbolKind::Enum,
+            SymbolKind::Interface,
+            SymbolKind::Impl,
+            SymbolKind::Class,
+            SymbolKind::Type,
+            SymbolKind::Const,
+            SymbolKind::Variable,
+            SymbolKind::Macro,
+            SymbolKind::Namespace,
+            SymbolKind::Section,
+            SymbolKind::Table,
+            SymbolKind::Key,
+            SymbolKind::Item,
+            SymbolKind::Target,
+            SymbolKind::Stage,
+            SymbolKind::Test,
+        ];
+        for kind in all {
+            let expected = match kind {
+                SymbolKind::Module => 1,
+                SymbolKind::Function => 2,
+                SymbolKind::Method => 3,
+                SymbolKind::Struct => 4,
+                SymbolKind::Enum => 5,
+                SymbolKind::Interface => 6,
+                SymbolKind::Impl => 7,
+                SymbolKind::Class => 8,
+                SymbolKind::Type => 9,
+                SymbolKind::Const => 10,
+                SymbolKind::Variable => 11,
+                SymbolKind::Macro => 12,
+                SymbolKind::Namespace => 13,
+                SymbolKind::Section => 14,
+                SymbolKind::Table => 15,
+                SymbolKind::Key => 16,
+                SymbolKind::Item => 17,
+                SymbolKind::Target => 18,
+                SymbolKind::Stage => 19,
+                SymbolKind::Test => 20,
+            };
+            assert_eq!(kind.code(), expected);
+            assert_eq!(SymbolKind::from_code(expected), Some(kind));
+        }
+        assert_eq!(SymbolKind::from_code(0), None);
+        assert_eq!(SymbolKind::from_code(21), None);
     }
 }
