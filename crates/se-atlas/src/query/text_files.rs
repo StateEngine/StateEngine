@@ -22,11 +22,7 @@ pub(super) fn file_window(
                 })?,
         );
     }
-    let filter = if last_path_key.is_some() {
-        "f.path_key>?3 AND "
-    } else {
-        ""
-    };
+    let filter = last_path_key.as_ref().map_or("", |_| "f.path_key>?3 AND ");
     let mut statement = sql.prepare(&format!(
         "SELECT {FILE_COLUMNS},f.path_key FROM files f WHERE {filter}atlas_scope(f.path,f.language,?1,?2) ORDER BY f.path_key LIMIT 257"
     ))?;

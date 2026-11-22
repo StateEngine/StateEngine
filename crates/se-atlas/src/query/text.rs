@@ -181,11 +181,10 @@ impl QueryReader<'_, '_, '_> {
         }
         let mut scan = source.map(LiveSource::open_scan).transpose()?;
         let mut last_path_key = None;
+        let pinned_end =
+            |pos: &(bool, i64, Vec<u8>)| pinned.as_ref().is_some_and(|p| at_window_end(pos, p));
         'scan: loop {
-            if pinned
-                .as_ref()
-                .is_some_and(|p| at_window_end(position.0, position.1, &position.2, p))
-            {
+            if pinned_end(&position) {
                 more_window = pinned.as_ref().is_some_and(|p| p.has_more);
                 break;
             }
@@ -208,10 +207,7 @@ impl QueryReader<'_, '_, '_> {
             }
             let exhausted = !has_more;
             for file in files_batch {
-                if pinned
-                    .as_ref()
-                    .is_some_and(|p| at_window_end(position.0, position.1, &position.2, p))
-                {
+                if pinned_end(&position) {
                     more_window = pinned.as_ref().is_some_and(|p| p.has_more);
                     break 'scan;
                 }
@@ -237,18 +233,7 @@ impl QueryReader<'_, '_, '_> {
                 let Some(stream) = scan.open(&file.pointer.path)? else {
                     range_incomplete = true;
                     stats.unavailable_files += 1;
-                    if !snapshot
-                        .index
-                        .coverage
-                        .reasons
-                        .contains(&CoverageReason::ReadFailure)
-                    {
-                        snapshot
-                            .index
-                            .coverage
-                            .reasons
-                            .push(CoverageReason::ReadFailure);
-                    }
+                    note_reason(&mut snapshot, CoverageReason::ReadFailure);
                     continue;
                 };
                 let result = crate::text::search_with_terms(
@@ -276,8 +261,8 @@ impl QueryReader<'_, '_, '_> {
                     (result.time_limited, CoverageReason::TimeLimit),
                     (result.line_limited, CoverageReason::ByteLimit),
                 ] {
-                    if condition && !snapshot.index.coverage.reasons.contains(&reason) {
-                        snapshot.index.coverage.reasons.push(reason);
+                    if condition {
+                        note_reason(&mut snapshot, reason);
                     }
                 }
                 stats.binary_files += u32::from(result.binary);
@@ -422,7 +407,7 @@ impl QueryReader<'_, '_, '_> {
             scan.finish()?;
         }
         if let Some(pinned) = &pinned
-            && !at_window_end(position.0, position.1, &position.2, pinned)
+            && !at_window_end(&position, pinned)
         {
             return Err(cursor::invalid(
                 "text window could not be replayed within its bound; retry or restart",
@@ -436,10 +421,7 @@ impl QueryReader<'_, '_, '_> {
         let mut files = Vec::<(FileId, u8)>::new();
         for mut hit in best {
             if let HitTarget::Code(code) = &hit.value.target {
-                if let Some((_, count)) = files
-                    .iter_mut()
-                    .find(|(file, _)| *file == code.pointer.file)
-                {
+                if let Some((_, count)) = files.iter_mut().find(|(f, _)| *f == code.pointer.file) {
                     if *count == 3 {
                         continue;
                     }
@@ -448,11 +430,10 @@ impl QueryReader<'_, '_, '_> {
                     files.push((code.pointer.file, 1));
                 }
             }
-            let max = if query.full {
-                query.budget.max_bytes.min(12 * 1024)
-            } else {
-                query.budget.max_bytes
-            } as usize;
+            let max = query
+                .budget
+                .max_bytes
+                .min(if query.full { 12 * 1024 } else { u32::MAX }) as usize;
             if bytes + hit.bytes > max && hit.value.body.is_some() {
                 hit.value.body = None;
                 bodies_omitted += 1;
@@ -474,17 +455,7 @@ impl QueryReader<'_, '_, '_> {
                         &snapshot.index,
                         "text",
                         digest,
-                        Key {
-                            integers: vec![
-                                start.integers[0],
-                                start.integers[1],
-                                1,
-                                last.integers[0],
-                                last.integers[1],
-                                super::modes::key(mode),
-                            ],
-                            bytes: [&start.bytes[..16], last.bytes.as_slice()].concat(),
-                        },
+                        hit_key(&start, mode, last),
                         None,
                     )?
                     .with_ranking_time(ranking.now_unix_ms)
@@ -540,9 +511,7 @@ impl QueryReader<'_, '_, '_> {
             } else {
                 CoverageReason::TimeLimit
             };
-            if !snapshot.index.coverage.reasons.contains(&reason) {
-                snapshot.index.coverage.reasons.push(reason);
-            }
+            note_reason(&mut snapshot, reason);
         }
         let output = SearchResults {
             mode,
@@ -560,28 +529,14 @@ impl QueryReader<'_, '_, '_> {
                     .transpose()?
                     .as_ref(),
             )?,
-            truncated_candidates: if more_window || metadata_pool.truncated {
-                None
-            } else {
-                Some(0)
-            },
+            truncated_candidates: (!(more_window || metadata_pool.truncated)).then_some(0),
             full: query.full,
             text: Some(stats.clone()),
             bodies_omitted,
         };
         let keys = keys
             .into_iter()
-            .map(|last| Key {
-                integers: vec![
-                    start.integers[0],
-                    start.integers[1],
-                    1,
-                    last.integers[0],
-                    last.integers[1],
-                    super::modes::key(mode),
-                ],
-                bytes: [&start.bytes[..16], last.bytes.as_slice()].concat(),
-            })
+            .map(|last| hit_key(&start, mode, &last))
             .collect();
         Ok(super::search_page::SearchPage {
             answer: snapshot.answer(Read::Present { value: output }, advanced),
@@ -591,6 +546,26 @@ impl QueryReader<'_, '_, '_> {
     }
 }
 
-fn at_window_end(started: bool, time: i64, file: &[u8], bound: &TextWindow) -> bool {
-    started && time == bound.last_touch_unix_ms && file == bound.file
+fn note_reason(snapshot: &mut Snapshot, reason: CoverageReason) {
+    if !snapshot.index.coverage.reasons.contains(&reason) {
+        snapshot.index.coverage.reasons.push(reason);
+    }
+}
+
+fn hit_key(start: &Key, mode: SearchMode, last: &Key) -> Key {
+    Key {
+        integers: vec![
+            start.integers[0],
+            start.integers[1],
+            1,
+            last.integers[0],
+            last.integers[1],
+            super::modes::key(mode),
+        ],
+        bytes: [&start.bytes[..16], last.bytes.as_slice()].concat(),
+    }
+}
+
+fn at_window_end(pos: &(bool, i64, Vec<u8>), bound: &TextWindow) -> bool {
+    pos.0 && pos.1 == bound.last_touch_unix_ms && pos.2 == bound.file
 }

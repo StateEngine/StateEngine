@@ -1,6 +1,7 @@
 //! Keep compact metadata identities while the bounded source scan runs.
 use super::candidates::{Candidate, Kind};
 use super::*;
+use crate::cache::connection::BudgetStatement;
 struct Entry {
     file: i64,
     rowid: i64,
@@ -10,7 +11,7 @@ struct Entry {
     related: bool,
 }
 struct LiteralLookup<'a> {
-    statement: Option<crate::cache::connection::BudgetStatement<'a>>,
+    statement: Option<BudgetStatement<'a>>,
     smart: bool,
     needle: String,
 }
@@ -28,15 +29,6 @@ impl LiteralLookup<'_> {
             needle,
         }
     }
-}
-fn prepare_literal_statement<'a>(
-    sql: &'a SqlView<'_>,
-    smart: bool,
-) -> AtlasResult<crate::cache::connection::BudgetStatement<'a>> {
-    let name = if smart { "n.text" } else { "lower(n.text)" };
-    sql.prepare(&format!(
-        "SELECT s.key,n.text,s.kind,s.start_byte,s.end_byte,s.start_line,s.start_column,s.end_line,s.end_column,CASE WHEN {name}=?2 THEN 1 WHEN instr({name},?2)=1 THEN 2 ELSE 4 END AS tier FROM symbols s INDEXED BY symbols_file JOIN names n ON n.id=s.name WHERE s.file=?1 AND instr({name},?2)>0 ORDER BY tier,s.start_byte,s.id LIMIT 1"
-    ))
 }
 #[derive(Default)]
 pub(super) struct Pool<'a> {
@@ -96,39 +88,31 @@ impl<'a> Pool<'a> {
                 .split_once(" WHERE ")
                 .and_then(|(_, s)| s.rsplit_once(" ORDER BY "))
                 .ok_or_else(|| cache_error("invalid source metadata plan"))?;
-            let from = if plan.kind == Kind::Symbol {
-                if plan.lexical {
-                    "symbols s JOIN names n ON n.id=s.name JOIN symbol_fts ON symbol_fts.rowid=s.id"
-                } else {
-                    "names n CROSS JOIN symbols s INDEXED BY symbols_name ON s.name=n.id"
-                }
-            } else {
-                "files f"
-            };
-            let (id, file) = if plan.kind == Kind::Symbol {
-                ("s.id", "s.file")
-            } else {
-                ("f.id", "f.id")
-            };
-            let score = if plan.lexical {
-                ",bm25(symbol_fts)"
-            } else {
-                ",0.0"
+            let (from, id, file, score) = match (plan.kind, plan.lexical) {
+                (Kind::Symbol, true) => (
+                    "symbols s JOIN names n ON n.id=s.name JOIN symbol_fts ON symbol_fts.rowid=s.id",
+                    "s.id",
+                    "s.file",
+                    ",bm25(symbol_fts)",
+                ),
+                (Kind::Symbol, false) => (
+                    "names n CROSS JOIN symbols s INDEXED BY symbols_name ON s.name=n.id",
+                    "s.id",
+                    "s.file",
+                    ",0.0",
+                ),
+                _ => ("files f", "f.id", "f.id", ",0.0"),
             };
             let statement =
                 format!("SELECT {id},{file}{score} FROM {from} WHERE {condition} LIMIT 513");
-            let mut ids = Vec::new();
+            let mut ids: Vec<(i64, i64, f64)> = Vec::new();
             {
                 let mut statement = sql.prepare(&statement)?;
                 let mut rows = statement
                     .query(rusqlite::params_from_iter(plan.values))
                     .map_err(cache_error)?;
                 while let Some(row) = rows.next().map_err(cache_error)? {
-                    ids.push((
-                        get::<i64>(row, 0)?,
-                        get::<i64>(row, 1)?,
-                        get::<f64>(row, 2)?,
-                    ));
+                    ids.push((get(row, 0)?, get(row, 1)?, get(row, 2)?));
                 }
             }
             if ids.len() > 512 {
@@ -223,9 +207,16 @@ fn literal_best<'a>(
 ) -> AtlasResult<Option<(CodeHit, u8, f64, bool)>> {
     let statement = match &mut lookup.statement {
         Some(statement) => statement,
-        None => lookup
-            .statement
-            .insert(prepare_literal_statement(sql, lookup.smart)?),
+        None => {
+            let name = if lookup.smart {
+                "n.text"
+            } else {
+                "lower(n.text)"
+            };
+            lookup.statement.insert(sql.prepare(&format!(
+                "SELECT s.key,n.text,s.kind,s.start_byte,s.end_byte,s.start_line,s.start_column,s.end_line,s.end_column,CASE WHEN {name}=?2 THEN 1 WHEN instr({name},?2)=1 THEN 2 ELSE 4 END AS tier FROM symbols s INDEXED BY symbols_file JOIN names n ON n.id=s.name WHERE s.file=?1 AND instr({name},?2)>0 ORDER BY tier,s.start_byte,s.id LIMIT 1"
+            ))?)
+        }
     };
     let mut rows = statement
         .query((file.rowid, lookup.needle.as_str()))
