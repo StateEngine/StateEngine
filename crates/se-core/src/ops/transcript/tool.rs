@@ -129,10 +129,6 @@ pub struct Observation {
 impl Observation {
     /// Call before committing each observation. CaptureRequest remains trusted
     /// host input; serializable durable metadata is not a new IPC write door.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub fn validate_binding(
         &self,
         session: &SessionId,
@@ -164,42 +160,7 @@ impl Observation {
                 "a nonempty exact range within committed native source evidence",
             ));
         }
-        match (&self.native, self.provider) {
-            (NativeIdentity::ClaudeCall { tool_use_id }, Provider::Claude) => {
-                label(tool_use_id, 256)?
-            }
-            (
-                NativeIdentity::CodexItem {
-                    turn_id,
-                    item_id,
-                    call_id,
-                },
-                Provider::Codex,
-            ) => {
-                if item_id.is_none() && call_id.is_none() {
-                    return Err(invalid(
-                        "a native item/call ID or explicitly unknown identity",
-                    ));
-                }
-                for id in [turn_id, item_id, call_id].into_iter().flatten() {
-                    label(id, 256)?;
-                }
-            }
-            (
-                NativeIdentity::AcpCall {
-                    request,
-                    tool_call_id,
-                },
-                Provider::Acp,
-            ) => {
-                if *request == 0 {
-                    return Err(invalid("the original protocol prompt request"));
-                }
-                label(tool_call_id, 512)?;
-            }
-            (NativeIdentity::Unknown(_), _) => (),
-            _ => return Err(invalid("native identity namespace matching its provider")),
-        }
+        native_identity_bounded(&self.native, self.provider)?;
         if self.phase == Phase::Called && !matches!(self.outcome, Outcome::Unknown(_)) {
             return Err(invalid(
                 "a call intent with unknown outcome and no observed content revision",
@@ -208,31 +169,7 @@ impl Observation {
         if let ToolName::Known(name) = &self.tool {
             label(name, 128)?;
         }
-        match &self.target {
-            Target::Paths(paths) => {
-                if paths.is_empty() || paths.len() > 16 {
-                    return Err(invalid(
-                        "one through sixteen observed paths or explicitly unknown target",
-                    ));
-                }
-                for path in paths {
-                    text(&path.spelling, 1024)?;
-                    if self.phase == Phase::Called && path.content_revision.is_some() {
-                        return Err(invalid("call intent without an observed content revision"));
-                    }
-                    if let Some(ContentRevision::Opaque { scheme, value }) = &path.content_revision
-                    {
-                        label(scheme, 64)?;
-                        label(value, 256)?;
-                    }
-                    if let Some(cwd) = &path.cwd {
-                        text(cwd, 1024)?;
-                    }
-                }
-            }
-            Target::Query(query) | Target::Command(query) => text(query, 1024)?,
-            Target::Unknown(_) => (),
-        }
+        target_bounded(&self.target, self.phase)?;
         let bytes =
             serde_json::to_vec(self).map_err(|_| invalid("serializable bounded observation"))?;
         if bytes.len() > MAX_BYTES {
@@ -243,6 +180,70 @@ impl Observation {
             ));
         }
         Ok(())
+    }
+}
+fn native_identity_bounded(native: &NativeIdentity, provider: Provider) -> Result<()> {
+    match (native, provider) {
+        (NativeIdentity::ClaudeCall { tool_use_id }, Provider::Claude) => label(tool_use_id, 256)?,
+        (
+            NativeIdentity::CodexItem {
+                turn_id,
+                item_id,
+                call_id,
+            },
+            Provider::Codex,
+        ) => {
+            if item_id.is_none() && call_id.is_none() {
+                return Err(invalid(
+                    "a native item/call ID or explicitly unknown identity",
+                ));
+            }
+            for id in [turn_id, item_id, call_id].into_iter().flatten() {
+                label(id, 256)?;
+            }
+        }
+        (
+            NativeIdentity::AcpCall {
+                request,
+                tool_call_id,
+            },
+            Provider::Acp,
+        ) => {
+            if *request == 0 {
+                return Err(invalid("the original protocol prompt request"));
+            }
+            label(tool_call_id, 512)?;
+        }
+        (NativeIdentity::Unknown(_), _) => (),
+        _ => return Err(invalid("native identity namespace matching its provider")),
+    }
+    Ok(())
+}
+fn target_bounded(target: &Target, phase: Phase) -> Result<()> {
+    match target {
+        Target::Paths(paths) => {
+            if paths.is_empty() || paths.len() > 16 {
+                return Err(invalid(
+                    "one through sixteen observed paths or explicitly unknown target",
+                ));
+            }
+            for path in paths {
+                text(&path.spelling, 1024)?;
+                if phase == Phase::Called && path.content_revision.is_some() {
+                    return Err(invalid("call intent without an observed content revision"));
+                }
+                if let Some(ContentRevision::Opaque { scheme, value }) = &path.content_revision {
+                    label(scheme, 64)?;
+                    label(value, 256)?;
+                }
+                if let Some(cwd) = &path.cwd {
+                    text(cwd, 1024)?;
+                }
+            }
+            Ok(())
+        }
+        Target::Query(query) | Target::Command(query) => text(query, 1024),
+        Target::Unknown(_) => Ok(()),
     }
 }
 fn invalid(expected: &str) -> SeError {
