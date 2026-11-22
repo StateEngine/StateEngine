@@ -103,19 +103,27 @@ impl<T> Read<T> {
         }
     }
     pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Read<U> {
+        match self.into_present() {
+            Ok(value) => Read::Present { value: f(value) },
+            Err(other) => other,
+        }
+    }
+    /// The present value, or this read's absent, unreadable or unknown state
+    /// carried unchanged to another value type.
+    pub fn into_present<U>(self) -> core::result::Result<T, Read<U>> {
         match self {
-            Self::Present { value } => Read::Present { value: f(value) },
-            Self::Absent { checked } => Read::Absent { checked },
+            Self::Present { value } => Ok(value),
+            Self::Absent { checked } => Err(Read::Absent { checked }),
             Self::Unreadable {
                 source,
                 reason,
                 error,
-            } => Read::Unreadable {
+            } => Err(Read::Unreadable {
                 source,
                 reason,
                 error,
-            },
-            Self::Unknown { what } => Read::Unknown { what },
+            }),
+            Self::Unknown { what } => Err(Read::Unknown { what }),
         }
     }
     pub fn as_ref(&self) -> Read<&T> {

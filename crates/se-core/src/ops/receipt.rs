@@ -408,8 +408,13 @@ pub fn working_state_get<R: Snapshot>(
     cx: &mut commit::Cx<'_, R>,
 ) -> Result<WorkingStateOutput> {
     let name = named_agent(cx.read, &agent)?;
-    let value = match cx.read.working_state(agent).map_err(|e| store_error(&e))? {
-        Read::Present { value } => {
+    let value = match cx
+        .read
+        .working_state(agent)
+        .map_err(|e| store_error(&e))?
+        .into_present()
+    {
+        Ok(value) => {
             let updated_at = timestamp(event_time(&value.current))?;
             match value.current.body {
                 EventBody::WorkingStateSet {
@@ -439,17 +444,7 @@ pub fn working_state_get<R: Snapshot>(
                 }
             }
         }
-        Read::Absent { checked } => Read::Absent { checked },
-        Read::Unknown { what } => Read::Unknown { what },
-        Read::Unreadable {
-            source,
-            reason,
-            error,
-        } => Read::Unreadable {
-            source,
-            reason,
-            error,
-        },
+        Err(other) => other,
     };
     Ok(WorkingStateOutput { agent: name, value })
 }
