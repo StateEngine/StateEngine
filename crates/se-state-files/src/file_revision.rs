@@ -1,7 +1,7 @@
 //! Generic native file revision facts for an already retained regular file or directory.
 use std::{fs::File, io};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeFileRevision {
     pub volume: [u8; 16],
     pub file: [u8; 16],

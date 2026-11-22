@@ -122,7 +122,7 @@ impl SourceDirectory for PinnedDirectory<'_> {
             .map_err(|e| error("source directory identity", e))
     }
 }
-/// The first identity is the before-read baseline the open already observed;
+/// An identity taken before any read is the baseline the open already observed;
 /// every later one, including each after-read check, is a fresh native query.
 struct PinnedSource<'a> {
     file: NativeRootFile<'a>,
@@ -138,6 +138,8 @@ impl<'a> PinnedSource<'a> {
 }
 impl Read for PinnedSource<'_> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        // Once bytes are read, open-time facts can no longer stand in for a check.
+        self.baseline_taken.set(true);
         self.file.read(bytes)
     }
 }
@@ -153,7 +155,7 @@ impl SourceFile for PinnedSource<'_> {
                 .revision()
                 .map_err(|e| error("retained source", e))?
         } else {
-            self.file.opened_revision().clone()
+            self.file.opened_revision()
         };
         Ok(FileIdentity {
             volume: native.volume,

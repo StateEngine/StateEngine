@@ -66,7 +66,7 @@ impl Control {
                 .root
                 .open_relative(name)?
                 .ok_or_else(|| invalid("private Git control file disappeared"))?;
-            if &file.revision()? != revision {
+            if file.opened_revision() != *revision {
                 return Err(invalid("private Git control file changed"));
             }
         }

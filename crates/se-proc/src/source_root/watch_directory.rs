@@ -18,7 +18,7 @@ impl NativeWatchDirectory {
         let owned_root = NativeSourceRoot {
             path: root.path.clone(),
             directory: root.directory.try_clone()?,
-            identity: root.identity.clone(),
+            identity: root.identity,
         };
         let NativeRootDirectory {
             path,

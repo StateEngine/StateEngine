@@ -352,8 +352,8 @@ impl NativeRootFile<'_> {
     }
     /// Revision read by the no-follow open itself: a before-read baseline
     /// that costs no further query. Compare it with a fresh `revision()`.
-    pub fn opened_revision(&self) -> &NativeFileRevision {
-        &self.opened
+    pub fn opened_revision(&self) -> NativeFileRevision {
+        self.opened
     }
     /// A retained handle keeps its object for life, so only the name is reread.
     pub fn validate_name(&self) -> io::Result<bool> {
