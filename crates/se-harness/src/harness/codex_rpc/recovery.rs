@@ -2,10 +2,6 @@
 //! Resume subscribes to the existing thread; no turn/start or launch is replayed.
 use super::*;
 impl CodexHarness {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub async fn recover(
         &self,
         identity: &crate::SessionIdentity,
@@ -46,90 +42,120 @@ impl CodexHarness {
                     &context(cx.generation, deadline.remaining()?),
                 )
                 .await?;
-            let result = async {
-                binding
-                    .request(
-                        "initialize",
-                        input::initialize(),
-                        &context(cx.generation, deadline.remaining()?),
-                    )
-                    .await?;
-                binding
-                    .notify(
-                        "initialized",
-                        json!({}),
-                        &context(cx.generation, deadline.remaining()?),
-                    )
-                    .await?;
-                let response = binding
-                    .request(
-                        "thread/resume",
-                        json!({"threadId":conversation.as_str()}),
-                        &context(cx.generation, deadline.remaining()?),
-                    )
-                    .await?;
-                if response.pointer("/thread/id").and_then(Value::as_str)
-                    != Some(conversation.as_str())
-                {
-                    return Err(SeError::invalid(
-                        "Codex restart thread",
-                        "the exact original conversation",
-                    ));
-                }
-                if let Some(pin) = transcript {
-                    let path = response
-                        .pointer("/thread/path")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| {
-                            SeError::invalid(
-                                "Codex restart rollout",
-                                "the provider-reported persistent path",
-                            )
-                        })?;
-                    if pin.identity != *identity
-                        || pin.conversation != *conversation
-                        || pin.path.to_local()? != Path::new(path)
-                    {
-                        return Err(SeError::invalid(
-                            "Codex restart rollout",
-                            "the original protected path, conversation and session",
-                        ));
-                    }
-                    *binding.rollout.lock().map_err(|_| poisoned())? = Some(pin.path.clone());
-                }
-                // The response and queued notifications form a single ordered
-                // handoff. Completion received during resume cannot leave a
-                // phantom active turn or permit input to the wrong turn.
-                binding
-                    .state
-                    .lock()
-                    .map_err(|_| poisoned())?
-                    .restore(&response)?;
-                let record = self
-                    .directory(&identity.session)?
-                    .join("codex-runtime.json");
-                let session = identity.session.clone();
-                self.pool
-                    .run_owned(&deadline, move || {
-                        if Self::retained_socket(&record, &session)? != socket {
-                            return Err(SeError::invalid(
-                                "Codex restart endpoint",
-                                "the original private address",
-                            ));
-                        }
-                        Ok(())
-                    })
-                    .await?;
-                deadline.remaining()?;
-                binding.completion.nudge();
-                Ok(())
-            }
-            .await;
-            if let Err(error) = result {
+            if let Err(error) = resume_recovered_thread(
+                &binding,
+                identity,
+                conversation,
+                transcript,
+                &deadline,
+                &cx,
+            )
+            .await
+            {
                 let _ = close(&binding, &cx).await;
                 return Err(error);
             }
+            if let Err(error) = self
+                .verify_endpoint_after_resume(identity, socket, &deadline)
+                .await
+            {
+                let _ = close(&binding, &cx).await;
+                return Err(error);
+            }
+            binding.completion.nudge();
             Ok(HarnessBinding::new(binding))
         }
     }
+    #[cfg(unix)]
+    async fn verify_endpoint_after_resume(
+        &self,
+        identity: &crate::SessionIdentity,
+        socket: PathBuf,
+        deadline: &crate::Deadline,
+    ) -> Result<()> {
+        let record = self
+            .directory(&identity.session)?
+            .join("codex-runtime.json");
+        let session = identity.session.clone();
+        self.pool
+            .run_owned(deadline, move || {
+                if Self::retained_socket(&record, &session)? != socket {
+                    return Err(SeError::invalid(
+                        "Codex restart endpoint",
+                        "the original private address",
+                    ));
+                }
+                Ok(())
+            })
+            .await?;
+        deadline.remaining()?;
+        Ok(())
+    }
+}
+#[cfg(unix)]
+async fn resume_recovered_thread(
+    binding: &Arc<Binding>,
+    identity: &crate::SessionIdentity,
+    conversation: &ProviderSessionId,
+    transcript: Option<&crate::TranscriptPin>,
+    deadline: &crate::Deadline,
+    cx: &CallContext,
+) -> Result<()> {
+    binding
+        .request(
+            "initialize",
+            input::initialize(),
+            &context(cx.generation, deadline.remaining()?),
+        )
+        .await?;
+    binding
+        .notify(
+            "initialized",
+            json!({}),
+            &context(cx.generation, deadline.remaining()?),
+        )
+        .await?;
+    let response = binding
+        .request(
+            "thread/resume",
+            json!({"threadId":conversation.as_str()}),
+            &context(cx.generation, deadline.remaining()?),
+        )
+        .await?;
+    if response.pointer("/thread/id").and_then(Value::as_str) != Some(conversation.as_str()) {
+        return Err(SeError::invalid(
+            "Codex restart thread",
+            "the exact original conversation",
+        ));
+    }
+    if let Some(pin) = transcript {
+        let path = response
+            .pointer("/thread/path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                SeError::invalid(
+                    "Codex restart rollout",
+                    "the provider-reported persistent path",
+                )
+            })?;
+        if pin.identity != *identity
+            || pin.conversation != *conversation
+            || pin.path.to_local()? != Path::new(path)
+        {
+            return Err(SeError::invalid(
+                "Codex restart rollout",
+                "the original protected path, conversation and session",
+            ));
+        }
+        *binding.rollout.lock().map_err(|_| poisoned())? = Some(pin.path.clone());
+    }
+    // The response and queued notifications form a single ordered
+    // handoff. Completion received during resume cannot leave a
+    // phantom active turn or permit input to the wrong turn.
+    binding
+        .state
+        .lock()
+        .map_err(|_| poisoned())?
+        .restore(&response)?;
+    Ok(())
 }

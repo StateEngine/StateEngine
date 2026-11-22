@@ -288,6 +288,7 @@ fn from_principal<R: Snapshot>(
                     review,
                 }),
                 working_note: Some(working_note),
+                background: None,
             },
         },
     })

@@ -225,9 +225,13 @@ fn run() -> Result {
         BootIdentity::Linux { .. } => BootIdentity::WindowsAbsoluteCreationClock,
         _ => BootIdentity::Linux { boot_id: [0; 16] },
     };
+    // A new image under the same birth is the same process: an in-place update
+    // or rename of its executable changes only the reported path.
     let mut image = expected.clone();
-    image.image = image.image.with_file_name("unowned-birth-image");
-    for wrong in [&start, &boot, &image] {
+    image.image = image.image.with_file_name("replaced-birth-image");
+    observe_process_birth(&image, deadline())
+        .map_err(|error| format!("same birth with a new image refused: {error:?}"))?;
+    for wrong in [&start, &boot] {
         assert_eq!(
             observe_process_birth(wrong, deadline())
                 .err()

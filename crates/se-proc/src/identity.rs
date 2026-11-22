@@ -50,6 +50,17 @@ pub struct ProcessIdentity {
     #[serde(with = "crate::checkpoint::native_path")]
     pub image: PathBuf,
 }
+impl ProcessIdentity {
+    /// The same process instance: one birth on this machine and boot. The
+    /// image is a recorded fact, not identity, because an in-place update or
+    /// rename of the executable changes the path a running process reports.
+    pub fn same_birth(&self, other: &Self) -> bool {
+        self.machine == other.machine
+            && self.boot == other.boot
+            && self.pid == other.pid
+            && self.start == other.start
+    }
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum NativeState {

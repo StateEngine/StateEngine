@@ -326,7 +326,7 @@ fn native_image_stays_direct_and_exactly_retirable() -> Check {
     scope.finish()
 }
 #[test]
-fn genuine_native_root_image_swap_is_still_refused() -> Check {
+fn native_root_image_swap_keeps_custody_under_the_same_birth() -> Check {
     let home = Home::new()?;
     let mut scope = Scope::launch(&home, home.invocation(false, true)?)?;
     scope.wait_ready()?;
@@ -349,11 +349,16 @@ fn genuine_native_root_image_swap_is_still_refused() -> Check {
         }
         std::thread::park_timeout(Duration::from_millis(5));
     }
-    let refusal = scope
+    // The same birth is the same process: custody holds and it still retires.
+    let after = scope
         .runtime
         .observe(&scope.process)
-        .err()
-        .ok_or("root image swap was accepted")?;
-    assert_eq!(refusal.code, ProcErrorCode::IdentityChanged, "{refusal:?}");
+        .map_err(|error| format!("root image swap lost custody: {error:?}"))?
+        .record
+        .root;
+    assert!(
+        after.same_birth(&before),
+        "the observed root is the original birth"
+    );
     scope.finish()
 }

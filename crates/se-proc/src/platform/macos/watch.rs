@@ -30,7 +30,7 @@ impl Watch {
     pub fn track(&self, expected: &ProcessIdentity) -> ProcResult<()> {
         let live = || -> ProcResult<bool> {
             match crate::read_process(expected.machine.clone(), expected.pid)? {
-                ProcessRead::Present(value) if value.identity == *expected => Ok(true),
+                ProcessRead::Present(value) if value.identity.same_birth(expected) => Ok(true),
                 ProcessRead::Present(value) => Err(changed(expected, Some(&value.identity))),
                 ProcessRead::Absent { .. } | ProcessRead::ExitedRecord { .. } => Ok(false),
             }

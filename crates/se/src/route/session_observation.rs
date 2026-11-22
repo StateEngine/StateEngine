@@ -112,6 +112,7 @@ pub(super) fn merge_runtime_observation(
                     source: "provider turn observation".into(), reason: error.to_string(), error: Some(Box::new(error.body.clone())),
                 },
             });
+            row.background = se_core::ops::agent_state::host_background(row, &observed);
             if row.provider == se_types::Provider::Codex {
                 row.codex_login = Some(match &observed {
                     Ok(rows) => rows

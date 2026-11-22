@@ -204,7 +204,7 @@ mod macos {
         Ok(())
     }
     #[test]
-    fn birth_conversion_matches_native_time_and_rejects_changed_identity() -> Result {
+    fn birth_conversion_matches_native_time_and_rejects_a_changed_birth() -> Result {
         let child = Held::start()?;
         let expected = outside(child.pid().0)?;
         let StartIdentity::MacOs {
@@ -225,11 +225,15 @@ mod macos {
             seconds: seconds + 1,
             microseconds,
         };
-        let mut wrong_image = expected.clone();
-        wrong_image.image.set_file_name("unowned-reader-image");
+        // A new image under the same birth is the same process: an in-place
+        // update or rename of its executable changes only the reported path.
+        let mut replaced_image = expected.clone();
+        replaced_image.image.set_file_name("replaced-reader-image");
+        observe_process_birth(&replaced_image, deadline())
+            .map_err(|e| format!("same birth with a new image refused: {e:?}"))?;
         let mut wrong_boot = expected.clone();
         wrong_boot.boot = BootIdentity::Linux { boot_id: [0; 16] };
-        for identity in [wrong, wrong_image, wrong_boot] {
+        for identity in [wrong, wrong_boot] {
             assert_eq!(
                 observe_process_birth(&identity, deadline())
                     .err()

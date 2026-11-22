@@ -159,11 +159,11 @@ fn parent(pid: u32) -> IpcNativeResult<u32> {
 }
 
 /// Liveness of the exact retained provider birth, without granting ownership.
+/// The image is not compared: an in-place update or rename of the executable
+/// changes the path a running provider reports without ending it.
 pub fn provider_is_live(provider: &NativeIpcPeer, bound: &IpcIoBound) -> IpcNativeResult<bool> {
     match observe(provider.pid(), provider.principal(), bound) {
-        Ok(current) => {
-            Ok(current.started() == provider.started() && current.image() == provider.image())
-        }
+        Ok(current) => Ok(current.started() == provider.started()),
         Err(error) if error.source.kind() == std::io::ErrorKind::NotFound => Ok(false),
         #[cfg(windows)]
         Err(error) if error.source.raw_os_error() == Some(87) => Ok(false),
