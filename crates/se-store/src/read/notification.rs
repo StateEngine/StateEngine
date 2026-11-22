@@ -123,11 +123,7 @@ impl SqliteSnapshot {
                     )
                     .map_err(|e| self.read_sql(e))?;
                 (
-                    Some(
-                        wire(&self.db, "event", &event, &scope)?
-                            .try_into()
-                            .map_err(invalid)?,
-                    ),
+                    Some(typed_wire(&self.db, "event", &event, &scope)?),
                     Some(at),
                 )
             } else {

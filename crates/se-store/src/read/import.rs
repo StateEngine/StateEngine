@@ -179,11 +179,7 @@ impl crate::import::ImportSnapshot for SqliteSnapshot {
             .optional()
             .map_err(sql)?;
         project
-            .map(|id| {
-                wire(&self.db, "project", &id, &[0])?
-                    .try_into()
-                    .map_err(invalid)
-            })
+            .map(|id| typed_wire(&self.db, "project", &id, &[0]))
             .transpose()
     }
 }
