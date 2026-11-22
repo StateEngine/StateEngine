@@ -98,6 +98,74 @@ fn portable_path_constructor_and_wire_refuse_aliases() -> Check {
     Ok(())
 }
 #[test]
+fn since_text_reads_durations_times_commits_and_unix_millis() -> Check {
+    for (text, ago) in [
+        ("30s", 30_000),
+        ("10m", 600_000),
+        ("2h", 7_200_000),
+        ("7d", 604_800_000),
+    ] {
+        let baseline = ChangeBaseline::from_text(text)?;
+        assert!(
+            matches!(baseline, ChangeBaseline::RelativeMillis(ms) if ms == ago),
+            "{text}: {baseline:?}"
+        );
+        // A cursor digests the query; a relative baseline must not move with the clock.
+        let again = serde_json::to_vec(&ChangeBaseline::from_text(text)?)?;
+        assert_eq!(serde_json::to_vec(&baseline)?, again, "{text}");
+    }
+    let iso = ChangeBaseline::from_text("2026-11-20T09:30Z")?;
+    assert!(matches!(
+        iso,
+        ChangeBaseline::ObservedUnixMillis(1_795_167_000_000)
+    ));
+    for prefix in ["1234567", "abcdef1", "123456789012"] {
+        let baseline = ChangeBaseline::from_text(prefix)?;
+        assert!(
+            matches!(&baseline, ChangeBaseline::ObservedCommitPrefix(p) if p == prefix),
+            "{prefix}: {baseline:?}"
+        );
+    }
+    let millis = ChangeBaseline::from_text("1700000000000")?;
+    assert!(matches!(
+        millis,
+        ChangeBaseline::ObservedUnixMillis(1_700_000_000_000)
+    ));
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    assert!(matches!(
+        ChangeBaseline::from_text(sha)?,
+        ChangeBaseline::ObservedCommit(GitObjectId::Sha1(_))
+    ));
+    for bad in ["nope", "10x", "m", ""] {
+        let error = ChangeBaseline::from_text(bad)
+            .err()
+            .ok_or_else(|| format!("accepted {bad:?}"))?;
+        assert_eq!(error.body.class().exit_code(), 64, "{bad:?}: {error}");
+    }
+    Ok(())
+}
+#[test]
+fn since_wire_accepts_typed_text_and_resolves_relative_against_now() -> Check {
+    let text: ChangeBaseline = serde_json::from_value(serde_json::json!("10m"))?;
+    assert!(matches!(text, ChangeBaseline::RelativeMillis(600_000)));
+    assert!(serde_json::from_value::<ChangeBaseline>(serde_json::json!("nope")).is_err());
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
+    )?;
+    let resolved = text
+        .resolve_unix_millis()
+        .ok_or("relative did not resolve")?;
+    assert!(
+        (now - 600_000 - 5_000..=now - 600_000 + 5_000).contains(&resolved),
+        "{resolved} vs {now}"
+    );
+    let absolute = ChangeBaseline::ObservedUnixMillis(42);
+    assert_eq!(absolute.resolve_unix_millis(), Some(42));
+    Ok(())
+}
+#[test]
 fn hit_body_wire_preserves_unknown_agreement_and_checks_size() -> Check {
     let origin = BodyOrigin::AuthoritativeRecord(record()?.pointer);
     let body = HitBody::new(origin, "one\ntwo".into(), false)?;
