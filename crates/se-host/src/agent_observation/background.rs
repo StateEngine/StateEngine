@@ -53,12 +53,14 @@ fn observe(
     }
     let engine = std::env::current_exe().ok();
     let root = &observed.record.root;
+    let supervised =
+        cfg!(unix) && se_proc::canonicalize_path("/bin/sh").ok().as_ref() == Some(&root.image);
     let mut members: Vec<&ProcessIdentity> = Vec::new();
     for member in &remaining.known_live {
         if infrastructure(member, root, engine.as_deref()) {
             continue;
         }
-        match provider_under_supervisor(member, root) {
+        match provider_under_supervisor(supervised, member, root) {
             Ok(true) => continue,
             Ok(false) => members.push(member),
             Err(error) => return unreadable(format!("{error:?}")),
@@ -113,10 +115,11 @@ fn infrastructure(member: &ProcessIdentity, root: &ProcessIdentity, engine: Opti
 /// supervisor, which starts only the provider. That direct child is the
 /// provider itself; the work it starts runs below it and still counts.
 fn provider_under_supervisor(
+    supervised: bool,
     member: &ProcessIdentity,
     root: &ProcessIdentity,
 ) -> se_proc::ProcResult<bool> {
-    if !cfg!(unix) || se_proc::canonicalize_path("/bin/sh").ok().as_ref() != Some(&root.image) {
+    if !supervised {
         return Ok(false);
     }
     Ok(matches!(
