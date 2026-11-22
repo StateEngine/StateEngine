@@ -3,7 +3,9 @@ use super::*;
 use se_store::{ProcessIdentityRecord, ProjectionRecord};
 use se_types::{Detail, Read, SeError, details};
 
-pub(super) fn process_identity(record: &ProjectionRecord) -> Result<&ProcessIdentityRecord> {
+pub(in crate::process) fn process_identity(
+    record: &ProjectionRecord,
+) -> Result<&ProcessIdentityRecord> {
     record
         .process_identity()
         .ok_or_else(|| error("takeover selection", "wrong process record kind"))

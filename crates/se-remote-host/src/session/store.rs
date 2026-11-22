@@ -43,10 +43,6 @@ impl SecurityStore {
             owner_fault: None,
         })
     }
-    pub fn with_home(mut self, home: std::path::PathBuf) -> Self {
-        self.home = Some(home);
-        self
-    }
     pub fn with_reads(mut self, reads: se_store::ReadPhasePool) -> Self {
         self.reads = Some(reads);
         self

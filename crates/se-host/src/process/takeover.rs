@@ -10,12 +10,12 @@ use se_store::{Admission, EventBody};
 use se_types::{Result, SeError};
 use sha2::Digest;
 use std::sync::atomic::Ordering;
-mod reboot;
 mod replacement;
 mod selection;
 type Stopped =
     Arc<tokio::sync::Mutex<std::collections::BTreeMap<se_types::LifecycleId, TakeoverReport>>>;
-use selection::{combine_reports, process_identity};
+use selection::combine_reports;
+pub(in crate::process) use selection::process_identity;
 
 impl LaunchCoordinator {
     pub async fn launch(
