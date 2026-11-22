@@ -38,6 +38,10 @@ pub(super) fn file_effect(
         ),
     }
 }
+/// The file is no longer at its path, whether removed now or already absent.
+pub(super) fn gone(outcome: &FileOutcome) -> bool {
+    matches!(outcome, FileOutcome::Removed | FileOutcome::AlreadyAbsent)
+}
 pub(super) fn digest_bytes(value: &str) -> Result<[u8; 32]> {
     Ok(Sha256::parse_hex(value)?.as_bytes().to_owned())
 }

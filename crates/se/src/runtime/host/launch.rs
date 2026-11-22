@@ -71,10 +71,6 @@ pub fn start_with_origin(
         }
     }
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn start_recorded(
     home: &Path,
     configuration: &Path,
@@ -83,75 +79,9 @@ fn start_recorded(
     bound: &se_host::client::lease::Deadline,
     log: &mut super::startup_log::StartupLog,
 ) -> std::result::Result<StartedHost, Box<StartupFailure>> {
-    let setup = (|| -> Result<_> {
-        bound.remaining()?;
-        if !home.is_absolute() || !configuration.is_absolute() {
-            return Err(invalid("absolute home and selected configuration"));
-        }
-        let persisted = super::machine(home)?;
-        if persisted != machine {
-            return Err(invalid("the initialized protected machine identity"));
-        }
-        let files = se_proc::NativeStateFiles::open(home).map_err(file_error)?;
-        let mut nonce = [0; 16];
-        let mut instance = [0; 16];
-        let mut epoch = [0; 8];
-        se_proc::fill_entropy(&mut nonce)
-            .and_then(|()| se_proc::fill_entropy(&mut instance))
-            .and_then(|()| se_proc::fill_entropy(&mut epoch))
-            .map_err(|error| {
-                se_core::scope::unreadable("runtime startup entropy", &error.to_string())
-            })?;
-        if nonce == [0; 16] || instance == [0; 16] {
-            return Err(invalid(
-                "nonzero native startup nonce and independent host identifier",
-            ));
-        }
-        let instance = se_proc::HostInstanceId(instance);
-        let generation = HostGeneration::new((u64::from_le_bytes(epoch) & i64::MAX as u64).max(1))?;
-        let arguments = vec![
-            "host".into(),
-            home.as_os_str().into(),
-            se_types::hex_lower(&instance.0).into(),
-            generation.get().to_string().into(),
-            configuration.as_os_str().into(),
-            origin.frame().into(),
-        ];
-        #[cfg(unix)]
-        let arguments = {
-            let mut arguments = arguments;
-            let paths = crate::config::unix_socket_paths()?;
-            arguments.push(
-                paths
-                    .runtime_directory
-                    .map_or_else(OsString::new, PathBuf::into_os_string),
-            );
-            arguments.push(
-                paths
-                    .temporary_directory
-                    .map_or_else(OsString::new, PathBuf::into_os_string),
-            );
-            arguments
-        };
-        log.note("Preparing protected runtime temporary storage");
-        let environment = super::environment::prepare(&files, configuration)?;
-        log.note("Protected runtime temporary storage ready");
-        let spec = se_proc::RuntimeLaunchSpec {
-            machine,
-            startup_nonce: nonce,
-            executable: std::env::current_exe().map_err(|e| {
-                se_core::scope::unreadable("installed host image", &e.to_string()).with_cause(e)
-            })?,
-            arguments,
-            // Native bootstrap passes only this fixed block. SQLite retains
-            // file-backed temporary storage within the protected state home.
-            environment,
-            deadline: bound.at(),
-        };
-        Ok((files, spec, instance, generation))
-    })()
-    .map_err(|error| Box::new(StartupFailure { error, child: None }))?;
-    let (files, spec, instance, generation) = setup;
+    let (files, spec, instance, generation) =
+        prepare_launch(home, configuration, machine, origin, bound, log)
+            .map_err(|error| Box::new(StartupFailure { error, child: None }))?;
     let nonce = spec.startup_nonce;
     log.note("Waiting for the detached runtime's authenticated native startup handshake");
     let mut launched = NativeProcessRuntime::spawn_runtime(spec).map_err(|failure| {
@@ -172,69 +102,13 @@ fn start_recorded(
         .and_then(|()| read_published_endpoint(&files, &launched.identity, generation, bound));
     let endpoint = match published {
         Ok(endpoint) => endpoint,
-        Err(error) => {
-            return Err(startup_failure(error, Some(launched.child), bound));
-        }
+        Err(error) => return Err(startup_failure(error, Some(launched.child), bound)),
     };
     log.note("Authenticating the published runtime endpoint");
-    let proof = (|| -> Result<_> {
-        // The exclusive host publishes this protected file-identity hint before
-        // its endpoint. Reuse it under the original deadline, just as ordinary
-        // forwarding does; the native peer proof still rechecks the live image.
-        se_proc::native_ipc::restore_image_cache(
-            home,
-            endpoint.image_sha256,
-            &bound.native_bound(),
-        )
-        .map_err(|error| startup_ipc_error("protected executable cache", error))?;
-        #[cfg(unix)]
-        let stream = match &endpoint.address {
-            se_host::IpcEndpoint::UnixSocket(path) => {
-                se_proc::native_ipc::NativeUnixStream::connect(
-                    &path.to_local()?,
-                    bound.native_bound(),
-                )
-            }
-            _ => return Err(invalid("a native Unix startup endpoint")),
-        };
-        #[cfg(windows)]
-        let stream = match &endpoint.address {
-            se_host::IpcEndpoint::WindowsPipe(name) => {
-                se_proc::native_ipc::NativePipeStream::connect(
-                    std::ffi::OsStr::new(name),
-                    bound.native_bound(),
-                )
-            }
-            _ => return Err(invalid("a native Windows startup endpoint")),
-        };
-        let stream = stream.map_err(|error| startup_ipc_error("runtime ready channel", error))?;
-        let peer = se_proc::native_ipc::observe_ipc_peer_bounded(
-            stream.channel(),
-            se_proc::native_ipc::IpcPeerSide::Server,
-            &bound.native_bound(),
-        )
-        .map_err(|error| startup_ipc_error("runtime ready peer", error))?;
-        peer.verify_instance(&endpoint.epoch.owner, endpoint.image_sha256)
-            .map_err(|error| {
-                se_core::scope::unreadable("runtime ready owner", &error.to_string())
-                    .with_cause(error)
-            })?;
-        let channel = File::from(stream.channel().try_clone_to_owned().map_err(|error| {
-            se_core::scope::unreadable("retain runtime ready peer", &error.to_string())
-                .with_cause(error)
-        })?);
-        Ok(se_proc::RuntimeReadyProof {
-            startup_nonce: nonce,
-            owner: launched.identity,
-            host: instance,
-            endpoint: channel,
-        })
-    })();
+    let proof = authenticate_endpoint(home, &endpoint, bound, nonce, launched.identity, instance);
     let proof = match proof {
         Ok(proof) => proof,
-        Err(error) => {
-            return Err(startup_failure(error, Some(launched.child), bound));
-        }
+        Err(error) => return Err(startup_failure(error, Some(launched.child), bound)),
     };
     log.note("Waiting for the runtime ownership commit");
     let ready = NativeProcessRuntime::commit_runtime(launched.child, proof).map_err(|failure| {
@@ -256,6 +130,139 @@ fn start_recorded(
         ready,
         endpoint,
         detachment_record,
+    })
+}
+/// Draws the startup secrets, builds the authenticated private frame and
+/// prepares the protected environment the detached runtime starts with.
+fn prepare_launch(
+    home: &Path,
+    configuration: &Path,
+    machine: MachineId,
+    origin: StartupOrigin,
+    bound: &se_host::client::lease::Deadline,
+    log: &mut super::startup_log::StartupLog,
+) -> Result<(
+    se_proc::NativeStateFiles,
+    se_proc::RuntimeLaunchSpec,
+    se_proc::HostInstanceId,
+    HostGeneration,
+)> {
+    bound.remaining()?;
+    if !home.is_absolute() || !configuration.is_absolute() {
+        return Err(invalid("absolute home and selected configuration"));
+    }
+    let persisted = super::machine(home)?;
+    if persisted != machine {
+        return Err(invalid("the initialized protected machine identity"));
+    }
+    let files = se_proc::NativeStateFiles::open(home).map_err(file_error)?;
+    let mut nonce = [0; 16];
+    let mut instance = [0; 16];
+    let mut epoch = [0; 8];
+    se_proc::fill_entropy(&mut nonce)
+        .and_then(|()| se_proc::fill_entropy(&mut instance))
+        .and_then(|()| se_proc::fill_entropy(&mut epoch))
+        .map_err(|error| {
+            se_core::scope::unreadable("runtime startup entropy", &error.to_string())
+        })?;
+    if nonce == [0; 16] || instance == [0; 16] {
+        return Err(invalid(
+            "nonzero native startup nonce and independent host identifier",
+        ));
+    }
+    let instance = se_proc::HostInstanceId(instance);
+    let generation = HostGeneration::new((u64::from_le_bytes(epoch) & i64::MAX as u64).max(1))?;
+    let arguments = vec![
+        "host".into(),
+        home.as_os_str().into(),
+        se_types::hex_lower(&instance.0).into(),
+        generation.get().to_string().into(),
+        configuration.as_os_str().into(),
+        origin.frame().into(),
+    ];
+    #[cfg(unix)]
+    let arguments = {
+        let mut arguments = arguments;
+        let paths = crate::config::unix_socket_paths()?;
+        arguments.push(
+            paths
+                .runtime_directory
+                .map_or_else(OsString::new, PathBuf::into_os_string),
+        );
+        arguments.push(
+            paths
+                .temporary_directory
+                .map_or_else(OsString::new, PathBuf::into_os_string),
+        );
+        arguments
+    };
+    log.note("Preparing protected runtime temporary storage");
+    let environment = super::environment::prepare(&files, configuration)?;
+    log.note("Protected runtime temporary storage ready");
+    let spec = se_proc::RuntimeLaunchSpec {
+        machine,
+        startup_nonce: nonce,
+        executable: std::env::current_exe().map_err(|e| {
+            se_core::scope::unreadable("installed host image", &e.to_string()).with_cause(e)
+        })?,
+        arguments,
+        // Native bootstrap passes only this fixed block. SQLite retains
+        // file-backed temporary storage within the protected state home.
+        environment,
+        deadline: bound.at(),
+    };
+    Ok((files, spec, instance, generation))
+}
+/// Connects to the published endpoint and proves its peer is the pinned
+/// runtime owner before that owner may commit.
+fn authenticate_endpoint(
+    home: &Path,
+    endpoint: &se_host::EndpointRecord,
+    bound: &se_host::client::lease::Deadline,
+    nonce: [u8; 16],
+    owner: se_proc::ProcessIdentity,
+    host: se_proc::HostInstanceId,
+) -> Result<se_proc::RuntimeReadyProof> {
+    // The exclusive host publishes this protected file-identity hint before
+    // its endpoint. Reuse it under the original deadline, just as ordinary
+    // forwarding does; the native peer proof still rechecks the live image.
+    se_proc::native_ipc::restore_image_cache(home, endpoint.image_sha256, &bound.native_bound())
+        .map_err(|error| startup_ipc_error("protected executable cache", error))?;
+    #[cfg(unix)]
+    let stream = match &endpoint.address {
+        se_host::IpcEndpoint::UnixSocket(path) => {
+            se_proc::native_ipc::NativeUnixStream::connect(&path.to_local()?, bound.native_bound())
+        }
+        _ => return Err(invalid("a native Unix startup endpoint")),
+    };
+    #[cfg(windows)]
+    let stream = match &endpoint.address {
+        se_host::IpcEndpoint::WindowsPipe(name) => se_proc::native_ipc::NativePipeStream::connect(
+            std::ffi::OsStr::new(name),
+            bound.native_bound(),
+        ),
+        _ => return Err(invalid("a native Windows startup endpoint")),
+    };
+    let stream = stream.map_err(|error| startup_ipc_error("runtime ready channel", error))?;
+    let peer = se_proc::native_ipc::observe_ipc_peer_bounded(
+        stream.channel(),
+        se_proc::native_ipc::IpcPeerSide::Server,
+        &bound.native_bound(),
+    )
+    .map_err(|error| startup_ipc_error("runtime ready peer", error))?;
+    peer.verify_instance(&endpoint.epoch.owner, endpoint.image_sha256)
+        .map_err(|error| {
+            se_core::scope::unreadable("runtime ready owner", &error.to_string()).with_cause(error)
+        })?;
+    let channel = File::from(stream.channel().try_clone_to_owned().map_err(|error| {
+        se_core::scope::unreadable("retain runtime ready peer", &error.to_string())
+            .with_cause(error)
+    })?);
+    Ok(se_proc::RuntimeReadyProof {
+        startup_nonce: nonce,
+        owner,
+        host,
+        endpoint: channel,
     })
 }
 fn startup_failure(
