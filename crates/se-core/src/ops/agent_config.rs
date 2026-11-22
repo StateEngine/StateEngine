@@ -9,8 +9,8 @@ use crate::{
 };
 use se_config::config_policy::{ConfigFile, EffectiveSandbox};
 use se_store::{
-    Actor, AtomicBatch, EventBody, Expected, GrantKey, PermissionProfile, ProjectionRecord,
-    Snapshot,
+    Actor, AtomicBatch, EventBody, Expected, GrantKey, InputText, PermissionProfile,
+    ProjectionRecord, Snapshot,
 };
 use se_types::{AgentId, IdempotencyKey, Read, Result, SeError};
 use serde_json::Value;
@@ -191,10 +191,6 @@ fn replay_target<R: Snapshot>(key: &IdempotencyKey, cx: &mut Cx<'_, R>) -> Resul
         }
     }
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn set<R: Snapshot>(
     kernel: &Kernel,
     input: ConfigSet,
@@ -247,67 +243,7 @@ pub fn set<R: Snapshot>(
             expected,
         },
         Field::Model | Field::Profile | Field::ProviderSetting(_) => {
-            let saved = scope::require_present(
-                record,
-                "saved agent profile",
-                "Read the saved profile of this exact agent in the same project before retrying with the original --key.",
-            )?;
-            let EventBody::ProfileSaved { mut profile, .. } = saved.current.body else {
-                return Err(scope::unreadable(
-                    "saved agent profile",
-                    "current event is not ProfileSaved",
-                ));
-            };
-            if matches!(field, Field::Model) {
-                profile.model = if input.value == "null" {
-                    None
-                } else {
-                    super::inputs::bounded("model", &input.value, 256, false)?;
-                    Some(input.value.clone())
-                }
-            } else if let Field::ProviderSetting(field) = field {
-                // An explicit update supersedes the legacy saved effort, including null.
-                if field == "reasoning_effort" {
-                    profile.effort = None;
-                }
-                let mut settings = serde_json::to_value(&profile.provider_settings)
-                    .map_err(|error| scope::unreadable("provider settings", &error.to_string()))?;
-                settings[field] = if input.value == "null" {
-                    Value::Null
-                } else if field == "context_window" {
-                    serde_json::json!(input.value.parse::<u64>().map_err(|_| SeError::invalid(
-                        "context_window",
-                        "a positive token count or null"
-                    ))?)
-                } else {
-                    Value::String(input.value.clone())
-                };
-                profile.provider_settings = serde_json::from_value(settings).map_err(|_| {
-                    SeError::invalid("provider settings", "valid typed provider settings")
-                })?;
-            } else {
-                let provider = match profile.provider {
-                    se_store::Provider::Claude => se_config::config_policy::Provider::Claude,
-                    se_store::Provider::Codex => se_config::config_policy::Provider::Codex,
-                    se_store::Provider::SeCode => se_config::config_policy::Provider::SeCode,
-                    se_store::Provider::Acp => se_config::config_policy::Provider::Acp,
-                };
-                let resolved = configuration.resolve_profile(&input.value, provider, false)?;
-                profile.permission = match resolved.sandbox {
-                    EffectiveSandbox::ReadOnly => PermissionProfile::ReadOnly,
-                    EffectiveSandbox::WorkspaceWrite => PermissionProfile::WorkspaceWrite,
-                    EffectiveSandbox::Bypass => PermissionProfile::NamedFullBypass,
-                };
-                profile.named_profile = input.value.clone();
-            }
-            profile
-                .provider_settings
-                .validate(profile.provider.into())?;
-            EventBody::ProfileSaved {
-                agent,
-                profile,
-                expected,
-            }
+            profile_body(field, record, agent, &input.value, expected, configuration)?
         }
     };
     let mut event = kernel.event(body, cx)?;
@@ -330,4 +266,74 @@ pub fn set<R: Snapshot>(
             human_only,
         },
     ))
+}
+
+fn profile_body(
+    field: Field,
+    record: Read<ProjectionRecord>,
+    agent: AgentId,
+    value: &str,
+    expected: Expected,
+    configuration: &ConfigFile,
+) -> Result<EventBody<InputText>> {
+    let saved = scope::require_present(
+        record,
+        "saved agent profile",
+        "Read the saved profile of this exact agent in the same project before retrying with the original --key.",
+    )?;
+    let EventBody::ProfileSaved { mut profile, .. } = saved.current.body else {
+        return Err(scope::unreadable(
+            "saved agent profile",
+            "current event is not ProfileSaved",
+        ));
+    };
+    if matches!(field, Field::Model) {
+        profile.model = if value == "null" {
+            None
+        } else {
+            super::inputs::bounded("model", value, 256, false)?;
+            Some(value.to_owned())
+        }
+    } else if let Field::ProviderSetting(field) = field {
+        // An explicit update supersedes the legacy saved effort, including null.
+        if field == "reasoning_effort" {
+            profile.effort = None;
+        }
+        let mut settings = serde_json::to_value(&profile.provider_settings)
+            .map_err(|error| scope::unreadable("provider settings", &error.to_string()))?;
+        settings[field] = if value == "null" {
+            Value::Null
+        } else if field == "context_window" {
+            serde_json::json!(value.parse::<u64>().map_err(|_| SeError::invalid(
+                "context_window",
+                "a positive token count or null"
+            ))?)
+        } else {
+            Value::String(value.to_owned())
+        };
+        profile.provider_settings = serde_json::from_value(settings)
+            .map_err(|_| SeError::invalid("provider settings", "valid typed provider settings"))?;
+    } else {
+        let provider = match profile.provider {
+            se_store::Provider::Claude => se_config::config_policy::Provider::Claude,
+            se_store::Provider::Codex => se_config::config_policy::Provider::Codex,
+            se_store::Provider::SeCode => se_config::config_policy::Provider::SeCode,
+            se_store::Provider::Acp => se_config::config_policy::Provider::Acp,
+        };
+        let resolved = configuration.resolve_profile(value, provider, false)?;
+        profile.permission = match resolved.sandbox {
+            EffectiveSandbox::ReadOnly => PermissionProfile::ReadOnly,
+            EffectiveSandbox::WorkspaceWrite => PermissionProfile::WorkspaceWrite,
+            EffectiveSandbox::Bypass => PermissionProfile::NamedFullBypass,
+        };
+        profile.named_profile = value.to_owned();
+    }
+    profile
+        .provider_settings
+        .validate(profile.provider.into())?;
+    Ok(EventBody::ProfileSaved {
+        agent,
+        profile,
+        expected,
+    })
 }
