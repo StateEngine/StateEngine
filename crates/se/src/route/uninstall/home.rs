@@ -8,53 +8,14 @@ use se_store::{ReadStore, StateFiles};
 use se_types::{Read, Result, SeError};
 use std::{io, path::Path};
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn execute(
     cx: &Bootstrap,
     input: &Uninstall,
     diagnostic: &mut dyn FnMut(&str) -> io::Result<()>,
 ) -> Result<Option<UninstallOutput>> {
-    let route::setup::Setup::Present(reader) =
-        route::setup::inspect(&cx.home, receipt::timestamp(route::execute::now_us()?)?)?
-    else {
+    let Some(_claim) = admit(cx, input)? else {
         return Ok(None);
     };
-    let files = route::files::Files::open(&cx.home).map_err(|e| store_error(&e))?;
-    let _claim = se_proc::NativeInstallationClaim::acquire().map_err(|e| {
-        crate::installation_error::map(e, |e| {
-            scope::unreadable(
-                "initialized-home cleanup installation exclusion",
-                &e.to_string(),
-            )
-        })
-    })?;
-    match files
-        .readback(&cx.home.join("standalone-install.json"))
-        .map_err(|e| store_error(&e))?
-    {
-        Read::Present { .. } => return Ok(None),
-        Read::Absent { .. } => (),
-        other => {
-            scope::require_present(
-                other,
-                "installation record",
-                "Restore access to the selected home's record; no cleanup was attempted.",
-            )?;
-        }
-    }
-    let inventory = route::owner::inventory(&reader, &files)?;
-    let owner = route::owner::from_inventory(&inventory)?;
-    owner.authorize(
-        "installation.uninstall",
-        owner.os_owner(),
-        cx.session.is_some(),
-        !input.yes,
-    )?;
-    drop(reader);
-    drop(files);
     diagnostic("No standalone installation record: stop this initialized home and retire only its runtime artifacts; retain the executable, PATH, state, configuration and identity.\n")
         .map_err(|e| scope::unreadable("initialized-home cleanup diagnostic", &e.to_string()))?;
     let stopped = route::execute::stop_for_uninstall(
@@ -96,32 +57,7 @@ pub(super) fn execute(
         && issues.is_empty();
     let observed_at = receipt::timestamp(route::execute::now_us()?)?;
     let home = cx.home.display().to_string();
-    let preserved = [
-        "state.db",
-        "config.toml",
-        "credential",
-        "machine.json",
-        "runtime.lock",
-    ]
-    .into_iter()
-    .map(|name| {
-        format!(
-            "{}{}",
-            cx.home.join(name).display(),
-            if name == "runtime.lock" {
-                " (shared coordination lock for this home)"
-            } else {
-                ""
-            }
-        )
-    })
-    .chain(std::iter::once(format!(
-        "{home} (all other contents, including history, backups, transcripts and unrelated files)"
-    )))
-    .chain(std::iter::once(
-        "Executable, PATH, repositories and provider login are unchanged".into(),
-    ))
-    .collect();
+    let preserved = preserved(&cx.home, &home);
     Ok(Some(UninstallOutput {
         idempotency_key: input.idempotency_key.clone(),
         complete,
@@ -153,6 +89,77 @@ pub(super) fn execute(
             },
         },
     }))
+}
+/// Admit cleanup only for a present home without an installation record,
+/// holding the account-wide installation exclusion for the caller.
+fn admit(cx: &Bootstrap, input: &Uninstall) -> Result<Option<se_proc::NativeInstallationClaim>> {
+    let route::setup::Setup::Present(reader) =
+        route::setup::inspect(&cx.home, receipt::timestamp(route::execute::now_us()?)?)?
+    else {
+        return Ok(None);
+    };
+    let files = route::files::Files::open(&cx.home).map_err(|e| store_error(&e))?;
+    let claim = se_proc::NativeInstallationClaim::acquire().map_err(|e| {
+        crate::installation_error::map(e, |e| {
+            scope::unreadable(
+                "initialized-home cleanup installation exclusion",
+                &e.to_string(),
+            )
+        })
+    })?;
+    match files
+        .readback(&cx.home.join("standalone-install.json"))
+        .map_err(|e| store_error(&e))?
+    {
+        Read::Present { .. } => return Ok(None),
+        Read::Absent { .. } => (),
+        other => {
+            scope::require_present(
+                other,
+                "installation record",
+                "Restore access to the selected home's record; no cleanup was attempted.",
+            )?;
+        }
+    }
+    let inventory = route::owner::inventory(&reader, &files)?;
+    let owner = route::owner::from_inventory(&inventory)?;
+    owner.authorize(
+        "installation.uninstall",
+        owner.os_owner(),
+        cx.session.is_some(),
+        !input.yes,
+    )?;
+    drop(reader);
+    drop(files);
+    Ok(Some(claim))
+}
+fn preserved(root: &Path, home: &str) -> Vec<String> {
+    [
+        "state.db",
+        "config.toml",
+        "credential",
+        "machine.json",
+        "runtime.lock",
+    ]
+    .into_iter()
+    .map(|name| {
+        format!(
+            "{}{}",
+            root.join(name).display(),
+            if name == "runtime.lock" {
+                " (shared coordination lock for this home)"
+            } else {
+                ""
+            }
+        )
+    })
+    .chain(std::iter::once(format!(
+        "{home} (all other contents, including history, backups, transcripts and unrelated files)"
+    )))
+    .chain(std::iter::once(
+        "Executable, PATH, repositories and provider login are unchanged".into(),
+    ))
+    .collect()
 }
 fn retire(cx: &Bootstrap, effects: &mut Vec<FileEffect>, confirmed: bool) -> Result<()> {
     let route::setup::Setup::Present(reader) =
