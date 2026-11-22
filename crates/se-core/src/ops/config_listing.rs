@@ -2,13 +2,14 @@
 //! bounded static pages over the closed config.toml key set.
 use super::{ConfigList, inputs::Validate};
 use crate::scope;
-use se_config::config_policy::{Approval, ConfigFile, Provider, Sandbox};
+use rows::{acp_profile_rows, launch_runtime_rows, provider_rows, service_rows};
+use se_config::config_policy::ConfigFile;
 use se_types::{
-    Cursor, Omission, OmissionReason, Page, Read, Result, SeError, Sequence, Source, StopReason,
+    Cursor, Omission, OmissionReason, Page, Result, SeError, Sequence, Source, StopReason,
     WindowFields,
 };
-use serde_json::{Value, json};
 use std::num::{NonZeroU32, NonZeroU64};
+mod rows;
 
 /// Bounded static pages over the closed config.toml key set. Every row is
 /// the effective typed setting; only Option fields can be absent. `--origin`
@@ -17,10 +18,6 @@ use std::num::{NonZeroU32, NonZeroU64};
 /// bounded by the requested row limit and the wire byte budget; the returned
 /// cursor continues the list, so a valid large configuration lists completely
 /// across pages instead of refusing the whole file.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn list(
     configuration: &ConfigFile,
     origin: Option<&str>,
@@ -37,129 +34,17 @@ pub fn list(
         }
         (false, _) => None,
     };
-    let mut rows: Vec<super::ConfigValueOutput> = Vec::new();
-    let row = |rows: &mut Vec<super::ConfigValueOutput>, key: &str, value: Read<Value>| {
-        rows.push(super::ConfigValueOutput {
-            key: key.to_owned(),
-            value,
-            origin: origin.clone(),
-        });
-    };
-    row(
-        &mut rows,
-        "default_project",
-        present(json!(configuration.default_project)),
-    );
-    row(
-        &mut rows,
-        "launch.provider",
-        present(json!(provider_wire(configuration.launch.provider))),
-    );
-    row(
-        &mut rows,
-        "launch.terminal",
-        present(json!(configuration.launch.terminal)),
-    );
-    row(
-        &mut rows,
-        "runtime.listen_port",
-        option(&configuration.runtime.listen_port),
-    );
-    row(
-        &mut rows,
-        "runtime.blocking_jobs",
-        option(&configuration.runtime.blocking_jobs),
-    );
-    row(
-        &mut rows,
-        "runtime.mail_wake_interval_seconds",
-        option(&configuration.runtime.mail_wake_interval_seconds),
-    );
-    row(
-        &mut rows,
-        "runtime.captain_nudge_idle_seconds",
-        option(&configuration.runtime.captain_nudge_idle_seconds),
-    );
-    row(
-        &mut rows,
-        "runtime.captain_nudge_attempts",
-        option(&configuration.runtime.captain_nudge_attempts),
-    );
-    for registration in se_types::HARNESS_REGISTRY {
-        let name = registration.id;
-        let provider = configuration.provider(registration.provider);
-        row(
-            &mut rows,
-            &format!("providers.{name}.command"),
-            option(&provider.command),
-        );
-        row(
-            &mut rows,
-            &format!("providers.{name}.model"),
-            present(json!(provider.model)),
-        );
-        row(
-            &mut rows,
-            &format!("providers.{name}.profile"),
-            present(json!(provider.profile)),
-        );
-    }
-    row(
-        &mut rows,
-        "providers.secode.seed_profile",
-        option(&configuration.providers.secode.seed_profile),
-    );
-    for (key, value) in [
-        ("acp.arguments", json!(configuration.acp.arguments)),
-        ("acp.environment", json!(configuration.acp.environment)),
-        ("acp.mode", json!(configuration.acp.mode)),
-    ] {
-        row(&mut rows, key, present(value));
-    }
-    for (name, profile) in &configuration.profiles {
-        row(
-            &mut rows,
-            &format!("profiles.{name}.sandbox"),
-            present(json!(sandbox_wire(profile.sandbox))),
-        );
-        row(
-            &mut rows,
-            &format!("profiles.{name}.network"),
-            present(json!(profile.network)),
-        );
-        let approval = match &profile.approval {
-            Some(approval) => present(json!(approval_wire(*approval))),
-            None => Read::Absent {
-                checked: "not set in the effective configuration".into(),
-            },
-        };
-        row(&mut rows, &format!("profiles.{name}.approval"), approval);
-        row(
-            &mut rows,
-            &format!("profiles.{name}.bypass"),
-            present(json!(profile.bypass)),
-        );
-        row(
-            &mut rows,
-            &format!("profiles.{name}.git_write"),
-            present(json!(profile.git_write)),
-        );
-    }
-    row(
-        &mut rows,
-        "atlas.enabled",
-        present(json!(configuration.atlas.enabled)),
-    );
-    row(
-        &mut rows,
-        "atlas.hooks",
-        present(json!(configuration.atlas.hooks)),
-    );
-    row(
-        &mut rows,
-        "capture.enabled",
-        present(json!(configuration.capture.enabled)),
-    );
+    let mut rows = launch_runtime_rows(configuration, &origin);
+    rows.extend(provider_rows(configuration, &origin));
+    rows.extend(acp_profile_rows(configuration, &origin));
+    rows.extend(service_rows(configuration, &origin));
+    page_rows(rows, input, &origin)
+}
+fn page_rows(
+    rows: Vec<super::ConfigValueOutput>,
+    input: ConfigList,
+    origin: &Option<String>,
+) -> Result<super::ConfigPageOutput> {
     // The row set is static, so the cursor is a plain row count: the rows
     // before it are the pages the caller already received.
     let offset = cursor_offset(input.cursor.as_ref())?;
@@ -262,35 +147,6 @@ fn cursor_offset(cursor: Option<&Cursor>) -> Result<u64> {
     rest.parse()
         .map_err(|_| SeError::invalid("cursor", "a config list cursor"))
 }
-fn present(value: Value) -> Read<Value> {
-    Read::Present { value }
-}
-fn option<T: serde::Serialize>(value: &Option<T>) -> Read<Value> {
-    match value {
-        Some(value) => Read::Present {
-            value: json!(value),
-        },
-        None => Read::Absent {
-            checked: "not set in the effective configuration".into(),
-        },
-    }
-}
-fn provider_wire(provider: Provider) -> &'static str {
-    provider.id()
-}
-fn sandbox_wire(sandbox: Sandbox) -> &'static str {
-    match sandbox {
-        Sandbox::ReadOnly => "read-only",
-        Sandbox::WorkspaceWrite => "workspace-write",
-    }
-}
-fn approval_wire(approval: Approval) -> &'static str {
-    match approval {
-        Approval::OnRequest => "on-request",
-        Approval::Untrusted => "untrusted",
-        Approval::Never => "never",
-    }
-}
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -298,7 +154,9 @@ fn approval_wire(approval: Approval) -> &'static str {
 )]
 mod list_tests {
     use super::*;
-    use se_config::config_policy::Profile;
+    use se_config::config_policy::{Approval, Profile, Provider, Sandbox};
+    use se_types::Read;
+    use serde_json::{Value, json};
 
     const EXPECTED_KEYS: &[&str] = &[
         "default_project",

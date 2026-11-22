@@ -123,46 +123,14 @@ pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentSt
     from_principal(agent, principal, controlled_profile, cx)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn from_principal<R: Snapshot>(
     agent: AgentId,
     principal: ProjectionRecord,
     controlled_profile: Option<Read<ProjectionRecord>>,
     cx: &mut Cx<'_, R>,
 ) -> Result<AgentStatusOutput> {
-    let (name, role) = match principal.current.body {
-        EventBody::PrincipalRegistered { name, role, .. } => {
-            (name, (!role.is_empty()).then_some(role))
-        }
-        EventBody::PrincipalRenamed { name, .. } => {
-            let role = principal
-                .original
-                .as_deref()
-                .and_then(|original| match &original.body {
-                    EventBody::PrincipalRegistered { role, .. } if !role.is_empty() => {
-                        Some(role.clone())
-                    }
-                    _ => None,
-                });
-            (name, role)
-        }
-        _ => {
-            return Err(scope::unreadable(
-                "saved agent identity",
-                "current registration/name unavailable",
-            ));
-        }
-    };
-    let profile = match controlled_profile {
-        Some(profile) => profile,
-        None => cx
-            .read
-            .profile(agent.clone())
-            .map_err(|error| store_error(&error))?,
-    };
+    let (name, role) = principal_name_role(&principal)?;
+    let profile = saved_profile_record(&agent, controlled_profile, cx)?;
     let saved = match profile {
         Read::Present { value } => value,
         Read::Absent { checked } => {
@@ -191,57 +159,16 @@ fn from_principal<R: Snapshot>(
             });
         }
     };
-    let EventBody::ProfileSaved { profile, .. } = saved.current.body else {
-        return Err(scope::unreadable(
-            "saved agent profile",
-            "current immutable profile unavailable",
-        ));
-    };
-    let provider = match profile.provider {
-        se_store::Provider::Claude => se_types::Provider::Claude,
-        se_store::Provider::Codex => se_types::Provider::Codex,
-        se_store::Provider::SeCode => se_types::Provider::SeCode,
-        se_store::Provider::Acp => se_types::Provider::Acp,
-    };
+    let profile = profile_saved(saved)?;
+    let provider = provider_view(profile.provider);
     let (session, conversation, mut resume) = super::agent_session::read(&agent, cx)?;
     let never_launched = session.state == "never-launched" && session.session_id.is_none();
-    if provider == se_types::Provider::SeCode {
-        resume.ready = false;
-        resume.mode = "compatible-service-required".into();
-        resume.reason = Some(super::AgentCommand::SECODE_RESUME_UNAVAILABLE.into());
-        resume.command = None;
-        resume.argv = None;
-    }
-    let secode_binding = if provider == se_types::Provider::SeCode {
-        Some(retained_secode_binding(session.session_id.as_ref(), cx)?)
+    let (secode_binding, secode_runtime) = if provider == se_types::Provider::SeCode {
+        secode_views(&session, &mut resume, cx)?
     } else {
-        None
+        (None, None)
     };
-    let secode_runtime = secode_binding.as_ref().map(|binding| match binding {
-        Read::Absent { checked } if session.session_id.is_none() => Read::Absent {
-            checked: checked.clone(),
-        },
-        Read::Unknown { what } => Read::Unknown { what: what.clone() },
-        Read::Unreadable { source, reason, error } => Read::Unreadable {
-            source: source.clone(),
-            reason: reason.clone(),
-            error: error.clone(),
-        },
-        _ => Read::Unknown {
-            what: "Current service and execution observations require the owning runtime; retained custody is shown separately.".into(),
-        },
-    });
-    let unread = cx
-        .read
-        .message_count(se_store::MessageQuery {
-            recipient: Some(Actor::Agent(agent.clone())),
-            sender: None,
-            kind: None,
-            unread_only: true,
-            full_body: false,
-            direction: se_store::MailDirection::OldestFirst,
-        })
-        .map_err(|error| store_error(&error))?;
+    let unread = unread_count(&agent, cx)?;
     // The open question is a stored fact; the state itself is settled once the
     // runtime's observations are merged.
     let waiting_on = super::agent_state::open_question(&agent, cx)?;
@@ -292,6 +219,118 @@ fn from_principal<R: Snapshot>(
             },
         },
     })
+}
+
+fn principal_name_role(principal: &ProjectionRecord) -> Result<(String, Option<String>)> {
+    match &principal.current.body {
+        EventBody::PrincipalRegistered { name, role, .. } => {
+            Ok((name.clone(), (!role.is_empty()).then_some(role.clone())))
+        }
+        EventBody::PrincipalRenamed { name, .. } => {
+            let role = principal
+                .original
+                .as_deref()
+                .and_then(|original| match &original.body {
+                    EventBody::PrincipalRegistered { role, .. } if !role.is_empty() => {
+                        Some(role.clone())
+                    }
+                    _ => None,
+                });
+            Ok((name.clone(), role))
+        }
+        _ => Err(scope::unreadable(
+            "saved agent identity",
+            "current registration/name unavailable",
+        )),
+    }
+}
+
+fn saved_profile_record<R: Snapshot>(
+    agent: &AgentId,
+    controlled_profile: Option<Read<ProjectionRecord>>,
+    cx: &mut Cx<'_, R>,
+) -> Result<Read<ProjectionRecord>> {
+    match controlled_profile {
+        Some(profile) => Ok(profile),
+        None => cx
+            .read
+            .profile(agent.clone())
+            .map_err(|error| store_error(&error)),
+    }
+}
+
+fn profile_saved(saved: ProjectionRecord) -> Result<se_store::Profile> {
+    let EventBody::ProfileSaved { profile, .. } = saved.current.body else {
+        return Err(scope::unreadable(
+            "saved agent profile",
+            "current immutable profile unavailable",
+        ));
+    };
+    Ok(profile)
+}
+
+fn provider_view(provider: se_store::Provider) -> se_types::Provider {
+    match provider {
+        se_store::Provider::Claude => se_types::Provider::Claude,
+        se_store::Provider::Codex => se_types::Provider::Codex,
+        se_store::Provider::SeCode => se_types::Provider::SeCode,
+        se_store::Provider::Acp => se_types::Provider::Acp,
+    }
+}
+
+type SecodeViews = (
+    Option<Read<super::SecodeBindingView>>,
+    Option<Read<super::SecodeRuntimeView>>,
+);
+
+fn secode_views<R: Snapshot>(
+    session: &super::SessionView,
+    resume: &mut super::ResumeCommand,
+    cx: &mut Cx<'_, R>,
+) -> Result<SecodeViews> {
+    resume.ready = false;
+    resume.mode = "compatible-service-required".into();
+    resume.reason = Some(super::AgentCommand::SECODE_RESUME_UNAVAILABLE.into());
+    resume.command = None;
+    resume.argv = None;
+    let secode_binding = Some(retained_secode_binding(session.session_id.as_ref(), cx)?);
+    let secode_runtime = secode_binding
+        .as_ref()
+        .map(|binding| secode_runtime_view(binding, session));
+    Ok((secode_binding, secode_runtime))
+}
+
+fn secode_runtime_view(
+    binding: &Read<super::SecodeBindingView>,
+    session: &super::SessionView,
+) -> Read<super::SecodeRuntimeView> {
+    match binding {
+        Read::Absent { checked } if session.session_id.is_none() => Read::Absent {
+            checked: checked.clone(),
+        },
+        Read::Unknown { what } => Read::Unknown { what: what.clone() },
+        Read::Unreadable { source, reason, error } => Read::Unreadable {
+            source: source.clone(),
+            reason: reason.clone(),
+            error: error.clone(),
+        },
+        _ => Read::Unknown {
+            what: "Current service and execution observations require the owning runtime; retained custody is shown separately.".into(),
+        },
+    }
+}
+
+fn unread_count<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<u64> {
+    cx.read
+        .message_count(se_store::MessageQuery {
+            recipient: Some(Actor::Agent(agent.clone())),
+            sender: None,
+            kind: None,
+            unread_only: true,
+            full_body: false,
+            direction: se_store::MailDirection::OldestFirst,
+        })
+        .map_err(|error| store_error(&error))
 }
 
 fn retained_secode_binding<R: Snapshot>(
