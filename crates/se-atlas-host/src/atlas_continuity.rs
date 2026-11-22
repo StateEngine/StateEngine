@@ -9,10 +9,6 @@ use se_store::{Actor, Admission, Scope, SqliteSnapshot};
 use se_types::{Read, Result, SeError, code::*};
 use std::time::{Duration, Instant};
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(crate) fn source(
     owner: &AtlasOwnerPort,
     ticket: Option<RecordFeedTicket>,
@@ -36,18 +32,7 @@ pub(crate) fn source(
             "the admitted registered project",
         ));
     }
-    let state = match &index.state {
-        IndexState::Disabled | IndexState::NotBuilt => Some(ResumeCodeState::Disabled),
-        IndexState::Dormant | IndexState::Absent => Some(ResumeCodeState::NeverIndexed),
-        IndexState::Opening
-        | IndexState::ColdIndexing { .. }
-        | IndexState::Draining
-        | IndexState::Closed => Some(ResumeCodeState::Updating),
-        IndexState::Unreadable { .. } | IndexState::Suspended { .. } => {
-            Some(ResumeCodeState::Unreadable)
-        }
-        _ => None,
-    };
+    let state = short_circuit_state(&index.state);
     if let Some(state) = state {
         return Ok(ResumeCode {
             index,
@@ -122,6 +107,20 @@ pub(crate) fn source(
     }
     output
         .ok_or_else(|| SeError::invalid("Atlas continuity read", "one completed borrowed callback"))
+}
+fn short_circuit_state(state: &IndexState) -> Option<ResumeCodeState> {
+    match state {
+        IndexState::Disabled | IndexState::NotBuilt => Some(ResumeCodeState::Disabled),
+        IndexState::Dormant | IndexState::Absent => Some(ResumeCodeState::NeverIndexed),
+        IndexState::Opening
+        | IndexState::ColdIndexing { .. }
+        | IndexState::Draining
+        | IndexState::Closed => Some(ResumeCodeState::Updating),
+        IndexState::Unreadable { .. } | IndexState::Suspended { .. } => {
+            Some(ResumeCodeState::Unreadable)
+        }
+        _ => None,
+    }
 }
 fn failed(error: &SeError) -> ResumeCodeState {
     if matches!(
