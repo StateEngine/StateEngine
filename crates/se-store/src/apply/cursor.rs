@@ -82,10 +82,6 @@ fn bounds(window: &Window) -> StoreResult<(u64, u64, u64, bool, Option<u64>)> {
         window.omitted().count,
     ))
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn apply(
     c: &Connection,
     h: &EventHeader,
@@ -97,132 +93,7 @@ pub(super) fn apply(
     let p = project_id(c, &h.scope, false)?;
     let s = scope_key(c, &h.scope, false)?;
     let agent = match body {
-        EventBody::CursorRecorded { cursor } => {
-            let purpose_ok = !cursor.purpose.is_empty()
-                && cursor.purpose.len() <= 128
-                && cursor
-                    .purpose
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
-            if !purpose_ok || cursor.value.as_str().len() > 192 {
-                return Err(invalid("cursor purpose grammar or value bounds"));
-            }
-            let a = key(c, "agent", cursor.agent.as_str(), &s, false)?;
-            permitted(c, h, &p, &cursor.agent, &a)?;
-            let (from, to, returned, complete, omitted) = bounds(&cursor.window)?;
-            // A store-backed window must name this store and this project.
-            if let Some(se_types::Source::Store { store, project }) =
-                cursor.window.fields().map(|f| &f.source)
-            {
-                let this: Vec<u8> = c
-                    .query_row(
-                        "SELECT store_id FROM store_info WHERE singleton=1",
-                        [],
-                        |r| r.get(0),
-                    )
-                    .map_err(sql)?;
-                let scoped = matches!(&h.scope, Scope::Project(id) if project.as_ref() == Some(id));
-                if canonical(store.as_str()).as_deref() != Some(this.as_slice()) || !scoped {
-                    return Err(fail(
-                        StoreErrorCode::ScopeMismatch,
-                        "cursor window names another store or project",
-                    ));
-                }
-            }
-            // Validate a supplied opaque end when issuing, before it can become
-            // durable cursor history. Later frontier fallback is not admission.
-            if let Some(end) = cursor.window.fields().and_then(|f| f.end_cursor.as_ref()) {
-                let end = checked_end(c, end)?;
-                if !(from..=to).contains(&end) {
-                    return Err(fail(
-                        StoreErrorCode::CursorInvalid,
-                        "cursor end is outside its window bounds",
-                    ));
-                }
-            }
-            // The window cannot claim events this store has not committed.
-            if to >= seq as u64 {
-                return Err(invalid(
-                    "cursor window extends past the committed store head",
-                ));
-            }
-            // A new window may re-read, but never start past work its
-            // predecessor did not confirm: after an ack, past that window's
-            // last returned item; before one, past the unacknowledged start.
-            let prior: Option<(i64, u64, u64, bool, Option<i64>)> = c
-                .query_row(
-                    "SELECT d.event_seq,d.from_seq,d.to_seq,d.complete,h.acknowledged_seq FROM cursors h JOIN cursor_data d ON d.cursor_id=h.cursor_id AND d.acknowledged_event IS NULL WHERE h.project_id=? AND h.agent_id=? AND h.purpose=?",
-                    rusqlite::params![p, a, cursor.purpose],
-                    |r| {
-                        Ok((
-                            r.get(0)?,
-                            crate::sql_value::value(r, 1)?,
-                            crate::sql_value::value(r, 2)?,
-                            r.get(3)?,
-                            r.get(4)?,
-                        ))
-                    },
-                )
-                .optional()
-                .map_err(sql)?;
-            if let Some((issued, prior_from, prior_to, complete, acked)) = prior {
-                // A complete window returned everything up to `to`. An
-                // incomplete one confirms its last returned item, clamped into
-                // its own bounds, or only `from` without this store's cursor.
-                let limit = match (acked, complete) {
-                    (None, _) => prior_from,
-                    (Some(_), true) => prior_to,
-                    (Some(_), false) => confirmed_end(c, issued)?
-                        .map_or(prior_from, |last| last.clamp(prior_from, prior_to)),
-                };
-                if from > limit {
-                    return Err(fail(
-                        StoreErrorCode::InvalidTransition,
-                        format!(
-                            "cursor window would skip unconfirmed work: it must start at or before {limit}"
-                        ),
-                    ));
-                }
-            }
-            let id = cursor.id.as_bytes().to_vec();
-            let reused: bool = c
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM cursor_data d CROSS JOIN events e ON e.seq=d.event_seq WHERE e.project_id=? AND d.cursor_id=?)",
-                    rusqlite::params![p, id],
-                    |r| r.get(0),
-                )
-                .map_err(sql)?;
-            if reused {
-                return Err(fail(
-                    StoreErrorCode::NaturalKeyConflict,
-                    "cursor ID was already issued; issue a fresh cursor",
-                ));
-            }
-            let expected = match cursor.expected {
-                Expected::Absent => None,
-                Expected::Revision(r) => Some(r.value.get()),
-            };
-            c.execute(
-                "INSERT INTO cursor_data(event_seq,cursor_id,agent_id,purpose,value,expected_revision,from_seq,to_seq,returned,complete,omitted,acknowledged_event) VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL)",
-                crate::sql_value::sql_params![seq, id, a, cursor.purpose, cursor.value.as_str().as_bytes().to_vec(), expected, from, to, returned, complete, omitted],
-            )
-            .map_err(sql)?;
-            let changed = c
-                .execute(
-                    "INSERT INTO cursors(project_id,agent_id,purpose,cursor_id,revision,last_seq,acknowledged_seq) VALUES(?,?,?,?,?,?,NULL)
-                     ON CONFLICT(project_id,agent_id,purpose) DO UPDATE SET cursor_id=excluded.cursor_id,revision=excluded.revision,last_seq=excluded.last_seq,acknowledged_seq=NULL
-                     WHERE cursors.revision=excluded.revision-1",
-                    crate::sql_value::sql_params![p, a, cursor.purpose, id, rev, seq],
-                )
-                .map_err(sql)?;
-            if changed != 1 {
-                return Err(fail(
-                    StoreErrorCode::RevisionConflict,
-                    "cursor head changed",
-                ));
-            }
-            a
-        }
+        EventBody::CursorRecorded { cursor } => record(c, h, &p, &s, &cursor, seq, rev)?,
         EventBody::CursorAcknowledged {
             cursor, evidence, ..
         } => {
@@ -293,6 +164,161 @@ pub(super) fn apply(
         ));
     }
     codec::aux(c, seq, facts)
+}
+/// Issue a cursor over the exact window it presented; returns its agent key.
+fn record(
+    c: &Connection,
+    h: &EventHeader,
+    p: &[u8],
+    s: &[u8],
+    cursor: &CursorRecord,
+    seq: i64,
+    rev: u64,
+) -> StoreResult<Vec<u8>> {
+    let purpose_ok = !cursor.purpose.is_empty()
+        && cursor.purpose.len() <= 128
+        && cursor
+            .purpose
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+    if !purpose_ok || cursor.value.as_str().len() > 192 {
+        return Err(invalid("cursor purpose grammar or value bounds"));
+    }
+    let a = key(c, "agent", cursor.agent.as_str(), s, false)?;
+    permitted(c, h, p, &cursor.agent, &a)?;
+    let (from, to, returned, complete, omitted) = admit_window(c, h, &cursor.window, seq)?;
+    prior_confirmed(c, p, &a, &cursor.purpose, from)?;
+    let id = cursor.id.as_bytes().to_vec();
+    let reused: bool = c
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM cursor_data d CROSS JOIN events e ON e.seq=d.event_seq WHERE e.project_id=? AND d.cursor_id=?)",
+            rusqlite::params![p, id],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    if reused {
+        return Err(fail(
+            StoreErrorCode::NaturalKeyConflict,
+            "cursor ID was already issued; issue a fresh cursor",
+        ));
+    }
+    let expected = match cursor.expected {
+        Expected::Absent => None,
+        Expected::Revision(r) => Some(r.value.get()),
+    };
+    c.execute(
+        "INSERT INTO cursor_data(event_seq,cursor_id,agent_id,purpose,value,expected_revision,from_seq,to_seq,returned,complete,omitted,acknowledged_event) VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL)",
+        crate::sql_value::sql_params![seq, id, a, cursor.purpose, cursor.value.as_str().as_bytes().to_vec(), expected, from, to, returned, complete, omitted],
+    )
+    .map_err(sql)?;
+    let changed = c
+        .execute(
+            "INSERT INTO cursors(project_id,agent_id,purpose,cursor_id,revision,last_seq,acknowledged_seq) VALUES(?,?,?,?,?,?,NULL)
+             ON CONFLICT(project_id,agent_id,purpose) DO UPDATE SET cursor_id=excluded.cursor_id,revision=excluded.revision,last_seq=excluded.last_seq,acknowledged_seq=NULL
+             WHERE cursors.revision=excluded.revision-1",
+            crate::sql_value::sql_params![p, a, cursor.purpose, id, rev, seq],
+        )
+        .map_err(sql)?;
+    if changed != 1 {
+        return Err(fail(
+            StoreErrorCode::RevisionConflict,
+            "cursor head changed",
+        ));
+    }
+    Ok(a)
+}
+/// The window's bounds, once it names this store and project, ends inside
+/// itself and stays behind the committed store head.
+fn admit_window(
+    c: &Connection,
+    h: &EventHeader,
+    window: &Window,
+    seq: i64,
+) -> StoreResult<(u64, u64, u64, bool, Option<u64>)> {
+    let bounds = bounds(window)?;
+    let (from, to, ..) = bounds;
+    // A store-backed window must name this store and this project.
+    if let Some(se_types::Source::Store { store, project }) = window.fields().map(|f| &f.source) {
+        let this: Vec<u8> = c
+            .query_row(
+                "SELECT store_id FROM store_info WHERE singleton=1",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(sql)?;
+        let scoped = matches!(&h.scope, Scope::Project(id) if project.as_ref() == Some(id));
+        if canonical(store.as_str()).as_deref() != Some(this.as_slice()) || !scoped {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "cursor window names another store or project",
+            ));
+        }
+    }
+    // Validate a supplied opaque end when issuing, before it can become
+    // durable cursor history. Later frontier fallback is not admission.
+    if let Some(end) = window.fields().and_then(|f| f.end_cursor.as_ref()) {
+        let end = checked_end(c, end)?;
+        if !(from..=to).contains(&end) {
+            return Err(fail(
+                StoreErrorCode::CursorInvalid,
+                "cursor end is outside its window bounds",
+            ));
+        }
+    }
+    // The window cannot claim events this store has not committed.
+    if to >= seq as u64 {
+        return Err(invalid(
+            "cursor window extends past the committed store head",
+        ));
+    }
+    Ok(bounds)
+}
+/// A new window may re-read, but never start past work its
+/// predecessor did not confirm: after an ack, past that window's
+/// last returned item; before one, past the unacknowledged start.
+fn prior_confirmed(
+    c: &Connection,
+    p: &[u8],
+    a: &[u8],
+    purpose: &str,
+    from: u64,
+) -> StoreResult<()> {
+    let prior: Option<(i64, u64, u64, bool, Option<i64>)> = c
+        .query_row(
+            "SELECT d.event_seq,d.from_seq,d.to_seq,d.complete,h.acknowledged_seq FROM cursors h JOIN cursor_data d ON d.cursor_id=h.cursor_id AND d.acknowledged_event IS NULL WHERE h.project_id=? AND h.agent_id=? AND h.purpose=?",
+            rusqlite::params![p, a, purpose],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    crate::sql_value::value(r, 1)?,
+                    crate::sql_value::value(r, 2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(sql)?;
+    if let Some((issued, prior_from, prior_to, complete, acked)) = prior {
+        // A complete window returned everything up to `to`. An
+        // incomplete one confirms its last returned item, clamped into
+        // its own bounds, or only `from` without this store's cursor.
+        let limit = match (acked, complete) {
+            (None, _) => prior_from,
+            (Some(_), true) => prior_to,
+            (Some(_), false) => confirmed_end(c, issued)?
+                .map_or(prior_from, |last| last.clamp(prior_from, prior_to)),
+        };
+        if from > limit {
+            return Err(fail(
+                StoreErrorCode::InvalidTransition,
+                format!(
+                    "cursor window would skip unconfirmed work: it must start at or before {limit}"
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 /// The agent itself or its owner records and acknowledges its cursors.
 fn permitted(

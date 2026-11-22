@@ -50,10 +50,6 @@ pub(crate) fn revision(c: &Connection, change: &Change) -> StoreResult<u64> {
     }
     Ok(1)
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(crate) fn apply(
     c: &Connection,
     h: &EventHeader,
@@ -117,69 +113,98 @@ pub(crate) fn apply(
         )
         .map_err(sql)?;
     match &change {
-        Change::Connected { .. } => {
-            let info = connection::info(c)?;
-            if info.id != state.credential.store {
-                return Err(invalid("credential belongs to another store"));
-            }
-            let count: i64 = c
-                .query_row(
-                    "SELECT count(*) FROM channel_connections WHERE active=1",
-                    [],
-                    |r| crate::sql_value::value(r, 0),
-                )
-                .map_err(sql)?;
-            if count >= crate::channel::MAX_CONNECTIONS as i64 {
-                return Err(fail(
-                    StoreErrorCode::Backpressure,
-                    "channel connection limit",
-                ));
-            }
-            if let crate::channel::ChannelPolicy::ConfirmResume {
-                profile_revision,
-                cost_limit,
-                ..
-            } = state.policy
-            {
-                if state.resume_configuration.is_none() || cost_limit.is_some() {
-                    return Err(invalid(
-                        "phone lifecycle configuration/cost policy is unsupported",
-                    ));
-                }
-                let p = project_id(c, &h.scope, false)?;
-                let s = scope_key(c, &h.scope, false)?;
-                let a = key(c, "agent", state.target.agent.as_str(), &s, false)?;
-                let actual: Option<u64> = c
-                    .query_row(
-                        "SELECT revision FROM profiles WHERE project_id=? AND agent_id=?",
-                        crate::sql_value::sql_params![p, a],
-                        |r| crate::sql_value::value(r, 0),
-                    )
-                    .optional()
-                    .map_err(sql)?;
-                if actual != Some(profile_revision) {
-                    return Err(invalid("phone lifecycle profile revision changed"));
-                }
-            } else if state.resume_configuration.is_some() {
-                return Err(invalid("save-only channel cannot carry a lifecycle grant"));
-            }
-            // The approved selection is checked again at COMMIT, not just in the UI.
-            let p = project_id(c, &h.scope, false)?;
-            let s = scope_key(c, &h.scope, false)?;
-            let agent = key(c, "agent", state.target.agent.as_str(), &s, false)?;
-            let actual: Option<u64> = c.query_row("SELECT revision FROM principals WHERE project_id=? AND principal_id=? AND principal_kind='agent'", crate::sql_value::sql_params![p, agent], |r| crate::sql_value::value(r, 0)).optional().map_err(sql)?;
-            if actual != Some(state.target.selection_revision) {
-                return Err(fail(
-                    StoreErrorCode::InvalidTransition,
-                    "agent selection revision changed",
-                ));
-            }
-            if let Pairing::Challenge { expires_at_us, .. } = state.pairing
-                && expires_at_us <= now
-            {
-                return Err(invalid("pairing challenge already expired"));
-            }
+        Change::Connected { .. } => admit(c, h, &state, now)?,
+        _ => transition(c, &mut state, &change, now, seq)?,
+    }
+    state.revision = rev;
+    let project = project_id(c, &h.scope, false)?;
+    let owner = key(c, "human", state.owner.as_str(), &[0], false)?;
+    let json = codec::encode(&state)?;
+    if matches!(change, Change::Connected { .. }) {
+        c.execute("INSERT INTO channel_connections(id,project_id,owner_id,connector,bot_id,credential_id,credential_revision,revision,active,credential_removed,state_json,last_seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![state.id.as_str(), project, owner, state.connector.as_str(), state.bot.id, state.credential.id.as_str(),state.credential.revision,rev,1,false,json,seq]).map_err(sql)?;
+    } else {
+        c.execute("UPDATE channel_connections SET revision=?,active=?,credential_removed=?,state_json=?,last_seq=? WHERE id=?",crate::sql_value::sql_params![rev,!matches!(state.pairing, Pairing::Revoked),state.credential_removed,json,seq,state.id.as_str()]).map_err(sql)?;
+    }
+    if matches!(change, Change::PairingConfirmed { .. }) {
+        update::enqueue(c, &state, None, None, "paired", seq)?;
+    }
+    codec::aux(c, seq, facts)
+}
+/// A new connection: its store, the connection limit, its lifecycle policy
+/// and the approved agent selection, all checked again at COMMIT.
+fn admit(c: &Connection, h: &EventHeader, state: &ChannelConnection, now: i64) -> StoreResult<()> {
+    let info = connection::info(c)?;
+    if info.id != state.credential.store {
+        return Err(invalid("credential belongs to another store"));
+    }
+    let count: i64 = c
+        .query_row(
+            "SELECT count(*) FROM channel_connections WHERE active=1",
+            [],
+            |r| crate::sql_value::value(r, 0),
+        )
+        .map_err(sql)?;
+    if count >= crate::channel::MAX_CONNECTIONS as i64 {
+        return Err(fail(
+            StoreErrorCode::Backpressure,
+            "channel connection limit",
+        ));
+    }
+    if let crate::channel::ChannelPolicy::ConfirmResume {
+        profile_revision,
+        cost_limit,
+        ..
+    } = state.policy
+    {
+        if state.resume_configuration.is_none() || cost_limit.is_some() {
+            return Err(invalid(
+                "phone lifecycle configuration/cost policy is unsupported",
+            ));
         }
+        let p = project_id(c, &h.scope, false)?;
+        let s = scope_key(c, &h.scope, false)?;
+        let a = key(c, "agent", state.target.agent.as_str(), &s, false)?;
+        let actual: Option<u64> = c
+            .query_row(
+                "SELECT revision FROM profiles WHERE project_id=? AND agent_id=?",
+                crate::sql_value::sql_params![p, a],
+                |r| crate::sql_value::value(r, 0),
+            )
+            .optional()
+            .map_err(sql)?;
+        if actual != Some(profile_revision) {
+            return Err(invalid("phone lifecycle profile revision changed"));
+        }
+    } else if state.resume_configuration.is_some() {
+        return Err(invalid("save-only channel cannot carry a lifecycle grant"));
+    }
+    // The approved selection is checked again at COMMIT, not just in the UI.
+    let p = project_id(c, &h.scope, false)?;
+    let s = scope_key(c, &h.scope, false)?;
+    let agent = key(c, "agent", state.target.agent.as_str(), &s, false)?;
+    let actual: Option<u64> = c.query_row("SELECT revision FROM principals WHERE project_id=? AND principal_id=? AND principal_kind='agent'", crate::sql_value::sql_params![p, agent], |r| crate::sql_value::value(r, 0)).optional().map_err(sql)?;
+    if actual != Some(state.target.selection_revision) {
+        return Err(fail(
+            StoreErrorCode::InvalidTransition,
+            "agent selection revision changed",
+        ));
+    }
+    if let Pairing::Challenge { expires_at_us, .. } = state.pairing
+        && expires_at_us <= now
+    {
+        return Err(invalid("pairing challenge already expired"));
+    }
+    Ok(())
+}
+/// Pairing and lifecycle changes on an existing connection.
+fn transition(
+    c: &Connection,
+    state: &mut ChannelConnection,
+    change: &Change,
+    now: i64,
+    seq: i64,
+) -> StoreResult<()> {
+    match change {
         Change::PairingSeen { digest, phone, .. } => {
             validate_phone(phone)?;
             let Pairing::Challenge {
@@ -251,19 +276,7 @@ pub(crate) fn apply(
         }
         _ => return Err(invalid("channel change dispatch")),
     }
-    state.revision = rev;
-    let project = project_id(c, &h.scope, false)?;
-    let owner = key(c, "human", state.owner.as_str(), &[0], false)?;
-    let json = codec::encode(&state)?;
-    if matches!(change, Change::Connected { .. }) {
-        c.execute("INSERT INTO channel_connections(id,project_id,owner_id,connector,bot_id,credential_id,credential_revision,revision,active,credential_removed,state_json,last_seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![state.id.as_str(), project, owner, state.connector.as_str(), state.bot.id, state.credential.id.as_str(),state.credential.revision,rev,1,false,json,seq]).map_err(sql)?;
-    } else {
-        c.execute("UPDATE channel_connections SET revision=?,active=?,credential_removed=?,state_json=?,last_seq=? WHERE id=?",crate::sql_value::sql_params![rev,!matches!(state.pairing, Pairing::Revoked),state.credential_removed,json,seq,state.id.as_str()]).map_err(sql)?;
-    }
-    if matches!(change, Change::PairingConfirmed { .. }) {
-        update::enqueue(c, &state, None, None, "paired", seq)?;
-    }
-    codec::aux(c, seq, facts)
+    Ok(())
 }
 fn validate(state: &ChannelConnection) -> StoreResult<()> {
     let positive = |v: u64| v > 0 && v <= i64::MAX as u64;

@@ -181,17 +181,7 @@ pub(super) fn apply(
     };
     shape(&identity, to)?;
     let id = key(c, "lifecycle", identity.record.as_str(), &scope, true)?;
-    let principal = key(
-        c,
-        identity.principal.kind(),
-        identity.principal.wire(),
-        if identity.principal.kind() == "human" {
-            &[0]
-        } else {
-            &scope
-        },
-        false,
-    )?;
+    let principal = actor_key(c, &identity.principal, &scope, false)?;
     let owner: Option<Vec<u8>> = c
         .query_row(
             "SELECT owner_id FROM principals WHERE project_id=? AND principal_id=?",

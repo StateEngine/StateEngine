@@ -41,17 +41,7 @@ pub(super) fn send(
     let scope = scope_key(c, &header.scope, true)?;
     let project = project_id(c, &header.scope, false)?;
     let message = key(c, "message", message.as_str(), &scope, true)?;
-    let sender = key(
-        c,
-        header.actor.kind(),
-        header.actor.wire(),
-        if header.actor.kind() == "human" {
-            &[0]
-        } else {
-            &scope
-        },
-        false,
-    )?;
+    let sender = actor_key(c, &header.actor, &scope, false)?;
     for reference in &refs {
         let event = key(c, "event", reference.as_str(), &scope, false)?;
         let exists: bool = c
@@ -128,17 +118,7 @@ pub(super) fn mark(
     let project = project_id(c, &header.scope, false)?;
     let message_id = message.clone();
     let message = key(c, "message", message.as_str(), &scope, false)?;
-    let recipient = key(
-        c,
-        recipient.kind(),
-        recipient.wire(),
-        if recipient.kind() == "human" {
-            &[0]
-        } else {
-            &scope
-        },
-        false,
-    )?;
+    let recipient = actor_key(c, &recipient, &scope, false)?;
     let current = connection::mail_table(c)? == "message_deliveries";
     let selection = if current {
         "SELECT sent_seq,read_seq IS NULL AND dismissed_seq IS NULL AND superseded_by IS NULL,is_floor FROM message_deliveries WHERE project_id=? AND message_id=? AND recipient_id=?"
