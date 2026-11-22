@@ -161,10 +161,6 @@ pub fn refusal(
 ) -> io::Result<u8> {
     self::error(host, error, json, None, operation.idempotency_key(), stderr)
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn run(
     host: &impl ClientPresentation,
     operation: AnyOp,
@@ -209,59 +205,10 @@ pub fn run(
                 json,
                 stderr,
             )?;
-            let prepared = dispatch(
-                AnyOp::RemotePrepareSend(RemotePrepareSendCall {
-                    host: input.host.clone(),
-                    request: input.request.clone(),
-                }),
-                &mut diagnostic,
-            );
-            let p = match prepared {
-                Ok(AnyOutput::RemotePrepareSend(p)) => p.value,
-                Ok(_) => {
-                    return error(
-                        &SeError::invalid(
-                            "remote preparation",
-                            "the admitted nonsecret binding result",
-                        ),
-                        json,
-                        None,
-                        stderr,
-                    );
-                }
+            let p = match prepare_remote_send(&mut input, dispatch) {
+                Ok(p) => p,
                 Err(e) => return error(&e, json, None, stderr),
             };
-            if p.idempotency_key != input.request.idempotency_key
-                || p.target != input.request.target
-                || p.session != input.request.session
-                || p.body_bytes as usize != input.request.body.len()
-            {
-                return error(
-                    &SeError::invalid("remote preparation", "the original keyed request"),
-                    json,
-                    None,
-                    stderr,
-                );
-            }
-            if input
-                .expected_binding
-                .as_ref()
-                .is_some_and(|expected| expected.host != p.host || expected.grant != p.grant)
-            {
-                return error(
-                    &SeError::invalid(
-                        "remote binding",
-                        "the original host/grant; do not retarget an uncertain send",
-                    ),
-                    json,
-                    None,
-                    stderr,
-                );
-            }
-            input.expected_binding = Some(Box::new(RemoteBindingSelection {
-                host: p.host,
-                grant: p.grant.clone(),
-            }));
             // Preserve the resolved retry binding before a mutation can cross
             // the wire, even if this process loses the eventual final reply.
             send_status(
@@ -321,6 +268,59 @@ pub fn run(
             Err(e) => error(&e, json, None, stderr),
         },
     }
+}
+
+fn prepare_remote_send<'a>(
+    input: &mut RemoteSendCall,
+    dispatch: &mut Dispatch<'a>,
+) -> Result<RemoteSendPreparation> {
+    let mut diagnostic = |_: &str| {
+        Err(io::Error::other(
+            "remote operations require typed status/errors, not progress banners",
+        ))
+    };
+    let prepared = dispatch(
+        AnyOp::RemotePrepareSend(RemotePrepareSendCall {
+            host: input.host.clone(),
+            request: input.request.clone(),
+        }),
+        &mut diagnostic,
+    );
+    let p = match prepared {
+        Ok(AnyOutput::RemotePrepareSend(p)) => p.value,
+        Ok(_) => {
+            return Err(SeError::invalid(
+                "remote preparation",
+                "the admitted nonsecret binding result",
+            ));
+        }
+        Err(e) => return Err(e),
+    };
+    if p.idempotency_key != input.request.idempotency_key
+        || p.target != input.request.target
+        || p.session != input.request.session
+        || p.body_bytes as usize != input.request.body.len()
+    {
+        return Err(SeError::invalid(
+            "remote preparation",
+            "the original keyed request",
+        ));
+    }
+    if input
+        .expected_binding
+        .as_ref()
+        .is_some_and(|expected| expected.host != p.host || expected.grant != p.grant)
+    {
+        return Err(SeError::invalid(
+            "remote binding",
+            "the original host/grant; do not retarget an uncertain send",
+        ));
+    }
+    input.expected_binding = Some(Box::new(RemoteBindingSelection {
+        host: p.host,
+        grant: p.grant.clone(),
+    }));
+    Ok(p)
 }
 
 fn watch(
