@@ -1,6 +1,7 @@
 //! Keep compact metadata identities while the bounded source scan runs.
 use super::candidates::{Candidate, Kind};
 use super::*;
+use crate::cache::connection::BudgetStatement;
 struct Entry {
     file: i64,
     rowid: i64,
@@ -9,27 +10,50 @@ struct Entry {
     lexical: f64,
     related: bool,
 }
-pub(super) struct Pool {
+struct LiteralLookup<'a> {
+    statement: Option<BudgetStatement<'a>>,
+    smart: bool,
+    needle: String,
+}
+impl LiteralLookup<'_> {
+    fn new(text: &str) -> Self {
+        let smart = text.chars().any(char::is_uppercase);
+        let needle = if smart {
+            text.to_owned()
+        } else {
+            text.to_ascii_lowercase()
+        };
+        Self {
+            statement: None,
+            smart,
+            needle,
+        }
+    }
+}
+#[derive(Default)]
+pub(super) struct Pool<'a> {
     entries: Vec<Entry>,
+    literal: Option<LiteralLookup<'a>>,
     pub truncated: bool,
 }
-impl Pool {
+impl<'a> Pool<'a> {
     pub fn collect(
         env: &QueryEnv<'_>,
-        sql: &SqlView<'_>,
+        sql: &'a SqlView<'_>,
         snapshot: &Snapshot,
         query: &FindQuery,
         mode: SearchMode,
         end: Instant,
     ) -> AtlasResult<Self> {
-        let mut pool = Self {
-            entries: Vec::new(),
-            truncated: false,
-        };
+        let mut pool = Self::default();
         // Literal metadata belongs to the same file window as live source.
         // Global name probes spend the first window's deadline before source
         // progress, and their 128-file cap demotes later indexed symbols.
-        if query.kind != SearchKind::Code || query.regex || mode == SearchMode::Literal {
+        if query.kind != SearchKind::Code || query.regex {
+            return Ok(pool);
+        }
+        if mode == SearchMode::Literal {
+            pool.literal = Some(LiteralLookup::new(query.query.as_str()));
             return Ok(pool);
         }
         if mode == SearchMode::Related {
@@ -64,39 +88,31 @@ impl Pool {
                 .split_once(" WHERE ")
                 .and_then(|(_, s)| s.rsplit_once(" ORDER BY "))
                 .ok_or_else(|| cache_error("invalid source metadata plan"))?;
-            let from = if plan.kind == Kind::Symbol {
-                if plan.lexical {
-                    "symbols s JOIN names n ON n.id=s.name JOIN symbol_fts ON symbol_fts.rowid=s.id"
-                } else {
-                    "names n CROSS JOIN symbols s INDEXED BY symbols_name ON s.name=n.id"
-                }
-            } else {
-                "files f"
-            };
-            let (id, file) = if plan.kind == Kind::Symbol {
-                ("s.id", "s.file")
-            } else {
-                ("f.id", "f.id")
-            };
-            let score = if plan.lexical {
-                ",bm25(symbol_fts)"
-            } else {
-                ",0.0"
+            let (from, id, file, score) = match (plan.kind, plan.lexical) {
+                (Kind::Symbol, true) => (
+                    "symbols s JOIN names n ON n.id=s.name JOIN symbol_fts ON symbol_fts.rowid=s.id",
+                    "s.id",
+                    "s.file",
+                    ",bm25(symbol_fts)",
+                ),
+                (Kind::Symbol, false) => (
+                    "names n CROSS JOIN symbols s INDEXED BY symbols_name ON s.name=n.id",
+                    "s.id",
+                    "s.file",
+                    ",0.0",
+                ),
+                _ => ("files f", "f.id", "f.id", ",0.0"),
             };
             let statement =
                 format!("SELECT {id},{file}{score} FROM {from} WHERE {condition} LIMIT 513");
-            let mut ids = Vec::new();
+            let mut ids: Vec<(i64, i64, f64)> = Vec::new();
             {
                 let mut statement = sql.prepare(&statement)?;
                 let mut rows = statement
                     .query(rusqlite::params_from_iter(plan.values))
                     .map_err(cache_error)?;
                 while let Some(row) = rows.next().map_err(cache_error)? {
-                    ids.push((
-                        get::<i64>(row, 0)?,
-                        get::<i64>(row, 1)?,
-                        get::<f64>(row, 2)?,
-                    ));
+                    ids.push((get(row, 0)?, get(row, 1)?, get(row, 2)?));
                 }
             }
             if ids.len() > 512 {
@@ -139,17 +155,22 @@ impl Pool {
         }
         self.entries.push(entry);
     }
+    pub fn release_literal(&mut self) {
+        if let Some(lookup) = &mut self.literal {
+            lookup.statement = None;
+        }
+    }
     pub fn best(
-        &self,
+        &mut self,
         env: &QueryEnv<'_>,
-        sql: &SqlView<'_>,
+        sql: &'a SqlView<'_>,
         snapshot: &Snapshot,
         file: &FileRow,
         query: &FindQuery,
         mode: SearchMode,
     ) -> AtlasResult<Option<(CodeHit, u8, f64, bool)>> {
-        if query.kind == SearchKind::Code && !query.regex && mode == SearchMode::Literal {
-            return literal_best(sql, file, query.query.as_str());
+        if let Some(lookup) = &mut self.literal {
+            return literal_best(lookup, sql, file);
         }
         let Some(entry) = self.entries.iter().find(|e| e.file == file.rowid) else {
             return Ok(None);
@@ -176,25 +197,30 @@ impl Pool {
     }
 }
 
-fn literal_best(
-    sql: &SqlView<'_>,
+// Resolve only this file, and materialize its winning symbol in the same
+// statement. Re-reading symbol/name/parent/file rows discards the already
+// admitted file and amplifies cold IO inside the source scan allowance.
+fn literal_best<'a>(
+    lookup: &mut LiteralLookup<'a>,
+    sql: &'a SqlView<'_>,
     file: &FileRow,
-    text: &str,
 ) -> AtlasResult<Option<(CodeHit, u8, f64, bool)>> {
-    let smart = text.chars().any(char::is_uppercase);
-    let (name, needle) = if smart {
-        ("n.text", "?2")
-    } else {
-        ("lower(n.text)", "lower(?2)")
+    let statement = match &mut lookup.statement {
+        Some(statement) => statement,
+        None => {
+            let name = if lookup.smart {
+                "n.text"
+            } else {
+                "lower(n.text)"
+            };
+            lookup.statement.insert(sql.prepare(&format!(
+                "SELECT s.key,n.text,s.kind,s.start_byte,s.end_byte,s.start_line,s.start_column,s.end_line,s.end_column,CASE WHEN {name}=?2 THEN 1 WHEN instr({name},?2)=1 THEN 2 ELSE 4 END AS tier FROM symbols s INDEXED BY symbols_file JOIN names n ON n.id=s.name WHERE s.file=?1 AND instr({name},?2)>0 ORDER BY tier,s.start_byte,s.id LIMIT 1"
+            ))?)
+        }
     };
-    // Resolve only this file, and materialize its winning symbol in the same
-    // statement. Re-reading symbol/name/parent/file rows discards the already
-    // admitted file and amplifies cold IO inside the source scan allowance.
-    let statement = format!(
-        "SELECT s.key,n.text,s.kind,s.start_byte,s.end_byte,s.start_line,s.start_column,s.end_line,s.end_column,CASE WHEN {name}={needle} THEN 1 WHEN instr({name},{needle})=1 THEN 2 ELSE 4 END AS tier FROM symbols s INDEXED BY symbols_file JOIN names n ON n.id=s.name WHERE s.file=?1 AND instr({name},{needle})>0 ORDER BY tier,s.start_byte,s.id LIMIT 1"
-    );
-    let mut statement = sql.prepare(&statement)?;
-    let mut rows = statement.query((file.rowid, text)).map_err(cache_error)?;
+    let mut rows = statement
+        .query((file.rowid, lookup.needle.as_str()))
+        .map_err(cache_error)?;
     let mut best = rows
         .next()
         .map_err(cache_error)?
@@ -217,21 +243,15 @@ fn literal_best(
             Ok::<_, se_types::SeError>((hit, tier, 0.0, false))
         })
         .transpose()?;
-    let path_match = if smart {
-        file.pointer.path.as_str().contains(text)
-    } else {
-        file.pointer
-            .path
-            .as_str()
-            .to_ascii_lowercase()
-            .contains(&text.to_ascii_lowercase())
-    };
+    let path = file.pointer.path.as_str();
+    let path_match = (lookup.smart && path.contains(lookup.needle.as_str()))
+        || (!lookup.smart && crate::policy::contains_ascii_ci(path, &lookup.needle));
     if path_match && best.as_ref().is_none_or(|(_, tier, _, _)| *tier > 3) {
         best = Some((
             CodeHit {
                 pointer: file.pointer.clone(),
                 symbol: None,
-                name: file.pointer.path.as_str().to_owned(),
+                name: path.to_owned(),
                 kind: None,
                 method: FindMethod::MetadataFts,
                 accuracy: None,

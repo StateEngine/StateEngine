@@ -4,7 +4,7 @@ mod stream;
 use crate::{errors::AtlasResult, model::*, source::SourceFile};
 use grep_matcher::Matcher;
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
-use grep_searcher::{SearcherBuilder, Sink, SinkMatch};
+use grep_searcher::{Searcher, SearcherBuilder, Sink, SinkMatch};
 use se_types::code::*;
 use std::{
     io::{self, Read, SeekFrom},
@@ -54,6 +54,14 @@ pub(crate) fn compile_pattern(
             se_types::SeError::invalid("Atlas text query", &format!("a bounded expression: {e}"))
         })
 }
+pub(crate) fn build_searcher() -> Searcher {
+    SearcherBuilder::new()
+        .line_number(true)
+        .heap_limit(Some(32_768))
+        .encoding(None)
+        .bom_sniffing(false)
+        .build()
+}
 #[expect(
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
@@ -62,6 +70,7 @@ pub(crate) fn search_with_terms(
     mut file: Box<dyn SourceFile + '_>,
     request: TextRequest<'_>,
     matcher: &RegexMatcher,
+    searcher: &mut Searcher,
     terms: Option<&lexical::Terms>,
 ) -> AtlasResult<TextFileResult> {
     if request.max_matches > 3 {
@@ -91,16 +100,10 @@ pub(crate) fn search_with_terms(
     let mut sink = Matches {
         request: &request,
         matcher,
-        items: Vec::with_capacity(3),
+        items: Vec::new(),
         omitted: 0,
     };
-    let result = SearcherBuilder::new()
-        .line_number(true)
-        .heap_limit(Some(32_768))
-        .encoding(None)
-        .bom_sniffing(false)
-        .build()
-        .search_reader(matcher, &mut reader, &mut sink);
+    let result = searcher.search_reader(matcher, &mut reader, &mut sink);
     output.binary = reader.binary;
     output.non_utf8 = reader.non_utf8 || reader.tail_len > 0;
     output.complete = result.is_ok() && reader.eof;

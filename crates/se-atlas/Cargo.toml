@@ -16,7 +16,7 @@ se-types = { path = "../se-types" }
 se-trusted-path = { path = "../se-trusted-path" }
 serde.workspace = true
 serde_json.workspace = true
-blake3 = { version = "=1.8.7", default-features = false, features = ["std", "pure"] }
+blake3 = { version = "=1.8.7", default-features = false, features = ["std"] }
 rusqlite = { version = "0.41", features = ["bundled", "hooks", "limits", "functions"] }
 # MIT; safe Rust API over upstream C parsers, no WASM/runtime/network.
 tree-sitter = { version = "=0.26.13", default-features = false, features = ["std"] }
