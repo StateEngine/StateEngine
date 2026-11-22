@@ -73,9 +73,7 @@ impl Rules {
                 .open_relative("info/exclude")
                 .map_err(|e| source_error("info/exclude", e))?
             {
-                let before = file
-                    .revision()
-                    .map_err(|e| source_error("info/exclude", e))?;
+                let before = file.opened_revision();
                 let text = rules.read(&mut file, "info/exclude")?;
                 if file
                     .revision()

@@ -242,7 +242,7 @@ fn reference(root: &NativeSourceRoot) -> AtlasResult<String> {
     else {
         return Ok(String::new());
     };
-    let before = file.revision().map_err(|e| source_error("HEAD", e))?;
+    let before = file.opened_revision();
     let mut text = String::new();
     (&mut file)
         .take(4097)

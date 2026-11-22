@@ -65,6 +65,7 @@ pub struct NativeRootDirectory<'a> {
     entries: entries::Cursor,
 }
 
+use se_state_files::NativeObjectKey;
 pub use se_state_files::{NativeFileRevision, observe_file_revision};
 
 pub struct NativeSourceRoot {
@@ -76,6 +77,7 @@ pub struct NativeRootFile<'a> {
     root: &'a NativeSourceRoot,
     path: String,
     file: File,
+    opened: NativeFileRevision,
 }
 /// Scoped directory-prefix handle cache for one bounded multi-file scan.
 /// Reuses verified no-follow directory handles across sibling files in path
@@ -83,33 +85,36 @@ pub struct NativeRootFile<'a> {
 /// handles as soon as the scan ends.
 pub struct NativeSourceScan<'a> {
     root: &'a NativeSourceRoot,
-    dirs: Vec<(String, File)>,
+    dirs: Vec<(String, File, NativeObjectKey)>,
 }
 impl<'a> NativeSourceScan<'a> {
     pub fn open_relative(&mut self, path: &str) -> io::Result<Option<NativeRootFile<'a>>> {
         validate(path)?;
-        let (dir_parts, leaf) = match path.rsplit_once('/') {
-            Some((prefix, leaf)) => (prefix.split('/').collect::<Vec<_>>(), leaf),
-            None => (Vec::new(), path),
+        let (prefix, leaf) = match path.rsplit_once('/') {
+            Some((prefix, leaf)) => (Some(prefix), leaf),
+            None => (None, path),
         };
+        let dir_parts = || prefix.into_iter().flat_map(|prefix| prefix.split('/'));
         let common = self
             .dirs
             .iter()
-            .zip(dir_parts.iter())
-            .take_while(|((held, _), want)| held.as_str() == **want)
+            .zip(dir_parts())
+            .take_while(|((held, ..), want)| held == want)
             .count();
         if common < self.dirs.len() {
             self.verify_cached()?;
             self.dirs.truncate(common);
         }
-        for &part in &dir_parts[common..] {
+        for part in dir_parts().skip(common) {
             let parent = self
                 .dirs
                 .last()
-                .map(|(_, file)| file)
-                .unwrap_or(&self.root.directory);
+                .map_or(&self.root.directory, |(_, file, _)| file);
             match os::open_component(parent, part, true) {
-                Ok(dir) => self.dirs.push((part.to_owned(), dir)),
+                Ok((dir, facts)) => {
+                    let key = os::object_key(&dir, &facts)?;
+                    self.dirs.push((part.to_owned(), dir, key));
+                }
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {
                     // Root replacement is not file absence, even on ENOENT.
                     self.root.check()?;
@@ -121,20 +126,21 @@ impl<'a> NativeSourceScan<'a> {
         let parent = self
             .dirs
             .last()
-            .map(|(_, file)| file)
-            .unwrap_or(&self.root.directory);
-        let file = match os::open_component(parent, leaf, false) {
-            Ok(file) => file,
+            .map_or(&self.root.directory, |(_, file, _)| file);
+        let (file, facts) = match os::open_component(parent, leaf, false) {
+            Ok(opened) => opened,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 self.root.check()?;
                 return Ok(None);
             }
             Err(e) => return Err(e),
         };
+        let opened = os::opened_revision(&file, &facts, false)?;
         Ok(Some(NativeRootFile {
             root: self.root,
             path: path.into(),
             file,
+            opened,
         }))
     }
     fn verify_cached(&self) -> io::Result<()> {
@@ -142,16 +148,16 @@ impl<'a> NativeSourceScan<'a> {
             return Ok(());
         }
         let mut held: Option<File> = None;
-        for (part, cached) in &self.dirs {
+        for (part, _, cached) in &self.dirs {
             let parent = held.as_ref().unwrap_or(&self.root.directory);
-            let fresh = match os::open_component(parent, part, true) {
-                Ok(dir) => dir,
+            let (fresh, facts) = match os::open_component(parent, part, true) {
+                Ok(opened) => opened,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {
                     return Err(changed("source directory changed during scan"));
                 }
                 Err(e) => return Err(e),
             };
-            if !os::same_object(&fresh, cached)? {
+            if os::object_key(&fresh, &facts)? != *cached {
                 return Err(changed("source directory changed during scan"));
             }
             held = Some(fresh);
@@ -205,6 +211,14 @@ impl NativeSourceRoot {
         self.check()?;
         Ok(self.identity.root_key())
     }
+    /// Empty opens the registered root by name, which has no open-time facts.
+    fn open_directory_handle(&self, path: &str) -> io::Result<(File, Option<os::Facts>)> {
+        if path.is_empty() {
+            os::open_root(&self.path).map(|f| (f, None))
+        } else {
+            os::open_directory(&self.directory, path).map(|(f, facts)| (f, Some(facts)))
+        }
+    }
     pub fn check(&self) -> io::Result<()> {
         let named = os::open_root(&self.path)?;
         if !self.identity.same_object(&os::revision(&named, true)?)
@@ -228,15 +242,17 @@ impl NativeSourceRoot {
         let opened = os::open_relative(&self.directory, path);
         // Root replacement is not file absence, even if the lookup saw ENOENT.
         self.check()?;
-        let file = match opened {
-            Ok(file) => file,
+        let (file, facts) = match opened {
+            Ok(opened) => opened,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e),
         };
+        let opened = os::opened_revision(&file, &facts, false)?;
         Ok(Some(NativeRootFile {
             root: self,
             path: path.into(),
             file,
+            opened,
         }))
     }
     /// Empty denotes this registered root. Every other component is no-follow.
@@ -247,18 +263,17 @@ impl NativeSourceRoot {
             validate(path)?;
         }
         self.check()?;
-        let opened = if path.is_empty() {
-            os::open_root(&self.path)
-        } else {
-            os::open_directory(&self.directory, path)
-        };
+        let opened = self.open_directory_handle(path);
         self.check()?;
-        let directory = match opened {
-            Ok(f) => f,
+        let (directory, facts) = match opened {
+            Ok(opened) => opened,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e),
         };
-        let identity = os::revision(&directory, true)?;
+        let identity = match &facts {
+            Some(facts) => os::opened_revision(&directory, facts, true)?,
+            None => os::revision(&directory, true)?,
+        };
         let entries = entries::Cursor::new(&directory)?;
         let cursor = NativeRootDirectory {
             root: self,
@@ -303,22 +318,19 @@ impl NativeRootDirectory<'_> {
         }
         os::revision(&self.directory, true)
     }
+    /// A retained handle keeps its object for life, so only the name is reread.
     pub fn validate_name(&self) -> io::Result<bool> {
         self.root.check()?;
-        let opened = if self.path.is_empty() {
-            os::open_root(&self.root.path)
-        } else {
-            os::open_directory(&self.root.directory, &self.path)
-        };
-        let named = match opened {
-            Ok(f) => f,
+        let (named, facts) = match self.root.open_directory_handle(&self.path) {
+            Ok(opened) => opened,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
             Err(e) => return Err(e),
         };
-        let same = self.identity.same_object(&os::revision(&named, true)?)
-            && self
-                .identity
-                .same_object(&os::revision(&self.directory, true)?);
+        let named = match &facts {
+            Some(facts) => os::object_key(&named, facts)?,
+            None => os::revision(&named, true)?.object_key(),
+        };
+        let same = named == self.identity.object_key();
         self.root.check()?;
         Ok(same)
     }
@@ -334,19 +346,26 @@ impl NativeRootDirectory<'_> {
     }
 }
 impl NativeRootFile<'_> {
+    /// Fresh native revision of the retained file.
     pub fn revision(&self) -> io::Result<NativeFileRevision> {
         os::revision(&self.file, false)
     }
+    /// Revision read by the no-follow open itself: a before-read baseline
+    /// that costs no further query. Compare it with a fresh `revision()`.
+    pub fn opened_revision(&self) -> NativeFileRevision {
+        self.opened
+    }
+    /// A retained handle keeps its object for life, so only the name is reread.
     pub fn validate_name(&self) -> io::Result<bool> {
-        let named = match os::open_relative(&self.root.directory, &self.path) {
-            Ok(file) => file,
+        let (named, facts) = match os::open_relative(&self.root.directory, &self.path) {
+            Ok(opened) => opened,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 self.root.check()?;
                 return Ok(false);
             }
             Err(e) => return Err(e),
         };
-        let same = os::revision(&named, false)?.same_object(&self.revision()?);
+        let same = os::object_key(&named, &facts)? == self.opened.object_key();
         self.root.check()?;
         Ok(same)
     }

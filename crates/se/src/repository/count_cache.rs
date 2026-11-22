@@ -242,7 +242,7 @@ fn small(root: &NativeSourceRoot, path: &str, maximum: u64) -> io::Result<Option
     let Some(mut file) = root.open_relative(path)? else {
         return Ok(None);
     };
-    let before = file.revision()?;
+    let before = file.opened_revision();
     let mut bytes = Vec::new();
     file.by_ref().take(maximum + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > maximum || file.revision()? != before || !file.validate_name()? {
