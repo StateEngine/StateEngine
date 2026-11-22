@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub(crate) use windows::{check, hold_short_root, record, retire};
+pub(crate) use windows::{hold_short_root, prepare, record, recover, retire};
 
 fn native(error: impl std::fmt::Display) -> se_types::SeError {
     se_core::scope::unreadable("Codex native custody", &error.to_string())

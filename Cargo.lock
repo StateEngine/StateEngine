@@ -1730,7 +1730,6 @@ dependencies = [
  "tokio-tungstenite",
  "toml",
  "toml_edit",
- "uds_windows",
  "uuid",
  "zeroize",
 ]

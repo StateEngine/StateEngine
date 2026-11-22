@@ -104,7 +104,7 @@ pub(crate) fn dispose(file: &File, path: &Path) -> Result<()> {
         )
     } == 0
     {
-        return Err(last("remove exact pinned installation object", path));
+        return Err(last("remove exact pinned object", path));
     }
     Ok(())
 }

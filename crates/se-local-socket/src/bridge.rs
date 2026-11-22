@@ -136,7 +136,8 @@ pub(crate) async fn open(path: &Path) -> std::io::Result<Bridge> {
                     }
                 }
             }
-            let _ = writer.shutdown(std::net::Shutdown::Both);
+            // Half-close: the server's last frames still reach the host.
+            let _ = writer.shutdown(std::net::Shutdown::Write);
         });
     let second = match second {
         Ok(second) => second,

@@ -25,7 +25,7 @@ impl CodexHarness {
             endpoint::prepare(socket, record, session)?;
         }
         #[cfg(windows)]
-        crate::codex_endpoint::check(socket, record, session)?;
+        crate::codex_endpoint::prepare(socket, record, session)?;
         #[cfg(not(any(unix, windows)))]
         let _ = (socket, record, session);
         Ok(())
@@ -63,7 +63,7 @@ impl CodexHarness {
         #[cfg(unix)]
         endpoint::recover(&socket, record, session)?;
         #[cfg(windows)]
-        crate::codex_endpoint::check(&socket, record, session)?;
+        crate::codex_endpoint::recover(&socket, record, session)?;
         Ok(socket)
     }
     pub async fn prepare_socket(&self, request: &HarnessRequest, cx: &CallContext) -> Result<()> {

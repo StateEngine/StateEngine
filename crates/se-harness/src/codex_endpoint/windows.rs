@@ -1,7 +1,7 @@
 //! Windows custody of the forwarder's AF_UNIX socket in its private per-launch
 //! directory. This module keeps its own record
 //! beside the launch record: the directory's native identity at creation, and
-//! the socket leaf's identity and AF_UNIX tag when the host first checks it.
+//! the socket leaf's identity and AF_UNIX tag when the launch first checks it.
 //! Removal compares and disposes through one handle; anything that changed is
 //! preserved and reported, never repaired.
 use se_local_socket::identity::ObjectId;
@@ -151,9 +151,19 @@ fn same_directory(parent: &Path, value: &Directory) -> Result<()> {
     Ok(())
 }
 
-/// Before any session secret is sent: the recorded path and directory, and
-/// the socket leaf, pinned the first time and compared on every later check.
-pub(crate) fn check(socket: &Path, record: &Path, session: &SessionId) -> Result<()> {
+/// During launch, before any session secret is sent: the recorded path and
+/// directory, and the socket leaf, pinned the first time it is checked.
+pub(crate) fn prepare(socket: &Path, record: &Path, session: &SessionId) -> Result<()> {
+    check(socket, record, session, true)
+}
+
+/// During recovery: the same checks against the pin the launch published.
+/// A missing pin is refused, never inferred from whatever holds the name now.
+pub(crate) fn recover(socket: &Path, record: &Path, session: &SessionId) -> Result<()> {
+    check(socket, record, session, false)
+}
+
+fn check(socket: &Path, record: &Path, session: &SessionId, publish_new: bool) -> Result<()> {
     let (value, _) = recorded(socket, record, session)?
         .ok_or_else(|| failure("the endpoint record is absent"))?;
     let parent = socket
@@ -165,13 +175,16 @@ pub(crate) fn check(socket: &Path, record: &Path, session: &SessionId) -> Result
     match leaf(record, session)? {
         Some((pinned, _)) if pinned == observed => Ok(()),
         Some(_) => Err(failure("the socket leaf was replaced since it was pinned")),
-        None => publish(
+        None if publish_new => publish(
             &beside(record, LEAF)?,
             &Leaf {
                 session: session.clone(),
                 leaf: observed.to_bytes(),
             },
         ),
+        None => Err(failure(
+            "the original endpoint identity journal is absent; no new custody was inferred",
+        )),
     }
 }
 
@@ -204,10 +217,18 @@ pub(crate) fn retire(socket: &Path, record: &Path, session: &SessionId) -> Resul
                 pin.remove_local_socket(socket)
                     .map_err(|e| failure(&format!("socket leaf: {e}")))?;
             }
-            None if std::fs::symlink_metadata(socket).is_ok() => {
-                return Err(failure("the socket leaf was never pinned; it is preserved"));
-            }
-            None => {}
+            // A launch that failed before its first check left no pin. The
+            // recorded directory still bounds the name, so only an AF_UNIX
+            // leaf is removed, compared and disposed through one handle.
+            None => match std::fs::symlink_metadata(socket) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(failure(&format!("socket leaf: {e}"))),
+                Ok(_) => {
+                    ObjectId::local_socket(socket)
+                        .and_then(|id| id.remove_local_socket(socket))
+                        .map_err(|e| failure(&format!("unpinned socket leaf: {e}")))?;
+                }
+            },
         }
         ObjectId::from_bytes(value.directory)
             .remove_directory(parent)
