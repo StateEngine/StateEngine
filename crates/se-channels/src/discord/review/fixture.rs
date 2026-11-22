@@ -3,7 +3,7 @@ use crate::test_directory as cleanup_directory;
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
         Arc,
@@ -36,10 +36,6 @@ struct Process {
 }
 
 impl Fixture {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub fn new(mode: &str) -> Check<Self> {
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let root = std::env::temp_dir().join(format!(
@@ -50,97 +46,9 @@ impl Fixture {
         fs::create_dir(&root)?;
         let root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
-        let openssl = |args: &[&str]| -> Check<()> {
-            let output = Command::new("openssl")
-                .args(args)
-                .current_dir(&root)
-                .output()?;
-            require(
-                output.status.success(),
-                "synthetic TLS certificate generation failed",
-            )
-        };
-        openssl(&[
-            "req",
-            "-x509",
-            "-newkey",
-            "rsa:2048",
-            "-nodes",
-            "-keyout",
-            "ca.key",
-            "-out",
-            "ca.pem",
-            "-days",
-            "1",
-            "-subj",
-            "/CN=synthetic-local-test-ca",
-            "-addext",
-            "basicConstraints=critical,CA:TRUE",
-            "-addext",
-            "keyUsage=critical,keyCertSign,cRLSign",
-        ])?;
-        openssl(&[
-            "req",
-            "-new",
-            "-newkey",
-            "rsa:2048",
-            "-nodes",
-            "-keyout",
-            "key.pem",
-            "-out",
-            "request.csr",
-            "-subj",
-            "/CN=gateway.discord.gg",
-        ])?;
-        fs::write(
-            root.join("leaf.conf"),
-            "subjectAltName=DNS:discord.com,DNS:gateway.discord.gg\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n",
-        )?;
-        openssl(&[
-            "x509",
-            "-req",
-            "-in",
-            "request.csr",
-            "-CA",
-            "ca.pem",
-            "-CAkey",
-            "ca.key",
-            "-CAcreateserial",
-            "-out",
-            "certificate.pem",
-            "-days",
-            "1",
-            "-extfile",
-            "leaf.conf",
-        ])?;
-        let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/judges/discord_gateway_review.py");
-        let child = Command::new("python3")
-            .arg("-B")
-            .arg(&helper)
-            .arg("--root")
-            .arg(&root)
-            .arg("--mode")
-            .arg(mode)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(fs::File::create(root.join("provider.stderr"))?)
-            .spawn()?;
-        let process = Process {
-            root: root.clone(),
-            child,
-            helper,
-            _root_owner: root_owner,
-        };
-        let started = std::time::Instant::now();
-        while !root.join("ready.json").exists() {
-            if started.elapsed() > Duration::from_secs(5) {
-                return Err("local provider did not publish its listener".into());
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        let ready: Value = serde_json::from_slice(&fs::read(root.join("ready.json"))?)?;
-        let port = u16::try_from(ready["port"].as_u64().ok_or("listener port absent")?)?;
+        synthetic_certificates(&root)?;
+        let process = Process::spawn(&root, mode, root_owner)?;
+        let port = wait_for_listener(&root)?;
         let address = ([127, 0, 0, 1], port).into();
         let client = Discord::client_builder()
             .resolve("discord.com", address)
@@ -220,6 +128,113 @@ impl Fixture {
             }
             Err(error) => eprintln!("{test}: provider events unreadable: {error}"),
         }
+    }
+}
+/// A one-day synthetic CA and a leaf for both provider hosts, signed by it.
+fn synthetic_certificates(root: &Path) -> Check {
+    let openssl = |args: &[&str]| -> Check<()> {
+        let output = Command::new("openssl")
+            .args(args)
+            .current_dir(root)
+            .output()?;
+        require(
+            output.status.success(),
+            "synthetic TLS certificate generation failed",
+        )
+    };
+    openssl(&[
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-keyout",
+        "ca.key",
+        "-out",
+        "ca.pem",
+        "-days",
+        "1",
+        "-subj",
+        "/CN=synthetic-local-test-ca",
+        "-addext",
+        "basicConstraints=critical,CA:TRUE",
+        "-addext",
+        "keyUsage=critical,keyCertSign,cRLSign",
+    ])?;
+    openssl(&[
+        "req",
+        "-new",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-keyout",
+        "key.pem",
+        "-out",
+        "request.csr",
+        "-subj",
+        "/CN=gateway.discord.gg",
+    ])?;
+    fs::write(
+        root.join("leaf.conf"),
+        "subjectAltName=DNS:discord.com,DNS:gateway.discord.gg\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n",
+    )?;
+    openssl(&[
+        "x509",
+        "-req",
+        "-in",
+        "request.csr",
+        "-CA",
+        "ca.pem",
+        "-CAkey",
+        "ca.key",
+        "-CAcreateserial",
+        "-out",
+        "certificate.pem",
+        "-days",
+        "1",
+        "-extfile",
+        "leaf.conf",
+    ])
+}
+/// The port the local provider published, once it is listening.
+fn wait_for_listener(root: &Path) -> Check<u16> {
+    let started = std::time::Instant::now();
+    while !root.join("ready.json").exists() {
+        if started.elapsed() > Duration::from_secs(5) {
+            return Err("local provider did not publish its listener".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let ready: Value = serde_json::from_slice(&fs::read(root.join("ready.json"))?)?;
+    Ok(u16::try_from(
+        ready["port"].as_u64().ok_or("listener port absent")?,
+    )?)
+}
+impl Process {
+    fn spawn(
+        root: &Path,
+        mode: &str,
+        root_owner: cleanup_directory::PrivateDirectory,
+    ) -> Check<Self> {
+        let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/judges/discord_gateway_review.py");
+        let child = Command::new("python3")
+            .arg("-B")
+            .arg(&helper)
+            .arg("--root")
+            .arg(root)
+            .arg("--mode")
+            .arg(mode)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(fs::File::create(root.join("provider.stderr"))?)
+            .spawn()?;
+        Ok(Self {
+            root: root.to_path_buf(),
+            child,
+            helper,
+            _root_owner: root_owner,
+        })
     }
 }
 impl Drop for Process {
