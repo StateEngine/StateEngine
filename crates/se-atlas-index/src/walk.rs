@@ -144,12 +144,12 @@ pub fn discover(root: &IndexSourceRoot, options: &WalkOptions) -> Result<Discove
 /// again: a changed root is still an error, never a skip.
 fn skip(root: &IndexSourceRoot, out: &mut Discovery, error: &io::Error) -> Result<()> {
     root.check()?;
-    if error.kind() == io::ErrorKind::PermissionDenied {
-        out.unreadable_dirs += 1;
+    if error.kind() == io::ErrorKind::NotFound {
+        out.vanished_dirs += 1;
     } else if custody::refusal(error) {
         out.refused_dirs += 1;
     } else {
-        out.vanished_dirs += 1;
+        out.unreadable_dirs += 1;
     }
     Ok(())
 }

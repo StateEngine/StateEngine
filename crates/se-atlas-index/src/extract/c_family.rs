@@ -131,7 +131,8 @@ pub(crate) fn classify_kotlin(header: &str, _raw: &str, scope: Scope) -> Option<
         return Decl::new(name, kind, exported);
     }
     if let Some(after) = keyword(rest, "companion") {
-        let name = ident(after.trim_start().trim_start_matches("object").trim_start());
+        let rest = after.trim_start();
+        let name = ident(keyword(rest, "object").unwrap_or(rest).trim_start());
         let name = if name.is_empty() { "Companion" } else { name };
         return Decl::new(name, SymbolKind::Class, exported);
     }

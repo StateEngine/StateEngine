@@ -98,7 +98,8 @@ impl Store {
     }
 }
 
-/// Judge an existing epoch file without changing it.
+/// Judge an existing epoch file without changing it unless SQLite requires
+/// WAL recovery after an unclean shutdown.
 fn usable(path: &Path, identity: &StoreIdentity) -> Result<Verdict> {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -107,11 +108,27 @@ fn usable(path: &Path, identity: &StoreIdentity) -> Result<Verdict> {
         Err(error) => return Err(error.into()),
         Ok(_) => {}
     }
-    let checked = open_connection(path, false).and_then(|conn| schema::verdict(&conn, identity));
+    let checked = match open_connection_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .and_then(|conn| schema::verdict(&conn, identity))
+    {
+        Err(error) if is_readonly_recovery(&error) => {
+            open_connection_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+                .and_then(|conn| schema::verdict(&conn, identity))
+        }
+        other => other,
+    };
     match checked {
         Err(error) if is_corrupt(&error) => Ok(Verdict::Rebuild(RebuildReason::Corrupt)),
         other => other,
     }
+}
+
+fn is_readonly_recovery(error: &IndexError) -> bool {
+    matches!(
+        error,
+        IndexError::Sqlite(rusqlite::Error::SqliteFailure(failure, _))
+            if failure.extended_code == rusqlite::ffi::SQLITE_READONLY_RECOVERY
+    )
 }
 
 fn is_corrupt(error: &IndexError) -> bool {
@@ -127,12 +144,16 @@ fn is_corrupt(error: &IndexError) -> bool {
 /// verbatim path after the link and reparse-point checks NOFOLLOW cannot
 /// make there. Sidecars are checked on both.
 pub(crate) fn open_connection(path: &Path, writable: bool) -> Result<Connection> {
-    files::check_leaves(path)?;
     let access = if writable {
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
     } else {
         OpenFlags::SQLITE_OPEN_READ_ONLY
     };
+    open_connection_flags(path, access)
+}
+
+fn open_connection_flags(path: &Path, access: OpenFlags) -> Result<Connection> {
+    files::check_leaves(path)?;
     #[cfg(windows)]
     let (target, symlink_guard) = (se_proc::sqlite_path(path), OpenFlags::empty());
     #[cfg(not(windows))]

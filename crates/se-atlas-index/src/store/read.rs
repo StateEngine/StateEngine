@@ -38,6 +38,7 @@ impl Reader {
             let (files, epoch) = current_database(path)?;
             let opened = open_connection(&files.epoch_path(epoch), false).and_then(|conn| {
                 schema::configure_reader(&conn)?;
+                let _: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
                 Ok(conn)
             });
             match opened {

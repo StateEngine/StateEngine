@@ -175,12 +175,17 @@ fn refusing<'a>(
         Ok(None) => Ok(Opened::Absent),
         Ok(Some(file)) => Ok(Opened::File(file)),
         Err(error) if refusal(&error) => Ok(Opened::Refused),
-        // Windows reports a directory opened as a file as access denied;
-        // only a directory that really opens as one is a refusal.
+        // Windows reports a directory or directory reparse point opened as a
+        // file as access denied; open_directory returns Ok(Some(_)) for a real
+        // directory and InvalidInput for a reparse point / junction.
         Err(error)
             if cfg!(windows)
                 && error.kind() == io::ErrorKind::PermissionDenied
-                && matches!(root.open_directory(path), Ok(Some(_))) =>
+                && match root.open_directory(path) {
+                    Ok(Some(_)) => true,
+                    Err(dir_err) => dir_err.kind() == io::ErrorKind::InvalidInput,
+                    _ => false,
+                } =>
         {
             Ok(Opened::Refused)
         }

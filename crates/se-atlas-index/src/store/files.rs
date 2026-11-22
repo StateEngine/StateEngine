@@ -50,7 +50,12 @@ impl StoreFiles {
         #[cfg(windows)]
         let dir = {
             let dir = parent_of(path);
-            check_directory(&dir)?;
+            let abs = if dir.is_absolute() {
+                dir.clone()
+            } else {
+                std::env::current_dir()?.join(&dir)
+            };
+            check_directory(&abs)?;
             dir
         };
         Ok(Self { dir, stem })
@@ -87,16 +92,20 @@ impl StoreFiles {
             Ok(meta) if is_link(&meta) || !meta.is_file() => return Err(refused().into()),
             Ok(_) => {}
         }
-        let mut text = String::new();
+        let mut bytes = Vec::new();
         match fs::File::open(&path) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Pointer::Missing),
             Err(error) => return Err(error.into()),
             Ok(file) => {
-                if file.take(POINTER_LIMIT).read_to_string(&mut text).is_err() {
-                    return Ok(Pointer::Damaged);
-                }
+                file.take(POINTER_LIMIT + 1).read_to_end(&mut bytes)?;
             }
         }
+        if bytes.len() > POINTER_LIMIT as usize {
+            return Ok(Pointer::Damaged);
+        }
+        let Ok(text) = std::str::from_utf8(&bytes) else {
+            return Ok(Pointer::Damaged);
+        };
         Ok(self
             .parse_epoch(text.trim_end())
             .map_or(Pointer::Damaged, Pointer::Epoch))
@@ -160,20 +169,41 @@ impl StoreFiles {
         Ok(())
     }
 
-    /// Remove every epoch except `keep`. A file still held open by a draining
-    /// reader cannot be removed on Windows; it is left for the next reap.
+    /// Remove every epoch except `keep`. Delete `.db` first so a live Windows
+    /// reader holding `.db` prevents stripping its `-wal`/`-shm` sidecars.
     pub fn reap(&self, keep: u64) {
-        let Ok(epochs) = self.epochs() else {
+        if let Ok(epochs) = self.epochs() {
+            for epoch in epochs.into_iter().filter(|epoch| *epoch != keep) {
+                let db = self.epoch_path(epoch);
+                if check_leaves(&db).is_err() {
+                    continue;
+                }
+                if fs::remove_file(&db).is_ok() {
+                    for side in sidecars(&db) {
+                        let _ = fs::remove_file(side);
+                    }
+                }
+            }
+        }
+        self.reap_pointer_temps();
+    }
+
+    fn reap_pointer_temps(&self) {
+        let prefix = format!("{}.v5.current.", self.stem);
+        let own = format!("{prefix}{}.tmp", std::process::id());
+        let Ok(entries) = fs::read_dir(&self.dir) else {
             return;
         };
-        for epoch in epochs.into_iter().filter(|epoch| *epoch != keep) {
-            let db = self.epoch_path(epoch);
-            if check_leaves(&db).is_err() {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(text) = name.to_str() else {
                 continue;
-            }
-            let [wal, shm] = sidecars(&db);
-            for file in [wal, shm, db] {
-                let _ = fs::remove_file(file);
+            };
+            if text != own && text.starts_with(&prefix) && text.ends_with(".tmp") {
+                let path = entry.path();
+                if check_leaf(&path).is_ok() {
+                    let _ = fs::remove_file(path);
+                }
             }
         }
     }
