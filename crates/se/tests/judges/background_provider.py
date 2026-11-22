@@ -3,12 +3,15 @@ request, leaves a process running in its own scope.
 
 Before answering a frame it obeys two control files in its working directory:
 `spawn-background` starts a long-running child carrying a secret argument, and
-`stop-background` stops that child; each is removed once obeyed.
+`stop-background` stops that child; each is removed once obeyed. Like
+burst_provider, every frame is appended to captured-input.jsonl with its
+monotonic arrival time.
 """
 import json
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 import burst_provider
 import mail_provider
@@ -44,8 +47,11 @@ def answer_with_background():
         if not line.strip():
             continue
         turn += 1
+        prompt = burst_provider.text_of(json.loads(line))
+        with (repo / "captured-input.jsonl").open("a") as record:
+            record.write(json.dumps({"turn": turn, "monotonic": time.monotonic(), "text": prompt}) + "\n")
         child = obey(repo, child)
-        burst_provider.complete(conversation, native, turn, burst_provider.text_of(json.loads(line)))
+        burst_provider.complete(conversation, native, turn, prompt)
     raise RuntimeError("stdin closed before public shutdown")
 
 
