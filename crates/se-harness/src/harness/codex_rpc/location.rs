@@ -137,51 +137,10 @@ impl CodexHarness {
     }
     /// Called only after native scope exit, including cold cleanup. No recursive
     /// removal, path reconstruction from provider output, or permission repair.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub fn retire_socket(&self, session: &se_types::SessionId) -> Result<()> {
         let path = self.directory(session)?.join("codex-runtime.json");
         let Some(mut owned) = se_proc::OwnedFile::open(&path).map_err(native_error)? else {
-            // A durable plan precedes creation. If creation was interrupted
-            // before its incarnation record, absence and unproved custody are
-            // different outcomes; never call a remaining directory removed.
-            let plan = self.directory(session)?.join("codex-plan.json");
-            if let Some(mut file) = se_proc::OwnedFile::open(&plan).map_err(native_error)? {
-                #[derive(serde::Deserialize)]
-                #[serde(deny_unknown_fields)]
-                struct Planned {
-                    session: se_types::SessionId,
-                    socket: Option<NativePath>,
-                }
-                let planned: Planned =
-                    serde_json::from_slice(&file.read(8192).map_err(native_error)?).map_err(
-                        |e| se_core::scope::unreadable("Codex planned rendezvous", &e.to_string()),
-                    )?;
-                if &planned.session != session {
-                    return Err(SeError::invalid(
-                        "Codex planned rendezvous",
-                        "the exact original session",
-                    ));
-                }
-                if let Some(socket) = planned.socket {
-                    let socket = socket.to_local()?;
-                    let parent = socket
-                        .parent()
-                        .ok_or_else(|| SeError::invalid("Codex socket", "a parent"))?;
-                    match std::fs::symlink_metadata(parent) {
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-                        _ => {
-                            return Err(se_core::scope::unreadable(
-                                "Codex rendezvous custody",
-                                "the planned directory remains without an actual creation record; preserve it for owner reconciliation",
-                            ));
-                        }
-                    }
-                }
-            }
-            return Ok(());
+            return self.verify_planned_rendezvous(session);
         };
         let bytes = owned.read(8192).map_err(native_error)?;
         let value: Record = serde_json::from_slice(&bytes)
@@ -198,47 +157,7 @@ impl CodexHarness {
         drop(owned);
         let socket = value.socket.to_local()?;
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let parent = socket
-                .parent()
-                .ok_or_else(|| SeError::invalid("Codex socket", "a private parent"))?;
-            let directory = match std::fs::symlink_metadata(parent) {
-                Ok(metadata) => Some(metadata),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-                Err(e) => {
-                    return Err(se_core::scope::unreadable(
-                        "Codex rendezvous cleanup",
-                        &e.to_string(),
-                    ));
-                }
-            };
-            if let Some(metadata) = &directory {
-                let _pin = se_proc::NativeStateFiles::open(parent).map_err(native_error)?;
-                if metadata.dev() != value.device
-                    || metadata.ino() != value.inode
-                    || socket.file_name().is_none_or(|name| name != "s")
-                {
-                    return Err(se_core::scope::unreadable(
-                        "Codex socket cleanup",
-                        "recorded directory incarnation differs; preserve the replacement",
-                    ));
-                }
-            }
-            endpoint::retire(&socket, &path, &value)?;
-            if directory.is_some() {
-                match se_proc::remove_empty_directory(parent).map_err(native_error)? {
-                    se_proc::DirectoryRemoval::Removed
-                    | se_proc::DirectoryRemoval::AlreadyAbsent => (),
-                    _ => {
-                        return Err(se_core::scope::unreadable(
-                            "Codex rendezvous cleanup",
-                            "the exact directory remains nonempty",
-                        ));
-                    }
-                }
-            }
-        }
+        retire_endpoint(&socket, &path, &value)?;
         #[cfg(not(unix))]
         let _ = socket;
         se_proc::OwnedFile::open(&path)
@@ -252,4 +171,86 @@ impl CodexHarness {
             .remove(Sha256::digest(&bytes).into())
             .map_err(native_error)
     }
+    fn verify_planned_rendezvous(&self, session: &se_types::SessionId) -> Result<()> {
+        // A durable plan precedes creation. If creation was interrupted
+        // before its incarnation record, absence and unproved custody are
+        // different outcomes; never call a remaining directory removed.
+        let plan = self.directory(session)?.join("codex-plan.json");
+        if let Some(mut file) = se_proc::OwnedFile::open(&plan).map_err(native_error)? {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Planned {
+                session: se_types::SessionId,
+                socket: Option<NativePath>,
+            }
+            let planned: Planned = serde_json::from_slice(&file.read(8192).map_err(native_error)?)
+                .map_err(|e| {
+                    se_core::scope::unreadable("Codex planned rendezvous", &e.to_string())
+                })?;
+            if &planned.session != session {
+                return Err(SeError::invalid(
+                    "Codex planned rendezvous",
+                    "the exact original session",
+                ));
+            }
+            if let Some(socket) = planned.socket {
+                let socket = socket.to_local()?;
+                let parent = socket
+                    .parent()
+                    .ok_or_else(|| SeError::invalid("Codex socket", "a parent"))?;
+                match std::fs::symlink_metadata(parent) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+                    _ => {
+                        return Err(se_core::scope::unreadable(
+                            "Codex rendezvous custody",
+                            "the planned directory remains without an actual creation record; preserve it for owner reconciliation",
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+#[cfg(unix)]
+fn retire_endpoint(socket: &Path, path: &Path, value: &Record) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let parent = socket
+        .parent()
+        .ok_or_else(|| SeError::invalid("Codex socket", "a private parent"))?;
+    let directory = match std::fs::symlink_metadata(parent) {
+        Ok(metadata) => Some(metadata),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(se_core::scope::unreadable(
+                "Codex rendezvous cleanup",
+                &e.to_string(),
+            ));
+        }
+    };
+    if let Some(metadata) = &directory {
+        let _pin = se_proc::NativeStateFiles::open(parent).map_err(native_error)?;
+        if metadata.dev() != value.device
+            || metadata.ino() != value.inode
+            || socket.file_name().is_none_or(|name| name != "s")
+        {
+            return Err(se_core::scope::unreadable(
+                "Codex socket cleanup",
+                "recorded directory incarnation differs; preserve the replacement",
+            ));
+        }
+    }
+    endpoint::retire(socket, path, value)?;
+    if directory.is_some() {
+        match se_proc::remove_empty_directory(parent).map_err(native_error)? {
+            se_proc::DirectoryRemoval::Removed | se_proc::DirectoryRemoval::AlreadyAbsent => (),
+            _ => {
+                return Err(se_core::scope::unreadable(
+                    "Codex rendezvous cleanup",
+                    "the exact directory remains nonempty",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
