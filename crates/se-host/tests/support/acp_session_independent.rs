@@ -809,3 +809,98 @@ async fn session_aggregate_turn_overflow_never_seals_a_complete_prefix() -> Chec
     );
     f.stop().await
 }
+
+/// Protects: HTTP MCP is chosen only when the agent advertises it or the
+/// descriptor explicitly accepts unadvertised HTTP; otherwise stdio is used.
+#[tokio::test]
+async fn session_http_mcp_selection_follows_advertised_capability() -> Check {
+    let mut silent = Fixture::new(PermissionPolicy::Refuse).await?;
+    silent.initialize(json!({})).await?;
+    assert!(!silent.session.supports_http_mcp(false)?);
+    assert!(silent.session.supports_http_mcp(true)?);
+    silent.stop().await?;
+    let mut declined = Fixture::new(PermissionPolicy::Refuse).await?;
+    declined
+        .initialize(json!({"mcpCapabilities":{"http":false}}))
+        .await?;
+    assert!(!declined.session.supports_http_mcp(false)?);
+    declined.stop().await?;
+    let advertised = Fixture::ready(PermissionPolicy::Refuse).await?;
+    assert!(advertised.session.supports_http_mcp(false)?);
+    advertised.stop().await
+}
+
+/// Protects: the saved model is sent to the open conversation exactly once and
+/// a later turn can still be offered.
+#[tokio::test]
+async fn session_set_model_selects_the_saved_model_on_the_open_conversation() -> Check {
+    let mut f = Fixture::ready(PermissionPolicy::Refuse).await?;
+    let index = f.writes()?.len();
+    let session = f.session.clone();
+    let context = cx()?;
+    let operation =
+        tokio::spawn(async move { session.set_model("synthetic-model", context).await });
+    let request = f.write(index).await?;
+    assert_eq!(request["method"], "session/set_model");
+    assert_eq!(request["params"]["sessionId"], "conversation");
+    assert_eq!(request["params"]["modelId"], "synthetic-model");
+    f.emit(json!({"jsonrpc":"2.0","id":request["id"],"result":{}}))?;
+    operation.await??;
+    assert_eq!(f.writes()?.len(), index + 1);
+    let id = f.prompt("after-model").await?;
+    f.complete(id, "end_turn").await?;
+    f.stop().await
+}
+
+/// Protects: an agent without session/set_model (-32601) gets a refusal that
+/// names the model and the steps that work, not a bare protocol code.
+#[tokio::test]
+async fn session_set_model_unsupported_names_actionable_alternatives() -> Check {
+    let mut f = Fixture::ready(PermissionPolicy::Refuse).await?;
+    let index = f.writes()?.len();
+    let session = f.session.clone();
+    let context = cx()?;
+    let operation =
+        tokio::spawn(async move { session.set_model("synthetic-model", context).await });
+    let request = f.write(index).await?;
+    f.emit(json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"Method not found"}}))?;
+    let refused = operation
+        .await?
+        .err()
+        .ok_or("unsupported session/set_model was reported as success")?;
+    let message = refused.body.message();
+    for expected in [
+        "\"synthetic-model\"",
+        "--model",
+        "{model}",
+        "model_environment",
+    ] {
+        assert!(
+            message.contains(expected),
+            "refusal lacks {expected}: {message}"
+        );
+    }
+    f.stop().await
+}
+
+/// Protects: other protocol errors keep their original failure, not the
+/// unsupported-method guidance.
+#[tokio::test]
+async fn session_set_model_other_errors_are_not_relabelled() -> Check {
+    let mut f = Fixture::ready(PermissionPolicy::Refuse).await?;
+    let index = f.writes()?.len();
+    let session = f.session.clone();
+    let context = cx()?;
+    let operation =
+        tokio::spawn(async move { session.set_model("synthetic-model", context).await });
+    let request = f.write(index).await?;
+    f.emit(json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32602,"message":"Invalid params"}}))?;
+    let refused = operation
+        .await?
+        .err()
+        .ok_or("rejected session/set_model was reported as success")?;
+    let message = refused.body.message();
+    assert!(message.contains("-32602"), "original code lost: {message}");
+    assert!(!message.contains("model_environment"), "{message}");
+    f.stop().await
+}
