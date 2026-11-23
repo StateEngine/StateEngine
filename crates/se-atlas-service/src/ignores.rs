@@ -33,6 +33,15 @@ impl Ignores {
 
     /// Whether discovery would skip the file `path`, or a directory above it.
     pub fn ignored(&mut self, source: &IndexSourceRoot, path: &str) -> bool {
+        self.skipped(source, path, false)
+    }
+
+    /// Whether discovery would skip the directory `path` or one above it.
+    pub fn ignored_directory(&mut self, source: &IndexSourceRoot, path: &str) -> bool {
+        self.skipped(source, path, true)
+    }
+
+    fn skipped(&mut self, source: &IndexSourceRoot, path: &str, leaf_directory: bool) -> bool {
         let physical = source.physical_root();
         if self.global.is_none() {
             let patterns = filter::global_patterns();
@@ -42,7 +51,7 @@ impl Ignores {
         let mut chain = vec![String::new()];
         for at in 0..parts.len() {
             let entry = parts[..=at].join("/");
-            let directory = at + 1 < parts.len();
+            let directory = leaf_directory || at + 1 < parts.len();
             for dir in &chain {
                 self.load(source, dir);
             }

@@ -53,14 +53,21 @@ pub(crate) fn run(shared: &Arc<Shared>, receiver: &Receiver<Msg>) {
             return;
         }
     };
-    match engine.prepare() {
-        Err(reason) => set_phase(shared, Phase::Failed(reason)),
-        Ok(()) => engine.serve(receiver),
+    let prepared = engine.prepare();
+    if prepared.is_ok() {
+        engine.serve(receiver);
     }
     if let Some(watcher) = engine.watcher.take() {
         watcher.stop();
     }
-    set_phase(shared, Phase::Stopped);
+    match prepared {
+        // Readers keep seeing why, not a closed index, until the stop.
+        Err(reason) => {
+            set_phase(shared, Phase::Failed(reason));
+            refuse_feeds(receiver);
+        }
+        Ok(()) => set_phase(shared, Phase::Stopped),
+    }
 }
 
 fn set_phase(shared: &Shared, phase: Phase) {
@@ -466,6 +473,13 @@ impl<'a> Engine<'a> {
         let rules = paths.iter().any(|dirty| ignores::is_rule_file(&dirty.path));
         if rules {
             self.ignores.clear();
+            // A per-directory watch must also cover folders a rule stopped
+            // ignoring; the reconcile below catches what the swap misses.
+            if cfg!(target_os = "linux")
+                && let Ok(directories) = self.directories()
+            {
+                self.arm(&directories);
+            }
         }
         if overflowed || rules {
             match self.reconcile() {

@@ -201,7 +201,8 @@ impl Service {
                 Pass::default()
             };
             scan = pass.rescan;
-            let retry = if pass.again {
+            // A catalogue left unscanned is due again, not on the next event.
+            let retry = if pass.again || pass.rescan {
                 Some(FEED_AGAIN)
             } else if pass.backoff {
                 Some(FEED_BACKOFF)
@@ -296,25 +297,27 @@ impl Service {
                 }
             }
         }
-        let waiting = self.feeding.lock().map_err(|_| busy())?.clone();
+        let started = self.started()?;
+        let waiting = std::mem::take(&mut *self.feeding.lock().map_err(|_| busy())?);
         let until = Instant::now() + FEED_PASS;
-        let mut settled = Vec::new();
+        let mut unsettled = Vec::new();
         for project in waiting {
             let mut complete = true;
-            for root in self.started()? {
-                if root.spec().project != project {
-                    continue;
-                }
-                complete &= self.feed(host, &root, until, &mut pass);
+            for root in started.iter().filter(|root| root.spec().project == project) {
+                complete &= self.feed(host, root, until, &mut pass);
             }
-            if complete {
-                settled.push(project);
+            if !complete {
+                unsettled.push(project);
             }
         }
-        self.feeding
-            .lock()
-            .map_err(|_| busy())?
-            .retain(|project| !settled.contains(project));
+        let mut feeding = self.feeding.lock().map_err(|_| busy())?;
+        // A project asked for during the pass is fed on the next one.
+        pass.again |= !feeding.is_empty();
+        for project in unsettled {
+            if !feeding.contains(&project) {
+                feeding.push(project);
+            }
+        }
         Ok(pass)
     }
 

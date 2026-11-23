@@ -58,6 +58,30 @@ pub fn classify(path: &str) -> Reported {
     Reported::Source
 }
 
+/// Classify one root-relative directory. Only the built-in directory
+/// boundary applies: a folder such as `src/secrets/` holds source, so its
+/// coming and going is never dropped because a data file there would be.
+pub fn classify_directory(path: &str) -> Reported {
+    let path = path.trim_start_matches("./").trim_matches('/');
+    if path.is_empty() || path == ".git" {
+        return Reported::Drop;
+    }
+    if let Some(rest) = path.strip_prefix(".git/") {
+        return if rest == "refs/heads" || rest.starts_with("refs/heads/") {
+            Reported::Head
+        } else {
+            Reported::Drop
+        };
+    }
+    let skipped = path.split('/').any(|part| {
+        part == ".git" || part == ".stateengine" || SKIPPED_DIRECTORIES.contains(&part)
+    });
+    if skipped || policy::directory_denied(path) {
+        return Reported::Drop;
+    }
+    Reported::Source
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

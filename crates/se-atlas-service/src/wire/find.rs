@@ -344,7 +344,9 @@ fn finish(
     if query.full {
         budget.max_bytes = budget.max_bytes.min(FULL_RESPONSE as u32);
     }
-    let empty = results(index, query, Vec::new(), None, 0, shape)?;
+    // Sized with the longest cursor, so a page that gains one still fits.
+    let widest = cursor::wrap('f', &se_atlas_search::MAX_LIMIT.to_string())?;
+    let empty = results(index, query, Vec::new(), Some(widest), 0, shape)?;
     let mut bytes = size(&answer(index, Read::Present { value: empty }));
     let (mut items, mut bodies_omitted) = (Vec::new(), 0u16);
     let mut body_bytes = 0usize;
@@ -361,8 +363,17 @@ fn finish(
             hit.body = None;
             bodies_omitted += 1;
         }
-        let cost = size(&hit) + 1;
-        if bytes + cost > budget.max_bytes as usize {
+        let mut cost = size(&hit) + 1;
+        let max_bytes = budget.max_bytes as usize;
+        // The first hit must fit, or the page could never progress.
+        if items.is_empty() && bytes + cost > max_bytes && hit.body.take().is_some() {
+            bodies_omitted += 1;
+            cost = size(&hit) + 1;
+        }
+        if items.is_empty() && bytes + cost > max_bytes {
+            return Err(super::records::over_budget(bytes + cost, budget.max_bytes));
+        }
+        if bytes + cost > max_bytes {
             stopped_at = Some(at);
             break;
         }
@@ -373,7 +384,7 @@ fn finish(
     let resume_at = stopped_at
         .or_else(|| (shape.more_ranked && !items.is_empty()).then_some(shape.offset + items.len()));
     let next = resume_at
-        .filter(|at| *at < se_atlas_search::MAX_LIMIT)
+        .filter(|at| *at < se_atlas_search::MAX_LIMIT && !items.is_empty())
         .map(|at| cursor::wrap('f', &at.to_string()))
         .transpose()?;
     let mut value = results(index, query, items, next, bytes, shape)?;

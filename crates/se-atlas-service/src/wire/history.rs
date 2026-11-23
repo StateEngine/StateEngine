@@ -8,7 +8,7 @@ use crate::{
     error::{index_error, sqlite},
     root::Shared,
 };
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use se_atlas_index::store::{ChangeKind as V5Change, Reader};
 use se_atlas_query::changes::{ChangeEntry, ChangesAnswer, ChangesRequest, Since};
 use se_types::code::AtlasText as _;
@@ -78,8 +78,7 @@ pub(crate) fn changes(
 ) -> Result<Answer<Read<Page<CodeChange>>>> {
     query.scope.validate()?;
     let fit = (query.budget.max_bytes as usize / ROW_BYTES).max(1);
-    let (found, lower, fence) =
-        shared.with_reader(|reader| read_changes(reader, index, query, viewer, fit))?;
+    let found = shared.with_reader(|reader| read_changes(reader, index, query, viewer, fit))?;
     let found = match found {
         ChangesAnswer::Found(found) => found,
         ChangesAnswer::CommitNotObserved { commit } => {
@@ -98,13 +97,10 @@ pub(crate) fn changes(
     let at = Generation(u64::try_from(found.through_generation).unwrap_or(0));
     let mut items = Vec::new();
     for entry in &found.entries {
-        let generation = u64::try_from(entry.generation).unwrap_or(0);
-        if generation <= lower
-            || fence.is_some_and(|fence| generation > fence.0)
-            || entry
-                .path
-                .as_deref()
-                .is_some_and(|path| !admits(&query.scope, path))
+        if entry
+            .path
+            .as_deref()
+            .is_some_and(|path| !admits(&query.scope, path))
         {
             continue;
         }
@@ -132,16 +128,14 @@ pub(crate) fn changes(
     checked(answer(&index, Read::Present { value }), query.budget)
 }
 
-type Read3 = (ChangesAnswer, u64, Option<Generation>);
-
 fn read_changes(
     reader: &Reader,
     index: &IndexSummary,
     query: &ChangesQuery,
     viewer: &AtlasPrincipal,
     fit: usize,
-) -> Result<Read3> {
-    let (since, lower, fence) = baseline(reader.connection(), index, viewer, &query.since)?;
+) -> Result<ChangesAnswer> {
+    let since = baseline(reader.connection(), index, viewer, &query.since)?;
     let request = ChangesRequest {
         since,
         limit: usize::from(query.budget.max_results).min(fit),
@@ -151,41 +145,44 @@ fn read_changes(
             .map(|next| cursor::unwrap('c', next))
             .transpose()?,
     };
-    let found = se_atlas_query::changes::changes(reader, &request).map_err(|e| index_error(&e))?;
-    Ok((found, lower, fence))
+    se_atlas_query::changes::changes(reader, &request).map_err(|e| index_error(&e))
 }
 
-/// The v5 start, the generation a resume cursor already delivered, and the
-/// fence an offer's retrieval cursor bounds the range at.
+/// The v5 start. A resume cursor starts after the generation it delivered
+/// and, for an offer's retrieval cursor, stops at the offer's fence.
 fn baseline(
     conn: &Connection,
     index: &IndexSummary,
     viewer: &AtlasPrincipal,
     since: &ChangeBaseline,
-) -> Result<(Since, u64, Option<Generation>)> {
+) -> Result<Since> {
     Ok(match since {
-        ChangeBaseline::RelativeMillis(ms) => (Since::RelativeMillis(*ms), 0, None),
-        ChangeBaseline::ObservedUnixMillis(at) => (Since::ObservedUnixMillis(*at), 0, None),
-        ChangeBaseline::ObservedCommit(oid) => (Since::Commit(hex(oid)), 0, None),
-        ChangeBaseline::ObservedCommitPrefix(prefix) => (Since::Commit(prefix.clone()), 0, None),
+        ChangeBaseline::RelativeMillis(ms) => Since::RelativeMillis(*ms),
+        ChangeBaseline::ObservedUnixMillis(at) => Since::ObservedUnixMillis(*at),
+        ChangeBaseline::ObservedCommit(oid) => Since::Commit(hex(oid)),
+        ChangeBaseline::ObservedCommitPrefix(prefix) => Since::Commit(prefix.clone()),
         ChangeBaseline::Cursor(saved) => {
-            let (delivered, fence) = range(index, viewer, saved)?;
-            let observed: Option<i64> = conn
-                .query_row(
-                    "SELECT observed_unix_ms FROM generations WHERE generation <= ?1
-                     ORDER BY generation DESC LIMIT 1",
-                    [i64::try_from(delivered).unwrap_or(i64::MAX)],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(|e| sqlite(&e))?;
-            (
-                Since::ObservedUnixMillis(observed.unwrap_or(0)),
-                delivered,
-                fence,
-            )
+            let current = at_published(conn, index)?;
+            let (delivered, fence) = range(&current, viewer, saved)?;
+            Since::AfterGeneration {
+                after: i64::try_from(delivered).unwrap_or(i64::MAX),
+                through: fence.map(|fence| i64::try_from(fence.0).unwrap_or(i64::MAX)),
+            }
         }
     })
+}
+
+/// The summary at the generation this connection reads, so a cursor issued
+/// from the store is judged against the store, not a cached summary.
+fn at_published(conn: &Connection, index: &IndexSummary) -> Result<IndexSummary> {
+    let published: i64 = conn
+        .query_row("SELECT generation FROM meta WHERE singleton=1", [], |row| {
+            row.get(0)
+        })
+        .map_err(|e| sqlite(&e))?;
+    let mut current = index.clone();
+    current.generation = Some(Generation(u64::try_from(published).unwrap_or(0)));
+    Ok(current)
 }
 
 fn hex(oid: &GitObjectId) -> String {
@@ -280,7 +277,7 @@ pub(crate) fn resume(
     let mut issued = index.clone();
     issued.generation = Some(Generation(scan.published));
     let mut output = ResumeCode {
-        index: index.clone(),
+        index: issued.clone(),
         state: ResumeCodeState::Available,
         items: scan.bulk.into_iter().map(ResumeChange::Bulk).collect(),
         omitted: (!scan.limited).then_some(scan.omitted_bulk),
@@ -365,11 +362,10 @@ fn scan_resume(
     index: &IndexSummary,
     request: &ResumeRequest,
 ) -> Result<ResumeScan> {
-    let published: i64 = conn
-        .query_row("SELECT generation FROM meta WHERE singleton=1", [], |row| {
-            row.get(0)
-        })
-        .map_err(|e| sqlite(&e))?;
+    let current = at_published(conn, index)?;
+    let published = current.generation.map_or(0, |generation| {
+        i64::try_from(generation.0).unwrap_or(i64::MAX)
+    });
     let floor: i64 = conn
         .query_row(
             "SELECT coalesce(min(generation), 0) FROM generations",
@@ -377,8 +373,6 @@ fn scan_resume(
             |row| row.get(0),
         )
         .map_err(|e| sqlite(&e))?;
-    let mut current = index.clone();
-    current.generation = Some(Generation(u64::try_from(published).unwrap_or(0)));
     let viewer = AtlasPrincipal::Agent(request.viewer.clone());
     // A cursor from another epoch, viewer or query is a gap, never an error:
     // the digest then starts at the oldest retained change.

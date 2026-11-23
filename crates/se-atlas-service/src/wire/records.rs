@@ -4,7 +4,11 @@
 //! that a record the viewer may not see exists. An authority that cannot
 //! answer is an error, never an empty result.
 use super::{PageFacts, answer, checked, cursor, find::RANK_VERSION, page, size};
-use crate::{error::sqlite, read::RecordCheck, root::Shared};
+use crate::{
+    error::{index_error, sqlite},
+    read::RecordCheck,
+    root::Shared,
+};
 use rusqlite::Connection;
 use se_types::code::AtlasText as _;
 use se_types::{
@@ -18,7 +22,7 @@ use se_types::{
 
 /// Records one impact or outline answer lists.
 pub(crate) const MAX_LINKED: usize = 10;
-/// Candidates checked for one answer before it reports a floor.
+/// Candidates read per target for one impact or outline answer.
 const MAX_SCANNED: usize = 512;
 /// Candidate rows read per round trip while paging a record search.
 const CHUNK: u64 = 64;
@@ -55,7 +59,8 @@ fn unreadable(subject: &str, reason: &str) -> SeError {
 /// Authorized records mentioning any of `targets`, newest first.
 pub(crate) struct Linked {
     pub hits: Vec<RecordHit>,
-    /// More candidates exist than were checked or listed.
+    /// Another record this viewer may see exists beyond those listed. Only
+    /// visible records decide it, so it never counts hidden ones.
     pub limited: bool,
 }
 
@@ -66,7 +71,7 @@ pub(crate) fn linked(
     records: &dyn RecordCheck,
     targets: &[(&str, Vec<u8>)],
 ) -> Result<Linked> {
-    let (candidates, mut limited) = shared.with_reader(|reader| {
+    let candidates = shared.with_reader(|reader| {
         let conn = reader.connection();
         let mut select = conn
             .prepare_cached(
@@ -77,37 +82,34 @@ pub(crate) fn linked(
             )
             .map_err(|e| sqlite(&e))?;
         let mut found: Vec<(i64, String, String, String)> = Vec::new();
-        let mut limited = false;
         for (kind, key) in targets {
             let rows = select
-                .query_map(
-                    rusqlite::params![kind, key, MAX_SCANNED as i64 + 1],
-                    |row| Ok((row.get(3)?, row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
+                .query_map(rusqlite::params![kind, key, MAX_SCANNED as i64], |row| {
+                    Ok((row.get(3)?, row.get(0)?, row.get(1)?, row.get(2)?))
+                })
                 .map_err(|e| sqlite(&e))?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(|e| sqlite(&e))?;
-            limited |= rows.len() > MAX_SCANNED;
             found.extend(rows);
         }
         found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
         found.dedup_by(|a, b| a.1 == b.1);
-        limited |= found.len() > MAX_SCANNED;
-        found.truncate(MAX_SCANNED);
-        Ok((found, limited))
+        Ok(found)
     })?;
     let mut hits = Vec::new();
-    for (at, (_, key, kind, event)) in candidates.iter().enumerate() {
-        if hits.len() >= MAX_LINKED {
-            limited |= at < candidates.len();
-            break;
-        }
+    let mut limited = false;
+    for (_, key, kind, event) in &candidates {
         let Some(pointer) = pointer(key, kind, event) else {
             continue;
         };
-        if let Some(hit) = authorize(records, &pointer, None)? {
-            hits.push(hit);
+        let Some(hit) = authorize(records, &pointer, None)? else {
+            continue;
+        };
+        if hits.len() >= MAX_LINKED {
+            limited = true;
+            break;
         }
+        hits.push(hit);
     }
     Ok(Linked { hits, limited })
 }
@@ -129,10 +131,11 @@ fn pointer(record_id: &str, kind: &str, event: &str) -> Option<RecordPointer> {
     })
 }
 
-/// Records of one kind whose title or body holds every query word. Rows are
-/// paged by candidate position, but a page holds only records core admitted
-/// for this viewer: the page fills with visible records, and `more` is
-/// decided by one further visible record, never by a raw candidate count.
+/// Records of one kind whose title or body holds every query word, newest
+/// first. Every decision a viewer can see is made on records core admitted
+/// for them: a page fills with visible records, `next` appears only when a
+/// further visible record exists, and the cursor names the page's last
+/// listed record, so no count, position or time of a hidden record leaks.
 pub(crate) fn find(
     shared: &Shared,
     index: &IndexSummary,
@@ -141,52 +144,82 @@ pub(crate) fn find(
     records: &dyn RecordCheck,
 ) -> Result<Answer<Read<SearchResults>>> {
     let start = match &query.next {
-        Some(next) => cursor::number('m', next)?,
-        None => 0,
+        Some(next) => key(next)?,
+        None => (i64::MAX, i64::MAX),
     };
     let limit = usize::from(query.budget.max_results);
-    let empty = results(index, query, Vec::new(), None, 0)?;
+    let max_bytes = query.budget.max_bytes as usize;
+    // Sized with the longest cursor, so a page that gains one still fits.
+    let widest = key_cursor((i64::MAX, i64::MAX))?;
+    let empty = results(index, query, Vec::new(), Some(widest), 0)?;
     let mut bytes = size(&answer(index, Read::Present { value: empty }));
     let mut items = Vec::new();
-    let mut next = None;
-    let mut scanned = 0usize;
-    let mut offset = start;
-    'pages: loop {
-        let rows =
-            shared.with_reader(|reader| rows(reader.connection(), query, kind, offset, CHUNK))?;
-        let exhausted = (rows.len() as u64) < CHUNK;
-        for (position, (key, event)) in (offset..).zip(rows) {
-            if scanned >= MAX_SCANNED {
-                // Unchecked candidates remain: resume at the first of them.
-                next = Some(position);
-                break 'pages;
+    let mut last = None;
+    let mut more = false;
+    shared.with_reader(|reader| {
+        let snapshot = reader.snapshot().map_err(|e| index_error(&e))?;
+        let mut after = start;
+        loop {
+            let rows = rows(snapshot.connection(), query, kind, after, CHUNK)?;
+            let exhausted = (rows.len() as u64) < CHUNK;
+            for (record, event, at) in rows {
+                after = at;
+                let Some(pointer) = pointer(&record, crate::records::kind_name(kind), &event)
+                else {
+                    continue;
+                };
+                let Some(value) = authorize(records, &pointer, Some(&query.query))? else {
+                    continue;
+                };
+                let hit = record_hit(value);
+                let cost = size(&hit) + 1;
+                if items.is_empty() && bytes + cost > max_bytes {
+                    return Err(over_budget(bytes + cost, query.budget.max_bytes));
+                }
+                if items.len() >= limit || bytes + cost > max_bytes {
+                    more = true;
+                    return Ok(());
+                }
+                bytes += cost;
+                items.push(hit);
+                last = Some(at);
             }
-            scanned += 1;
-            let Some(pointer) = pointer(&key, crate::records::kind_name(kind), &event) else {
-                continue;
-            };
-            let Some(value) = authorize(records, &pointer, Some(&query.query))? else {
-                continue;
-            };
-            let hit = record_hit(value);
-            let cost = size(&hit) + 1;
-            if items.len() >= limit || bytes + cost > query.budget.max_bytes as usize {
-                next = Some(position);
-                break 'pages;
+            if exhausted {
+                return Ok(());
             }
-            bytes += cost;
-            items.push(hit);
         }
-        if exhausted {
-            break;
-        }
-        offset += CHUNK;
-    }
-    let next = next
-        .map(|at| cursor::wrap('m', &at.to_string()))
-        .transpose()?;
+    })?;
+    let next = last.filter(|_| more).map(key_cursor).transpose()?;
     let value = results(index, query, items, next, bytes)?;
     checked(answer(index, Read::Present { value }), query.budget)
+}
+
+/// A record page cursor: the `(occurred_unix_ms, id)` of the last listed
+/// record, one the viewer was admitted to.
+fn key_cursor((at, id): (i64, i64)) -> Result<se_types::code::AtlasCursor> {
+    cursor::wrap('m', &format!("{at}.{id}"))
+}
+
+fn key(next: &se_types::code::AtlasCursor) -> Result<(i64, i64)> {
+    cursor::unwrap('m', next)?
+        .split_once('.')
+        .and_then(|(at, id)| Some((at.parse().ok()?, id.parse().ok()?)))
+        .ok_or_else(|| {
+            SeError::invalid(
+                "Atlas cursor",
+                "a cursor this query returned; repeat the query without it",
+            )
+        })
+}
+
+/// One visible record is larger than the whole byte budget: refuse rather
+/// than return a page that cannot progress.
+pub(crate) fn over_budget(requested: usize, available: u32) -> SeError {
+    SeError::new(Detail::AtlasResourceBudget(details::AtlasResourceBudget {
+        resource: "Atlas response bytes".into(),
+        requested: requested as u64,
+        available: u64::from(available),
+    }))
 }
 
 fn record_hit(value: RecordHit) -> SearchHit {
@@ -234,13 +267,17 @@ fn results(
     })
 }
 
+/// A candidate's record id, source event and `(occurred_unix_ms, id)` key.
+type Candidate = (String, String, (i64, i64));
+
+/// Candidates older than `after`, newest first.
 fn rows(
     conn: &Connection,
     query: &FindQuery,
     kind: RecordKind,
-    offset: u64,
+    after: (i64, i64),
     limit: u64,
-) -> Result<Vec<(String, String)>> {
+) -> Result<Vec<Candidate>> {
     let words: Vec<String> = query
         .query
         .as_str()
@@ -253,10 +290,11 @@ fn rows(
     let pattern = words.join(" ");
     let mut select = conn
         .prepare_cached(
-            "SELECT r.record_id, r.source_event FROM records r
+            "SELECT r.record_id, r.source_event, r.occurred_unix_ms, r.id FROM records r
              WHERE r.kind=?2 AND (r.id IN (SELECT rowid FROM record_fts WHERE record_fts MATCH ?1)
                 OR r.id IN (SELECT rowid FROM record_text_fts WHERE record_text_fts MATCH ?1))
-             ORDER BY r.occurred_unix_ms DESC, r.id DESC LIMIT ?3 OFFSET ?4",
+               AND (r.occurred_unix_ms, r.id) < (?4, ?5)
+             ORDER BY r.occurred_unix_ms DESC, r.id DESC LIMIT ?3",
         )
         .map_err(|e| sqlite(&e))?;
     let rows = select
@@ -265,9 +303,10 @@ fn rows(
                 pattern,
                 crate::records::kind_name(kind),
                 i64::try_from(limit).unwrap_or(i64::MAX),
-                i64::try_from(offset).unwrap_or(i64::MAX)
+                after.0,
+                after.1
             ],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, (row.get(2)?, row.get(3)?))),
         )
         .map_err(|e| sqlite(&e))?;
     rows.collect::<rusqlite::Result<_>>()

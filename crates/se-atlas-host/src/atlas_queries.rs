@@ -1,10 +1,17 @@
 //! Admitted Atlas reads on the owner's v5 engine. Queries register the
 //! project's worktrees and signal interest; they never start a build
 //! themselves, and records reach an answer only through core's check.
+#[cfg(feature = "listener")]
 use crate::atlas_records::AtlasRecordReader;
-use se_atlas::{errors::AtlasResult, query::RecordReader};
-use se_store::{Actor, Admission, Scope, Snapshot};
-use se_types::{ProjectId, Read, SeError, code::*};
+use se_atlas::errors::AtlasResult;
+#[cfg(feature = "listener")]
+use se_atlas::query::RecordReader;
+use se_store::Snapshot;
+#[cfg(feature = "listener")]
+use se_store::{Actor, Admission, Scope};
+#[cfg(feature = "listener")]
+use se_types::{ProjectId, Read};
+use se_types::{SeError, code::*};
 
 /// One presentation path for CLI and MCP. JSON remains the typed wire family.
 pub use se_mcp::compact;
@@ -49,6 +56,7 @@ pub fn execute(
 }
 
 /// The admitted viewer; remote grants never read Atlas.
+#[cfg(feature = "listener")]
 pub(crate) fn principal(admission: &Admission) -> AtlasResult<AtlasPrincipal> {
     match &admission.actor {
         Actor::Agent(agent) => Ok(AtlasPrincipal::Agent(agent.clone())),
@@ -62,12 +70,14 @@ pub(crate) fn principal(admission: &Admission) -> AtlasResult<AtlasPrincipal> {
 }
 
 /// Core's record check for one admitted viewer, lent to the engine.
+#[cfg(feature = "listener")]
 pub(crate) struct CheckedRecords<'a, R: Snapshot> {
     reader: AtlasRecordReader<'a, R>,
     project: ProjectId,
     viewer: AtlasPrincipal,
 }
 
+#[cfg(feature = "listener")]
 impl<'a, R: Snapshot> CheckedRecords<'a, R> {
     pub(crate) fn new(
         read: &'a mut R,
@@ -82,6 +92,7 @@ impl<'a, R: Snapshot> CheckedRecords<'a, R> {
     }
 }
 
+#[cfg(feature = "listener")]
 impl<R: Snapshot> se_atlas_service::RecordCheck for CheckedRecords<'_, R> {
     fn hit(
         &self,

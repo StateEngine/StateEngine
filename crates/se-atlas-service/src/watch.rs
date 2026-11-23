@@ -8,6 +8,7 @@
 use crate::{
     dirty::Change,
     filter::{self, Reported},
+    ignores::{self, Ignores},
     root::{Msg, Shared},
     settle::Watch,
 };
@@ -59,6 +60,7 @@ impl Watcher {
                         watch,
                         root,
                         names,
+                        ignores: Ignores::default(),
                     };
                     state.run(&stop, &woken);
                 }
@@ -179,7 +181,7 @@ fn subdirectories(root: &NativeSourceRoot, directory: &str) -> std::io::Result<V
             } else {
                 format!("{directory}/{name}")
             };
-            if filter::classify(&format!("{child}/x")) != Reported::Drop {
+            if filter::classify_directory(&child) != Reported::Drop {
                 out.push(child);
             }
         }
@@ -192,6 +194,8 @@ struct Thread<'a> {
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     root: NativeSourceRoot,
     names: Names,
+    /// Discovery's ignore rules, so an ignored new folder costs no watch.
+    ignores: Ignores,
 }
 
 impl Thread<'_> {
@@ -258,10 +262,16 @@ impl Thread<'_> {
     fn event(&mut self, action: NativeWatchAction, flagged: bool, path: &str) -> bool {
         // The filter runs first: an ignored path never costs a syscall.
         let as_file = filter::classify(path);
-        let as_directory = filter::classify(&format!("{path}/x"));
+        let as_directory = filter::classify_directory(path);
         if as_file == Reported::Drop && as_directory == Reported::Drop {
             return false;
         }
+        if ignores::is_rule_file(path) {
+            self.ignores.clear();
+        }
+        // Windows reports every name as a directory; the custody check
+        // below tells them apart.
+        let flagged = !cfg!(windows) && flagged;
         let gone = matches!(
             action,
             NativeWatchAction::Removed | NativeWatchAction::MovedFrom
@@ -314,7 +324,7 @@ impl Thread<'_> {
     /// reconcile. A new branch folder only needs watching.
     #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
     fn directory(&mut self, action: NativeWatchAction, path: &str, class: Reported) {
-        if class == Reported::Drop {
+        if class == Reported::Drop || self.ignored(path) {
             return;
         }
         match action {
@@ -339,6 +349,16 @@ impl Thread<'_> {
             }
             _ => self.lose(),
         }
+    }
+
+    /// Whether discovery skips a source directory by its ignore rules. Git's
+    /// folders are judged by the built-in filter alone.
+    fn ignored(&mut self, path: &str) -> bool {
+        let Some(source) = self.shared.source() else {
+            return false;
+        };
+        filter::classify_directory(path) == Reported::Source
+            && self.ignores.ignored_directory(source, path)
     }
 
     /// Notifications on Linux and macOS carry the directory bit.
@@ -375,6 +395,7 @@ impl Thread<'_> {
                 // later events are not reported under a stale name.
                 self.names.remove(&descriptor);
                 let _ = self.watch.remove(descriptor);
+                self.count();
                 false
             }
             // Its removal was already seen.
@@ -397,6 +418,7 @@ impl Thread<'_> {
             self.names.remove(&descriptor);
             let _ = self.watch.remove(descriptor);
         }
+        self.count();
     }
 
     /// Watch a new directory and every directory already inside it, so a
@@ -410,6 +432,9 @@ impl Thread<'_> {
             if added >= MAX_NEW_DIRECTORIES {
                 self.fail("too many new directories appeared at once to watch each one");
                 return;
+            }
+            if self.ignored(&directory) {
+                continue;
             }
             match self.watch.subscribe(&self.root, &directory) {
                 Ok(Some(registration)) => {
@@ -434,10 +459,16 @@ impl Thread<'_> {
                 Err(_) => self.lose(),
             }
         }
+        self.count();
+    }
+
+    /// Publish how many directories are watched now.
+    #[cfg(target_os = "linux")]
+    fn count(&self) {
         if let Ok(mut progress) = self.shared.progress()
             && let Watch::Armed { directories } = &mut progress.watch
         {
-            *directories += added;
+            *directories = self.names.len() as u64;
         }
     }
 
