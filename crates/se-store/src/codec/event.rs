@@ -40,41 +40,7 @@ pub(crate) fn load_event(c: &Connection, seq: i64, info: &StoreInfo) -> StoreRes
     let parse_event =
         |k: &[u8]| wire(c, "event", k, &s).and_then(|v| v.try_into().map_err(invalid));
     let body = super::body(c, seq, &kind, &scope)?;
-    match (&body, version) {
-        (EventBody::ProfileSaved { profile, .. }, 2) if profile.harness.is_none() => {
-            return Err(invalid(
-                "descriptor-bound profile is missing its harness selection",
-            ));
-        }
-        (EventBody::ProfileSaved { profile, .. }, 3) if profile.provider_settings.is_empty() => {
-            return Err(invalid(
-                "version 3 profile is missing its provider settings",
-            ));
-        }
-        (
-            EventBody::CredentialActivated {
-                first_request: None,
-                ..
-            },
-            1,
-        ) => {
-            return Err(invalid(
-                "version 1 credential activation is missing its first request",
-            ));
-        }
-        (
-            EventBody::CredentialActivated {
-                first_request: Some(_),
-                ..
-            },
-            2,
-        ) => {
-            return Err(invalid(
-                "version 2 credential activation unexpectedly carries a first request",
-            ));
-        }
-        _ => {}
-    }
+    validate_schema_version(&body, version)?;
     let writer = match (mode.as_str(), generation) {
         ("direct", None) => LeaseIdentity {
             store: Some(info.id.clone()),
@@ -127,4 +93,23 @@ pub(crate) fn load_event(c: &Connection, seq: i64, info: &StoreInfo) -> StoreRes
         body,
         erased_fields: Vec::new(),
     })
+}
+
+fn validate_schema_version(body: &EventBody<StoredText>, version: u32) -> StoreResult<()> {
+    let reason = match (body, version) {
+        (EventBody::ProfileSaved { profile, .. }, 2) if profile.harness.is_none() => {
+            "descriptor-bound profile is missing its harness selection"
+        }
+        (EventBody::ProfileSaved { profile, .. }, 3) if profile.provider_settings.is_empty() => {
+            "version 3 profile is missing its provider settings"
+        }
+        (EventBody::CredentialActivated { first_request, .. }, 1) if first_request.is_none() => {
+            "version 1 credential activation is missing its first request"
+        }
+        (EventBody::CredentialActivated { first_request, .. }, 2) if first_request.is_some() => {
+            "version 2 credential activation unexpectedly carries a first request"
+        }
+        _ => return Ok(()),
+    };
+    Err(invalid(reason))
 }
