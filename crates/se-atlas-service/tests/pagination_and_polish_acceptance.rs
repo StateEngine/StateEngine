@@ -14,8 +14,8 @@ use se_types::{
     Cursor, Detail, Page, Read, SeError, StopReason,
     code::{
         Accuracy, AtlasCursor, AtlasTarget, AtlasText as _, ChangeBaseline, CodeChange,
-        CoverageReason, ImpactQuery, OutlineQuery, QueryBudget, ReferenceHit, RefsQuery,
-        RelativePath, SearchScope,
+        CoverageReason, ImpactQuery, IndexState, OutlineQuery, QueryBudget, ReferenceHit,
+        RefsQuery, RelativePath, SearchScope,
     },
 };
 use std::collections::BTreeSet;
@@ -301,7 +301,7 @@ fn refs_resumed_page_deadline_preserves_offset() -> TestResult {
         budget: QueryBudget {
             max_results: 200,
             max_bytes: 65_536,
-            work: Duration::from_millis(1),
+            work: Duration::from_nanos(1),
         }
         .checked()?,
     };
@@ -383,12 +383,30 @@ fn changes_byte_budget_paging_no_duplicates_or_drops() -> TestResult {
     ] {
         live.repo.write(path, text)?;
     }
-    let _ = wait_current(live.root()?, SETTLE_TIMEOUT)?;
     let viewer = se_types::code::AtlasPrincipal::Agent(agent_id(1)?);
-
     let full_q =
         changes_query_with_bytes(ChangeBaseline::ObservedUnixMillis(0), 200, 65_536, None)?;
-    let full_ans = live.root()?.changes(&full_q, &viewer)?;
+    let full_ans = wait_until(SETTLE_TIMEOUT, "edited files observed in changes", || {
+        if live.root()?.summary()?.state != IndexState::Current {
+            return Ok(None);
+        }
+        let ans = live.root()?.changes(&full_q, &viewer)?;
+        let Read::Present { value } = &ans.data else {
+            return Ok(None);
+        };
+        let seen: BTreeSet<&str> = value
+            .items()
+            .iter()
+            .filter_map(|item| match item {
+                CodeChange::Edit(edit) => Some(edit.pointer.path.as_str()),
+                _ => None,
+            })
+            .collect();
+        let all_seen = ["src/a.rs", "src/b.rs", "src/c.rs"]
+            .iter()
+            .all(|path| seen.contains(path));
+        Ok(all_seen.then_some(ans))
+    })?;
     let full_json = serde_json::to_vec(&full_ans)?;
     let full_page = present(full_ans.data)?;
     let total = full_page.items().len();
@@ -574,7 +592,7 @@ fn impact_imported_file_accuracy_and_deadline_stop_reason() -> TestResult {
         budget: QueryBudget {
             max_results: 200,
             max_bytes: 65_536,
-            work: Duration::from_millis(1),
+            work: Duration::from_nanos(1),
         }
         .checked()?,
     };
