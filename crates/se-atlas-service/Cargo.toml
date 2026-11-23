@@ -17,6 +17,8 @@ serde_json.workspace = true
 # Content checks of recently written files and resume offer digests.
 blake3 = { version = "=1.8.7", default-features = false, features = ["std"] }
 rusqlite = { version = "0.41", features = ["bundled"] }
+# Discovery's ignore rules, applied to paths the watcher reports.
+ignore = "=0.4.33"
 
 [lints]
 workspace = true

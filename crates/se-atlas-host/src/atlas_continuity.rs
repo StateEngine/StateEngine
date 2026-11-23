@@ -76,7 +76,7 @@ pub(crate) fn source(
     if !owner.records.is_current(&scope, ticket)? {
         output.index.note(CoverageReason::RecordFeedLag);
     }
-    fit(&mut output);
+    fit(&mut output, viewer)?;
     if started.elapsed() > Duration::from_millis(20) {
         return Err(se_types::SeError::new(
             se_types::Detail::AtlasResourceBudget(se_types::details::AtlasResourceBudget {
@@ -89,10 +89,12 @@ pub(crate) fn source(
     Ok(output)
 }
 /// Drop items until the rendered context fits; past that, no offer at all.
-fn fit(output: &mut ResumeCode) {
+/// An offer that loses items carries a retrieval cursor for what it left
+/// out, so acknowledging it never skips them.
+fn fit(output: &mut ResumeCode, viewer: &se_types::AgentId) -> Result<()> {
     loop {
         if se_atlas::render::resume(output).is_ok() {
-            return;
+            return Ok(());
         }
         if output.items.pop().is_none() {
             output.state = ResumeCodeState::BudgetExceeded;
@@ -108,10 +110,13 @@ fn fit(output: &mut ResumeCode) {
                 ))
                 .body,
             );
-            return;
+            return Ok(());
         }
         output.omitted = output.omitted.map(|n| n + 1);
         output.complete = false;
+        if output.omitted_since.is_none() {
+            output.omitted_since = se_atlas_service::resume_retrieval(output, viewer)?;
+        }
     }
 }
 fn short_circuit_state(state: &IndexState) -> Option<ResumeCodeState> {

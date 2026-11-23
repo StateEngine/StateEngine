@@ -4,6 +4,10 @@ use se_types::{Result, SeError};
 use std::sync::Arc;
 use std::sync::Mutex;
 
+/// Worktree feeds certified current at once; a project with many worktrees
+/// must not evict one certification by making another.
+const MAX_CURRENT: usize = 64;
+
 #[derive(Default)]
 struct State {
     serial: u64,
@@ -170,7 +174,7 @@ impl RecordFeedFence {
             state
                 .current
                 .retain(|(old, _)| old.project != scope.project || old.root != scope.root);
-            if state.current.len() == 2 {
+            if state.current.len() == MAX_CURRENT {
                 state.current.remove(0);
             }
             state.current.push((scope, ticket.0));

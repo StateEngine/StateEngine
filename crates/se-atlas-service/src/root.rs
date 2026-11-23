@@ -1,7 +1,7 @@
 //! One registered worktree: its writer thread, its watcher, and the state
 //! both share with queries.
 use crate::{
-    dirty::DirtySet,
+    dirty::{Change, DirtyPath, DirtySet},
     error::{index_error, poisoned},
     settle::Progress,
 };
@@ -18,7 +18,7 @@ use std::{
         mpsc::{self, Sender, SyncSender},
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// Which worktree to index and where its store lives.
@@ -40,6 +40,21 @@ pub struct FeedReceipt {
 }
 
 pub(crate) type FeedReply = SyncSender<Result<FeedReceipt>>;
+
+/// The dirty paths a query's summary was computed from.
+pub(crate) struct Dirty {
+    pub paths: Vec<DirtyPath>,
+    pub overflowed: bool,
+}
+
+impl Dirty {
+    pub fn change(&self, path: &str) -> Option<Change> {
+        self.paths
+            .iter()
+            .find(|dirty| dirty.path == path)
+            .map(|dirty| dirty.change)
+    }
+}
 
 pub(crate) enum Msg {
     /// The watcher marked paths dirty.
@@ -92,9 +107,16 @@ impl Shared {
     }
 
     pub fn summary(&self) -> Result<IndexSummary> {
-        let progress = self.progress()?.clone();
+        self.snapshot().map(|(summary, _)| summary)
+    }
+
+    /// The summary and the dirty paths it was computed from, taken under one
+    /// lock, so an answer never says `Current` while its overlay drops rows.
+    pub fn snapshot(&self) -> Result<(IndexSummary, Dirty)> {
+        // Lock order everywhere: progress, then dirty.
+        let progress = self.progress()?;
         let dirty = self.dirty()?;
-        Ok(IndexSummary {
+        let summary = IndexSummary {
             project: self.spec.project.clone(),
             root: self.spec.root.clone(),
             epoch: progress.epoch.clone(),
@@ -102,7 +124,12 @@ impl Shared {
             state: progress.state(&dirty),
             coverage: progress.coverage(&dirty),
             memory: None,
-        })
+        };
+        let paths = Dirty {
+            paths: dirty.snapshot(),
+            overflowed: dirty.overflowed(),
+        };
+        Ok((summary, paths))
     }
 
     /// A read-only connection to the current epoch, from the pool when one
@@ -122,7 +149,18 @@ impl Shared {
         Reader::open(&self.db()).map_err(|error| index_error(&error))
     }
 
-    pub fn give_back(&self, reader: Reader) {
+    /// Run `read` on a pooled reader. A reader whose query failed is dropped,
+    /// never returned to the pool, so a broken connection is not reused.
+    pub fn with_reader<T>(&self, read: impl FnOnce(&Reader) -> Result<T>) -> Result<T> {
+        let reader = self.reader()?;
+        let result = read(&reader);
+        if result.is_ok() {
+            self.give_back(reader);
+        }
+        result
+    }
+
+    fn give_back(&self, reader: Reader) {
         let Ok(epoch) = self.progress().map(|p| p.epoch.clone()) else {
             return;
         };
@@ -197,19 +235,26 @@ impl Root {
 
     /// Stop the watcher and writer, waiting up to `timeout` for the writer.
     pub fn stop(&self, timeout: Duration) -> Result<()> {
+        self.signal_stop();
+        self.join(Instant::now() + timeout)
+    }
+
+    /// Ask the writer to stop without waiting; every long loop it runs checks
+    /// this between files. Signal every root first, then [`Root::join`] each.
+    pub fn signal_stop(&self) {
         self.shared.stopping.store(true, Ordering::Release);
         self.shared.send(Msg::Stop);
-        let handle = self
-            .writer
-            .lock()
-            .map_err(|_| poisoned("writer handle"))?
-            .take();
-        let Some(handle) = handle else {
+    }
+
+    /// Wait until `until` for a signalled writer. A writer still running at
+    /// the bound keeps its handle, so a later call can join it.
+    pub fn join(&self, until: Instant) -> Result<()> {
+        let mut slot = self.writer.lock().map_err(|_| poisoned("writer handle"))?;
+        let Some(handle) = slot.as_ref() else {
             return Ok(());
         };
-        let until = std::time::Instant::now() + timeout;
         while !handle.is_finished() {
-            if std::time::Instant::now() >= until {
+            if Instant::now() >= until {
                 return Err(se_types::SeError::invalid(
                     "Atlas writer shutdown",
                     "the writer to finish its batch within the shutdown bound",
@@ -217,6 +262,9 @@ impl Root {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
+        let Some(handle) = slot.take() else {
+            return Ok(());
+        };
         handle
             .join()
             .map_err(|_| se_types::SeError::invalid("Atlas writer", "a writer that did not panic"))

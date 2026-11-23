@@ -1,34 +1,28 @@
-//! `refs`, `impact` and `outline` on the wire. A private path and an
-//! unindexed name are different answers; an outline of a file the watcher
-//! reported changed is extracted from the file as it is now.
-use super::{
-    PageFacts, answer, checked, cursor, file_id, kind, language, page, pointer, size, span, unknown,
-};
+//! `refs` and `impact` on the wire. A private path and an unindexed name are
+//! different answers. A file the watcher reported changed or removed is
+//! marked stale or left out, and an answer read while changes are pending
+//! is never complete: the index may not list what the edit added.
+use super::{PageFacts, answer, checked, cursor, file_id, page, pointer, records, size, unknown};
 use crate::{
     dirty::Change,
-    error::{index_error, sqlite},
+    error::index_error,
     read::{RecordCheck, STARTING},
-    root::Shared,
+    root::{Dirty, Shared},
 };
-use rusqlite::{Connection, OptionalExtension};
-use se_atlas_index::{custody::GuardedRead, extract, store::Reader};
 use se_atlas_query::{
     Answer as Found, Target,
     impact::{CallerVia, ImpactRequest},
-    outline::{Incomplete, OutlineRequest},
     refs::{RefAccuracy, RefsRequest},
 };
 use se_types::code::AtlasText as _;
 use se_types::{
     Page, Read, Result, SeError,
     code::{
-        Accuracy, Answer, AtlasTarget, CoverageReason, Dependent, FileCoverage, FileImpactHop,
-        Impact, ImpactQuery, IndexSummary, Outline, OutlineQuery, OutlineSymbol, RecordHit,
-        RecordKey, RecordKind, RecordPointer, Reference, ReferenceHit, ReferenceKind, RefsQuery,
+        Accuracy, Answer, AtlasTarget, CodePointer, CoverageReason, Dependent, FileImpactHop,
+        Impact, ImpactQuery, IndexSummary, Reference, ReferenceHit, ReferenceKind, RefsQuery,
         SnapshotFreshness, SymbolId, SymbolSelector,
     },
 };
-use std::collections::HashMap;
 
 /// Serialized bytes assumed per listed reference or dependent when sizing a
 /// page; the page is still measured exactly before it is returned.
@@ -56,19 +50,14 @@ pub(crate) fn target(target: &AtlasTarget) -> Result<Target> {
 }
 
 /// The answer for a target that resolved to nothing usable.
-fn unresolved<T, U>(
+pub(crate) fn unresolved<T, U>(
     index: &IndexSummary,
     found: Found<U>,
     asked: &AtlasTarget,
 ) -> Result<std::result::Result<U, Answer<Read<T>>>> {
     match found {
         Found::Found(value) => Ok(Ok(value)),
-        Found::Refused { path } => Ok(Err(unknown(
-            index,
-            &format!(
-                "{path} is a private file Atlas never reads or indexes; open it directly if you need it"
-            ),
-        ))),
+        Found::Refused { path } => Ok(Err(unknown(index, &refused(&path)))),
         Found::NotFound { suggestions } => {
             let hint = if suggestions.is_empty() {
                 String::new()
@@ -89,16 +78,27 @@ fn unresolved<T, U>(
     }
 }
 
-fn with_reader<T>(shared: &Shared, read: impl FnOnce(&Reader) -> Result<T>) -> Result<T> {
-    let reader = shared.reader()?;
-    let result = read(&reader);
-    shared.give_back(reader);
-    result
+/// The refusal for a path Atlas never reads.
+pub(crate) fn refused(path: &str) -> String {
+    format!(
+        "{path} is a private file Atlas never reads or indexes; open it directly if you need it"
+    )
+}
+
+/// How a listed file stands against the dirty paths: `None` when it was
+/// removed and must not be listed.
+fn freshness(dirty: &Dirty, path: &str) -> Option<SnapshotFreshness> {
+    match dirty.change(path) {
+        None => Some(SnapshotFreshness::Current),
+        Some(Change::Modified) => Some(SnapshotFreshness::Stale),
+        Some(Change::Removed) => None,
+    }
 }
 
 pub(crate) fn refs(
     shared: &Shared,
     index: &IndexSummary,
+    dirty: &Dirty,
     query: &RefsQuery,
 ) -> Result<Answer<Read<Page<ReferenceHit>>>> {
     let Some(source) = shared.source() else {
@@ -114,7 +114,7 @@ pub(crate) fn refs(
         },
         deadline: query.budget.work,
     };
-    let found = with_reader(shared, |reader| {
+    let found = shared.with_reader(|reader| {
         se_atlas_query::refs::refs(reader, source, &request).map_err(|e| index_error(&e))
     })?;
     let refs = match unresolved(index, found, &query.target)? {
@@ -128,9 +128,12 @@ pub(crate) fn refs(
     let mut items = Vec::new();
     for group in &refs.groups {
         let accuracy = match group.accuracy {
-            RefAccuracy::ImportedFile => Accuracy::ExplicitImport,
+            RefAccuracy::ImportedFile => Accuracy::ImportedFile,
             RefAccuracy::NameOnly if query.include_name_only => Accuracy::NameOnly,
             RefAccuracy::NameOnly => continue,
+        };
+        let Some(fresh) = freshness(dirty, &group.path) else {
+            continue;
         };
         for line in &group.lines {
             let text = line.text.trim_start();
@@ -138,12 +141,7 @@ pub(crate) fn refs(
                 .iter()
                 .any(|lead| text.starts_with(lead));
             items.push(ReferenceHit::Code(Reference {
-                site: pointer(
-                    &group.path,
-                    Some((line.line, line.line)),
-                    None,
-                    SnapshotFreshness::Current,
-                )?,
+                site: pointer(&group.path, Some((line.line, line.line)), None, fresh)?,
                 kind: if import {
                     ReferenceKind::Import
                 } else {
@@ -156,10 +154,17 @@ pub(crate) fn refs(
             }));
         }
     }
-    let partial = refs.deadline_reached || refs.files_read_failed > 0 || refs.files_partly_read > 0;
+    let pending = !dirty.paths.is_empty() || dirty.overflowed;
+    let partial = refs.deadline_reached
+        || refs.files_read_failed > 0
+        || refs.files_partly_read > 0
+        || pending;
     let mut index = index.clone();
     if refs.deadline_reached {
         index.note(CoverageReason::TimeLimit);
+    }
+    if pending {
+        index.note(CoverageReason::StaleSnapshot);
     }
     let next = refs
         .next_cursor
@@ -183,46 +188,39 @@ pub(crate) fn refs(
 pub(crate) fn impact(
     shared: &Shared,
     index: &IndexSummary,
+    dirty: &Dirty,
     query: &ImpactQuery,
-    records: &dyn RecordCheck,
+    checker: &dyn RecordCheck,
 ) -> Result<Answer<Read<Impact>>> {
     let request = ImpactRequest {
         target: target(&query.target)?,
         depth: u32::from(query.depth),
         deadline: query.budget.work,
     };
-    let (found, linked) = with_reader(shared, |reader| {
-        let found =
-            se_atlas_query::impact::impact(reader, &request).map_err(|e| index_error(&e))?;
-        let linked = match &found {
-            Found::Found(impact) => impact
-                .records
-                .items
-                .iter()
-                .map(|record| record_pointer(reader.connection(), &record.record_id))
-                .collect::<Result<Vec<_>>>()?,
-            _ => Vec::new(),
-        };
-        Ok((found, linked))
+    let found = shared.with_reader(|reader| {
+        se_atlas_query::impact::impact(reader, &request).map_err(|e| index_error(&e))
     })?;
     let found = match unresolved(index, found, &query.target)? {
         Ok(found) => found,
         Err(answer) => return Ok(answer),
     };
     let defining = found.files.first().map(|file| file.path.clone());
-    let hop = |path: &str, accuracy: Accuracy| -> Result<Vec<FileImpactHop>> {
-        let Some(defining) = &defining else {
-            return Ok(Vec::new());
+    let site = |path: &str, fresh: SnapshotFreshness| pointer(path, None, None, fresh);
+    let hop =
+        |path: &str, fresh: SnapshotFreshness, accuracy: Accuracy| -> Result<Vec<FileImpactHop>> {
+            let Some(defining) = &defining else {
+                return Ok(Vec::new());
+            };
+            Ok(vec![FileImpactHop {
+                from: file_id(defining),
+                to: file_id(path),
+                site: site(path, fresh)?,
+                start_byte: 0,
+                end_byte: 0,
+                accuracy,
+            }])
         };
-        Ok(vec![FileImpactHop {
-            from: file_id(defining),
-            to: file_id(path),
-            site: pointer(path, None, None, SnapshotFreshness::Current)?,
-            start_byte: 0,
-            end_byte: 0,
-            accuracy,
-        }])
-    };
+    let mut dropped = 0u64;
     let mut dependents = Vec::new();
     for caller in &found.callers.items {
         let accuracy = match caller.via {
@@ -230,26 +228,40 @@ pub(crate) fn impact(
             CallerVia::NameOnly => Accuracy::NameOnly,
             CallerVia::Imports | CallerVia::Dependent => Accuracy::ExplicitImport,
         };
-        dependents.push(dependent(&caller.path, hop(&caller.path, accuracy)?)?);
+        let Some(fresh) = freshness(dirty, &caller.path) else {
+            dropped += 1;
+            continue;
+        };
+        let hops = hop(&caller.path, fresh, accuracy)?;
+        dependents.push(dependent(site(&caller.path, fresh)?, hops));
     }
     let mut tests = Vec::new();
     for test in &found.tests.items {
-        tests.push(dependent(
-            &test.path,
-            hop(&test.path, Accuracy::ExplicitImport)?,
-        )?);
+        let Some(fresh) = freshness(dirty, &test.path) else {
+            dropped += 1;
+            continue;
+        };
+        let hops = hop(&test.path, fresh, Accuracy::ExplicitImport)?;
+        tests.push(dependent(site(&test.path, fresh)?, hops));
     }
-    let mut hits: Vec<RecordHit> = Vec::new();
-    for pointer in linked.into_iter().flatten() {
-        if let Read::Present { value } = records.hit(&pointer, None)? {
-            hits.push(value);
-        }
-    }
-    let floor = found.callers.more_is_floor || found.tests.more_is_floor || found.deadline_reached;
+    // Every visibility is a candidate; only core's check makes a hit.
+    let mut targets: Vec<(&str, Vec<u8>)> = found
+        .files
+        .iter()
+        .map(|file| ("file", file.key.clone()))
+        .collect();
+    targets.extend(found.symbols.iter().map(|s| ("symbol", s.key.clone())));
+    let linked = records::linked(shared, checker, &targets)?;
+    let pending = !dirty.paths.is_empty() || dirty.overflowed;
+    let floor = found.callers.more_is_floor
+        || found.tests.more_is_floor
+        || found.deadline_reached
+        || linked.limited
+        || pending;
     let mut value = Impact {
         dependents,
         tests,
-        records: hits,
+        records: linked.hits,
         omitted_frontier: (found.callers.more + found.tests.more) as u64,
         frontier_count_complete: !floor,
         next: None,
@@ -259,19 +271,22 @@ pub(crate) fn impact(
     if found.deadline_reached {
         index.note(CoverageReason::TimeLimit);
     }
+    if pending || dropped > 0 {
+        index.note(CoverageReason::StaleSnapshot);
+    }
     fit_impact(&index, &mut value, query.budget.max_bytes as usize);
     value.complete =
         value.omitted_frontier == 0 && value.frontier_count_complete && !found.definitions_capped;
     checked(answer(&index, Read::Present { value }), query.budget)
 }
 
-fn dependent(path: &str, file_hops: Vec<FileImpactHop>) -> Result<Dependent> {
-    Ok(Dependent {
-        pointer: pointer(path, None, None, SnapshotFreshness::Current)?,
+fn dependent(pointer: CodePointer, file_hops: Vec<FileImpactHop>) -> Dependent {
+    Dependent {
+        pointer,
         symbol: None,
         hops: Vec::new(),
         file_hops,
-    })
+    }
 }
 
 /// Drop the last listed rows until the answer fits, counting each.
@@ -293,246 +308,4 @@ fn fit_impact(index: &IndexSummary, value: &mut Impact, max_bytes: usize) {
         }
         value.omitted_frontier += 1;
     }
-}
-
-/// A record's pointer, from the store's copy of its identity.
-fn record_pointer(conn: &Connection, record_id: &str) -> Result<Option<RecordPointer>> {
-    let row: Option<(String, String)> = conn
-        .prepare_cached("SELECT kind, source_event FROM records WHERE record_id=?1")
-        .and_then(|mut select| {
-            select
-                .query_row([record_id], |row| Ok((row.get(0)?, row.get(1)?)))
-                .optional()
-        })
-        .map_err(|e| sqlite(&e))?;
-    let Some((kind, event)) = row else {
-        return Ok(None);
-    };
-    let kind = match kind.as_str() {
-        "decision" => RecordKind::Decision,
-        "message" => RecordKind::Message,
-        "working" => RecordKind::Working,
-        "edit" => RecordKind::Edit,
-        "commit" => RecordKind::Commit,
-        _ => return Ok(None),
-    };
-    let (Ok(key), Ok(source_event)) = (RecordKey::new(record_id), event.parse()) else {
-        return Ok(None);
-    };
-    Ok(Some(RecordPointer {
-        key,
-        kind,
-        source_event,
-    }))
-}
-
-pub(crate) fn outline(
-    shared: &Shared,
-    index: &IndexSummary,
-    query: &OutlineQuery,
-    records: &dyn RecordCheck,
-) -> Result<Answer<Read<Outline>>> {
-    let path = query.path.as_str();
-    let dirty = shared.dirty()?.change(path);
-    let limit = usize::from(query.budget.max_results);
-    let mut value = match dirty {
-        Some(Change::Removed) => {
-            return Ok(unknown(
-                index,
-                &format!("{path} was deleted; the index is catching up"),
-            ));
-        }
-        Some(Change::Modified) => match live_outline(shared, path, limit)? {
-            Some(value) => value,
-            None => return Ok(unknown(index, STARTING)),
-        },
-        None => {
-            let request = OutlineRequest {
-                target: Target::File(path.to_owned()),
-                limit,
-            };
-            let found = with_reader(shared, |reader| {
-                let found = se_atlas_query::outline::outline(reader, &request)
-                    .map_err(|e| index_error(&e))?;
-                match found {
-                    Found::Found(outline) => {
-                        indexed_outline(reader.connection(), &outline).map(Found::Found)
-                    }
-                    Found::Refused { path } => Ok(Found::Refused { path }),
-                    Found::NotFound { suggestions } => Ok(Found::NotFound { suggestions }),
-                }
-            })?;
-            match unresolved(index, found, &AtlasTarget::File(query.path.clone()))? {
-                Ok(value) => value,
-                Err(answer) => return Ok(answer),
-            }
-        }
-    };
-    value.records = outline_records(shared, path, records)?;
-    while size(&answer(
-        index,
-        Read::Present {
-            value: value.clone(),
-        },
-    )) > query.budget.max_bytes as usize
-        && value.symbols.pop().is_some()
-    {
-        value.complete = false;
-    }
-    checked(answer(index, Read::Present { value }), query.budget)
-}
-
-fn indexed_outline(
-    conn: &Connection,
-    outline: &se_atlas_query::outline::Outline,
-) -> Result<Outline> {
-    let mut keys: HashMap<i64, [u8; 32]> = HashMap::new();
-    {
-        let mut select = conn
-            .prepare_cached("SELECT id, key FROM sym WHERE file=?1")
-            .map_err(|e| sqlite(&e))?;
-        let rows = select
-            .query_map([outline.file.id], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-            })
-            .map_err(|e| sqlite(&e))?;
-        for row in rows {
-            let (id, key) = row.map_err(|e| sqlite(&e))?;
-            if let Some(key) = super::hash(Some(key)) {
-                keys.insert(id, key);
-            }
-        }
-    }
-    let hash: Option<Vec<u8>> = conn
-        .query_row(
-            "SELECT hash FROM files WHERE id=?1",
-            [outline.file.id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| sqlite(&e))?;
-    let symbols = outline
-        .entries
-        .iter()
-        .filter_map(|entry| {
-            Some(OutlineSymbol {
-                id: SymbolId(*keys.get(&entry.id)?),
-                parent: entry
-                    .parent
-                    .and_then(|parent| keys.get(&parent))
-                    .map(|key| SymbolId(*key)),
-                name: entry.name.clone(),
-                kind: kind(entry.kind?),
-                span: span(entry.line, entry.end_line),
-            })
-        })
-        .collect();
-    let coverage = match outline.incomplete {
-        None => FileCoverage::Indexed,
-        Some(Incomplete::Binary) => FileCoverage::Deferred {
-            reason: CoverageReason::UnsupportedEncoding,
-        },
-        Some(Incomplete::Minified) => FileCoverage::Partial {
-            reasons: vec![CoverageReason::SourceBytesLimit],
-        },
-        Some(Incomplete::Truncated) => FileCoverage::Partial {
-            reasons: vec![CoverageReason::ResultLimit],
-        },
-        Some(Incomplete::ExtractFailed) => FileCoverage::Partial {
-            reasons: vec![CoverageReason::ParseErrors],
-        },
-    };
-    Ok(Outline {
-        file: pointer(
-            &outline.file.path,
-            None,
-            super::hash(hash),
-            SnapshotFreshness::Current,
-        )?,
-        language: language(&outline.file.lang, &outline.file.path),
-        complete: outline.omitted == 0 && outline.incomplete.is_none(),
-        coverage,
-        symbols,
-        records: Vec::new(),
-        next: None,
-    })
-}
-
-/// Outline a changed file from its current bytes, read through custody.
-fn live_outline(shared: &Shared, path: &str, limit: usize) -> Result<Option<Outline>> {
-    let Some(source) = shared.source() else {
-        return Ok(None);
-    };
-    let file = match source
-        .read_guarded_file(path)
-        .map_err(|e| index_error(&e.into()))?
-    {
-        GuardedRead::Source(file) => file,
-        GuardedRead::Absent | GuardedRead::Denied | GuardedRead::Refused => return Ok(None),
-    };
-    let extracted = extract::extract(path, &file.bytes, file.prefix_only);
-    let symbols: Vec<OutlineSymbol> = extracted
-        .symbols
-        .iter()
-        .take(limit)
-        .map(|symbol| OutlineSymbol {
-            id: SymbolId(symbol.key),
-            parent: symbol
-                .parent
-                .and_then(|at| extracted.symbols.get(at))
-                .map(|parent| SymbolId(parent.key)),
-            name: symbol.name.clone(),
-            kind: kind(symbol.kind),
-            span: span(symbol.line, symbol.end_line),
-        })
-        .collect();
-    Ok(Some(Outline {
-        file: pointer(path, None, Some(extracted.hash), SnapshotFreshness::Current)?,
-        language: language(extracted.lang.as_str(), path),
-        coverage: if file.prefix_only {
-            FileCoverage::Partial {
-                reasons: vec![CoverageReason::SourceBytesLimit],
-            }
-        } else {
-            FileCoverage::Indexed
-        },
-        complete: !file.prefix_only && extracted.symbols.len() <= limit,
-        symbols,
-        records: Vec::new(),
-        next: None,
-    }))
-}
-
-/// Records that mention the file, newest first; core checks each one.
-fn outline_records(
-    shared: &Shared,
-    path: &str,
-    records: &dyn RecordCheck,
-) -> Result<Vec<RecordHit>> {
-    let pointers = with_reader(shared, |reader| {
-        let conn = reader.connection();
-        let mut select = conn
-            .prepare_cached(
-                "SELECT r.record_id FROM mentions m JOIN records r ON r.id = m.source_id
-                 JOIN files f ON f.key = m.target_key
-                 WHERE m.source_kind='record' AND m.target_kind='file' AND f.path=?1
-                 ORDER BY r.occurred_unix_ms DESC LIMIT 5",
-            )
-            .map_err(|e| sqlite(&e))?;
-        let ids: Vec<String> = select
-            .query_map([path], |row| row.get(0))
-            .map_err(|e| sqlite(&e))?
-            .collect::<rusqlite::Result<_>>()
-            .map_err(|e| sqlite(&e))?;
-        ids.iter()
-            .map(|id| record_pointer(conn, id))
-            .collect::<Result<Vec<_>>>()
-    })?;
-    let mut hits = Vec::new();
-    for pointer in pointers.into_iter().flatten() {
-        if let Read::Present { value } = records.hit(&pointer, None)? {
-            hits.push(value);
-        }
-    }
-    Ok(hits)
 }

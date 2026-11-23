@@ -145,6 +145,8 @@ pub enum ReferenceKind {
 pub enum Accuracy {
     LexicalBinding,
     ExplicitImport,
+    /// The name appears in a file that imports the defining file.
+    ImportedFile,
     NameOnly,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]

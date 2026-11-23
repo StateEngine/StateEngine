@@ -2,9 +2,12 @@
 //! builds or reconciles, then commits watcher batches: changes are coalesced
 //! for [`DEBOUNCE`] after the last event (at most [`MAX_DEBOUNCE`] after the
 //! first) and written path by path, with lazy delta compaction when due.
+//! Every long loop checks for a stop between files, so shutdown is prompt.
 use crate::{
-    dirty::Change,
-    filter, githead, reconcile, records,
+    dirty::{Change, DirtyPath},
+    filter, githead,
+    ignores::{self, Ignores},
+    reconcile, records,
     root::{FeedReceipt, Msg, Shared},
     settle::{Phase, Watch},
     watch::Watcher,
@@ -12,7 +15,7 @@ use crate::{
 use se_atlas_index::{
     IndexError,
     custody::IndexSourceRoot,
-    extract::imports::Resolver,
+    extract::{flags, imports::Resolver},
     store::{BuildOptions, CompactPolicy, Store, StoreIdentity},
     walk::{self, WalkOptions},
 };
@@ -34,6 +37,10 @@ pub const MAX_DEBOUNCE: Duration = Duration::from_millis(500);
 const IDLE_TICK: Duration = Duration::from_secs(2);
 /// How often a writer without a working watch re-arms and reconciles.
 const UNWATCHED_RECONCILE: Duration = Duration::from_secs(30);
+/// How often files that could not be read are tried again.
+const RETRY_FAILED: Duration = Duration::from_secs(10);
+/// The longest a head change waits for Git to release its index lock.
+const HEAD_LOCK_WAIT: Duration = Duration::from_secs(2);
 
 type Outcome<T> = std::result::Result<T, String>;
 
@@ -48,15 +55,7 @@ pub(crate) fn run(shared: &Arc<Shared>, receiver: &Receiver<Msg>) {
     };
     match engine.prepare() {
         Err(reason) => set_phase(shared, Phase::Failed(reason)),
-        Ok(()) => {
-            let failed = shared
-                .progress()
-                .map_or(true, |p| matches!(p.phase, Phase::Failed(_)));
-            if !failed {
-                set_phase(shared, Phase::Ready);
-            }
-            engine.serve(receiver);
-        }
+        Ok(()) => engine.serve(receiver),
     }
     if let Some(watcher) = engine.watcher.take() {
         watcher.stop();
@@ -67,6 +66,15 @@ pub(crate) fn run(shared: &Arc<Shared>, receiver: &Receiver<Msg>) {
 fn set_phase(shared: &Shared, phase: Phase) {
     if let Ok(mut progress) = shared.progress() {
         progress.phase = phase;
+    }
+}
+
+/// End a build or reconcile: the root is ready unless it failed meanwhile.
+fn settle_phase(shared: &Shared) {
+    if let Ok(mut progress) = shared.progress()
+        && !matches!(progress.phase, Phase::Failed(_) | Phase::Stopped)
+    {
+        progress.phase = Phase::Ready;
     }
 }
 
@@ -95,11 +103,18 @@ struct Engine<'a> {
     store: Store,
     source: Arc<IndexSourceRoot>,
     resolver: Resolver,
+    ignores: Ignores,
+    /// Files that could not be read, by name; retried every [`RETRY_FAILED`].
     failed: BTreeSet<String>,
+    /// Files a build could not read, before a reconcile names them.
+    unnamed_failed: u64,
     watcher: Option<Watcher>,
     head: Option<Vec<u8>>,
+    /// When a head change began waiting for Git's index lock.
+    head_waiting: Option<Instant>,
     last_write: Instant,
     last_reconcile: Instant,
+    last_retry: Instant,
     jobs: u64,
     rebuild: bool,
 }
@@ -127,11 +142,15 @@ impl<'a> Engine<'a> {
             store,
             source,
             resolver: Resolver::new(std::iter::empty::<&str>()),
+            ignores: Ignores::default(),
             failed: BTreeSet::new(),
+            unnamed_failed: 0,
             watcher: None,
             head: None,
+            head_waiting: None,
             last_write: Instant::now(),
             last_reconcile: Instant::now(),
+            last_retry: Instant::now(),
             jobs: 0,
             rebuild: rebuild.is_some(),
         };
@@ -181,26 +200,17 @@ impl<'a> Engine<'a> {
         }
         self.record_head();
         self.refresh();
+        settle_phase(self.shared);
         Ok(())
     }
 
-    /// Directories to watch where each needs its own watch.
+    /// Every directory discovery enters, empty ones included, where each
+    /// needs its own watch.
     fn directories(&self) -> se_atlas_index::Result<Vec<String>> {
         if !cfg!(target_os = "linux") {
             return Ok(Vec::new());
         }
-        let discovery = walk::discover(&self.source, &walk_options())?;
-        let mut out = BTreeSet::new();
-        for path in &discovery.files {
-            let mut dir = path.as_str();
-            while let Some(at) = dir.rfind('/') {
-                dir = &dir[..at];
-                if !out.insert(dir.to_owned()) {
-                    break;
-                }
-            }
-        }
-        Ok(out.into_iter().collect())
+        Ok(walk::discover(&self.source, &walk_options())?.directories)
     }
 
     fn arm(&mut self, directories: &[String]) {
@@ -219,7 +229,12 @@ impl<'a> Engine<'a> {
         }
     }
 
+    /// Rebuild the store. Files the build could not read are counted, and a
+    /// reconcile soon after names each one; the build never recurses into it.
     fn cold(&mut self) -> se_atlas_index::Result<()> {
+        if self.shared.stopping() {
+            return Ok(());
+        }
         self.jobs += 1;
         set_phase(
             self.shared,
@@ -237,6 +252,13 @@ impl<'a> Engine<'a> {
         )?;
         self.resolver = self.indexed_resolver()?;
         self.failed.clear();
+        self.unnamed_failed = report.read_failed as u64;
+        if report.read_failed > 0 {
+            // Due at once: the next idle tick reconciles and names them.
+            self.last_retry = Instant::now()
+                .checked_sub(RETRY_FAILED)
+                .unwrap_or(self.last_retry);
+        }
         if let Ok(mut progress) = self.shared.progress() {
             progress.discovery_complete = report.discovery_complete;
             progress.counts.discovered = report.discovered as u64;
@@ -244,10 +266,8 @@ impl<'a> Engine<'a> {
                 u64::from(report.unreadable_dirs) + u64::from(report.refused_dirs);
         }
         self.last_write = Instant::now();
-        if report.read_failed > 0 {
-            // Name the files that failed, so each is retried when it changes.
-            self.reconcile()?;
-        }
+        self.refresh();
+        settle_phase(self.shared);
         Ok(())
     }
 
@@ -259,12 +279,16 @@ impl<'a> Engine<'a> {
         Ok(Resolver::new(paths.iter().map(String::as_str)))
     }
 
-    /// Re-index what changed since the store was last written.
+    /// Re-index what changed since the store was last written, and remove
+    /// what discovery no longer lists (deleted, newly ignored or denied).
     fn reconcile(&mut self) -> se_atlas_index::Result<()> {
+        if self.shared.stopping() {
+            return Ok(());
+        }
         self.last_reconcile = Instant::now();
         let discovery = walk::discover(&self.source, &walk_options())?;
-        let changed = reconcile::changed(&self.store, &self.source, &discovery.files)?;
-        if changed.len() > 2_000.max(discovery.files.len() / 2) {
+        let delta = reconcile::changed(&self.store, &self.source, &discovery.files)?;
+        if delta.changed.len() + delta.gone.len() > 2_000.max(discovery.files.len() / 2) {
             return self.cold();
         }
         self.resolver = Resolver::new(discovery.files.iter().map(String::as_str));
@@ -274,7 +298,20 @@ impl<'a> Engine<'a> {
             progress.counts.unlisted_directories =
                 u64::from(discovery.unreadable_dirs) + u64::from(discovery.refused_dirs);
         }
-        for path in &changed {
+        self.unnamed_failed = 0;
+        self.failed
+            .retain(|path| discovery.files.binary_search(path).is_ok());
+        self.failed.extend(delta.failed);
+        for path in &delta.gone {
+            if self.shared.stopping() {
+                return Ok(());
+            }
+            self.forget(path);
+        }
+        for path in &delta.changed {
+            if self.shared.stopping() {
+                return Ok(());
+            }
             self.index(path);
         }
         Ok(())
@@ -302,10 +339,25 @@ impl<'a> Engine<'a> {
         self.failed.insert(path.to_owned());
     }
 
+    /// Drop one path's rows; it is no longer discovered.
+    fn forget(&mut self, path: &str) {
+        self.last_write = Instant::now();
+        self.resolver.remove(path);
+        if self.store.remove_file(path).is_err() {
+            self.failed.insert(path.to_owned());
+        } else {
+            self.failed.remove(path);
+        }
+    }
+
     fn serve(&mut self, receiver: &Receiver<Msg>) {
         loop {
             let pending = self.shared.dirty().is_ok_and(|dirty| !dirty.is_empty());
-            let wait = if pending { DEBOUNCE } else { IDLE_TICK };
+            let wait = if pending || self.head_waiting.is_some() {
+                DEBOUNCE
+            } else {
+                IDLE_TICK
+            };
             match receiver.recv_timeout(wait) {
                 Ok(Msg::Stop) | Err(RecvTimeoutError::Disconnected) => return,
                 Ok(Msg::Wake) => {
@@ -347,18 +399,23 @@ impl<'a> Engine<'a> {
     }
 
     fn idle(&mut self, pending: bool) {
+        if self.head_waiting.is_some() {
+            self.record_head();
+        }
         let unwatched = self
             .shared
             .progress()
             .is_ok_and(|p| !matches!(p.watch, Watch::Armed { .. }));
+        let retry = (!self.failed.is_empty() || self.unnamed_failed > 0)
+            && self.last_retry.elapsed() >= RETRY_FAILED;
         if unwatched && self.last_reconcile.elapsed() >= UNWATCHED_RECONCILE {
             if let Ok(directories) = self.directories() {
                 self.arm(&directories);
             }
-            if let Ok(mut dirty) = self.shared.dirty() {
-                dirty.lose();
-            }
+            self.lose();
             self.flush();
+        } else if retry {
+            self.retry();
         } else if pending {
             self.flush();
         } else {
@@ -366,7 +423,33 @@ impl<'a> Engine<'a> {
         }
     }
 
-    /// Commit every dirty path; reconcile first when changes were lost.
+    /// Try unreadable files again, so a transient lock (an antivirus scan,
+    /// a sharing violation) recovers to current without an edit.
+    fn retry(&mut self) {
+        self.last_retry = Instant::now();
+        if self.unnamed_failed > 0 {
+            self.lose();
+            self.flush();
+            return;
+        }
+        let failed: Vec<String> = self.failed.iter().cloned().collect();
+        for path in &failed {
+            if self.shared.stopping() {
+                return;
+            }
+            self.index(path);
+        }
+        self.refresh();
+    }
+
+    fn lose(&self) {
+        if let Ok(mut dirty) = self.shared.dirty() {
+            dirty.lose();
+        }
+    }
+
+    /// Commit every dirty path; reconcile first when changes were lost or an
+    /// ignore rule file changed.
     fn flush(&mut self) {
         let Ok((paths, overflowed, token)) = self.shared.dirty().map(|dirty| {
             (
@@ -380,32 +463,31 @@ impl<'a> Engine<'a> {
         if let Ok(mut progress) = self.shared.progress() {
             progress.batch_running = true;
         }
-        if overflowed {
+        let rules = paths.iter().any(|dirty| ignores::is_rule_file(&dirty.path));
+        if rules {
+            self.ignores.clear();
+        }
+        if overflowed || rules {
             match self.reconcile() {
-                Ok(()) => {
+                Ok(()) if overflowed => {
                     if let Ok(mut dirty) = self.shared.dirty() {
                         dirty.end_reconcile(token);
                     }
                 }
+                Ok(()) => {}
                 Err(error) => set_phase(self.shared, Phase::Failed(error.to_string())),
             }
         }
+        let mut done = Vec::with_capacity(paths.len());
         for path in &paths {
-            if path.change == Change::Removed {
-                match reconcile::under(&self.store, &path.path) {
-                    Ok(children) => children.iter().for_each(|child| self.index(child)),
-                    // Unknown children: the next pass reconciles the tree.
-                    Err(_) => {
-                        if let Ok(mut dirty) = self.shared.dirty() {
-                            dirty.lose();
-                        }
-                    }
-                }
+            if self.shared.stopping() {
+                break;
             }
-            self.index(&path.path);
+            self.commit(path);
+            done.push(path);
         }
         if let Ok(mut dirty) = self.shared.dirty() {
-            for path in &paths {
+            for path in done {
                 dirty.settle(&path.path, path.serial);
             }
         }
@@ -413,7 +495,26 @@ impl<'a> Engine<'a> {
         self.refresh();
     }
 
+    /// Write one dirty path. A path the ignore rules exclude is removed, not
+    /// read; a removed name also drops every indexed file below it.
+    fn commit(&mut self, path: &DirtyPath) {
+        if path.change == Change::Removed {
+            match reconcile::under(&self.store, &path.path) {
+                Ok(children) => children.iter().for_each(|child| self.index(child)),
+                // Unknown children: the next pass reconciles the tree.
+                Err(_) => self.lose(),
+            }
+        } else if self.ignores.ignored(&self.source, &path.path) {
+            self.forget(&path.path);
+            return;
+        }
+        self.index(&path.path);
+    }
+
     fn compact(&mut self) {
+        if self.shared.stopping() {
+            return;
+        }
         let policy = CompactPolicy::default();
         if self
             .store
@@ -427,26 +528,47 @@ impl<'a> Engine<'a> {
     /// Publish file counts and the generation after a write.
     fn refresh(&self) {
         let conn = self.store.connection();
-        let indexed: Option<i64> = conn
-            .query_row("SELECT count(*) FROM files", [], |row| row.get(0))
-            .ok();
-        let generation: Option<i64> = conn
-            .query_row("SELECT generation FROM meta WHERE singleton=1", [], |row| {
-                row.get(0)
-            })
-            .ok();
+        let count = |sql: &str| -> Option<u64> {
+            conn.query_row(sql, [], |row| row.get::<_, i64>(0))
+                .ok()
+                .and_then(|n| u64::try_from(n).ok())
+        };
+        let indexed = count("SELECT count(*) FROM files");
+        let generation = count("SELECT generation FROM meta WHERE singleton=1");
+        let extract_failed = conn
+            .query_row(
+                "SELECT count(*) FROM files WHERE flags & ?1 != 0",
+                [i64::from(flags::EXTRACT_FAILED)],
+                |row| row.get::<_, i64>(0),
+            )
+            .ok()
+            .and_then(|n| u64::try_from(n).ok());
         if let Ok(mut progress) = self.shared.progress() {
             progress.batch_running = false;
-            progress.counts.failed = self.failed.len() as u64;
+            progress.counts.failed = self.failed.len() as u64 + self.unnamed_failed;
             if let Some(indexed) = indexed {
-                progress.counts.indexed = u64::try_from(indexed).unwrap_or(0);
+                progress.counts.indexed = indexed;
             }
-            progress.generation = generation.and_then(|g| u64::try_from(g).ok());
+            // Unreadable counts are not zero: keep the last known value.
+            if let Some(extract_failed) = extract_failed {
+                progress.counts.extract_failed = extract_failed;
+            }
+            progress.generation = generation;
         }
     }
 
+    /// Record the commit `HEAD` names, once Git has let go of its index lock
+    /// or [`HEAD_LOCK_WAIT`] has passed.
     fn record_head(&mut self) {
-        let Some(oid) = githead::head(&self.shared.spec.source) else {
+        let source = &self.shared.spec.source;
+        if githead::busy(source) {
+            let since = *self.head_waiting.get_or_insert_with(Instant::now);
+            if since.elapsed() < HEAD_LOCK_WAIT {
+                return;
+            }
+        }
+        self.head_waiting = None;
+        let Some(oid) = githead::head(source) else {
             return;
         };
         if self.head.as_ref() == Some(&oid) {
@@ -465,8 +587,5 @@ impl<'a> Engine<'a> {
 
 /// The store's record cursor, read through a query connection.
 pub(crate) fn feed_cursor(shared: &Shared) -> se_types::Result<Option<se_types::EventId>> {
-    let reader = shared.reader()?;
-    let cursor = records::cursor(reader.connection());
-    shared.give_back(reader);
-    cursor
+    shared.with_reader(|reader| records::cursor(reader.connection()))
 }

@@ -10,12 +10,24 @@ use std::path::{Component, Path};
 /// Bound for one feed chunk's write.
 const FEED_WRITE: Duration = Duration::from_secs(1);
 
-pub(super) fn chunk(host: &dyn AtlasHost, owner: &HumanId, root: &Root) -> Result<bool> {
+/// What one chunk did for a worktree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Fed {
+    /// Every committed record is in the store, certified for this ticket.
+    Current,
+    /// A chunk was written and more remain.
+    More,
+    /// Nothing can progress now: a core write is pending, the store has no
+    /// epoch yet, or a write intervened before certification.
+    Waiting,
+}
+
+pub(super) fn chunk(host: &dyn AtlasHost, owner: &HumanId, root: &Root) -> Result<Fed> {
     let Some(ticket) = host.records().ticket()? else {
-        return Ok(false);
+        return Ok(Fed::Waiting);
     };
     let Some(epoch) = root.summary()?.epoch else {
-        return Ok(false);
+        return Ok(Fed::Waiting);
     };
     let spec = root.spec();
     let admitted = admission(host, owner, Scope::Project(spec.project.clone()));
@@ -36,16 +48,18 @@ pub(super) fn chunk(host: &dyn AtlasHost, owner: &HumanId, root: &Root) -> Resul
             None => true,
         };
         if !complete {
-            return Ok(false);
+            return Ok(Fed::More);
         }
-        host.records().mark_current(
-            RecordFeedScope {
-                project: spec.project.clone(),
-                root: spec.root.clone(),
-                epoch,
-            },
-            ticket,
-        )
+        let scope = RecordFeedScope {
+            project: spec.project.clone(),
+            root: spec.root.clone(),
+            epoch,
+        };
+        Ok(if host.records().mark_current(scope, ticket)? {
+            Fed::Current
+        } else {
+            Fed::Waiting
+        })
     })();
     close_read(result, snapshot.close())
 }

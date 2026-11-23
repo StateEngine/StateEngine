@@ -1,8 +1,8 @@
 //! What one root's index can honestly claim. `Current` holds only when
 //! discovery finished, no batch is pending, the dirty set is empty and not
-//! overflowed, no file failed to read, and the watch is armed. Skipped files
-//! (binary, minified, private, unsupported) and Git history never hold a
-//! root back from `Current`.
+//! overflowed, no file failed to read or extract, and the watch is armed.
+//! Skipped files (binary, minified, private, unsupported) and Git history
+//! never hold a root back from `Current`.
 use crate::dirty::DirtySet;
 use se_types::{
     ErrorBody, SeError,
@@ -45,6 +45,8 @@ pub struct Counts {
     pub failed: u64,
     /// Directories discovery could not list.
     pub unlisted_directories: u64,
+    /// Indexed files whose symbols could not be extracted.
+    pub extract_failed: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -81,6 +83,7 @@ impl Progress {
             && !self.batch_running
             && dirty.is_empty()
             && self.counts.failed == 0
+            && self.counts.extract_failed == 0
             && matches!(self.watch, Watch::Armed { .. })
     }
 
@@ -108,6 +111,12 @@ impl Progress {
                     error: partial(&format!(
                         "{} files could not be read; each is retried when it next changes",
                         self.counts.failed
+                    )),
+                },
+                Watch::Armed { .. } if self.counts.extract_failed > 0 => IndexState::Partial {
+                    error: partial(&format!(
+                        "{} files could not be parsed; their symbols are missing until they next change",
+                        self.counts.extract_failed
                     )),
                 },
                 Watch::Armed { .. } => IndexState::Partial {
@@ -143,10 +152,13 @@ impl Progress {
         if self.counts.failed > 0 {
             reasons.push(CoverageReason::ReadFailure);
         }
+        if self.counts.extract_failed > 0 {
+            reasons.push(CoverageReason::ParseErrors);
+        }
         Coverage {
             discovered_files: self.counts.discovered,
             indexed_files: self.counts.indexed,
-            partial_files: 0,
+            partial_files: self.counts.extract_failed,
             deferred_files: 0,
             failed_files: self.counts.failed,
             discovery_complete: self.discovery_complete,

@@ -48,6 +48,12 @@ struct Registered {
 
 /// Bound for stopping one replaced worktree's writer.
 const REPLACE_STOP: Duration = Duration::from_secs(2);
+/// Pause before the next pass while record feed is still waiting.
+const FEED_AGAIN: Duration = Duration::from_millis(50);
+/// Pause before retrying a feed write that failed or timed out.
+const FEED_BACKOFF: Duration = Duration::from_millis(500);
+/// Time one pass spends feeding before it yields.
+const FEED_PASS: Duration = Duration::from_millis(250);
 
 impl Service {
     pub fn new(
@@ -76,6 +82,7 @@ impl Service {
     /// stopping ones whose worktree left or moved. True when anything changed.
     fn register(&self, project: &ProjectId, specs: Vec<RootSpec>) -> Result<bool> {
         let mut retired = Vec::new();
+        let mut failed = None;
         let changed = {
             let mut roots = self.roots()?;
             let before = roots.len();
@@ -94,7 +101,14 @@ impl Service {
                     continue;
                 }
                 let root = if self.enabled {
-                    Some(Root::start(spec.clone())?)
+                    match Root::start(spec.clone()) {
+                        Ok(root) => Some(root),
+                        Err(error) => {
+                            // Retired writers still stop below.
+                            failed.get_or_insert(error);
+                            continue;
+                        }
+                    }
                 } else {
                     None
                 };
@@ -111,7 +125,10 @@ impl Service {
         if changed && self.enabled {
             self.need_feed([project.clone()])?;
         }
-        Ok(changed)
+        match failed {
+            Some(error) => Err(error),
+            None => Ok(changed),
+        }
     }
 
     /// The project's selected worktree.
@@ -161,6 +178,8 @@ fn busy() -> SeError {
 struct Pass {
     /// More record feed is waiting; run again soon.
     again: bool,
+    /// A feed write failed (a writer busy with a rebuild); retry after a pause.
+    backoff: bool,
     /// The catalogue changed; scan it on the next pass.
     rescan: bool,
 }
@@ -182,13 +201,19 @@ impl Service {
                 Pass::default()
             };
             scan = pass.rescan;
-            let retry = pass.again;
+            let retry = if pass.again {
+                Some(FEED_AGAIN)
+            } else if pass.backoff {
+                Some(FEED_BACKOFF)
+            } else {
+                None
+            };
             let stop = {
                 let stopped = stopped.changed();
                 let core = host.records().changed();
                 let timer = async {
-                    if retry {
-                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    if let Some(delay) = retry {
+                        tokio::time::sleep(delay).await;
                     } else {
                         std::future::pending::<()>().await;
                     }
@@ -236,16 +261,29 @@ impl Service {
             });
         work.unwrap_or_else(|error| {
             eprintln!("Code index maintenance paused: {error}");
-            Pass::default()
+            Pass {
+                backoff: true,
+                ..Pass::default()
+            }
         })
     }
 
     /// One bounded pass: register the catalogue when asked, then feed each
-    /// started worktree its project's committed records.
+    /// started worktree its project's committed records, several chunks per
+    /// worktree within [`FEED_PASS`].
     fn work(&self, host: &dyn AtlasHost, scan: bool) -> Result<Pass> {
         let mut pass = Pass::default();
         if let Some(activity) = host.records().take_activity()? {
             pass.rescan = activity.registry_changed || activity.overflow;
+            if activity.overflow {
+                // Lost activity names no project: every one may be behind.
+                let all: Vec<ProjectId> = self
+                    .roots()?
+                    .iter()
+                    .map(|registered| registered.spec.project.clone())
+                    .collect();
+                self.need_feed(all)?;
+            }
             self.need_feed(activity.projects)?;
         }
         if scan {
@@ -259,6 +297,7 @@ impl Service {
             }
         }
         let waiting = self.feeding.lock().map_err(|_| busy())?.clone();
+        let until = Instant::now() + FEED_PASS;
         let mut settled = Vec::new();
         for project in waiting {
             let mut complete = true;
@@ -266,17 +305,7 @@ impl Service {
                 if root.spec().project != project {
                     continue;
                 }
-                match records::chunk(host, &self.owner, &root) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        complete = false;
-                        pass.again |= host.records().ticket()?.is_some();
-                    }
-                    Err(error) => {
-                        complete = false;
-                        eprintln!("Code index record feed paused: {error}");
-                    }
-                }
+                complete &= self.feed(host, &root, until, &mut pass);
             }
             if complete {
                 settled.push(project);
@@ -287,6 +316,28 @@ impl Service {
             .map_err(|_| busy())?
             .retain(|project| !settled.contains(project));
         Ok(pass)
+    }
+
+    /// Feed one worktree until it is current, cannot progress, or the pass
+    /// runs out of time. True once it is current.
+    fn feed(&self, host: &dyn AtlasHost, root: &Root, until: Instant, pass: &mut Pass) -> bool {
+        loop {
+            match records::chunk(host, &self.owner, root) {
+                Ok(records::Fed::Current) => return true,
+                Ok(records::Fed::More) if Instant::now() < until => {}
+                Ok(records::Fed::More | records::Fed::Waiting) => {
+                    pass.again = true;
+                    return false;
+                }
+                Err(error) => {
+                    // A writer busy with a rebuild times the write out; retry
+                    // after a pause so record lag clears without a new event.
+                    pass.backoff = true;
+                    eprintln!("Code index record feed paused: {error}");
+                    return false;
+                }
+            }
+        }
     }
 
     /// Mark projects whose records may be ahead of their engines.
@@ -300,15 +351,25 @@ impl Service {
         Ok(())
     }
 
+    /// Stop every worktree's writer: signal them all first, then join each
+    /// within the shared deadline. One slow writer never leaves the others
+    /// running; the first failure is reported after every join.
     pub async fn close(self: Arc<Self>, host: &dyn AtlasHost, remaining: Duration) -> Result<()> {
         let close_at = Instant::now() + remaining;
         host.run_owned(
             remaining,
             Box::new(move || {
-                for root in self.started()? {
-                    let left = close_at.saturating_duration_since(Instant::now());
-                    root.stop(left.max(Duration::from_millis(1)))?;
+                let started = self.started()?;
+                for root in &started {
+                    root.signal_stop();
                 }
+                let mut first = None;
+                for root in &started {
+                    if let Err(error) = root.join(close_at) {
+                        first.get_or_insert(error);
+                    }
+                }
+                first.map_or(Ok(()), Err)?;
                 Ok(Box::new(()) as Box<dyn Any + Send>)
             }),
         )

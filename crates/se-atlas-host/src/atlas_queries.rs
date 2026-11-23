@@ -147,8 +147,9 @@ pub fn owner_read<R: Snapshot>(
         )?,
         None => false,
     };
+    let viewer = principal(admission)?;
     let records = CheckedRecords::new(read, admission, project.clone())?;
-    let mut output = execute_v5(&engine, request, &records)?;
+    let mut output = execute_v5(&engine, request, &records, &viewer)?;
     if !feed_current {
         note(&mut output, CoverageReason::RecordFeedLag);
     }
@@ -160,6 +161,7 @@ fn execute_v5(
     engine: &se_atlas_service::Root,
     request: &se_core::ops::AtlasRead,
     records: &dyn se_atlas_service::RecordCheck,
+    viewer: &AtlasPrincipal,
 ) -> AtlasResult<se_core::ops::AnyOutput> {
     use se_core::ops::{
         AtlasChangesOutput, AtlasFindOutput, AtlasImpactOutput, AtlasOutlineOutput, AtlasRead,
@@ -179,7 +181,7 @@ fn execute_v5(
         }
         .into(),
         AtlasRead::Changes(input) => AtlasChangesOutput {
-            answer: engine.changes(&input.query()?)?,
+            answer: engine.changes(&input.query()?, viewer)?,
         }
         .into(),
         AtlasRead::Outline(input) => AtlasOutlineOutput {

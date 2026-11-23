@@ -4,6 +4,8 @@
 pub(crate) mod find;
 pub(crate) mod history;
 pub(crate) mod nav;
+pub(crate) mod outline;
+pub(crate) mod records;
 
 use se_atlas_index::extract::{LanguageTag, SymbolKind as V5Kind, file_key};
 use se_types::code::AtlasText as _;

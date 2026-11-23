@@ -1,20 +1,20 @@
 //! Queries against one root. Each answer carries the root's summary as it
-//! stood when the query began; the host decides beforehand whether the root
-//! can answer at all.
+//! stood when the query began, taken together with the dirty paths the
+//! answer overlays; the host decides beforehand whether the root can answer.
 use crate::{
     error::{index_error, sqlite},
     reconcile,
     root::Root,
-    wire::{find, history, nav},
+    wire::{find, history, nav, outline},
 };
 use rusqlite::OptionalExtension;
 use se_atlas_query::{Answer as Found, Target, outline::OutlineRequest};
 use se_types::{
     EventId, Page, Read, Result,
     code::{
-        Answer, ChangesQuery, CodeChange, FindQuery, Impact, ImpactQuery, Outline, OutlineQuery,
-        QueryText, RecordHit, RecordPointer, ReferenceHit, RefsQuery, ResumeCode, ResumeRequest,
-        SearchResults,
+        Answer, AtlasPrincipal, ChangesQuery, CodeChange, FindQuery, Impact, ImpactQuery, Outline,
+        OutlineQuery, QueryText, RecordHit, RecordPointer, ReferenceHit, RefsQuery, ResumeCode,
+        ResumeRequest, SearchResults,
     },
 };
 
@@ -58,11 +58,13 @@ impl Root {
         query: &FindQuery,
         records: &dyn RecordCheck,
     ) -> Result<Answer<Read<SearchResults>>> {
-        find::find(&self.shared, &self.summary()?, query, records)
+        let (index, dirty) = self.shared.snapshot()?;
+        find::find(&self.shared, &index, &dirty, query, records)
     }
 
     pub fn refs(&self, query: &RefsQuery) -> Result<Answer<Read<Page<ReferenceHit>>>> {
-        nav::refs(&self.shared, &self.summary()?, query)
+        let (index, dirty) = self.shared.snapshot()?;
+        nav::refs(&self.shared, &index, &dirty, query)
     }
 
     pub fn impact(
@@ -70,7 +72,8 @@ impl Root {
         query: &ImpactQuery,
         records: &dyn RecordCheck,
     ) -> Result<Answer<Read<Impact>>> {
-        nav::impact(&self.shared, &self.summary()?, query, records)
+        let (index, dirty) = self.shared.snapshot()?;
+        nav::impact(&self.shared, &index, &dirty, query, records)
     }
 
     pub fn outline(
@@ -78,11 +81,17 @@ impl Root {
         query: &OutlineQuery,
         records: &dyn RecordCheck,
     ) -> Result<Answer<Read<Outline>>> {
-        nav::outline(&self.shared, &self.summary()?, query, records)
+        let (index, dirty) = self.shared.snapshot()?;
+        outline::outline(&self.shared, &index, &dirty, query, records)
     }
 
-    pub fn changes(&self, query: &ChangesQuery) -> Result<Answer<Read<Page<CodeChange>>>> {
-        history::changes(&self.shared, &self.summary()?, query)
+    /// Changes for `viewer`; a resume range cursor is bound to its viewer.
+    pub fn changes(
+        &self,
+        query: &ChangesQuery,
+        viewer: &AtlasPrincipal,
+    ) -> Result<Answer<Read<Page<CodeChange>>>> {
+        history::changes(&self.shared, &self.summary()?, query, viewer)
     }
 
     /// The resume digest; building it never moves the viewer's cursor.
@@ -108,9 +117,8 @@ impl Root {
 
     /// A unique definition of `name`, with its importers, from SQL alone.
     pub fn hook_symbol(&self, name: &str) -> Result<Option<HookSymbol>> {
-        let reader = self.shared.reader()?;
-        let result = (|| {
-            let found = se_atlas_query::hooks::hooks(&reader, &Target::Symbol(name.to_owned()))
+        self.shared.with_reader(|reader| {
+            let found = se_atlas_query::hooks::hooks(reader, &Target::Symbol(name.to_owned()))
                 .map_err(|e| index_error(&e))?;
             let Found::Found(hooks) = found else {
                 return Ok(None);
@@ -140,9 +148,7 @@ impl Root {
                 callers: hooks.importers.items.clone(),
                 mentions: hooks.mentions,
             }))
-        })();
-        self.shared.give_back(reader);
-        result
+        })
     }
 
     /// The outline of a large indexed file, or `None` for a small one.
@@ -154,19 +160,18 @@ impl Root {
             Some((size, _)) if size >= HOOK_OUTLINE_BYTES => {}
             _ => return Ok(None),
         }
-        let reader = self.shared.reader()?;
-        let result = (|| {
+        self.shared.with_reader(|reader| {
             let request = OutlineRequest {
                 target: Target::File(path.to_owned()),
                 limit: HOOK_OUTLINE_ENTRIES,
             };
             let Found::Found(outline) =
-                se_atlas_query::outline::outline(&reader, &request).map_err(|e| index_error(&e))?
+                se_atlas_query::outline::outline(reader, &request).map_err(|e| index_error(&e))?
             else {
                 return Ok(None);
             };
             let mentions =
-                match se_atlas_query::hooks::hooks(&reader, &Target::File(path.to_owned()))
+                match se_atlas_query::hooks::hooks(reader, &Target::File(path.to_owned()))
                     .map_err(|e| index_error(&e))?
                 {
                     Found::Found(hooks) => hooks.mentions,
@@ -181,8 +186,6 @@ impl Root {
                     .collect(),
                 mentions,
             }))
-        })();
-        self.shared.give_back(reader);
-        result
+        })
     }
 }

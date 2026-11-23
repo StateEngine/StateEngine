@@ -42,6 +42,8 @@ impl Default for WalkOptions {
 pub struct Discovery {
     /// Root-relative slash-separated file paths, sorted.
     pub files: Vec<String>,
+    /// Root-relative directories entered, empty ones included, in walk order.
+    pub directories: Vec<String>,
     pub denied: u32,
     pub ignored: u32,
     pub links: u32,
@@ -132,7 +134,10 @@ pub fn discover(root: &IndexSourceRoot, options: &WalkOptions) -> Result<Discove
             return Ok(out);
         }
         match open_frame(root, path, &mut out) {
-            Ok(Some(frame)) => stack.push(frame),
+            Ok(Some(frame)) => {
+                out.directories.push(frame.path.clone());
+                stack.push(frame);
+            }
             Ok(None) => {
                 out.vanished_dirs += 1;
                 skipped = true;

@@ -136,9 +136,11 @@ impl Overlay {
             false
         });
         match read {
-            FileRead::Done { bytes, .. } => {
+            FileRead::Done { bytes, partial } => {
                 self.bytes += bytes;
                 self.hits.extend(kept);
+                // A capped read left the rest of the file unexamined.
+                self.unread += usize::from(partial);
             }
             FileRead::Absent | FileRead::Refused => {}
             FileRead::Failed => self.unread += 1,

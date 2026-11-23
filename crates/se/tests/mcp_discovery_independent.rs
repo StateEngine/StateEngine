@@ -103,7 +103,6 @@ fn real_stdio_client_lists_every_available_registered_tool() -> Check {
 
 /// Bug: PR 186 — a disabled Atlas still advertised its five query tools.
 #[test]
-#[cfg(target_os = "linux")]
 fn disabled_atlas_is_not_advertised_over_http_or_stdio() -> Check {
     let mut config = se_config::config_policy::ConfigFile::default();
     config.atlas.enabled = false;
@@ -181,9 +180,8 @@ fn discovery(config: se_config::config_policy::ConfigFile) -> Check {
     runtime.block_on(async {
         let mut host = HostedRuntime::prepare(initialized, start(&f)?, runtime.handle().clone(), &bound()?).await?;
         host.configure(config)?;
-        // The Linux product installs Atlas; its complete catalogue crosses the
-        // former stdio cap. Other supported targets currently expose core tools.
-        #[cfg(target_os = "linux")]
+        // Every supported target installs the Atlas engine; its complete
+        // catalogue crosses the former stdio cap.
         host.install_native_atlas(
             Path::new(env!("CARGO_BIN_EXE_se")).to_path_buf(),
             NativeAtlasQualification::default(),
@@ -210,7 +208,7 @@ fn discovery(config: se_config::config_policy::ConfigFile) -> Check {
                 let stdio = stdio_list(&f.options.state_directory, &capability).await?;
                 let stdio_names = tool_names(&stdio)?;
                 require(stdio_names == http_names, "stdio and HTTP advertise different tools")?;
-                let atlas_available = cfg!(target_os = "linux") && atlas_enabled;
+                let atlas_available = atlas_enabled;
                 let expected = se_core::ops::CATALOGUE.iter().filter_map(|meta| {
                     if !atlas_available && meta.feature == se_core::registry::Feature::Atlas { return None; }
                     match meta.mcp { se_core::registry::McpExposure::Tool { name, .. } => Some(name.to_owned()), _ => None }

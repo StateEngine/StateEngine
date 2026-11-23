@@ -12,7 +12,7 @@ use crate::{
     error::{index_error, sqlite},
     overlay::{self, FreshHit, Overlay, Terms},
     read::{RecordCheck, STARTING},
-    root::{Msg, Shared},
+    root::{Dirty, Msg, Shared},
 };
 use rusqlite::{Connection, OptionalExtension};
 use se_atlas_index::{
@@ -28,8 +28,8 @@ use se_types::{
     Read, Result, SeError,
     code::{
         Answer, BodyOrigin, CodeHit, ContentHash, CoverageReason, FindMethod, FindQuery, HitBody,
-        HitReason, HitTarget, IndexSummary, RecordKey, RecordKind, RecordPointer, RelativePath,
-        SearchHit, SearchKind, SearchMode, SearchResults, SearchScope, SnapshotFreshness, SymbolId,
+        HitReason, HitTarget, IndexState, IndexSummary, RecordKind, RelativePath, SearchHit,
+        SearchKind, SearchMode, SearchResults, SearchScope, SnapshotFreshness, SymbolId,
         TextSearchStats,
     },
 };
@@ -43,6 +43,7 @@ const FULL_RESPONSE: usize = 12 * 1024;
 pub(crate) fn find(
     shared: &Shared,
     index: &IndexSummary,
+    dirty: &Dirty,
     query: &FindQuery,
     records: &dyn RecordCheck,
 ) -> Result<Answer<Read<SearchResults>>> {
@@ -59,7 +60,7 @@ pub(crate) fn find(
         ));
     }
     if let Some(kind) = record_kind(query.kind) {
-        return record_find(shared, index, query, kind, records);
+        return super::records::find(shared, index, query, kind, records);
     }
     let Some(source) = shared.source() else {
         return Ok(unknown(index, STARTING));
@@ -68,12 +69,28 @@ pub(crate) fn find(
         Some(next) => usize::try_from(cursor::number('f', next)?).unwrap_or(usize::MAX),
         None => 0,
     };
-    let reader = shared.reader()?;
-    let result = se_atlas_search::search(&reader, source, &request(query, offset))
-        .map_err(|error| index_error(&error))
-        .and_then(|outcome| assemble(shared, &reader, source, index, query, offset, &outcome));
-    shared.give_back(reader);
-    result
+    shared.with_reader(|reader| {
+        let outcome = se_atlas_search::search(reader, source, &request(query, offset))
+            .map_err(|error| index_error(&error))?;
+        let view = View {
+            shared,
+            reader,
+            source,
+            index,
+            dirty,
+        };
+        assemble(&view, query, offset, &outcome)
+    })
+}
+
+/// What one query reads from: the root, its connection, and the summary
+/// and dirty paths taken together when the query began.
+struct View<'a> {
+    shared: &'a Shared,
+    reader: &'a Reader,
+    source: &'a IndexSourceRoot,
+    index: &'a IndexSummary,
+    dirty: &'a Dirty,
 }
 
 fn record_kind(kind: SearchKind) -> Option<RecordKind> {
@@ -148,18 +165,12 @@ impl Row<'_> {
 }
 
 fn assemble(
-    shared: &Shared,
-    reader: &Reader,
-    source: &IndexSourceRoot,
-    index: &IndexSummary,
+    view: &View<'_>,
     query: &FindQuery,
     offset: usize,
     outcome: &SearchOutcome,
 ) -> Result<Answer<Read<SearchResults>>> {
-    let (dirty, overflowed) = {
-        let dirty = shared.dirty()?;
-        (dirty.snapshot(), dirty.overflowed())
-    };
+    let (shared, source, dirty) = (view.shared, view.source, view.dirty);
     let kinds = filter(query.kind);
     let terms = Terms::new(
         query.query.as_str(),
@@ -168,9 +179,12 @@ fn assemble(
         matches!(kinds, KindFilter::All | KindFilter::Path),
     );
     let mut fresh = Overlay::default();
-    fresh.read(source, &terms, &dirty, &|path| admits(&query.scope, path));
+    fresh.read(source, &terms, &dirty.paths, &|path| {
+        admits(&query.scope, path)
+    });
     let checked_files = answer_files(outcome, &fresh.stale);
-    let stale = overlay::stale_files(reader.connection(), source, &checked_files, now_ns());
+    let conn = view.reader.connection();
+    let stale = overlay::stale_files(conn, source, &checked_files, now_ns());
     if !stale.is_empty() {
         if let Ok(mut set) = shared.dirty() {
             for path in &stale {
@@ -182,6 +196,7 @@ fn assemble(
             fresh.file(source, &terms, path);
         }
     }
+    fresh.unread = fresh.unread.max(unreproduced(outcome, &fresh, kinds));
     let verified: BTreeSet<&str> = checked_files
         .iter()
         .map(String::as_str)
@@ -200,16 +215,16 @@ fn assemble(
         let (path, line) = row.key();
         seen.insert((path.to_owned(), line))
     });
-    let partial = outcome.stopped_early() || fresh.unread > 0 || overflowed;
-    let mut index = index.clone();
+    let partial = outcome.stopped_early() || fresh.unread > 0 || dirty.overflowed;
+    let mut index = view.index.clone();
     if outcome.deadline_reached {
         index.note(CoverageReason::TimeLimit);
     }
-    if fresh.unread > 0 || overflowed {
-        index.degrade(CoverageReason::StaleSnapshot);
+    if fresh.unread > 0 || dirty.overflowed || !stale.is_empty() {
+        updating(&mut index, fresh.unread.max(stale.len()));
     }
     let context = Context {
-        conn: reader.connection(),
+        conn,
         source,
         verified: &verified,
         full: query.full,
@@ -229,6 +244,44 @@ fn assemble(
         return finish(&context, &index, query, &guesses, &shape);
     }
     finish(&context, &index, query, &rows, &shape)
+}
+
+/// Files read live whose index rows were dropped but which the literal
+/// overlay cannot fully re-evaluate: a symbol search (the overlay reads lines,
+/// not declarations) or a search whose hits came from close spellings.
+fn unreproduced(outcome: &SearchOutcome, fresh: &Overlay, kinds: KindFilter) -> usize {
+    if fresh.stale.is_empty() {
+        return 0;
+    }
+    let close = |hit: &Hit| {
+        matches!(
+            hit.match_kind,
+            MatchKind::Fuzzy { .. } | MatchKind::Partial | MatchKind::Compact | MatchKind::Guess
+        )
+    };
+    let fuzzy = outcome.hits.iter().any(close) || !outcome.guesses.is_empty();
+    if matches!(kinds, KindFilter::Symbol) || fuzzy {
+        fresh.stale.len()
+    } else {
+        0
+    }
+}
+
+/// The answer read past what the index holds: it is updating, never current.
+fn updating(index: &mut IndexSummary, pending: usize) {
+    let pending = pending.max(1) as u64;
+    index.note(CoverageReason::StaleSnapshot);
+    index.coverage.stale_files = index.coverage.stale_files.max(pending);
+    if matches!(
+        index.state,
+        IndexState::Current | IndexState::VerificationNeeded { .. }
+    ) {
+        index.state = IndexState::Updating {
+            pending_files: pending,
+            pending_change_batches: 1,
+            discovery_complete: index.coverage.discovery_complete,
+        };
+    }
 }
 
 /// How one page is cut and labelled.
@@ -507,118 +560,4 @@ fn now_ns() -> i128 {
         .map_or(0, |elapsed| {
             i128::try_from(elapsed.as_nanos()).unwrap_or(i128::MAX)
         })
-}
-
-/// Records of one kind whose title or body holds every query word. Core
-/// rechecks each against the viewer before it becomes a hit.
-fn record_find(
-    shared: &Shared,
-    index: &IndexSummary,
-    query: &FindQuery,
-    kind: RecordKind,
-    records: &dyn RecordCheck,
-) -> Result<Answer<Read<SearchResults>>> {
-    let offset = match &query.next {
-        Some(next) => cursor::number('m', next)?,
-        None => 0,
-    };
-    let limit = u64::from(query.budget.max_results);
-    let reader = shared.reader()?;
-    let rows = record_rows(reader.connection(), query, kind, offset, limit + 1);
-    shared.give_back(reader);
-    let rows = rows?;
-    let more = rows.len() as u64 > limit;
-    let mut items = Vec::new();
-    let mut bytes = 0;
-    for (key, event) in rows.into_iter().take(limit as usize) {
-        let (Ok(key), Ok(source_event)) = (RecordKey::new(key), event.parse()) else {
-            continue;
-        };
-        let pointer = RecordPointer {
-            key,
-            kind,
-            source_event,
-        };
-        if let Read::Present { value } = records.hit(&pointer, Some(&query.query))? {
-            let hit = SearchHit {
-                target: HitTarget::Record(value),
-                reason: HitReason {
-                    mode: SearchMode::Exact,
-                    match_tier: 100,
-                    last_touch_unix_ms: None,
-                    edited_by: None,
-                    cited_messages: 0,
-                    text_only: false,
-                    related: false,
-                },
-                rank_version: RANK_VERSION,
-                body: None,
-            };
-            bytes += size(&hit) + 1;
-            items.push(hit);
-        }
-    }
-    let next = more
-        .then(|| cursor::wrap('m', &(offset + limit).to_string()))
-        .transpose()?;
-    let value = SearchResults {
-        mode: SearchMode::Exact,
-        fallback_from: None,
-        page: page(
-            items,
-            PageFacts {
-                index,
-                budget: query.budget,
-                after: query.next.as_ref(),
-                next,
-                partial: false,
-                bytes,
-            },
-        )?,
-        truncated_candidates: Some(0),
-        full: false,
-        bodies_omitted: 0,
-        text: None,
-    };
-    checked(answer(index, Read::Present { value }), query.budget)
-}
-
-fn record_rows(
-    conn: &Connection,
-    query: &FindQuery,
-    kind: RecordKind,
-    offset: u64,
-    limit: u64,
-) -> Result<Vec<(String, String)>> {
-    let words: Vec<String> = query
-        .query
-        .as_str()
-        .split_whitespace()
-        .map(|word| format!("\"{}\"", word.replace('"', "\"\"")))
-        .collect();
-    if words.is_empty() {
-        return Ok(Vec::new());
-    }
-    let pattern = words.join(" ");
-    let mut select = conn
-        .prepare_cached(
-            "SELECT r.record_id, r.source_event FROM records r
-             WHERE r.kind=?2 AND (r.id IN (SELECT rowid FROM record_fts WHERE record_fts MATCH ?1)
-                OR r.id IN (SELECT rowid FROM record_text_fts WHERE record_text_fts MATCH ?1))
-             ORDER BY r.occurred_unix_ms DESC, r.id DESC LIMIT ?3 OFFSET ?4",
-        )
-        .map_err(|e| sqlite(&e))?;
-    let rows = select
-        .query_map(
-            rusqlite::params![
-                pattern,
-                crate::records::kind_name(kind),
-                i64::try_from(limit).unwrap_or(i64::MAX),
-                i64::try_from(offset).unwrap_or(i64::MAX)
-            ],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .map_err(|e| sqlite(&e))?;
-    rows.collect::<rusqlite::Result<_>>()
-        .map_err(|e| sqlite(&e))
 }

@@ -15,7 +15,7 @@ use std::time::Instant;
 
 pub fn owner_augment<R: Snapshot>(
     owner: &AtlasOwnerPort,
-    _ticket: Option<RecordFeedTicket>,
+    ticket: Option<RecordFeedTicket>,
     input: &AtlasAugment,
     read: &mut R,
     admission: &Admission,
@@ -25,7 +25,9 @@ pub fn owner_augment<R: Snapshot>(
     };
     // An uncertain index/authority/IO/deadline is no augmentation, never a block.
     // Public Atlas operations retain these errors; this private hint is optional.
-    let text = augment_v5(owner, input, read, admission).ok().flatten();
+    let text = augment_v5(owner, ticket, input, read, admission)
+        .ok()
+        .flatten();
     Ok(AtlasHookOutput {
         stdout: text
             .filter(|_| se_atlas::clock::now() < end)
@@ -36,6 +38,7 @@ pub fn owner_augment<R: Snapshot>(
 /// Index-only context for the target; never starts a build or reads source.
 fn augment_v5<R: Snapshot>(
     owner: &AtlasOwnerPort,
+    ticket: Option<RecordFeedTicket>,
     input: &AtlasAugment,
     read: &mut R,
     admission: &Admission,
@@ -45,13 +48,26 @@ fn augment_v5<R: Snapshot>(
     };
     let root = input.root.as_ref();
     request_project(owner, read, project, root)?;
-    if !readable(&owner.summary(project, root)?) {
+    let summary = owner.summary(project, root)?;
+    if !readable(&summary) {
         return Ok(None);
     }
+    // A mention count from a feed that lags core would be a guess.
+    let counted = match &summary.epoch {
+        Some(epoch) => owner.records.is_current(
+            &crate::atlas_runtime::record_fence::RecordFeedScope {
+                project: project.clone(),
+                root: summary.root.clone(),
+                epoch: epoch.clone(),
+            },
+            ticket,
+        )?,
+        None => false,
+    };
     let engine = owner.engine(project, root)?;
     match &input.target {
-        AtlasHookTarget::Symbol(name) => symbol(&engine, name.as_str()),
-        AtlasHookTarget::File(path) => outline(&engine, &path.to_local()?),
+        AtlasHookTarget::Symbol(name) => symbol(&engine, name.as_str(), counted),
+        AtlasHookTarget::File(path) => outline(&engine, &path.to_local()?, counted),
     }
 }
 
@@ -70,7 +86,7 @@ fn linked(text: &mut String, mentions: usize) {
         add(text, format!("linked (sample): {mentions} messages"));
     }
 }
-fn symbol(engine: &se_atlas_service::Root, name: &str) -> Result<Option<String>> {
+fn symbol(engine: &se_atlas_service::Root, name: &str, counted: bool) -> Result<Option<String>> {
     let Some(found) = engine.hook_symbol(name)? else {
         return Ok(None);
     };
@@ -78,13 +94,19 @@ fn symbol(engine: &se_atlas_service::Root, name: &str) -> Result<Option<String>>
         "Atlas indexed context (sample): definition {} {}:{}",
         found.name, found.path, found.line
     );
-    linked(&mut text, found.mentions);
+    if counted {
+        linked(&mut text, found.mentions);
+    }
     for caller in found.callers {
         add(&mut text, format!("caller {caller}"));
     }
     Ok(encode(&text))
 }
-fn outline(engine: &se_atlas_service::Root, path: &std::path::Path) -> Result<Option<String>> {
+fn outline(
+    engine: &se_atlas_service::Root,
+    path: &std::path::Path,
+    counted: bool,
+) -> Result<Option<String>> {
     let Ok(relative) = path.strip_prefix(&engine.spec().source) else {
         return Ok(None);
     };
@@ -96,7 +118,9 @@ fn outline(engine: &se_atlas_service::Root, path: &std::path::Path) -> Result<Op
         return Ok(None);
     };
     let mut text = format!("Atlas outline (sample): {}", found.path);
-    linked(&mut text, found.mentions);
+    if counted {
+        linked(&mut text, found.mentions);
+    }
     for (name, line) in found.symbols {
         add(&mut text, format!("{name}:{line}"));
     }

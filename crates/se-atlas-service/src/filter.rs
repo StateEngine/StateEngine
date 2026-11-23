@@ -1,7 +1,8 @@
 //! The watcher's fast path: decide what a reported path means before it
 //! reaches the debounce queue or the dirty set. Build output, dependency
 //! trees, private files and our own state never enter either; Git's head
-//! files only signal a checkout.
+//! files and its index lock only signal a checkout, which the writer reads
+//! once Git lets go of the lock.
 use se_atlas_index::policy;
 
 /// Directory names skipped at any depth, as discovery skips them.
@@ -19,7 +20,8 @@ pub fn global_patterns() -> Vec<String> {
 pub enum Reported {
     /// Ignored, private, or not ours to index.
     Drop,
-    /// Git moved `HEAD` or a branch: record the commit the tree is now at.
+    /// Git moved `HEAD` or a branch, or took or released its index lock:
+    /// record the commit the tree is at once the lock is gone.
     Head,
     /// A source path the writer should read again.
     Source,
@@ -32,7 +34,8 @@ pub fn classify(path: &str) -> Reported {
         return Reported::Drop;
     }
     if let Some(rest) = path.strip_prefix(".git/") {
-        return if rest == "HEAD" || rest == "packed-refs" || rest.starts_with("refs/heads/") {
+        let head = matches!(rest, "HEAD" | "packed-refs" | "index.lock");
+        return if head || rest.starts_with("refs/heads/") {
             Reported::Head
         } else {
             Reported::Drop
@@ -63,7 +66,6 @@ mod tests {
     fn ignored_private_and_state_paths_never_reach_the_queue() {
         for path in [
             ".git/objects/ab/cdef",
-            ".git/index.lock",
             "target/debug/se",
             "crates/x/target/release/build.rs",
             "web/node_modules/left-pad/index.js",
@@ -83,5 +85,6 @@ mod tests {
         assert_eq!(classify("docs/target"), Reported::Source);
         assert_eq!(classify(".git/HEAD"), Reported::Head);
         assert_eq!(classify(".git/refs/heads/main"), Reported::Head);
+        assert_eq!(classify(".git/index.lock"), Reported::Head);
     }
 }

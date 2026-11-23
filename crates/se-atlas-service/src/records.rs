@@ -17,6 +17,18 @@ use se_types::{
 /// Mentions and touches kept per record and per target.
 const MAX_TARGETS: usize = 256;
 const TOUCHES_PER_TARGET: i64 = 10;
+/// Title bytes the store keeps; core may send a longer excerpt.
+const MAX_TITLE: usize = 160;
+
+/// The longest prefix of `text` within `max` bytes, cut on a character
+/// boundary, so an over-long title never stalls the feed on a CHECK.
+fn clip(text: &str, max: usize) -> &str {
+    let mut end = text.len().min(max);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
 
 /// The last core event the store has folded in.
 pub(crate) fn cursor(conn: &Connection) -> Result<Option<EventId>> {
@@ -102,6 +114,7 @@ fn upsert(tx: &Transaction<'_>, record: &FeedRecord) -> rusqlite::Result<()> {
                 .map(|keys| serde_json::to_vec(keys).unwrap_or_default()),
         ),
     };
+    let title = clip(&record.title, MAX_TITLE);
     let actor = record
         .actor
         .as_ref()
@@ -119,7 +132,7 @@ fn upsert(tx: &Transaction<'_>, record: &FeedRecord) -> rusqlite::Result<()> {
             kind_name(record.pointer.kind),
             actor,
             record.occurred_unix_ms,
-            record.title,
+            title,
             record.pointer.source_event.as_str(),
             visibility,
             audience,
@@ -142,7 +155,7 @@ fn upsert(tx: &Transaction<'_>, record: &FeedRecord) -> rusqlite::Result<()> {
     refresh(tx, &old)?;
     tx.execute(
         "INSERT INTO record_fts(rowid, title, kind) VALUES (?1, ?2, ?3)",
-        params![id, record.title, kind_name(record.pointer.kind)],
+        params![id, title, kind_name(record.pointer.kind)],
     )?;
     tx.execute(
         "INSERT INTO record_text_fts(rowid, body) VALUES (?1, ?2)",

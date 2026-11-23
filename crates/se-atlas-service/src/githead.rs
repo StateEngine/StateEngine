@@ -5,22 +5,48 @@
 use se_proc::NativeSourceRoot;
 use std::{
     io::Read,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 /// Bytes read from any one Git metadata file.
 const MAX_FILE: u64 = 64 * 1024;
 const MAX_PACKED_REFS: u64 = 4 << 20;
 
+/// A worktree's Git directory, held through custody.
+struct GitDir {
+    root: NativeSourceRoot,
+    /// Its spelling, to resolve a relative `commondir` against.
+    path: PathBuf,
+}
+
+/// The worktree's own `.git` directory, or the one a linked worktree's
+/// `.git` file names.
+fn git_dir(source: &Path) -> Option<GitDir> {
+    let tree = NativeSourceRoot::open(source).ok()?;
+    if read(&tree, ".git/HEAD", MAX_FILE).is_some() {
+        return Some(GitDir {
+            root: tree.subroot(".git").ok()?,
+            path: source.join(".git"),
+        });
+    }
+    let text = read(&tree, ".git", MAX_FILE)?;
+    let path = resolve(source, text.trim().strip_prefix("gitdir:")?.trim())?;
+    Some(GitDir {
+        root: NativeSourceRoot::open(&path).ok()?,
+        path,
+    })
+}
+
+/// Whether Git holds its index lock: a checkout or commit is under way, so
+/// the head may be about to move again.
+pub(crate) fn busy(source: &Path) -> bool {
+    git_dir(source).is_some_and(|git| matches!(git.root.open_relative("index.lock"), Ok(Some(_))))
+}
+
 /// The raw object id `HEAD` names, 20 or 32 bytes.
 pub(crate) fn head(source: &Path) -> Option<Vec<u8>> {
-    let tree = NativeSourceRoot::open(source).ok()?;
-    let git_dir = match read(&tree, ".git/HEAD", MAX_FILE) {
-        Some(_) => source.join(".git"),
-        None => linked_git_dir(&tree, source)?,
-    };
-    let git = NativeSourceRoot::open(&git_dir).ok()?;
-    let head = read(&git, "HEAD", MAX_FILE)?;
+    let git = git_dir(source)?;
+    let head = read(&git.root, "HEAD", MAX_FILE)?;
     let head = head.trim();
     let Some(reference) = head.strip_prefix("ref:").map(str::trim) else {
         return oid(head);
@@ -28,11 +54,10 @@ pub(crate) fn head(source: &Path) -> Option<Vec<u8>> {
     if !reference.starts_with("refs/") || reference.split('/').any(|part| part == "..") {
         return None;
     }
-    let common = common_dir(&git, &git_dir);
-    let common = common
-        .as_deref()
-        .and_then(|dir| NativeSourceRoot::open(dir).ok());
-    let stores = std::iter::once(&git).chain(common.as_ref());
+    let common = read(&git.root, "commondir", MAX_FILE)
+        .and_then(|text| resolve(&git.path, text.trim()))
+        .and_then(|dir| NativeSourceRoot::open(&dir).ok());
+    let stores = std::iter::once(&git.root).chain(common.as_ref());
     for store in stores {
         if let Some(text) = read(store, reference, MAX_FILE) {
             return oid(text.trim());
@@ -50,27 +75,28 @@ pub(crate) fn head(source: &Path) -> Option<Vec<u8>> {
     None
 }
 
-/// A linked worktree's `.git` is a file naming its Git directory.
-fn linked_git_dir(tree: &NativeSourceRoot, source: &Path) -> Option<PathBuf> {
-    let text = read(tree, ".git", MAX_FILE)?;
-    let spelling = text.trim().strip_prefix("gitdir:")?.trim();
+/// A Git-written path, absolute or relative to `base`, with `.` and `..`
+/// resolved by name: custody opens only absolute, normalized roots.
+fn resolve(base: &Path, spelling: &str) -> Option<PathBuf> {
     let path = Path::new(spelling);
-    Some(if path.is_absolute() {
+    let joined = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        source.join(path)
-    })
-}
-
-/// Where a linked worktree's shared refs live.
-fn common_dir(git: &NativeSourceRoot, git_dir: &Path) -> Option<PathBuf> {
-    let text = read(git, "commondir", MAX_FILE)?;
-    let path = Path::new(text.trim());
-    Some(if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        git_dir.join(path)
-    })
+        base.join(path)
+    };
+    let mut out = PathBuf::new();
+    for component in joined.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    return None;
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out.is_absolute().then_some(out)
 }
 
 fn read(root: &NativeSourceRoot, path: &str, limit: u64) -> Option<String> {

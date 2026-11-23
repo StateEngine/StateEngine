@@ -1678,6 +1678,7 @@ name = "se-atlas-service"
 version = "0.0.1-alpha.1"
 dependencies = [
  "blake3",
+ "ignore",
  "rusqlite",
  "se-atlas-index",
  "se-atlas-query",

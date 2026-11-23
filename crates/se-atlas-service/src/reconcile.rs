@@ -9,12 +9,26 @@ use se_atlas_index::{
 };
 use std::collections::HashMap;
 
-/// Root-relative paths whose index rows may be stale, sorted.
+/// What a stat walk found against the store.
+#[derive(Debug, Default)]
+pub(crate) struct Delta {
+    /// New or changed discovered files to read again, sorted.
+    pub changed: Vec<String>,
+    /// Indexed files discovery no longer lists (deleted, ignored or denied),
+    /// to remove rather than read again, sorted.
+    pub gone: Vec<String>,
+    /// Discovered files whose stats could not be read (a sharing violation,
+    /// no permission); each is retried later, and the root is partial.
+    pub failed: Vec<String>,
+}
+
+/// Compare discovered files with what the store last indexed. One file that
+/// cannot be examined is recorded, never fatal to the whole root.
 pub(crate) fn changed(
     store: &Store,
     source: &IndexSourceRoot,
     discovered: &[String],
-) -> Result<Vec<String>> {
+) -> Result<Delta> {
     let mut indexed: HashMap<String, (i64, i64)> = HashMap::new();
     {
         let mut select = store
@@ -26,16 +40,21 @@ pub(crate) fn changed(
             indexed.insert(path, facts);
         }
     }
-    let mut out = Vec::new();
+    let mut out = Delta::default();
     for path in discovered {
-        match indexed.remove(path) {
-            None => out.push(path.clone()),
-            Some(facts) if stat(source, path)? != Some(facts) => out.push(path.clone()),
-            Some(_) => {}
+        let known = indexed.remove(path);
+        match stat(source, path) {
+            Ok(facts) if known.is_some() && facts == known => {}
+            Ok(_) => out.changed.push(path.clone()),
+            Err(_) => {
+                // A replaced root is not one unreadable file.
+                source.check()?;
+                out.failed.push(path.clone());
+            }
         }
     }
-    out.extend(indexed.into_keys());
-    out.sort_unstable();
+    out.gone.extend(indexed.into_keys());
+    out.gone.sort_unstable();
     Ok(out)
 }
 
