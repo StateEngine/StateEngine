@@ -471,8 +471,11 @@ impl<'a> Engine<'a> {
             progress.batch_running = true;
         }
         let rules = paths.iter().any(|dirty| ignores::is_rule_file(&dirty.path));
-        if rules {
+        let removed = paths.iter().any(|dirty| dirty.change == Change::Removed);
+        if rules || overflowed || removed {
             self.ignores.clear();
+        }
+        if rules {
             // A per-directory watch must also cover folders a rule stopped
             // ignoring; the reconcile below catches what the swap misses.
             if cfg!(target_os = "linux")

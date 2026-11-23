@@ -14,8 +14,8 @@ use se_types::code::AtlasText as _;
 use se_types::{
     Detail, Read, Result, SeError,
     code::{
-        Answer, FindQuery, HitReason, HitTarget, IndexSummary, QueryText, RecordHit, RecordKey,
-        RecordKind, RecordPointer, SearchHit, SearchMode, SearchResults,
+        Answer, CoverageReason, FindQuery, HitReason, HitTarget, IndexSummary, QueryText,
+        RecordHit, RecordKey, RecordKind, RecordPointer, SearchHit, SearchMode, SearchResults,
     },
     details,
 };
@@ -134,9 +134,10 @@ fn pointer(record_id: &str, kind: &str, event: &str) -> Option<RecordPointer> {
 
 /// Records of one kind whose title or body holds every query word, newest
 /// first. Every decision a viewer can see is made on records core admitted
-/// for them: a page fills with visible records, `next` appears only when a
-/// further visible record exists, and the cursor names the page's last
-/// listed record, so no count, position or time of a hidden record leaks.
+/// for them: a page fills with visible records, `next` appears when a further
+/// visible record exists (or after a work-deadline timeout when at least one
+/// visible record was listed), and the cursor names the page's last listed
+/// record, so no count, position or time of a hidden record leaks.
 pub(crate) fn find(
     shared: &Shared,
     index: &IndexSummary,
@@ -151,10 +152,13 @@ pub(crate) fn find(
     };
     let limit = usize::from(query.budget.max_results);
     let max_bytes = query.budget.max_bytes as usize;
-    // Sized with the longest cursor and partial omission, so adding either still fits.
+    // Sized with the longest cursor, partial omission, and TimeLimit coverage
+    // reason, so adding any of them still fits the byte budget.
     let widest = key_cursor((i64::MAX, i64::MAX))?;
-    let empty = results(index, query, Vec::new(), Some(widest), true, 0)?;
-    let mut bytes = size(&answer(index, Read::Present { value: empty }));
+    let mut sized_index = index.clone();
+    sized_index.note(CoverageReason::TimeLimit);
+    let empty = results(&sized_index, query, Vec::new(), Some(widest), true, 0)?;
+    let mut bytes = size(&answer(&sized_index, Read::Present { value: empty }));
     let mut items = Vec::new();
     let mut last = None;
     let mut more = false;
@@ -200,12 +204,16 @@ pub(crate) fn find(
             }
         }
     })?;
+    let mut summary = index.clone();
+    if timed_out {
+        summary.note(CoverageReason::TimeLimit);
+    }
     let next = last
         .filter(|_| more || timed_out)
         .map(key_cursor)
         .transpose()?;
-    let value = results(index, query, items, next, timed_out, bytes)?;
-    checked(answer(index, Read::Present { value }), query.budget)
+    let value = results(&summary, query, items, next, timed_out, bytes)?;
+    checked(answer(&summary, Read::Present { value }), query.budget)
 }
 
 /// A record page cursor: the `(occurred_unix_ms, id)` of the last listed
@@ -275,7 +283,7 @@ fn results(
                 bytes,
             },
         )?,
-        truncated_candidates: Some(0),
+        truncated_candidates: (!partial).then_some(0),
         full: false,
         bodies_omitted: 0,
         text: None,

@@ -324,13 +324,16 @@ impl Thread<'_> {
     /// reconcile. A new branch folder only needs watching.
     #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
     fn directory(&mut self, action: NativeWatchAction, path: &str, class: Reported) {
+        if class == Reported::Drop {
+            return;
+        }
         if matches!(
             action,
             NativeWatchAction::MovedTo | NativeWatchAction::MovedFrom | NativeWatchAction::Removed
         ) {
             self.ignores.clear();
         }
-        if class == Reported::Drop || self.ignored(path) {
+        if self.ignored(path) {
             return;
         }
         match action {
@@ -478,14 +481,15 @@ impl Thread<'_> {
         }
     }
 
-    fn lose(&self) {
+    fn lose(&mut self) {
+        self.ignores.clear();
         if let Ok(mut dirty) = self.shared.dirty() {
             dirty.lose();
         }
         self.shared.send(Msg::Wake);
     }
 
-    fn fail(&self, reason: &str) {
+    fn fail(&mut self, reason: &str) {
         if let Ok(mut progress) = self.shared.progress() {
             progress.watch = Watch::Failed(reason.to_owned());
         }

@@ -204,8 +204,8 @@ fn first_page(
                 )?
                 .query_row([at], |row| row.get(0))?;
             let pruned = floor.is_some_and(|floor| at < floor.observed_unix_ms);
-            let first = first.unwrap_or(through.saturating_add(1));
-            ((first - 1, i64::MAX), pruned)
+            let after = first.map_or((through, i64::MAX), |g| (g.saturating_sub(1), i64::MAX));
+            (after, pruned)
         }
         Start::After(generation) => {
             let pruned = floor.is_some_and(|floor| generation < floor.generation.saturating_sub(1));
