@@ -1,6 +1,4 @@
-//! Compact Atlas rendering, its error types, and the built-in private-file
-//! policy.
+//! Compact Atlas rendering and its error types.
 
 pub mod errors;
-pub mod policy;
 pub mod render;

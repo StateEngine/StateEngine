@@ -1559,7 +1559,7 @@ dependencies = [
  "clap",
  "regex",
  "rusqlite",
- "se-atlas",
+ "se-atlas-index",
  "se-cli-spec",
  "se-config",
  "se-core",

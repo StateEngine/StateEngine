@@ -346,11 +346,9 @@ async fn caught_up(
             Ok(Some((true, Some(cursor), root))) if Some(&cursor) != after.as_ref() => {
                 let paths = indexed_paths(state, project, &root)?;
                 assert!(paths.iter().any(|p| p == "good.js"));
-                for path in paths {
+                for path in &paths {
                     assert!(
-                        !se_atlas::policy::built_in_denied(&se_types::code::RelativePath::new(
-                            &path
-                        )?),
+                        !se_atlas_index::policy::file_denied(path),
                         "private file entered the v5 store: {path}"
                     );
                 }
