@@ -1,9 +1,9 @@
 //! Development consumer of automatic after-ready composition and record wakes.
-//! The synthetic SQL admission tests behavior, never native memory qualification.
+//! It reads the v5 store the owner writes; no legacy cache or memory profile.
 #![cfg(all(target_os = "linux", not(debug_assertions)))]
-use se_atlas::cache::connection::SqlProfile;
 use se_host::*;
 use se_store::*;
+use se_types::code::AtlasText as _;
 use se_types::{HostEpoch, HostGeneration, MachineId, ProcessFields, ProcessInstance, Secret};
 use std::{
     io::Write,
@@ -275,8 +275,9 @@ fn write(endpoint: &EndpointRecord) -> Result<(), String> {
     };
     assert!(
         matches!(&output.value.answer.data, se_types::Read::Present { value }
-        if value.page.items().iter().any(|hit| hit.reason.last_touch_unix_ms.is_some())),
-        "real IPC path search did not receive Git-seeded file activity"
+        if value.page.items().iter().any(|hit| matches!(&hit.target,
+            se_types::code::HitTarget::Code(code) if code.pointer.path.as_str() == "good.js"))),
+        "real IPC path search did not find the indexed file"
     );
     assert!(
         !output
@@ -288,85 +289,77 @@ fn write(endpoint: &EndpointRecord) -> Result<(), String> {
             .contains(&se_types::code::CoverageReason::ResultLimit),
         "complete one-commit history was labelled partial"
     );
-    let memory = output
-        .value
-        .answer
-        .index
-        .memory
-        .ok_or("Atlas query omitted the owner memory report")?;
-    assert_eq!(memory.anonymous_ceiling_bytes, 13_000_000);
-    assert!(!memory.joined_qualified && memory.shared_grammar_pages.is_none());
     Ok(())
 }
+/// The v5 store's current epoch database for one root, opened read-only.
+fn indexed_paths(
+    state: &std::path::Path,
+    project: &se_types::ProjectId,
+    root: &se_types::code::RootId,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let dir = state
+        .join("atlas-v5")
+        .join(project.as_str())
+        .join(root.as_str());
+    let current = std::fs::read_to_string(dir.join("atlas.v5.current"))?;
+    let conn = rusqlite::Connection::open_with_flags(
+        dir.join(current.trim()),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let mut statement = conn.prepare("SELECT path FROM files")?;
+    let paths = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(paths)
+}
+/// Wait until the owner indexed the fixture, certified its record feed
+/// current for the root's epoch, and folded records past `after`.
 async fn caught_up(
     context: &ExecutionContext,
+    state: &std::path::Path,
     project: &se_types::ProjectId,
-    records: i64,
-) -> Result<(), Box<dyn std::error::Error>> {
+    after: Option<se_types::EventId>,
+) -> Result<se_types::EventId, Box<dyn std::error::Error>> {
     let end = Instant::now() + Duration::from_secs(30);
     loop {
-        let context = context.clone();
-        let project = project.clone();
+        let owner = context.clone();
+        let selected = project.clone();
         let pool = context.blocking.clone();
         let result = pool
             .run(BlockingClass::Foreground, &deadline()?, move || {
-                let summary = context.atlas.summary(&project, None)?;
-                let memory = summary.memory.ok_or_else(|| {
-                    se_types::SeError::invalid("Atlas status", "memory qualification report")
-                })?;
-                assert_eq!(memory.anonymous_ceiling_bytes, 13_000_000);
-                assert!(memory.shared_grammar_pages.is_none() && !memory.joined_qualified);
-                let ticket = context.atlas.records.ticket()?;
-                let mut observed = None;
-                context
-                    .atlas
-                    .with_reader(&project, None, ticket, &mut |cache, _, fresh| {
-                        cache.read(Instant::now() + Duration::from_secs(1), |sql| {
-                            let count: i64 = sql
-                                .prepare("SELECT count(*) FROM records")?
-                                .query_row([], |r| r.get(0))
-                                .map_err(|e| {
-                                    se_core::scope::unreadable(
-                                        "development records",
-                                        &e.to_string(),
-                                    )
-                                })?;
-                            let commits: i64 = sql.prepare("SELECT count(*) FROM commits WHERE subject='automatic_git_seed'")?
-                                .query_row([], |r| r.get(0)).map_err(|e| se_core::scope::unreadable("development Git seed", &e.to_string()))?;
-                            assert_eq!(commits, 1, "automatic owner omitted its post-reap Git invocation");
-                            let mut statement = sql.prepare("SELECT path FROM files")?;
-                            let mut rows = statement.query([]).map_err(|e| {
-                                se_core::scope::unreadable("development files", &e.to_string())
-                            })?;
-                            let mut paths = Vec::new();
-                            while let Some(row) = rows.next().map_err(|e| {
-                                se_core::scope::unreadable("development files", &e.to_string())
-                            })? {
-                                paths.push(row.get::<_, String>(0).map_err(|e| {
-                                    se_core::scope::unreadable("development files", &e.to_string())
-                                })?);
-                            }
-                            observed = Some((fresh, count, paths));
-                            Ok(())
-                        })
-                    })?;
-                Ok(observed)
+                let summary = owner.atlas.summary(&selected, None)?;
+                let Some(epoch) = summary.epoch.clone() else {
+                    return Ok(None);
+                };
+                let ticket = owner.atlas.records.ticket()?;
+                let scope = atlas_runtime::record_fence::RecordFeedScope {
+                    project: selected.clone(),
+                    root: summary.root.clone(),
+                    epoch,
+                };
+                let fresh = owner.atlas.records.is_current(&scope, ticket)?;
+                let cursor = owner.atlas.engine(&selected, None)?.feed_cursor()?;
+                Ok(Some((fresh, cursor, summary.root)))
             })
             .await;
         let last = match result {
-            Ok(Some((true, count, paths))) if count >= records => {
+            Ok(Some((true, Some(cursor), root))) if Some(&cursor) != after.as_ref() => {
+                let paths = indexed_paths(state, project, &root)?;
                 assert!(paths.iter().any(|p| p == "good.js"));
                 for path in paths {
                     assert!(
                         !se_atlas::policy::built_in_denied(&se_types::code::RelativePath::new(
                             &path
                         )?),
-                        "private file entered the real cold/renewal cache: {path}"
+                        "private file entered the v5 store: {path}"
                     );
                 }
-                return Ok(());
+                return Ok(cursor);
             }
-            Ok(value) => format!("feed not caught up: {value:?}"),
+            Ok(value) => format!(
+                "feed not caught up: {:?}",
+                value.map(|(fresh, cursor, _)| (fresh, cursor))
+            ),
             Err(error) => error.to_string(),
         };
         if Instant::now() >= end {
@@ -394,10 +387,7 @@ fn automatic_owner_indexes_and_catches_committed_records_up() -> Check {
         host.configure(se_config::config_policy::ConfigFile::default())?;
         host.install_native_atlas(
             std::path::PathBuf::from(env!("CARGO_BIN_EXE_se")).canonicalize()?,
-            NativeAtlasQualification {
-                sql: Some(SqlProfile::from_qualified_overhead(1)?),
-                parsers: Vec::new(),
-            },
+            NativeAtlasQualification::default(),
         )?;
         let context = host.execution_context();
         let stop = host.local_stop();
@@ -405,9 +395,10 @@ fn automatic_owner_indexes_and_catches_committed_records_up() -> Check {
         let endpoint = listener.endpoint().clone();
         let serving = tokio::spawn(host.serve(listener));
         let result = async {
-            caught_up(&context, &f.project, 1).await?;
+            let state = f.options.state_directory.clone();
+            let first = caught_up(&context, &state, &f.project, None).await?;
             tokio::task::spawn_blocking(move || write(&endpoint)).await??;
-            caught_up(&context, &f.project, 2).await?;
+            caught_up(&context, &state, &f.project, Some(first)).await?;
             Ok::<(), Box<dyn std::error::Error>>(())
         }
         .await;

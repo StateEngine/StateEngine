@@ -44,6 +44,17 @@ pub trait AtlasReadPort: Send + Sync {
         Ok(())
     }
     fn summary(&self, project: &ProjectId, root: Option<&RootId>) -> Result<IndexSummary>;
+    /// The v5 engine serving this project's selected worktree.
+    fn engine(
+        &self,
+        _project: &ProjectId,
+        _root: Option<&RootId>,
+    ) -> Result<Arc<se_atlas_service::Root>> {
+        Err(se_core::scope::unreadable(
+            "Atlas engine",
+            "this controller has no v5 engine; restart the host",
+        ))
+    }
     /// Status observes publication only; no cache opens or work is scheduled.
     fn status(
         &self,
@@ -125,6 +136,22 @@ impl AtlasOwnerPort {
     }
     pub fn summary(&self, project: &ProjectId, root: Option<&RootId>) -> Result<IndexSummary> {
         self.reader.get().ok_or_else(|| se_core::scope::unreadable("Atlas owner read port", "the owner has not installed its controller; no registered root summary is available"))?.summary(project, root)
+    }
+    /// The engine an admitted query reads; never starts indexing itself.
+    pub fn engine(
+        &self,
+        project: &ProjectId,
+        root: Option<&RootId>,
+    ) -> Result<Arc<se_atlas_service::Root>> {
+        self.reader
+            .get()
+            .ok_or_else(|| {
+                se_core::scope::unreadable(
+                    "Atlas owner read port",
+                    "the owner has not installed its controller",
+                )
+            })?
+            .engine(project, root)
     }
     #[cfg(feature = "listener")]
     pub fn install(&self, reader: Arc<dyn AtlasReadPort>) -> Result<()> {

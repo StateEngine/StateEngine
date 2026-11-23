@@ -1625,6 +1625,7 @@ version = "0.0.1-alpha.1"
 dependencies = [
  "se-atlas",
  "se-atlas-cold",
+ "se-atlas-service",
  "se-config",
  "se-core",
  "se-mcp",
@@ -1670,6 +1671,22 @@ dependencies = [
  "regex-syntax",
  "rusqlite",
  "se-atlas-index",
+]
+
+[[package]]
+name = "se-atlas-service"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "blake3",
+ "ignore",
+ "rusqlite",
+ "se-atlas-index",
+ "se-atlas-query",
+ "se-atlas-search",
+ "se-proc",
+ "se-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -32,6 +32,9 @@ pub enum Since {
     /// Changes after the working tree was observed at this commit: 40 or 64
     /// hex digits, or a unique prefix of at least seven.
     Commit(String),
+    /// Changes after this generation, through `through` when it is given
+    /// (a delivered range's fence), else through the newest one.
+    AfterGeneration { after: i64, through: Option<i64> },
 }
 
 #[derive(Clone, Debug)]
@@ -122,39 +125,10 @@ pub fn changes(reader: &Reader, request: &ChangesRequest) -> Result<ChangesAnswe
             let pruned = floor.is_some_and(|floor| generation < floor.generation);
             (through, (generation, ordinal), pruned)
         }
-        None => {
-            let through: i64 = conn
-                .prepare_cached("SELECT coalesce(max(generation), 0) FROM generations")?
-                .query_row([], |row| row.get(0))?;
-            let start = match &request.since {
-                Since::RelativeMillis(ms) => {
-                    let ms = i64::try_from(*ms).unwrap_or(i64::MAX);
-                    Start::Time(se_atlas_index::store::now_unix_ms().saturating_sub(ms))
-                }
-                Since::ObservedUnixMillis(at) => Start::Time(*at),
-                Since::Commit(commit) => match commit_generation(conn, commit)? {
-                    Some(generation) => Start::After(generation),
-                    None => {
-                        return Ok(ChangesAnswer::CommitNotObserved {
-                            commit: commit.clone(),
-                        });
-                    }
-                },
-            };
-            let (first, pruned) = match start {
-                Start::Time(at) => {
-                    let first: Option<i64> = conn
-                        .prepare_cached(
-                            "SELECT min(generation) FROM generations WHERE observed_unix_ms >= ?1",
-                        )?
-                        .query_row([at], |row| row.get(0))?;
-                    let pruned = floor.is_some_and(|floor| at < floor.observed_unix_ms);
-                    (first.unwrap_or(through + 1), pruned)
-                }
-                Start::After(generation) => (generation + 1, false),
-            };
-            (through, (first - 1, i64::MAX), pruned)
-        }
+        None => match first_page(conn, &request.since, floor)? {
+            Ok(bounds) => bounds,
+            Err(unobserved) => return Ok(unobserved),
+        },
     };
     let limit = super::page_limit(request.limit, DEFAULT_LIMIT, MAX_LIMIT);
     let mut select = conn.prepare_cached(
@@ -184,6 +158,61 @@ pub fn changes(reader: &Reader, request: &ChangesRequest) -> Result<ChangesAnswe
         retention_floor: floor,
         pruned,
     }))
+}
+
+/// The newest generation, the position after which, and whether history
+/// before the start was pruned.
+type Bounds = (i64, (i64, i64), bool);
+
+/// Where a first page starts, or the answer for a commit never observed.
+fn first_page(
+    conn: &rusqlite::Connection,
+    since: &Since,
+    floor: Option<RetentionFloor>,
+) -> Result<std::result::Result<Bounds, ChangesAnswer>> {
+    let newest: i64 = conn
+        .prepare_cached("SELECT coalesce(max(generation), 0) FROM generations")?
+        .query_row([], |row| row.get(0))?;
+    let through = match since {
+        Since::AfterGeneration {
+            through: Some(fence),
+            ..
+        } => newest.min(*fence),
+        _ => newest,
+    };
+    let start = match since {
+        Since::RelativeMillis(ms) => {
+            let ms = i64::try_from(*ms).unwrap_or(i64::MAX);
+            Start::Time(se_atlas_index::store::now_unix_ms().saturating_sub(ms))
+        }
+        Since::ObservedUnixMillis(at) => Start::Time(*at),
+        Since::AfterGeneration { after, .. } => Start::After(*after),
+        Since::Commit(commit) => match commit_generation(conn, commit)? {
+            Some(generation) => Start::After(generation),
+            None => {
+                return Ok(Err(ChangesAnswer::CommitNotObserved {
+                    commit: commit.clone(),
+                }));
+            }
+        },
+    };
+    let (after, pruned) = match start {
+        Start::Time(at) => {
+            let first: Option<i64> = conn
+                .prepare_cached(
+                    "SELECT min(generation) FROM generations WHERE observed_unix_ms >= ?1",
+                )?
+                .query_row([at], |row| row.get(0))?;
+            let pruned = floor.is_some_and(|floor| at < floor.observed_unix_ms);
+            let after = first.map_or((through, i64::MAX), |g| (g.saturating_sub(1), i64::MAX));
+            (after, pruned)
+        }
+        Start::After(generation) => {
+            let pruned = floor.is_some_and(|floor| generation < floor.generation.saturating_sub(1));
+            ((generation, i64::MAX), pruned)
+        }
+    };
+    Ok(Ok((through, after, pruned)))
 }
 
 enum Start {
@@ -250,6 +279,7 @@ fn request_digest(since: &Since) -> String {
         Since::RelativeMillis(ms) => format!("relative:{ms}"),
         Since::ObservedUnixMillis(at) => format!("observed:{at}"),
         Since::Commit(commit) => format!("commit:{}", commit.trim().to_ascii_lowercase()),
+        Since::AfterGeneration { after, through } => format!("after:{after}:{through:?}"),
     };
     let digest = blake3::hash(identity.as_bytes());
     let value = u32::from_le_bytes([

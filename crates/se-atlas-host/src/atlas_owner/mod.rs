@@ -1,365 +1,386 @@
-//! One after-ready Atlas driver on the supplied runtime and maintenance gate.
-//! No IO starts during installation, and no SQL handle crosses an await.
+//! The host's Atlas owner: one v5 engine per registered worktree, started
+//! after readiness. Registration comes from the authoritative catalogue and
+//! from queries; the owner loop feeds committed records into each engine.
+//! No SQL handle crosses an await, and all disk work runs off the runtime.
 mod qualification;
 mod read;
 mod records;
 mod roots;
-mod work;
-use crate::atlas_renewal::{NativeRenewal, drive_events, drive_quantum};
-use crate::atlas_runtime::project_work::{ProjectWork, Ticket};
-use crate::atlas_runtime::{NativeController, NativeRuntime, read_port::*};
 use crate::host::AtlasHost;
-use se_atlas::{cache::connection::SqlProfile, lifecycle::*, model::*, parse::ParserProfile};
+use se_atlas::{cache::connection::SqlProfile, parse::ParserProfile};
+use se_atlas_service::{Root, RootSpec};
 use se_core::store_error::store_error;
 use se_store::{Actor, Admission, Scope, Snapshot};
-use se_types::{HumanId, ProjectId, Result, SeError};
+use se_types::{HumanId, ProjectId, Result, SeError, code::RootId};
 use std::future::{Future, poll_fn};
-#[cfg(target_os = "linux")]
-use std::os::fd::OwnedFd;
 use std::task::Poll;
 use std::{
+    any::Any,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     time::{Duration, Instant},
 };
-#[cfg(target_os = "linux")]
-use tokio::io::unix::AsyncFd;
 use tokio::sync::watch;
 
-/// Independent native measurements supply these admissions. Installation fills
-/// the measured Linux SQL/parser defaults within their qualified source bounds.
+/// Retained for installers that still pass legacy native measurements. The
+/// v5 engine runs no native parser and needs no admission profile.
 #[derive(Default, Debug)]
 pub struct NativeAtlasQualification {
     pub sql: Option<SqlProfile>,
     pub parsers: Vec<ParserProfile>,
 }
+
 pub struct Service {
-    #[cfg(windows)]
-    source_signal: Arc<tokio::sync::Notify>,
-    state: Mutex<State>,
-    readers: Mutex<read::Catalogue>,
-    profile: Option<SqlProfile>,
+    home: PathBuf,
     owner: HumanId,
-    memory: MemoryBudget,
     enabled: bool,
-    unqualified: bool,
     interests: Arc<crate::atlas_runtime::record_fence::RecordFeedFence>,
-    work: Arc<ProjectWork>,
-    home: PathBuf,
+    roots: Mutex<Vec<Registered>>,
+    /// Projects whose committed records may not all be in their engines.
+    feeding: Mutex<Vec<ProjectId>>,
 }
-struct State {
-    controller: NativeController<NativeRenewal>,
-    home: PathBuf,
-    roots: Vec<Root>,
-    scan: Option<roots::Scan>,
-    enabled: bool,
-    child_deadline: Option<(u32, Instant)>,
-    work_retry_after: Option<Instant>,
-    work: Arc<ProjectWork>,
-    queue_scan: Option<crate::atlas_runtime::project_work::Scan>,
-    active_project: Option<ActiveProject>,
-    registry_dirty: bool,
-    reconcile_all: bool,
+
+/// One registered worktree; `root` is absent while Atlas is disabled.
+struct Registered {
+    spec: RootSpec,
+    root: Option<Arc<Root>>,
 }
-struct ActiveProject {
-    ticket: Ticket,
-    after: Option<RootId>,
-    root: Option<RootId>,
-}
-struct Root {
-    registration: RootRegistration,
-    feed_pending: bool,
-    feed_stalled: bool,
-    // Deadline, previous delay, and whether this is the final native drain.
-    event_retry: Option<(Instant, Duration, bool)>,
-}
-#[derive(Clone)]
-enum Wake {
-    Core,
-    #[cfg(target_os = "linux")]
-    Source(RootId),
-    #[cfg(windows)]
-    Sources,
-    #[cfg(target_os = "linux")]
-    Child,
-    Scheduled,
-}
-struct Plan {
-    ready: bool,
-    delay: Option<Duration>,
-    #[cfg(windows)]
-    listen_sources: bool,
-    #[cfg(target_os = "linux")]
-    fds: Vec<(OwnedFd, Wake)>,
-}
+
+/// Bound for stopping one replaced worktree's writer.
+const REPLACE_STOP: Duration = Duration::from_secs(2);
+/// Pause before the next pass while record feed is still waiting.
+const FEED_AGAIN: Duration = Duration::from_millis(50);
+/// Pause before retrying a feed write that failed or timed out.
+const FEED_BACKOFF: Duration = Duration::from_millis(500);
+/// Time one pass spends feeding before it yields.
+const FEED_PASS: Duration = Duration::from_millis(250);
+
 impl Service {
     pub fn new(
         state_directory: &std::path::Path,
-        image: PathBuf,
+        _image: PathBuf,
         owner: HumanId,
         enabled: bool,
-        qualification: NativeAtlasQualification,
+        _qualification: NativeAtlasQualification,
         interests: Arc<crate::atlas_runtime::record_fence::RecordFeedFence>,
     ) -> Result<Arc<Self>> {
-        let qualification = qualification.with_native_sql()?;
-        let unqualified = cfg!(windows) && enabled && qualification.sql.is_none();
-        let enabled = enabled && !unqualified;
-        let home = state_directory.join("atlas");
-        let work = Arc::new(ProjectWork::new(state_directory.join("atlas-projects")));
-        let memory = qualification.memory();
-        let profile = qualification.sql.clone();
-        let renewal = NativeRenewal::new(qualification.parsers)?;
-        #[cfg(windows)]
-        let source_signal = renewal.signal();
-        let controller = NativeController::new(NativeRuntime::new(
-            home.clone(),
-            image,
-            renewal,
-            qualification.sql,
-        )?);
         Ok(Arc::new(Self {
-            #[cfg(windows)]
-            source_signal,
-            state: Mutex::new(State {
-                controller,
-                home: home.clone(),
-                roots: Vec::new(),
-                scan: Some(roots::Scan::default()),
-                enabled,
-                child_deadline: None,
-                work_retry_after: None,
-                work: work.clone(),
-                queue_scan: None,
-                active_project: None,
-                registry_dirty: false,
-                reconcile_all: false,
-            }),
-            readers: Mutex::new(read::Catalogue::default()),
-            profile,
+            home: state_directory.join("atlas-v5"),
             owner,
-            memory,
             enabled,
-            unqualified,
             interests,
-            work,
-            home,
+            roots: Mutex::new(Vec::new()),
+            feeding: Mutex::new(Vec::new()),
         }))
     }
+
+    fn roots(&self) -> Result<MutexGuard<'_, Vec<Registered>>> {
+        self.roots.lock().map_err(|_| busy())
+    }
+
+    /// Make `specs` the project's worktrees, starting new engines and
+    /// stopping ones whose worktree left or moved. True when anything changed.
+    fn register(&self, project: &ProjectId, specs: Vec<RootSpec>) -> Result<bool> {
+        let mut retired = Vec::new();
+        let mut failed = None;
+        let changed = {
+            let mut roots = self.roots()?;
+            let before = roots.len();
+            let mut changed = false;
+            roots.retain_mut(|registered| {
+                let keep = &registered.spec.project != project
+                    || specs.iter().any(|spec| spec == &registered.spec);
+                if !keep {
+                    changed = true;
+                    retired.extend(registered.root.take());
+                }
+                keep
+            });
+            for spec in specs {
+                if roots.iter().any(|registered| registered.spec == spec) {
+                    continue;
+                }
+                let root = if self.enabled {
+                    match Root::start(spec.clone()) {
+                        Ok(root) => Some(root),
+                        Err(error) => {
+                            // Retired writers still stop below.
+                            failed.get_or_insert(error);
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                };
+                roots.push(Registered { spec, root });
+                changed = true;
+            }
+            changed || roots.len() != before
+        };
+        for root in retired {
+            if let Err(error) = root.stop(REPLACE_STOP) {
+                eprintln!("Code index writer for a removed worktree did not stop: {error}");
+            }
+        }
+        if changed && self.enabled {
+            self.need_feed([project.clone()])?;
+        }
+        match failed {
+            Some(error) => Err(error),
+            None => Ok(changed),
+        }
+    }
+
+    /// The project's selected worktree.
+    fn select(
+        &self,
+        project: &ProjectId,
+        selected: Option<&RootId>,
+    ) -> Result<(RootSpec, Option<Arc<Root>>)> {
+        let roots = self.roots()?;
+        let mut matching = roots.iter().filter(|registered| {
+            &registered.spec.project == project
+                && selected.is_none_or(|id| id == &registered.spec.root)
+        });
+        let first = matching.next().ok_or_else(|| {
+            SeError::invalid(
+                "Atlas query root",
+                "a current registered worktree of this project",
+            )
+        })?;
+        if matching.next().is_some() {
+            return Err(SeError::invalid(
+                "Atlas query root",
+                "an explicit root when the project has several worktrees",
+            ));
+        }
+        Ok((first.spec.clone(), first.root.clone()))
+    }
+
+    fn started(&self) -> Result<Vec<Arc<Root>>> {
+        Ok(self
+            .roots()?
+            .iter()
+            .filter_map(|registered| registered.root.clone())
+            .collect())
+    }
 }
+
 fn busy() -> SeError {
     se_core::scope::unreadable(
         "Atlas owner",
-        "the maintenance owner lock is poisoned; preserve the cache and restart the host",
+        "the owner's worktree list lock is poisoned; restart the host, the index stores are kept",
     )
 }
+
+/// What one background pass found.
+#[derive(Clone, Copy, Default)]
+struct Pass {
+    /// More record feed is waiting; run again soon.
+    again: bool,
+    /// A feed write failed (a writer busy with a rebuild); retry after a pause.
+    backoff: bool,
+    /// The catalogue changed; scan it on the next pass.
+    rescan: bool,
+}
+
 impl Service {
     pub async fn run<T: Send + Sync + 'static>(
         self: Arc<Self>,
         host: Arc<dyn AtlasHost>,
         mut stopped: watch::Receiver<Option<T>>,
     ) -> Result<()> {
-        let mut wake = Wake::Core;
+        let mut scan = true;
         loop {
             if stopped.borrow().is_some() {
                 break;
             }
-            let service = self.clone();
-            let job = host.clone();
-            let work = host
-                .run_background_owned(
-                    Duration::from_secs(5),
-                    Box::new(move || {
-                        let mut state = service.state.lock().map_err(|_| busy())?;
-                        service.publish_readers(&state, true)?;
-                        let result = state.work(job.as_ref(), &service.owner, wake);
-                        service.publish_readers(&state, false)?;
-                        // Keep live progress in memory. Only a settled pass needs
-                        // durable metadata for readers of a later cold root.
-                        let pending = result
-                            .as_ref()
-                            .is_ok_and(|plan| plan.ready || plan.delay.is_some());
-                        if !pending {
-                            service.persist_readers()?;
-                        }
-                        Ok(Box::new(result?) as Box<dyn std::any::Any + Send>)
-                    }),
-                )
-                .await
-                .and_then(|value| {
-                    value
-                        .downcast::<Plan>()
-                        .map(|boxed| *boxed)
-                        .map_err(|_| busy())
-                });
-            let plan = match work {
-                Ok(plan) => plan,
-                Err(error) => {
-                    eprintln!("Code index maintenance paused: {error}");
-                    // No retry timer is invented after failure. A new committed
-                    // event can retry independently of source readiness.
-                    Plan {
-                        ready: false,
-                        delay: None,
-                        #[cfg(windows)]
-                        listen_sources: false,
-                        #[cfg(target_os = "linux")]
-                        fds: Vec::new(),
-                    }
-                }
+            let pass = if self.enabled {
+                self.background(&host, scan).await
+            } else {
+                Pass::default()
             };
-            enum Event {
-                Stop(bool),
-                Core,
-                Ready(Result<Wake>),
-            }
-            let event = {
+            scan = pass.rescan;
+            // A catalogue left unscanned is due again, not on the next event.
+            let retry = if pass.again || pass.rescan {
+                Some(FEED_AGAIN)
+            } else if pass.backoff {
+                Some(FEED_BACKOFF)
+            } else {
+                None
+            };
+            let stop = {
                 let stopped = stopped.changed();
                 let core = host.records().changed();
-                #[cfg(windows)]
-                let listen_sources = plan.listen_sources;
-                let ready = wait(plan);
-                #[cfg(windows)]
-                let source = self.source_signal.notified();
-                let mut stopped = std::pin::pin!(stopped);
-                let mut core = std::pin::pin!(core);
-                let mut ready = std::pin::pin!(ready);
-                #[cfg(windows)]
-                let mut source = std::pin::pin!(source);
+                let timer = async {
+                    if let Some(delay) = retry {
+                        tokio::time::sleep(delay).await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                };
+                let (mut stopped, mut core, mut timer) = (
+                    std::pin::pin!(stopped),
+                    std::pin::pin!(core),
+                    std::pin::pin!(timer),
+                );
                 poll_fn(|cx| {
                     if let Poll::Ready(value) = stopped.as_mut().poll(cx) {
-                        return Poll::Ready(Event::Stop(value.is_err()));
+                        return Poll::Ready(value.is_err());
                     }
-                    if core.as_mut().poll(cx).is_ready() {
-                        return Poll::Ready(Event::Core);
-                    }
-                    #[cfg(windows)]
-                    if listen_sources && source.as_mut().poll(cx).is_ready() {
-                        return Poll::Ready(Event::Ready(Ok(Wake::Sources)));
-                    }
-                    if let Poll::Ready(value) = ready.as_mut().poll(cx) {
-                        return Poll::Ready(Event::Ready(value));
+                    if core.as_mut().poll(cx).is_ready() || timer.as_mut().poll(cx).is_ready() {
+                        return Poll::Ready(false);
                     }
                     Poll::Pending
                 })
                 .await
             };
-            match event {
-                Event::Stop(closed) => {
-                    if closed || stopped.borrow().is_some() {
-                        break;
-                    }
-                    wake = Wake::Scheduled;
-                }
-                Event::Core => wake = Wake::Core,
-                Event::Ready(ready) => wake = ready?,
+            if stop || stopped.borrow().is_some() {
+                break;
             }
         }
         Ok(())
     }
+
+    async fn background(self: &Arc<Self>, host: &Arc<dyn AtlasHost>, scan: bool) -> Pass {
+        let service = self.clone();
+        let job = host.clone();
+        let work = host
+            .run_background_owned(
+                Duration::from_secs(5),
+                Box::new(move || {
+                    let pass = service.work(job.as_ref(), scan)?;
+                    Ok(Box::new(pass) as Box<dyn Any + Send>)
+                }),
+            )
+            .await
+            .and_then(|value| {
+                value
+                    .downcast::<Pass>()
+                    .map(|pass| *pass)
+                    .map_err(|_| busy())
+            });
+        work.unwrap_or_else(|error| {
+            eprintln!("Code index maintenance paused: {error}");
+            Pass {
+                backoff: true,
+                ..Pass::default()
+            }
+        })
+    }
+
+    /// One bounded pass: register the catalogue when asked, then feed each
+    /// started worktree its project's committed records, several chunks per
+    /// worktree within [`FEED_PASS`].
+    fn work(&self, host: &dyn AtlasHost, scan: bool) -> Result<Pass> {
+        let mut pass = Pass::default();
+        if let Some(activity) = host.records().take_activity()? {
+            pass.rescan = activity.registry_changed || activity.overflow;
+            if activity.overflow {
+                // Lost activity names no project: every one may be behind.
+                let all: Vec<ProjectId> = self
+                    .roots()?
+                    .iter()
+                    .map(|registered| registered.spec.project.clone())
+                    .collect();
+                self.need_feed(all)?;
+            }
+            self.need_feed(activity.projects)?;
+        }
+        if scan {
+            let mut catalogue = roots::Scan::default();
+            let until = Instant::now() + Duration::from_secs(2);
+            while !catalogue.page(host, &self.owner, self)? {
+                if Instant::now() >= until {
+                    pass.rescan = true;
+                    break;
+                }
+            }
+        }
+        let started = self.started()?;
+        let waiting = std::mem::take(&mut *self.feeding.lock().map_err(|_| busy())?);
+        let until = Instant::now() + FEED_PASS;
+        let mut unsettled = Vec::new();
+        for project in waiting {
+            let mut complete = true;
+            for root in started.iter().filter(|root| root.spec().project == project) {
+                complete &= self.feed(host, root, until, &mut pass);
+            }
+            if !complete {
+                unsettled.push(project);
+            }
+        }
+        let mut feeding = self.feeding.lock().map_err(|_| busy())?;
+        // A project asked for during the pass is fed on the next one.
+        pass.again |= !feeding.is_empty();
+        for project in unsettled {
+            if !feeding.contains(&project) {
+                feeding.push(project);
+            }
+        }
+        Ok(pass)
+    }
+
+    /// Feed one worktree until it is current, cannot progress, or the pass
+    /// runs out of time. True once it is current.
+    fn feed(&self, host: &dyn AtlasHost, root: &Root, until: Instant, pass: &mut Pass) -> bool {
+        loop {
+            match records::chunk(host, &self.owner, root) {
+                Ok(records::Fed::Current) => return true,
+                Ok(records::Fed::More) if Instant::now() < until => {}
+                Ok(records::Fed::More | records::Fed::Waiting) => {
+                    pass.again = true;
+                    return false;
+                }
+                Err(error) => {
+                    // A writer busy with a rebuild times the write out; retry
+                    // after a pause so record lag clears without a new event.
+                    pass.backoff = true;
+                    eprintln!("Code index record feed paused: {error}");
+                    return false;
+                }
+            }
+        }
+    }
+
+    /// Mark projects whose records may be ahead of their engines.
+    fn need_feed(&self, projects: impl IntoIterator<Item = ProjectId>) -> Result<()> {
+        let mut feeding = self.feeding.lock().map_err(|_| busy())?;
+        for project in projects {
+            if !feeding.contains(&project) {
+                feeding.push(project);
+            }
+        }
+        Ok(())
+    }
+
+    /// Stop every worktree's writer: signal them all first, then join each
+    /// within the shared deadline. One slow writer never leaves the others
+    /// running; the first failure is reported after every join.
     pub async fn close(self: Arc<Self>, host: &dyn AtlasHost, remaining: Duration) -> Result<()> {
         let close_at = Instant::now() + remaining;
         host.run_owned(
             remaining,
             Box::new(move || {
-                self.readers.lock().map_err(|_| read::poisoned())?.clear();
-                let mut state = self.state.lock().map_err(|_| busy())?;
-                let roots: Vec<_> = state
-                    .roots
-                    .iter()
-                    .map(|r| r.registration.root.clone())
-                    .collect();
-                for root in roots {
-                    let left = close_at
-                        .checked_duration_since(Instant::now())
-                        .filter(|d| !d.is_zero())
-                        .ok_or_else(|| {
-                            SeError::new(se_types::Detail::DeadlineExceeded(
-                                se_types::details::DeadlineExceeded {
-                                    op: "local IPC".into(),
-                                    deadline_ms: remaining.as_millis().min(u128::from(u64::MAX))
-                                        as u64,
-                                },
-                            ))
-                        })?;
-                    match state.controller.close(root, CloseReason::HostDrain, left)? {
-                        CloseResult::Closed => (),
-                        _ => {
-                            return Err(SeError::invalid(
-                                "Atlas shutdown",
-                                "native child and watch close must complete before the owner releases custody",
-                            ));
-                        }
+                let started = self.started()?;
+                for root in &started {
+                    root.signal_stop();
+                }
+                let mut first = None;
+                for root in &started {
+                    if let Err(error) = root.join(close_at) {
+                        first.get_or_insert(error);
                     }
                 }
-                Ok(Box::new(()) as Box<dyn std::any::Any + Send>)
+                first.map_or(Ok(()), Err)?;
+                Ok(Box::new(()) as Box<dyn Any + Send>)
             }),
         )
         .await?;
         Ok(())
     }
 }
-#[cfg(target_os = "linux")]
-async fn wait(plan: Plan) -> Result<Wake> {
-    if plan.ready {
-        tokio::task::yield_now().await;
-        return Ok(Wake::Scheduled);
-    }
-    let fds: Vec<_> = plan
-        .fds
-        .into_iter()
-        .map(|(fd, wake)| {
-            #[expect(deprecated, reason = "The reactor exclusively owns this OwnedFd until AsyncFd drops it; its descriptor is fixed, unlike a generic AsRawFd value. Native unsafe code stays in se-proc.")]
-            let registration=AsyncFd::with_interest(fd,tokio::io::Interest::READABLE);
-            registration.map(|fd|(fd,wake))
-        })
-        .collect::<std::io::Result<_>>()
-        .map_err(|e| se_core::scope::unreadable("Atlas readiness", &e.to_string()))?;
-    let readable = std::future::poll_fn(|cx| {
-        for (fd, wake) in &fds {
-            match fd.poll_read_ready(cx) {
-                std::task::Poll::Ready(Ok(mut ready)) => {
-                    ready.clear_ready();
-                    return std::task::Poll::Ready(Ok(wake.clone()));
-                }
-                std::task::Poll::Ready(Err(error)) => {
-                    return std::task::Poll::Ready(Err(se_core::scope::unreadable(
-                        "Atlas readiness",
-                        &error.to_string(),
-                    )));
-                }
-                std::task::Poll::Pending => (),
-            }
-        }
-        std::task::Poll::Pending
-    });
-    let timer = async {
-        match plan.delay {
-            Some(delay) => tokio::time::sleep(delay).await,
-            None => std::future::pending().await,
-        };
-        Ok(Wake::Scheduled)
-    };
-    let mut readable = std::pin::pin!(readable);
-    let mut timer = std::pin::pin!(timer);
-    poll_fn(|cx| {
-        if let Poll::Ready(value) = timer.as_mut().poll(cx) {
-            return Poll::Ready(value);
-        }
-        readable.as_mut().poll(cx)
-    })
-    .await
-}
-#[cfg(windows)]
-async fn wait(plan: Plan) -> Result<Wake> {
-    if plan.ready {
-        tokio::task::yield_now().await;
-    } else if let Some(delay) = plan.delay {
-        tokio::time::sleep(delay).await;
-    } else {
-        std::future::pending::<()>().await;
-    }
-    Ok(Wake::Scheduled)
-}
+
 fn close_read<T>(result: Result<T>, closed: se_store::StoreResult<()>) -> Result<T> {
     match (result, closed) {
         (result, Ok(())) => result,
@@ -367,6 +388,7 @@ fn close_read<T>(result: Result<T>, closed: se_store::StoreResult<()>) -> Result
         (Err(original), Err(error)) => Err(original.with_cause(error)),
     }
 }
+
 fn admission(host: &dyn AtlasHost, owner: &HumanId, scope: Scope) -> Admission {
     Admission {
         scope,
