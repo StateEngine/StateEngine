@@ -2,12 +2,12 @@ use super::*;
 use rusqlite::params;
 impl QueryReader<'_, '_, '_> {
     pub fn outline(&mut self, query: &OutlineQuery) -> AtlasResult<Answer<Read<Outline>>> {
-        let end = deadline(query.budget)?;
+        let (end, hard) = deadline(query.budget)?;
         let started = end - query.budget.work;
         let digest = cursor::digest(&("outline", &query.path, &self.ctx.viewer))?;
         let identity = self.cache.identity().clone();
         let env = self.ctx.split();
-        let result = self.cache.read(end, |sql| {
+        let result = self.cache.read(hard, |sql| {
             let snapshot = snapshot(&identity, &env, sql)?;
             if crate::policy::built_in_denied(&query.path) {return Ok(snapshot.unknown("source path is excluded by the built-in private-file policy"));}
             let previous = query.next.as_ref().map(PositionCursor::decode).transpose()?;
@@ -15,12 +15,12 @@ impl QueryReader<'_, '_, '_> {
             let key = previous.as_ref().map(|p| &p.last_key);
             if let Some(k) = key { validate_key(k)?; }
             let Some(file) = file_by_path(sql, &query.path)? else {
-                return if snapshot.negative_complete() {
+                return if snapshot.index.negative_complete() {
                     Ok(snapshot.answer(Read::Absent { checked: format!("registered cache path {} in epoch {}", query.path.as_str(), identity.epoch) }, advanced))
                 } else { Ok(snapshot.unknown("path is not indexed; discovery or semantics are incomplete")) };
             };
             let mut output = Outline { file: file.pointer, language: file.language, coverage: file.coverage,
-                symbols: Vec::new(), records: Vec::new(), complete: snapshot.negative_complete() && !advanced, next: None };
+                symbols: Vec::new(), records: Vec::new(), complete: snapshot.index.negative_complete() && !advanced, next: None };
             let phase = key.map_or(0, |k| k.integers[0]);
             let mut last = key.cloned().unwrap_or_default();
             let mut more = false;
@@ -28,12 +28,7 @@ impl QueryReader<'_, '_, '_> {
                 let start = key.map_or(0, |k| k.integers[1]);
                 let stop = key.map_or(u64::MAX, |k| k.integers[2]);
                 let symbol_key = key.map_or(&[][..], |k| k.bytes.as_slice());
-                let ids={
-                    let mut stmt=sql.prepare("SELECT id FROM symbols WHERE file=?1 AND (?2=0 OR start_byte>?3 OR (start_byte=?3 AND (end_byte<?4 OR (end_byte=?4 AND key>?5)))) ORDER BY start_byte,end_byte DESC,key LIMIT ?6")?;
-                    let mut rows=stmt.query(params![file.rowid,key.is_some(),signed(start)?,i64::try_from(stop).unwrap_or(i64::MAX),symbol_key,u32::from(query.budget.max_results)+1]).map_err(cache_error)?;
-                    let mut ids=Vec::with_capacity(query.budget.max_results as usize+1);
-                    while let Some(row)=rows.next().map_err(cache_error)?{ids.push(get::<i64>(row,0)?);}ids
-                };
+                let ids=id_column(sql,"SELECT id FROM symbols WHERE file=?1 AND (?2=0 OR start_byte>?3 OR (start_byte=?3 AND (end_byte<?4 OR (end_byte=?4 AND key>?5)))) ORDER BY start_byte,end_byte DESC,key LIMIT ?6",params![file.rowid,key.is_some(),signed(start)?,i64::try_from(stop).unwrap_or(i64::MAX),symbol_key,u32::from(query.budget.max_results)+1],query.budget.max_results as usize+1)?;
                 for id in ids {
                     let symbol=symbol_by_id(sql,id)?.0.value;
                     if output.symbols.len() >= query.budget.max_results as usize { more = true; break; }
@@ -64,13 +59,9 @@ impl QueryReader<'_, '_, '_> {
             }
             check_output(snapshot.answer(Read::Present { value: output }, advanced), query.budget)
         });
-        let answer = phase_timeout("outline query", started, end, result)?;
-        phase_timeout(
-            "outline query",
-            started,
-            end,
-            super::freshness::finish(self, answer, query.budget, end),
-        )
+        let answer = phase_timeout("outline query", started, hard, result)?;
+        let answer = super::freshness::finish(self, answer, query.budget, (end, hard));
+        phase_timeout("outline query", started, hard, answer)
     }
 }
 fn validate_key(key: &Key) -> AtlasResult<()> {

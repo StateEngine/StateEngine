@@ -3,8 +3,7 @@ use super::{execute, files::Files};
 use crate::bootstrap::Bootstrap;
 use se_core::{admission::read_scope, ops::*, scope, store_error::store_error};
 use se_store::{
-    Actor, Admission, EventBody, MailDirection, MessageQuery, ReadStore, RuntimeOwnerHead, Scope,
-    Snapshot,
+    Actor, Admission, MailDirection, MessageQuery, ReadStore, RuntimeOwnerHead, Scope, Snapshot,
 };
 use se_types::{Read, Result};
 #[path = "status/projects.rs"]
@@ -18,9 +17,7 @@ pub fn observe<R: ReadStore>(
 ) -> Result<AnyOutput> {
     let deadline = super::session_observation::deadline()?;
     let owner = Some(reader.runtime_owner().map_err(|e| store_error(&e))?);
-    let mut snapshot = reader
-        .snapshot(read_scope(admission))
-        .map_err(|e| store_error(&e))?;
+    let mut snapshot = super::select::open_snapshot(reader, admission)?;
     let result = observe_snapshot(cx, &mut snapshot, owner, files, admission).and_then(|output| {
         super::session_observation::prepare(output, &mut snapshot, admission, deadline)
     });
@@ -123,16 +120,11 @@ pub fn observe_snapshot_watched<S: Snapshot>(
                 output.removal = Some(removal);
                 return Ok(());
             }
-            let (name, roots) = match &record.current.body {
-                EventBody::ProjectRegistered { name, roots, .. }
-                | EventBody::ProjectUpdated { name, roots, .. } => (name, roots.as_slice()),
-                EventBody::ProjectMoved { name, to, .. } => (name, std::slice::from_ref(to)),
-                _ => {
-                    return Err(scope::unreadable(
-                        "project status",
-                        "selected project metadata is not active",
-                    ));
-                }
+            let Some((_, name, roots)) = super::select::active_project(&record.current.body) else {
+                return Err(scope::unreadable(
+                    "project status",
+                    "selected project metadata is not active",
+                ));
             };
             output.scope = "project".into();
             let root = roots
@@ -148,7 +140,7 @@ pub fn observe_snapshot_watched<S: Snapshot>(
             output.project = Read::Present {
                 value: ProjectView {
                     id: project.clone(),
-                    name: name.clone(),
+                    name: name.to_owned(),
                     root,
                     registered_at: receipt::timestamp(
                         record
@@ -191,7 +183,7 @@ pub fn observe_snapshot_watched<S: Snapshot>(
                         output.principal = Some(PrincipalView {
                             project: Named {
                                 id: project.clone(),
-                                name: name.clone(),
+                                name: name.to_owned(),
                             },
                             agent: selected,
                             session_id: session.clone(),

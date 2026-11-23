@@ -66,10 +66,6 @@ fn drain(reader: &mut impl Read, bytes: &mut Vec<u8>, maximum: usize) -> io::Res
         }
     }
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn read(
     image: &Path,
     control: &Path,
@@ -81,86 +77,12 @@ pub(super) fn read(
     let lease = se_proc::atlas_worker::lease::Lease::acquire()?;
     let filesystem = super::filesystem::Filesystem::new(image, roots)?;
     let parent = std::process::id() as libc::pid_t;
-    let mut command = Command::new(image);
-    command
-        .current_dir(control)
-        .env_clear()
-        .env("HOME", control)
-        .env("XDG_CONFIG_HOME", control)
-        .env("GIT_DIR", control)
-        .env("GIT_OBJECT_DIRECTORY", objects)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_NO_LAZY_FETCH", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_NO_REPLACE_OBJECTS", "1")
-        .env("LC_ALL", "C")
-        .env("GIT_PAGER", "cat")
-        .args([
-            "--no-optional-locks",
-            "--no-replace-objects",
-            "-c",
-            "core.packedGitWindowSize=1048576",
-            "-c",
-            "core.packedGitLimit=8388608",
-            "-c",
-            "core.deltaBaseCacheLimit=1048576",
-            "-c",
-            "core.commitGraph=false",
-            "-c",
-            "core.multiPackIndex=false",
-            "-c",
-            "gc.auto=0",
-            "-c",
-            "maintenance.auto=false",
-            "-c",
-            "protocol.allow=never",
-        ])
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    let mut command = git_command(image, control, objects, args);
     // SAFETY: the pre-exec callback performs only async-signal-safe native limit
     // calls, with initialized stack POD. It never raises an inherited bound.
     unsafe {
         command.pre_exec(move || {
-            let mut inherited = libc::rlimit {
-                rlim_cur: 0,
-                rlim_max: 0,
-            };
-            if libc::getrlimit(libc::RLIMIT_AS, &mut inherited) < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let cap = se_proc::atlas_worker::MEMORY_BYTES
-                .min(inherited.rlim_cur)
-                .min(inherited.rlim_max);
-            let limit = libc::rlimit {
-                rlim_cur: cap,
-                rlim_max: cap,
-            };
-            let cpu = libc::rlimit {
-                rlim_cur: 900,
-                rlim_max: 900,
-            };
-            let descriptors = libc::rlimit {
-                rlim_cur: 64,
-                rlim_max: 64,
-            };
-            if libc::setrlimit(libc::RLIMIT_AS, &limit) < 0
-                || libc::setrlimit(libc::RLIMIT_CPU, &cpu) < 0
-                || libc::setrlimit(libc::RLIMIT_NOFILE, &descriptors) < 0
-                || libc::setpriority(libc::PRIO_PROCESS, 0, 10) < 0
-                || libc::syscall(libc::SYS_ioprio_set, 1, 0, 3 << 13) < 0
-                || libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) < 0
-                || libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32) < 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            if libc::getppid() != parent {
-                return Err(io::Error::from_raw_os_error(libc::ESRCH));
-            }
+            native_limits(parent)?;
             filesystem.enter()?;
             contain()?;
             Ok(())
@@ -246,6 +168,97 @@ pub(super) fn read(
             return Err(io::Error::last_os_error());
         }
     }
+}
+/// Build the Git command: a cleared environment, pinned offline config, and the
+/// history args. No helper path is granted here; exec stays for the image only.
+fn git_command(image: &Path, control: &Path, objects: &Path, args: Vec<String>) -> Command {
+    let mut command = Command::new(image);
+    command
+        .current_dir(control)
+        .env_clear()
+        .env("HOME", control)
+        .env("XDG_CONFIG_HOME", control)
+        .env("GIT_DIR", control)
+        .env("GIT_OBJECT_DIRECTORY", objects)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("LC_ALL", "C")
+        .env("GIT_PAGER", "cat")
+        .args([
+            "--no-optional-locks",
+            "--no-replace-objects",
+            "-c",
+            "core.packedGitWindowSize=1048576",
+            "-c",
+            "core.packedGitLimit=8388608",
+            "-c",
+            "core.deltaBaseCacheLimit=1048576",
+            "-c",
+            "core.commitGraph=false",
+            "-c",
+            "core.multiPackIndex=false",
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "maintenance.auto=false",
+            "-c",
+            "protocol.allow=never",
+        ])
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+/// Apply the async-signal-safe native limits in the pre-exec child: never
+/// raise an inherited bound, and refuse a stolen process identity.
+fn native_limits(parent: libc::pid_t) -> io::Result<()> {
+    // SAFETY: pre-exec performs only async-signal-safe native limit calls,
+    // with initialized stack POD. It never raises an inherited bound.
+    unsafe {
+        let mut inherited = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if libc::getrlimit(libc::RLIMIT_AS, &mut inherited) < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let cap = se_proc::atlas_worker::MEMORY_BYTES
+            .min(inherited.rlim_cur)
+            .min(inherited.rlim_max);
+        let limit = libc::rlimit {
+            rlim_cur: cap,
+            rlim_max: cap,
+        };
+        let cpu = libc::rlimit {
+            rlim_cur: 900,
+            rlim_max: 900,
+        };
+        let descriptors = libc::rlimit {
+            rlim_cur: 64,
+            rlim_max: 64,
+        };
+        if libc::setrlimit(libc::RLIMIT_AS, &limit) < 0
+            || libc::setrlimit(libc::RLIMIT_CPU, &cpu) < 0
+            || libc::setrlimit(libc::RLIMIT_NOFILE, &descriptors) < 0
+            || libc::setpriority(libc::PRIO_PROCESS, 0, 10) < 0
+            || libc::syscall(libc::SYS_ioprio_set, 1, 0, 3 << 13) < 0
+            || libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) < 0
+            || libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32) < 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if libc::getppid() != parent {
+            return Err(io::Error::from_raw_os_error(libc::ESRCH));
+        }
+    }
+    Ok(())
 }
 
 /// The closed read verbs need neither network nor descendants. Exec remains

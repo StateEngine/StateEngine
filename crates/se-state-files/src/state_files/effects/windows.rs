@@ -90,7 +90,7 @@ fn open_shared_with_layout(
     // SAFETY: successful CreateFileW transfers one uniquely owned native handle.
     Ok(unsafe { File::from_raw_handle(raw) })
 }
-fn dispose(file: &File, path: &Path) -> Result<()> {
+pub(crate) fn dispose(file: &File, path: &Path) -> Result<()> {
     let info = FILE_DISPOSITION_INFO_EX {
         Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
     };
@@ -104,7 +104,7 @@ fn dispose(file: &File, path: &Path) -> Result<()> {
         )
     } == 0
     {
-        return Err(last("remove exact pinned installation object", path));
+        return Err(last("remove exact pinned object", path));
     }
     Ok(())
 }

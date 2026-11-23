@@ -39,16 +39,6 @@ fn refusal(from: &Actor, to: &str, count: u64) -> Box<StoreError> {
     error
 }
 
-fn actor_ref_key(c: &Connection, actor: &Actor, scope: &[u8]) -> StoreResult<Vec<u8>> {
-    key(
-        c,
-        actor.kind(),
-        actor.wire(),
-        if actor.kind() == "human" { &[0] } else { scope },
-        false,
-    )
-}
-
 /// Direct pair: count exactly the pair's rows inside the window. The
 /// window is a lower time bound on the append stamp, and the stamp can
 /// move backwards when the system clock steps, so the lookup is bounded
@@ -68,8 +58,8 @@ pub(super) fn direct(
         return Ok(());
     }
     let since_us = header.occurred_at_us - WINDOW_MINUTES as i64 * 60 * 1_000_000;
-    let from = actor_ref_key(c, sender, scope)?;
-    let to = actor_ref_key(c, recipient, scope)?;
+    let from = actor_key(c, sender, scope, false)?;
+    let to = actor_key(c, recipient, scope, false)?;
     // Homes older than schema 15 lack the stamp column, so their count joins
     // the event stamp; it stays exact by time, not by sequence, until a host
     // open migrates the home.

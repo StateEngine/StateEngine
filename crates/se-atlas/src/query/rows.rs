@@ -1,18 +1,51 @@
 //! Decoding is fallible: damaged rows never disappear into an empty answer.
 use super::*;
-use rusqlite::Row;
+use rusqlite::{Row, types::ValueRef};
 use serde::de::DeserializeOwned;
 
 pub(super) fn get<T: rusqlite::types::FromSql>(row: &Row<'_>, column: usize) -> AtlasResult<T> {
     match row.get_ref(column).map_err(cache_error)? {
-        rusqlite::types::ValueRef::Text(bytes) | rusqlite::types::ValueRef::Blob(bytes)
-            if bytes.len() > 8192 =>
-        {
+        ValueRef::Text(bytes) | ValueRef::Blob(bytes) if bytes.len() > 8192 => {
             return Err(cache_error("cache query field exceeds 8192 bytes"));
         }
         _ => (),
     }
     row.get(column).map_err(cache_error)
+}
+/// Decodes every row of a bounded statement; the statement closes before return.
+pub(super) fn all<T>(
+    sql: &SqlView<'_>,
+    statement: &str,
+    params: impl rusqlite::Params,
+    reserve: usize,
+    mut decode: impl FnMut(&Row<'_>) -> AtlasResult<T>,
+) -> AtlasResult<Vec<T>> {
+    let mut statement = sql.prepare(statement)?;
+    let mut rows = statement.query(params).map_err(cache_error)?;
+    let mut output = Vec::with_capacity(reserve);
+    while let Some(row) = rows.next().map_err(cache_error)? {
+        output.push(decode(row)?);
+    }
+    Ok(output)
+}
+/// The first column of a statement's one row.
+pub(super) fn scalar<T: rusqlite::types::FromSql>(
+    sql: &SqlView<'_>,
+    statement: &str,
+    params: impl rusqlite::Params,
+) -> AtlasResult<T> {
+    sql.prepare(statement)?
+        .query_row(params, |r| r.get(0))
+        .map_err(cache_error)
+}
+/// The integer first column of every row of a bounded statement.
+pub(super) fn id_column(
+    sql: &SqlView<'_>,
+    statement: &str,
+    params: impl rusqlite::Params,
+    reserve: usize,
+) -> AtlasResult<Vec<i64>> {
+    all(sql, statement, params, reserve, |row| get(row, 0))
 }
 pub(super) fn json<T: DeserializeOwned>(text: &str) -> AtlasResult<T> {
     serde_json::from_str(text).map_err(cache_error)
@@ -66,7 +99,10 @@ pub(super) struct FileRow {
 }
 pub(super) const FILE_COLUMNS: &str = "f.id,f.key,f.path,f.indexed_hash,f.coverage_json,f.language";
 pub(super) fn file(row: &Row<'_>, start: usize) -> AtlasResult<FileRow> {
-    let coverage: FileCoverage = json(&get::<String>(row, start + 4)?)?;
+    let coverage = match row.get_ref(start + 4).map_err(cache_error)? {
+        ValueRef::Text(b"\"Indexed\"") => FileCoverage::Indexed,
+        _ => json(&get::<String>(row, start + 4)?)?,
+    };
     let freshness = match &coverage {
         FileCoverage::Indexed => SnapshotFreshness::Current,
         FileCoverage::Stale { .. } => SnapshotFreshness::Stale,
@@ -82,9 +118,13 @@ pub(super) fn file(row: &Row<'_>, start: usize) -> AtlasResult<FileRow> {
             freshness,
         },
         coverage,
-        language: get::<Option<String>>(row, start + 5)?
-            .map(tag)
-            .transpose()?,
+        language: match row.get_ref(start + 5).map_err(cache_error)? {
+            ValueRef::Null => None,
+            ValueRef::Text(b) => Some(
+                crate::policy::decode_language(b).map_or_else(|| tag(get(row, start + 5)?), Ok)?,
+            ),
+            _ => Some(tag(get(row, start + 5)?)?),
+        },
     })
 }
 pub(super) fn file_by_path(sql: &SqlView<'_>, path: &RelativePath) -> AtlasResult<Option<FileRow>> {
@@ -130,16 +170,9 @@ pub(super) fn symbol_by_id(sql: &SqlView<'_>, id: i64) -> AtlasResult<(SymbolRow
             },
         )
     };
-    result.value.name = {
-        let mut stmt = sql.prepare("SELECT text FROM names WHERE id=?1")?;
-        stmt.query_row([name], |row| row.get(0))
-            .map_err(cache_error)?
-    };
+    result.value.name = scalar(sql, "SELECT text FROM names WHERE id=?1", [name])?;
     if let Some(parent) = parent {
-        let mut stmt = sql.prepare("SELECT key FROM symbols WHERE id=?1")?;
-        let key: Vec<u8> = stmt
-            .query_row([parent], |row| row.get(0))
-            .map_err(cache_error)?;
+        let key: Vec<u8> = scalar(sql, "SELECT key FROM symbols WHERE id=?1", [parent])?;
         result.value.parent = Some(SymbolId(
             key.try_into()
                 .map_err(|_| cache_error("invalid parent symbol key"))?,

@@ -4,15 +4,6 @@ use super::*;
 fn effect_key(id: &RecordId) -> Vec<u8> {
     id.as_bytes().to_vec()
 }
-fn principal_key(c: &Connection, a: &Actor, scope: &[u8]) -> StoreResult<Vec<u8>> {
-    key(
-        c,
-        a.kind(),
-        a.wire(),
-        if a.kind() == "human" { &[0] } else { scope },
-        false,
-    )
-}
 /// Current effect head: (revision, state, principal key).
 type EffectHead = (u64, String, Option<Vec<u8>>);
 fn head(c: &Connection, p: &[u8], effect: &[u8]) -> StoreResult<Option<EffectHead>> {
@@ -169,7 +160,7 @@ fn authorize(
 ) -> StoreResult<()> {
     let own = match (&h.actor, principal) {
         (Actor::Remote(_) | Actor::Guest, _) => false,
-        (Actor::Agent(_), Some(a)) => principal_key(c, &h.actor, scope)? == a,
+        (Actor::Agent(_), Some(a)) => actor_key(c, &h.actor, scope, false)? == a,
         (Actor::Agent(_), None) => false,
         (Actor::Human(_), _) => super::project::is_owner(c, h, p)?,
     };
@@ -208,10 +199,6 @@ fn after_request(
         ))
     }
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn apply(
     c: &Connection,
     h: &EventHeader,
@@ -238,7 +225,7 @@ pub(super) fn apply(
             session::reference(c, &p, &scope, &cause)?;
             let a = principal
                 .as_ref()
-                .map(|a| principal_key(c, a, &scope))
+                .map(|a| actor_key(c, a, &scope, false))
                 .transpose()?;
             authorize(c, h, &p, &scope, a.as_deref())?;
             if let EffectIntent::MailNotice(notice) = &intent {
@@ -275,7 +262,7 @@ pub(super) fn apply(
                 ));
             }
             authorize(c, h, &p, &scope, owner.as_deref())?;
-            let offered_to = principal_key(c, &principal, &scope)?;
+            let offered_to = actor_key(c, &principal, &scope, false)?;
             let matches = match &owner {
                 Some(o) => *o == offered_to,
                 None => principal == h.actor,
@@ -297,120 +284,158 @@ pub(super) fn apply(
                     super::mail::validate_offer(c, h, &effect, observation, lease)?
                 }
             }
-            let reused: bool = c
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM aux_data a JOIN events e ON e.seq=a.event_seq WHERE json_extract(a.facts,'$.attempt') IS NOT NULL AND json_extract(a.facts,'$.effect')=? AND json_extract(a.facts,'$.attempt')=? AND e.project_id=? AND e.kind='effect.offered')",
-                    rusqlite::params![codec::encode(&effect)?.trim_matches('"'), codec::encode(&attempt)?.trim_matches('"'), p],
-                    |r| r.get(0),
-                )
-                .map_err(sql)?;
-            if reused {
-                return Err(fail(
-                    StoreErrorCode::NaturalKeyConflict,
-                    "effect attempt was already offered",
-                ));
-            }
+            attempt_fresh(c, &p, &effect, &attempt)?;
             update(c, &p, &id, rev, seq, "offered")?;
             if let crate::mail::OfferEvidence::Observed(observation) = &evidence {
                 super::notification::observed(c, h, &effect, observation, seq)?;
             }
         }
-        EventBody::EffectSettled {
-            effect,
-            outcome,
-            evidence,
-            failure,
-            ..
-        } => {
-            let id = effect_key(&effect);
-            let (_, state, owner) = head(c, &p, &id)?.ok_or_else(|| {
-                fail(
-                    StoreErrorCode::ReferenceMissing,
-                    "settled effect was never requested",
-                )
-            })?;
-            if !matches!(state.as_str(), "pending" | "offered") {
-                return Err(fail(
-                    StoreErrorCode::InvalidTransition,
-                    "a terminal effect cannot settle again",
-                ));
-            }
-            authorize(c, h, &p, &scope, owner.as_deref())?;
-            let reason_ok = failure
-                .as_ref()
-                .is_some_and(|f| !f.is_empty() && f.len() <= 16384);
-            let shape_ok = match outcome {
-                EffectOutcome::Witnessed => !evidence.is_empty() && failure.is_none(),
-                EffectOutcome::Failed | EffectOutcome::Abandoned => reason_ok,
-            };
-            if !shape_ok || evidence.len() > 16 {
-                return Err(invalid(
-                    "witnessed needs outside evidence and no failure; failed/abandoned need a bounded reason",
-                ));
-            }
-            for e in &evidence {
-                after_request(c, &p, &scope, &id, e)?;
-            }
-            let state = match outcome {
-                EffectOutcome::Witnessed => "witnessed",
-                EffectOutcome::Failed => "failed",
-                EffectOutcome::Abandoned => "abandoned",
-            };
-            update(c, &p, &id, rev, seq, state)?;
-            let k = owner
-                .as_ref()
-                .map(|a| principal_kind(c, &p, a))
-                .transpose()?;
-            debt(c, &p, &owner, k.as_deref().unwrap_or("human"), -1, seq)?;
-        }
-        EventBody::IntegrationRecorded {
-            integration,
-            key: k,
-            marker,
-            written_sha256,
-            state,
-            witness,
-            ..
-        } => {
-            if !super::project::is_owner(c, h, &p)? {
-                return Err(fail(
-                    StoreErrorCode::ScopeMismatch,
-                    "only the project owner records owned integrations",
-                ));
-            }
-            if k.is_empty() || k.len() > 1024 || marker.is_empty() || marker.len() > 1024 {
-                return Err(invalid("integration key/marker bounds"));
-            }
-            if state == IntegrationState::Installed && written_sha256.is_none() {
-                return Err(invalid(
-                    "an installed integration records its written digest",
-                ));
-            }
-            session::reference(c, &p, &scope, &witness)?;
-            let id = effect_key(&integration);
-            let name = match state {
-                IntegrationState::Installed => "installed",
-                IntegrationState::Removed => "removed",
-                IntegrationState::Conflict => "conflict",
-            };
-            let changed = c
-                .execute(
-                    "INSERT INTO integrations(project_id,integration_id,revision,last_seq,state) VALUES(?,?,?,?,?)
-                     ON CONFLICT(project_id,integration_id) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq,state=excluded.state
-                     WHERE integrations.revision=excluded.revision-1",
-                    crate::sql_value::sql_params![p, id, rev, seq, name],
-                )
-                .map_err(sql)?;
-            if changed != 1 {
-                return Err(fail(
-                    StoreErrorCode::RevisionConflict,
-                    "integration head changed",
-                ));
-            }
-        }
+        b @ EventBody::EffectSettled { .. } => settle(c, h, &p, &scope, b, seq, rev)?,
+        b @ EventBody::IntegrationRecorded { .. } => integration(c, h, &p, &scope, b, seq, rev)?,
         _ => return Err(invalid("effect apply dispatch")),
     }
     codec::aux(c, seq, facts)
+}
+fn settle(
+    c: &Connection,
+    h: &EventHeader,
+    p: &[u8],
+    scope: &[u8],
+    body: EventBody<InputText>,
+    seq: i64,
+    rev: u64,
+) -> StoreResult<()> {
+    let EventBody::EffectSettled {
+        effect,
+        outcome,
+        evidence,
+        failure,
+        ..
+    } = body
+    else {
+        return Err(invalid("effect apply dispatch"));
+    };
+    let id = effect_key(&effect);
+    let (_, state, owner) = head(c, p, &id)?.ok_or_else(|| {
+        fail(
+            StoreErrorCode::ReferenceMissing,
+            "settled effect was never requested",
+        )
+    })?;
+    if !matches!(state.as_str(), "pending" | "offered") {
+        return Err(fail(
+            StoreErrorCode::InvalidTransition,
+            "a terminal effect cannot settle again",
+        ));
+    }
+    authorize(c, h, p, scope, owner.as_deref())?;
+    let reason_ok = failure
+        .as_ref()
+        .is_some_and(|f| !f.is_empty() && f.len() <= 16384);
+    let shape_ok = match outcome {
+        EffectOutcome::Witnessed => !evidence.is_empty() && failure.is_none(),
+        EffectOutcome::Failed | EffectOutcome::Abandoned => reason_ok,
+    };
+    if !shape_ok || evidence.len() > 16 {
+        return Err(invalid(
+            "witnessed needs outside evidence and no failure; failed/abandoned need a bounded reason",
+        ));
+    }
+    for e in &evidence {
+        after_request(c, p, scope, &id, e)?;
+    }
+    let state = match outcome {
+        EffectOutcome::Witnessed => "witnessed",
+        EffectOutcome::Failed => "failed",
+        EffectOutcome::Abandoned => "abandoned",
+    };
+    update(c, p, &id, rev, seq, state)?;
+    let k = owner
+        .as_ref()
+        .map(|a| principal_kind(c, p, a))
+        .transpose()?;
+    debt(c, p, &owner, k.as_deref().unwrap_or("human"), -1, seq)?;
+    Ok(())
+}
+fn integration(
+    c: &Connection,
+    h: &EventHeader,
+    p: &[u8],
+    scope: &[u8],
+    body: EventBody<InputText>,
+    seq: i64,
+    rev: u64,
+) -> StoreResult<()> {
+    let EventBody::IntegrationRecorded {
+        integration,
+        key: k,
+        marker,
+        written_sha256,
+        state,
+        witness,
+        ..
+    } = body
+    else {
+        return Err(invalid("effect apply dispatch"));
+    };
+    if !super::project::is_owner(c, h, p)? {
+        return Err(fail(
+            StoreErrorCode::ScopeMismatch,
+            "only the project owner records owned integrations",
+        ));
+    }
+    if k.is_empty() || k.len() > 1024 || marker.is_empty() || marker.len() > 1024 {
+        return Err(invalid("integration key/marker bounds"));
+    }
+    if state == IntegrationState::Installed && written_sha256.is_none() {
+        return Err(invalid(
+            "an installed integration records its written digest",
+        ));
+    }
+    session::reference(c, p, scope, &witness)?;
+    let id = effect_key(&integration);
+    let name = match state {
+        IntegrationState::Installed => "installed",
+        IntegrationState::Removed => "removed",
+        IntegrationState::Conflict => "conflict",
+    };
+    let changed = c
+        .execute(
+            "INSERT INTO integrations(project_id,integration_id,revision,last_seq,state) VALUES(?,?,?,?,?)
+             ON CONFLICT(project_id,integration_id) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq,state=excluded.state
+             WHERE integrations.revision=excluded.revision-1",
+            crate::sql_value::sql_params![p, id, rev, seq, name],
+        )
+        .map_err(sql)?;
+    if changed != 1 {
+        return Err(fail(
+            StoreErrorCode::RevisionConflict,
+            "integration head changed",
+        ));
+    }
+    Ok(())
+}
+/// One offer per effect attempt: a repeated attempt ID is refused.
+fn attempt_fresh(
+    c: &Connection,
+    p: &[u8],
+    effect: &RecordId,
+    attempt: &RecordId,
+) -> StoreResult<()> {
+    let reused: bool = c
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM aux_data a JOIN events e ON e.seq=a.event_seq WHERE json_extract(a.facts,'$.attempt') IS NOT NULL AND json_extract(a.facts,'$.effect')=? AND json_extract(a.facts,'$.attempt')=? AND e.project_id=? AND e.kind='effect.offered')",
+            rusqlite::params![codec::encode(effect)?.trim_matches('"'), codec::encode(attempt)?.trim_matches('"'), p],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    if reused {
+        return Err(fail(
+            StoreErrorCode::NaturalKeyConflict,
+            "effect attempt was already offered",
+        ));
+    }
+    Ok(())
 }
 fn update(c: &Connection, p: &[u8], id: &[u8], rev: u64, seq: i64, state: &str) -> StoreResult<()> {
     let changed = c

@@ -10,7 +10,7 @@ impl CodexHarness {
         attended: bool,
         cx: CallContext,
     ) -> Result<HarnessBinding> {
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (identity, conversation, transcript, attended, cx);
             Err(se_core::scope::unreadable(
@@ -18,7 +18,7 @@ impl CodexHarness {
                 "the original stdio connection cannot be reopened on this platform; preserve the session and use its exact public stop/resume command",
             ))
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let deadline = crate::Deadline::idle()?.stage(cx.timeout)?;
             let session = identity.session.clone();
@@ -66,7 +66,7 @@ impl CodexHarness {
             Ok(HarnessBinding::new(binding))
         }
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn verify_endpoint_after_resume(
         &self,
         identity: &crate::SessionIdentity,
@@ -92,7 +92,7 @@ impl CodexHarness {
         Ok(())
     }
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn resume_recovered_thread(
     binding: &Arc<Binding>,
     identity: &crate::SessionIdentity,

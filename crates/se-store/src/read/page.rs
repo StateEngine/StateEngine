@@ -8,6 +8,17 @@ pub(super) struct PageFacts {
     pub remaining: Option<u64>,
 }
 impl SqliteSnapshot {
+    /// The window source for rows read from this store and admitted scope.
+    pub(super) fn store_source(&self) -> Source {
+        let project = match &self.scope.admission.scope {
+            Scope::Project(p) => Some(p.clone()),
+            _ => None,
+        };
+        Source::Store {
+            store: self.info.id.clone(),
+            project,
+        }
+    }
     pub(super) fn page<T>(
         &self,
         items: Vec<T>,
@@ -62,13 +73,7 @@ impl SqliteSnapshot {
             }
         };
         let window = Window::new(WindowFields {
-            source: Source::Store {
-                store: self.info.id.clone(),
-                project: match &self.scope.admission.scope {
-                    Scope::Project(p) => Some(p.clone()),
-                    _ => None,
-                },
-            },
+            source: self.store_source(),
             from: Sequence::new(after).map_err(invalid)?,
             to: Sequence::new(h).map_err(invalid)?,
             start_cursor: budget.page.after.clone(),

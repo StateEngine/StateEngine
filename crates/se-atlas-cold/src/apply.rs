@@ -9,7 +9,7 @@ use se_atlas::{
     model::Generation,
     policy::built_in_denied,
 };
-use se_types::code::AtlasText;
+use se_types::code::{AtlasText, RelativePath};
 use std::time::Instant;
 
 pub fn ingest(
@@ -74,10 +74,6 @@ pub(crate) fn publish_coverage(
 }
 /// The owner may call this inside its existing contained cold transaction. It
 /// opens no connection, raises no profile, and grants no publication authority.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn apply(sql: &SqlView<'_>, feed: &HistoryFeed) -> AtlasResult<HistoryReceipt> {
     feed.validate()?;
     let (project, root, generation, serial): (String, String, i64, i64) = sql
@@ -135,14 +131,8 @@ pub fn apply(sql: &SqlView<'_>, feed: &HistoryFeed) -> AtlasResult<HistoryReceip
     let mut changed = 0;
     let mut denied_paths = 0;
     for commit in &feed.commits {
-        let mut paths = Vec::with_capacity(commit.paths.len());
-        for path in &commit.paths {
-            if built_in_denied(path) {
-                denied_paths += 1;
-            } else if !paths.contains(&path) {
-                paths.push(path);
-            }
-        }
+        let (denied, paths) = split_paths(commit);
+        denied_paths += denied;
         // No author, subject, touch or mention is derived for secret-only commits.
         // Their traversal position remains explicit without retaining those facts.
         if paths.is_empty() && commit.paths_note.is_none() {
@@ -154,30 +144,7 @@ pub fn apply(sql: &SqlView<'_>, feed: &HistoryFeed) -> AtlasResult<HistoryReceip
         if commit.paths_note.is_some() && commit.allowed_paths.unwrap_or(0) == 0 {
             continue;
         }
-        let id = upsert(sql, commit)?;
-        let oid = object(&commit.oid)?;
-        sql.prepare("INSERT OR IGNORE INTO observed_commits VALUES(?1,?2)")?
-            .execute(params![&oid, next])
-            .map_err(cache_error)?;
-        for path in paths {
-            let key: Option<Vec<u8>> = sql
-                .prepare("SELECT key FROM files WHERE path=?1")?
-                .query_row([path.as_str()], |r| r.get(0))
-                .optional()
-                .map_err(cache_error)?;
-            if let Some(key) = key {
-                sql.prepare(
-                    "INSERT OR IGNORE INTO mentions VALUES('commit',?1,'file',?2,'ExplicitImport')",
-                )?
-                .execute(params![id, &key])
-                .map_err(cache_error)?;
-                file_touch(sql, id, &key, commit.author_unix_ms)?;
-            }
-        }
-        // Commit-owned rows retire with commits_links_delete. File authorship is
-        // deliberately untouched: a path-only diff proves no current revision.
-        sql.prepare("INSERT OR IGNORE INTO touches(target_kind,target_key,ordinal,touch_kind,actor,at_unix_ms) VALUES('commit',?1,0,'commit',NULL,?2)")?.execute(params![&oid,commit.author_unix_ms]).map_err(cache_error)?;
-        sql.prepare("INSERT INTO activity VALUES('commit',?1,?2,0) ON CONFLICT(target_kind,target_key) DO UPDATE SET last_touch_unix_ms=excluded.last_touch_unix_ms")?.execute(params![&oid,commit.author_unix_ms]).map_err(cache_error)?;
+        link_commit(sql, commit, &paths, next)?;
         changed += 1;
     }
     sql.prepare("UPDATE record_feed SET last_oid=?1,history_bound=?2 WHERE singleton=1")?
@@ -195,6 +162,55 @@ pub fn apply(sql: &SqlView<'_>, feed: &HistoryFeed) -> AtlasResult<HistoryReceip
         generation: Generation(next as u64),
         replay: false,
     })
+}
+/// Split a commit's paths into the denied count and the deduplicated allowed
+/// list, keeping feed traversal order and duplicate policy.
+fn split_paths(commit: &Commit) -> (u32, Vec<&RelativePath>) {
+    let mut paths = Vec::with_capacity(commit.paths.len());
+    let mut denied = 0;
+    for path in &commit.paths {
+        if built_in_denied(path) {
+            denied += 1;
+        } else if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    (denied, paths)
+}
+
+/// Link one retained commit: the observed row, each allowed path's mention and
+/// file touch, then the commit-owned touch and activity rows.
+fn link_commit(
+    sql: &SqlView<'_>,
+    commit: &Commit,
+    paths: &[&RelativePath],
+    next: i64,
+) -> AtlasResult<()> {
+    let id = upsert(sql, commit)?;
+    let oid = object(&commit.oid)?;
+    sql.prepare("INSERT OR IGNORE INTO observed_commits VALUES(?1,?2)")?
+        .execute(params![&oid, next])
+        .map_err(cache_error)?;
+    for path in paths {
+        let key: Option<Vec<u8>> = sql
+            .prepare("SELECT key FROM files WHERE path=?1")?
+            .query_row([path.as_str()], |r| r.get(0))
+            .optional()
+            .map_err(cache_error)?;
+        if let Some(key) = key {
+            sql.prepare(
+                "INSERT OR IGNORE INTO mentions VALUES('commit',?1,'file',?2,'ExplicitImport')",
+            )?
+            .execute(params![id, &key])
+            .map_err(cache_error)?;
+            file_touch(sql, id, &key, commit.author_unix_ms)?;
+        }
+    }
+    // Commit-owned rows retire with commits_links_delete. File authorship is
+    // deliberately untouched: a path-only diff proves no current revision.
+    sql.prepare("INSERT OR IGNORE INTO touches(target_kind,target_key,ordinal,touch_kind,actor,at_unix_ms) VALUES('commit',?1,0,'commit',NULL,?2)")?.execute(params![&oid,commit.author_unix_ms]).map_err(cache_error)?;
+    sql.prepare("INSERT INTO activity VALUES('commit',?1,?2,0) ON CONFLICT(target_kind,target_key) DO UPDATE SET last_touch_unix_ms=excluded.last_touch_unix_ms")?.execute(params![&oid,commit.author_unix_ms]).map_err(cache_error)?;
+    Ok(())
 }
 type CommitFacts = (i64, i64, String, String, Option<Vec<u8>>);
 fn facts(sql: &SqlView<'_>, commit: &Commit) -> AtlasResult<Option<CommitFacts>> {

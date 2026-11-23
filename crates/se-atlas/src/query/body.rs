@@ -34,8 +34,9 @@ pub(super) fn source(
     let mut lines = 0;
     let mut cut = false;
     loop {
+        // Past the soft budget a body is omitted and counted, never a failure.
         if crate::clock::now() >= end {
-            return Err(capacity("Atlas full-body work deadline", 1, 0));
+            return Ok(None);
         }
         let count = file
             .read(&mut buffer)
@@ -85,7 +86,9 @@ pub(super) fn source(
         pointer.freshness = SnapshotFreshness::Stale;
         return Ok(None);
     }
-    build_hit_body(pointer, revision, (excerpt, cut, start)).map(Some)
+    let bom = crate::text::bom_len(start, &excerpt);
+    excerpt.drain(..bom);
+    build_hit_body(pointer, revision, (excerpt, cut, start + bom as u64)).map(Some)
 }
 fn build_hit_body(
     pointer: &CodePointer,
@@ -103,13 +106,15 @@ fn build_hit_body(
         }
         Err(error) => return Err(source_error(&pointer.path, error)),
     };
-    let first = pointer.span.map_or(
+    let mut first = pointer.span.map_or(
         Position {
             line: 1,
             byte_column: 0,
         },
         |s| s.start,
     );
+    // Bytes skipped before the body (a byte-order mark) stay on its first line.
+    first.byte_column += (start - pointer.span.map_or(0, |s| s.start_byte)) as u32;
     let end_position = if let Some((_, last)) = text.rsplit_once('\n') {
         Position {
             line: first.line + text.bytes().filter(|b| *b == b'\n').count() as u32,

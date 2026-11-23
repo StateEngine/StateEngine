@@ -1,7 +1,7 @@
 //! Best-effort, index-only context on the provider's critical path. No text
 //! search, source body or HitBody API is used; permission decisions are untouched.
 use crate::{
-    atlas_queries::with_owner_reader,
+    atlas_queries::{readable, request_project},
     atlas_runtime::{read_port::AtlasOwnerPort, record_fence::RecordFeedTicket},
 };
 use se_atlas::{
@@ -9,7 +9,7 @@ use se_atlas::{
     source::RegisteredSource,
 };
 use se_core::ops::{AtlasAugment, AtlasHookOutput, AtlasHookTarget};
-use se_store::{Admission, Snapshot};
+use se_store::{Admission, Scope, Snapshot};
 use se_types::{Result, code::*};
 use std::time::Instant;
 
@@ -23,50 +23,54 @@ pub fn owner_augment<R: Snapshot>(
     let Some(end) = input.deadline.filter(|end| *end > se_atlas::clock::now()) else {
         return Ok(AtlasHookOutput::default());
     };
-    let result = with_owner_reader(
-        owner,
-        ticket,
-        input.root.as_ref(),
-        read,
-        admission,
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|error| {
-                se_types::SeError::invalid("hook observation time", &error.to_string())
-            })?
-            .as_millis()
-            .min(i64::MAX as u128) as i64,
-        |reader, source| augment(reader, source, input),
-    );
     // An uncertain index/authority/IO/deadline is no augmentation, never a block.
     // Public Atlas operations retain these errors; this private hint is optional.
-    Ok(AtlasHookOutput {
-        stdout: result
-            .ok()
-            .map(|value| value.stdout)
-            .filter(|_| se_atlas::clock::now() < end)
-            .unwrap_or_default(),
-    })
-}
-/// Execute against an already scoped reader; never opens a cache or starts work.
-pub fn augment(
-    reader: &mut QueryReader<'_, '_, '_>,
-    source: &RegisteredSource<crate::atlas_source::NativeAtlasSource>,
-    input: &AtlasAugment,
-) -> Result<AtlasHookOutput> {
-    let Some(end) = input.deadline.filter(|end| *end > se_atlas::clock::now()) else {
-        return Ok(AtlasHookOutput::default());
-    };
-    let text = match &input.target {
-        AtlasHookTarget::Symbol(name) => symbol(reader, name, end)?,
-        AtlasHookTarget::File(path) => outline(reader, source, &path.to_local()?, end)?,
-    };
+    let text = augment_v5(owner, ticket, input, read, admission)
+        .ok()
+        .flatten();
     Ok(AtlasHookOutput {
         stdout: text
             .filter(|_| se_atlas::clock::now() < end)
             .unwrap_or_default(),
     })
 }
+
+/// Index-only context for the target; never starts a build or reads source.
+fn augment_v5<R: Snapshot>(
+    owner: &AtlasOwnerPort,
+    ticket: Option<RecordFeedTicket>,
+    input: &AtlasAugment,
+    read: &mut R,
+    admission: &Admission,
+) -> Result<Option<String>> {
+    let Scope::Project(project) = &admission.scope else {
+        return Ok(None);
+    };
+    let root = input.root.as_ref();
+    request_project(owner, read, project, root)?;
+    let summary = owner.summary(project, root)?;
+    if !readable(&summary) {
+        return Ok(None);
+    }
+    // A mention count from a feed that lags core would be a guess.
+    let counted = match &summary.epoch {
+        Some(epoch) => owner.records.is_current(
+            &crate::atlas_runtime::record_fence::RecordFeedScope {
+                project: project.clone(),
+                root: summary.root.clone(),
+                epoch: epoch.clone(),
+            },
+            ticket,
+        )?,
+        None => false,
+    };
+    let engine = owner.engine(project, root)?;
+    match &input.target {
+        AtlasHookTarget::Symbol(name) => symbol(&engine, name.as_str(), counted),
+        AtlasHookTarget::File(path) => outline(&engine, &path.to_local()?, counted),
+    }
+}
+
 fn encode(text: &str) -> Option<String> {
     let output=serde_json::to_string(&serde_json::json!({"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":text}})).ok()?;
     (output.len() <= 600).then_some(output)
@@ -77,13 +81,71 @@ fn add(text: &mut String, line: String) {
         *text = next;
     }
 }
-fn linked(text: &mut String, sample: &se_atlas::query::hooks::LinkedSample) {
-    if sample.messages != 0 {
-        add(
-            text,
-            format!("linked (sample): {} messages", sample.messages),
-        );
+fn linked(text: &mut String, mentions: usize) {
+    if mentions != 0 {
+        add(text, format!("linked (sample): {mentions} messages"));
     }
+}
+fn symbol(engine: &se_atlas_service::Root, name: &str, counted: bool) -> Result<Option<String>> {
+    let Some(found) = engine.hook_symbol(name)? else {
+        return Ok(None);
+    };
+    let mut text = format!(
+        "Atlas indexed context (sample): definition {} {}:{}",
+        found.name, found.path, found.line
+    );
+    if counted {
+        linked(&mut text, found.mentions);
+    }
+    for caller in found.callers {
+        add(&mut text, format!("caller {caller}"));
+    }
+    Ok(encode(&text))
+}
+fn outline(
+    engine: &se_atlas_service::Root,
+    path: &std::path::Path,
+    counted: bool,
+) -> Result<Option<String>> {
+    let Ok(relative) = path.strip_prefix(&engine.spec().source) else {
+        return Ok(None);
+    };
+    let Some(relative) = relative.to_str() else {
+        return Ok(None);
+    };
+    let relative = relative.replace(std::path::MAIN_SEPARATOR, "/");
+    let Some(found) = engine.hook_outline(&relative)? else {
+        return Ok(None);
+    };
+    let mut text = format!("Atlas outline (sample): {}", found.path);
+    if counted {
+        linked(&mut text, found.mentions);
+    }
+    for (name, line) in found.symbols {
+        add(&mut text, format!("{name}:{line}"));
+    }
+    Ok(encode(&text))
+}
+
+/// The legacy cache reader's hook adapter, kept until that reader is removed.
+/// Executes against an already scoped reader; never opens a cache or starts work.
+pub fn augment(
+    reader: &mut QueryReader<'_, '_, '_>,
+    source: &RegisteredSource<crate::atlas_source::NativeAtlasSource>,
+    input: &AtlasAugment,
+) -> Result<AtlasHookOutput> {
+    let Some(end) = input.deadline.filter(|end| *end > se_atlas::clock::now()) else {
+        return Ok(AtlasHookOutput::default());
+    };
+    let text = match &input.target {
+        AtlasHookTarget::Symbol(name) => legacy_symbol(reader, name, end)?,
+        AtlasHookTarget::File(path) => legacy_outline(reader, source, &path.to_local()?, end)?,
+    };
+    Ok(AtlasHookOutput {
+        stdout: text
+            .filter(|_| se_atlas::clock::now() < end)
+            .unwrap_or_default(),
+    })
 }
 fn location(pointer: &CodePointer) -> String {
     match &pointer.span {
@@ -91,7 +153,7 @@ fn location(pointer: &CodePointer) -> String {
         None => pointer.path.as_str().to_owned(),
     }
 }
-fn symbol(
+fn legacy_symbol(
     reader: &mut QueryReader<'_, '_, '_>,
     name: &QueryText,
     end: Instant,
@@ -107,13 +169,13 @@ fn symbol(
         symbol.name,
         location(&context.file)
     );
-    linked(&mut text, &context.linked);
+    linked(&mut text, context.linked.messages as usize);
     for caller in context.callers {
         add(&mut text, format!("caller {}", location(&caller)));
     }
     Ok(encode(&text).filter(|_| se_atlas::clock::now() < end))
 }
-fn outline(
+fn legacy_outline(
     reader: &mut QueryReader<'_, '_, '_>,
     source: &RegisteredSource<crate::atlas_source::NativeAtlasSource>,
     path: &std::path::Path,
@@ -138,7 +200,7 @@ fn outline(
         return Ok(None);
     };
     let mut text = format!("Atlas outline (sample): {}", outline.file.path.as_str());
-    linked(&mut text, &outline.linked);
+    linked(&mut text, outline.linked.messages as usize);
     for symbol in outline.symbols {
         add(
             &mut text,

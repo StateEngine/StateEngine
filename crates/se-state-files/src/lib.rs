@@ -17,7 +17,13 @@ pub mod windows_attributes;
 pub use creation_owner::{FileOwnerError, FileOwnerInitialization, initialize_file_creation_owner};
 pub use entropy::{NativeEntropyError, fill_entropy, random_secret};
 pub use file_identity::NativeFileIdentity;
-pub use file_revision::{NativeFileRevision, observe_file_revision, observe_file_revision_for};
+pub use file_revision::{
+    NativeFileRevision, NativeObjectKey, observe_file_revision, observe_file_revision_for,
+};
+#[cfg(windows)]
+pub use file_revision::{file_revision_from_information, observe_object_key};
+#[cfg(unix)]
+pub use file_revision::{file_revision_from_metadata, object_key_from_metadata};
 pub use state_files::effects::{
     CreatedDirectoryCleanup, DirectoryRemoval, NativeDirectoryCreation, NativeInstallationClaim,
     OwnedFile, installation_claim_path, remove_empty_directory, scan_recovery, scan_temporary,

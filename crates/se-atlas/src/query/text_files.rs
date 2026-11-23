@@ -3,12 +3,14 @@ use super::*;
 use rusqlite::{OptionalExtension, params};
 pub(super) fn file_window(
     sql: &SqlView<'_>,
-    started: bool,
-    key: &[u8],
+    resume_key: Option<&[u8]>,
+    last_path_key: &mut Option<String>,
     scope: &SearchScope,
 ) -> AtlasResult<(Vec<FileRow>, bool)> {
-    let previous: Option<String> = if started {
-        Some(
+    if last_path_key.is_none()
+        && let Some(key) = resume_key
+    {
+        *last_path_key = Some(
             sql.prepare("SELECT path_key FROM files WHERE key=?1")?
                 .query_row([key], |r| r.get(0))
                 .optional()
@@ -18,33 +20,28 @@ pub(super) fn file_window(
                         "the last source file moved out of this index; restart the search",
                     )
                 })?,
-        )
-    } else {
-        None
-    };
-    let query_sql = if started {
-        format!(
-            "SELECT {FILE_COLUMNS} FROM files f WHERE f.path_key>?1 AND atlas_scope(f.path,f.language,?2,?3) ORDER BY f.path_key LIMIT 33"
-        )
-    } else {
-        format!(
-            "SELECT {FILE_COLUMNS} FROM files f WHERE atlas_scope(f.path,f.language,?1,?2) ORDER BY f.path_key LIMIT 33"
-        )
-    };
-    let mut statement = sql.prepare(&query_sql)?;
-    let paths = scope.packed_paths();
-    let languages = scope.packed_languages();
-    let mut rows = if let Some(previous) = previous {
-        statement.query(params![previous, paths, languages])
+        );
+    }
+    let filter = last_path_key.as_ref().map_or("", |_| "f.path_key>?3 AND ");
+    let mut statement = sql.prepare(&format!(
+        "SELECT {FILE_COLUMNS},f.path_key FROM files f WHERE {filter}atlas_scope(f.path,f.language,?1,?2) ORDER BY f.path_key LIMIT 257"
+    ))?;
+    let (paths, languages) = (scope.packed_paths(), scope.packed_languages());
+    let mut rows = if let Some(previous) = last_path_key.as_deref() {
+        statement.query(params![paths, languages, previous])
     } else {
         statement.query(params![paths, languages])
     }
     .map_err(cache_error)?;
-    let mut files = Vec::with_capacity(33);
+    let mut files = Vec::with_capacity(256);
+    let mut more = false;
     while let Some(row) = rows.next().map_err(cache_error)? {
+        if files.len() == 256 {
+            more = true;
+            break;
+        }
+        *last_path_key = Some(get(row, 6)?);
         files.push(file(row, 0)?);
     }
-    let more = files.len() > 32;
-    files.truncate(32);
     Ok((files, more))
 }

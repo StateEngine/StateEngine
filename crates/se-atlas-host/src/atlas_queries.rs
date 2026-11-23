@@ -1,173 +1,124 @@
-//! Borrow the controller's scoped cache and core's authoritative read together.
-//! Explicit reads signal project interest to the existing background owner;
-//! this adapter cannot activate a root or open another connection.
+//! Admitted Atlas reads on the owner's v5 engine. Queries register the
+//! project's worktrees and signal interest; they never start a build
+//! themselves, and records reach an answer only through core's check.
+#[cfg(feature = "listener")]
 use crate::atlas_records::AtlasRecordReader;
-use se_atlas::{
-    errors::AtlasResult,
-    lifecycle::AtlasController,
-    query::{LiveSource, QueryReader, ReaderContext},
-};
-use se_store::{Actor, Admission, Scope, Snapshot};
+use se_atlas::errors::AtlasResult;
+#[cfg(feature = "listener")]
+use se_atlas::query::RecordReader;
+use se_store::Snapshot;
+#[cfg(feature = "listener")]
+use se_store::{Actor, Admission, Scope};
+#[cfg(feature = "listener")]
+use se_types::{ProjectId, Read};
 use se_types::{SeError, code::*};
 
-/// Host observations fenced against the supplied core snapshot. Unknown record
-/// maintenance is false. A hostless reader always labels its snapshot unverified.
-pub struct QueryObservations {
-    pub hostless: bool,
-    pub epoch_retired: bool,
-    pub record_feed_current: bool,
-    pub now_unix_ms: Option<i64>,
-}
+/// One presentation path for CLI and MCP. JSON remains the typed wire family.
+pub use se_mcp::compact;
 
-/// The runtime invokes this only inside with_reader, after admitted root lookup.
+/// The legacy cache reader's adapter, kept until that reader is removed.
+/// A hard SQL deadline carries a retry delay; reads are never replayed here.
 pub fn execute(
-    reader: &mut QueryReader<'_, '_, '_>,
-    request: &se_core::ops::AtlasRead,
-) -> AtlasResult<se_core::ops::AnyOutput> {
-    match execute_once(reader, request) {
-        Err(error) if sql_deadline(&error) => {
-            // The failed read snapshot has rolled back. Retry the same admitted
-            // read once with a fresh query slice; never replay a write or widen
-            // either slice's SQL, source or output budget.
-            execute_once(reader, request).map_err(|mut error| {
-                if sql_deadline(&error) {
-                    error.body = error
-                        .body
-                        .with_retry(se_types::Retry::After(std::time::Duration::from_secs(1)));
-                }
-                error
-            })
-        }
-        result => result,
-    }
-}
-
-fn sql_deadline(error: &SeError) -> bool {
-    matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail)
-        if detail.op.starts_with("Atlas SQL"))
-}
-
-#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
-pub(crate) fn open_reader<'a>(
-    files: &'a dyn se_atlas::cache::CacheFiles,
-    scope: &se_atlas::scope::Scope,
-    profile: &se_atlas::cache::connection::SqlProfile,
-) -> AtlasResult<Option<se_atlas::cache::pointer::DiscoveredEpoch<'a>>> {
-    let started = std::time::Instant::now();
-    let deadline = started + std::time::Duration::from_secs(5);
-    se_atlas::cache::pointer::open_current(
-        files, scope, se_atlas::cache::connection::ConnectionRole::QueryReader, profile, deadline,
-    ).map_err(|error| {
-        if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas SQL") {
-            se_atlas::cache::connection::timeout_phase("reader connection admission", deadline - started, started.elapsed())
-        } else {
-            error
-        }
-    })
-}
-
-fn execute_once(
-    reader: &mut QueryReader<'_, '_, '_>,
+    reader: &mut se_atlas::query::QueryReader<'_, '_, '_>,
     request: &se_core::ops::AtlasRead,
 ) -> AtlasResult<se_core::ops::AnyOutput> {
     use se_core::ops::{
         AtlasChangesOutput, AtlasFindOutput, AtlasImpactOutput, AtlasOutlineOutput, AtlasRead,
         AtlasRefsOutput,
     };
-    match request {
-        AtlasRead::Find(input) => Ok(AtlasFindOutput {
-            answer: if input.options.format == AtlasFormat::Compact {
-                reader.find_compact(
-                    &input.query()?,
-                    input.options.byte_budget as usize,
-                    input.options.explain,
-                )?
-            } else {
-                reader.find(&input.query()?)?
-            },
-        }
-        .into()),
-        AtlasRead::Refs(input) => Ok(AtlasRefsOutput {
-            answer: reader.refs(&input.query()?)?,
-        }
-        .into()),
-        AtlasRead::Impact(input) => Ok(AtlasImpactOutput {
-            answer: reader.impact(&input.query()?)?,
-        }
-        .into()),
-        AtlasRead::Changes(input) => Ok(AtlasChangesOutput {
-            answer: reader.changes(&input.query()?)?,
-        }
-        .into()),
-        AtlasRead::Outline(input) => Ok(AtlasOutlineOutput {
-            answer: reader.outline(&input.query()?)?,
-        }
-        .into()),
-    }
-}
-
-pub fn with_reader<C, R, T>(
-    controller: &C,
-    root: RootId,
-    read: &mut R,
-    admission: &Admission,
-    observations: QueryObservations,
-    query: impl FnOnce(&mut QueryReader<'_, '_, '_>) -> AtlasResult<T>,
-) -> AtlasResult<T>
-where
-    C: AtlasController,
-    C::Source: LiveSource,
-    R: Snapshot,
-{
-    let Scope::Project(project) = &admission.scope else {
-        return Err(SeError::invalid(
-            "Atlas query scope",
-            "one admitted registered project",
-        ));
+    let output = match request {
+        AtlasRead::Find(input) => reader
+            .find(&input.query()?)
+            .map(|answer| AtlasFindOutput { answer }.into()),
+        AtlasRead::Refs(input) => reader
+            .refs(&input.query()?)
+            .map(|answer| AtlasRefsOutput { answer }.into()),
+        AtlasRead::Impact(input) => reader
+            .impact(&input.query()?)
+            .map(|answer| AtlasImpactOutput { answer }.into()),
+        AtlasRead::Changes(input) => reader
+            .changes(&input.query()?)
+            .map(|answer| AtlasChangesOutput { answer }.into()),
+        AtlasRead::Outline(input) => reader
+            .outline(&input.query()?)
+            .map(|answer| AtlasOutlineOutput { answer }.into()),
     };
-    let viewer = match &admission.actor {
-        Actor::Agent(agent) => AtlasPrincipal::Agent(agent.clone()),
-        Actor::Human(human) => AtlasPrincipal::Human(human.clone()),
-        Actor::Guest => AtlasPrincipal::Guest,
-        Actor::Remote(_) => {
-            return Err(SeError::invalid(
-                "Atlas query principal",
-                "an admitted local Owner or agent; remote grants cover list, watch and send only",
-            ));
+    output.map_err(|mut error| {
+        if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail)
+            if detail.op.starts_with("Atlas SQL"))
+        {
+            error.body = error
+                .body
+                .with_retry(se_types::Retry::After(std::time::Duration::from_secs(1)));
         }
-    };
-    let expected_root = root.clone();
-    controller.with_reader(root, |cache, source| {
-        let registration = &cache.identity().scope.registration;
-        if &registration.project != project || registration.root != expected_root {
-            return Err(SeError::invalid(
-                "Atlas query binding",
-                "the admitted project's registered root",
-            ));
-        }
-        let records = AtlasRecordReader::new(read, admission);
-        let mut reader = QueryReader::new(
-            cache,
-            ReaderContext {
-                memory: None,
-                viewer,
-                records: &records,
-                source: Some(source),
-                hostless: observations.hostless,
-                epoch_retired: observations.epoch_retired,
-                record_feed_current: observations.record_feed_current && !observations.hostless,
-                now_unix_ms: observations.now_unix_ms,
-            },
-        );
-        query(&mut reader)
+        error
     })
 }
 
-/// One presentation path for CLI and MCP. JSON remains the typed wire family.
-pub use se_mcp::compact;
+/// The admitted viewer; remote grants never read Atlas.
+#[cfg(feature = "listener")]
+pub(crate) fn principal(admission: &Admission) -> AtlasResult<AtlasPrincipal> {
+    match &admission.actor {
+        Actor::Agent(agent) => Ok(AtlasPrincipal::Agent(agent.clone())),
+        Actor::Human(human) => Ok(AtlasPrincipal::Human(human.clone())),
+        Actor::Guest => Ok(AtlasPrincipal::Guest),
+        Actor::Remote(_) => Err(SeError::invalid(
+            "Atlas query principal",
+            "an admitted local Owner or agent; remote grants cover list, watch and send only",
+        )),
+    }
+}
 
-/// Execute inside the existing admitted core read phase, lending the owner's
-/// cache/source for the duration. No read lease or borrowed handle survives.
+/// Core's record check for one admitted viewer, lent to the engine.
+#[cfg(feature = "listener")]
+pub(crate) struct CheckedRecords<'a, R: Snapshot> {
+    reader: AtlasRecordReader<'a, R>,
+    project: ProjectId,
+    viewer: AtlasPrincipal,
+}
+
+#[cfg(feature = "listener")]
+impl<'a, R: Snapshot> CheckedRecords<'a, R> {
+    pub(crate) fn new(
+        read: &'a mut R,
+        admission: &'a Admission,
+        project: ProjectId,
+    ) -> AtlasResult<Self> {
+        Ok(Self {
+            viewer: principal(admission)?,
+            reader: AtlasRecordReader::new(read, admission),
+            project,
+        })
+    }
+}
+
+#[cfg(feature = "listener")]
+impl<R: Snapshot> se_atlas_service::RecordCheck for CheckedRecords<'_, R> {
+    fn hit(
+        &self,
+        pointer: &RecordPointer,
+        query: Option<&QueryText>,
+    ) -> se_types::Result<Read<RecordHit>> {
+        self.reader
+            .read(&self.project, &self.viewer, pointer, query)
+    }
+}
+
+/// States whose store an engine can read, even while it is still building.
+pub(crate) fn readable(summary: &IndexSummary) -> bool {
+    summary.epoch.is_some()
+        && matches!(
+            summary.state,
+            IndexState::Current
+                | IndexState::Updating { .. }
+                | IndexState::VerificationNeeded { .. }
+                | IndexState::ColdIndexing { .. }
+                | IndexState::Partial { .. }
+        )
+}
+
+/// Execute inside the existing admitted core read phase. No read lease or
+/// borrowed handle survives the call.
 #[cfg(feature = "listener")]
 pub fn owner_read<R: Snapshot>(
     owner: &crate::atlas_runtime::read_port::AtlasOwnerPort,
@@ -175,7 +126,7 @@ pub fn owner_read<R: Snapshot>(
     request: &se_core::ops::AtlasRead,
     read: &mut R,
     admission: &Admission,
-    now_unix_ms: i64,
+    _now_unix_ms: i64,
 ) -> AtlasResult<se_core::ops::AnyOutput> {
     let Scope::Project(project) = &admission.scope else {
         return Err(SeError::invalid(
@@ -183,46 +134,90 @@ pub fn owner_read<R: Snapshot>(
             "one admitted registered project",
         ));
     };
-    request_project(owner, read, project, request.options().root.as_ref())?;
-    let summary = owner.summary(project, request.options().root.as_ref())?;
-    if &summary.project != project
-        || request
-            .options()
-            .root
-            .as_ref()
-            .is_some_and(|root| root != &summary.root)
-    {
+    let root = request.options().root.as_ref();
+    request_project(owner, read, project, root)?;
+    let summary = owner.summary(project, root)?;
+    if &summary.project != project || root.is_some_and(|root| root != &summary.root) {
         return Err(SeError::invalid(
             "Atlas summary scope",
             "the admitted project's selected registered root",
         ));
     }
-    if !matches!(
-        summary.state,
-        IndexState::Current
-            | IndexState::Updating { .. }
-            | IndexState::VerificationNeeded { .. }
-            | IndexState::Opening
-            | IndexState::ColdIndexing { .. }
-            | IndexState::Suspended { .. }
-            | IndexState::Partial { .. }
-    ) || summary.epoch.is_none()
-    {
+    if !readable(&summary) {
         return Ok(unavailable(request, summary));
     }
-    with_prepared_owner_reader(
-        owner,
-        ticket,
-        request.options().root.as_ref(),
-        read,
-        admission,
-        now_unix_ms,
-        |reader, _| execute(reader, request),
-    )
+    let engine = owner.engine(project, root)?;
+    let feed_current = match &summary.epoch {
+        Some(epoch) => owner.records.is_current(
+            &crate::atlas_runtime::record_fence::RecordFeedScope {
+                project: project.clone(),
+                root: summary.root.clone(),
+                epoch: epoch.clone(),
+            },
+            ticket,
+        )?,
+        None => false,
+    };
+    let viewer = principal(admission)?;
+    let records = CheckedRecords::new(read, admission, project.clone())?;
+    let mut output = execute_v5(&engine, request, &records, &viewer)?;
+    if !feed_current {
+        note(&mut output, CoverageReason::RecordFeedLag);
+    }
+    Ok(output)
 }
 
-/// Read/continuity hooks use the same current authoritative registration as
-/// explicit CLI/MCP queries. Status deliberately never calls this handoff.
+#[cfg(feature = "listener")]
+fn execute_v5(
+    engine: &se_atlas_service::Root,
+    request: &se_core::ops::AtlasRead,
+    records: &dyn se_atlas_service::RecordCheck,
+    viewer: &AtlasPrincipal,
+) -> AtlasResult<se_core::ops::AnyOutput> {
+    use se_core::ops::{
+        AtlasChangesOutput, AtlasFindOutput, AtlasImpactOutput, AtlasOutlineOutput, AtlasRead,
+        AtlasRefsOutput,
+    };
+    Ok(match request {
+        AtlasRead::Find(input) => AtlasFindOutput {
+            answer: engine.find(&input.query()?, records)?,
+        }
+        .into(),
+        AtlasRead::Refs(input) => AtlasRefsOutput {
+            answer: engine.refs(&input.query()?)?,
+        }
+        .into(),
+        AtlasRead::Impact(input) => AtlasImpactOutput {
+            answer: engine.impact(&input.query()?, records)?,
+        }
+        .into(),
+        AtlasRead::Changes(input) => AtlasChangesOutput {
+            answer: engine.changes(&input.query()?, viewer)?,
+        }
+        .into(),
+        AtlasRead::Outline(input) => AtlasOutlineOutput {
+            answer: engine.outline(&input.query()?, records)?,
+        }
+        .into(),
+    })
+}
+
+/// Record a coverage gap that leaves the code index's own state alone.
+#[cfg(feature = "listener")]
+fn note(output: &mut se_core::ops::AnyOutput, reason: CoverageReason) {
+    use se_core::ops::AnyOutput;
+    match output {
+        AnyOutput::AtlasFind(v) => v.value.answer.index.note(reason),
+        AnyOutput::AtlasRefs(v) => v.value.answer.index.note(reason),
+        AnyOutput::AtlasImpact(v) => v.value.answer.index.note(reason),
+        AnyOutput::AtlasChanges(v) => v.value.answer.index.note(reason),
+        AnyOutput::AtlasOutline(v) => v.value.answer.index.note(reason),
+        _ => (),
+    }
+}
+
+/// Read, hook and continuity callers use the same current authoritative
+/// registration as explicit queries. Status never calls this.
 pub(crate) fn request_project<R: Snapshot>(
     owner: &crate::atlas_runtime::read_port::AtlasOwnerPort,
     read: &mut R,
@@ -238,6 +233,7 @@ pub(crate) fn request_project<R: Snapshot>(
     let roots = match registered.current.body {
         se_store::EventBody::ProjectRegistered { roots, .. }
         | se_store::EventBody::ProjectUpdated { roots, .. } => roots,
+        se_store::EventBody::ProjectMoved { to, .. } => vec![to],
         _ => {
             return Err(SeError::invalid(
                 "Atlas project",
@@ -248,98 +244,6 @@ pub(crate) fn request_project<R: Snapshot>(
     owner.observe_project(project, &roots)?;
     owner.request_interest(project, root)?;
     Ok(())
-}
-
-/// One admitted snapshot and borrowed controller reader for private adapters too.
-pub(crate) fn with_owner_reader<R: Snapshot, T>(
-    owner: &crate::atlas_runtime::read_port::AtlasOwnerPort,
-    ticket: Option<crate::atlas_runtime::record_fence::RecordFeedTicket>,
-    root: Option<&RootId>,
-    read: &mut R,
-    admission: &Admission,
-    now_unix_ms: i64,
-    query: impl FnOnce(
-        &mut QueryReader<'_, '_, '_>,
-        &se_atlas::source::RegisteredSource<crate::atlas_source::NativeAtlasSource>,
-    ) -> AtlasResult<T>,
-) -> AtlasResult<T> {
-    let Scope::Project(project) = &admission.scope else {
-        return Err(SeError::invalid(
-            "Atlas query scope",
-            "one admitted registered project",
-        ));
-    };
-    request_project(owner, read, project, root)?;
-    with_prepared_owner_reader(owner, ticket, root, read, admission, now_unix_ms, query)
-}
-
-fn with_prepared_owner_reader<R: Snapshot, T>(
-    owner: &crate::atlas_runtime::read_port::AtlasOwnerPort,
-    ticket: Option<crate::atlas_runtime::record_fence::RecordFeedTicket>,
-    root: Option<&RootId>,
-    read: &mut R,
-    admission: &Admission,
-    now_unix_ms: i64,
-    query: impl FnOnce(
-        &mut QueryReader<'_, '_, '_>,
-        &se_atlas::source::RegisteredSource<crate::atlas_source::NativeAtlasSource>,
-    ) -> AtlasResult<T>,
-) -> AtlasResult<T> {
-    let Scope::Project(project) = &admission.scope else {
-        return Err(SeError::invalid(
-            "Atlas query scope",
-            "one admitted registered project",
-        ));
-    };
-    let viewer = match &admission.actor {
-        Actor::Agent(id) => AtlasPrincipal::Agent(id.clone()),
-        Actor::Human(id) => AtlasPrincipal::Human(id.clone()),
-        Actor::Guest => AtlasPrincipal::Guest,
-        Actor::Remote(_) => {
-            return Err(SeError::invalid(
-                "Atlas query principal",
-                "an admitted local Owner or agent; remote grants cover list, watch and send only",
-            ));
-        }
-    };
-    let mut query = Some(query);
-    let mut output = None;
-    owner.with_observed_reader(project, root, ticket, &mut |cache, source, observed| {
-        if &cache.identity().scope.registration.project != project
-            || root.is_some_and(|root| root != &cache.identity().scope.registration.root)
-        {
-            return Err(SeError::invalid(
-                "Atlas owner callback",
-                "the admitted project's selected root",
-            ));
-        }
-        let query = query
-            .take()
-            .ok_or_else(|| SeError::invalid("Atlas owner callback", "one borrowed callback"))?;
-        let records = AtlasRecordReader::new(read, admission);
-        let mut reader = QueryReader::new(
-            cache,
-            ReaderContext {
-                memory: observed.summary.memory,
-                viewer: viewer.clone(),
-                records: &records,
-                source: Some(source),
-                hostless: false,
-                epoch_retired: observed.epoch_retired,
-                now_unix_ms: Some(now_unix_ms),
-                record_feed_current: observed.record_feed_current,
-            },
-        )
-        .with_source_state(observed.summary.state);
-        output = Some(query(&mut reader, source)?);
-        Ok(())
-    })?;
-    output.ok_or_else(|| {
-        SeError::invalid(
-            "Atlas owner read port",
-            "one completed scoped query callback",
-        )
-    })
 }
 
 #[cfg(feature = "listener")]
@@ -364,13 +268,10 @@ fn unavailable(request: &se_core::ops::AtlasRead, index: IndexSummary) -> se_cor
                     IndexState::Dormant | IndexState::Absent => {
                         "The registered Atlas index has no published snapshot"
                     }
-                    IndexState::Opening | IndexState::ColdIndexing { .. } => {
-                        "Atlas indexing is queued or starting; retry this query in 1 second, or use se status to watch progress"
-                    }
                     IndexState::Draining | IndexState::Closed => {
                         "The registered Atlas index has closed reader admission"
                     }
-                    _ => "The registered Atlas index has no readable published epoch",
+                    _ => se_atlas_service::STARTING,
                 }
                 .into(),
             },

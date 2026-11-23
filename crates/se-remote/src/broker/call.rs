@@ -3,10 +3,6 @@ use super::*;
 impl<B: Budget> RemoteBroker<B> {
     /// Native admission precedes this call; human key selection also requires
     /// the verified current console/ancestry observation.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub async fn execute(
         &self,
         operation: AnyOp,
@@ -31,25 +27,14 @@ impl<B: Budget> RemoteBroker<B> {
             }
             _ => (),
         }
-        let context = || {
-            source.as_ref().map_or_else(
-                RemoteCallContext::human_device,
-                VerifiedSourceSession::context,
-            )
-        };
+        let source = source.as_ref();
+        let context = || call_context(source);
         match operation {
             AnyOp::RemotePrepareSend(input) => {
                 let b = self
                     .resolve(&input.host, context(), admission, terminal, deadline)
                     .await?;
-                if !b
-                    .config
-                    .device
-                    .scope
-                    .allows(RemoteVerb::Send, &input.request.target)
-                {
-                    return Err(refused("send target or verb is outside this grant"));
-                }
+                allow_send(&b.config.device.scope, &input.request.target)?;
                 context()
                     .invocation(&b.config.device, RemoteRequest::Send(input.request.clone()))?;
                 Ok(RemoteSendPreparation {
@@ -63,35 +48,14 @@ impl<B: Budget> RemoteBroker<B> {
                 .into())
             }
             AnyOp::RemoteLaunch(input) => {
-                self.launch(input, admission, terminal, source.as_ref(), deadline)
+                self.launch(input, admission, terminal, source, deadline)
                     .await
             }
             AnyOp::RemoteList(input) => {
                 let b = self
                     .resolve(&input.host, context(), admission, terminal, deadline)
                     .await?;
-                let mut request = input.request;
-                scope(
-                    &b.config.device.scope,
-                    RemoteVerb::List,
-                    &mut request.targets,
-                )?;
-                let call = context();
-                call.invocation(&b.config.device, RemoteRequest::List(request.clone()))?;
-                let client = self.connection(&b, &call).await?;
-                let result = client.list(context(), request.clone()).await?;
-                call.check_current()?;
-                check_size(&result, request.budget)?;
-                if result.schema != RemoteListResult::SCHEMA
-                    || result.agents.items().iter().any(|r| {
-                        !request.targets.is_empty() && !request.targets.contains(&r.target)
-                    })
-                {
-                    return Err(refused(
-                        "remote list returned a mismatched schema or target",
-                    ));
-                }
-                Ok(result.body.into())
+                self.list(input, &b, source).await
             }
             AnyOp::RemoteWatch(input) => {
                 let b = self
@@ -111,7 +75,7 @@ impl<B: Budget> RemoteBroker<B> {
                     .watches
                     .read(
                         &b.config.device,
-                        source.as_ref(),
+                        source,
                         client,
                         (request, input.reader_id),
                         input.wait_ms,
@@ -125,86 +89,94 @@ impl<B: Budget> RemoteBroker<B> {
                 let b = self
                     .resolve(&input.host, context(), admission, terminal, deadline)
                     .await?;
-                if input.expected_binding.as_ref().is_some_and(|expected| {
-                    expected.host != b.config.device.host || expected.grant != b.config.device.grant
-                }) {
-                    return Err(refused(
-                        "saved alias changed host/grant; resolve the original send there with its same key, never retarget it",
-                    ));
-                }
-                let request = input.request;
-                if !b
-                    .config
-                    .device
-                    .scope
-                    .allows(RemoteVerb::Send, &request.target)
-                {
-                    return Err(refused("send target or verb is outside this grant"));
-                }
-                let call = context();
-                call.invocation(&b.config.device, RemoteRequest::Send(request.clone()))?;
-                let client = self.connection(&b, &call).await?;
-                // No retry/re-key here. An already admitted remote send retains
-                // its receipt even if the source fence closes while it commits.
-                let key = request.idempotency_key.clone();
-                let result = client.send(context(), request).await?;
-                let checked = (|| {
-                    match &result.receipt {
-                        se_types::Receipt::Committed { commit }
-                        | se_types::Receipt::Replayed { original: commit }
-                            if commit.idempotency_key == key => {}
-                        se_types::Receipt::Pending {
-                            idempotency_key, ..
-                        } if *idempotency_key == key => (),
-                        se_types::Receipt::Refused { .. } => (),
-                        _ => {
-                            return Err(refused(
-                                "remote receipt changed the original mutation key",
-                            ));
-                        }
-                    }
-                    if result.schema != RemoteSendResult::SCHEMA
-                        || result.attribution.host != b.config.device.host
-                        || result.attribution.grant != b.config.device.grant
-                        || result.attribution.device != b.config.device.device
-                        || !if matches!(result.receipt, se_types::Receipt::Replayed { .. }) {
-                            // A replay carries the original source session/generation,
-                            // not the retrying successor. Its lead subject must still
-                            // match the same host/project/agent grant binding.
-                            result
-                                .attribution
-                                .source
-                                .as_ref()
-                                .map(RemoteSourceSession::address)
-                                == source.as_ref().map(|s| s.source().address())
-                        } else {
-                            result.attribution.source.as_ref()
-                                == source.as_ref().map(VerifiedSourceSession::source)
-                        }
-                    {
-                        return Err(refused(
-                            "remote receipt attribution does not match the original grant/source",
-                        ));
-                    }
-                    result.receipt.validate()?;
-                    check_size(&result, REMOTE_FRAME_BYTES as u32)?;
-                    Ok(())
-                })();
-                if let Err(cause) = checked {
-                    return Err(SeError::new(se_types::Detail::CommitOutcomeUnknown(
-                        se_types::details::CommitOutcomeUnknown {
-                            operation: "remote.send".into(),
-                            key: Some(key.to_string()),
-                            natural_events: vec![],
-                        },
-                    ))
-                    .with_cause(cause));
-                }
-                Ok(result.body.into())
+                self.send(input, &b, source).await
             }
             _ => Err(refused(
                 "only closed remote list/watch/send operations enter this broker",
             )),
         }
+    }
+    async fn list(
+        &self,
+        input: RemoteListCall,
+        b: &Binding,
+        source: Option<&VerifiedSourceSession>,
+    ) -> Result<AnyOutput> {
+        let mut request = input.request;
+        scope(
+            &b.config.device.scope,
+            RemoteVerb::List,
+            &mut request.targets,
+        )?;
+        let call = call_context(source);
+        call.invocation(&b.config.device, RemoteRequest::List(request.clone()))?;
+        let client = self.connection(b, &call).await?;
+        let result = client.list(call_context(source), request.clone()).await?;
+        call.check_current()?;
+        check_size(&result, request.budget)?;
+        if result.schema != RemoteListResult::SCHEMA
+            || result
+                .agents
+                .items()
+                .iter()
+                .any(|r| !request.targets.is_empty() && !request.targets.contains(&r.target))
+        {
+            return Err(refused(
+                "remote list returned a mismatched schema or target",
+            ));
+        }
+        Ok(result.body.into())
+    }
+    async fn send(
+        &self,
+        input: RemoteSendCall,
+        b: &Binding,
+        source: Option<&VerifiedSourceSession>,
+    ) -> Result<AnyOutput> {
+        let device = &b.config.device;
+        if input
+            .expected_binding
+            .as_ref()
+            .is_some_and(|expected| expected.host != device.host || expected.grant != device.grant)
+        {
+            return Err(refused(
+                "saved alias changed host/grant; resolve the original send there with its same key, never retarget it",
+            ));
+        }
+        let request = input.request;
+        allow_send(&device.scope, &request.target)?;
+        let call = call_context(source);
+        call.invocation(device, RemoteRequest::Send(request.clone()))?;
+        let client = self.connection(b, &call).await?;
+        // No retry/re-key here. An already admitted remote send retains
+        // its receipt even if the source fence closes while it commits.
+        let key = request.idempotency_key.clone();
+        let result = client.send(call_context(source), request).await?;
+        let checked = (|| {
+            match &result.receipt {
+                se_types::Receipt::Committed { commit }
+                | se_types::Receipt::Replayed { original: commit }
+                    if commit.idempotency_key == key => {}
+                se_types::Receipt::Pending {
+                    idempotency_key, ..
+                } if *idempotency_key == key => (),
+                se_types::Receipt::Refused { .. } => (),
+                _ => {
+                    return Err(refused("remote receipt changed the original mutation key"));
+                }
+            }
+            let replayed = matches!(result.receipt, se_types::Receipt::Replayed { .. });
+            if result.schema != RemoteSendResult::SCHEMA
+                || !attributed(&result.attribution, device, source, replayed)
+            {
+                return Err(refused(
+                    "remote receipt attribution does not match the original grant/source",
+                ));
+            }
+            result.receipt.validate()?;
+            check_size(&result, REMOTE_FRAME_BYTES as u32)
+        })();
+        checked.map_err(|cause| outcome_unknown("remote.send", &key, cause))?;
+        Ok(result.body.into())
     }
 }

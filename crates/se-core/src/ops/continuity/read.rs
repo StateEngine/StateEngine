@@ -81,10 +81,6 @@ pub(super) fn unread<R: Snapshot>(
     mail.page = se_types::Page::new(rows, mail.page.window().clone(), mail.page.next().cloned())?;
     Ok(mail)
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn gather<R: Snapshot>(
     input: &Resume,
     identity: &Identity,
@@ -122,57 +118,12 @@ pub(super) fn gather<R: Snapshot>(
         .position_cursor(&head, purpose)
         .map_err(|e| store_error(&e))?;
     let mut attention = Vec::new();
-    match cx
-        .read
-        .cursor(agent.clone(), "continuity".into())
-        .map_err(|e| store_error(&e))?
-    {
-        Read::Present { value } if value.acknowledged.is_none() => attention.push(
-            "The previous issued context window is not acknowledged. This read does not acknowledge a packet or mark mail read.".into(),
-        ),
-        Read::Present { .. } | Read::Absent { .. } => (),
-        other => {
-            scope::require_present(
-                other,
-                "continuity cursor head",
-                "Restore its issuing and acknowledgment facts; issuance alone is not a read.",
-            )?;
-        }
-    }
+    cursor_attention(agent, &mut attention, cx)?;
     let working = receipt::working_state_get(agent.clone(), cx)?
         .value
-        .map(|value| {
-            // No cursor asks no question, so there is no comparison to report.
-            // A cursor whose saved-work checkpoint is missing gets the unknown
-            // answer by name instead of a guessed "unchanged".
-            let (changed, changed_why) = match working_baseline {
-                Some((cursor, working)) => (Some(working > cursor), None),
-                None if input.since.is_none() => (None, None),
-                None => (
-                    None,
-                    Some("this cursor has no saved-work checkpoint to compare against".into()),
-                ),
-            };
-            ContinuityWorkingState {
-                bytes: value.text.len() as u64,
-                value,
-                complete: true,
-                changed,
-                changed_why,
-                command: None,
-                argv: None,
-            }
-        });
+        .map(|value| working_entry(value, working_baseline, input.since.is_some()));
     let mail = unread(identity, limit, input.byte_budget, cx)?;
-    let unread_total = mail.unread_total.ok_or_else(|| {
-        scope::unreadable(
-            "continuity unread count",
-            "the exact matching count was not supplied",
-        )
-    })?;
-    if unread_total > 0 {
-        attention.push(format!("{unread_total} unread message(s) require reading; listing and context construction do not mark them read."));
-    }
+    let unread_total = unread_report(&mail, &mut attention)?;
     let mut omissions = Vec::new();
     let mut failures = Vec::new();
     match &working {
@@ -200,10 +151,107 @@ pub(super) fn gather<R: Snapshot>(
         "stateengine_event_read",
         &mut omissions,
     );
-    let mut window = turns.window().clone();
+    let window = turns.window().clone();
+    let (recent, unreadable_turns, previewed_turns) =
+        recent_turns(agent, &cx.admission.scope, identity, turns, &mut failures)?;
+    let window = turn_omissions(
+        window,
+        &recent,
+        unreadable_turns,
+        previewed_turns,
+        identity,
+        &mail,
+        &mut omissions,
+    )?;
+    Ok(Gathered {
+        working,
+        unread: mail.page,
+        unread_total,
+        turns: recent,
+        transcript,
+        window,
+        cursor,
+        omissions,
+        attention,
+        failures,
+    })
+}
+
+fn cursor_attention<R: Snapshot>(
+    agent: &se_types::AgentId,
+    attention: &mut Vec<String>,
+    cx: &mut Cx<'_, R>,
+) -> Result<()> {
+    match cx
+        .read
+        .cursor(agent.clone(), "continuity".into())
+        .map_err(|e| store_error(&e))?
+    {
+        Read::Present { value } if value.acknowledged.is_none() => attention.push(
+            "The previous issued context window is not acknowledged. This read does not acknowledge a packet or mark mail read.".into(),
+        ),
+        Read::Present { .. } | Read::Absent { .. } => (),
+        other => {
+            scope::require_present(
+                other,
+                "continuity cursor head",
+                "Restore its issuing and acknowledgment facts; issuance alone is not a read.",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn working_entry(
+    value: crate::ops::WorkingStateValue,
+    baseline: Option<(u64, u64)>,
+    has_since: bool,
+) -> ContinuityWorkingState {
+    // No cursor asks no question, so there is no comparison to report.
+    // A cursor whose saved-work checkpoint is missing gets the unknown
+    // answer by name instead of a guessed "unchanged".
+    let (changed, changed_why) = match baseline {
+        Some((cursor, working)) => (Some(working > cursor), None),
+        None if !has_since => (None, None),
+        None => (
+            None,
+            Some("this cursor has no saved-work checkpoint to compare against".into()),
+        ),
+    };
+    ContinuityWorkingState {
+        bytes: value.text.len() as u64,
+        value,
+        complete: true,
+        changed,
+        changed_why,
+        command: None,
+        argv: None,
+    }
+}
+
+fn unread_report(mail: &crate::ops::MessagePage, attention: &mut Vec<String>) -> Result<u64> {
+    let unread_total = mail.unread_total.ok_or_else(|| {
+        scope::unreadable(
+            "continuity unread count",
+            "the exact matching count was not supplied",
+        )
+    })?;
+    if unread_total > 0 {
+        attention.push(format!("{unread_total} unread message(s) require reading; listing and context construction do not mark them read."));
+    }
+    Ok(unread_total)
+}
+
+fn recent_turns(
+    agent: &se_types::AgentId,
+    admission_scope: &se_store::Scope,
+    identity: &Identity,
+    turns: se_types::Page<se_store::StoredEvent>,
+    failures: &mut Vec<se_types::ErrorBody>,
+) -> Result<(Vec<RecentTurn>, u64, u64)> {
     let mut recent = Vec::new();
-    let mut unreadable_turns = 0;
-    let mut previewed_turns = 0;
+    let mut unreadable_turns = 0u64;
+    let mut previewed_turns = 0u64;
     for event in turns.into_items() {
         let EventBody::SessionTurn {
             agent: target,
@@ -217,7 +265,7 @@ pub(super) fn gather<R: Snapshot>(
                 "the targeted turn read returned another kind",
             ));
         };
-        if target != *agent || event.header.scope != cx.admission.scope {
+        if target != *agent || event.header.scope != *admission_scope {
             return Err(scope::unreadable(
                 "recent turns",
                 "the targeted read returned another agent or project",
@@ -260,6 +308,19 @@ pub(super) fn gather<R: Snapshot>(
             argv: command.argv,
         });
     }
+    Ok((recent, unreadable_turns, previewed_turns))
+}
+
+fn turn_omissions(
+    window: Window,
+    recent: &[RecentTurn],
+    unreadable_turns: u64,
+    previewed_turns: u64,
+    identity: &Identity,
+    mail: &crate::ops::MessagePage,
+    omissions: &mut Vec<Omission>,
+) -> Result<Window> {
+    let mut window = window;
     if unreadable_turns > 0 {
         let mut fields = window.fields().cloned().ok_or_else(|| {
             scope::unreadable("continuity window", "source accounting is missing")
@@ -282,21 +343,11 @@ pub(super) fn gather<R: Snapshot>(
         mail.page.window(),
         &mail_command(identity)?,
         "stateengine_msg_list",
-        &mut omissions,
-    );
-    Ok(Gathered {
-        working,
-        unread: mail.page,
-        unread_total,
-        turns: recent,
-        transcript,
-        window,
-        cursor,
         omissions,
-        attention,
-        failures,
-    })
+    );
+    Ok(window)
 }
+
 pub(super) fn clip(text: &str, maximum: usize) -> &str {
     let mut end = maximum.min(text.len());
     while !text.is_char_boundary(end) {

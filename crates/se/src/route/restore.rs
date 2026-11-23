@@ -135,10 +135,6 @@ fn sorted(mut owners: Vec<HumanId>) -> Vec<HumanId> {
     owners.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     owners
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "one ordered owner, backup, host and restore sequence"
-)]
 fn run(
     cx: &Bootstrap,
     input: &StoreRestore,
@@ -167,20 +163,8 @@ fn run(
         .as_ref()
         .map(|live| sorted(live.inventory.owners.clone()))
         .filter(|owners| !owners.is_empty());
-    if let Some(owner) = live_owners.as_ref().and_then(|owners| owners.first()) {
-        let admission = admission(owner);
-        if let Read::Present { value } =
-            SqliteFactory::recovery_receipt(&options, &request, &admission)
-                .map_err(|e| store_error(&e))?
-        {
-            return Ok(RestoreResult {
-                receipt: Some(value.original_receipt),
-                reason: Some(
-                    "This request already restored the store; nothing was changed again.".into(),
-                ),
-                ..result(input, "restored")
-            });
-        }
+    if let Some(replayed) = replayed(input, &options, &request, live_owners.as_deref())? {
+        return Ok(replayed);
     }
     let Some(backup) = newest(&options)? else {
         return Ok(refused(
@@ -206,25 +190,7 @@ fn run(
         .first()
         .cloned()
         .ok_or_else(|| SeError::invalid("restore owner", "a registered owner"))?;
-    let (backup_store, backup_incarnation, through) = backup.through.storage_parts();
-    let events_lost = live
-        .as_ref()
-        .and_then(|live| live.head.as_ref())
-        .and_then(|head| {
-            let (store, incarnation, sequence) = head.storage_parts();
-            (store == backup_store && incarnation == backup_incarnation)
-                .then(|| sequence.saturating_sub(through))
-        });
-    let mut planned = RestoreResult {
-        backup: Some(store_restore::RestoreBackup {
-            id: uuid::Uuid::from_bytes(*backup.id.as_bytes()).to_string(),
-            path: backup.path.display().to_string(),
-            through_sequence: through,
-            bytes: backup.bytes,
-        }),
-        events_lost,
-        ..result(input, "planned")
-    };
+    let mut planned = plan(input, &backup, live.as_ref());
     let blocking = live
         .as_ref()
         .map(|live| agents(&live.reader, &live.inventory, &owner))
@@ -259,12 +225,54 @@ fn run(
     }
     let target = match &live {
         Some(live) => live.inventory.store.id.clone(),
-        None => backup_store.clone(),
+        None => backup.through.storage_parts().0.clone(),
     };
     drop(live);
     restore(
         cx, &files, &options, backup, &request, target, &owner, planned,
     )
+}
+/// The result this request already recorded, when it restored the store.
+fn replayed(
+    input: &StoreRestore,
+    options: &StoreOptions,
+    request: &RequestIdentity,
+    live_owners: Option<&[HumanId]>,
+) -> Result<Option<RestoreResult>> {
+    if let Some(owner) = live_owners.and_then(|owners| owners.first()) {
+        let admission = admission(owner);
+        if let Read::Present { value } =
+            SqliteFactory::recovery_receipt(options, request, &admission)
+                .map_err(|e| store_error(&e))?
+        {
+            return Ok(Some(RestoreResult {
+                receipt: Some(value.original_receipt),
+                reason: Some(
+                    "This request already restored the store; nothing was changed again.".into(),
+                ),
+                ..result(input, "restored")
+            }));
+        }
+    }
+    Ok(None)
+}
+fn plan(input: &StoreRestore, backup: &BackupGeneration, live: Option<&Live>) -> RestoreResult {
+    let (backup_store, backup_incarnation, through) = backup.through.storage_parts();
+    let events_lost = live.and_then(|live| live.head.as_ref()).and_then(|head| {
+        let (store, incarnation, sequence) = head.storage_parts();
+        (store == backup_store && incarnation == backup_incarnation)
+            .then(|| sequence.saturating_sub(through))
+    });
+    RestoreResult {
+        backup: Some(store_restore::RestoreBackup {
+            id: uuid::Uuid::from_bytes(*backup.id.as_bytes()).to_string(),
+            path: backup.path.display().to_string(),
+            through_sequence: through,
+            bytes: backup.bytes,
+        }),
+        events_lost,
+        ..result(input, "planned")
+    }
 }
 fn admission(owner: &HumanId) -> Admission {
     Admission {

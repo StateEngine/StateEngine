@@ -69,15 +69,10 @@ pub(crate) fn canonicalize(c: &Connection, batch: &mut AtomicBatch) -> StoreResu
     }
     Ok(())
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-pub(crate) fn validate_batch(c: &Connection, batch: &AtomicBatch) -> StoreResult<()> {
-    use EventBody::*;
+fn reject_duplicate_turns(batch: &AtomicBatch) -> StoreResult<()> {
     let mut turns = Vec::new();
     for e in &batch.events {
-        if let SessionTurn {
+        if let EventBody::SessionTurn {
             session,
             provider,
             vendor_ref,
@@ -96,6 +91,11 @@ pub(crate) fn validate_batch(c: &Connection, batch: &AtomicBatch) -> StoreResult
             turns.push((session, provider, vendor_ref));
         }
     }
+    Ok(())
+}
+pub(crate) fn validate_batch(c: &Connection, batch: &AtomicBatch) -> StoreResult<()> {
+    use EventBody::*;
+    reject_duplicate_turns(batch)?;
     let progress: Vec<_> = batch
         .events
         .iter()

@@ -29,6 +29,22 @@ pub(crate) fn row(
     Some(observe(native, &process, deadline))
 }
 
+/// Whether the agent has a background process running now. Codex tool commands
+/// are not attributed to one agent, and an unreadable scope is not known to be
+/// busy, so both read as not running.
+pub(crate) fn busy(
+    provider: se_store::Provider,
+    native: &NativeProcessRuntime,
+    process: Option<std::sync::Arc<OwnedProcess>>,
+) -> bool {
+    let process = match process {
+        Some(process) if provider != se_store::Provider::Codex => process,
+        _ => return false,
+    };
+    let deadline = Instant::now() + std::time::Duration::from_secs(2);
+    matches!(observe(native, &process, deadline), Read::Present { value } if value.processes > 0)
+}
+
 fn observe(
     native: &NativeProcessRuntime,
     process: &OwnedProcess,

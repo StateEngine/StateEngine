@@ -168,10 +168,6 @@ fn add_omission(
         ));
     }
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
     input: &Resume,
     identity: &Identity,
@@ -186,13 +182,7 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
         if needed <= input.byte_budget as usize {
             return Ok(());
         }
-        if let Read::Present { value } = &mut result.transcript.transcript_events
-            && value.pop().is_some()
-        {
-            if let Read::Present { value: count } = &mut result.transcript.transcript_events_omitted
-            {
-                *count = count.saturating_add(1);
-            }
+        if drop_last_transcript_event(result) {
             continue;
         }
         // A since cursor asks what changed: spend recovery duplication and
@@ -203,29 +193,7 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
         if input.since.is_none() && trim_turn(result, data, input, needed)? {
             continue;
         }
-        if result.unread.items().len() > 1 {
-            let count = (result.unread.items().len() / 2).max(1) as u16;
-            let smaller = read::unread(identity, count, input.byte_budget, cx)?;
-            result.unread = smaller.page;
-            result.required_reads.retain(|v| v.kind != "message");
-            result
-                .required_reads
-                .extend(result.unread.items().iter().map(|m| RequiredRead {
-                    kind: "message".into(),
-                    id: m.id.to_string(),
-                    why: "Unread message addressed to you; listing does not acknowledge it.".into(),
-                }));
-            result.omissions.retain(|v| v.section != "unread");
-            result.omissions.push(read::omission(
-                "unread",
-                Some(
-                    data.unread_total
-                        .saturating_sub(result.unread.items().len() as u64),
-                ),
-                "packet byte budget",
-                read::mail_command(identity)?,
-                "stateengine_msg_list",
-            ));
+        if halve_unread(result, identity, data, input, cx)? {
             continue;
         }
         if input.byte_budget <= DEFAULT_BYTES && super::compact::recovery(result) {
@@ -239,63 +207,8 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
         {
             continue;
         }
-        if let Read::Present { value } = &mut result.working_state
-            && !value.value.text.is_empty()
-            && (input.since.is_none() || value.value.text.len() > 256 || !value.complete)
-        {
-            if value.value.text.len() <= 256
-                && value.command.is_some()
-                && result
-                    .omissions
-                    .iter()
-                    .any(|item| item.section == "recovery_commands")
-            {
-                // With unusually long IDs, use the shared recovery command
-                // before sacrificing the last useful fragment of saved work.
-                value.command = None;
-                value.argv = None;
-                continue;
-            }
-            let existing = result
-                .omissions
-                .iter()
-                .position(|item| item.section == "working_state");
-            if existing.is_none() {
-                // Account for the recovery metadata before choosing a text cut.
-                // Otherwise adding the remedy after clipping can erase the note.
-                let command = identity.working_state()?;
-                let mut omitted = read::omission(
-                    "working_state",
-                    Some(0),
-                    "packet byte budget",
-                    command,
-                    "stateengine_working_state_get",
-                );
-                omitted.unit = Some("UTF-8 bytes".into());
-                value.command = Some(omitted.command.clone());
-                value.argv = Some(omitted.argv.clone());
-                result.omissions.push(omitted);
-                value.complete = false;
-                continue;
-            }
-            let mut limit = value
-                .value
-                .text
-                .len()
-                .saturating_sub(needed - input.byte_budget as usize + 8);
-            if input.byte_budget <= DEFAULT_BYTES {
-                // Shared recovery must not erase the last saved-work fragment.
-                limit = limit.max(value.value.text.len().min(128));
-            }
-            if limit < value.value.text.len() {
-                value.value.text = read::clip(&value.value.text, limit).into();
-                value.complete = false;
-                if let Some(index) = existing {
-                    result.omissions[index].count =
-                        Some(value.bytes.saturating_sub(value.value.text.len() as u64));
-                }
-                continue;
-            }
+        if clip_working_state(result, identity, input, needed)? {
+            continue;
         }
         if input.since.is_some() && trim_turn(result, data, input, needed)? {
             continue;
@@ -310,6 +223,125 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
         "finite packet reduction did not converge",
     ))
 }
+
+fn drop_last_transcript_event(result: &mut ResumeOutput) -> bool {
+    let Read::Present { value } = &mut result.transcript.transcript_events else {
+        return false;
+    };
+    if value.pop().is_none() {
+        return false;
+    }
+    if let Read::Present { value: count } = &mut result.transcript.transcript_events_omitted {
+        *count = count.saturating_add(1);
+    }
+    true
+}
+
+fn halve_unread<R: Snapshot>(
+    result: &mut ResumeOutput,
+    identity: &Identity,
+    data: &mut Gathered,
+    input: &Resume,
+    cx: &mut Cx<'_, R>,
+) -> Result<bool> {
+    if result.unread.items().len() <= 1 {
+        return Ok(false);
+    }
+    let count = (result.unread.items().len() / 2).max(1) as u16;
+    let smaller = read::unread(identity, count, input.byte_budget, cx)?;
+    result.unread = smaller.page;
+    result.required_reads.retain(|v| v.kind != "message");
+    result
+        .required_reads
+        .extend(result.unread.items().iter().map(|m| RequiredRead {
+            kind: "message".into(),
+            id: m.id.to_string(),
+            why: "Unread message addressed to you; listing does not acknowledge it.".into(),
+        }));
+    result.omissions.retain(|v| v.section != "unread");
+    result.omissions.push(read::omission(
+        "unread",
+        Some(
+            data.unread_total
+                .saturating_sub(result.unread.items().len() as u64),
+        ),
+        "packet byte budget",
+        read::mail_command(identity)?,
+        "stateengine_msg_list",
+    ));
+    Ok(true)
+}
+
+fn clip_working_state(
+    result: &mut ResumeOutput,
+    identity: &Identity,
+    input: &Resume,
+    needed: usize,
+) -> Result<bool> {
+    let Read::Present { value } = &mut result.working_state else {
+        return Ok(false);
+    };
+    if value.value.text.is_empty()
+        || !(input.since.is_none() || value.value.text.len() > 256 || !value.complete)
+    {
+        return Ok(false);
+    }
+    if value.value.text.len() <= 256
+        && value.command.is_some()
+        && result
+            .omissions
+            .iter()
+            .any(|item| item.section == "recovery_commands")
+    {
+        // With unusually long IDs, use the shared recovery command
+        // before sacrificing the last useful fragment of saved work.
+        value.command = None;
+        value.argv = None;
+        return Ok(true);
+    }
+    let existing = result
+        .omissions
+        .iter()
+        .position(|item| item.section == "working_state");
+    if existing.is_none() {
+        // Account for the recovery metadata before choosing a text cut.
+        // Otherwise adding the remedy after clipping can erase the note.
+        let command = identity.working_state()?;
+        let mut omitted = read::omission(
+            "working_state",
+            Some(0),
+            "packet byte budget",
+            command,
+            "stateengine_working_state_get",
+        );
+        omitted.unit = Some("UTF-8 bytes".into());
+        value.command = Some(omitted.command.clone());
+        value.argv = Some(omitted.argv.clone());
+        result.omissions.push(omitted);
+        value.complete = false;
+        return Ok(true);
+    }
+    let mut limit = value
+        .value
+        .text
+        .len()
+        .saturating_sub(needed - input.byte_budget as usize + 8);
+    if input.byte_budget <= DEFAULT_BYTES {
+        // Shared recovery must not erase the last saved-work fragment.
+        limit = limit.max(value.value.text.len().min(128));
+    }
+    if limit < value.value.text.len() {
+        value.value.text = read::clip(&value.value.text, limit).into();
+        value.complete = false;
+        if let Some(index) = existing {
+            result.omissions[index].count =
+                Some(value.bytes.saturating_sub(value.value.text.len() as u64));
+        }
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 fn trim_turn(
     result: &mut ResumeOutput,
     data: &mut Gathered,

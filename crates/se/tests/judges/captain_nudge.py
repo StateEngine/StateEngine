@@ -3,8 +3,10 @@
 Under a captain, a crew agent that completes turns on an open assignment
 without sending a message, saving a note or updating the assignment is nudged
 exactly `captain_nudge_attempts` times, at least the idle interval apart; then
-its captain gets one stuck alert and the nudges stop. A message from the agent
-resets the streak, so nudging resumes.
+its captain gets one stuck alert and the nudges stop. While a process the agent
+left running is still alive it is not nudged at all. A message from the agent
+resets the streak, so nudging resumes. The provider is a script, so it runs
+under StateEngine's supervisor and an idle agent has no background process.
 Run: python3 captain_nudge.py --se SE --output NEW_DIRECTORY [--idle SECONDS]
 """
 import argparse
@@ -13,6 +15,7 @@ from pathlib import Path
 import time
 import uuid
 
+from background_status import script_provider
 from mail_cli import Fixture
 
 ATTEMPTS = 2
@@ -82,11 +85,22 @@ def run(fixture, idle):
     fixture.ok("--key", key(), "--project", fixture.project, "captain", "set", lead)
     fixture.ok("--key", key(), "--project", fixture.project, "assignment", "write", "--action", "open",
                "--assignee", fixture.agent, "--body", "Judge assignment that the crew never reports on")
+    script_provider(fixture)
+    # The agent's first turn (the assignment notice) starts a long-running job.
+    (fixture.repo / "spawn-background").write_text("go")
     fixture.launch()
     wait_until(lambda: (fixture.repo / "launch-turn-complete").exists(), 30, "the launch turn")
-    print("ok 1 - a captain, an open assignment and a turn-completing crew agent", flush=True)
+    wait_until(lambda: (fixture.repo / "background-pid").exists(), 30, "the background job to start")
+    print("ok 1 - a captain, an open assignment and a crew agent with a job still running", flush=True)
 
     cache = {}
+    time.sleep(idle * 4)
+    assert not nudge_frames(fixture, cache), "an agent with a running background job was nudged"
+    (fixture.repo / "stop-background").write_text("go")
+    fixture.mail("send", fixture.agent, "Wrap up the job")
+    wait_until(lambda: not (fixture.repo / "background-pid").exists(), 30, "the background job to stop")
+    print(f"ok 2 - no nudge for {idle * 4} s while the job ran", flush=True)
+
     nudged = wait_until(lambda: len(nudge_frames(fixture, cache)) >= ATTEMPTS and nudge_frames(fixture, cache),
                         idle * (ATTEMPTS + 3) + 30, f"{ATTEMPTS} nudges")
     alert = wait_until(lambda: alerts(fixture, lead), idle * 3 + 30, "the stuck alert")
@@ -97,12 +111,12 @@ def run(fixture, idle):
     assert all(gap >= idle - 0.5 for gap in gaps), f"nudges came faster than the {idle}s interval: {gaps}"
     alert = alerts(fixture, lead)
     assert len(alert) == 1, f"expected one stuck alert to the captain, saw {len(alert)}"
-    print(f"ok 2 - {ATTEMPTS} nudges {gaps} s apart, then one stuck alert and no further nudge", flush=True)
+    print(f"ok 3 - {ATTEMPTS} nudges {gaps} s apart, then one stuck alert and no further nudge", flush=True)
 
     fixture.rpc("stateengine_msg_send", {"to": lead, "body": "Still on it", "kind": "note",
                                          "idempotency_key": key()})
     wait_until(lambda: len(nudge_frames(fixture, cache)) > ATTEMPTS, idle * 2 + 30, "a nudge after the reset")
-    print("ok 3 - a message from the agent resets the streak and nudging resumes", flush=True)
+    print("ok 4 - a message from the agent resets the streak and nudging resumes", flush=True)
 
 
 def main():
@@ -111,13 +125,13 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--idle", type=int, default=3)
     args = parser.parse_args()
-    fixture = Fixture(args.se, args.output, provider_helper=Path(__file__).with_name("burst_provider.py"))
-    print("1..4", flush=True)
+    fixture = Fixture(args.se, args.output, provider_helper=Path(__file__).with_name("background_provider.py"))
+    print("1..5", flush=True)
     try:
         run(fixture, args.idle)
     finally:
         fixture.close()
-    print("ok 4 - witnessed shutdown and outside provider exit", flush=True)
+    print("ok 5 - witnessed shutdown and outside provider exit", flush=True)
 
 
 if __name__ == "__main__":

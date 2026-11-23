@@ -1,0 +1,85 @@
+//! Find what changed while nothing was watching: compare each discovered
+//! file's size and modification time, read through custody without reading
+//! its bytes, against what the store last indexed. New, changed and vanished
+//! paths come back; the writer re-indexes only those.
+use se_atlas_index::{
+    Result,
+    custody::{GuardedOpen, IndexSourceRoot},
+    store::Store,
+};
+use std::collections::HashMap;
+
+/// What a stat walk found against the store.
+#[derive(Debug, Default)]
+pub(crate) struct Delta {
+    /// New or changed discovered files to read again, sorted.
+    pub changed: Vec<String>,
+    /// Indexed files discovery no longer lists (deleted, ignored or denied),
+    /// to remove rather than read again, sorted.
+    pub gone: Vec<String>,
+    /// Discovered files whose stats could not be read (a sharing violation,
+    /// no permission); each is retried later, and the root is partial.
+    pub failed: Vec<String>,
+}
+
+/// Compare discovered files with what the store last indexed. One file that
+/// cannot be examined is recorded, never fatal to the whole root.
+pub(crate) fn changed(
+    store: &Store,
+    source: &IndexSourceRoot,
+    discovered: &[String],
+) -> Result<Delta> {
+    let mut indexed: HashMap<String, (i64, i64)> = HashMap::new();
+    {
+        let mut select = store
+            .connection()
+            .prepare_cached("SELECT path, coalesce(size, -1), coalesce(mtime_ns, -1) FROM files")?;
+        let rows = select.query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))?;
+        for row in rows {
+            let (path, facts) = row?;
+            indexed.insert(path, facts);
+        }
+    }
+    let mut out = Delta::default();
+    for path in discovered {
+        let known = indexed.remove(path);
+        match stat(source, path) {
+            Ok(facts) if known.is_some() && facts == known => {}
+            Ok(_) => out.changed.push(path.clone()),
+            Err(_) => {
+                // A replaced root is not one unreadable file.
+                source.check()?;
+                out.failed.push(path.clone());
+            }
+        }
+    }
+    out.gone.extend(indexed.into_keys());
+    out.gone.sort_unstable();
+    Ok(out)
+}
+
+/// Indexed files below `directory`. A watcher that cannot tell a removed
+/// directory from a removed file reports the name alone; its files go too.
+pub(crate) fn under(store: &Store, directory: &str) -> Result<Vec<String>> {
+    // '0' sorts right after '/', so this range is exactly `directory/...`.
+    let mut select = store
+        .connection()
+        .prepare_cached("SELECT path FROM files WHERE path > ?1 || '/' AND path < ?1 || '0'")?;
+    let rows = select.query_map([directory], |row| row.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Size and modification time as the store records them, `None` when the
+/// name no longer denotes a readable regular file.
+pub(crate) fn stat(source: &IndexSourceRoot, path: &str) -> Result<Option<(i64, i64)>> {
+    Ok(match source.open_guarded_file(path)? {
+        GuardedOpen::File(file) => {
+            let revision = file.opened_revision();
+            Some((
+                i64::try_from(revision.size).unwrap_or(i64::MAX),
+                i64::try_from(revision.mtime_unix_nanos).unwrap_or(i64::MAX),
+            ))
+        }
+        GuardedOpen::Absent | GuardedOpen::Denied | GuardedOpen::Refused => None,
+    })
+}

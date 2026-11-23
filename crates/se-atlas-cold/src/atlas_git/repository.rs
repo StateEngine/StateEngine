@@ -338,7 +338,7 @@ fn small(root: &NativeSourceRoot, path: &str) -> io::Result<Option<String>> {
     let Some(mut file) = root.open_relative(path)? else {
         return Ok(None);
     };
-    let before = file.revision()?;
+    let before = file.opened_revision();
     let mut bytes = Vec::new();
     file.by_ref().take(4097).read_to_end(&mut bytes)?;
     if bytes.len() > 4096 || file.revision()? != before || !file.validate_name()? {
@@ -385,7 +385,7 @@ fn packed(root: &NativeSourceRoot, reference: &str) -> io::Result<Option<String>
     let Some(mut file) = root.open_relative("packed-refs")? else {
         return Ok(None);
     };
-    let before = file.revision()?;
+    let before = file.opened_revision();
     if before.size > 4_000_000 {
         return Err(invalid(
             "Git packed refs exceed the 4000000-byte read bound",

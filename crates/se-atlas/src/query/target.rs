@@ -8,13 +8,49 @@ pub(super) fn resolve(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Op
     Ok(resolve_inner(sql, target)?
         .filter(|t| !crate::policy::built_in_denied(&t.file.pointer.path)))
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+/// The explicit target a positional one names, so callers see one shape;
+/// `None` when nothing indexed matches it.
+pub(super) fn concrete(sql: &SqlView<'_>, given: &AtlasTarget) -> AtlasResult<Option<AtlasTarget>> {
+    let AtlasTarget::Auto(text) = given else {
+        return Ok(Some(given.clone()));
+    };
+    Ok(auto(sql, text.as_str())?.map(|found| match found.symbol {
+        Some(symbol) => AtlasTarget::Symbol(SymbolSelector::Id(symbol.value.id)),
+        None => AtlasTarget::File(found.file.pointer.path),
+    }))
+}
+/// An indexed path, then `path:line` for the symbol spanning that line (or the
+/// file), then one exact symbol name.
+fn auto(sql: &SqlView<'_>, text: &str) -> AtlasResult<Option<Target>> {
+    let slashed = text.replace('\\', "/");
+    let mut found = None;
+    if let Ok(path) = RelativePath::new(slashed.as_str()) {
+        found = resolve_inner(sql, &AtlasTarget::File(path))?;
+    }
+    if found.is_none()
+        && let Some((path, line)) = slashed.rsplit_once(':')
+        && let (Ok(path), Ok(line @ 1..)) = (RelativePath::new(path), line.parse::<u32>())
+        && let Some(file) = file_by_path(sql, &path)?
+    {
+        let q = "SELECT id FROM symbols WHERE file=?1 AND start_line<=?2 AND end_line>=?2 ORDER BY (end_byte-start_byte),key LIMIT 1";
+        let ids = id_column(sql, q, params![file.rowid, line], 1)?;
+        let sym = ids.first().map(|&id| symbol_by_id(sql, id));
+        found = Some(Target {
+            file,
+            symbol: sym.transpose()?.map(|(s, _)| s),
+        });
+    }
+    if found.is_none() {
+        found = resolve_name(sql, &QueryText::new(text)?, None, None, None, None)?;
+    }
+    Ok(found)
+}
 fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<Target>> {
     if let AtlasTarget::File(path) = target {
         return Ok(file_by_path(sql, path)?.map(|file| Target { file, symbol: None }));
+    }
+    if let AtlasTarget::Auto(text) = target {
+        return auto(sql, text.as_str());
     }
     let AtlasTarget::Symbol(selector) = target else {
         return Err(se_types::SeError::invalid(
@@ -24,15 +60,13 @@ fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<
     };
     let (name, path, container, kind, line) = match selector {
         SymbolSelector::Id(id) => {
-            let found = {
-                let mut stmt = sql.prepare("SELECT id FROM symbols WHERE key=?1")?;
-                let mut rows = stmt.query([id.0.as_slice()]).map_err(cache_error)?;
-                rows.next()
-                    .map_err(cache_error)?
-                    .map(|r| get::<i64>(r, 0))
-                    .transpose()?
-            };
-            return found.map(|id| load(sql, id)).transpose();
+            let found = id_column(
+                sql,
+                "SELECT id FROM symbols WHERE key=?1",
+                [id.0.as_slice()],
+                1,
+            )?;
+            return found.first().map(|&id| load(sql, id)).transpose();
         }
         SymbolSelector::At { path, position } => {
             if position.line == 0 {
@@ -44,18 +78,15 @@ fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<
             let Some(file) = file_by_path(sql, path)? else {
                 return Ok(None);
             };
-            let found = {
-                let mut stmt=sql.prepare("SELECT id FROM symbols WHERE file=?1 AND (start_line<?2 OR (start_line=?2 AND start_column<=?3)) AND (end_line>?2 OR (end_line=?2 AND end_column>?3)) ORDER BY (end_byte-start_byte),key LIMIT 1")?;
-                let mut rows = stmt
-                    .query(params![file.rowid, position.line, position.byte_column])
-                    .map_err(cache_error)?;
-                rows.next()
-                    .map_err(cache_error)?
-                    .map(|r| get::<i64>(r, 0))
-                    .transpose()?
-            };
+            let found = id_column(
+                sql,
+                "SELECT id FROM symbols WHERE file=?1 AND (start_line<?2 OR (start_line=?2 AND start_column<=?3)) AND (end_line>?2 OR (end_line=?2 AND end_column>?3)) ORDER BY (end_byte-start_byte),key LIMIT 1",
+                params![file.rowid, position.line, position.byte_column],
+                1,
+            )?;
             return found
-                .map(|id| {
+                .first()
+                .map(|&id| {
                     symbol_by_id(sql, id).map(|(symbol, _)| Target {
                         file,
                         symbol: Some(symbol),
@@ -71,7 +102,17 @@ fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<
             line,
         } => (name, path, container, kind, line),
     };
-    let file = path.as_ref().map(|p| file_by_path(sql, p)).transpose()?;
+    resolve_name(sql, name, path.as_ref(), container.as_ref(), *kind, *line)
+}
+fn resolve_name(
+    sql: &SqlView<'_>,
+    name: &QueryText,
+    path: Option<&RelativePath>,
+    container: Option<&QueryText>,
+    kind: Option<SymbolKind>,
+    line: Option<u32>,
+) -> AtlasResult<Option<Target>> {
+    let file = path.map(|p| file_by_path(sql, p)).transpose()?;
     if file.as_ref().is_some_and(Option::is_none) {
         return Ok(None);
     }
@@ -83,67 +124,9 @@ fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<
         statement.push_str(" AND s.file=?2");
     }
     statement.push_str(" ORDER BY s.key LIMIT 513");
-    let ids = {
-        let mut stmt = sql.prepare(&statement)?;
-        let mut rows = stmt
-            .query(rusqlite::params_from_iter(values))
-            .map_err(cache_error)?;
-        let mut ids = Vec::with_capacity(513);
-        while let Some(row) = rows.next().map_err(cache_error)? {
-            ids.push(get::<i64>(row, 0)?);
-        }
-        ids
-    };
-    const TYPE_DECLARATION: &[SymbolKind] = &[
-        SymbolKind::Struct,
-        SymbolKind::Class,
-        SymbolKind::Enum,
-        SymbolKind::Interface,
-        SymbolKind::Trait,
-        SymbolKind::TypeAlias,
-    ];
+    let ids = id_column(sql, &statement, rusqlite::params_from_iter(values), 513)?;
     let limited = ids.len() > 512;
-    // Selected candidates are kept as ids and declaration flags; display
-    // strings are bounded to the first twenty, so the resolver never holds
-    // the full rows it walks for filtering.
-    let mut candidates: Vec<(i64, bool)> = Vec::new();
-    let mut displays = Vec::new();
-    for id in ids.into_iter().take(512) {
-        let target = load(sql, id)?;
-        if crate::policy::built_in_denied(&target.file.pointer.path) {
-            continue;
-        }
-        let symbol = &target
-            .symbol
-            .as_ref()
-            .ok_or_else(|| cache_error("missing resolved symbol"))?
-            .value;
-        if let Some(kind) = kind
-            && symbol.kind != *kind
-        {
-            continue;
-        }
-        if let Some(line) = line
-            && symbol.span.start.line != *line
-        {
-            continue;
-        }
-        if let Some(container) = container
-            && !container_matches(sql, id, container.as_str())?
-        {
-            continue;
-        }
-        candidates.push((id, TYPE_DECLARATION.contains(&symbol.kind)));
-        if displays.len() < 20 {
-            displays.push(format!(
-                "{:?} {}:{} {}",
-                symbol.kind,
-                target.file.pointer.path.as_str(),
-                symbol.span.start.line,
-                symbol.name
-            ));
-        }
-    }
+    let (candidates, displays) = filter(sql, ids, container, kind, line)?;
     if limited {
         return Err(capacity(
             "Atlas selector candidates; narrow path or container",
@@ -182,6 +165,64 @@ fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<
         }),
     ))
 }
+type Selected = (Vec<(i64, bool)>, Vec<String>);
+/// Selected candidates are kept as ids and declaration flags; display strings are
+/// bounded to the first twenty, so the resolver never holds the rows it filters.
+fn filter(
+    sql: &SqlView<'_>,
+    ids: Vec<i64>,
+    container: Option<&QueryText>,
+    kind: Option<SymbolKind>,
+    line: Option<u32>,
+) -> AtlasResult<Selected> {
+    const TYPE_DECLARATION: &[SymbolKind] = &[
+        SymbolKind::Struct,
+        SymbolKind::Class,
+        SymbolKind::Enum,
+        SymbolKind::Interface,
+        SymbolKind::Trait,
+        SymbolKind::TypeAlias,
+    ];
+    let mut candidates = Vec::new();
+    let mut displays = Vec::new();
+    for id in ids.into_iter().take(512) {
+        let target = load(sql, id)?;
+        if crate::policy::built_in_denied(&target.file.pointer.path) {
+            continue;
+        }
+        let symbol = &target
+            .symbol
+            .as_ref()
+            .ok_or_else(|| cache_error("missing resolved symbol"))?
+            .value;
+        if let Some(kind) = kind
+            && symbol.kind != kind
+        {
+            continue;
+        }
+        if let Some(line) = line
+            && symbol.span.start.line != line
+        {
+            continue;
+        }
+        if let Some(container) = container
+            && !container_matches(sql, id, container.as_str())?
+        {
+            continue;
+        }
+        candidates.push((id, TYPE_DECLARATION.contains(&symbol.kind)));
+        if displays.len() < 20 {
+            displays.push(format!(
+                "{:?} {}:{} {}",
+                symbol.kind,
+                target.file.pointer.path.as_str(),
+                symbol.span.start.line,
+                symbol.name
+            ));
+        }
+    }
+    Ok((candidates, displays))
+}
 fn load(sql: &SqlView<'_>, id: i64) -> AtlasResult<Target> {
     let (symbol, file) = symbol_by_id(sql, id)?;
     Ok(Target {
@@ -198,22 +239,12 @@ fn container_matches(sql: &SqlView<'_>, id: i64, expected: &str) -> AtlasResult<
             return Err(cache_error("container ancestry exceeds 32 or cycles"));
         }
         visited.push(current);
-        let parent = {
-            let mut stmt = sql.prepare("SELECT parent FROM symbols WHERE id=?1")?;
-            stmt.query_row([current], |r| r.get::<_, Option<i64>>(0))
-                .map_err(cache_error)?
-        };
+        let parent = scalar(sql, "SELECT parent FROM symbols WHERE id=?1", [current])?;
         let Some(parent) = parent else {
             break;
         };
-        let name = {
-            let mut stmt = sql.prepare(
-                "SELECT n.text FROM symbols s JOIN names n ON n.id=s.name WHERE s.id=?1",
-            )?;
-            stmt.query_row([parent], |r| r.get::<_, String>(0))
-                .map_err(cache_error)?
-        };
-        names.push(name);
+        let name = "SELECT n.text FROM symbols s JOIN names n ON n.id=s.name WHERE s.id=?1";
+        names.push(scalar::<String>(sql, name, [parent])?);
         current = parent;
     }
     names.reverse();
@@ -239,10 +270,7 @@ pub(super) fn reference_by_id(sql: &SqlView<'_>, id: i64) -> AtlasResult<Referen
     };
     let mut site = file_by_id(sql, file)?.pointer;
     site.span = Some(span);
-    let spelling = {
-        let mut stmt = sql.prepare("SELECT text FROM names WHERE id=?1")?;
-        stmt.query_row([name], |r| r.get(0)).map_err(cache_error)?
-    };
+    let spelling = scalar(sql, "SELECT text FROM names WHERE id=?1", [name])?;
     Ok(Reference {
         site,
         kind,
@@ -252,9 +280,8 @@ pub(super) fn reference_by_id(sql: &SqlView<'_>, id: i64) -> AtlasResult<Referen
         accuracy,
     })
 }
-fn symbol_key(sql: &SqlView<'_>, id: i64) -> AtlasResult<SymbolId> {
-    let mut stmt = sql.prepare("SELECT key FROM symbols WHERE id=?1")?;
-    let key: Vec<u8> = stmt.query_row([id], |r| r.get(0)).map_err(cache_error)?;
+pub(super) fn symbol_key(sql: &SqlView<'_>, id: i64) -> AtlasResult<SymbolId> {
+    let key: Vec<u8> = scalar(sql, "SELECT key FROM symbols WHERE id=?1", [id])?;
     Ok(SymbolId(
         key.try_into()
             .map_err(|_| cache_error("invalid symbol key"))?,

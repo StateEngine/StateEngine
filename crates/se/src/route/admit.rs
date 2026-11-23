@@ -78,11 +78,7 @@ pub fn hook_session(cx: &Bootstrap, phase: ReadPhase) -> Result<()> {
         }
         Ok(())
     })();
-    match (result, read.close().map_err(|e| store_error(&e))) {
-        (result, Ok(())) => result,
-        (Ok(()), Err(error)) => Err(error),
-        (Err(error), Err(close)) => Err(error.with_cause(close)),
-    }
+    super::execute::finish_read(result, read.close().map_err(|e| store_error(&e)))
 }
 
 pub struct Caller {

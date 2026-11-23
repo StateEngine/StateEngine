@@ -397,19 +397,24 @@ pub fn control_socket(codex_home: &std::path::Path) -> std::path::PathBuf {
         .join("app-server-control.sock")
 }
 
-/// The agent's own process forwards to its login's shared app-server. On Unix
-/// the host and an attended terminal reach it through the agent's private
-/// socket; elsewhere through its stdio.
+/// The agent's own process forwards to its login's shared app-server. The host
+/// and an attended terminal reach it through the agent's private local socket.
 pub fn forwarder_invocation(
     launch: &CodexLaunch<'_>,
     forwarder: &std::path::Path,
     mut environment: Vec<(OsString, OsString)>,
 ) -> Result<ProviderInvocation> {
     validate(launch)?;
-    let downstream: OsString = match launch.socket {
-        Some(socket) => socket.as_os_str().to_owned(),
-        None => crate::codex_forward::STDIO.into(),
-    };
+    let downstream: OsString = launch
+        .socket
+        .ok_or_else(|| {
+            incompatible(
+                "this platform has no private local socket for the agent",
+                "Run Codex agents on Linux, macOS or Windows.",
+            )
+        })?
+        .as_os_str()
+        .to_owned();
     environment.retain(|(name, _)| {
         let name = name.to_string_lossy().to_ascii_uppercase();
         name != "SE_SESSION"
@@ -425,7 +430,7 @@ pub fn forwarder_invocation(
     ));
     Ok(ProviderInvocation {
         executable: NativePath::from_local(forwarder.to_owned())?,
-        arguments: vec![crate::codex_forward::ENTRY.into(), downstream],
+        arguments: vec![se_local_socket::forward::ENTRY.into(), downstream],
         environment: se_proc::Environment {
             entries: environment,
         },

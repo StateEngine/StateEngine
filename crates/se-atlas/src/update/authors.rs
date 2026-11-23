@@ -20,11 +20,7 @@ pub fn captured(
             "at least one witnessed revision",
         ));
     }
-    let generation: u64 = unsigned(
-        sql,
-        "SELECT index_generation+1 FROM meta WHERE singleton=1",
-        [],
-    )?;
+    let generation = next_generation(sql)?;
     let mut cursor = (0u64, 0u32);
     let mut matched = 0;
     loop {

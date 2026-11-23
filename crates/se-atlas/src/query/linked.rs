@@ -73,7 +73,9 @@ pub(super) fn for_file(
             .read(&snapshot.index.project, env.viewer, &pointer, query)?
         {
             Read::Present { value } => {
-                if value.pointer != pointer || value.line.len() > 160 || value.mentions.len() > 256
+                if value.pointer != pointer
+                    || value.line.len() > RECORD_LINE_BYTES
+                    || value.mentions.len() > 256
                 {
                     return Err(cache_error(
                         "core record read disagrees with its pointer or bounded contract",

@@ -46,10 +46,6 @@ pub fn target<R: Snapshot>(
         }
     }
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn launch<R: Snapshot>(
     kernel: &Kernel,
     mut input: AgentLaunch,
@@ -85,7 +81,70 @@ pub fn launch<R: Snapshot>(
         "saved launch profile",
         "Save a profile for this agent before launching it.",
     )?;
-    let EventBody::ProfileSaved { mut profile, .. } = saved.current.body else {
+    let (mut profile, provider) = saved_profile(&mut input, &control, saved)?;
+    let resolved = configuration.resolve_profile(&profile.named_profile, provider, input.detach)?;
+    let permission = match resolved.sandbox {
+        EffectiveSandbox::ReadOnly => PermissionProfile::ReadOnly,
+        EffectiveSandbox::WorkspaceWrite => PermissionProfile::WorkspaceWrite,
+        EffectiveSandbox::Bypass => PermissionProfile::NamedFullBypass,
+    };
+    if permission != profile.permission {
+        return Err(SeError::invalid(
+            "saved launch permissions",
+            "save the changed named profile explicitly before launching",
+        ));
+    }
+    if let Some(model) = &input.model {
+        profile.model = Some(model.clone());
+    }
+    let (id, owner, project_name, cwd) = project_facts(cx)?;
+    let (seed, replayed) = launch_seed(kernel, cx, &input, &agent)?;
+    let identity = LaunchIdentity {
+        project: id.clone(),
+        agent: agent.clone(),
+        name: name.clone(),
+    };
+    let conversation =
+        select_conversation(cx, &input, &mut control, &profile, &identity, replayed)?;
+    let saved_conversation_age = conversation_age(kernel, &control, &conversation)?;
+    let bytes = seed
+        .canonical_bytes()?
+        .ok_or_else(|| SeError::invalid("launch allocation", "canonical UUIDv7 event identity"))?;
+    Ok(LaunchPlan {
+        remote: None,
+        channel_resume: None,
+        input,
+        owner,
+        project: Named {
+            id,
+            name: project_name,
+        },
+        agent: Named { id: agent, name },
+        cwd,
+        profile,
+        resolved,
+        conversation,
+        saved_conversation_age,
+        capture: configuration.capture.enabled,
+        control,
+        seed,
+        replayed,
+        session: se_types::SessionId::from_bytes(bytes)?,
+        lifecycle: se_types::LifecycleId::from_bytes(bytes)?,
+    })
+}
+/// Identity facts the launch plan carries into its refusal and repair messages.
+struct LaunchIdentity {
+    project: se_types::ProjectId,
+    agent: AgentId,
+    name: String,
+}
+fn saved_profile(
+    input: &mut AgentLaunch,
+    control: &se_store::ControlTarget,
+    saved: se_store::ProjectionRecord,
+) -> Result<(se_store::Profile, Provider)> {
+    let EventBody::ProfileSaved { profile, .. } = saved.current.body else {
         return Err(scope::unreadable(
             "launch profile",
             "wrong immutable profile event",
@@ -112,21 +171,16 @@ pub fn launch<R: Snapshot>(
             "the saved agent's provider; create another agent to use a different provider",
         ));
     }
-    let resolved = configuration.resolve_profile(&profile.named_profile, provider, input.detach)?;
-    let permission = match resolved.sandbox {
-        EffectiveSandbox::ReadOnly => PermissionProfile::ReadOnly,
-        EffectiveSandbox::WorkspaceWrite => PermissionProfile::WorkspaceWrite,
-        EffectiveSandbox::Bypass => PermissionProfile::NamedFullBypass,
-    };
-    if permission != profile.permission {
-        return Err(SeError::invalid(
-            "saved launch permissions",
-            "save the changed named profile explicitly before launching",
-        ));
-    }
-    if let Some(model) = &input.model {
-        profile.model = Some(model.clone());
-    }
+    Ok((profile, provider))
+}
+fn project_facts<R: Snapshot>(
+    cx: &mut Cx<'_, R>,
+) -> Result<(
+    se_types::ProjectId,
+    se_types::HumanId,
+    String,
+    se_types::NativePath,
+)> {
     let id = scope::project(cx.admission)?;
     let project = scope::require_present(
         cx.read.project(id.clone()).map_err(|e| store_error(&e))?,
@@ -153,6 +207,14 @@ pub fn launch<R: Snapshot>(
         .ok_or_else(|| scope::unreadable("launch project", "registered project has no root"))?
         .path
         .clone();
+    Ok((id, owner, project_name, cwd))
+}
+fn launch_seed<R: Snapshot>(
+    kernel: &Kernel,
+    cx: &mut Cx<'_, R>,
+    input: &AgentLaunch,
+    agent: &AgentId,
+) -> Result<(se_types::EventId, bool)> {
     let replay = cx
         .read
         .operation_receipt(cx.admission.actor.clone(), input.idempotency_key.clone())
@@ -170,8 +232,13 @@ pub fn launch<R: Snapshot>(
         None => kernel.facts()?.event.clone(),
         Some(value) => {
             let event = super::receipt::committed_event(cx.read, &value)?;
-            if !matches!(event.body, EventBody::SessionPrepared { agent: ref target, .. } if target == &agent)
-            {
+            if !matches!(
+                event.body,
+                EventBody::SessionPrepared {
+                    agent: ref target,
+                    ..
+                } if target == agent
+            ) {
                 return Err(SeError::invalid(
                     "launch request key",
                     "the original launch target and request arguments",
@@ -180,10 +247,20 @@ pub fn launch<R: Snapshot>(
             event.header.event
         }
     };
+    Ok((seed, replayed))
+}
+fn select_conversation<R: Snapshot>(
+    cx: &mut Cx<'_, R>,
+    input: &AgentLaunch,
+    control: &mut se_store::ControlTarget,
+    profile: &se_store::Profile,
+    identity: &LaunchIdentity,
+    replayed: bool,
+) -> Result<Read<ProviderSessionId>> {
     if !replayed && let Some(se_types::ResumeSelection::Session(session)) = &input.resume {
         let selected = cx
             .read
-            .control_session(agent.clone(), session.clone())
+            .control_session(identity.agent.clone(), session.clone())
             .map_err(|error| store_error(&error))?;
         control.resume_session = Read::Present {
             value: scope::require_present(
@@ -193,7 +270,7 @@ pub fn launch<R: Snapshot>(
             )?,
         };
     }
-    let conversation = match (|| -> Result<Read<ProviderSessionId>> {
+    let selection = (|| -> Result<Read<ProviderSessionId>> {
         let conversation = if replayed {
             // The host reuses the retained outcome or refuses an unavailable retry.
             // Selecting a new conversation here also reads a child's private capture
@@ -208,97 +285,35 @@ pub fn launch<R: Snapshot>(
                 checked: "launch starts a fresh provider conversation unless resume is explicitly requested".into(),
             }
         } else {
-            match &control.resume_session {
-                Read::Absent { .. } => {
-                    return Err(SeError::invalid(
-                        "resume conversation",
-                        "a saved conversation; omit --resume to start a fresh one",
-                    ));
-                }
-                Read::Present { value }
-                    if value
-                        .original
-                        .as_deref()
-                        .unwrap_or(&value.current)
-                        .header
-                        .door
-                        == se_store::Door::Import
-                        && profile.provider != se_store::Provider::Codex =>
-                {
-                    return Err(SeError::invalid(
-                        "resume conversation",
-                        "a resumable native conversation; imported history alone cannot reopen this provider, so omit --resume for a fresh conversation",
-                    ));
-                }
-                Read::Present { value } if super::agent_launch::retryable_attended_setup(value) => {
-                    return Err(SeError::invalid(
-                        "resume conversation",
-                        "an activated conversation; omit --resume to retry the expired window setup",
-                    ));
-                }
-                Read::Present { value } => {
-                    // Only an activated conversation is resumable. A revoked
-                    // preparation is not silently replaced with a new conversation.
-                    if !matches!(
-                        value.current.body,
-                        EventBody::SessionActivated { .. } | EventBody::SessionEnded { .. }
-                    ) {
-                        return Err(SeError::invalid(
-                            "resume conversation",
-                            "the last session never activated; omit --resume to start another conversation",
-                        ));
-                    }
-                    let original = value.original.as_deref().unwrap_or(&value.current);
-                    match &original.body {
-                        EventBody::SessionPrepared {
-                            agent: owner,
-                            provider,
-                            ..
-                        } if owner == &agent && *provider == profile.provider => {
-                            let reference = super::session_reference::read(cx.read, value)?;
-                            if original.header.door == se_store::Door::Import {
-                                imported_reference(reference)?
-                            } else {
-                                reference
-                            }
-                        }
-                        _ => {
-                            return Err(scope::unreadable(
-                                "resume conversation",
-                                "the original provider binding is unavailable or changed",
-                            ));
-                        }
-                    }
-                }
-                Read::Unreadable { .. } | Read::Unknown { .. } => {
-                    return Err(scope::unreadable(
-                        "resume conversation",
-                        "the latest provider binding is unreadable; repair it or omit --resume for a fresh conversation",
-                    ));
-                }
-            }
+            resumed_conversation(cx, control, profile, &identity.agent)?
         };
         Ok(conversation)
-    })() {
-        Ok(conversation) => conversation,
-        Err(failure) if input.override_live => Read::Absent {
+    })();
+    match selection {
+        Ok(conversation) => Ok(conversation),
+        Err(failure) if input.override_live => Ok(Read::Absent {
             checked: format!(
                 "Forced relaunch preserves the previous history and starts a fresh conversation because the saved binding could not be resumed: {failure}"
             ),
-        },
+        }),
         Err(failure) if !control.processes.is_empty() || !control.sessions.is_empty() => {
-            Read::Unknown {
+            Ok(Read::Unknown {
                 what: format!(
                     "Saved conversation unavailable before live-launch confirmation: {failure}"
                 ),
-            }
+            })
         }
         Err(failure) => {
             let next_step = if matches!(
                 failure.body.detail(),
                 se_types::Detail::CapabilityInvalid(_)
             ) {
-                let mut command = super::AgentCommand::launch(&agent, None, Some(&id), false);
+                let mut command = super::AgentCommand::launch(
+                    &identity.agent,
+                    None,
+                    Some(&identity.project),
+                    false,
+                );
                 if let Some(se_types::ResumeSelection::Session(session)) = &input.resume {
                     command = command.with_resume_session(session);
                 }
@@ -309,16 +324,98 @@ pub fn launch<R: Snapshot>(
             } else {
                 "Repair the saved binding before resuming, or omit --resume to preserve the old history and start a fresh conversation.".into()
             };
-            return Err(SeError::new(se_types::Detail::LaunchFailed(
+            Err(SeError::new(se_types::Detail::LaunchFailed(
                 se_types::details::LaunchFailed {
-                    subject: name.clone(),
+                    subject: identity.name.clone(),
                     reason: failure.to_string(),
                     next_step,
                 },
-            )));
+            )))
         }
-    };
-    let saved_conversation_age = match &conversation {
+    }
+}
+fn resumed_conversation<R: Snapshot>(
+    cx: &mut Cx<'_, R>,
+    control: &se_store::ControlTarget,
+    profile: &se_store::Profile,
+    agent: &AgentId,
+) -> Result<Read<ProviderSessionId>> {
+    Ok(match &control.resume_session {
+        Read::Absent { .. } => {
+            return Err(SeError::invalid(
+                "resume conversation",
+                "a saved conversation; omit --resume to start a fresh one",
+            ));
+        }
+        Read::Present { value }
+            if value
+                .original
+                .as_deref()
+                .unwrap_or(&value.current)
+                .header
+                .door
+                == se_store::Door::Import
+                && profile.provider != se_store::Provider::Codex =>
+        {
+            return Err(SeError::invalid(
+                "resume conversation",
+                "a resumable native conversation; imported history alone cannot reopen this provider, so omit --resume for a fresh conversation",
+            ));
+        }
+        Read::Present { value } if super::agent_launch::retryable_attended_setup(value) => {
+            return Err(SeError::invalid(
+                "resume conversation",
+                "an activated conversation; omit --resume to retry the expired window setup",
+            ));
+        }
+        Read::Present { value } => {
+            // Only an activated conversation is resumable. A revoked
+            // preparation is not silently replaced with a new conversation.
+            if !matches!(
+                value.current.body,
+                EventBody::SessionActivated { .. } | EventBody::SessionEnded { .. }
+            ) {
+                return Err(SeError::invalid(
+                    "resume conversation",
+                    "the last session never activated; omit --resume to start another conversation",
+                ));
+            }
+            let original = value.original.as_deref().unwrap_or(&value.current);
+            match &original.body {
+                EventBody::SessionPrepared {
+                    agent: owner,
+                    provider,
+                    ..
+                } if owner == agent && *provider == profile.provider => {
+                    let reference = super::session_reference::read(cx.read, value)?;
+                    if original.header.door == se_store::Door::Import {
+                        imported_reference(reference)?
+                    } else {
+                        reference
+                    }
+                }
+                _ => {
+                    return Err(scope::unreadable(
+                        "resume conversation",
+                        "the original provider binding is unavailable or changed",
+                    ));
+                }
+            }
+        }
+        Read::Unreadable { .. } | Read::Unknown { .. } => {
+            return Err(scope::unreadable(
+                "resume conversation",
+                "the latest provider binding is unreadable; repair it or omit --resume for a fresh conversation",
+            ));
+        }
+    })
+}
+fn conversation_age(
+    kernel: &Kernel,
+    control: &se_store::ControlTarget,
+    conversation: &Read<ProviderSessionId>,
+) -> Result<Read<super::agent_launch::SavedConversationAge>> {
+    Ok(match &conversation {
         Read::Present { .. } => match &control.resume_session {
             Read::Present { value } => {
                 let original = value.original.as_deref().unwrap_or(&value.current);
@@ -367,31 +464,6 @@ pub fn launch<R: Snapshot>(
         _ => Read::Unknown {
             what: "A launch retry retains its original conversation selection and age".into(),
         },
-    };
-    let bytes = seed
-        .canonical_bytes()?
-        .ok_or_else(|| SeError::invalid("launch allocation", "canonical UUIDv7 event identity"))?;
-    Ok(LaunchPlan {
-        remote: None,
-        channel_resume: None,
-        input,
-        owner,
-        project: Named {
-            id,
-            name: project_name,
-        },
-        agent: Named { id: agent, name },
-        cwd,
-        profile,
-        resolved,
-        conversation,
-        saved_conversation_age,
-        capture: configuration.capture.enabled,
-        control,
-        seed,
-        replayed,
-        session: se_types::SessionId::from_bytes(bytes)?,
-        lifecycle: se_types::LifecycleId::from_bytes(bytes)?,
     })
 }
 

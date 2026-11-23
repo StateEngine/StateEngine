@@ -3,9 +3,11 @@ use std::{
     ffi::CString,
     os::{
         fd::{AsRawFd, FromRawFd},
-        unix::{ffi::OsStrExt, fs::MetadataExt},
+        unix::ffi::OsStrExt,
     },
 };
+/// What the no-follow open already read from the opened handle.
+pub(super) type Facts = std::fs::Metadata;
 
 pub(super) fn open_root(path: &Path) -> io::Result<File> {
     let path =
@@ -20,13 +22,17 @@ pub(super) fn open_root(path: &Path) -> io::Result<File> {
     };
     owned(fd)
 }
-pub(super) fn open_relative(root: &File, path: &str) -> io::Result<File> {
+pub(super) fn open_relative(root: &File, path: &str) -> io::Result<(File, Facts)> {
     open_components(root, path, false)
 }
-pub(super) fn open_directory(root: &File, path: &str) -> io::Result<File> {
+pub(super) fn open_directory(root: &File, path: &str) -> io::Result<(File, Facts)> {
     open_components(root, if path.is_empty() { "." } else { path }, true)
 }
-pub(super) fn open_component(parent: &File, part: &str, is_directory: bool) -> io::Result<File> {
+pub(super) fn open_component(
+    parent: &File,
+    part: &str,
+    is_directory: bool,
+) -> io::Result<(File, Facts)> {
     let name = CString::new(part).map_err(|_| invalid("NUL in source component"))?;
     let flags = libc::O_RDONLY
         | libc::O_CLOEXEC
@@ -46,14 +52,14 @@ pub(super) fn open_component(parent: &File, part: &str, is_directory: bool) -> i
             "regular source file or directory required; links and devices refused",
         ));
     }
-    Ok(child)
+    Ok((child, m))
 }
-fn open_components(root: &File, path: &str, last_directory: bool) -> io::Result<File> {
-    let mut held: Option<File> = None;
+fn open_components(root: &File, path: &str, last_directory: bool) -> io::Result<(File, Facts)> {
+    let mut held: Option<(File, Facts)> = None;
     let mut components = path.split('/').peekable();
     while let Some(part) = components.next() {
         let is_directory = components.peek().is_some() || last_directory;
-        let parent = held.as_ref().unwrap_or(root);
+        let parent = held.as_ref().map_or(root, |(file, _)| file);
         held = Some(open_component(parent, part, is_directory)?);
     }
     held.ok_or_else(|| invalid("bounded slash-separated root-relative source path required"))
@@ -65,10 +71,15 @@ fn owned(fd: libc::c_int) -> io::Result<File> {
     // SAFETY: successful native open transferred this uniquely owned fd.
     Ok(unsafe { File::from_raw_fd(fd) })
 }
-pub(super) fn same_object(a: &File, b: &File) -> io::Result<bool> {
-    let ma = a.metadata()?;
-    let mb = b.metadata()?;
-    Ok(ma.dev() == mb.dev() && ma.ino() == mb.ino())
+pub(super) fn object_key(_: &File, facts: &Facts) -> io::Result<NativeObjectKey> {
+    Ok(se_state_files::object_key_from_metadata(facts))
+}
+pub(super) fn opened_revision(
+    _: &File,
+    facts: &Facts,
+    directory: bool,
+) -> io::Result<NativeFileRevision> {
+    se_state_files::file_revision_from_metadata(facts, directory)
 }
 pub(super) fn revision(file: &File, directory: bool) -> io::Result<NativeFileRevision> {
     se_state_files::observe_file_revision_for(file, directory)

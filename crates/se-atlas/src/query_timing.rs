@@ -1,7 +1,7 @@
 //! Bounded query phases and their SQL timeout diagnostics.
 use super::*;
 
-pub(super) fn minimum_phase(work: Duration) -> Duration {
+fn minimum_phase(work: Duration) -> Duration {
     (work / 8).clamp(Duration::from_nanos(1), Duration::from_millis(5))
 }
 /// Add the actual phase allowance and elapsed time to a generic SQL timeout.
@@ -43,17 +43,17 @@ pub(super) fn collect_phase(
     snapshot: &Snapshot,
     query: &FindQuery,
     mode: SearchMode,
-    window: (Instant, Instant),
+    end: Instant,
 ) -> AtlasResult<super::candidates::Candidates> {
-    let candidate_end = window.1 - (query.budget.work / 4).min(Duration::from_millis(3));
+    let candidate_end = end - (query.budget.work / 4).min(Duration::from_millis(3));
     let started = crate::clock::now();
     if candidate_end.saturating_duration_since(started) < minimum_phase(query.budget.work) {
-        return phase_timeout(
-            "metadata search before candidate admission",
-            window.0,
-            window.1,
-            Err(crate::cache::connection::timeout(0)),
-        );
+        // No soft allowance is left: an empty partial answer, not a failure.
+        let values = Vec::new();
+        return Ok(super::candidates::Candidates {
+            values,
+            truncated: true,
+        });
     }
     phase_timeout(
         "metadata candidates",

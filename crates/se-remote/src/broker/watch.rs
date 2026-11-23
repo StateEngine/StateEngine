@@ -83,10 +83,66 @@ impl Watches {
         .await
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
+    /// Find this selection's subscription, or admit it within the shared slots.
+    fn entry(
+        &self,
+        key: String,
+        source: Option<&VerifiedSourceSession>,
+        request: &RemoteWatch,
+    ) -> Result<Arc<Entry>> {
+        let mut entries = self.entries.lock().map_err(|_| poisoned())?;
+        if !entries.contains_key(&key) {
+            let in_flight = |entries: &BTreeMap<String, Arc<Entry>>| {
+                entries.values().map(|e| e.target_count).sum::<usize>() + request.targets.len() > 64
+            };
+            while in_flight(&entries) || entries.len() >= REMOTE_MAX_REQUESTS / 2 {
+                // Leave request slots for active list/send calls as well as
+                // readers: inactive subscriptions also occupy far-side slots.
+                // A stopped terminal must not reserve capacity for the full
+                // idle TTL. Evict only entries no read currently owns; their
+                // sealed cursors reconstruct the view if a reader returns.
+                let mut oldest = None;
+                for (key, entry) in entries
+                    .iter()
+                    .filter(|(_, entry)| Arc::strong_count(entry) == 1)
+                {
+                    let touched = *entry.touched.lock().map_err(|_| poisoned())?;
+                    if oldest.as_ref().is_none_or(|(_, prior)| touched < *prior) {
+                        oldest = Some((key.clone(), touched));
+                    }
+                }
+                let Some((key, _)) = oldest else {
+                    if in_flight(&entries) {
+                        return Err(refused(
+                            "64 source watch targets are in flight; retry after a reader finishes",
+                        ));
+                    }
+                    // The smaller threshold trims idle cache entries only;
+                    // it never interrupts or limits an active reader.
+                    break;
+                };
+                entries.remove(&key);
+            }
+            entries.insert(
+                key.clone(),
+                Arc::new(Entry {
+                    target_count: request.targets.len(),
+                    touched: Mutex::new(Instant::now()),
+                    source: source.map(|s| s.source.clone()),
+                    fence: source.map(|s| Arc::clone(&s.fence)),
+                    state: AsyncMutex::new(State {
+                        opened_at: Instant::now(),
+                        clock: None,
+                        request: request.clone(),
+                        stream: None,
+                        cursors: request.cursors.clone(),
+                        returned_cursors: request.cursors.clone(),
+                    }),
+                }),
+            );
+        }
+        Ok(Arc::clone(entries.get(&key).ok_or_else(poisoned)?))
+    }
     pub async fn read_with<B: Budget, F>(
         &self,
         key: String,
@@ -104,86 +160,14 @@ impl Watches {
             + Send,
     {
         self.remove_fenced()?;
-        let entry = {
-            let mut entries = self.entries.lock().map_err(|_| poisoned())?;
-            if !entries.contains_key(&key) {
-                while entries.values().map(|e| e.target_count).sum::<usize>()
-                    + request.targets.len()
-                    > 64
-                    || entries.len() >= REMOTE_MAX_REQUESTS / 2
-                {
-                    // Leave request slots for active list/send calls as well as
-                    // readers: inactive subscriptions also occupy far-side slots.
-                    // A stopped terminal must not reserve capacity for the full
-                    // idle TTL. Evict only entries no read currently owns; their
-                    // sealed cursors reconstruct the view if a reader returns.
-                    let mut oldest = None;
-                    for (key, entry) in entries
-                        .iter()
-                        .filter(|(_, entry)| Arc::strong_count(entry) == 1)
-                    {
-                        let touched = *entry.touched.lock().map_err(|_| poisoned())?;
-                        if oldest.as_ref().is_none_or(|(_, prior)| touched < *prior) {
-                            oldest = Some((key.clone(), touched));
-                        }
-                    }
-                    let Some((key, _)) = oldest else {
-                        if entries.values().map(|e| e.target_count).sum::<usize>()
-                            + request.targets.len()
-                            > 64
-                        {
-                            return Err(refused(
-                                "64 source watch targets are in flight; retry after a reader finishes",
-                            ));
-                        }
-                        // The smaller threshold trims idle cache entries only;
-                        // it never interrupts or limits an active reader.
-                        break;
-                    };
-                    entries.remove(&key);
-                }
-                entries.insert(
-                    key.clone(),
-                    Arc::new(Entry {
-                        target_count: request.targets.len(),
-                        touched: Mutex::new(Instant::now()),
-                        source: source.map(|s| s.source.clone()),
-                        fence: source.map(|s| Arc::clone(&s.fence)),
-                        state: AsyncMutex::new(State {
-                            opened_at: Instant::now(),
-                            clock: None,
-                            request: request.clone(),
-                            stream: None,
-                            cursors: request.cursors.clone(),
-                            returned_cursors: request.cursors.clone(),
-                        }),
-                    }),
-                );
-            }
-            Arc::clone(entries.get(&key).ok_or_else(poisoned)?)
-        };
+        let entry = self.entry(key, source, &request)?;
         // Allow a disconnected predecessor's task to release its page. The
         // caller retains its existing bounded activity slot, and neither a
         // concurrent reader nor a reconnect allocates a second subscription.
         let lock_wait = Duration::from_millis(50).min(deadline.remaining()?);
         let mut state = tokio::time::timeout(lock_wait, entry.state.lock())
             .await
-            .map_err(|_| {
-                let mut error = SeError::new(se_types::Detail::DeadlineExceeded(
-                    se_types::details::DeadlineExceeded {
-                        op: "remote watch; another page is still in flight, close it or retry this read".into(),
-                        deadline_ms: lock_wait.as_millis() as u64,
-                    },
-                ));
-                error.body = error
-                    .body
-                    .with_retry(se_types::Retry::After(Duration::from_millis(50)))
-                    .with_remedy(se_types::Remedy {
-                        text: "Await the current watch page or close its reader, then retry this same scoped read.".into(),
-                        command: None,
-                    });
-                error
-            })?;
+            .map_err(|_| page_in_flight(lock_wait))?;
         *entry.touched.lock().map_err(|_| poisoned())? = Instant::now();
         entry.context().check_current()?;
         let incoming = serde_json::to_vec(&request.cursors).map_err(|_| poisoned())?;
@@ -224,44 +208,10 @@ impl Watches {
             let opened_at = state.opened_at;
             measure::release(&mut state.clock, opened_at, &mut result)?;
         }
-        let validated = (|| {
-            entry.context().check_current()?;
-            check_size(&result, request.budget)?;
-            if result.schema != RemoteWatchBatch::SCHEMA
-                || result.cursors.len() > 64
-                || result
-                    .cursors
-                    .iter()
-                    .any(|c| !request.targets.contains(&c.target))
-            {
-                return Err(refused(
-                    "remote watch schema or cursors do not match this selection",
-                ));
-            }
-            for record in &result.records {
-                match record {
-                    RemoteWatchRecord::Snapshot { view } => {
-                        if view.schema != RemoteListResult::SCHEMA
-                            || view
-                                .agents
-                                .items()
-                                .iter()
-                                .any(|r| !request.targets.contains(&r.target))
-                        {
-                            return Err(refused("watch snapshot exceeded its selected scope"));
-                        }
-                    }
-                    RemoteWatchRecord::Durable { target, .. }
-                    | RemoteWatchRecord::Provisional { target, .. }
-                    | RemoteWatchRecord::Gap { target, .. } => {
-                        if !request.targets.contains(target) {
-                            return Err(refused("watch record exceeded its selected scope"));
-                        }
-                    }
-                }
-            }
-            Ok(())
-        })();
+        let validated = entry
+            .context()
+            .check_current()
+            .and_then(|()| check_batch(&result, &request));
         if let Err(error) = validated {
             state.stream = None;
             return Err(error);
@@ -291,4 +241,58 @@ impl Watches {
         }
         Ok(result)
     }
+}
+fn page_in_flight(lock_wait: Duration) -> SeError {
+    let mut error = SeError::new(se_types::Detail::DeadlineExceeded(
+        se_types::details::DeadlineExceeded {
+            op: "remote watch; another page is still in flight, close it or retry this read".into(),
+            deadline_ms: lock_wait.as_millis() as u64,
+        },
+    ));
+    error.body = error
+        .body
+        .with_retry(se_types::Retry::After(Duration::from_millis(50)))
+        .with_remedy(se_types::Remedy {
+            text: "Await the current watch page or close its reader, then retry this same scoped read.".into(),
+            command: None,
+        });
+    error
+}
+/// The page stays inside this selection's schema, cursor count and targets.
+fn check_batch(result: &RemoteWatchBatch, request: &RemoteWatch) -> Result<()> {
+    check_size(result, request.budget)?;
+    if result.schema != RemoteWatchBatch::SCHEMA
+        || result.cursors.len() > 64
+        || result
+            .cursors
+            .iter()
+            .any(|c| !request.targets.contains(&c.target))
+    {
+        return Err(refused(
+            "remote watch schema or cursors do not match this selection",
+        ));
+    }
+    for record in &result.records {
+        match record {
+            RemoteWatchRecord::Snapshot { view } => {
+                if view.schema != RemoteListResult::SCHEMA
+                    || view
+                        .agents
+                        .items()
+                        .iter()
+                        .any(|r| !request.targets.contains(&r.target))
+                {
+                    return Err(refused("watch snapshot exceeded its selected scope"));
+                }
+            }
+            RemoteWatchRecord::Durable { target, .. }
+            | RemoteWatchRecord::Provisional { target, .. }
+            | RemoteWatchRecord::Gap { target, .. } => {
+                if !request.targets.contains(target) {
+                    return Err(refused("watch record exceeded its selected scope"));
+                }
+            }
+        }
+    }
+    Ok(())
 }

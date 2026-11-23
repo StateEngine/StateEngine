@@ -90,10 +90,6 @@ impl CliSelections {
     }
     /// Called only by the authenticated CLI route inside its admitted finite read.
     /// The same metadata crosses IPC separately; MCP arguments never carry it.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub fn apply<R: se_store::Snapshot>(
         &self,
         op: &mut AnyOp,
@@ -130,31 +126,7 @@ impl CliSelections {
                 )),
             };
         }
-        if let Some(target) = &self.preview {
-            if !matches!(cx.admission.actor, se_store::Actor::Human(_)) {
-                return Err(SeError::new(se_types::Detail::OwnerRequired(
-                    se_types::details::OwnerRequired {
-                        op: "continuity preview".into(),
-                    },
-                )));
-            }
-            match op {
-                AnyOp::Resume(input) => {
-                    let se_store::Actor::Agent(agent) = crate::scope::selected_actor(cx, target)?
-                    else {
-                        return Err(SeError::invalid("preview", "a saved agent"));
-                    };
-                    input.preview_agent = Some(agent);
-                }
-                _ => {
-                    return Err(unknown_flag(
-                        "--preview",
-                        op.meta().name,
-                        "preview is only a read-only continuity operation",
-                    ));
-                }
-            }
-        }
+        self.apply_preview(op, cx)?;
         if self.control_all {
             match op {
                 AnyOp::AgentStop(input) => input.all = true,
@@ -192,6 +164,47 @@ impl CliSelections {
                 }
             }
         }
+        self.apply_agent(op, cx)?;
+        self.apply_mail(op, cx)?;
+        Ok(())
+    }
+    fn apply_preview<R: se_store::Snapshot>(
+        &self,
+        op: &mut AnyOp,
+        cx: &mut crate::commit::Cx<'_, R>,
+    ) -> Result<()> {
+        if let Some(target) = &self.preview {
+            if !matches!(cx.admission.actor, se_store::Actor::Human(_)) {
+                return Err(SeError::new(se_types::Detail::OwnerRequired(
+                    se_types::details::OwnerRequired {
+                        op: "continuity preview".into(),
+                    },
+                )));
+            }
+            match op {
+                AnyOp::Resume(input) => {
+                    let se_store::Actor::Agent(agent) = crate::scope::selected_actor(cx, target)?
+                    else {
+                        return Err(SeError::invalid("preview", "a saved agent"));
+                    };
+                    input.preview_agent = Some(agent);
+                }
+                _ => {
+                    return Err(unknown_flag(
+                        "--preview",
+                        op.meta().name,
+                        "preview is only a read-only continuity operation",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+    fn apply_agent<R: se_store::Snapshot>(
+        &self,
+        op: &mut AnyOp,
+        cx: &mut crate::commit::Cx<'_, R>,
+    ) -> Result<()> {
         if let Some(selector) = &self.agent {
             match op {
                 // Keep control selection in its own path: the core planner's
@@ -227,6 +240,13 @@ impl CliSelections {
                 }
             }
         }
+        Ok(())
+    }
+    fn apply_mail<R: se_store::Snapshot>(
+        &self,
+        op: &mut AnyOp,
+        cx: &mut crate::commit::Cx<'_, R>,
+    ) -> Result<()> {
         if self.mail_list || self.mail_to.is_some() {
             match op {
                 AnyOp::MessageList(input) => {

@@ -53,13 +53,13 @@ pub struct NativeAtlasCache {
 impl NativeAtlasCache {
     /// No creation, permissions repair, writer lock or schema action on reads.
     pub fn open(home: &Path, scope: Scope) -> AtlasResult<Option<Self>> {
-        let home = match NativeStateFiles::open(home) {
+        let home = match NativeStateFiles::open_retained(home) {
             Ok(home) => home,
             Err(e) if missing(&e) => return Ok(None),
             Err(e) => return Err(fail(e)),
         };
         let path = cache_path(&home, &scope)?;
-        let root = match NativeStateFiles::open(&path) {
+        let root = match NativeStateFiles::open_retained(&path) {
             Ok(root) => root,
             Err(e) if missing(&e) => return Ok(None),
             Err(e) => return Err(fail(e)),

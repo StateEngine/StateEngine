@@ -12,6 +12,7 @@ listener = ["se-atlas-cold/listener", "dep:tokio", "tokio/net", "tokio/sync", "t
 [dependencies]
 se-atlas = { path = "../se-atlas" }
 se-atlas-cold = { path = "../se-atlas-cold" }
+se-atlas-service = { path = "../se-atlas-service" }
 se-config = { path = "../se-config" }
 se-core = { path = "../se-core" }
 se-mcp = { path = "../se-mcp" }

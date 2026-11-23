@@ -5,6 +5,7 @@ Claude double reports signed in only while the synthetic token is in its
 environment, and records whether each child it starts saw the token.
 """
 import argparse
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -163,14 +164,19 @@ def run(image, output):
         if os.name == "nt":
             # Hosted Windows runners may refuse job breakaway, so own the host in
             # the foreground as the other Windows fixtures do.
-            log = (fixture.root / "host.log").open("wb")
-            host = subprocess.Popen([str(fixture.se), "--json", "--home", str(fixture.home), "up", "--foreground"],
-                                    env=fixture.env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+            stdout, stderr = fixture.root / "host.stdout", fixture.root / "host.stderr"
+            with stdout.open("wb") as out, stderr.open("wb") as err:
+                host = subprocess.Popen(
+                    [str(fixture.se), "--json", "--home", str(fixture.home), "up", "--foreground"],
+                    env=fixture.env, stdin=subprocess.DEVNULL, stdout=out, stderr=err)
             deadline = time.monotonic() + 120
-            while fixture.ok("status")["runtime"]["state"] != "running":
+            while not stdout.read_bytes().endswith(b"\n"):
                 assert host.poll() is None and time.monotonic() < deadline, (
-                    "foreground host did not start", (fixture.root / "host.log").read_text(errors="replace"))
-                time.sleep(0.5)
+                    "foreground host did not start", stderr.read_text(errors="replace"))
+                time.sleep(0.05)
+            ready = json.loads(stdout.read_bytes())
+            assert ready["schema"] == "se.runtime-start/v1" and ready["state"] == "running", ready
+            assert fixture.ok("status")["runtime"]["state"] == "running"
         else:
             fixture.ok("up")
         fixture.env[ENVIRONMENT] = TOKEN

@@ -4,10 +4,6 @@ use super::{
     *,
 };
 use rusqlite::types::Value;
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn collect(
     env: &QueryEnv<'_>,
     sql: &SqlView<'_>,
@@ -23,102 +19,18 @@ pub(super) fn collect(
         values: Vec::new(),
         truncated: seeds.truncated,
     };
-    let mut identities = Vec::new();
-    for seed in seeds.values.iter().take(8) {
-        if let Some((_, _, related)) = identities
-            .iter_mut()
-            .find(|(kind, id, _)| *kind == seed.kind && *id == seed.rowid)
-        {
-            *related = false;
-        } else {
-            identities.push((seed.kind, seed.rowid, false));
-        }
-        for (kind, id) in neighbors(sql, seed, &mut output.truncated, end)? {
-            if !identities.iter().any(|(k, i, _)| *k == kind && *i == id) {
-                if identities.len() == 256 {
-                    output.truncated = true;
-                    break;
-                }
-                identities.push((kind, id, true));
-            }
-        }
-        super::candidates::admission_time(end)?;
-    }
+    let identities = expand(sql, &seeds, &mut output.truncated, end)?;
     let mut resident = 0;
-    for (kind, rowid, related) in identities {
-        super::candidates::admission_time(end)?;
-        if !allowed(sql, kind, rowid, query)? {
+    for identity in identities {
+        if super::candidates::expired(end, &mut output.truncated) {
+            break;
+        }
+        let truncated = &mut output.truncated;
+        let Some(candidate) = admit(env, sql, snapshot, query, &seeds, identity, truncated)? else {
             continue;
-        }
-        if related && matches!(kind, Kind::Symbol | Kind::File) {
-            let file = if kind == Kind::Symbol {
-                symbol_by_id(sql, rowid)?.1
-            } else {
-                rowid
-            };
-            if !matches!(file_by_id(sql, file)?.coverage, FileCoverage::Indexed) {
-                output.truncated = true;
-                continue;
-            }
-        }
-        let (key, tie) = super::candidates::metadata(sql, kind, rowid)?;
-        if kind == Kind::Record {
-            let pointer = super::candidates::record_pointer(sql, rowid)?;
-            match env
-                .records
-                .read(&snapshot.index.project, env.viewer, &pointer, None)?
-            {
-                Read::Present { value } if value.pointer == pointer => (),
-                Read::Absent { .. } => continue,
-                _ => return Err(cache_error("related record authority unavailable")),
-            }
-        }
-        let tag = match kind {
-            Kind::Symbol => "symbol",
-            Kind::File => "file",
-            Kind::Record => "record",
-            Kind::Commit => "commit",
         };
-        let mut activity = crate::rank::activity(
-            sql,
-            tag,
-            &key,
-            crate::rank::ActivityQuery {
-                project: &snapshot.index.project,
-                viewer: env.viewer,
-                records: env.records,
-                now: env.now_unix_ms,
-            },
-        )?;
-        let path = if kind == Kind::Symbol {
-            Some(file_by_id(sql, symbol_by_id(sql, rowid)?.1)?.pointer.path)
-        } else {
-            None
-        };
-        if crate::rank::downweight(
-            path.as_ref().map_or(tie.as_str(), |p| p.as_str()),
-            query.kind,
-        ) {
-            activity.score *= 0.5;
-        }
-        let lexical = seeds
-            .values
-            .iter()
-            .find(|c| c.kind == kind && c.rowid == rowid)
-            .map_or(0.0, |c| c.lexical);
-        resident += key.len() + tie.len() + 160;
-        output.values.push(Candidate {
-            kind,
-            rowid,
-            tier: 4,
-            key,
-            tie,
-            activity,
-            precomputed_last: None,
-            lexical,
-            related,
-            downweighted: false,
-        });
+        resident += candidate.key.len() + candidate.tie.len() + 160;
+        output.values.push(candidate);
         output
             .values
             .sort_by_cached_key(|c| super::find::key(c, query.order));
@@ -133,28 +45,131 @@ pub(super) fn collect(
     }
     Ok(output)
 }
+/// Seeds keep their own identity; their neighbors are marked related, up to 256 identities.
+fn expand(
+    sql: &SqlView<'_>,
+    seeds: &Candidates,
+    truncated: &mut bool,
+    end: Instant,
+) -> AtlasResult<Vec<(Kind, i64, bool)>> {
+    let mut identities = Vec::new();
+    for seed in seeds.values.iter().take(8) {
+        if let Some((_, _, related)) = identities
+            .iter_mut()
+            .find(|(kind, id, _)| *kind == seed.kind && *id == seed.rowid)
+        {
+            *related = false;
+        } else {
+            identities.push((seed.kind, seed.rowid, false));
+        }
+        for (kind, id) in neighbors(sql, seed, truncated, end)? {
+            if !identities.iter().any(|(k, i, _)| *k == kind && *i == id) {
+                if identities.len() == 256 {
+                    *truncated = true;
+                    break;
+                }
+                identities.push((kind, id, true));
+            }
+        }
+        if super::candidates::expired(end, truncated) {
+            break;
+        }
+    }
+    Ok(identities)
+}
+fn admit(
+    env: &QueryEnv<'_>,
+    sql: &SqlView<'_>,
+    snapshot: &Snapshot,
+    query: &FindQuery,
+    seeds: &Candidates,
+    (kind, rowid, related): (Kind, i64, bool),
+    truncated: &mut bool,
+) -> AtlasResult<Option<Candidate>> {
+    if !allowed(sql, kind, rowid, query)? {
+        return Ok(None);
+    }
+    let file = owning_file(sql, kind, rowid)?;
+    if related
+        && let Some(file) = file
+        && !matches!(file_by_id(sql, file)?.coverage, FileCoverage::Indexed)
+    {
+        *truncated = true;
+        return Ok(None);
+    }
+    let (key, tie) = super::candidates::metadata(sql, kind, rowid)?;
+    if kind == Kind::Record {
+        let pointer = super::candidates::record_pointer(sql, rowid)?;
+        match env
+            .records
+            .read(&snapshot.index.project, env.viewer, &pointer, None)?
+        {
+            Read::Present { value } if value.pointer == pointer => (),
+            Read::Absent { .. } => return Ok(None),
+            _ => return Err(cache_error("related record authority unavailable")),
+        }
+    }
+    let mut activity = crate::rank::activity(
+        sql,
+        kind.tag(),
+        &key,
+        crate::rank::ActivityQuery {
+            project: &snapshot.index.project,
+            viewer: env.viewer,
+            records: env.records,
+            now: env.now_unix_ms,
+        },
+    )?;
+    let path = match (kind, file) {
+        (Kind::Symbol, Some(file)) => Some(file_by_id(sql, file)?.pointer.path),
+        _ => None,
+    };
+    if crate::rank::downweight(
+        path.as_ref().map_or(tie.as_str(), |p| p.as_str()),
+        query.kind,
+    ) {
+        activity.score *= 0.5;
+    }
+    let lexical = seeds
+        .values
+        .iter()
+        .find(|c| c.kind == kind && c.rowid == rowid)
+        .map_or(0.0, |c| c.lexical);
+    Ok(Some(Candidate {
+        kind,
+        rowid,
+        tier: 4,
+        key,
+        tie,
+        activity,
+        precomputed_last: None,
+        lexical,
+        related,
+        downweighted: false,
+    }))
+}
+/// The file that owns a symbol or file identity; records and commits own none.
+fn owning_file(sql: &SqlView<'_>, kind: Kind, id: i64) -> AtlasResult<Option<i64>> {
+    Ok(match kind {
+        Kind::Symbol => Some(symbol_by_id(sql, id)?.1),
+        Kind::File => Some(id),
+        Kind::Record | Kind::Commit => None,
+    })
+}
 fn ids(
     sql: &SqlView<'_>,
     statement: &str,
     value: Value,
+    kind: Kind,
     limited: &mut bool,
-) -> AtlasResult<Vec<i64>> {
-    let mut statement = sql.prepare(statement)?;
-    let mut rows = statement.query([value]).map_err(cache_error)?;
-    let mut output = Vec::new();
-    while let Some(row) = rows.next().map_err(cache_error)? {
-        output.push(get(row, 0)?);
-    }
+) -> AtlasResult<Vec<(Kind, i64)>> {
+    let mut output = all(sql, statement, [value], 0, |row| Ok((kind, get(row, 0)?)))?;
     if output.len() > 32 {
         output.truncate(32);
         *limited = true;
     }
     Ok(output)
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn neighbors(
     sql: &SqlView<'_>,
     seed: &Candidate,
@@ -163,68 +178,48 @@ fn neighbors(
 ) -> AtlasResult<Vec<(Kind, i64)>> {
     let mut output = Vec::new();
     let mut files = Vec::new();
-    if matches!(seed.kind, Kind::Symbol | Kind::File) {
-        let file = if seed.kind == Kind::Symbol {
-            symbol_by_id(sql, seed.rowid)?.1
-        } else {
-            seed.rowid
-        };
+    if let Some(file) = owning_file(sql, seed.kind, seed.rowid)? {
         if !matches!(file_by_id(sql, file)?.coverage, FileCoverage::Indexed) {
             *limited = true;
             return Ok(output);
         }
+        files.push(file);
     }
     if seed.kind == Kind::Symbol {
         for statement in [
             "SELECT target FROM refs WHERE enclosing=?1 AND target IS NOT NULL AND accuracy<>'NameOnly' ORDER BY target LIMIT 33",
             "SELECT enclosing FROM refs WHERE target=?1 AND enclosing IS NOT NULL AND accuracy<>'NameOnly' ORDER BY enclosing LIMIT 33",
         ] {
-            output.extend(
-                ids(sql, statement, Value::Integer(seed.rowid), limited)?
-                    .into_iter()
-                    .map(|id| (Kind::Symbol, id)),
-            );
+            let value = Value::Integer(seed.rowid);
+            output.extend(ids(sql, statement, value, Kind::Symbol, limited)?);
         }
-        files.push(symbol_by_id(sql, seed.rowid)?.1);
-    } else if seed.kind == Kind::File {
-        files.push(seed.rowid);
     }
-    let tag = match seed.kind {
-        Kind::Symbol => "symbol",
-        Kind::File => "file",
-        Kind::Record => "record",
-        Kind::Commit => "commit",
-    };
-    for id in ids(
+    let tag = seed.kind.tag();
+    output.extend(ids(
         sql,
         &format!(
             "SELECT source_id FROM mentions WHERE target_kind='{tag}' AND target_key=?1 AND source_kind='record' ORDER BY source_id LIMIT 33"
         ),
         Value::Blob(seed.key.clone()),
+        Kind::Record,
         limited,
-    )? {
-        output.push((Kind::Record, id));
-    }
+    )?);
     if matches!(seed.kind, Kind::Record | Kind::Commit) {
-        for (kind, table, key) in [
-            (Kind::File, "files", "key"),
-            (Kind::Symbol, "symbols", "key"),
-            (Kind::Record, "records", "record_id"),
+        for (kind, table, key, target_key) in [
+            (Kind::File, "files", "key", "target_key"),
+            (Kind::Symbol, "symbols", "key", "target_key"),
+            (
+                Kind::Record,
+                "records",
+                "record_id",
+                "CAST(target_key AS TEXT)",
+            ),
         ] {
-            let target = match kind {
-                Kind::File => "file",
-                Kind::Symbol => "symbol",
-                _ => "record",
-            };
-            let target_key = if kind == Kind::Record {
-                "CAST(target_key AS TEXT)"
-            } else {
-                "target_key"
-            };
+            let target = kind.tag();
             let statement = format!(
                 "SELECT id FROM {table} WHERE {key} IN (SELECT {target_key} FROM mentions WHERE source_kind='{tag}' AND source_id=?1 AND target_kind='{target}') ORDER BY id LIMIT 33"
             );
-            for id in ids(sql, &statement, Value::Integer(seed.rowid), limited)? {
+            for (kind, id) in ids(sql, &statement, Value::Integer(seed.rowid), kind, limited)? {
                 output.push((kind, id));
                 if kind == Kind::File {
                     files.push(id);
@@ -232,6 +227,16 @@ fn neighbors(
             }
         }
     }
+    file_neighbors(sql, files, &mut output, limited, end)?;
+    Ok(output)
+}
+fn file_neighbors(
+    sql: &SqlView<'_>,
+    files: Vec<i64>,
+    output: &mut Vec<(Kind, i64)>,
+    limited: &mut bool,
+    end: Instant,
+) -> AtlasResult<()> {
     for file in files {
         let row = file_by_id(sql, file)?;
         if crate::policy::built_in_denied(&row.pointer.path)
@@ -240,8 +245,7 @@ fn neighbors(
             *limited = true;
             continue;
         }
-        super::candidates::admission_time(end)?;
-        if output.len() >= 256 {
+        if super::candidates::expired(end, limited) || output.len() >= 256 {
             *limited = true;
             break;
         }
@@ -259,16 +263,12 @@ fn neighbors(
                 "SELECT target_file FROM imports WHERE file=?1 AND target_file IS NOT NULL ORDER BY target_file LIMIT 33",
             ),
         ] {
-            output.extend(
-                ids(sql, statement, Value::Integer(file), limited)?
-                    .into_iter()
-                    .map(|id| (kind, id)),
-            );
+            output.extend(ids(sql, statement, Value::Integer(file), kind, limited)?);
         }
-        let key = file_by_id(sql, file)?.pointer.file;
-        output.extend(ids(sql, "SELECT source_id FROM mentions WHERE target_kind='file' AND target_key=?1 AND source_kind='record' ORDER BY source_id LIMIT 33", Value::Blob(key.0.to_vec()), limited)?.into_iter().map(|id|(Kind::Record,id)));
+        let key = Value::Blob(row.pointer.file.0.to_vec());
+        output.extend(ids(sql, "SELECT source_id FROM mentions WHERE target_kind='file' AND target_key=?1 AND source_kind='record' ORDER BY source_id LIMIT 33", key, Kind::Record, limited)?);
     }
-    Ok(output)
+    Ok(())
 }
 fn allowed(sql: &SqlView<'_>, kind: Kind, id: i64, query: &FindQuery) -> AtlasResult<bool> {
     let kind_allowed = match kind {
@@ -295,15 +295,10 @@ fn allowed(sql: &SqlView<'_>, kind: Kind, id: i64, query: &FindQuery) -> AtlasRe
     if !kind_allowed {
         return Ok(false);
     }
-    if matches!(kind, Kind::File | Kind::Symbol) {
-        let file = if kind == Kind::Symbol {
-            symbol_by_id(sql, id)?.1
-        } else {
-            id
-        };
-        if crate::policy::built_in_denied(&file_by_id(sql, file)?.pointer.path) {
-            return Ok(false);
-        }
+    if let Some(file) = owning_file(sql, kind, id)?
+        && crate::policy::built_in_denied(&file_by_id(sql, file)?.pointer.path)
+    {
+        return Ok(false);
     }
     if query.scope.paths.is_empty() && query.scope.languages.is_empty() {
         return Ok(true);

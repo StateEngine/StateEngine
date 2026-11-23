@@ -36,10 +36,6 @@ pub(crate) fn expected(
         .filter(|v| *v <= i64::MAX as u64)
         .ok_or_else(|| invalid("entity revision exhausted"))
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
     use EventBody::*;
     let s = scope_key(c, &e.header.scope, false)?;
@@ -48,189 +44,6 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
         RemoteMessageAttributed { .. } | RemoteLaunchAttributed { .. } => Ok(1),
         RemoteMailboxRecorded { .. } => Ok(1),
         CaptainMessageRouted { .. } => Ok(1),
-        AssignmentOpened {
-            assignment,
-            expected: want,
-            ..
-        }
-        | AssignmentTransitioned {
-            assignment,
-            expected: want,
-            ..
-        } => {
-            let p = project_id(c, &e.header.scope, false)?;
-            let a = key(c, "event", assignment.as_str(), &s, false)?;
-            expected(
-                c,
-                "assignments",
-                "project_id=? AND assignment_id=?",
-                &[&p, &a],
-                *want,
-            )
-        }
-        ProjectCaptainChanged {
-            project,
-            expected: want,
-            ..
-        } => {
-            let p = key(c, "project", project.as_str(), &[0], false)?;
-            expected(c, "project_captain", "project_id=?", &[&p], *want)
-        }
-        ProjectRegistered {
-            project,
-            expected: want,
-            ..
-        } => {
-            let p = key(c, "project", project.as_str(), &[0], false)?;
-            expected(c, "projects", "project_id=?", &[&p], *want)
-        }
-        PrincipalRegistered {
-            principal,
-            expected: want,
-            ..
-        }
-        | PrincipalRenamed {
-            principal,
-            expected: want,
-            ..
-        } => {
-            let a = key(
-                c,
-                principal.kind(),
-                principal.wire(),
-                if principal.kind() == "human" {
-                    &[0]
-                } else {
-                    &s
-                },
-                false,
-            )?;
-            match &e.header.scope {
-                Scope::Registry => expected(c, "owners", "human_id=?", &[&a], *want),
-                _ => {
-                    let p = project_id(c, &e.header.scope, false)?;
-                    expected(
-                        c,
-                        "principals",
-                        "project_id=? AND principal_id=?",
-                        &[&p, &a],
-                        *want,
-                    )
-                }
-            }
-        }
-        ProfileSaved {
-            agent,
-            expected: want,
-            ..
-        }
-        | WorkingStateSet {
-            agent,
-            expected: want,
-            ..
-        } => {
-            let p = project_id(c, &e.header.scope, false)?;
-            let a = key(c, "agent", agent.as_str(), &s, false)?;
-            expected(
-                c,
-                if matches!(&e.body, ProfileSaved { .. }) {
-                    "profiles"
-                } else {
-                    "working_state"
-                },
-                "project_id=? AND agent_id=?",
-                &[&p, &a],
-                *want,
-            )
-        }
-        GrantRecorded {
-            principal,
-            key: grant,
-            expected: want,
-            ..
-        } => {
-            let a = key(
-                c,
-                principal.kind(),
-                principal.wire(),
-                if principal.kind() == "human" {
-                    &[0]
-                } else {
-                    &s
-                },
-                false,
-            )?;
-            expected(
-                c,
-                "grants",
-                "scope_key=? AND principal_id=? AND grant_key=?",
-                &[&s, &a, &codec::encode(grant)?],
-                *want,
-            )
-        }
-        MessageSent { message, .. } | WorkMessageSent { message, .. } => {
-            let p = project_id(c, &e.header.scope, false)?;
-            let m = key(c, "message", message.as_str(), &s, false)?;
-            expected(
-                c,
-                connection::mail_table(c)?,
-                "project_id=? AND message_id=?",
-                &[&p, &m],
-                Expected::Absent,
-            )
-        }
-        MessageSuperseded {
-            message,
-            expected: want,
-            ..
-        } => {
-            let p = project_id(c, &e.header.scope, false)?;
-            let m = key(c, "message", message.as_str(), &s, false)?;
-            expected(
-                c,
-                "messages",
-                "project_id=? AND message_id=?",
-                &[&p, &m],
-                *want,
-            )
-        }
-        MessageRead { message, .. }
-        | MessageDismissed { message, .. }
-        | MessageDelivered { message, .. } => {
-            let p = project_id(c, &e.header.scope, false)?;
-            let m = key(c, "message", message.as_str(), &s, false)?;
-            let rev: u64 = c
-                .query_row(
-                    &format!(
-                        "SELECT revision FROM {} WHERE project_id=? AND message_id=? LIMIT 1",
-                        connection::mail_table(c)?
-                    ),
-                    crate::sql_value::sql_params![p, m],
-                    |r| crate::sql_value::value(r, 0),
-                )
-                .optional()
-                .map_err(sql)?
-                .ok_or_else(|| {
-                    fail(
-                        StoreErrorCode::ReferenceMissing,
-                        format!("message {} is absent", message.as_str()),
-                    )
-                })?;
-            rev.checked_add(1)
-                .filter(|v| *v <= i64::MAX as u64)
-                .ok_or_else(|| invalid("message revision exhausted"))
-        }
-        EventBody::DecisionProposed { .. }
-        | EventBody::DecisionRatified { .. }
-        | EventBody::DecisionRejected { .. }
-        | EventBody::DecisionRetracted { .. }
-        | EventBody::DecisionSuperseded { .. } => Err(fail(
-            StoreErrorCode::VersionUnsupported,
-            "decision ledger writes are retired; existing events remain readable through history",
-        )),
-        RuntimeOwnerEstablished { expected: want, .. } => {
-            expected(c, "runtime_owner", "singleton=1", &[], *want)
-        }
         ProcessRegistered { .. } | ProcessTransition { .. } => process::revision(c, e),
         SessionPrepared { .. }
         | SessionActivated { .. }
@@ -265,6 +78,186 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
         ErasureRequested { .. } | TurnErased { .. } | MessageErased { .. } => Ok(1),
         ErasureCompleted { .. } => Ok(2),
         RecoveryRecorded { .. } => Ok(1),
+        EventBody::DecisionProposed { .. }
+        | EventBody::DecisionRatified { .. }
+        | EventBody::DecisionRejected { .. }
+        | EventBody::DecisionRetracted { .. }
+        | EventBody::DecisionSuperseded { .. } => Err(fail(
+            StoreErrorCode::VersionUnsupported,
+            "decision ledger writes are retired; existing events remain readable through history",
+        )),
+        RuntimeOwnerEstablished { expected: want, .. } => {
+            expected(c, "runtime_owner", "singleton=1", &[], *want)
+        }
+        _ => entity_revision(c, e, &s),
+    }
+}
+/// Revisions of project, principal, profile and grant records.
+fn entity_revision(c: &Connection, e: &NewEvent, s: &[u8]) -> StoreResult<u64> {
+    use EventBody::*;
+    match &e.body {
+        ProjectCaptainChanged {
+            project,
+            expected: want,
+            ..
+        }
+        | ProjectRegistered {
+            project,
+            expected: want,
+            ..
+        } => {
+            let p = key(c, "project", project.as_str(), &[0], false)?;
+            let table = if matches!(&e.body, ProjectRegistered { .. }) {
+                "projects"
+            } else {
+                "project_captain"
+            };
+            expected(c, table, "project_id=?", &[&p], *want)
+        }
+        PrincipalRegistered {
+            principal,
+            expected: want,
+            ..
+        }
+        | PrincipalRenamed {
+            principal,
+            expected: want,
+            ..
+        } => {
+            let a = actor_key(c, principal, s, false)?;
+            match &e.header.scope {
+                Scope::Registry => expected(c, "owners", "human_id=?", &[&a], *want),
+                _ => {
+                    let p = project_id(c, &e.header.scope, false)?;
+                    expected(
+                        c,
+                        "principals",
+                        "project_id=? AND principal_id=?",
+                        &[&p, &a],
+                        *want,
+                    )
+                }
+            }
+        }
+        ProfileSaved {
+            agent,
+            expected: want,
+            ..
+        }
+        | WorkingStateSet {
+            agent,
+            expected: want,
+            ..
+        } => {
+            let p = project_id(c, &e.header.scope, false)?;
+            let a = key(c, "agent", agent.as_str(), s, false)?;
+            expected(
+                c,
+                if matches!(&e.body, ProfileSaved { .. }) {
+                    "profiles"
+                } else {
+                    "working_state"
+                },
+                "project_id=? AND agent_id=?",
+                &[&p, &a],
+                *want,
+            )
+        }
+        GrantRecorded {
+            principal,
+            key: grant,
+            expected: want,
+            ..
+        } => {
+            let a = actor_key(c, principal, s, false)?;
+            expected(
+                c,
+                "grants",
+                "scope_key=? AND principal_id=? AND grant_key=?",
+                &[&s, &a, &codec::encode(grant)?],
+                *want,
+            )
+        }
+        _ => work_revision(c, e, s),
+    }
+}
+/// Work inside a project: assignments, and messages, which are new on send
+/// and whose reads and supersessions advance the head.
+fn work_revision(c: &Connection, e: &NewEvent, s: &[u8]) -> StoreResult<u64> {
+    use EventBody::*;
+    match &e.body {
+        AssignmentOpened {
+            assignment,
+            expected: want,
+            ..
+        }
+        | AssignmentTransitioned {
+            assignment,
+            expected: want,
+            ..
+        } => {
+            let p = project_id(c, &e.header.scope, false)?;
+            let a = key(c, "event", assignment.as_str(), s, false)?;
+            expected(
+                c,
+                "assignments",
+                "project_id=? AND assignment_id=?",
+                &[&p, &a],
+                *want,
+            )
+        }
+        MessageSent { message, .. } | WorkMessageSent { message, .. } => {
+            let p = project_id(c, &e.header.scope, false)?;
+            let m = key(c, "message", message.as_str(), s, false)?;
+            expected(
+                c,
+                connection::mail_table(c)?,
+                "project_id=? AND message_id=?",
+                &[&p, &m],
+                Expected::Absent,
+            )
+        }
+        MessageSuperseded {
+            message,
+            expected: want,
+            ..
+        } => {
+            let p = project_id(c, &e.header.scope, false)?;
+            let m = key(c, "message", message.as_str(), s, false)?;
+            expected(
+                c,
+                "messages",
+                "project_id=? AND message_id=?",
+                &[&p, &m],
+                *want,
+            )
+        }
+        MessageRead { message, .. }
+        | MessageDismissed { message, .. }
+        | MessageDelivered { message, .. } => {
+            let p = project_id(c, &e.header.scope, false)?;
+            let m = key(c, "message", message.as_str(), s, false)?;
+            let rev: u64 = c
+                .query_row(
+                    &format!(
+                        "SELECT revision FROM {} WHERE project_id=? AND message_id=? LIMIT 1",
+                        connection::mail_table(c)?
+                    ),
+                    crate::sql_value::sql_params![p, m],
+                    |r| crate::sql_value::value(r, 0),
+                )
+                .optional()
+                .map_err(sql)?
+                .ok_or_else(|| {
+                    fail(
+                        StoreErrorCode::ReferenceMissing,
+                        format!("message {} is absent", message.as_str()),
+                    )
+                })?;
+            rev.checked_add(1)
+                .filter(|v| *v <= i64::MAX as u64)
+                .ok_or_else(|| invalid("message revision exhausted"))
+        }
         _ => later("event revision"),
     }
 }

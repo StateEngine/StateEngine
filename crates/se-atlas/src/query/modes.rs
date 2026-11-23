@@ -6,6 +6,15 @@ pub(super) fn automatic(text: &str) -> SearchMode {
         SearchMode::Exact
     }
 }
+/// An unmatched single token never splits into OR'd fragments: those are
+/// guesses, not matches. Only a multi-word phrase widens to loose words.
+pub(super) fn fallbacks(initial: SearchMode) -> &'static [SearchMode] {
+    match initial {
+        SearchMode::Exact => &[SearchMode::Literal],
+        SearchMode::Phrase => &[SearchMode::Broad, SearchMode::Related],
+        _ => &[],
+    }
+}
 pub(super) fn fts(text: &str, mode: SearchMode) -> String {
     let quote = |text: &str| format!("\"{}\"", text.replace('"', "\"\""));
     if matches!(mode, SearchMode::Broad | SearchMode::Related) {

@@ -135,12 +135,7 @@ fn admit_caller(
     files: &files::Files,
 ) -> Result<admit::Caller> {
     let caller = admit::observe(cx, &mut phase, files);
-    let closed = phase.close().map_err(|error| store_error(&error));
-    match (caller, closed) {
-        (Ok(caller), Ok(())) => Ok(caller),
-        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-        (Err(error), Err(close)) => Err(error.with_cause(close)),
-    }
+    super::execute::finish_read(caller, phase.close().map_err(|error| store_error(&error)))
 }
 fn restore_image_caches(
     cx: &Bootstrap,

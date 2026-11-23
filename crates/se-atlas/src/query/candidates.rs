@@ -8,6 +8,16 @@ pub(super) enum Kind {
     Record,
     Commit,
 }
+impl Kind {
+    pub(super) fn tag(self) -> &'static str {
+        match self {
+            Kind::Symbol => "symbol",
+            Kind::File => "file",
+            Kind::Record => "record",
+            Kind::Commit => "commit",
+        }
+    }
+}
 pub(super) struct Candidate {
     pub kind: Kind,
     pub rowid: i64,
@@ -44,26 +54,19 @@ pub(super) fn collect(
         truncated: false,
     };
     let mut resident = 0;
-    for plan in super::candidate_sql::plans(query, mode)? {
-        admission_time(end)?;
-        let mut ids = Vec::with_capacity(513);
-        {
-            let mut stmt = sql.prepare(&plan.sql)?;
-            let mut rows = stmt
-                .query(rusqlite::params_from_iter(plan.values))
-                .map_err(cache_error)?;
-            while let Some(row) = rows.next().map_err(cache_error)? {
-                ids.push((
-                    get::<i64>(row, 0)?,
-                    get::<Option<i64>>(row, 1)?,
-                    if plan.lexical {
-                        get::<f64>(row, 2)?
-                    } else {
-                        0.0
-                    },
-                ));
-            }
+    'plans: for plan in super::candidate_sql::plans(query, mode)? {
+        if expired(end, &mut output.truncated) {
+            break;
         }
+        let values = rusqlite::params_from_iter(plan.values);
+        let mut ids = all(sql, &plan.sql, values, 513, |row| {
+            let bm25 = if plan.lexical {
+                get::<f64>(row, 2)?
+            } else {
+                0.0
+            };
+            Ok((get::<i64>(row, 0)?, get::<Option<i64>>(row, 1)?, bm25))
+        })?;
         if ids.len() > 512 {
             ids.pop();
             output.truncated = true;
@@ -74,8 +77,10 @@ pub(super) fn collect(
             if !bm25.is_finite() || bm25 > 0.0 {
                 return Err(cache_error("invalid BM25 score"));
             }
-            // An unfinished traversal prefix cannot provide a ranked continuation.
-            admission_time(end)?;
+            // An unfinished traversal prefix is partial, never a ranked continuation.
+            if expired(end, &mut output.truncated) {
+                break 'plans;
+            }
             let kind = plan.kind;
             // An earlier tier has already validated and retained this row in
             // the same snapshot; avoid repeating its metadata and authority reads.
@@ -160,14 +165,8 @@ pub(super) fn collect(
     }
     let mut activity = crate::rank::ActivityReader::new(sql)?;
     for candidate in &mut output.values {
-        let tag = match candidate.kind {
-            Kind::Symbol => "symbol",
-            Kind::File => "file",
-            Kind::Record => "record",
-            Kind::Commit => "commit",
-        };
         candidate.activity = activity.read(
-            tag,
+            candidate.kind.tag(),
             &candidate.key,
             crate::rank::ActivityQuery {
                 project: &snapshot.index.project,
@@ -185,12 +184,11 @@ pub(super) fn collect(
         .sort_by_cached_key(|candidate| super::find::key(candidate, query.order));
     Ok(output)
 }
-pub(super) fn admission_time(end: Instant) -> AtlasResult<()> {
-    if crate::clock::now() < end {
-        return Ok(());
-    }
-    // An expired checkpoint has no allowance left, as in SQL preparation.
-    Err(crate::cache::connection::timeout(0))
+/// Past the soft deadline admission stops: keep what was collected, marked partial.
+pub(super) fn expired(end: Instant, truncated: &mut bool) -> bool {
+    let late = crate::clock::now() >= end;
+    *truncated |= late;
+    late
 }
 pub(super) fn record_pointer(sql: &SqlView<'_>, id: i64) -> AtlasResult<RecordPointer> {
     let mut stmt = sql.prepare("SELECT record_id,kind,source_event FROM records WHERE id=?1")?;

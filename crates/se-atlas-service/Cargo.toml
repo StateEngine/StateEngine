@@ -1,0 +1,24 @@
+[package]
+name = "se-atlas-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+se-atlas-index = { path = "../se-atlas-index" }
+se-atlas-query = { path = "../se-atlas-query" }
+se-atlas-search = { path = "../se-atlas-search" }
+se-proc = { path = "../se-proc" }
+se-types = { path = "../se-types" }
+serde.workspace = true
+serde_json.workspace = true
+# Content checks of recently written files and resume offer digests.
+blake3 = { version = "=1.8.7", default-features = false, features = ["std"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
+# Discovery's ignore rules, applied to paths the watcher reports.
+ignore = "=0.4.33"
+
+[lints]
+workspace = true

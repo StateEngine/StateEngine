@@ -109,6 +109,24 @@ pub struct AgentStateView {
     pub elapsed_seconds: Option<u64>,
     /// The agent's latest question that has no reply yet.
     pub waiting_on: Option<WaitingOnView>,
+    /// Work the agent handed to named agents that none of them has answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<ReviewWaitView>,
+}
+/// A shared work handoff still waiting on its addressees. It comes from
+/// StateEngine's own messages; pull-request, merge and check states are not
+/// observed.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ReviewWaitView {
+    pub message_id: se_types::MessageId,
+    pub to: Vec<String>,
+    pub handed_at: String,
+    /// The recorded time `handed_at` shows, in Unix microseconds.
+    pub handed_at_us: i64,
+    /// The handoff's first line, such as the pull request it names.
+    pub summary: String,
+    /// Stored records the handoff refers to.
+    pub refs: Vec<String>,
 }
 /// What another agent in the same project may see of a peer: its identity,
 /// derived state and working note. No session, provider, resume, mail or

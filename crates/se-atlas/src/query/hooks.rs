@@ -48,25 +48,13 @@ impl QueryReader<'_, '_, '_> {
             }
             match target {
                 HookTarget::Symbol(name)=> {
-                    let ids={
-                        let mut stmt=sql.prepare("SELECT s.id FROM names n JOIN symbols s ON s.name=n.id WHERE n.text=?1 ORDER BY s.id LIMIT 2")?;
-                        let mut rows=stmt.query([name]).map_err(cache_error)?;
-                        let mut ids=Vec::with_capacity(2);
-                        while let Some(row)=rows.next().map_err(cache_error)? {ids.push(get::<i64>(row,0)?);}
-                        ids
-                    };
+                    let ids=id_column(sql,"SELECT s.id FROM names n JOIN symbols s ON s.name=n.id WHERE n.text=?1 ORDER BY s.id LIMIT 2",[name],2)?;
                     let [id]=ids.as_slice() else {return Ok(None);};
                     let (symbol,file)=symbol_by_id(sql,*id)?;
                     let mut file=file_by_id(sql,file)?.pointer;
                     if !usable(&file) {return Ok(None);}
                     file.span=Some(symbol.value.span);
-                    let ids={
-                        let mut stmt=sql.prepare("SELECT r.id FROM refs r JOIN files f ON f.id=r.file LEFT JOIN activity a ON a.target_kind='file' AND a.target_key=f.key WHERE r.target=?1 AND r.kind='Call' AND r.accuracy!='NameOnly' ORDER BY a.last_touch_unix_ms DESC,f.key,r.start_byte,r.id LIMIT 3")?;
-                        let mut rows=stmt.query([id]).map_err(cache_error)?;
-                        let mut ids=Vec::with_capacity(3);
-                        while let Some(row)=rows.next().map_err(cache_error)? {ids.push(get::<i64>(row,0)?);}
-                        ids
-                    };
+                    let ids=id_column(sql,"SELECT r.id FROM refs r JOIN files f ON f.id=r.file LEFT JOIN activity a ON a.target_kind='file' AND a.target_key=f.key WHERE r.target=?1 AND r.kind='Call' AND r.accuracy!='NameOnly' ORDER BY a.last_touch_unix_ms DESC,f.key,r.start_byte,r.id LIMIT 3",[id],3)?;
                     let mut callers=Vec::with_capacity(3);
                     for id in ids {
                         let reference=super::target::reference_by_id(sql,id)?;
@@ -81,13 +69,7 @@ impl QueryReader<'_, '_, '_> {
                     if crate::policy::built_in_denied(path) {return Ok(None);}
                     let Some(file)=file_by_path(sql,path)? else {return Ok(None);};
                     if !usable(&file.pointer) {return Ok(None);}
-                    let ids={
-                        let mut stmt=sql.prepare("SELECT id FROM symbols WHERE file=?1 ORDER BY start_byte,end_byte DESC,key LIMIT 4")?;
-                        let mut rows=stmt.query(params![file.rowid]).map_err(cache_error)?;
-                        let mut ids=Vec::with_capacity(4);
-                        while let Some(row)=rows.next().map_err(cache_error)? {ids.push(get::<i64>(row,0)?);}
-                        ids
-                    };
+                    let ids=id_column(sql,"SELECT id FROM symbols WHERE file=?1 ORDER BY start_byte,end_byte DESC,key LIMIT 4",params![file.rowid],4)?;
                     let mut symbols=Vec::with_capacity(4);
                     for id in ids {symbols.push(symbol_by_id(sql,id)?.0.value);}
                     let linked=records::sample(&env,sql,&file.pointer.file,None)?;

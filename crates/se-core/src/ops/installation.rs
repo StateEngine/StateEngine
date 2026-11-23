@@ -128,11 +128,17 @@ fn digest(value: &str) -> bool {
 }
 impl UninstallPlan {
     /// Consume untrusted input and establish the immutable execution boundary.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub fn validate(self) -> Result<ValidatedUninstallPlan> {
+        self.validate_boundary()?;
+        self.validate_owned_paths()?;
+        self.validate_path_edits()?;
+        let recovery_directories = self.recovery_directories();
+        Ok(ValidatedUninstallPlan {
+            plan: self,
+            recovery_directories,
+        })
+    }
+    fn validate_boundary(&self) -> Result<()> {
         if !self.state_home.is_absolute()
             || self
                 .state_home
@@ -157,6 +163,9 @@ impl UninstallPlan {
                 "1..512 exact owned files, at most 128 created directories and 16 PATH edits",
             ));
         }
+        Ok(())
+    }
+    fn validate_owned_paths(&self) -> Result<()> {
         let protected_files = [
             "runtime.lock",
             "state.db",
@@ -208,6 +217,9 @@ impl UninstallPlan {
                 ));
             }
         }
+        Ok(())
+    }
+    fn validate_path_edits(&self) -> Result<()> {
         let mut targets = BTreeSet::new();
         for edit in &self.path_edits {
             let target_ok = if cfg!(windows) {
@@ -230,8 +242,10 @@ impl UninstallPlan {
                 ));
             }
         }
-        let recovery_directories = self
-            .files
+        Ok(())
+    }
+    fn recovery_directories(&self) -> Vec<PathBuf> {
+        self.files
             .iter()
             .map(|file| Path::new(&file.path))
             .chain(
@@ -244,11 +258,7 @@ impl UninstallPlan {
             .map(Path::to_path_buf)
             .collect::<BTreeSet<_>>()
             .into_iter()
-            .collect();
-        Ok(ValidatedUninstallPlan {
-            plan: self,
-            recovery_directories,
-        })
+            .collect()
     }
 }
 

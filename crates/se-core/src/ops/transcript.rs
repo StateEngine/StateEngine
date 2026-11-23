@@ -230,21 +230,11 @@ pub(super) fn read<R: Snapshot>(
             .into_iter()
             .map(event)
             .collect::<Result<Vec<_>>>()?;
-        let last = match value.last_compaction {
-            Read::Present { value } => Read::Present {
+        let last = match value.last_compaction.into_present() {
+            Ok(value) => Read::Present {
                 value: event(value)?,
             },
-            Read::Absent { checked } => Read::Absent { checked },
-            Read::Unknown { what } => Read::Unknown { what },
-            Read::Unreadable {
-                source,
-                reason,
-                error,
-            } => Read::Unreadable {
-                source,
-                reason,
-                error,
-            },
+            Err(other) => other,
         };
         Ok::<_, SeError>(View {
             transcript_events: Read::Present { value: events },

@@ -99,15 +99,30 @@ fn validate(binding: &FirstBinding) -> StoreResult<()> {
     }
     Ok(())
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn check_pair(
     c: &Connection,
     batches: &[StoreResult<AtomicBatch>],
     info: &StoreInfo,
 ) -> StoreResult<()> {
+    let existing = existing_operations(c, batches, info)?;
+    if existing.iter().filter(|op| op.is_some()).count() == 1 {
+        return Err(fail(
+            StoreErrorCode::ProjectionInconsistent,
+            "first binding has only one retained operation; preserve this store",
+        ));
+    }
+    if existing.iter().all(Option::is_some) {
+        retained_pairs(c, batches, existing, info)?;
+    } else {
+        handover_phase(c)?;
+    }
+    Ok(())
+}
+fn existing_operations(
+    c: &Connection,
+    batches: &[StoreResult<AtomicBatch>],
+    info: &StoreInfo,
+) -> StoreResult<Vec<Option<Vec<u8>>>> {
     let mut existing = Vec::new();
     for batch in batches {
         let batch = batch.as_ref().map_err(Clone::clone)?;
@@ -133,123 +148,122 @@ pub(super) fn check_pair(
         let op: Option<Vec<u8>> = c.query_row("SELECT operation_id FROM operations WHERE scope_key=? AND actor_id=? AND request_key=?",rusqlite::params![scope,actor,request.key.as_str()],|row| row.get(0)).optional().map_err(sql)?;
         existing.push(op);
     }
-    if existing.iter().filter(|op| op.is_some()).count() == 1 {
-        return Err(fail(
-            StoreErrorCode::ProjectionInconsistent,
-            "first binding has only one retained operation; preserve this store",
-        ));
-    }
-    if existing.iter().all(Option::is_some) {
-        let mut owner_generation = None;
-        for (index, op) in existing.into_iter().enumerate() {
-            let batch = batches[index].as_ref().map_err(Clone::clone)?;
-            let retained = receipt(
-                c,
-                &op.ok_or_else(|| invalid("retained pair disappeared"))?,
-                info,
-                batch.request.as_ref().map(|r| r.key.clone()),
-            )?;
-            if retained.durability != CommitDurability::Full {
-                return Err(fail(
-                    StoreErrorCode::ProjectionInconsistent,
-                    "first binding lacks FULL stamps",
-                ));
-            }
-            let mut activations = 0;
-            let mut prepared = None;
-            for id in &retained.events {
-                let scope = scope_key(c, &batch.admission.scope, false)?;
-                let event = key(c, "event", id.as_str(), &scope, false)?;
-                let seq = c
-                    .query_row("SELECT seq FROM events WHERE event_id=?", [event], |row| {
-                        row.get(0)
-                    })
-                    .map_err(sql)?;
-                let event = crate::read::load_event(c, seq, info)?;
-                if event.header.scope != batch.admission.scope
-                    || event.header.actor != batch.admission.actor
-                {
-                    return Err(fail(
-                        StoreErrorCode::ProjectionInconsistent,
-                        "first binding membership scope/actor differs",
-                    ));
-                }
-                match event.body {
-                    EventBody::RuntimeOwnerEstablished {
-                        generation,
-                        recovered: None,
-                        ..
-                    } if index == 0 && retained.events.len() == 1 => {
-                        owner_generation = Some(generation.get());
-                    }
-                    EventBody::SessionPrepared {
-                        session,
-                        generation,
-                        surface: Some(SessionSurface::SeCode),
-                        ..
-                    } if index == 1
-                        && owner_generation == Some(generation)
-                        && prepared.is_none()
-                        && activations == 0 =>
-                    {
-                        prepared = Some(session);
-                    }
-                    EventBody::SessionActivated {
-                        session,
-                        process: None,
-                        containment: ContainmentFact::NotLaunched,
-                        ..
-                    } if index == 1 && prepared.as_ref() == Some(&session) && activations == 0 => {
-                        activations += 1;
-                    }
-                    EventBody::SessionEnded { session, .. }
-                    | EventBody::SessionRevoked { session, .. }
-                        if index == 1
-                            && activations == 0
-                            && prepared.as_ref() != Some(&session) => {}
-                    _ => {
-                        return Err(fail(
-                            StoreErrorCode::ProjectionInconsistent,
-                            "first binding retained membership differs",
-                        ));
-                    }
-                }
-                if event.durability != CommitDurability::Full
-                    || !matches!(event.writer.kind(), WriterKind::Host { generation } if Some(generation) == owner_generation)
-                {
-                    return Err(fail(
-                        StoreErrorCode::ProjectionInconsistent,
-                        "first binding member writer/durability differs",
-                    ));
-                }
-            }
-            if index == 1 && (activations != 1 || prepared.is_none() || owner_generation.is_none())
+    Ok(existing)
+}
+fn retained_pairs(
+    c: &Connection,
+    batches: &[StoreResult<AtomicBatch>],
+    existing: Vec<Option<Vec<u8>>>,
+    info: &StoreInfo,
+) -> StoreResult<()> {
+    let mut owner_generation = None;
+    for (index, op) in existing.into_iter().enumerate() {
+        let batch = batches[index].as_ref().map_err(Clone::clone)?;
+        let retained = receipt(
+            c,
+            &op.ok_or_else(|| invalid("retained pair disappeared"))?,
+            info,
+            batch.request.as_ref().map(|r| r.key.clone()),
+        )?;
+        if retained.durability != CommitDurability::Full {
+            return Err(fail(
+                StoreErrorCode::ProjectionInconsistent,
+                "first binding lacks FULL stamps",
+            ));
+        }
+        let mut activations = 0;
+        let mut prepared = None;
+        for id in &retained.events {
+            let scope = scope_key(c, &batch.admission.scope, false)?;
+            let event = key(c, "event", id.as_str(), &scope, false)?;
+            let seq = c
+                .query_row("SELECT seq FROM events WHERE event_id=?", [event], |row| {
+                    row.get(0)
+                })
+                .map_err(sql)?;
+            let event = crate::read::load_event(c, seq, info)?;
+            if event.header.scope != batch.admission.scope
+                || event.header.actor != batch.admission.actor
             {
                 return Err(fail(
                     StoreErrorCode::ProjectionInconsistent,
-                    "first binding retained activation missing",
+                    "first binding membership scope/actor differs",
+                ));
+            }
+            match event.body {
+                EventBody::RuntimeOwnerEstablished {
+                    generation,
+                    recovered: None,
+                    ..
+                } if index == 0 && retained.events.len() == 1 => {
+                    owner_generation = Some(generation.get());
+                }
+                EventBody::SessionPrepared {
+                    session,
+                    generation,
+                    surface: Some(SessionSurface::SeCode),
+                    ..
+                } if index == 1
+                    && owner_generation == Some(generation)
+                    && prepared.is_none()
+                    && activations == 0 =>
+                {
+                    prepared = Some(session);
+                }
+                EventBody::SessionActivated {
+                    session,
+                    process: None,
+                    containment: ContainmentFact::NotLaunched,
+                    ..
+                } if index == 1 && prepared.as_ref() == Some(&session) && activations == 0 => {
+                    activations += 1;
+                }
+                EventBody::SessionEnded { session, .. }
+                | EventBody::SessionRevoked { session, .. }
+                    if index == 1 && activations == 0 && prepared.as_ref() != Some(&session) => {}
+                _ => {
+                    return Err(fail(
+                        StoreErrorCode::ProjectionInconsistent,
+                        "first binding retained membership differs",
+                    ));
+                }
+            }
+            if event.durability != CommitDurability::Full
+                || !matches!(event.writer.kind(), WriterKind::Host { generation } if Some(generation) == owner_generation)
+            {
+                return Err(fail(
+                    StoreErrorCode::ProjectionInconsistent,
+                    "first binding member writer/durability differs",
                 ));
             }
         }
-    } else {
-        let phase: Option<Option<String>> = c
-            .query_row(
-                "SELECT phase FROM runtime_owner WHERE singleton=1",
-                [],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(sql)?;
-        if phase
-            .flatten()
-            .as_deref()
-            .is_some_and(|phase| matches!(phase, "Prepared" | "Claimed"))
-        {
+        if index == 1 && (activations != 1 || prepared.is_none() || owner_generation.is_none()) {
             return Err(fail(
-                StoreErrorCode::InvalidTransition,
-                "first binding cannot cross an unresolved handover",
+                StoreErrorCode::ProjectionInconsistent,
+                "first binding retained activation missing",
             ));
         }
+    }
+    Ok(())
+}
+fn handover_phase(c: &Connection) -> StoreResult<()> {
+    let phase: Option<Option<String>> = c
+        .query_row(
+            "SELECT phase FROM runtime_owner WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    if phase
+        .flatten()
+        .as_deref()
+        .is_some_and(|phase| matches!(phase, "Prepared" | "Claimed"))
+    {
+        return Err(fail(
+            StoreErrorCode::InvalidTransition,
+            "first binding cannot cross an unresolved handover",
+        ));
     }
     Ok(())
 }

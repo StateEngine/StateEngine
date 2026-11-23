@@ -1564,6 +1564,7 @@ dependencies = [
  "se-config",
  "se-core",
  "se-host",
+ "se-local-socket",
  "se-mcp",
  "se-proc",
  "se-remote-cli",
@@ -1624,6 +1625,7 @@ version = "0.0.1-alpha.1"
 dependencies = [
  "se-atlas",
  "se-atlas-cold",
+ "se-atlas-service",
  "se-config",
  "se-core",
  "se-mcp",
@@ -1634,6 +1636,57 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+]
+
+[[package]]
+name = "se-atlas-index"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "blake3",
+ "ignore",
+ "libc",
+ "rusqlite",
+ "se-proc",
+ "se-trusted-path",
+ "serde_json",
+]
+
+[[package]]
+name = "se-atlas-query"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "blake3",
+ "rusqlite",
+ "se-atlas-index",
+ "se-atlas-search",
+ "serde_json",
+]
+
+[[package]]
+name = "se-atlas-search"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "grep-regex",
+ "grep-searcher",
+ "regex-syntax",
+ "rusqlite",
+ "se-atlas-index",
+]
+
+[[package]]
+name = "se-atlas-service"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "blake3",
+ "ignore",
+ "rusqlite",
+ "se-atlas-index",
+ "se-atlas-query",
+ "se-atlas-search",
+ "se-proc",
+ "se-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1720,6 +1773,7 @@ dependencies = [
  "se-channels",
  "se-config",
  "se-core",
+ "se-local-socket",
  "se-mcp",
  "se-proc",
  "se-remote",
@@ -1736,7 +1790,6 @@ dependencies = [
  "tokio-tungstenite",
  "toml",
  "toml_edit",
- "uds_windows",
  "uuid",
  "zeroize",
 ]
@@ -1798,6 +1851,16 @@ dependencies = [
 [[package]]
 name = "se-identifiers"
 version = "0.0.1-alpha.1"
+
+[[package]]
+name = "se-local-socket"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-proc",
+ "tokio",
+ "uds_windows",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "se-mcp"

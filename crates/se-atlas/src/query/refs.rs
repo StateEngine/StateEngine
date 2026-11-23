@@ -3,7 +3,7 @@ use super::*;
 use rusqlite::types::Value;
 impl QueryReader<'_, '_, '_> {
     pub fn refs(&mut self, query: &RefsQuery) -> AtlasResult<Answer<Read<Page<ReferenceHit>>>> {
-        let end = deadline(query.budget)?;
+        let (end, hard) = deadline(query.budget)?;
         let started = end - query.budget.work;
         if query.kinds.len() > 5 {
             return Err(se_types::SeError::invalid(
@@ -20,11 +20,10 @@ impl QueryReader<'_, '_, '_> {
         ))?;
         let identity = self.cache.identity().clone();
         let env = self.ctx.split();
-        let result = self.cache.read(end, |sql| {
+        let result = self.cache.read(hard, |sql| {
             let snapshot = snapshot(&identity, &env, sql)?;
             let Some(target) = resolve(sql, &query.target)? else {
-                return Ok(snapshot
-                    .unknown("target not indexed; search by name or path and inspect coverage"));
+                return snapshot.missing(&query.target);
             };
             let previous = query
                 .next
@@ -62,7 +61,7 @@ impl QueryReader<'_, '_, '_> {
                 items,
                 query.budget,
                 next,
-                !snapshot.negative_complete() || advanced,
+                !snapshot.index.negative_complete() || advanced,
                 bytes,
                 query.next.as_ref(),
             )?;
@@ -71,13 +70,9 @@ impl QueryReader<'_, '_, '_> {
                 query.budget,
             )
         });
-        let answer = phase_timeout("refs query", started, end, result)?;
-        phase_timeout(
-            "references query",
-            started,
-            end,
-            super::freshness::finish(self, answer, query.budget, end),
-        )
+        let answer = phase_timeout("refs query", started, hard, result)?;
+        let answer = super::freshness::finish(self, answer, query.budget, (end, hard));
+        phase_timeout("references query", started, hard, answer)
     }
 }
 fn collect_references(
@@ -101,17 +96,9 @@ fn collect_references(
         }
         let (statement, values) =
             reference_plan(query, target, key.filter(|k| k.integers[0] == phase), phase)?;
-        let ids = {
-            let mut stmt = sql.prepare(&statement)?;
-            let mut rows = stmt
-                .query(rusqlite::params_from_iter(values))
-                .map_err(cache_error)?;
-            let mut ids = Vec::with_capacity(query.budget.max_results as usize + 1);
-            while let Some(row) = rows.next().map_err(cache_error)? {
-                ids.push(get::<i64>(row, 0)?);
-            }
-            ids
-        };
+        let values = rusqlite::params_from_iter(values);
+        let reserve = query.budget.max_results as usize + 1;
+        let ids = id_column(sql, &statement, values, reserve)?;
         for id in ids.iter().take(512) {
             let reference = reference_by_id(sql, *id)?;
             if crate::policy::built_in_denied(&reference.site.path) {

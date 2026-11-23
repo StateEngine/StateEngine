@@ -20,7 +20,7 @@ pub fn with_readable_regular_file<T>(
     let mut file = root
         .open_relative(name)?
         .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
-    let before = file.revision()?;
+    let before = file.opened_revision();
     let value = read(&mut file)?;
     if before != file.revision()? || !file.validate_name()? {
         return Err(io::Error::other("installed file changed while being read"));
@@ -31,7 +31,7 @@ pub fn with_readable_regular_file<T>(
 /// Refuse oversized metadata rather than parsing a silently truncated prefix.
 pub fn read_bounded_regular_file(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
     with_readable_regular_file(path, |file| {
-        if file.revision()?.size > limit as u64 {
+        if file.opened_revision().size > limit as u64 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "installed file exceeds its read bound",

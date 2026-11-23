@@ -35,23 +35,11 @@ fn registered_projects_page<R: ReadStore>(
     reader: &R,
     admission: &Admission,
 ) -> Result<se_types::Page<se_store::ProjectionRecord>> {
-    let mut snap = reader
-        .snapshot(read_scope(admission))
-        .map_err(|e| store_error(&e))?;
+    let mut snap = super::super::select::open_snapshot(reader, admission)?;
     let result = snap
         .projects(super::super::select::budget(None)?)
         .map_err(|e| store_error(&e));
-    let closed = snap.close().map_err(|e| store_error(&e));
-    match result {
-        Ok(page) => {
-            closed?;
-            Ok(page)
-        }
-        Err(error) => Err(match closed {
-            Ok(()) => error,
-            Err(close) => error.with_cause(close),
-        }),
-    }
+    super::super::execute::finish_read(result, snap.close().map_err(|e| store_error(&e)))
 }
 fn project_summary_row<R: ReadStore>(
     reader: &R,
@@ -60,28 +48,11 @@ fn project_summary_row<R: ReadStore>(
     home: &std::path::Path,
     record: se_store::ProjectionRecord,
 ) -> Result<ProjectSummary> {
-    let (id, name, roots) = match record.current.body {
-        EventBody::ProjectRegistered {
-            project,
-            name,
-            roots,
-            ..
-        }
-        | EventBody::ProjectUpdated {
-            project,
-            name,
-            roots,
-            ..
-        } => (project, name, roots),
-        EventBody::ProjectMoved {
-            project, name, to, ..
-        } => (project, name, vec![to.clone()]),
-        _ => {
-            return Err(scope::unreadable(
-                "registered project",
-                "active metadata has an unexpected event kind",
-            ));
-        }
+    let Some((id, name, roots)) = super::super::select::active_project(&record.current.body) else {
+        return Err(scope::unreadable(
+            "registered project",
+            "active metadata has an unexpected event kind",
+        ));
     };
     let mut errors = Vec::new();
     let root = match roots
@@ -131,8 +102,8 @@ fn project_summary_row<R: ReadStore>(
         }
     }
     Ok(ProjectSummary {
-        id,
-        name,
+        id: id.clone(),
+        name: name.to_owned(),
         root,
         agents_running,
         owner_unread,

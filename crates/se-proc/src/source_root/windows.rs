@@ -12,6 +12,8 @@ use windows_sys::Wdk::{
     },
 };
 use windows_sys::Win32::{Foundation::*, Storage::FileSystem::*, System::IO::IO_STATUS_BLOCK};
+/// What the no-reparse open already read from the opened handle.
+pub(super) type Facts = BY_HANDLE_FILE_INFORMATION;
 
 pub(super) fn open_root(path: &Path) -> io::Result<File> {
     let name = crate::state_files::windows::wide(path)
@@ -31,13 +33,17 @@ pub(super) fn open_root(path: &Path) -> io::Result<File> {
     };
     owned(raw)
 }
-pub(super) fn open_relative(root: &File, path: &str) -> io::Result<File> {
+pub(super) fn open_relative(root: &File, path: &str) -> io::Result<(File, Facts)> {
     open_components(root, path, false)
 }
-pub(super) fn open_directory(root: &File, path: &str) -> io::Result<File> {
+pub(super) fn open_directory(root: &File, path: &str) -> io::Result<(File, Facts)> {
     open_components(root, path, true)
 }
-pub(super) fn open_component(parent: &File, part: &str, is_directory: bool) -> io::Result<File> {
+pub(super) fn open_component(
+    parent: &File,
+    part: &str,
+    is_directory: bool,
+) -> io::Result<(File, Facts)> {
     if part.ends_with(['.', ' ']) {
         return Err(invalid("ambiguous Windows source component"));
     }
@@ -92,15 +98,15 @@ pub(super) fn open_component(parent: &File, part: &str, is_directory: bool) -> i
         ));
     }
     let child = owned(raw)?;
-    verify_handle(&child, is_directory)?;
-    Ok(child)
+    let facts = verify_handle(&child, is_directory)?;
+    Ok((child, facts))
 }
-fn open_components(root: &File, path: &str, last_directory: bool) -> io::Result<File> {
-    let mut held: Option<File> = None;
+fn open_components(root: &File, path: &str, last_directory: bool) -> io::Result<(File, Facts)> {
+    let mut held: Option<(File, Facts)> = None;
     let mut components = path.split('/').peekable();
     while let Some(part) = components.next() {
         let is_directory = components.peek().is_some() || last_directory;
-        let parent = held.as_ref().unwrap_or(root);
+        let parent = held.as_ref().map_or(root, |(file, _)| file);
         held = Some(open_component(parent, part, is_directory)?);
     }
     held.ok_or_else(|| invalid("bounded slash-separated root-relative source path required"))
@@ -125,10 +131,15 @@ fn verify_handle(file: &File, directory: bool) -> io::Result<BY_HANDLE_FILE_INFO
     }
     Ok(info)
 }
-pub(super) fn same_object(a: &File, b: &File) -> io::Result<bool> {
-    let ia = crate::windows_native::file_id(a)?;
-    let ib = crate::windows_native::file_id(b)?;
-    Ok(ia.volume == ib.volume && ia.index == ib.index)
+pub(super) fn object_key(file: &File, _: &Facts) -> io::Result<NativeObjectKey> {
+    se_state_files::observe_object_key(file)
+}
+pub(super) fn opened_revision(
+    file: &File,
+    facts: &Facts,
+    directory: bool,
+) -> io::Result<NativeFileRevision> {
+    se_state_files::file_revision_from_information(file, facts, directory)
 }
 pub(super) fn revision(file: &File, directory: bool) -> io::Result<NativeFileRevision> {
     se_state_files::observe_file_revision_for(file, directory)

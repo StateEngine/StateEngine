@@ -31,20 +31,39 @@ pub(super) fn inventory<R: ReadStore>(
     admission: &Admission,
     query: Option<RemovedProjectQuery>,
 ) -> Result<Vec<ProjectionRecord>> {
-    let mut snapshot = reader
-        .snapshot(read_scope(admission))
-        .map_err(|e| store_error(&e))?;
+    let mut snapshot = open_snapshot(reader, admission)?;
     let result = inventory_at(&mut snapshot, query);
-    let closed = snapshot.close().map_err(|e| store_error(&e));
-    match result {
-        Ok(value) => {
-            closed?;
-            Ok(value)
+    super::execute::finish_read(result, snapshot.close().map_err(|e| store_error(&e)))
+}
+/// Opens a read snapshot under the caller's admitted read scope.
+pub(super) fn open_snapshot<R: ReadStore>(
+    reader: &R,
+    admission: &Admission,
+) -> Result<R::Snapshot> {
+    reader
+        .snapshot(read_scope(admission))
+        .map_err(|e| store_error(&e))
+}
+/// The identity, name and current roots of an active project body; `None`
+/// for any body that is not an active registration.
+pub(super) fn active_project<T>(body: &EventBody<T>) -> Option<(&ProjectId, &str, &[Root])> {
+    match body {
+        EventBody::ProjectRegistered {
+            project,
+            name,
+            roots,
+            ..
         }
-        Err(error) => Err(match closed {
-            Ok(()) => error,
-            Err(close) => error.with_cause(close),
-        }),
+        | EventBody::ProjectUpdated {
+            project,
+            name,
+            roots,
+            ..
+        } => Some((project, name, roots)),
+        EventBody::ProjectMoved {
+            project, name, to, ..
+        } => Some((project, name, std::slice::from_ref(to))),
+        _ => None,
     }
 }
 pub(super) fn inventory_at<S: Snapshot>(
@@ -127,16 +146,11 @@ fn bound_project_check<S: Snapshot>(
         "bound project",
         "Select an existing project in this data home with --project, or restore its original project binding.",
     )?;
-    let name = match &record.current.body {
-        EventBody::ProjectRegistered { name, .. }
-        | EventBody::ProjectUpdated { name, .. }
-        | EventBody::ProjectMoved { name, .. } => name,
-        _ => {
-            return Err(scope::unreadable(
-                "bound project",
-                "unexpected project metadata",
-            ));
-        }
+    let Some((_, name, _)) = active_project(&record.current.body) else {
+        return Err(scope::unreadable(
+            "bound project",
+            "unexpected project metadata",
+        ));
     };
     if selector != bound.to_string() && selector != name {
         return Err(SeError::invalid(
@@ -188,41 +202,24 @@ fn gather_candidates<S: Snapshot>(
     let mut candidates = Vec::new();
     let mut choices = Vec::new();
     for record in inventory_at(snapshot, None)? {
-        let (id, name, roots) = match record.current.body {
-            EventBody::ProjectRegistered {
-                project,
-                name,
-                roots,
-                ..
-            }
-            | EventBody::ProjectUpdated {
-                project,
-                name,
-                roots,
-                ..
-            } => (project, name, roots),
-            EventBody::ProjectMoved {
-                project, name, to, ..
-            } => (project, name, vec![to.clone()]),
-            _ => {
-                return Err(scope::unreadable(
-                    "project metadata",
-                    "unexpected registered-project body",
-                ));
-            }
+        let Some((id, name, roots)) = active_project(&record.current.body) else {
+            return Err(scope::unreadable(
+                "project metadata",
+                "unexpected registered-project body",
+            ));
         };
         choices.push(ProjectChoice {
             id: id.clone(),
-            name: name.clone(),
+            name: name.to_owned(),
             root: match roots.first().map(|root| root.path.encoded()) {
                 Some(PathEncoding::UnixBytes(bytes)) => String::from_utf8_lossy(bytes).into_owned(),
                 Some(PathEncoding::WindowsUtf16(units)) => String::from_utf16_lossy(units),
                 None => "no registered root".into(),
             },
         });
-        let depth = candidate_depth(requested, &id, &name, &roots, ancestry_cwd)?;
+        let depth = candidate_depth(requested, id, name, roots, ancestry_cwd)?;
         if let Some(depth) = depth {
-            candidates.push((depth, id));
+            candidates.push((depth, id.clone()));
         }
     }
     if candidates.is_empty()

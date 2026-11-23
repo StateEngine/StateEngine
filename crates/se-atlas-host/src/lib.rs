@@ -12,7 +12,10 @@ pub mod atlas_continuity;
 #[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
 mod atlas_git_watch;
 pub mod atlas_hooks;
-#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+#[cfg(all(
+    feature = "listener",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 pub mod atlas_owner;
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 mod atlas_parse;
@@ -21,5 +24,8 @@ pub mod atlas_records;
 #[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
 pub mod atlas_renewal;
 pub mod atlas_runtime;
-#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+#[cfg(all(
+    feature = "listener",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 pub mod host;

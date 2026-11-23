@@ -3,6 +3,8 @@
 //! Opaque text is constructed through the shared pure validation contract below.
 use crate::{AgentId, ErrorBody, EventId, ProjectId};
 pub use crate::{AtlasRootId as RootId, IndexEpochId as CacheEpoch};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 mod resources;
 pub use resources::{GrammarPages, MemoryBudget};
@@ -73,64 +75,36 @@ macro_rules! wire_id {
     };
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
 pub struct AtlasJobId(pub [u8; 16]);
 wire_id!(AtlasJobId, 16, "^[0-9a-f]{32}$");
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    Hash,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    schemars::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Generation(pub u64);
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    Hash,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    schemars::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ChangeId {
     pub generation: Generation,
     pub ordinal: u32,
 }
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
 pub struct FileId(pub [u8; 16]);
 wire_id!(FileId, 16, "^[0-9a-f]{32}$");
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
 pub struct SymbolId(pub [u8; 32]);
 wire_id!(SymbolId, 32, "^[0-9a-f]{64}$");
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
 pub struct ContentHash(pub [u8; 32]);
 wire_id!(ContentHash, 32, "^[0-9a-f]{64}$");
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "String", into = "String")]
 pub struct RelativePath(pub(crate) String);
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "String", into = "String")]
 pub struct AtlasCursor(pub(crate) String);
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "String", into = "String")]
 pub struct QueryText(pub(crate) String);
 
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum Language {
     JavaScript,
     Jsx,
@@ -139,9 +113,7 @@ pub enum Language {
     Rust,
     Python,
 }
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum SymbolKind {
     Module,
     Namespace,
@@ -161,9 +133,7 @@ pub enum SymbolKind {
     EnumVariant,
     Macro,
 }
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum ReferenceKind {
     Call,
     Import,
@@ -171,17 +141,15 @@ pub enum ReferenceKind {
     TypeUse,
     ValueUse,
 }
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum Accuracy {
     LexicalBinding,
     ExplicitImport,
+    /// The name appears in a file that imports the defining file.
+    ImportedFile,
     NameOnly,
 }
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum CoverageReason {
     UnsupportedLanguage,
     UnsupportedEncoding,
@@ -211,33 +179,25 @@ pub enum CoverageReason {
     RetentionGap,
 }
 
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Position {
     pub line: u32,
     pub byte_column: u32,
 }
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Span {
     pub start: Position,
     pub end: Position,
     pub start_byte: u64,
     pub end_byte: u64,
 }
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum SnapshotFreshness {
     Current,
     Stale,
     Unknown,
 }
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CodePointer {
     pub file: FileId,
     pub path: RelativePath,
@@ -246,9 +206,7 @@ pub struct CodePointer {
     pub freshness: SnapshotFreshness,
 }
 
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum FileCoverage {
     Indexed,
     Partial {
@@ -269,16 +227,12 @@ pub enum FileCoverage {
 }
 /// One degraded commit in the current history window: its changed paths were
 /// omitted within bounds, retaining only allowed-path evidence.
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct HistoryCommitNote {
     pub oid: String,
     pub note: String,
 }
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Coverage {
     pub discovered_files: u64,
     pub indexed_files: u64,
@@ -305,9 +259,7 @@ pub struct Coverage {
     pub history_commit_notes: Vec<HistoryCommitNote>,
 }
 
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum IndexState {
     NotBuilt,
     Disabled,
@@ -340,9 +292,7 @@ pub enum IndexState {
     Draining,
     Closed,
 }
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct IndexSummary {
     pub project: ProjectId,
     pub root: RootId,
@@ -353,9 +303,32 @@ pub struct IndexSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<MemoryBudget>,
 }
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+impl IndexSummary {
+    /// Record a coverage gap once.
+    pub fn note(&mut self, reason: CoverageReason) {
+        if !self.coverage.reasons.contains(&reason) {
+            self.coverage.reasons.push(reason);
+        }
+    }
+    /// Record a gap that also leaves a current index needing verification.
+    pub fn degrade(&mut self, reason: CoverageReason) {
+        if matches!(self.state, IndexState::Current) {
+            self.state = IndexState::VerificationNeeded { reason };
+        }
+        self.note(reason);
+    }
+    /// A current index with every file indexed: only then is "no match" an answer.
+    pub fn negative_complete(&self) -> bool {
+        let c = &self.coverage;
+        matches!(self.state, IndexState::Current)
+            && c.discovery_complete
+            && c.partial_files == 0
+            && c.stale_files == 0
+            && c.failed_files == 0
+            && c.deferred_files == 0
+    }
+}
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Answer<T> {
     pub index: IndexSummary,
     pub snapshot_advanced: bool,
@@ -363,18 +336,14 @@ pub struct Answer<T> {
     pub data: T,
 }
 
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum FindMethod {
     ExactName,
     SplitIdentifier,
     MetadataFts,
     Text,
 }
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CodeHit {
     pub pointer: CodePointer,
     pub symbol: Option<SymbolId>,
@@ -383,9 +352,7 @@ pub struct CodeHit {
     pub method: FindMethod,
     pub accuracy: Option<Accuracy>,
 }
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Reference {
     pub site: CodePointer,
     pub kind: ReferenceKind,
@@ -394,18 +361,14 @@ pub struct Reference {
     pub resolved_target: Option<SymbolId>,
     pub accuracy: Accuracy,
 }
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ImpactHop {
     pub from: SymbolId,
     pub to: SymbolId,
     pub site: CodePointer,
     pub accuracy: Accuracy,
 }
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Dependent {
     pub pointer: CodePointer,
     pub symbol: Option<SymbolId>,
@@ -413,9 +376,7 @@ pub struct Dependent {
     #[serde(default)]
     pub file_hops: Vec<FileImpactHop>,
 }
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Impact {
     pub dependents: Vec<Dependent>,
     pub tests: Vec<Dependent>,
@@ -426,9 +387,7 @@ pub struct Impact {
     pub complete: bool,
 }
 
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum AuthorHint {
     Captured {
         agent: AgentId,
@@ -440,9 +399,7 @@ pub enum AuthorHint {
     },
     Unknown,
 }
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum ChangeKind {
     Added,
     Removed,
@@ -450,18 +407,14 @@ pub enum ChangeKind {
     BodyChanged,
     FileOnly,
 }
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct DependentCount {
     pub count: u64,
     pub at_generation: Generation,
     pub complete: bool,
     pub reason: Option<CoverageReason>,
 }
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CodeEdit {
     pub id: ChangeId,
     pub pointer: CodePointer,
@@ -472,18 +425,14 @@ pub struct CodeEdit {
     pub author: AuthorHint,
     pub dependents: DependentCount,
 }
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum BulkReason {
     HeadChange,
     FilesystemBurst,
     IgnoreReconcile,
     WatchReconcile,
 }
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct BulkChange {
     pub id: ChangeId,
     pub reason: BulkReason,
@@ -492,16 +441,12 @@ pub struct BulkChange {
     pub sample_paths: Vec<RelativePath>,
     pub complete: bool,
 }
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum CodeChange {
     Edit(Box<CodeEdit>),
     Bulk(BulkChange),
 }
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum SurfaceAtlasState {
     NotBuilt,
     Disabled,
@@ -510,9 +455,7 @@ pub enum SurfaceAtlasState {
     Ready,
     Unreadable,
 }
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct OutlineSymbol {
     pub id: SymbolId,
     pub parent: Option<SymbolId>,
@@ -520,9 +463,7 @@ pub struct OutlineSymbol {
     pub kind: SymbolKind,
     pub span: Span,
 }
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Outline {
     pub file: CodePointer,
     pub language: Option<Language>,
@@ -541,7 +482,7 @@ mod search;
 pub use search::*;
 mod validation;
 pub use validation::Validate;
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResumeRequest {
     pub viewer: AgentId,
@@ -549,9 +490,7 @@ pub struct ResumeRequest {
     pub cursor_revision: u64,
     pub recently_edited_symbols: Vec<SymbolId>,
 }
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum ResumeCodeState {
     Available,
     Zero,
@@ -562,12 +501,10 @@ pub enum ResumeCodeState {
     Updating,
     BudgetExceeded,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct ResumeOfferId(pub [u8; 16]);
 wire_id!(ResumeOfferId, 16, "^[0-9a-f]{32}$");
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum ResumeChange {
     File {
         pointer: CodePointer,
@@ -580,9 +517,7 @@ pub enum ResumeChange {
     },
     Bulk(BulkChange),
 }
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ResumeAdvance {
     pub offer: ResumeOfferId,
     pub expected_cursor: Option<AtlasCursor>,
@@ -590,16 +525,14 @@ pub struct ResumeAdvance {
     pub next_cursor: AtlasCursor,
     pub fence: Generation,
 }
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub enum ResumeCursorCommit {
     Applied { revision: u64 },
     AlreadyApplied { revision: u64 },
     Stale { actual_revision: u64 },
 }
 /// Model-visible status; private delivery/CAS controls are never serialized here.
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ResumeCodeStatus {
     pub state: ResumeCodeState,
     pub complete: bool,
@@ -610,7 +543,7 @@ pub struct ResumeCodeStatus {
     pub omitted_since: Option<AtlasCursor>,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ResumeCode {
     pub index: IndexSummary,
     pub state: ResumeCodeState,

@@ -326,3 +326,43 @@ fn refused(reason: &str) -> SeError {
 fn poisoned() -> SeError {
     refused("source broker state is unreadable")
 }
+fn call_context(source: Option<&VerifiedSourceSession>) -> RemoteCallContext {
+    source.map_or_else(
+        RemoteCallContext::human_device,
+        VerifiedSourceSession::context,
+    )
+}
+fn allow_send(scope: &RemoteScope, target: &RemoteTarget) -> Result<()> {
+    if scope.allows(RemoteVerb::Send, target) {
+        return Ok(());
+    }
+    Err(refused("send target or verb is outside this grant"))
+}
+/// A replay carries the original source session/generation, not the retrying
+/// successor. Its lead subject must still match the same grant binding.
+fn attributed(
+    actual: &RemoteAttribution,
+    device: &MachineSession,
+    source: Option<&VerifiedSourceSession>,
+    replayed: bool,
+) -> bool {
+    actual.host == device.host
+        && actual.grant == device.grant
+        && actual.device == device.device
+        && if replayed {
+            actual.source.as_ref().map(RemoteSourceSession::address)
+                == source.map(|s| s.source().address())
+        } else {
+            actual.source.as_ref() == source.map(VerifiedSourceSession::source)
+        }
+}
+fn outcome_unknown(operation: &str, key: &impl ToString, cause: SeError) -> SeError {
+    SeError::new(se_types::Detail::CommitOutcomeUnknown(
+        se_types::details::CommitOutcomeUnknown {
+            operation: operation.into(),
+            key: Some(key.to_string()),
+            natural_events: vec![],
+        },
+    ))
+    .with_cause(cause)
+}
