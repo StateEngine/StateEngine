@@ -10,6 +10,37 @@ use se_types::{
 };
 use sha2::{Digest, Sha256};
 
+pub(super) fn fit_handoff<T>(
+    state: &mut T,
+    budget: usize,
+    max_budget: usize,
+    render: impl Fn(&T) -> String,
+    reduce: impl Fn(&mut T, usize) -> bool,
+) -> Result<String> {
+    for _ in 0..256 {
+        let text = render(state);
+        if text.len() <= budget {
+            return Ok(text);
+        }
+        let excess = text.len() - budget;
+        if !reduce(state, excess) {
+            let needed = text.len();
+            let mut error = SeError::too_large("handoff packet header", budget, needed);
+            if needed <= max_budget {
+                error.body = error.body.with_remedy(se_types::Remedy {
+                    text: format!("Retry with --budget {needed} (or omit --budget to use 8192)."),
+                    command: Some(se_types::Cmd::Manual),
+                });
+            }
+            return Err(error);
+        }
+    }
+    Err(scope::unreadable(
+        "handoff budget",
+        "finite handoff reduction did not converge",
+    ))
+}
+
 pub(super) fn resume<R: Snapshot>(
     input: Resume,
     at: UnixMicros,

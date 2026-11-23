@@ -333,6 +333,9 @@ impl Kernel {
             | AnyOp::RemoteSend(_)
             | AnyOp::RemoteLaunch(_) => Err(remote_refused()),
             AnyOp::Resume(input) => plan_resume(self, input, cx),
+            AnyOp::HandoffExport(input) => {
+                complete_step(crate::ops::continuity::handoff::export(input, cx))
+            }
             AnyOp::SessionContext(input) => plan_session_context(self, input, cx),
             AnyOp::AgentList(input) => plan_agent_list(input, cx),
             AnyOp::AgentLaunch(input) => plan_agent_launch(self, input, cx),

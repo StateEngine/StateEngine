@@ -11,6 +11,84 @@ pub(super) struct Identity {
     pub model: Option<String>,
     pub conversation: Option<String>,
 }
+pub(super) struct HandoffIdentity {
+    pub project: se_types::Named<se_types::ProjectId>,
+    pub agent: se_types::Named<AgentId>,
+    pub session_id: Option<se_types::SessionId>,
+}
+
+pub(super) fn resolve_handoff<R: Snapshot>(
+    from: Option<&str>,
+    cx: &mut Cx<'_, R>,
+) -> Result<HandoffIdentity> {
+    let project = crate::ops::receipt::named_project(cx)?;
+    let selected = match from {
+        Some(selector) => {
+            let Actor::Agent(agent) = scope::selected_actor(cx, selector)? else {
+                return Err(SeError::invalid("from", "a project agent, not the owner"));
+            };
+            Some(agent)
+        }
+        None => None,
+    };
+    let agent = match (&cx.admission.actor, selected.as_ref()) {
+        (Actor::Human(_), None) => {
+            let mut error = SeError::new(se_types::Detail::UsageMissingArgument(
+                se_types::details::UsageMissingArgument {
+                    command: "se handoff export".into(),
+                    argument: "--from AGENT".into(),
+                },
+            ));
+            error.body = error.body.with_remedy(se_types::Remedy {
+                text: "Choose a project agent with the command below, then pass --from AGENT to export its handoff packet.".into(),
+                command: Some(se_types::Cmd::Se {
+                    argv: se_types::Argv::from_op(&OwnerResumeChoices(&project.id))?,
+                }),
+            });
+            return Err(error);
+        }
+        _ => scope::working_agent(cx.admission, selected.as_ref(), "handoff.export")?,
+    };
+    let principal = scope::require_present(
+        cx.read
+            .principal(Actor::Agent(agent.clone()))
+            .map_err(|e| store_error(&e))?,
+        "handoff agent",
+        "Select a registered agent in this admitted project.",
+    )?;
+    let (name, _role) = principal_name_role(&principal)?;
+    let session_id = match (&cx.admission.actor, &cx.admission.session) {
+        (Actor::Agent(caller), Some(bound)) if caller == &agent => Some(bound.clone()),
+        _ => match cx
+            .read
+            .latest_session(agent.clone())
+            .map_err(|e| store_error(&e))?
+        {
+            Read::Present { value } => {
+                let first = value.original.as_deref().unwrap_or(&value.current);
+                match &first.body {
+                    EventBody::SessionPrepared { session, .. } => Some(session.clone()),
+                    _ => None,
+                }
+            }
+            Read::Absent { .. } => None,
+            other => {
+                scope::require_present(
+                    other,
+                    "handoff session",
+                    "Restore the agent's latest session record before retrying.",
+                )?;
+                None
+            }
+        },
+    };
+    Ok(HandoffIdentity {
+        project,
+        agent: se_types::Named { id: agent, name },
+        session_id,
+    })
+}
+
 pub(super) fn resolve<R: Snapshot>(
     preview: Option<&AgentId>,
     cx: &mut Cx<'_, R>,

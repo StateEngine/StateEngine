@@ -93,6 +93,7 @@ RemoteWatch => RemoteWatchCall, RemoteWatchOutput;
 RemoteSend => RemoteSendCall, RemoteSendOutput;
 RemoteLaunch => RemoteLaunchCall, RemoteLaunchOutput;
 Resume => Resume, ResumeOutput;
+HandoffExport => HandoffExport, HandoffOutput;
 SessionContext => SessionContextRequest, SessionContextOutput;
 MetaVersion => MetaVersion, VersionOutput;
 MetaHelp => MetaHelp, HelpOutput;

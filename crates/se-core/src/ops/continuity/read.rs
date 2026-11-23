@@ -81,17 +81,17 @@ pub(super) fn unread<R: Snapshot>(
     mail.page = se_types::Page::new(rows, mail.page.window().clone(), mail.page.next().cloned())?;
     Ok(mail)
 }
-pub(super) fn gather<R: Snapshot>(
-    input: &Resume,
-    identity: &Identity,
-    limit: u16,
+pub(super) fn checkpoint<R: Snapshot>(
+    agent: &se_types::AgentId,
+    since: Option<&se_types::Cursor>,
     cx: &mut Cx<'_, R>,
-) -> Result<Gathered> {
-    let agent = &identity.principal.agent.id;
+) -> Result<(
+    Option<se_store::StorePosition>,
+    se_store::ResumeHead,
+    se_types::Cursor,
+)> {
     let purpose = se_store::PositionPurpose::Continuity(agent.clone());
-    let since = input
-        .since
-        .as_ref()
+    let since = since
         .map(|cursor| cx.read.cursor_position(cursor, purpose.clone()))
         .transpose()
         .map_err(|error| super::cursor::store_cursor_error(&error))?;
@@ -105,6 +105,20 @@ pub(super) fn gather<R: Snapshot>(
         "continuity checkpoint",
         "Restore the selected agent's registered resume head before retrying context.",
     )?;
+    let cursor = cx
+        .read
+        .position_cursor(&resume_head.through, purpose)
+        .map_err(|e| store_error(&e))?;
+    Ok((since, resume_head, cursor))
+}
+pub(super) fn gather<R: Snapshot>(
+    input: &Resume,
+    identity: &Identity,
+    limit: u16,
+    cx: &mut Cx<'_, R>,
+) -> Result<Gathered> {
+    let agent = &identity.principal.agent.id;
+    let (since, resume_head, cursor) = checkpoint(agent, input.since.as_ref(), cx)?;
     // A caller's cursor is a saved-work baseline only when both positions come
     // from this store the cursor already belongs to. Anything else is unknown,
     // never rounded to "unchanged".
@@ -112,11 +126,6 @@ pub(super) fn gather<R: Snapshot>(
         (Some(cursor), Some(working)) => Some((cursor.sequence(), working.sequence())),
         _ => None,
     };
-    let head = resume_head.through;
-    let cursor = cx
-        .read
-        .position_cursor(&head, purpose)
-        .map_err(|e| store_error(&e))?;
     let mut attention = Vec::new();
     cursor_attention(agent, &mut attention, cx)?;
     let working = receipt::working_state_get(agent.clone(), cx)?

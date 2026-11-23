@@ -93,6 +93,7 @@ pub enum HumanKind {
     Stop,
     Wake,
     Resume,
+    Handoff,
     WorkingState,
     WorkingStateReceipt,
     SearchPage,

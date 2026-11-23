@@ -118,6 +118,15 @@ fn decode_session(name: &str, m: &ArgMatches) -> Result<Option<AnyOp>> {
                 .map_err(|_| SeError::invalid("budget", "1024..1048576"))?,
             preview_agent: None,
         }),
+        "handoff.export" => AnyOp::HandoffExport(HandoffExport {
+            from: text(m, "from"),
+            budget: required(m, "budget")?
+                .parse()
+                .map_err(|_| SeError::invalid("budget", "256..16384"))?,
+            since: text(m, "since")
+                .map(se_core::ops::continuity::resume_since)
+                .transpose()?,
+        }),
         "session.context" => AnyOp::SessionContext(SessionContextRequest {
             source_failure: None,
             limit: required(m, "limit")?

@@ -124,6 +124,7 @@ Plain `se init` (including `--repo DIR`) is managed setup and writes nothing ins
 | `agent.stop` | `stop AGENT [--release] \| --all` | `stateengine_agent_stop` — bound self or explicit creator-authorized `target_agent_id`; all is owner-only | either | custody | owner selector/all, implicit self or direct-created target with current create grant; exact owned lifecycle resolved and rechecked | `StopReceipt`: per-agent exact-instance witness or unknown population with reason and original-conversation resume command; release command/result: 50 A.6; native mechanics: 30; persistence/recovery: 20 | J3, J5 |
 | `agent.wake` | `agent wake AGENT` | `stateengine_agent_wake` — explicit `target_agent_id` and creator authorization for sessions | either | custody | explicit running agent target and observed lifecycle; owner or its direct creator with current create grant | `WakeReceipt`: offered/delivered/pending/refused facts; never a spawn or a recipient-read claim | J4 |
 | `continuity.resume` | `resume [--since CURSOR --budget BYTES --limit N] [--preview AGENT]` | `stateengine_resume` | either | read | opaque since cursor, bounded context budget; preview target only for owner | `Resume`: verified principal, continuity/working state, required reads, omissions/deferred retrieval, next cursor and integrity/readiness facts | J3, J4 |
+| `handoff.export` | `handoff export [--from AGENT --budget BYTES --since CURSOR]` | `stateengine_handoff_export` | either | read | optional agent selector (required for owner; bound agents default to self), bounded UTF-8 byte budget (256..16384, default 8192), optional opaque since cursor | `HandoffOutput`: deterministic model-agnostic handoff text, byte count, cursor, honest completeness, agent and session | J3, J4 |
 | `working_state.get` | `working-state [--agent AGENT]` | `stateengine_working_state_get` | either | read | owner selector or implicit self | `Read<WorkingState>`: text and revision/absence fact | J3 |
 | `working_state.set` | `working-state set TEXT [--agent AGENT] --expect REV` | `stateengine_working_state_set` | either | write | text, expected revision or explicit absent sentinel; owner selector or implicit self | `WorkingStateReceipt`: new revision/readback; revision conflict uses the common error channel with expected/current revision and no event | J3 |
 | `history.search` | `search QUERY` | `stateengine_search` | either | read | query, authorized record-kind/time filters, page/budget | `Page<SearchHit>`: pointers/snippets, scope/window and omissions; matches are not authority | J3, J4 |
@@ -276,7 +277,7 @@ Crew can omit the recipient for a `question`, `blocker`, or `done` message to se
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 59 operations (53 core, 6 Atlas), 29 MCP tools (24 core, 5 Atlas). Planned: 6 operations, 2 MCP tools.
+Registered: 60 operations (54 core, 6 Atlas), 30 MCP tools (25 core, 5 Atlas). Planned: 6 operations, 2 MCP tools.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -327,6 +328,7 @@ Registered: 59 operations (53 core, 6 Atlas), 29 MCP tools (24 core, 5 Atlas). P
 | `agent.create` | agent add | `stateengine_agent_create` | either | write |
 | `agent.rename` | agent rename | none | owner | write |
 | `continuity.resume` | resume | `stateengine_resume` | either | read |
+| `handoff.export` | handoff export | `stateengine_handoff_export` | either | read |
 | `session.context` | session context (hidden) | none | session | read |
 | `agent.list` | agent list | none | owner | read |
 | `agent.launch` | launch | `stateengine_agent_launch` | either | custody |
