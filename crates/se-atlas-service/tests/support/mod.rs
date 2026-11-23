@@ -27,7 +27,9 @@ use std::{
 
 pub type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-pub const SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Settle deadline for acceptance tests: long enough for concurrent CI
+/// runners, short enough to catch a real hang.
+pub const SETTLE_TIMEOUT: Duration = Duration::from_secs(20);
 pub const QUERY_TIMEOUT: Duration = Duration::from_secs(4);
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(4);
 
@@ -288,14 +290,17 @@ pub fn wait_current(
     root: &Root,
     timeout: Duration,
 ) -> Result<IndexSummary, Box<dyn std::error::Error>> {
+    let mut last: Option<IndexSummary> = None;
     wait_until(timeout, "IndexState::Current", || {
         let summary = root.summary()?;
         if summary.state == IndexState::Current {
             Ok(Some(summary))
         } else {
+            last = Some(summary);
             Ok(None)
         }
     })
+    .map_err(|error| annotate_settle_error(error, last))
 }
 
 pub fn wait_generation_gt(
@@ -303,15 +308,34 @@ pub fn wait_generation_gt(
     after: u64,
     timeout: Duration,
 ) -> Result<IndexSummary, Box<dyn std::error::Error>> {
+    let mut last: Option<IndexSummary> = None;
     wait_until(timeout, "generation advance and Current", || {
         let summary = root.summary()?;
         let generation = summary.generation.map_or(0, |g| g.0);
         if summary.state == IndexState::Current && generation > after {
             Ok(Some(summary))
         } else {
+            last = Some(summary);
             Ok(None)
         }
     })
+    .map_err(|error| annotate_settle_error(error, last))
+}
+
+/// Append the last observed index state and generation to a settle-wait
+/// failure so the timeout message is immediately actionable.
+fn annotate_settle_error(
+    error: Box<dyn std::error::Error>,
+    last: Option<IndexSummary>,
+) -> Box<dyn std::error::Error> {
+    match last {
+        Some(summary) => format!(
+            "{error}; last observed: state={:?}, generation={:?}",
+            summary.state, summary.generation
+        )
+        .into(),
+        None => error,
+    }
 }
 
 pub fn wait_find_path(root: &Root, term: &str, expected_path: &str) -> TestResult {
