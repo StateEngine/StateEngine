@@ -53,6 +53,8 @@ pub enum ScopeIdentity {
     WindowsJob {
         host: HostInstanceId,
         name: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        persistent: bool,
     },
     LinuxCgroup {
         #[serde(with = "crate::checkpoint::native_path")]

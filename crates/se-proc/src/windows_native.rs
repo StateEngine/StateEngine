@@ -3,6 +3,7 @@
 pub(crate) use se_native_path::windows::{acl, allocation};
 pub(crate) use se_state_files::windows_attributes::{self as attributes, Error};
 pub(crate) mod console;
+pub(crate) mod job;
 mod parent;
 mod process_query;
 pub(crate) use parent::parent;

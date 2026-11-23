@@ -14,10 +14,11 @@ mod stdio;
 use crate::platform::{Progress, empty};
 use crate::runtime::notify::Hub;
 use crate::support::*;
+use crate::windows_native::job;
 use crate::*;
 use identity::*;
 pub(crate) use identity::{read_process, read_process_until, verify_live_identity};
-use std::{mem::zeroed, ptr, sync::Arc};
+use std::{ptr, sync::Arc};
 pub(crate) use stdio::NativeStdio;
 use windows_sys::Win32::{Foundation::*, System::JobObjects::*};
 
@@ -30,6 +31,7 @@ pub(crate) struct Scope {
     child: Option<spawn::Child>,
     console_host: Option<console::ConsoleHost>,
     window: bool,
+    persistent: bool,
     pub scope: ScopeIdentity,
     pub guarantee: ContainmentGuarantee,
     pub entry: EntryMethod,
@@ -38,7 +40,14 @@ pub(crate) struct Scope {
     interrupt_helper: Option<spawn::Child>,
     _notification: notify::Registration,
 }
-const LIMITS: JOB_OBJECT_LIMIT = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+fn query_limits(
+    handle: &Handle,
+    code: ProcErrorCode,
+    api: &'static str,
+) -> ProcResult<JOB_OBJECT_LIMIT> {
+    // SAFETY: caller retains the live query-capable job handle.
+    unsafe { job::query_limits(handle.0, api) }.map_err(|e| native(code, e.operation, e.source))
+}
 impl Driver {
     pub fn new(config: &HostConfig) -> ProcResult<Self> {
         Ok(Self {
@@ -90,52 +99,31 @@ impl Driver {
                 "native job name already exists; do not adopt or modify it",
             ));
         }
-        // SAFETY: initialized native POD policy output/input with all optional fields zero.
-        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
-        info.BasicLimitInformation.LimitFlags = LIMITS;
-        // SAFETY: retained original job and exact aligned policy/association bytes.
-        if unsafe {
-            SetInformationJobObject(
-                job.0,
-                JobObjectExtendedLimitInformation,
-                (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-                size_of_val(&info) as u32,
-            )
-        } == 0
-        {
-            return Err(last(
-                ProcErrorCode::ContainmentUnavailable,
-                "SetInformationJobObject",
-            ));
-        }
+        let persistent = spec.mode == LaunchMode::HeadlessPersistent;
+        // SAFETY: retained original job handle with JOB_OBJECT_SET_ATTRIBUTES.
+        unsafe { job::set_limits(job.0, job::expected_limits(persistent)) }
+            .map_err(|e| native(ProcErrorCode::ContainmentUnavailable, e.operation, e.source))?;
         let notification = self.collector.register(hub)?;
-        let association = JOBOBJECT_ASSOCIATE_COMPLETION_PORT {
-            CompletionKey: notification.key as *mut _,
-            CompletionPort: self.collector.handle.0,
-        };
-        // SAFETY: retained original job and exact aligned policy/association bytes.
-        if unsafe {
-            SetInformationJobObject(
+        // SAFETY: retained original job and live collector IOCP handles.
+        unsafe {
+            job::associate_iocp(
                 job.0,
-                JobObjectAssociateCompletionPortInformation,
-                (&association as *const JOBOBJECT_ASSOCIATE_COMPLETION_PORT).cast(),
-                size_of_val(&association) as u32,
-            )
-        } == 0
-        {
-            return Err(last(
-                ProcErrorCode::ContainmentUnavailable,
+                self.collector.handle.0,
+                notification.key,
                 "associate job IOCP",
-            ));
+            )
         }
+        .map_err(|e| native(ProcErrorCode::ContainmentUnavailable, e.operation, e.source))?;
         let scope = Scope {
             job,
             child: None,
             console_host: None,
             window: spec.mode == LaunchMode::Window,
+            persistent,
             scope: ScopeIdentity::WindowsJob {
                 host: reservation.host,
                 name,
+                persistent,
             },
             guarantee: ContainmentGuarantee::KernelScope {
                 explicit_breakaway: true,
@@ -152,31 +140,18 @@ impl Driver {
     }
     pub fn begin(&self, scope: &mut Scope, spec: LaunchSpec, _hub: &Arc<Hub>) -> ProcResult<()> {
         scope.verify_limits()?;
-        scope.child = Some(spawn::create(spec, &scope.job)?);
+        scope.child = Some(spawn::create(spec, &scope.job, scope.persistent)?);
         Ok(())
     }
 }
 impl Scope {
     fn verify_limits(&self) -> ProcResult<()> {
-        // SAFETY: initialized native POD policy output/input with all optional fields zero.
-        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
-        // SAFETY: live query-capable job and exact aligned writable native output.
-        if unsafe {
-            QueryInformationJobObject(
-                self.job.0,
-                JobObjectExtendedLimitInformation,
-                (&mut info as *mut JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-                size_of_val(&info) as u32,
-                ptr::null_mut(),
-            )
-        } == 0
-        {
-            return Err(last(
-                ProcErrorCode::ContainmentChanged,
-                "query pinned job limits",
-            ));
-        }
-        if info.BasicLimitInformation.LimitFlags != LIMITS {
+        let flags = query_limits(
+            &self.job,
+            ProcErrorCode::ContainmentChanged,
+            "query pinned job limits",
+        )?;
+        if flags != job::expected_limits(self.persistent) {
             return Err(input("job policy", "pinned job limits changed"));
         }
         Ok(())
@@ -241,25 +216,10 @@ impl Scope {
     }
     pub fn observe(&mut self) -> ProcResult<ScopeObservation> {
         self.verify_limits()?;
-        // SAFETY: accounting output is native POD with initialized optional fields.
-        let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
-        // SAFETY: live query-capable job and exact aligned writable native output.
-        if unsafe {
-            QueryInformationJobObject(
-                self.job.0,
-                JobObjectBasicAccountingInformation,
-                (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
-                size_of_val(&accounting) as u32,
-                ptr::null_mut(),
-            )
-        } == 0
-        {
-            return Err(last(
-                ProcErrorCode::ScopeUnreadable,
-                "read pinned job accounting",
-            ));
-        }
-        if accounting.ActiveProcesses == 0 {
+        // SAFETY: live query-capable job handle.
+        let active = unsafe { job::active_processes(self.job.0, "read pinned job accounting") }
+            .map_err(|e| native(ProcErrorCode::ScopeUnreadable, e.operation, e.source))?;
+        if active == 0 {
             return empty(self.scope.clone());
         }
         let (known_live, extent) = match self.members() {

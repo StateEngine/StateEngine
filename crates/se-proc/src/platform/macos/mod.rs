@@ -69,7 +69,7 @@ impl Driver {
         limits: ResourceLimits,
         _hub: &Arc<Hub>,
     ) -> ProcResult<Scope> {
-        if spec.mode != LaunchMode::Headless
+        if !spec.mode.is_headless()
             || spec.policy.containment == ContainmentRequirement::KernelScope
         {
             return Err(unsupported(
