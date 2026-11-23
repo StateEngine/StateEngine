@@ -1,10 +1,7 @@
 //! Compact text is budgeted as UTF-8 and escapes source/record terminal controls.
 mod pages;
 mod pointer;
-use crate::{
-    errors::{AtlasResult, capacity},
-    model::*,
-};
+use crate::errors::{AtlasResult, capacity};
 pub use pages::{changes, impact, outline, refs};
 use pointer::{location, pointer};
 use se_types::{Read, code::*};

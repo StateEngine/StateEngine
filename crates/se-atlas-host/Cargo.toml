@@ -7,25 +7,18 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-listener = ["se-atlas-cold/listener", "dep:tokio", "tokio/net", "tokio/sync", "tokio/time"]
+listener = ["dep:tokio", "tokio/net", "tokio/sync", "tokio/time"]
 
 [dependencies]
 se-atlas = { path = "../se-atlas" }
-se-atlas-cold = { path = "../se-atlas-cold" }
 se-atlas-service = { path = "../se-atlas-service" }
-se-config = { path = "../se-config" }
 se-core = { path = "../se-core" }
 se-mcp = { path = "../se-mcp" }
-se-proc = { path = "../se-proc" }
 se-store = { path = "../se-store" }
 se-types = { path = "../se-types" }
-serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tokio = { workspace = true, optional = true }
-
-[dev-dependencies]
-se-atlas = { path = "../se-atlas", features = ["test-clock"] }
 
 [lints]
 workspace = true

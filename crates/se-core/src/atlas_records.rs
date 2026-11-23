@@ -35,46 +35,6 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
                 mentions: Vec::new(),
             }))
     }
-    /// Token indexes propose candidates; literal matching is rechecked against
-    /// the authorized current text so punctuation/case cannot create false hits.
-    pub fn literal_hit(
-        &mut self,
-        project: &ProjectId,
-        viewer: &AtlasPrincipal,
-        pointer: &RecordPointer,
-        query: &QueryText,
-    ) -> Result<Read<RecordHit>> {
-        Ok(match self.load(project, viewer, pointer)?.into_present() {
-            Ok(value) => {
-                let smart = query.as_str().chars().any(char::is_uppercase);
-                let found = if smart {
-                    value.body.contains(query.as_str())
-                } else {
-                    value
-                        .body
-                        .to_lowercase()
-                        .contains(&query.as_str().to_lowercase())
-                };
-                if found {
-                    Read::Present {
-                        value: RecordHit {
-                            pointer: pointer.clone(),
-                            actor: value.actor,
-                            occurred_unix_ms: value.at,
-                            line: excerpt::line(&value.body, Some(query)),
-                            body_truncated: value.body.len() > 65536,
-                            mentions: Vec::new(),
-                        },
-                    }
-                } else {
-                    Read::Absent {
-                        checked: "literal absent from the authorized current record text".into(),
-                    }
-                }
-            }
-            Err(other) => other,
-        })
-    }
     pub fn body(
         &mut self,
         project: &ProjectId,

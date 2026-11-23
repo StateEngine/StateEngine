@@ -171,7 +171,7 @@ fn serve(
             crate::config::Origin::BuiltIn => host.configure(config.value)?,
         }
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-        host.install_native_atlas(helper_executable.to_local()?,se_host::NativeAtlasQualification::default())?;
+        host.install_native_atlas()?;
         host.configure_auto_start(auto_start)?;
         #[cfg(unix)]
         host.configure_unix_socket_paths(socket_paths)?;

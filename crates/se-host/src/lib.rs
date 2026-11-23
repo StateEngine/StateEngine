@@ -87,13 +87,9 @@ pub use process::{
 pub use process_io::UnixProviderIo;
 #[cfg(all(windows, feature = "listener"))]
 pub use process_io::WindowsProviderIo;
-pub use se_atlas_cold::atlas_cache;
-pub use se_atlas_cold::atlas_source;
 #[cfg(feature = "listener")]
 use se_atlas_host::atlas_continuity;
-#[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
-pub use se_atlas_host::atlas_renewal;
-pub use se_atlas_host::{atlas_cold, atlas_hooks, atlas_queries, atlas_records, atlas_runtime};
+pub use se_atlas_host::{atlas_hooks, atlas_queries, atlas_records, atlas_runtime};
 pub(crate) use se_harness::session;
 #[cfg(feature = "listener")]
 pub(crate) use se_harness::startup_timing;

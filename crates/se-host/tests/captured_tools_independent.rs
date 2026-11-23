@@ -13,8 +13,6 @@ use sha2::{Digest, Sha256 as Hasher};
 #[path = "support/wave2_host_fixture.rs"]
 mod support;
 use support::*;
-#[path = "captured_tools_independent/atlas.rs"]
-mod atlas;
 
 #[test]
 fn trusted_tool_facts_survive_capture_readback_and_retry_for_both_providers() -> Check {
@@ -160,7 +158,6 @@ fn capture_case(provider: Provider) -> Check {
                 let progress = present(snapshot.capture_source(source)?)?;
                 require(matches!(progress.current.body, EventBody::CaptureProgress {new_offset,..} if new_offset==bytes.len() as u64), "source cursor stopped before retained facts")?;
                 snapshot.close()?;
-                atlas::check(&execution, &f)?;
                 Ok(())
             }.await;
             stop.request(); result

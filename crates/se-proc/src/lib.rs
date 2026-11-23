@@ -21,7 +21,6 @@ pub use se_state_files::advisory_lock;
 pub use windows_package::process_has_package_identity;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod allocator;
-pub mod atlas_worker;
 mod canonical_path;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub use allocator::{reclaim_unused_allocator_pages, release_read_only_mapped_pages};

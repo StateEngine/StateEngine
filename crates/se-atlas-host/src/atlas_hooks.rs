@@ -4,14 +4,9 @@ use crate::{
     atlas_queries::{readable, request_project},
     atlas_runtime::{read_port::AtlasOwnerPort, record_fence::RecordFeedTicket},
 };
-use se_atlas::{
-    query::{QueryReader, hooks::HookTarget},
-    source::RegisteredSource,
-};
 use se_core::ops::{AtlasAugment, AtlasHookOutput, AtlasHookTarget};
 use se_store::{Admission, Scope, Snapshot};
 use se_types::{Result, code::*};
-use std::time::Instant;
 
 pub fn owner_augment<R: Snapshot>(
     owner: &AtlasOwnerPort,
@@ -20,7 +15,10 @@ pub fn owner_augment<R: Snapshot>(
     read: &mut R,
     admission: &Admission,
 ) -> Result<AtlasHookOutput> {
-    let Some(end) = input.deadline.filter(|end| *end > se_atlas::clock::now()) else {
+    let Some(end) = input
+        .deadline
+        .filter(|end| *end > std::time::Instant::now())
+    else {
         return Ok(AtlasHookOutput::default());
     };
     // An uncertain index/authority/IO/deadline is no augmentation, never a block.
@@ -30,7 +28,7 @@ pub fn owner_augment<R: Snapshot>(
         .flatten();
     Ok(AtlasHookOutput {
         stdout: text
-            .filter(|_| se_atlas::clock::now() < end)
+            .filter(|_| std::time::Instant::now() < end)
             .unwrap_or_default(),
     })
 }
@@ -125,89 +123,6 @@ fn outline(
         add(&mut text, format!("{name}:{line}"));
     }
     Ok(encode(&text))
-}
-
-/// The legacy cache reader's hook adapter, kept until that reader is removed.
-/// Executes against an already scoped reader; never opens a cache or starts work.
-pub fn augment(
-    reader: &mut QueryReader<'_, '_, '_>,
-    source: &RegisteredSource<crate::atlas_source::NativeAtlasSource>,
-    input: &AtlasAugment,
-) -> Result<AtlasHookOutput> {
-    let Some(end) = input.deadline.filter(|end| *end > se_atlas::clock::now()) else {
-        return Ok(AtlasHookOutput::default());
-    };
-    let text = match &input.target {
-        AtlasHookTarget::Symbol(name) => legacy_symbol(reader, name, end)?,
-        AtlasHookTarget::File(path) => legacy_outline(reader, source, &path.to_local()?, end)?,
-    };
-    Ok(AtlasHookOutput {
-        stdout: text
-            .filter(|_| se_atlas::clock::now() < end)
-            .unwrap_or_default(),
-    })
-}
-fn location(pointer: &CodePointer) -> String {
-    match &pointer.span {
-        Some(span) => format!("{}:{}", pointer.path.as_str(), span.start.line),
-        None => pointer.path.as_str().to_owned(),
-    }
-}
-fn legacy_symbol(
-    reader: &mut QueryReader<'_, '_, '_>,
-    name: &QueryText,
-    end: Instant,
-) -> Result<Option<String>> {
-    let Some(context) = reader.hook_context(HookTarget::Symbol(name.as_str()), end)? else {
-        return Ok(None);
-    };
-    let [symbol] = context.symbols.as_slice() else {
-        return Ok(None);
-    };
-    let mut text = format!(
-        "Atlas indexed context (sample): definition {} {}",
-        symbol.name,
-        location(&context.file)
-    );
-    linked(&mut text, context.linked.messages as usize);
-    for caller in context.callers {
-        add(&mut text, format!("caller {}", location(&caller)));
-    }
-    Ok(encode(&text).filter(|_| se_atlas::clock::now() < end))
-}
-fn legacy_outline(
-    reader: &mut QueryReader<'_, '_, '_>,
-    source: &RegisteredSource<crate::atlas_source::NativeAtlasSource>,
-    path: &std::path::Path,
-    end: Instant,
-) -> Result<Option<String>> {
-    let root = &source.scope.registration.canonical_source_root;
-    let Ok(relative) = path.strip_prefix(root) else {
-        return Ok(None);
-    };
-    let Some(relative) = relative.to_str() else {
-        return Ok(None);
-    };
-    let relative = RelativePath::new(relative.replace(std::path::MAIN_SEPARATOR, "/"))?;
-    let Some(file) = source.open(&relative)? else {
-        return Ok(None);
-    };
-    if file.identity()?.size < 32768 || !file.validate_path()? {
-        return Ok(None);
-    }
-    drop(file);
-    let Some(outline) = reader.hook_context(HookTarget::File(&relative), end)? else {
-        return Ok(None);
-    };
-    let mut text = format!("Atlas outline (sample): {}", outline.file.path.as_str());
-    linked(&mut text, outline.linked.messages as usize);
-    for symbol in outline.symbols {
-        add(
-            &mut text,
-            format!("{}:{}", symbol.name, symbol.span.start.line),
-        );
-    }
-    Ok(encode(&text).filter(|_| se_atlas::clock::now() < end))
 }
 
 /// Classify only simple search tools and explicit single-file reads. Shell text

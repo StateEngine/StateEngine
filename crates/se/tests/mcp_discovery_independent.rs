@@ -182,10 +182,7 @@ fn discovery(config: se_config::config_policy::ConfigFile) -> Check {
         host.configure(config)?;
         // Every supported target installs the Atlas engine; its complete
         // catalogue crosses the former stdio cap.
-        host.install_native_atlas(
-            Path::new(env!("CARGO_BIN_EXE_se")).to_path_buf(),
-            NativeAtlasQualification::default(),
-        )?;
+        host.install_native_atlas()?;
         let (_coordinator, reconciliation) = LaunchCoordinator::install(
             &mut host,
             ProcessOptions {

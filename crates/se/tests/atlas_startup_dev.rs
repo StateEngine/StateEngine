@@ -385,10 +385,7 @@ fn automatic_owner_indexes_and_catches_committed_records_up() -> Check {
             HostedRuntime::prepare(initialized, options, runtime.handle().clone(), &deadline()?)
                 .await?;
         host.configure(se_config::config_policy::ConfigFile::default())?;
-        host.install_native_atlas(
-            std::path::PathBuf::from(env!("CARGO_BIN_EXE_se")).canonicalize()?,
-            NativeAtlasQualification::default(),
-        )?;
+        host.install_native_atlas()?;
         let context = host.execution_context();
         let stop = host.local_stop();
         let listener = host.listen(runtime.handle().clone(), &deadline()?).await?;

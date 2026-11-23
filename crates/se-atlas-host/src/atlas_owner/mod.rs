@@ -2,12 +2,10 @@
 //! after readiness. Registration comes from the authoritative catalogue and
 //! from queries; the owner loop feeds committed records into each engine.
 //! No SQL handle crosses an await, and all disk work runs off the runtime.
-mod qualification;
 mod read;
 mod records;
 mod roots;
 use crate::host::AtlasHost;
-use se_atlas::{cache::connection::SqlProfile, parse::ParserProfile};
 use se_atlas_service::{Root, RootSpec};
 use se_core::store_error::store_error;
 use se_store::{Actor, Admission, Scope, Snapshot};
@@ -21,14 +19,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::watch;
-
-/// Retained for installers that still pass legacy native measurements. The
-/// v5 engine runs no native parser and needs no admission profile.
-#[derive(Default, Debug)]
-pub struct NativeAtlasQualification {
-    pub sql: Option<SqlProfile>,
-    pub parsers: Vec<ParserProfile>,
-}
 
 pub struct Service {
     home: PathBuf,
@@ -58,10 +48,8 @@ const FEED_PASS: Duration = Duration::from_millis(250);
 impl Service {
     pub fn new(
         state_directory: &std::path::Path,
-        _image: PathBuf,
         owner: HumanId,
         enabled: bool,
-        _qualification: NativeAtlasQualification,
         interests: Arc<crate::atlas_runtime::record_fence::RecordFeedFence>,
     ) -> Result<Arc<Self>> {
         Ok(Arc::new(Self {

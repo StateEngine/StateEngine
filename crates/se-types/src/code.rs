@@ -232,7 +232,7 @@ pub struct HistoryCommitNote {
     pub oid: String,
     pub note: String,
 }
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Coverage {
     pub discovered_files: u64,
     pub indexed_files: u64,

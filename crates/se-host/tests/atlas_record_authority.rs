@@ -2,7 +2,6 @@
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
-use se_atlas::query::RecordReader;
 use se_host::atlas_records::AtlasRecordReader;
 use se_store::*;
 use se_types::{Read, code::*};
