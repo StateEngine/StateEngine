@@ -324,6 +324,12 @@ impl Thread<'_> {
     /// reconcile. A new branch folder only needs watching.
     #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
     fn directory(&mut self, action: NativeWatchAction, path: &str, class: Reported) {
+        if matches!(
+            action,
+            NativeWatchAction::MovedTo | NativeWatchAction::MovedFrom | NativeWatchAction::Removed
+        ) {
+            self.ignores.clear();
+        }
         if class == Reported::Drop || self.ignored(path) {
             return;
         }

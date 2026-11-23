@@ -196,7 +196,7 @@ fn first_page(
             }
         },
     };
-    let (first, pruned) = match start {
+    let (after, pruned) = match start {
         Start::Time(at) => {
             let first: Option<i64> = conn
                 .prepare_cached(
@@ -204,14 +204,15 @@ fn first_page(
                 )?
                 .query_row([at], |row| row.get(0))?;
             let pruned = floor.is_some_and(|floor| at < floor.observed_unix_ms);
-            (first.unwrap_or(through + 1), pruned)
+            let first = first.unwrap_or(through.saturating_add(1));
+            ((first - 1, i64::MAX), pruned)
         }
         Start::After(generation) => {
-            let pruned = floor.is_some_and(|floor| generation + 1 < floor.generation);
-            (generation + 1, pruned)
+            let pruned = floor.is_some_and(|floor| generation < floor.generation.saturating_sub(1));
+            ((generation, i64::MAX), pruned)
         }
     };
-    Ok(Ok((through, (first - 1, i64::MAX), pruned)))
+    Ok(Ok((through, after, pruned)))
 }
 
 enum Start {

@@ -59,7 +59,8 @@ fn unreadable(subject: &str, reason: &str) -> SeError {
 /// Authorized records mentioning any of `targets`, newest first.
 pub(crate) struct Linked {
     pub hits: Vec<RecordHit>,
-    /// Another record this viewer may see exists beyond those listed. Only
+    /// Another record this viewer may see exists within the newest
+    /// [`MAX_SCANNED`] (512) candidates per target beyond those listed. Only
     /// visible records decide it, so it never counts hidden ones.
     pub limited: bool,
 }
@@ -143,26 +144,36 @@ pub(crate) fn find(
     kind: RecordKind,
     records: &dyn RecordCheck,
 ) -> Result<Answer<Read<SearchResults>>> {
+    let deadline = std::time::Instant::now().checked_add(query.budget.work);
     let start = match &query.next {
         Some(next) => key(next)?,
         None => (i64::MAX, i64::MAX),
     };
     let limit = usize::from(query.budget.max_results);
     let max_bytes = query.budget.max_bytes as usize;
-    // Sized with the longest cursor, so a page that gains one still fits.
+    // Sized with the longest cursor and partial omission, so adding either still fits.
     let widest = key_cursor((i64::MAX, i64::MAX))?;
-    let empty = results(index, query, Vec::new(), Some(widest), 0)?;
+    let empty = results(index, query, Vec::new(), Some(widest), true, 0)?;
     let mut bytes = size(&answer(index, Read::Present { value: empty }));
     let mut items = Vec::new();
     let mut last = None;
     let mut more = false;
+    let mut timed_out = false;
     shared.with_reader(|reader| {
         let snapshot = reader.snapshot().map_err(|e| index_error(&e))?;
         let mut after = start;
         loop {
+            if deadline.is_some_and(|until| std::time::Instant::now() >= until) {
+                timed_out = true;
+                return Ok(());
+            }
             let rows = rows(snapshot.connection(), query, kind, after, CHUNK)?;
             let exhausted = (rows.len() as u64) < CHUNK;
             for (record, event, at) in rows {
+                if deadline.is_some_and(|until| std::time::Instant::now() >= until) {
+                    timed_out = true;
+                    return Ok(());
+                }
                 after = at;
                 let Some(pointer) = pointer(&record, crate::records::kind_name(kind), &event)
                 else {
@@ -189,8 +200,11 @@ pub(crate) fn find(
             }
         }
     })?;
-    let next = last.filter(|_| more).map(key_cursor).transpose()?;
-    let value = results(index, query, items, next, bytes)?;
+    let next = last
+        .filter(|_| more || timed_out)
+        .map(key_cursor)
+        .transpose()?;
+    let value = results(index, query, items, next, timed_out, bytes)?;
     checked(answer(index, Read::Present { value }), query.budget)
 }
 
@@ -244,6 +258,7 @@ fn results(
     query: &FindQuery,
     items: Vec<SearchHit>,
     next: Option<se_types::code::AtlasCursor>,
+    partial: bool,
     bytes: usize,
 ) -> Result<SearchResults> {
     Ok(SearchResults {
@@ -256,7 +271,7 @@ fn results(
                 budget: query.budget,
                 after: query.next.as_ref(),
                 next,
-                partial: false,
+                partial,
                 bytes,
             },
         )?,
