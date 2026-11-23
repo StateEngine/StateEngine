@@ -70,12 +70,7 @@ fn binding(word: &str, after: &str, scope: Scope, exported: bool) -> Option<Decl
         return Decl::new(ident(rest.trim_start()), SymbolKind::Enum, exported);
     }
     let name = ident(after);
-    let value = after.find('=').map(|at| after[at + 1..].trim_start());
-    let function = value.is_some_and(|value| {
-        keyword(value, "function").is_some()
-            || keyword(value, "async").is_some()
-            || after.contains("=>")
-    });
+    let function = assigned(after).is_some_and(function_value);
     let kind = if function {
         SymbolKind::Function
     } else if !scope.top_level {
@@ -86,6 +81,48 @@ fn binding(word: &str, after: &str, scope: Scope, exported: bool) -> Option<Decl
         SymbolKind::Variable
     };
     Decl::new(name, kind, exported)
+}
+
+/// The value after a binding's own `=`: the first outside brackets that is
+/// not part of `=>`, `==`, `!=`, `<=` or `>=`, so a typed arrow such as
+/// `f: (x: T) => T = ...` finds its value rather than its type.
+fn assigned(text: &str) -> Option<&str> {
+    let bytes = text.as_bytes();
+    let mut depth = 0i32;
+    for (at, &b) in bytes.iter().enumerate() {
+        let before = at.checked_sub(1).map(|p| bytes[p]);
+        match b {
+            b'(' | b'<' | b'{' | b'[' => depth += 1,
+            b')' | b'}' | b']' => depth -= 1,
+            b'>' if before != Some(b'=') => depth -= 1,
+            b'=' if depth <= 0
+                && !matches!(bytes.get(at + 1), Some(b'>' | b'='))
+                && !matches!(before, Some(b'=' | b'!' | b'<' | b'>')) =>
+            {
+                return Some(text[at + 1..].trim_start());
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Whether a bound value is itself a function: `function`, or an arrow whose
+/// parameters lead the value. A callback passed to a call (`list.map(x =>
+/// ...)`) does not make the binding a function.
+fn function_value(value: &str) -> bool {
+    let value = keyword(value, "async").map_or(value, str::trim_start);
+    if keyword(value, "function").is_some() {
+        return true;
+    }
+    let value = skip_group(value, b'<', b'>').trim_start();
+    let rest = if value.starts_with('(') {
+        skip_group(value, b'(', b')')
+    } else {
+        &value[ident(value).len()..]
+    }
+    .trim_start();
+    rest.starts_with("=>") || (rest.starts_with(':') && rest.contains("=>"))
 }
 
 fn member(rest: &str) -> Option<Decl> {
@@ -109,7 +146,8 @@ fn member(rest: &str) -> Option<Decl> {
     } else {
         tail
     };
-    let method = tail.starts_with('(') || (tail.starts_with('=') && tail.contains("=>"));
+    let method = tail.starts_with('(')
+        || (tail.starts_with(['=', ':']) && assigned(tail).is_some_and(function_value));
     method
         .then(|| Decl::new(name, SymbolKind::Method, false))
         .flatten()
@@ -139,4 +177,30 @@ fn split_word(text: &str) -> (&str, &str) {
         .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$' || c == '*'))
         .unwrap_or(text.len());
     (&text[..end], &text[end..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Grammar, lex, outline};
+    use super::SymbolKind;
+
+    #[test]
+    fn blocks_inside_parameters_keep_the_declaration() {
+        let text = "export async function scan(target, deps = {}) {\n  const at = `${a.b()}${sep}`;\n  return { at };\n}\nexport function next({ a } = {}, done = () => {}) {}\nconst list = items.map((item) => { return item; });\nconst pick = async (x = {}) => x;\n";
+        let masked = lex::mask_for(Grammar::JavaScript, text);
+        let (symbols, _) = outline::outline(Grammar::JavaScript, text, &masked);
+        let found: Vec<_> = symbols
+            .iter()
+            .map(|s| (s.name.as_str(), s.kind, s.line, s.end_line, s.exported))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("scan", SymbolKind::Function, 1, 4, true),
+                ("next", SymbolKind::Function, 5, 5, true),
+                ("list", SymbolKind::Const, 6, 6, false),
+                ("pick", SymbolKind::Function, 7, 7, false),
+            ]
+        );
+    }
 }

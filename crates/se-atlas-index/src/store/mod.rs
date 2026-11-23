@@ -9,6 +9,7 @@
 mod cold;
 mod compact;
 mod files;
+mod history;
 mod incremental;
 pub mod read;
 mod schema;
@@ -17,6 +18,7 @@ mod write;
 
 pub use cold::{BuildOptions, BuildReport};
 pub use compact::{CompactPolicy, CompactReport};
+pub use history::{ChangeKind, RETAINED_GENERATIONS, now_unix_ms};
 pub use incremental::{PathOutcome, SymbolDiff, UpdateReport};
 pub use read::{ReadSnapshot, Reader};
 pub use schema::{SCHEMA_VERSION, StoreIdentity};
@@ -95,6 +97,15 @@ impl Store {
 
     pub(crate) fn connection_mut(&mut self) -> &mut Connection {
         &mut self.conn
+    }
+
+    /// Record that the working tree was observed at commit `oid` (20 or 32
+    /// raw bytes), so `changes` can answer "since this commit".
+    pub fn record_commit(&mut self, oid: &[u8]) -> Result<i64> {
+        let tx = self.conn.transaction()?;
+        let generation = history::record_commit(&tx, oid)?;
+        tx.commit()?;
+        Ok(generation)
     }
 }
 

@@ -66,6 +66,32 @@ impl SymbolKind {
         ALL.into_iter().find(|kind| kind.code() == code)
     }
 
+    /// The lowercase name shown to users.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Module => "module",
+            Self::Function => "function",
+            Self::Method => "method",
+            Self::Struct => "struct",
+            Self::Enum => "enum",
+            Self::Interface => "interface",
+            Self::Impl => "impl",
+            Self::Class => "class",
+            Self::Type => "type",
+            Self::Const => "const",
+            Self::Variable => "variable",
+            Self::Macro => "macro",
+            Self::Namespace => "namespace",
+            Self::Section => "section",
+            Self::Table => "table",
+            Self::Key => "key",
+            Self::Item => "item",
+            Self::Target => "target",
+            Self::Stage => "stage",
+            Self::Test => "test",
+        }
+    }
+
     fn holds_methods(self) -> bool {
         matches!(
             self,
@@ -410,7 +436,7 @@ pub(crate) fn collapse(text: &str) -> String {
 }
 
 /// Byte offset of `word` as a whole identifier inside `text`.
-pub(crate) fn find_word(text: &str, word: &str) -> Option<usize> {
+pub fn find_word(text: &str, word: &str) -> Option<usize> {
     if word.is_empty() {
         return None;
     }
@@ -428,6 +454,10 @@ struct Frame {
     kind: Option<SymbolKind>,
     saved_paren: u32,
     start: usize,
+    /// The header in progress when a block opens inside parentheses, such
+    /// as a `= {}` default parameter or a callback body. It resumes when the
+    /// block closes, so the enclosing declaration keeps its name.
+    outer: Option<usize>,
 }
 
 const MAX_HEADER_BYTES: usize = 4096;
@@ -528,23 +558,42 @@ impl<'a, 'b> BraceScan<'a, 'b> {
             None
         };
         let kind = symbol.and_then(|index| self.builder.symbols.get(index).map(|s| s.kind));
+        let outer = (self.paren > 0).then_some(self.header_start);
         self.stack.push(Frame {
             symbol,
             kind,
             saved_paren: self.paren,
             start: range.0,
+            outer,
         });
         self.reset(i + 1);
     }
 
     fn close_block(&mut self, i: usize) {
-        if let Some(frame) = self.stack.pop() {
-            if let Some(index) = frame.symbol {
-                self.builder.close(index, (frame.start, i + 1));
-            }
-            self.paren = frame.saved_paren;
+        let Some(frame) = self.stack.pop() else {
+            self.reset(i + 1);
+            return;
+        };
+        if let Some(index) = frame.symbol {
+            self.builder.close(index, (frame.start, i + 1));
         }
-        self.reset(i + 1);
+        self.paren = frame.saved_paren;
+        // A resumed header still honours both header caps.
+        let resumed = frame
+            .outer
+            .filter(|start| i + 1 - start <= MAX_HEADER_BYTES)
+            .and_then(|start| {
+                let lines = self.masked[start..=i].bytes().filter(|b| *b == b'\n');
+                Some((start, u32::try_from(lines.count()).ok()?))
+            })
+            .filter(|(_, lines)| *lines <= MAX_HEADER_LINES);
+        match resumed {
+            Some((start, lines)) => {
+                self.header_start = start;
+                self.header_lines = lines;
+            }
+            None => self.reset(i + 1),
+        }
     }
 
     fn statement(&mut self, i: usize) {

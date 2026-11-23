@@ -160,7 +160,7 @@ pub(crate) fn searcher() -> Searcher {
 }
 
 /// How one file read ended.
-pub(crate) enum FileRead {
+pub enum FileRead {
     /// Bytes read; `partial` when a line cap or the full-read limit stopped
     /// the read before the end of the file.
     Done {
@@ -184,6 +184,38 @@ impl FileRead {
             Self::Refused => outcome.files_refused += 1,
             Self::Failed => outcome.files_read_failed += 1,
         }
+    }
+}
+
+/// The lines of indexed files that hold one literal, read through custody
+/// for callers that judge each line themselves.
+pub struct LiteralLines {
+    matcher: RegexMatcher,
+    searcher: Searcher,
+}
+
+impl LiteralLines {
+    /// Lines holding `literal`, ignoring case unless `case_exact`.
+    pub fn new(literal: &str, case_exact: bool) -> Result<Self> {
+        let matcher = RegexMatcherBuilder::new()
+            .case_insensitive(!case_exact)
+            .build(&regex_syntax::escape(literal))
+            .map_err(|_| IndexError::Invalid("the literal does not compile"))?;
+        Ok(Self {
+            matcher,
+            searcher: searcher(),
+        })
+    }
+
+    /// Offer each line of `path` holding the literal to `on_line`, which
+    /// answers whether it kept the line, under the per-file line caps.
+    pub fn read(
+        &mut self,
+        root: &IndexSourceRoot,
+        path: &str,
+        on_line: impl FnMut(u32, &str) -> bool,
+    ) -> FileRead {
+        read_lines(root, path, &self.matcher, &mut self.searcher, on_line)
     }
 }
 
@@ -228,7 +260,7 @@ pub(crate) fn read_lines(
 }
 
 /// The trimmed text of a line as shown in a hit.
-pub(crate) fn hit_text(line: &str) -> String {
+pub fn hit_text(line: &str) -> String {
     char_prefix(line.trim(), TEXT_BYTES).to_owned()
 }
 
