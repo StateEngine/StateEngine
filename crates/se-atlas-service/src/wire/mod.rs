@@ -173,9 +173,30 @@ pub(crate) struct PageFacts<'a> {
     pub budget: QueryBudget,
     pub after: Option<&'a AtlasCursor>,
     pub next: Option<AtlasCursor>,
-    /// The sources left something unexamined.
-    pub partial: bool,
+    pub examined: Examined,
     pub bytes: usize,
+}
+
+/// How much of its sources a page examined.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Examined {
+    All,
+    /// The sources left something unexamined.
+    Partly,
+    /// The work deadline stopped the reading, leaving the rest unexamined.
+    Deadline,
+}
+
+impl Examined {
+    pub fn of(partial: bool, deadline: bool) -> Self {
+        if deadline {
+            Self::Deadline
+        } else if partial {
+            Self::Partly
+        } else {
+            Self::All
+        }
+    }
 }
 
 pub(crate) fn page<T>(items: Vec<T>, facts: PageFacts<'_>) -> Result<Page<T>> {
@@ -184,10 +205,10 @@ pub(crate) fn page<T>(items: Vec<T>, facts: PageFacts<'_>) -> Result<Page<T>> {
         budget,
         after,
         next,
-        partial,
+        examined,
         bytes,
     } = facts;
-    let omission = if partial {
+    let omission = if examined != Examined::All {
         Omission::Unknown {
             reason: OmissionReason::SourceIncomplete,
         }
@@ -219,15 +240,26 @@ pub(crate) fn page<T>(items: Vec<T>, facts: PageFacts<'_>) -> Result<Page<T>> {
         omitted_before: Omission::None,
         omitted_after: omission,
         unreadable: 0,
-        stop_reason: if next.is_some() {
+        stop_reason: if examined == Examined::Deadline {
+            StopReason::Deadline
+        } else if next.is_some() {
             StopReason::ItemLimit
-        } else if partial {
+        } else if examined == Examined::Partly {
             StopReason::Unsupported
         } else {
             StopReason::Exhausted
         },
     })?;
     Page::new(items, window, next.as_ref().map(wire).transpose()?)
+}
+
+/// Bytes of the answer for `facts`' page before any item is listed. The
+/// page's cursor is taken as given, so pass the widest one it may carry;
+/// each listed item then costs its own bytes plus one separator.
+pub(crate) fn envelope<T: serde::Serialize>(facts: PageFacts<'_>) -> Result<usize> {
+    let index = facts.index;
+    let value = page(Vec::<T>::new(), facts)?;
+    Ok(size(&answer(index, Read::Present { value })))
 }
 
 /// Refuse an answer past its byte budget instead of truncating it silently.

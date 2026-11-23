@@ -3,7 +3,10 @@
 //! generation a viewer was offered, so a later digest starts after it.
 //! Building an offer never advances anything: core commits the cursor only
 //! when the consumer acknowledges delivery.
-use super::{PageFacts, answer, checked, cursor, find::admits, page, pointer, size, unknown};
+use super::{
+    Examined, PageFacts, answer, checked, cursor, envelope, find::admits, page, pointer, records,
+    size, unknown,
+};
 use crate::{
     error::{index_error, sqlite},
     root::Shared,
@@ -23,8 +26,6 @@ use se_types::{
     },
 };
 
-/// Serialized bytes assumed per change when sizing a page.
-const ROW_BYTES: usize = 420;
 /// Bulk changes a resume digest lists.
 const RESUME_BULK: usize = 5;
 /// Change rows a resume digest scans.
@@ -77,8 +78,7 @@ pub(crate) fn changes(
     viewer: &AtlasPrincipal,
 ) -> Result<Answer<Read<Page<CodeChange>>>> {
     query.scope.validate()?;
-    let fit = (query.budget.max_bytes as usize / ROW_BYTES).max(1);
-    let found = shared.with_reader(|reader| read_changes(reader, index, query, viewer, fit))?;
+    let (since, found) = shared.with_reader(|reader| read_changes(reader, index, query, viewer))?;
     let found = match found {
         ChangesAnswer::Found(found) => found,
         ChangesAnswer::CommitNotObserved { commit } => {
@@ -94,8 +94,23 @@ pub(crate) fn changes(
     if found.pruned {
         index.note(CoverageReason::RetentionGap);
     }
+    let facts = |next, bytes| PageFacts {
+        index: &index,
+        budget: query.budget,
+        after: query.next.as_ref(),
+        next,
+        examined: Examined::All,
+        bytes,
+    };
+    // Sized with the widest cursor, so a page that gains one still fits.
+    let widest = se_atlas_query::changes::resume_after(&since, i64::MAX, i64::MAX, i64::MAX);
+    let mut bytes = envelope::<CodeChange>(facts(Some(cursor::wrap('c', &widest)?), 0))?;
+    let max_bytes = query.budget.max_bytes as usize;
     let at = Generation(u64::try_from(found.through_generation).unwrap_or(0));
     let mut items = Vec::new();
+    // The listed change the page ends on once the item or byte limit cuts it.
+    let mut cut = None;
+    let mut last = None;
     for entry in &found.entries {
         if entry
             .path
@@ -104,48 +119,55 @@ pub(crate) fn changes(
         {
             continue;
         }
-        if let Some(change) = change(entry, at)? {
-            items.push(change);
+        let Some(change) = change(entry, at)? else {
+            continue;
+        };
+        let cost = size(&change) + 1;
+        if items.is_empty() && bytes + cost > max_bytes {
+            return Err(records::over_budget(bytes + cost, query.budget.max_bytes));
         }
+        if items.len() >= usize::from(query.budget.max_results) || bytes + cost > max_bytes {
+            cut = last;
+            break;
+        }
+        bytes += cost;
+        items.push(change);
+        last = Some(entry);
     }
-    let next = found
-        .next_cursor
-        .as_deref()
-        .map(|next| cursor::wrap('c', next))
-        .transpose()?;
-    let bytes = items.iter().map(|item| size(item) + 1).sum();
-    let value = page(
-        items,
-        PageFacts {
-            index: &index,
-            budget: query.budget,
-            after: query.next.as_ref(),
-            next,
-            partial: false,
-            bytes,
-        },
-    )?;
+    let next = match cut {
+        Some(entry) => Some(se_atlas_query::changes::resume_after(
+            &since,
+            found.through_generation,
+            entry.generation,
+            entry.ordinal,
+        )),
+        None => found.next_cursor.clone(),
+    };
+    let next = next.map(|next| cursor::wrap('c', &next)).transpose()?;
+    let value = page(items, facts(next, bytes))?;
     checked(answer(&index, Read::Present { value }), query.budget)
 }
 
+/// One page from the store, with the start it was read from: a cursor for
+/// the same request is minted from it.
 fn read_changes(
     reader: &Reader,
     index: &IndexSummary,
     query: &ChangesQuery,
     viewer: &AtlasPrincipal,
-    fit: usize,
-) -> Result<ChangesAnswer> {
+) -> Result<(Since, ChangesAnswer)> {
     let since = baseline(reader.connection(), index, viewer, &query.since)?;
     let request = ChangesRequest {
         since,
-        limit: usize::from(query.budget.max_results).min(fit),
+        limit: usize::from(query.budget.max_results),
         cursor: query
             .next
             .as_ref()
             .map(|next| cursor::unwrap('c', next))
             .transpose()?,
     };
-    se_atlas_query::changes::changes(reader, &request).map_err(|e| index_error(&e))
+    let found = se_atlas_query::changes::changes(reader, &request).map_err(|e| index_error(&e))?;
+    Ok((request.since, found))
 }
 
 /// The v5 start. A resume cursor starts after the generation it delivered

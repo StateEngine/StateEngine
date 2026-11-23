@@ -201,8 +201,9 @@ impl Service {
                 Pass::default()
             };
             scan = pass.rescan;
-            // A catalogue left unscanned is due again, not on the next event.
-            let retry = if pass.again || pass.rescan {
+            // A catalogue left unscanned is due again, not on the next event;
+            // a failed pass waits out its pause first.
+            let retry = if pass.again || (pass.rescan && !pass.backoff) {
                 Some(FEED_AGAIN)
             } else if pass.backoff {
                 Some(FEED_BACKOFF)
@@ -262,8 +263,11 @@ impl Service {
             });
         work.unwrap_or_else(|error| {
             eprintln!("Code index maintenance paused: {error}");
+            // A failed pass may have taken registry activity it never acted
+            // on, or left its catalogue scan unfinished: scan after the pause.
             Pass {
                 backoff: true,
+                rescan: true,
                 ..Pass::default()
             }
         })

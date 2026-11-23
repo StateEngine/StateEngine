@@ -295,6 +295,13 @@ fn request_digest(since: &Since) -> String {
     text
 }
 
+/// The cursor that resumes `since`'s pages, bounded at `through`, right
+/// after the change at `(generation, ordinal)`, so a caller that lists only
+/// part of a page loses and repeats nothing.
+pub fn resume_after(since: &Since, through: i64, generation: i64, ordinal: i64) -> String {
+    cursor(through, generation, ordinal, &request_digest(since))
+}
+
 fn cursor(through: i64, generation: i64, ordinal: i64, digest: &str) -> String {
     let part = |value: i64| base36(u64::try_from(value).unwrap_or(0));
     format!(
