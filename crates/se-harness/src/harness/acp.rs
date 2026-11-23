@@ -16,7 +16,9 @@ mod mail;
 pub struct AcpHarness {
     io: Arc<dyn ProviderIoPlatform>,
     configuration: ConfigFile,
+    se_executable: std::path::PathBuf,
     home: std::path::PathBuf,
+    mcp_port: u16,
 }
 pub struct Binding {
     pub session: Arc<Session>,
@@ -35,12 +37,16 @@ impl AcpHarness {
     pub fn new(
         io: Arc<dyn ProviderIoPlatform>,
         configuration: ConfigFile,
+        se_executable: std::path::PathBuf,
         home: std::path::PathBuf,
+        mcp_port: u16,
     ) -> Self {
         Self {
             io,
             configuration,
+            se_executable,
             home,
+            mcp_port,
         }
     }
     fn resolved(&self, request: &HarnessRequest) -> Result<ResolvedProfile> {
@@ -60,17 +66,6 @@ impl AcpHarness {
         let profile = configuration.resolve_profile(named_profile, Provider::Acp, true)?;
         let settings = configuration.acp_settings(harness, named_profile)?;
         let argument_model = settings.arguments.iter().any(|v| v.contains("{model}"));
-        let configured_model = argument_model
-            || settings
-                .model_arguments
-                .iter()
-                .any(|v| v.contains("{model}"))
-            || settings.model_environment.is_some();
-        if model.is_some() && !configured_model {
-            return Err(error(
-                "The selected model requires an argv {model} slot or a native model_environment binding in this harness configuration.",
-            ));
-        }
         if argument_model && model.is_none() {
             return Err(error(
                 "The selected harness's model binding requires a saved model. Select a model for this agent, or remove that binding to use the native harness default.",
@@ -78,17 +73,80 @@ impl AcpHarness {
         }
         Ok(profile)
     }
-    fn attach_servers(&self, request: &HarnessRequest) -> Result<Vec<serde_json::Value>> {
-        let servers = vec![json!({
+    fn attach_servers(
+        &self,
+        request: &HarnessRequest,
+        http_mcp: bool,
+    ) -> Result<Vec<serde_json::Value>> {
+        if http_mcp && self.mcp_port != 0 {
+            let bearer = std::str::from_utf8(request.mcp_bearer.expose())
+                .map_err(|_| error("MCP bearer is not UTF-8"))?;
+            let proof = std::str::from_utf8(request.launch_credential.expose())
+                .map_err(|_| error("session proof is not UTF-8"))?;
+            return Ok(vec![json!({
+                "type": "http",
+                "name": "stateengine",
+                "url": format!("http://127.0.0.1:{}/mcp", self.mcp_port),
+                "headers": [
+                    {"name": "Authorization", "value": format!("Bearer {bearer}")},
+                    {"name": "X-StateEngine-Session-Proof", "value": proof}
+                ]
+            })]);
+        }
+        let command = self
+            .se_executable
+            .to_str()
+            .ok_or_else(|| error("the StateEngine executable path is not valid UTF-8"))?;
+        let home = self
+            .home
+            .to_str()
+            .ok_or_else(|| error("the state home path is not valid UTF-8"))?;
+        Ok(vec![json!({
             "name": "stateengine",
-            "command": "se",
-            "args": ["mcp"],
+            "command": command,
+            "args": ["mcp", "--stdio"],
             "env": [
                 {"name": "SE_SESSION", "value": request.identity.session.as_str()},
-                {"name": "SE_HOME", "value": self.home.to_str().ok_or_else(|| error("the state home path is not valid UTF-8"))?}
+                {"name": "SE_HOME", "value": home}
             ]
-        })];
-        Ok(servers)
+        })])
+    }
+    async fn open_conversation(
+        &self,
+        session: &Session,
+        request: &HarnessRequest,
+        settings: &se_config::config_policy::harness::InvocationSettings,
+        remaining: &impl Fn() -> CallContext,
+    ) -> Result<String> {
+        let http_mcp = session.supports_http_mcp(settings.unadvertised_http_mcp)?;
+        let servers = self.attach_servers(request, http_mcp)?;
+        let replay = attach_replay(request)?;
+        let cwd = request.cwd.to_local()?;
+        let cwd = cwd
+            .to_str()
+            .ok_or_else(|| error("protocol cwd is not UTF-8"))?;
+        let conversation = session
+            .open(
+                cwd,
+                servers,
+                replay,
+                &settings.mode,
+                settings.unadvertised_http_mcp,
+                remaining(),
+            )
+            .await?;
+        let cli_or_env_model = settings.arguments.iter().any(|v| v.contains("{model}"))
+            || settings
+                .model_arguments
+                .iter()
+                .any(|v| v.contains("{model}"))
+            || settings.model_environment.is_some();
+        if let Some(model) = request.profile.model.as_deref()
+            && !cli_or_env_model
+        {
+            session.set_model(model, remaining()).await?;
+        }
+        Ok(conversation)
     }
 }
 pub fn bound(binding: &HarnessBinding) -> Result<&Arc<Binding>> {
@@ -239,26 +297,12 @@ impl Harness for AcpHarness {
                 cancellation: cx.cancellation.clone(),
             };
             binding.session.initialize(remaining()).await?;
-            let servers = self.attach_servers(&request)?;
-            let replay = attach_replay(&request)?;
             let settings = self.configuration.acp_settings(
                 request.profile.harness.as_deref(),
                 &request.profile.named_profile,
             )?;
-            let conversation = binding
-                .session
-                .open(
-                    request
-                        .cwd
-                        .to_local()?
-                        .to_str()
-                        .ok_or_else(|| error("protocol cwd is not UTF-8"))?,
-                    servers,
-                    replay,
-                    &settings.mode,
-                    settings.unadvertised_http_mcp,
-                    remaining(),
-                )
+            let conversation = self
+                .open_conversation(&binding.session, &request, &settings, &remaining)
                 .await?;
             let conversation = ProviderSessionId::new(conversation)?;
             let incarnation = serde_json::to_vec(&json!({

@@ -118,6 +118,16 @@ impl Session {
     pub fn subscribe(&self) -> watch::Receiver<u64> {
         self.changed.subscribe()
     }
+    pub fn supports_http_mcp(&self, unadvertised: bool) -> Result<bool> {
+        let state = self.lock()?;
+        ready(&state)?;
+        Ok(unadvertised
+            || state
+                .capabilities
+                .pointer("/mcpCapabilities/http")
+                .and_then(Value::as_bool)
+                == Some(true))
+    }
     pub fn observe(&self) -> Result<Observation> {
         let state = self
             .state
@@ -257,6 +267,30 @@ impl Session {
                 "session response did not establish its identity",
             )
         })
+    }
+    pub async fn set_model(&self, model: &str, cx: CallContext) -> Result<()> {
+        valid_id(model)?;
+        let until = super::connection::until(&cx)?;
+        let _input = tokio::time::timeout_at(until, self.input.lock())
+            .await
+            .map_err(|_| failure("ACP input queue", "original admission deadline expired"))?;
+        let conversation = {
+            let state = self.lock()?;
+            ready(&state)?;
+            state.conversation.clone().ok_or_else(|| {
+                failure("ACP model", "open a conversation before setting its model")
+            })?
+        };
+        self.connection
+            .request(
+                "session/set_model",
+                json!({"sessionId": conversation, "modelId": model}),
+                remaining(&cx, until)?,
+            )
+            .await?;
+        self.synchronize(until).await?;
+        ready(&*self.lock()?)?;
+        Ok(())
     }
     /// Offers one input once. The request ID proves neither durable provider
     /// acceptance nor canonical capture; keep its original key on uncertainty.

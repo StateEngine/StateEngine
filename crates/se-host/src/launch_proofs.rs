@@ -3,7 +3,7 @@
 use crate::client::lease::Deadline;
 use std::sync::Arc;
 
-use se_store::RecordId;
+use se_store::{RecordId, RecordIdentity};
 use se_types::{Result, SessionId};
 use std::{collections::BTreeMap, sync::Mutex};
 
@@ -151,6 +151,41 @@ impl PreparedRequestProofs {
             }
             tokio::time::timeout_at(tokio::time::Instant::from_std(deadline.at()),changed).await.map_err(|_|proof_error("credential readiness","actual first-use request witnesses did not arrive before the original launch deadline; no credential was activated"))?;
         }
+    }
+    /// Direct protocol harnesses (ACP) already proved live child ownership and
+    /// handshake over their private stdio pipes; fill any lazy or stdio-only
+    /// transport witness rather than blocking on an unused HTTP callback.
+    pub fn observe_or_allocate(&self, session: &SessionId) -> Result<PreparedFirstRequests> {
+        let slots = self
+            .0
+            .slots
+            .lock()
+            .map_err(|_| proof_error("credential readiness", "poisoned verifier registry"))?;
+        let slot = slots.get(session).ok_or_else(|| {
+            proof_error(
+                "credential readiness",
+                "the exact issued session has no retained verifier slot",
+            )
+        })?;
+        let next = || -> Result<RecordId> {
+            let mut entropy = [0; 10];
+            se_proc::fill_entropy(&mut entropy)
+                .map_err(|e| proof_error("ACP activation witness", e))?;
+            let now = u64::try_from(crate::runtime::start::now_unix_micros()?)
+                .map_err(|_| proof_error("ACP activation clock", "negative Unix microseconds"))?;
+            RecordId::from_parts(now / 1000, entropy)
+                .map_err(|e| se_core::store_error::store_error(&e))
+        };
+        Ok(PreparedFirstRequests {
+            session_request: match slot.first[0] {
+                Some(id) => id,
+                None => next()?,
+            },
+            http_request: match slot.first[1] {
+                Some(id) => id,
+                None => next()?,
+            },
+        })
     }
     pub fn remove(&self, session: &SessionId) -> Result<()> {
         self.0

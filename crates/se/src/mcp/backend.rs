@@ -96,10 +96,15 @@ impl Backend {
         Ok(Some(Arc::new(secret)))
     }
     /// A fresh authenticated read on every call: the contract is liveness, so
-    /// this deliberately does not read the principal memo.
+    /// this deliberately does not read the principal memo. During launch, a
+    /// verified `Prepared` pin returns `SessionNotActive` (never for revoked,
+    /// expired, fenced or wrong-purpose pins), matching HTTP discovery.
     pub fn check_session(&mut self, secret: &Secret) -> Result<()> {
-        self.call(secret, AnyOp::ProjectStatus(ProjectStatus::default()))
-            .map(|_| ())
+        match self.call_once(secret, AnyOp::ProjectStatus(ProjectStatus::default())) {
+            Ok(_) => Ok(()),
+            Err(error) if is_session_not_active(&error) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
     /// The capability's bound project and agent, memoized per capability.
     /// Identity is the cheapest operation that authenticates the session and
@@ -179,6 +184,21 @@ impl Backend {
     }
 
     pub fn call(&mut self, secret: &Secret, operation: AnyOp) -> Result<serde_json::Value> {
+        let started = Instant::now();
+        let launched = self.managed_hash == Some(Sha256::digest(secret.expose()).into());
+        loop {
+            match self.call_once(secret, operation.clone()) {
+                Err(error) if is_session_not_active(&error) && launched => {
+                    let mut options = crate::route::execute::options();
+                    charge_elapsed(&mut options, started)?;
+                    std::thread::sleep(options.timeout.min(std::time::Duration::from_millis(25)));
+                }
+                other => return other,
+            }
+        }
+    }
+
+    fn call_once(&mut self, secret: &Secret, operation: AnyOp) -> Result<serde_json::Value> {
         let mut options = crate::route::execute::options();
         let started = Instant::now();
         self.ensure_client(secret, &operation, started)?;
@@ -309,6 +329,9 @@ fn expired_session(error: &se_types::SeError) -> bool {
     matches!(error.body.detail(), se_types::Detail::CapabilityInvalid(detail)
         if detail.subject == "presented" && detail.reason == "expired")
 }
+fn is_session_not_active(error: &se_types::SeError) -> bool {
+    matches!(error.body.detail(), se_types::Detail::SessionNotActive(_))
+}
 fn charge_elapsed(options: &mut ClientOptions, started: Instant) -> Result<()> {
     options.timeout = options
         .timeout
@@ -371,11 +394,17 @@ impl se_host::McpBackend for Backend {
         Backend::principal(self, &capability)
     }
     async fn atlas_available(&mut self, capability: Arc<Secret>) -> Result<bool> {
-        let status = Backend::call(
-            self,
-            &capability,
-            AnyOp::ProjectStatus(ProjectStatus::default()),
-        )?;
+        let status =
+            match self.call_once(&capability, AnyOp::ProjectStatus(ProjectStatus::default())) {
+                Ok(status) => status,
+                Err(error) if is_session_not_active(&error) => {
+                    return self
+                        .configured_atlas()
+                        .transpose()
+                        .map(|v| v.unwrap_or(false));
+                }
+                Err(error) => return Err(error),
+            };
         match status
             .pointer("/atlas/state")
             .and_then(serde_json::Value::as_str)
