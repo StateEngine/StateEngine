@@ -233,6 +233,7 @@ pub(crate) fn request_project<R: Snapshot>(
     let roots = match registered.current.body {
         se_store::EventBody::ProjectRegistered { roots, .. }
         | se_store::EventBody::ProjectUpdated { roots, .. } => roots,
+        se_store::EventBody::ProjectMoved { to, .. } => vec![to],
         _ => {
             return Err(SeError::invalid(
                 "Atlas project",

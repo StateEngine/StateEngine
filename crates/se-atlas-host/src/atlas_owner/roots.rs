@@ -51,6 +51,10 @@ impl Scan {
                 | EventBody::ProjectUpdated { project, roots, .. } => {
                     service.register(&project, specs(&project, &roots, &service.home)?)?;
                 }
+                EventBody::ProjectMoved { project, to, .. } => {
+                    let roots = std::slice::from_ref(&to);
+                    service.register(&project, specs(&project, roots, &service.home)?)?;
+                }
                 _ => {
                     return Err(SeError::invalid(
                         "Atlas catalogue",

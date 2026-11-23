@@ -49,6 +49,9 @@ pub struct RefsRequest {
     pub limit: usize,
     /// `next_cursor` of the previous page.
     pub cursor: Option<usize>,
+    /// `next_lines` of the previous page: reference lines of the cursor's
+    /// file it already listed, skipped here.
+    pub cursor_lines: usize,
     pub deadline: Duration,
 }
 
@@ -58,6 +61,7 @@ impl RefsRequest {
             target,
             limit: DEFAULT_LIMIT,
             cursor: None,
+            cursor_lines: 0,
             deadline: DEFAULT_DEADLINE,
         }
     }
@@ -71,8 +75,12 @@ pub struct RefLine {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RefGroup {
+    /// The file's place among the candidates, as a cursor names it.
+    pub at: usize,
     pub path: String,
     pub accuracy: RefAccuracy,
+    /// Reference lines of this file an earlier page listed before `lines`.
+    pub first: usize,
     pub lines: Vec<RefLine>,
 }
 
@@ -99,7 +107,25 @@ pub struct Refs {
     pub files_partly_read: usize,
     /// Where the next page starts; `None` when every candidate was read.
     pub next_cursor: Option<usize>,
+    /// Reference lines of the `next_cursor` file this page already listed.
+    pub next_lines: usize,
     pub deadline_reached: bool,
+}
+
+impl Refs {
+    /// The `(cursor, cursor_lines)` that resumes right after line `line` of
+    /// group `group`, so a caller that lists only part of a page loses and
+    /// repeats nothing. `None` when no such line was listed.
+    pub fn resume_after(&self, group: usize, line: usize) -> Option<(usize, usize)> {
+        let found = self.groups.get(group)?;
+        found.lines.get(line)?;
+        let cut = self.next_cursor == Some(found.at) && self.next_lines > 0;
+        Some(if line + 1 < found.lines.len() || cut {
+            (found.at, found.first + line + 1)
+        } else {
+            (found.at + 1, 0)
+        })
+    }
 }
 
 struct Candidate {
@@ -162,6 +188,8 @@ pub fn refs(
             out.next_cursor = Some(at);
             break;
         }
+        let first = if at == start { request.cursor_lines } else { 0 };
+        let mut matched = 0usize;
         let mut lines = Vec::new();
         let read = lines_of.read(root, &candidate.path, |line, text| {
             let whole = if case_exact {
@@ -171,6 +199,9 @@ pub fn refs(
             };
             let declared = declarations.contains(&(candidate.file, line));
             if whole && !declared {
+                matched += 1;
+            }
+            if whole && !declared && matched > first {
                 lines.push(RefLine {
                     line,
                     text: hit_text(text),
@@ -184,14 +215,25 @@ pub fn refs(
             continue;
         }
         let room = limit - kept;
-        out.omitted_lines += lines.len().saturating_sub(room);
-        lines.truncate(room);
+        let cut = lines.len() > room;
+        if cut {
+            // The rest of this file starts the next page.
+            out.omitted_lines += lines.len() - room;
+            lines.truncate(room);
+            out.next_cursor = Some(at);
+            out.next_lines = first + room;
+        }
         kept += lines.len();
         out.groups.push(RefGroup {
+            at,
             path: candidate.path.clone(),
             accuracy: candidate.accuracy,
+            first,
             lines,
         });
+        if cut {
+            break;
+        }
     }
     out.name = name;
     Ok(Answer::Found(out))

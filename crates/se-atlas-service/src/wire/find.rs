@@ -4,8 +4,8 @@
 //! replacement. Close spellings offered when nothing matched are a labelled
 //! fallback, never ordinary hits.
 use super::{
-    PageFacts, answer, checked, cursor, file_id, kind, language_tags, page, pointer, size, span,
-    unknown,
+    Examined, PageFacts, answer, checked, cursor, file_id, kind, language_tags, page, pointer,
+    size, span, unknown,
 };
 use crate::{
     dirty::Change,
@@ -231,7 +231,7 @@ fn assemble(
     };
     let mut shape = Shape {
         offset,
-        partial,
+        examined: Examined::of(partial, outcome.deadline_reached),
         stats: stats(outcome, &fresh),
         guesses: false,
         more_ranked: outcome.omitted > 0 || outcome.omitted_at_least,
@@ -287,7 +287,7 @@ fn updating(index: &mut IndexSummary, pending: usize) {
 /// How one page is cut and labelled.
 struct Shape {
     offset: usize,
-    partial: bool,
+    examined: Examined,
     stats: TextSearchStats,
     guesses: bool,
     /// The search ranked more hits than it returned.
@@ -344,9 +344,12 @@ fn finish(
     if query.full {
         budget.max_bytes = budget.max_bytes.min(FULL_RESPONSE as u32);
     }
-    // Sized with the longest cursor, so a page that gains one still fits.
+    // Sized with the longest cursor, mode and omitted-body count, so a page
+    // that gains any of them still fits.
     let widest = cursor::wrap('f', &se_atlas_search::MAX_LIMIT.to_string())?;
-    let empty = results(index, query, Vec::new(), Some(widest), 0, shape)?;
+    let mut empty = results(index, query, Vec::new(), Some(widest), 0, shape)?;
+    empty.mode = SearchMode::Literal;
+    empty.bodies_omitted = budget.max_results;
     let mut bytes = size(&answer(index, Read::Present { value: empty }));
     let (mut items, mut bodies_omitted) = (Vec::new(), 0u16);
     let mut body_bytes = 0usize;
@@ -421,7 +424,7 @@ fn results(
                 budget: query.budget,
                 after: query.next.as_ref(),
                 next,
-                partial: shape.partial,
+                examined: shape.examined,
                 bytes,
             },
         )?,

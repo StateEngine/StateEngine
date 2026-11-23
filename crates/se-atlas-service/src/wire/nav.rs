@@ -2,7 +2,10 @@
 //! different answers. A file the watcher reported changed or removed is
 //! marked stale or left out, and an answer read while changes are pending
 //! is never complete: the index may not list what the edit added.
-use super::{PageFacts, answer, checked, cursor, file_id, page, pointer, records, size, unknown};
+use super::{
+    Examined, PageFacts, answer, checked, cursor, envelope, file_id, page, pointer, records, size,
+    unknown,
+};
 use crate::{
     dirty::Change,
     error::index_error,
@@ -12,21 +15,17 @@ use crate::{
 use se_atlas_query::{
     Answer as Found, Target,
     impact::{CallerVia, ImpactRequest},
-    refs::{RefAccuracy, RefsRequest},
+    refs::{RefAccuracy, RefGroup, RefLine, RefsRequest},
 };
 use se_types::code::AtlasText as _;
 use se_types::{
     Page, Read, Result, SeError,
     code::{
-        Accuracy, Answer, AtlasTarget, CodePointer, CoverageReason, Dependent, FileImpactHop,
-        Impact, ImpactQuery, IndexSummary, Reference, ReferenceHit, ReferenceKind, RefsQuery,
-        SnapshotFreshness, SymbolId, SymbolSelector,
+        Accuracy, Answer, AtlasCursor, AtlasTarget, CodePointer, CoverageReason, Dependent,
+        FileImpactHop, Impact, ImpactQuery, IndexSummary, Reference, ReferenceHit, ReferenceKind,
+        RefsQuery, SnapshotFreshness, SymbolId, SymbolSelector,
     },
 };
-
-/// Serialized bytes assumed per listed reference or dependent when sizing a
-/// page; the page is still measured exactly before it is returned.
-const ROW_BYTES: usize = 360;
 
 pub(crate) fn target(target: &AtlasTarget) -> Result<Target> {
     Ok(match target {
@@ -104,14 +103,18 @@ pub(crate) fn refs(
     let Some(source) = shared.source() else {
         return Ok(unknown(index, STARTING));
     };
-    let fit = (query.budget.max_bytes as usize / ROW_BYTES).max(1);
+    let (start, start_lines) = match &query.next {
+        Some(next) => {
+            let (file, lines) = position(next)?;
+            (Some(file), lines)
+        }
+        None => (None, 0),
+    };
     let request = RefsRequest {
         target: target(&query.target)?,
-        limit: usize::from(query.budget.max_results).min(fit),
-        cursor: match &query.next {
-            Some(next) => Some(usize::try_from(cursor::number('r', next)?).unwrap_or(usize::MAX)),
-            None => None,
-        },
+        limit: usize::from(query.budget.max_results),
+        cursor: start,
+        cursor_lines: start_lines,
         deadline: query.budget.work,
     };
     let found = shared.with_reader(|reader| {
@@ -125,35 +128,6 @@ pub(crate) fn refs(
         [only] => super::hash(Some(only.key.clone())).map(SymbolId),
         _ => None,
     };
-    let mut items = Vec::new();
-    for group in &refs.groups {
-        let accuracy = match group.accuracy {
-            RefAccuracy::ImportedFile => Accuracy::ImportedFile,
-            RefAccuracy::NameOnly if query.include_name_only => Accuracy::NameOnly,
-            RefAccuracy::NameOnly => continue,
-        };
-        let Some(fresh) = freshness(dirty, &group.path) else {
-            continue;
-        };
-        for line in &group.lines {
-            let text = line.text.trim_start();
-            let import = ["use ", "import ", "from ", "#include", "require("]
-                .iter()
-                .any(|lead| text.starts_with(lead));
-            items.push(ReferenceHit::Code(Reference {
-                site: pointer(&group.path, Some((line.line, line.line)), None, fresh)?,
-                kind: if import {
-                    ReferenceKind::Import
-                } else {
-                    ReferenceKind::ValueUse
-                },
-                spelling: line.text.clone(),
-                enclosing: None,
-                resolved_target: resolved,
-                accuracy,
-            }));
-        }
-    }
     let pending = !dirty.paths.is_empty() || dirty.overflowed;
     let partial = refs.deadline_reached
         || refs.files_read_failed > 0
@@ -166,23 +140,111 @@ pub(crate) fn refs(
     if pending {
         index.note(CoverageReason::StaleSnapshot);
     }
-    let next = refs
-        .next_cursor
-        .map(|at| cursor::wrap('r', &at.to_string()))
+    let facts = |next, deadline, bytes| PageFacts {
+        index: &index,
+        budget: query.budget,
+        after: query.next.as_ref(),
+        next,
+        examined: Examined::of(partial, deadline),
+        bytes,
+    };
+    // Sized with the widest cursor, so a page that gains one still fits.
+    let widest = wrap_position(usize::MAX, usize::MAX)?;
+    let mut bytes = envelope::<ReferenceHit>(facts(Some(widest), refs.deadline_reached, 0))?;
+    let max_bytes = query.budget.max_bytes as usize;
+    let mut items = Vec::new();
+    // The listed line the page ends on once the item or byte limit cuts it.
+    let mut cut = None;
+    let mut last = None;
+    'groups: for (at, group) in refs.groups.iter().enumerate() {
+        let Some((accuracy, fresh)) = listed(group, dirty, query.include_name_only) else {
+            continue;
+        };
+        for (line_at, line) in group.lines.iter().enumerate() {
+            let hit = reference(&group.path, line, fresh, accuracy, resolved)?;
+            let cost = size(&hit) + 1;
+            if items.is_empty() && bytes + cost > max_bytes {
+                return Err(records::over_budget(bytes + cost, query.budget.max_bytes));
+            }
+            if items.len() >= usize::from(query.budget.max_results) || bytes + cost > max_bytes {
+                cut = last;
+                break 'groups;
+            }
+            bytes += cost;
+            items.push(hit);
+            last = Some((at, line_at));
+        }
+    }
+    let next = match cut {
+        Some((group, line)) => refs.resume_after(group, line),
+        None => refs.next_cursor.map(|file| (file, refs.next_lines)),
+    };
+    let next = next
+        .map(|(file, lines)| wrap_position(file, lines))
         .transpose()?;
-    let bytes = items.iter().map(|item| size(item) + 1).sum();
-    let value = page(
-        items,
-        PageFacts {
-            index: &index,
-            budget: query.budget,
-            after: query.next.as_ref(),
-            next,
-            partial,
-            bytes,
-        },
-    )?;
+    let deadline = refs.deadline_reached && cut.is_none();
+    let value = page(items, facts(next, deadline, bytes))?;
     checked(answer(&index, Read::Present { value }), query.budget)
+}
+
+/// How a group's lines are listed, or `None` when they are left out: a
+/// name-only match the query did not ask for, or a file since removed.
+fn listed(
+    group: &RefGroup,
+    dirty: &Dirty,
+    include_name_only: bool,
+) -> Option<(Accuracy, SnapshotFreshness)> {
+    let accuracy = match group.accuracy {
+        RefAccuracy::ImportedFile => Accuracy::ImportedFile,
+        RefAccuracy::NameOnly if include_name_only => Accuracy::NameOnly,
+        RefAccuracy::NameOnly => return None,
+    };
+    Some((accuracy, freshness(dirty, &group.path)?))
+}
+
+fn reference(
+    path: &str,
+    line: &RefLine,
+    fresh: SnapshotFreshness,
+    accuracy: Accuracy,
+    resolved: Option<SymbolId>,
+) -> Result<ReferenceHit> {
+    let text = line.text.trim_start();
+    let import = ["use ", "import ", "from ", "#include", "require("]
+        .iter()
+        .any(|lead| text.starts_with(lead));
+    Ok(ReferenceHit::Code(Reference {
+        site: pointer(path, Some((line.line, line.line)), None, fresh)?,
+        kind: if import {
+            ReferenceKind::Import
+        } else {
+            ReferenceKind::ValueUse
+        },
+        spelling: line.text.clone(),
+        enclosing: None,
+        resolved_target: resolved,
+        accuracy,
+    }))
+}
+
+/// A refs page cursor: the candidate file the next page starts at and the
+/// reference lines of that file already listed.
+fn wrap_position(file: usize, lines: usize) -> Result<AtlasCursor> {
+    cursor::wrap('r', &format!("{file}.{lines}"))
+}
+
+/// The position a refs cursor names; a cursor without a line count starts
+/// at the beginning of its file.
+fn position(next: &AtlasCursor) -> Result<(usize, usize)> {
+    let text = cursor::unwrap('r', next)?;
+    let (file, lines) = text.split_once('.').unwrap_or((text.as_str(), "0"));
+    match (file.parse(), lines.parse()) {
+        (Ok(file), Ok(lines)) => Ok((file, lines)),
+        _ => Err(SeError::invalid(
+            "Atlas cursor",
+            "a cursor this query returned; repeat the query without it",
+        )),
+    }
 }
 
 pub(crate) fn impact(
@@ -226,7 +288,8 @@ pub(crate) fn impact(
         let accuracy = match caller.via {
             CallerVia::NameOnly if !query.include_name_only => continue,
             CallerVia::NameOnly => Accuracy::NameOnly,
-            CallerVia::Imports | CallerVia::Dependent => Accuracy::ExplicitImport,
+            // File-level import edges, never a resolved import of the symbol.
+            CallerVia::Imports | CallerVia::Dependent => Accuracy::ImportedFile,
         };
         let Some(fresh) = freshness(dirty, &caller.path) else {
             dropped += 1;
@@ -241,7 +304,7 @@ pub(crate) fn impact(
             dropped += 1;
             continue;
         };
-        let hops = hop(&test.path, fresh, Accuracy::ExplicitImport)?;
+        let hops = hop(&test.path, fresh, Accuracy::ImportedFile)?;
         tests.push(dependent(site(&test.path, fresh)?, hops));
     }
     // Every visibility is a candidate; only core's check makes a hit.

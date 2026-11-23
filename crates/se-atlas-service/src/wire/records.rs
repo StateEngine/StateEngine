@@ -3,7 +3,7 @@
 //! pages and counts are cut after that check, so an answer never reveals
 //! that a record the viewer may not see exists. An authority that cannot
 //! answer is an error, never an empty result.
-use super::{PageFacts, answer, checked, cursor, find::RANK_VERSION, page, size};
+use super::{Examined, PageFacts, answer, checked, cursor, find::RANK_VERSION, page, size};
 use crate::{
     error::{index_error, sqlite},
     read::RecordCheck,
@@ -279,7 +279,7 @@ fn results(
                 budget: query.budget,
                 after: query.next.as_ref(),
                 next,
-                partial,
+                examined: Examined::of(partial, partial),
                 bytes,
             },
         )?,

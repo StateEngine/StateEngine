@@ -73,13 +73,14 @@ pub(crate) fn outline(
     };
     let linked = records::linked(shared, records, &[("file", file_key(path).to_vec())])?;
     value.records = linked.hits;
+    // Symbols go first; linked records only once no symbol is left.
     while size(&answer(
         index,
         Read::Present {
             value: value.clone(),
         },
     )) > query.budget.max_bytes as usize
-        && value.symbols.pop().is_some()
+        && (value.symbols.pop().is_some() || value.records.pop().is_some())
     {
         value.complete = false;
     }
