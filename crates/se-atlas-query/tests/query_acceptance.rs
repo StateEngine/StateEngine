@@ -423,6 +423,7 @@ fn refs_phase_ordering_and_hyphenated_crate_matching() -> TestResult {
 fn refs_custody_refuses_swapped_link_outside_root() -> TestResult {
     let outside = TempDir::new("refs-outside")?;
     outside.write("swap.js", "probe(); // SYNTHETIC_EXTERNAL_SECRET_MARKER\n")?;
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut custody_repo = TestRepo::build(
         "refs-custody",
         &[
