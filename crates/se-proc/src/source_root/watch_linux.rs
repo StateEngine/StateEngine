@@ -1,5 +1,7 @@
 //! One nonblocking inotify source. Directory subscription uses an already
 //! validated no-follow pin; this layer retains no path map or collected events.
+//! A consumer may block in [`NativeSourceWatch::wait`] with no timer: an
+//! eventfd made on first use of [`NativeSourceWatch::wake_handle`] ends it.
 use super::*;
 use std::{
     ffi::{CString, OsStr},
@@ -7,21 +9,88 @@ use std::{
         fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
         unix::ffi::OsStrExt,
     },
+    sync::{Arc, OnceLock},
 };
 
-pub struct NativeSourceWatch(OwnedFd);
+pub struct NativeSourceWatch(OwnedFd, OnceLock<Arc<OwnedFd>>);
 pub struct NativeWatchEvents<'a> {
     bytes: &'a [u8],
+}
+/// Ends a [`NativeSourceWatch::wait`] from any thread.
+#[derive(Clone)]
+pub struct NativeWatchWake(Arc<OwnedFd>);
+impl NativeWatchWake {
+    pub fn wake(&self) -> io::Result<()> {
+        let one = 1u64.to_ne_bytes();
+        // SAFETY: live eventfd and the 8-byte buffer an eventfd write takes.
+        if unsafe { libc::write(self.0.as_raw_fd(), one.as_ptr().cast(), one.len()) } == 8 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        // A full counter already holds a pending wake.
+        match error.kind() {
+            io::ErrorKind::WouldBlock => Ok(()),
+            _ => Err(error),
+        }
+    }
+}
+fn owned(fd: libc::c_int) -> io::Result<OwnedFd> {
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the caller passes a successful new descriptor nobody else owns.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 impl NativeSourceWatch {
     pub fn new() -> io::Result<Self> {
         // SAFETY: fixed supported flags; success returns a new owned descriptor.
         let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
+        Ok(Self(owned(fd)?, OnceLock::new()))
+    }
+    /// A handle that ends [`Self::wait`]. Obtain it before blocking in `wait`
+    /// so the eventfd is registered in `poll`.
+    pub fn wake_handle(&self) -> io::Result<NativeWatchWake> {
+        if let Some(fd) = self.1.get() {
+            return Ok(NativeWatchWake(fd.clone()));
         }
-        // SAFETY: this is the sole owner of the successful new descriptor.
-        Ok(Self(unsafe { OwnedFd::from_raw_fd(fd) }))
+        // SAFETY: fixed supported flags; success returns a new owned descriptor.
+        let fd = Arc::new(owned(unsafe {
+            libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC)
+        })?);
+        Ok(NativeWatchWake(self.1.get_or_init(|| fd).clone()))
+    }
+    /// Block, with no timeout, until events are queued or a wake arrives.
+    /// The wake is consumed; queued events are left for [`Self::read`].
+    pub fn wait(&self) -> io::Result<()> {
+        let wake = self.1.get();
+        let entry = |fd: libc::c_int| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // A negative descriptor is skipped by poll.
+        let mut fds = [
+            entry(self.0.as_raw_fd()),
+            entry(wake.map_or(-1, |fd| fd.as_raw_fd())),
+        ];
+        // SAFETY: two initialized entries over live (or skipped) descriptors.
+        while unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+        let bad = libc::POLLERR | libc::POLLNVAL | libc::POLLHUP;
+        if (fds[0].revents | fds[1].revents) & bad != 0 {
+            return Err(io::Error::other("native watch poll descriptor error"));
+        }
+        if let Some(wake) = wake.filter(|_| fds[1].revents & libc::POLLIN != 0) {
+            let mut count = [0u8; 8];
+            // SAFETY: live nonblocking eventfd and an 8-byte buffer; the read
+            // resets its counter, and a raced empty read is harmless.
+            unsafe { libc::read(wake.as_raw_fd(), count.as_mut_ptr().cast(), 8) };
+        }
+        Ok(())
     }
     pub fn subscribe(
         &self,

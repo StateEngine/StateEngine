@@ -201,7 +201,7 @@ a conditional update into an unconditional overwrite.
         body: r#"Atlas is optional code navigation. se atlas lists find, refs, impact, changes
 and outline. A query requires an installed, enabled controller; status reports
 unavailable, disabled, absent or updating rather than pretending results are empty.
-The native controller currently runs on Linux. Other compositions can report it
+The native controller runs on Linux, Windows and macOS. Other compositions can report it
 unavailable. Optional code indexing is separate from saved conversations and mail.
 
 MCP targets retain their tagged JSON shape. For example, the target of

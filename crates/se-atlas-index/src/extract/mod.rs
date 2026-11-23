@@ -30,12 +30,12 @@ pub mod flags {
     pub const TEST: u32 = 1 << 3;
     pub const GENERATED: u32 = 1 << 4;
     pub const EXTRACT_FAILED: u32 = 1 << 5;
-    /// The file carries inline unit tests (Rust `#[cfg(test)]`).
+    /// The file carries inline unit tests (a Rust `#[cfg(..)]` naming `test`).
     pub const INLINE_TESTS: u32 = 1 << 6;
 }
 
 /// Raised whenever extraction changes its output, so stored indexes rebuild.
-pub const EXTRACTOR_VERSION: i64 = 2;
+pub const EXTRACTOR_VERSION: i64 = 3;
 const BINARY_SNIFF: usize = 8 * 1024;
 const MAX_LINE: usize = 4 * 1024;
 const MINIFIED_AVERAGE_LINE: usize = 300;
@@ -226,13 +226,10 @@ pub fn extract(path: &str, bytes: &[u8], prefix_only: bool) -> Extracted {
         .unwrap_or_else(|_| failed(path, bytes))
 }
 
-fn failed(path: &str, bytes: &[u8]) -> Extracted {
-    let grammar = Grammar::detect(path);
-    let mut counts = HashMap::new();
-    tokens::tokenize(path, &mut counts);
+fn shell(grammar: Grammar, bytes: &[u8], flags: u32, counts: HashMap<String, u32>) -> Extracted {
     Extracted {
         lang: LanguageTag(Cow::Borrowed(grammar.tag())),
-        flags: flags::EXTRACT_FAILED,
+        flags,
         hash: *blake3::hash(bytes).as_bytes(),
         tokens: tokens::sorted(counts),
         accuracy: outline::accuracy_of(grammar),
@@ -241,58 +238,46 @@ fn failed(path: &str, bytes: &[u8]) -> Extracted {
     }
 }
 
+fn failed(path: &str, bytes: &[u8]) -> Extracted {
+    let mut counts = HashMap::new();
+    tokens::tokenize(path, &mut counts);
+    shell(Grammar::detect(path), bytes, flags::EXTRACT_FAILED, counts)
+}
+
 fn extract_guarded(path: &str, bytes: &[u8], prefix_only: bool) -> Extracted {
     let grammar = Grammar::detect(path);
-    let mut out = Extracted {
-        lang: LanguageTag(Cow::Borrowed(grammar.tag())),
-        flags: 0,
-        hash: *blake3::hash(bytes).as_bytes(),
-        tokens: Vec::new(),
-        accuracy: outline::accuracy_of(grammar),
-        symbols: Vec::new(),
-        imports: Vec::new(),
-    };
     let mut counts = HashMap::new();
     tokens::tokenize(path, &mut counts);
     if bytes[..bytes.len().min(BINARY_SNIFF)].contains(&0) {
-        out.flags |= flags::BINARY;
-        out.tokens = tokens::sorted(counts);
-        return out;
+        return shell(grammar, bytes, flags::BINARY, counts);
     }
-    let bytes = bytes.strip_prefix("\u{feff}".as_bytes()).unwrap_or(bytes);
-    let text = String::from_utf8_lossy(bytes);
+    let body = bytes.strip_prefix("\u{feff}".as_bytes()).unwrap_or(bytes);
+    let text = String::from_utf8_lossy(body);
     if prefix_only || minified(&text) {
-        out.flags |= flags::TRUNCATED | flags::MINIFIED;
         tokens::tokenize(char_prefix(&text, MINIFIED_PREFIX), &mut counts);
-        out.tokens = tokens::sorted(counts);
-        return out;
+        return shell(grammar, bytes, flags::TRUNCATED | flags::MINIFIED, counts);
     }
     if lock_file(path) {
         // Generated dependency pins: searchable, but an outline is noise.
-        out.flags |= flags::GENERATED;
         tokens::tokenize(&text, &mut counts);
-        out.tokens = tokens::sorted(counts);
-        return out;
+        return shell(grammar, bytes, flags::GENERATED, counts);
     }
-    let full = std::panic::catch_unwind(|| extract_text(path, &text, grammar));
-    match full {
+    match std::panic::catch_unwind(|| extract_text(path, &text, grammar)) {
         Ok(full) => {
-            for (token, tf) in full.tokens.into_iter().chain(full.name_tokens) {
+            for (token, tf) in full.tokens {
                 *counts.entry(token).or_insert(0) += tf;
             }
-            out.flags |= full.flags;
+            let mut out = shell(grammar, bytes, full.flags, counts);
             out.symbols = full.symbols;
             out.imports = full.imports;
+            out
         }
-        Err(_) => out.flags |= flags::EXTRACT_FAILED,
+        Err(_) => shell(grammar, bytes, flags::EXTRACT_FAILED, counts),
     }
-    out.tokens = tokens::sorted(counts);
-    out
 }
 
 struct FullText {
     tokens: HashMap<String, u32>,
-    name_tokens: Vec<(String, u32)>,
     flags: u32,
     symbols: Vec<Symbol>,
     imports: Vec<ImportSpec>,
@@ -305,11 +290,11 @@ fn extract_text(path: &str, text: &str, grammar: Grammar) -> FullText {
     let (mut symbols, truncated) = outline::outline(grammar, text, &masked);
     outline::assign_keys(path, &mut symbols);
     let imports = imports::extract_imports(grammar, text, &masked);
-    let name_tokens = symbols
-        .iter()
-        .filter(|symbol| !symbol.name.is_empty())
-        .map(|symbol| (symbol.name.to_lowercase(), 1))
-        .collect();
+    for symbol in &symbols {
+        if !symbol.name.is_empty() {
+            *tokens.entry(symbol.name.to_lowercase()).or_insert(0) += 1;
+        }
+    }
     let mut flags = covers::test_flags(path, &masked);
     if truncated {
         flags |= self::flags::TRUNCATED;
@@ -319,7 +304,6 @@ fn extract_text(path: &str, text: &str, grammar: Grammar) -> FullText {
     }
     FullText {
         tokens,
-        name_tokens,
         flags,
         symbols,
         imports,
@@ -337,24 +321,11 @@ fn minified(text: &str) -> bool {
         || (text.len() >= MINIFIED_MIN_BYTES && text.len() / lines.max(1) > MINIFIED_AVERAGE_LINE)
 }
 
-const LOCK_FILES: &[&str] = &[
-    "Cargo.lock",
-    "package-lock.json",
-    "npm-shrinkwrap.json",
-    "yarn.lock",
-    "pnpm-lock.yaml",
-    "bun.lock",
-    "poetry.lock",
-    "Pipfile.lock",
-    "uv.lock",
-    "Gemfile.lock",
-    "composer.lock",
-    "go.sum",
-    "flake.lock",
-];
+const LOCK_FILES: &str = "Cargo.lock package-lock.json npm-shrinkwrap.json yarn.lock pnpm-lock.yaml bun.lock poetry.lock Pipfile.lock uv.lock Gemfile.lock composer.lock go.sum flake.lock";
 
 fn lock_file(path: &str) -> bool {
-    LOCK_FILES.contains(&path.rsplit('/').next().unwrap_or(path))
+    let name = path.rsplit('/').next().unwrap_or(path);
+    LOCK_FILES.split(' ').any(|lock| lock == name)
 }
 
 fn generated(path: &str, text: &str) -> bool {
@@ -370,12 +341,5 @@ fn generated(path: &str, text: &str) -> bool {
 
 /// The longest prefix of at most `limit` bytes that ends on a char boundary.
 pub fn char_prefix(text: &str, limit: usize) -> &str {
-    if text.len() <= limit {
-        return text;
-    }
-    let mut end = limit;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[..end]
+    &text[..text.floor_char_boundary(limit)]
 }
