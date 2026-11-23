@@ -151,17 +151,25 @@ pub fn impact(reader: &Reader, request: &ImpactRequest) -> Result<Answer<Impact>
         let tests = covering_tests(&snapshot, &out.files, &postings)?;
         test_ids.extend(tests.iter().map(|(id, _)| *id));
         out.tests = Section::capped(tests.into_iter().map(|(_, test)| test).collect(), MAX_TESTS);
+    } else {
+        out.tests.more_is_floor = true;
     }
     if on_time(&mut out) {
         callers(
             &snapshot, &target, &postings, &test_ids, depth, &budget, &mut out,
         )?;
+    } else {
+        out.callers.more_is_floor = true;
     }
     if on_time(&mut out) {
         records(&snapshot, &target, &mut out)?;
+    } else {
+        out.records.more_is_floor = true;
     }
     if on_time(&mut out) {
         out.changes = recent_changes(&snapshot, &target)?;
+    } else {
+        out.changes.more_is_floor = true;
     }
     Ok(Answer::Found(out))
 }
