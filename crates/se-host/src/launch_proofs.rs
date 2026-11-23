@@ -3,7 +3,7 @@
 use crate::client::lease::Deadline;
 use std::sync::Arc;
 
-use se_store::{RecordId, RecordIdentity};
+use se_store::RecordId;
 use se_types::{Result, SessionId};
 use std::{collections::BTreeMap, sync::Mutex};
 
@@ -152,10 +152,10 @@ impl PreparedRequestProofs {
             tokio::time::timeout_at(tokio::time::Instant::from_std(deadline.at()),changed).await.map_err(|_|proof_error("credential readiness","actual first-use request witnesses did not arrive before the original launch deadline; no credential was activated"))?;
         }
     }
-    /// Direct protocol harnesses (ACP) already proved live child ownership and
-    /// handshake over their private stdio pipes; fill any lazy or stdio-only
-    /// transport witness rather than blocking on an unused HTTP callback.
-    pub fn observe_or_allocate(&self, session: &SessionId) -> Result<PreparedFirstRequests> {
+    /// Return whichever first-use request witnesses have already arrived for
+    /// this session without fabricating missing IDs. Used by ACP launches that
+    /// already proved direct child ownership over their private stdio handshake.
+    pub fn observed(&self, session: &SessionId) -> Result<ObservedFirstRequests> {
         let slots = self
             .0
             .slots
@@ -167,24 +167,9 @@ impl PreparedRequestProofs {
                 "the exact issued session has no retained verifier slot",
             )
         })?;
-        let next = || -> Result<RecordId> {
-            let mut entropy = [0; 10];
-            se_proc::fill_entropy(&mut entropy)
-                .map_err(|e| proof_error("ACP activation witness", e))?;
-            let now = u64::try_from(crate::runtime::start::now_unix_micros()?)
-                .map_err(|_| proof_error("ACP activation clock", "negative Unix microseconds"))?;
-            RecordId::from_parts(now / 1000, entropy)
-                .map_err(|e| se_core::store_error::store_error(&e))
-        };
-        Ok(PreparedFirstRequests {
-            session_request: match slot.first[0] {
-                Some(id) => id,
-                None => next()?,
-            },
-            http_request: match slot.first[1] {
-                Some(id) => id,
-                None => next()?,
-            },
+        Ok(ObservedFirstRequests {
+            session_request: slot.first[0],
+            http_request: slot.first[1],
         })
     }
     pub fn remove(&self, session: &SessionId) -> Result<()> {
@@ -202,6 +187,12 @@ impl PreparedRequestProofs {
 pub struct PreparedFirstRequests {
     pub session_request: RecordId,
     pub http_request: RecordId,
+}
+/// Observed first-use request identities for launches whose MCP transports may
+/// connect lazily or use stdio only; `None` records absence honestly.
+pub struct ObservedFirstRequests {
+    pub session_request: Option<RecordId>,
+    pub http_request: Option<RecordId>,
 }
 fn proof_error(subject: &str, cause: impl std::fmt::Debug) -> se_types::SeError {
     se_core::scope::unreadable(subject, &format!("{cause:?}"))

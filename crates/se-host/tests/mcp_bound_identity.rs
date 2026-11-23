@@ -37,7 +37,7 @@ fn all_tools_check_each_identity_alias_against_the_authenticated_principal() -> 
                     credential: id,
                     session: session.clone(),
                     expected: revision(1)?,
-                    first_request: session::record()?,
+                    first_request: Some(session::record()?),
                 },
                 EventBody::WorkingStateSet {
                     agent: f.a.clone(),

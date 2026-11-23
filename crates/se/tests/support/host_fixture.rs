@@ -316,7 +316,7 @@ pub(super) fn prepare_session(
                     credential: issued,
                     session: session.clone(),
                     expected: revision(1)?,
-                    first_request: record(52)?,
+                    first_request: Some(record(52)?),
                 },
                 EventBody::CaptureSource {
                     source,

@@ -42,7 +42,7 @@ fn whoami_reports_the_admitted_principal_without_credentials() -> Check {
                     credential: id,
                     session: session.clone(),
                     expected: revision(1)?,
-                    first_request: session::record()?,
+                    first_request: Some(session::record()?),
                 },
             ],
         )?,

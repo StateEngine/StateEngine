@@ -300,10 +300,11 @@ impl LaunchCoordinator {
             _ => None,
         };
         let previous = self.head(work, deadline).await?;
-        let first = if plan.profile.provider == se_store::Provider::Acp {
-            self.proofs.observe_or_allocate(&plan.session)?
+        let (session_request, http_request) = if plan.profile.provider == se_store::Provider::Acp {
+            let observed = self.proofs.observed(&plan.session)?;
+            (observed.session_request, observed.http_request)
         } else {
-            loop {
+            let first = loop {
                 let changed = work.wake.event.notified();
                 tokio::pin!(changed);
                 changed.as_mut().enable();
@@ -311,23 +312,17 @@ impl LaunchCoordinator {
                 self.ensure_live(&owner, &plan.agent.id, true, deadline)
                     .await?;
                 let proof = self.proofs.wait(&plan.session, deadline);
-                tokio::pin!(proof);
-                let result = std::future::poll_fn(|cx| {
-                    use std::{future::Future, task::Poll};
-                    match proof.as_mut().poll(cx) {
-                        Poll::Ready(result) => Poll::Ready(Some(result)),
-                        Poll::Pending => changed.as_mut().poll(cx).map(|()| None),
-                    }
-                })
-                .await;
-                if let Some(result) = result {
-                    break result?;
+                tokio::select! {
+                    biased;
+                    result = proof => break result?,
+                    () = changed => {}
                 }
-            }
+            };
+            (Some(first.session_request), Some(first.http_request))
         };
         let credentials = process_commit::CredentialActivation {
-            session_request: first.session_request,
-            http_request: first.http_request,
+            session_request,
+            http_request,
         };
         let committed_plan = plan.clone();
         work.wake.require_startup()?;

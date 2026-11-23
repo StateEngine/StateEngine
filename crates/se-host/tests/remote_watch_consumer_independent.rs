@@ -181,7 +181,7 @@ fn mcp_watch_reconnect_retains_every_rendered_target_cursor() -> Check {
                     credential,
                     session: session.clone(),
                     expected: revision(1)?,
-                    first_request: session::record()?,
+                    first_request: Some(session::record()?),
                 },
             ],
         )?,

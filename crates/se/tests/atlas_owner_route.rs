@@ -359,7 +359,7 @@ fn five_queries_reach_the_real_owner_after_a_contained_cold_build() -> Check {
                     credential,
                     session: id,
                     expected: revision(1)?,
-                    first_request: session::record()?,
+                    first_request: Some(session::record()?),
                 },
             ],
         )?,

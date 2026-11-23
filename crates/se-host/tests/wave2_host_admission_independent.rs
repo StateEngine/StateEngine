@@ -215,7 +215,7 @@ fn stop_unproved_fence_crosses_sessions_but_not_agent_principals() -> Check {
                             credential: id,
                             session: s,
                             expected: revision(1)?,
-                            first_request: session::record()?,
+                            first_request: Some(session::record()?),
                         },
                         EventBody::WorkingStateSet {
                             agent: agent.clone(),

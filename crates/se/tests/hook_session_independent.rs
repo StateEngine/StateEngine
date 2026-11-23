@@ -247,7 +247,7 @@ fn check_case(case: &str) -> Check {
                 credential,
                 session: id.clone(),
                 expected: revision(1)?,
-                first_request: session::record()?,
+                first_request: Some(session::record()?),
             },
         ]);
     }

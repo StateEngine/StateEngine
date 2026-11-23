@@ -102,7 +102,7 @@ fn seed_mail(f: &Fixture) -> Check {
                     credential: id,
                     session: s,
                     expected: revision(1)?,
-                    first_request: session::record()?,
+                    first_request: Some(session::record()?),
                 },
             ],
         )?,

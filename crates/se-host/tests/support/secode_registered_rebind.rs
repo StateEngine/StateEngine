@@ -85,7 +85,7 @@ fn seed_session(f: &Fixture) -> Check<se_types::SessionId> {
             credential: se_core::ops::process_commit::session_credential_id(&session, purpose)?,
             session: session.clone(),
             expected: revision(1)?,
-            first_request: session::record()?,
+            first_request: Some(session::record()?),
         });
     }
     direct.append(

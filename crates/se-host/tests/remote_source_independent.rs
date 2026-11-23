@@ -130,7 +130,7 @@ fn actual_mcp_source_broker_refuses_loosened_key_and_revoked_credential() -> Che
                     credential,
                     session: session.clone(),
                     expected: revision(1)?,
-                    first_request: session::record()?,
+                    first_request: Some(session::record()?),
                 },
             ],
         )?,

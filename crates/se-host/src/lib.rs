@@ -38,7 +38,9 @@ pub use owner_inventory::decode_owner_inventory;
 #[cfg(feature = "runtime")]
 mod launch_proofs;
 #[cfg(feature = "runtime")]
-pub use launch_proofs::{PreparedFirstRequests, PreparedRequestProofs, VerifiedPreparedRequest};
+pub use launch_proofs::{
+    ObservedFirstRequests, PreparedFirstRequests, PreparedRequestProofs, VerifiedPreparedRequest,
+};
 #[cfg(feature = "listener")]
 mod http;
 #[cfg(feature = "listener")]

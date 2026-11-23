@@ -42,7 +42,7 @@ fn authenticated_mcp_cannot_remove_a_project() -> Check {
                     credential: id,
                     session: session.clone(),
                     expected: revision(1)?,
-                    first_request: session::record()?,
+                    first_request: Some(session::record()?),
                 },
                 EventBody::WorkingStateSet {
                     agent: f.a.clone(),

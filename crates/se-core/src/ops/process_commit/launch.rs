@@ -242,8 +242,8 @@ pub struct CaptureActivation {
     pub incarnation: Vec<u8>,
 }
 pub struct CredentialActivation {
-    pub session_request: RecordId,
-    pub http_request: RecordId,
+    pub session_request: Option<RecordId>,
+    pub http_request: Option<RecordId>,
 }
 pub struct Activation {
     pub capture: Option<CaptureActivation>,
@@ -307,16 +307,21 @@ pub fn activate<R: Snapshot>(
             expected: Expected::Absent,
         });
     }
-    for purpose in ["session", "http"] {
+    for (purpose, first_request) in [
+        ("session", credentials.session_request),
+        ("http", credentials.http_request),
+    ] {
+        if plan.profile.provider != se_store::Provider::Acp && first_request.is_none() {
+            return Err(se_types::SeError::invalid(
+                "credential activation",
+                "verified first-use request identities for both credentials",
+            ));
+        }
         bodies.push(EventBody::CredentialActivated {
             credential: credential_id(plan, purpose)?,
             session: plan.session.clone(),
             expected: revision(1)?,
-            first_request: if purpose == "session" {
-                credentials.session_request
-            } else {
-                credentials.http_request
-            },
+            first_request,
         });
     }
     batch(

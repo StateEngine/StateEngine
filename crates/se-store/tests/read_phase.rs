@@ -119,7 +119,7 @@ fn new_phase_observes_credential_activation_and_revocation() -> Check {
                     credential,
                     session: id.clone(),
                     expected: revision(1)?,
-                    first_request: record()?,
+                    first_request: Some(record()?),
                 },
             ],
         )?,

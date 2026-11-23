@@ -281,13 +281,25 @@ impl Session {
                 failure("ACP model", "open a conversation before setting its model")
             })?
         };
-        self.connection
+        if let Err(err) = self
+            .connection
             .request(
                 "session/set_model",
                 json!({"sessionId": conversation, "modelId": model}),
                 remaining(&cx, until)?,
             )
-            .await?;
+            .await
+        {
+            if err.body.message().contains("protocol error -32601") {
+                return Err(failure(
+                    "ACP model",
+                    format!(
+                        "The selected harness does not support ACP session/set_model for model {model:?}. Omit --model to use its native default, or configure a {{model}} argv slot or model_environment in its harness descriptor, then retry launch."
+                    ),
+                ));
+            }
+            return Err(err);
+        }
         self.synchronize(until).await?;
         ready(&*self.lock()?)?;
         Ok(())

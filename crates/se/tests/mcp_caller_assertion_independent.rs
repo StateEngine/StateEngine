@@ -152,7 +152,7 @@ fn stdio_caller_assertion_tracks_the_authenticated_binding() -> Check {
         credential: id,
         session: session.clone(),
         expected: revision(1)?,
-        first_request: support::session::record()?,
+        first_request: Some(support::session::record()?),
     });
     writer.append(
         f.batch(

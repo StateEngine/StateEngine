@@ -160,7 +160,7 @@ fn discovery(config: se_config::config_policy::ConfigFile) -> Check {
             credential: id,
             session: session.clone(),
             expected: revision(1)?,
-            first_request: support::session::record()?,
+            first_request: Some(support::session::record()?),
         });
     }
     writer.append(
