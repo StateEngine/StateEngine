@@ -10,7 +10,7 @@ publish.workspace = true
 default = ["runtime", "listener", "channels"]
 import = ["se-core/import"]
 runtime = ["se-harness/runtime", "dep:tokio"]
-listener = ["runtime", "se-harness/listener", "se-remote/listener", "se-atlas-cold/listener", "se-atlas-host/listener", "dep:reqwest", "tokio/macros", "tokio/net", "tokio/io-util", "tokio/time", "tokio/sync", "tokio/process", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio-tungstenite", "dep:futures-util", "dep:base64", "dep:se-secode-image"]
+listener = ["runtime", "se-harness/listener", "se-remote/listener", "se-atlas-host/listener", "dep:reqwest", "tokio/macros", "tokio/net", "tokio/io-util", "tokio/time", "tokio/sync", "tokio/process", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio-tungstenite", "dep:futures-util", "dep:base64", "dep:se-secode-image"]
 channels = ["listener", "se-harness/channels", "dep:se-channels"]
 secode = ["runtime", "listener", "se-harness/secode", "dep:secode-stateengine-api"]
 remote = ["se-harness/remote", "dep:se-remote-host", "se-remote/remote", "dep:base64", "listener", "tokio/fs", "dep:chacha20poly1305", "tokio/macros"]
@@ -29,9 +29,7 @@ se-mcp = { path = "../se-mcp" }
 se-store = { path = "../se-store" }
 se-proc = { path = "../se-proc" }
 se-repository = { path = "../se-repository" }
-se-atlas = { path = "../se-atlas" }
 se-secode-image = { path = "../se-secode-image", optional = true }
-se-atlas-cold = { path = "../se-atlas-cold" }
 se-atlas-host = { path = "../se-atlas-host" }
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"], optional = true }
 serde_json.workspace = true
@@ -116,15 +114,6 @@ path = "tests/lifecycle_read_custody_independent.rs"
 required-features = ["channels"]
 
 [dev-dependencies]
-se-atlas = { path = "../se-atlas", features = ["test-clock"] }
 se-channels = { path = "../se-channels", features = ["test-fixture"] }
 rusqlite = { version = "0.41", features = ["hooks"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "io-util"] }
-
-[[test]]
-name = "atlas_cold_crash_dev"
-harness = false
-
-[[test]]
-name = "atlas_cold_history_dev"
-harness = false

@@ -343,7 +343,7 @@ mod served {
             HostedRuntime::prepare(initialized, start(f)?, handle.clone(), &bound()?).await?;
         host.configure(se_config::config_policy::ConfigFile::default())?;
         let se = Path::new(env!("CARGO_BIN_EXE_se")).to_path_buf();
-        host.install_native_atlas(se.clone(), NativeAtlasQualification::default())?;
+        host.install_native_atlas()?;
         let options = ProcessOptions {
             helper_executable: se_types::NativePath::from_local(se)?,
             linux_delegation: se_proc::LinuxDelegation::CurrentScope,

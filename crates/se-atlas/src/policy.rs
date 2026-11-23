@@ -1,103 +1,5 @@
-use crate::{
-    errors::{AtlasResult, capacity},
-    model::*,
-};
+//! The built-in private-file boundary.
 use se_types::code::{AtlasText, RelativePath};
-use std::time::Duration;
-pub fn validate(policy: &AtlasPolicy) -> AtlasResult<()> {
-    if policy.max_files == 0
-        || policy.max_files > 100_000
-        || policy.max_change_rows == 0
-        || policy.max_change_rows > 50_000
-        || policy.change_retention_days == 0
-        || policy.change_retention_days > 30
-        || policy.max_cache_bytes > 512_000_000
-        || policy.total_reserved_bytes > ANONYMOUS_BYTES
-        || policy.parse.reserved_bytes > PARSER_BYTES
-        || policy.parse.max_source_bytes > 524_288
-        || policy.parse.max_rows > 65_536
-        || policy.parse.max_work > Duration::from_millis(200)
-        || policy.parse.max_work.is_zero()
-    {
-        return Err(se_types::SeError::invalid(
-            "Atlas policy",
-            "the finite source, parser, retention, cache and measured steady-state ceilings",
-        ));
-    }
-    let bytes: usize = policy
-        .ignore
-        .global_patterns
-        .iter()
-        .map(String::len)
-        .sum::<usize>()
-        + policy
-            .ignore
-            .generated_prefixes
-            .iter()
-            .map(|p| p.as_str().len())
-            .sum::<usize>();
-    if bytes > 32768 || policy.ignore.generated_prefixes.len() > 32 {
-        return Err(capacity("Atlas ignore metadata", bytes as u64, 32768));
-    }
-    if policy.watch.max_directories > 6144
-        || policy.watch.max_mapping_bytes > 98304
-        || u64::from(policy.watch.max_directories) * 16 > u64::from(policy.watch.max_mapping_bytes)
-        || policy
-            .watch
-            .observed_os_limit
-            .is_some_and(|os| u64::from(policy.watch.max_directories) > os / 8)
-    {
-        return Err(se_types::SeError::invalid(
-            "Atlas watch budget",
-            "the shared OS-fraction, 6144-directory and compact mapping bounds",
-        ));
-    }
-    Ok(())
-}
-pub fn language(path: &RelativePath) -> Option<Language> {
-    match path.as_str().rsplit('.').next()? {
-        "js" | "mjs" | "cjs" => Some(Language::JavaScript),
-        "jsx" => Some(Language::Jsx),
-        "ts" | "mts" | "cts" => Some(Language::TypeScript),
-        "tsx" => Some(Language::Tsx),
-        "rs" => Some(Language::Rust),
-        "py" | "pyi" => Some(Language::Python),
-        _ => None,
-    }
-}
-pub(crate) fn decode_language(bytes: &[u8]) -> Option<Language> {
-    match bytes {
-        b"JavaScript" => Some(Language::JavaScript),
-        b"Jsx" => Some(Language::Jsx),
-        b"TypeScript" => Some(Language::TypeScript),
-        b"Tsx" => Some(Language::Tsx),
-        b"Rust" => Some(Language::Rust),
-        b"Python" => Some(Language::Python),
-        _ => None,
-    }
-}
-pub(crate) fn contains_ascii_ci(haystack: &str, needle: &str) -> bool {
-    needle.is_empty()
-        || haystack
-            .as_bytes()
-            .windows(needle.len())
-            .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
-}
-
-/// The changed-path budget one writer quantum may carry across the cache
-/// connection; commits beyond it are dropped oldest-first, and a final
-/// oversized commit degrades behind an omission note.
-pub const WRITER_QUANTUM_PATHS: usize = 32;
-/// Count the changed native paths proven allowed: portable spelling and not
-/// built-in denied.
-pub fn writer_quantum_allowed(paths: &[String]) -> u32 {
-    paths
-        .iter()
-        .filter(|path| {
-            RelativePath::new(path.as_str()).is_ok_and(|relative| !built_in_denied(&relative))
-        })
-        .count() as u32
-}
 const DENIED_EXACT: &[&str] = &[
     ".git",
     ".stateengine",
@@ -162,7 +64,7 @@ pub fn built_in_denied(path: &RelativePath) -> bool {
 mod tests {
     use super::*;
     #[test]
-    fn private_paths_are_denied_in_any_component() -> AtlasResult<()> {
+    fn private_paths_are_denied_in_any_component() -> se_types::Result<()> {
         for name in [
             ".env",
             ".env.production",

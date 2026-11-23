@@ -1,8 +1,8 @@
 //! The owner's read port: summaries and engines for admitted queries. No
 //! query starts a build; registering a worktree only starts its writer.
 use super::*;
-use crate::atlas_runtime::read_port::{AtlasReadCallback, AtlasReadPort};
-use se_types::code::{IndexState, IndexSummary};
+use crate::atlas_runtime::read_port::AtlasReadPort;
+use se_types::code::{Coverage, IndexState, IndexSummary};
 
 impl Service {
     fn disabled_summary(spec: &RootSpec) -> IndexSummary {
@@ -12,7 +12,7 @@ impl Service {
             epoch: None,
             generation: None,
             state: IndexState::Disabled,
-            coverage: crate::atlas_cold::empty_coverage(),
+            coverage: Coverage::default(),
             memory: None,
         }
     }
@@ -70,17 +70,5 @@ impl AtlasReadPort for Service {
                 "an enabled registered root; set [atlas] enabled = true and restart the host",
             )
         })
-    }
-
-    fn with_reader(
-        &self,
-        _: &ProjectId,
-        _: Option<&RootId>,
-        _: &mut AtlasReadCallback<'_>,
-    ) -> Result<()> {
-        Err(SeError::invalid(
-            "Atlas reader",
-            "the v5 engine; this host no longer lends legacy cache connections",
-        ))
     }
 }

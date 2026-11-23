@@ -47,15 +47,6 @@ pub struct RecordFeedScope {
     pub root: se_types::code::RootId,
     pub epoch: se_types::code::CacheEpoch,
 }
-impl From<&se_atlas::cache::CacheIdentity> for RecordFeedScope {
-    fn from(identity: &se_atlas::cache::CacheIdentity) -> Self {
-        Self {
-            project: identity.scope.registration.project.clone(),
-            root: identity.scope.registration.root.clone(),
-            epoch: identity.epoch.clone(),
-        }
-    }
-}
 #[derive(Default)]
 pub struct RecordFeedFence {
     state: Mutex<State>,

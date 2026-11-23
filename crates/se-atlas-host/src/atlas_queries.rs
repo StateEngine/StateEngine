@@ -4,8 +4,6 @@
 #[cfg(feature = "listener")]
 use crate::atlas_records::AtlasRecordReader;
 use se_atlas::errors::AtlasResult;
-#[cfg(feature = "listener")]
-use se_atlas::query::RecordReader;
 use se_store::Snapshot;
 #[cfg(feature = "listener")]
 use se_store::{Actor, Admission, Scope};
@@ -15,45 +13,6 @@ use se_types::{SeError, code::*};
 
 /// One presentation path for CLI and MCP. JSON remains the typed wire family.
 pub use se_mcp::compact;
-
-/// The legacy cache reader's adapter, kept until that reader is removed.
-/// A hard SQL deadline carries a retry delay; reads are never replayed here.
-pub fn execute(
-    reader: &mut se_atlas::query::QueryReader<'_, '_, '_>,
-    request: &se_core::ops::AtlasRead,
-) -> AtlasResult<se_core::ops::AnyOutput> {
-    use se_core::ops::{
-        AtlasChangesOutput, AtlasFindOutput, AtlasImpactOutput, AtlasOutlineOutput, AtlasRead,
-        AtlasRefsOutput,
-    };
-    let output = match request {
-        AtlasRead::Find(input) => reader
-            .find(&input.query()?)
-            .map(|answer| AtlasFindOutput { answer }.into()),
-        AtlasRead::Refs(input) => reader
-            .refs(&input.query()?)
-            .map(|answer| AtlasRefsOutput { answer }.into()),
-        AtlasRead::Impact(input) => reader
-            .impact(&input.query()?)
-            .map(|answer| AtlasImpactOutput { answer }.into()),
-        AtlasRead::Changes(input) => reader
-            .changes(&input.query()?)
-            .map(|answer| AtlasChangesOutput { answer }.into()),
-        AtlasRead::Outline(input) => reader
-            .outline(&input.query()?)
-            .map(|answer| AtlasOutlineOutput { answer }.into()),
-    };
-    output.map_err(|mut error| {
-        if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail)
-            if detail.op.starts_with("Atlas SQL"))
-        {
-            error.body = error
-                .body
-                .with_retry(se_types::Retry::After(std::time::Duration::from_secs(1)));
-        }
-        error
-    })
-}
 
 /// The admitted viewer; remote grants never read Atlas.
 #[cfg(feature = "listener")]
@@ -319,7 +278,7 @@ mod refusal_tests {
             epoch: None,
             generation: None,
             state: IndexState::Disabled,
-            coverage: crate::atlas_cold::empty_coverage(),
+            coverage: Coverage::default(),
         };
         let request = se_core::ops::AtlasRead::Find(
             serde_json::from_value(serde_json::json!({"query": "main"}))

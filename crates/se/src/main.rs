@@ -459,35 +459,6 @@ fn main() -> std::process::ExitCode {
             }
         };
     }
-    if args
-        .get(1)
-        .is_some_and(|arg| arg == se_proc::atlas_worker::ENTRY)
-    {
-        #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
-        {
-            return finish(
-                if args.len() == 2 {
-                    se_host::atlas_cold::private_entry()
-                } else {
-                    Err(se_types::SeError::invalid(
-                        "Atlas private entry",
-                        "no public arguments",
-                    ))
-                },
-                &args,
-            );
-        }
-        #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
-        {
-            return finish(
-                Err(se_types::SeError::invalid(
-                    "Atlas cold worker",
-                    "native containment on this platform",
-                )),
-                &args,
-            );
-        }
-    }
     if let Some(code) = adoption::entry(&args) {
         return std::process::ExitCode::from(code);
     }

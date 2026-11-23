@@ -9,13 +9,12 @@ use se_store::ReadPhase;
 use se_types::{Generation, Result, SeError};
 use std::{
     any::Any,
-    path::PathBuf,
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
 use tokio::sync::watch;
 
-pub use se_atlas_host::atlas_owner::{NativeAtlasQualification, Service};
+pub use se_atlas_host::atlas_owner::Service;
 
 struct HostAtlasPort {
     context: ExecutionContext,
@@ -73,11 +72,7 @@ impl AtlasHost for HostAtlasPort {
 impl HostedRuntime {
     /// Standalone installation, before listen. The service
     /// begins only in serve, after readiness has been published.
-    pub fn install_native_atlas(
-        &mut self,
-        image: PathBuf,
-        qualification: NativeAtlasQualification,
-    ) -> Result<()> {
+    pub fn install_native_atlas(&mut self) -> Result<()> {
         if self.kind != crate::HostKind::Standalone
             || self.phase != crate::HostPhase::Prepared
             || self.atlas_owner.is_some()
@@ -100,10 +95,8 @@ impl HostedRuntime {
             .enabled;
         let service = Service::new(
             &self.state_directory,
-            image,
             self.owner.clone(),
             enabled,
-            qualification,
             self.execution.atlas.records.clone(),
         )?;
         self.install_atlas_read_port(service.clone())?;
