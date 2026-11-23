@@ -98,7 +98,7 @@ impl Backend {
     /// A fresh authenticated read on every call: the contract is liveness, so
     /// this deliberately does not read the principal memo. During launch, a
     /// verified `Prepared` pin returns `SessionNotActive` (never for revoked,
-    /// expired, fenced or wrong-purpose pins), matching HTTP discovery.
+    /// expired, fenced or wrong-purpose pins), allowing discovery before C3 commits.
     pub fn check_session(&mut self, secret: &Secret) -> Result<()> {
         match self.call_once(secret, AnyOp::ProjectStatus(ProjectStatus::default())) {
             Ok(_) => Ok(()),

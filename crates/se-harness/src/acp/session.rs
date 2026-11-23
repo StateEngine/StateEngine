@@ -121,12 +121,7 @@ impl Session {
     pub fn supports_http_mcp(&self, unadvertised: bool) -> Result<bool> {
         let state = self.lock()?;
         ready(&state)?;
-        Ok(unadvertised
-            || state
-                .capabilities
-                .pointer("/mcpCapabilities/http")
-                .and_then(Value::as_bool)
-                == Some(true))
+        Ok(http_mcp_allowed(&state, unadvertised))
     }
     pub fn observe(&self) -> Result<Observation> {
         let state = self
@@ -212,12 +207,7 @@ impl Session {
             if mcp_servers
                 .iter()
                 .any(|v| v.get("type").and_then(Value::as_str) == Some("http"))
-                && !unadvertised_http_mcp
-                && state
-                    .capabilities
-                    .pointer("/mcpCapabilities/http")
-                    .and_then(Value::as_bool)
-                    != Some(true)
+                && !http_mcp_allowed(&state, unadvertised_http_mcp)
             {
                 return Err(failure(
                     "ACP MCP",
@@ -290,7 +280,7 @@ impl Session {
             )
             .await
         {
-            if err.body.message().contains("protocol error -32601") {
+            if super::wire::is_protocol_error(&err, super::wire::METHOD_NOT_FOUND_CODE) {
                 return Err(failure(
                     "ACP model",
                     format!(
@@ -661,6 +651,15 @@ fn same_history(expected: &[CapturedMessage], replay: &[CapturedMessage]) -> boo
             .iter()
             .zip(replay)
             .all(|(a, b)| a.role == b.role && a.text.trim() == b.text.trim())
+}
+
+fn http_mcp_allowed(state: &State, unadvertised: bool) -> bool {
+    unadvertised
+        || state
+            .capabilities
+            .pointer("/mcpCapabilities/http")
+            .and_then(Value::as_bool)
+            == Some(true)
 }
 
 fn remaining(cx: &CallContext, until: tokio::time::Instant) -> Result<CallContext> {

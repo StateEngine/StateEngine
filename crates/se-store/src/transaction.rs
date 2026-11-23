@@ -487,11 +487,16 @@ impl Engine {
             false,
         )?;
         let event_actor = self.actor_key(&e.header.actor, &scope)?;
-        // Profiles with explicit harnesses or provider overrides refuse older
-        // readers instead of silently losing their launch settings.
+        // Profiles with explicit harnesses or provider overrides, and
+        // handshake-activated credentials without a first request, refuse
+        // older readers instead of failing mid-decode or losing settings.
         let schema_version = match &e.body {
             EventBody::ProfileSaved { profile, .. } if !profile.provider_settings.is_empty() => 3,
             EventBody::ProfileSaved { profile, .. } if profile.harness.is_some() => 2,
+            EventBody::CredentialActivated {
+                first_request: None,
+                ..
+            } => 2,
             _ => 1,
         };
         let writer = WriterMode::from_lease(&self.identity);
