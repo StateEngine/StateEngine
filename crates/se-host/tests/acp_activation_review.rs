@@ -1,4 +1,5 @@
-//! C3 credential activation over a real protected store and FULL writer.
+//! C3 credential activation over a real protected store and FULL writer,
+//! including the event schema version that guards older readers.
 //! Process identities are typed store fixtures, not native launch witnesses.
 #![cfg(any(target_os = "linux", windows))]
 use se_config::config_policy::ConfigFile;
@@ -12,7 +13,7 @@ use se_core::{
     },
 };
 use se_store::*;
-use se_types::{AgentId, LifecycleId, NativePath};
+use se_types::{AgentId, EventId, LifecycleId, NativePath};
 use std::time::Duration;
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
@@ -107,12 +108,26 @@ fn activate(
     ))
 }
 
+/// One stored credential activation: its decoded witness and the schema
+/// version the writer recorded for it.
+#[derive(Debug, PartialEq)]
+struct Stored {
+    event: EventId,
+    first_request: Option<RecordId>,
+    schema_version: i64,
+}
+
+fn database(h: &Harness) -> rusqlite::Result<rusqlite::Connection> {
+    rusqlite::Connection::open(h.f.options.state_directory.join("state.db"))
+}
+
+fn event_key(event: &EventId) -> Result<[u8; 16], Box<dyn std::error::Error>> {
+    Ok(event.canonical_bytes()?.ok_or("canonical event id")?)
+}
+
 /// Commits the batch and reads each stored credential activation back through
 /// the store codec, in batch order (session, then http).
-fn committed_first_requests(
-    h: &Harness,
-    batch: AtomicBatch,
-) -> Result<Vec<Option<RecordId>>, Box<dyn std::error::Error>> {
+fn committed(h: &Harness, batch: AtomicBatch) -> Result<Vec<Stored>, Box<dyn std::error::Error>> {
     let activated: Vec<_> = batch
         .events
         .iter()
@@ -121,14 +136,59 @@ fn committed_first_requests(
         .collect();
     h.commit(batch)?;
     let mut read = h.snapshot(&h.owner())?;
+    let database = database(h)?;
     let mut stored = Vec::new();
     for event in activated {
-        match present(read.event(event)?)?.body {
-            EventBody::CredentialActivated { first_request, .. } => stored.push(first_request),
-            _ => return Err("stored event is not a credential activation".into()),
-        }
+        let EventBody::CredentialActivated { first_request, .. } =
+            present(read.event(event.clone())?)?.body
+        else {
+            return Err("stored event is not a credential activation".into());
+        };
+        let schema_version = database.query_row(
+            "SELECT schema_version FROM events WHERE event_id=?",
+            [event_key(&event)?.as_slice()],
+            |row| row.get(0),
+        )?;
+        stored.push(Stored {
+            event,
+            first_request,
+            schema_version,
+        });
     }
     Ok(stored)
+}
+
+/// Rewrites one stored row's schema version in this test's private database
+/// and returns the code the real decoder refuses it with. Only the immutable
+/// event trigger is removed, so the decoder sees damage an append cannot make.
+fn tampered(
+    h: &Harness,
+    event: &EventId,
+    schema_version: i64,
+) -> Result<StoreErrorCode, Box<dyn std::error::Error>> {
+    let database = database(h)?;
+    let triggers: Vec<String> = database
+        .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='events' AND upper(sql) LIKE '%BEFORE UPDATE%'")?
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    for name in triggers {
+        assert!(name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'));
+        database.execute_batch(&format!("DROP TRIGGER {name}"))?;
+    }
+    assert_eq!(
+        database.execute(
+            "UPDATE events SET schema_version=? WHERE event_id=?",
+            rusqlite::params![schema_version, event_key(event)?.as_slice()],
+        )?,
+        1
+    );
+    drop(database);
+    let mut read = h.snapshot(&h.owner())?;
+    Ok(read
+        .event(event.clone())
+        .err()
+        .ok_or("tampered credential activation decoded as success")?
+        .code)
 }
 
 fn witness(n: u8) -> Result<RecordId, Box<dyn std::error::Error>> {
@@ -174,13 +234,22 @@ fn non_acp_activation_requires_both_verified_first_requests() -> Check {
             http_request: Some(witness(2)?),
         },
     )??;
+    let stored = committed(&h, batch)?;
     assert_eq!(
-        committed_first_requests(&h, batch)?,
-        vec![Some(witness(1)?), Some(witness(2)?)]
+        stored
+            .iter()
+            .map(|s| (s.first_request, s.schema_version))
+            .collect::<Vec<_>>(),
+        vec![(Some(witness(1)?), 1), (Some(witness(2)?), 1)]
     );
     for hash in HASHES {
         assert_eq!(h.credential(hash)?.state, CredentialState::Active);
     }
+    // A version 2 row must not carry a first request.
+    assert_ne!(
+        tampered(&h, &stored[0].event, 2)?,
+        StoreErrorCode::VersionUnsupported
+    );
     h.finish()
 }
 
@@ -215,12 +284,26 @@ fn acp_activation_stores_absent_first_requests_honestly() -> Check {
             http_request: None,
         },
     )??;
+    let stored = committed(&h, batch)?;
     assert_eq!(
-        committed_first_requests(&h, batch)?,
-        vec![Some(witness(3)?), None]
+        stored
+            .iter()
+            .map(|s| (s.first_request, s.schema_version))
+            .collect::<Vec<_>>(),
+        vec![(Some(witness(3)?), 1), (None, 2)],
+        "an absent first request must refuse older readers with schema version 2"
     );
     for hash in HASHES {
         assert_eq!(h.credential(hash)?.state, CredentialState::Active);
     }
+    // A version 1 row must carry a first request; version 3 is unknown.
+    assert_ne!(
+        tampered(&h, &stored[1].event, 1)?,
+        StoreErrorCode::VersionUnsupported
+    );
+    assert_eq!(
+        tampered(&h, &stored[1].event, 3)?,
+        StoreErrorCode::VersionUnsupported
+    );
     h.finish()
 }
