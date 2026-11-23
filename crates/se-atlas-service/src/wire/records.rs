@@ -266,7 +266,7 @@ fn results(
     query: &FindQuery,
     items: Vec<SearchHit>,
     next: Option<se_types::code::AtlasCursor>,
-    partial: bool,
+    timed_out: bool,
     bytes: usize,
 ) -> Result<SearchResults> {
     Ok(SearchResults {
@@ -279,11 +279,15 @@ fn results(
                 budget: query.budget,
                 after: query.next.as_ref(),
                 next,
-                examined: Examined::of(partial, partial),
+                examined: if timed_out {
+                    Examined::Deadline
+                } else {
+                    Examined::All
+                },
                 bytes,
             },
         )?,
-        truncated_candidates: (!partial).then_some(0),
+        truncated_candidates: (!timed_out).then_some(0),
         full: false,
         bodies_omitted: 0,
         text: None,

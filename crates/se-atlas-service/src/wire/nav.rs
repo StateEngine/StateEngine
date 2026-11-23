@@ -156,7 +156,7 @@ pub(crate) fn refs(
     // The listed line the page ends on once the item or byte limit cuts it.
     let mut cut = None;
     let mut last = None;
-    'groups: for (at, group) in refs.groups.iter().enumerate() {
+    'groups: for (group_at, group) in refs.groups.iter().enumerate() {
         let Some((accuracy, fresh)) = listed(group, dirty, query.include_name_only) else {
             continue;
         };
@@ -172,12 +172,16 @@ pub(crate) fn refs(
             }
             bytes += cost;
             items.push(hit);
-            last = Some((at, line_at));
+            last = Some((group_at, line_at));
         }
     }
     let next = match cut {
         Some((group, line)) => refs.resume_after(group, line),
-        None => refs.next_cursor.map(|file| (file, refs.next_lines)),
+        // Omit a non-progressing cursor when the deadline hit before the first resumed file.
+        None => refs
+            .next_cursor
+            .map(|file| (file, refs.next_lines))
+            .filter(|&(file, lines)| start != Some(file) || start_lines != lines),
     };
     let next = next
         .map(|(file, lines)| wrap_position(file, lines))

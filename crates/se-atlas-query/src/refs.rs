@@ -181,11 +181,13 @@ pub fn refs(
     for (at, candidate) in candidates.iter().enumerate().skip(start) {
         if kept >= limit || files >= MAX_SCAN_FILES || bytes >= MAX_SCAN_BYTES {
             out.next_cursor = Some(at);
+            out.next_lines = if at == start { request.cursor_lines } else { 0 };
             break;
         }
         if budget.expired() {
             out.deadline_reached = true;
             out.next_cursor = Some(at);
+            out.next_lines = if at == start { request.cursor_lines } else { 0 };
             break;
         }
         let first = if at == start { request.cursor_lines } else { 0 };
