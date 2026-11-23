@@ -28,6 +28,7 @@ members = [
     "crates/se-atlas",
     "crates/se-atlas-cold",
     "crates/se-atlas-index",
+    "crates/se-atlas-search",
     "crates/se-atlas-host",
     "crates/se-identifiers",
     "crates/se-repository",

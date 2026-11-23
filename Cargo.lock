@@ -1651,6 +1651,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "se-atlas-search"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "grep-regex",
+ "grep-searcher",
+ "regex-syntax",
+ "rusqlite",
+ "se-atlas-index",
+]
+
+[[package]]
 name = "se-channels"
 version = "0.0.1-alpha.1"
 dependencies = [
