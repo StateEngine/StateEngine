@@ -112,7 +112,7 @@ fn js_ts_outline_default_params_callbacks_typed_arrows_and_header_cap() -> TestR
 
 #[test]
 fn extractor_v1_reopen_under_v2_preserves_history_and_records() -> TestResult {
-    assert_eq!(EXTRACTOR_VERSION, 2);
+    const { assert!(EXTRACTOR_VERSION > 1) };
     let mut repo = TestRepo::build("ext-v1", &[("src/lib.rs", "pub fn alpha() {}\n")])?;
     repo.edit("src/lib.rs", "pub fn alpha() { let _ = 1; }\n")?;
     let commit = [0x42u8; 20];

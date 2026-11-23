@@ -7,12 +7,14 @@
 //! every other token holding the piece (a longer run such as a 64-digit hash,
 //! a joined name such as `a::b`, a part with other letters) is found by one
 //! scan of the vocabulary, so a match inside one is never dropped. A piece of
-//! the letters `a` to `f` alone never narrows: it may lie inside a hex run
-//! longer than the index's 128-byte token cap, which no row records.
+//! hex digits alone never narrows: it may lie inside a hex run longer than the
+//! index's 128-byte token cap, which no row records.
 //!
 //! Not covered: a piece inside a single unbroken run of letters longer than
-//! 128 bytes, or a case-insensitive piece that the text's own casing splits
-//! inside a token longer than 128 bytes. The index records neither.
+//! 128 bytes, a case-insensitive piece that the text's own casing splits
+//! inside a token longer than 128 bytes, or a joined name such as `a_b` whose
+//! only occurrence is inside a token longer than 128 bytes. The index records
+//! none of them.
 use crate::{
     Budget, HitField, MatchKind, ScanReason, Scope, SearchOutcome, SearchRequest, confirm,
     rank::{Candidate, Candidates, TermHit},
@@ -93,14 +95,14 @@ fn cold_build_publishing(conn: &Connection) -> Result<bool> {
 /// tokens. `None` when no piece is usable.
 ///
 /// A piece no indexed token contains proves nothing and is skipped, never
-/// read as an empty answer; so is a piece of hex letters alone.
+/// read as an empty answer; so is a piece of hex digits alone.
 fn regex_files(
     snapshot: &ReadSnapshot<'_>,
     pieces: &[String],
 ) -> Result<Option<HashMap<i64, u32>>> {
     let mut narrowing: Vec<(&str, Vec<i64>)> = Vec::new();
     for piece in pieces {
-        if piece.bytes().all(|b| (b'a'..=b'f').contains(&b)) {
+        if piece.bytes().all(|b| b.is_ascii_hexdigit()) {
             continue;
         }
         if let Some(ids) = piece_tokens(snapshot, piece)?

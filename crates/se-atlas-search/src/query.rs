@@ -164,6 +164,8 @@ fn push_unique(list: &mut Vec<String>, item: String) {
 /// case-insensitive letter (`(?i)r`) counts as its lowercase spelling, which
 /// is how the index stores it; text written in any case may split such a
 /// piece, which the regex search covers by also looking at whole tokens.
+/// Each unbroken run of ASCII letters, digits and `_` is a piece too: it lies
+/// inside one whole token, which the index keeps up to its byte cap.
 pub(crate) fn regex_pieces(pattern: &str) -> Result<Vec<String>> {
     let hir = regex_syntax::ParserBuilder::new()
         .build()
@@ -267,6 +269,14 @@ fn literal_pieces(literal: &str) -> Vec<String> {
                 .filter(|part| tokens::is_gram_token(part)),
         );
     }
+    // Whole names are indexed beside their parts, so a joined run such as
+    // `parse_with_options` narrows to the few files holding it.
+    for run in literal.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
+        let run = run.to_ascii_lowercase();
+        if tokens::is_gram_token(&run) && !out.contains(&run) {
+            out.push(run);
+        }
+    }
     out
 }
 
@@ -280,15 +290,21 @@ mod tests {
 
     #[test]
     fn regex_anchors_are_required_identifier_pieces() {
-        assert_eq!(pieces(r"fn\s+scan_worktree\("), ["scan", "worktree"]);
-        assert_eq!(pieces(r"QueryRead(er)?::new"), ["query", "read", "new"]);
+        assert_eq!(
+            pieces(r"fn\s+scan_worktree\("),
+            ["scan", "worktree", "scan_worktree"]
+        );
+        assert_eq!(
+            pieces(r"QueryRead(er)?::new"),
+            ["query", "read", "queryread", "new"]
+        );
         assert_eq!(pieces(r"foo|bar"), Vec::<String>::new());
         assert_eq!(pieces(r"(?i)reader"), ["reader"]);
         assert_eq!(pieces(r"(?i)QueryReader::new"), ["queryreader", "new"]);
         assert_eq!(pieces(r"(?i)[a-z]ead"), ["ead"]);
         assert_eq!(pieces(r"\w+->\w+"), Vec::<String>::new());
         // A trailing acronym may split differently in the text.
-        assert_eq!(pieces(r"loadHTTPS"), ["load"]);
+        assert_eq!(pieces(r"loadHTTPS"), ["load", "loadhttps"]);
         assert_eq!(pieces(r"x+abc"), ["abc"]);
         assert!(regex_pieces("(unclosed").is_err());
     }
