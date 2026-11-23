@@ -47,7 +47,8 @@ impl NativeSourceWatch {
         let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
         Ok(Self(owned(fd)?, OnceLock::new()))
     }
-    /// A handle that ends the current or next [`Self::wait`].
+    /// A handle that ends [`Self::wait`]. Obtain it before blocking in `wait`
+    /// so the eventfd is registered in `poll`.
     pub fn wake_handle(&self) -> io::Result<NativeWatchWake> {
         if let Some(fd) = self.1.get() {
             return Ok(NativeWatchWake(fd.clone()));
@@ -78,6 +79,10 @@ impl NativeSourceWatch {
             if error.kind() != io::ErrorKind::Interrupted {
                 return Err(error);
             }
+        }
+        let bad = libc::POLLERR | libc::POLLNVAL | libc::POLLHUP;
+        if (fds[0].revents | fds[1].revents) & bad != 0 {
+            return Err(io::Error::other("native watch poll descriptor error"));
         }
         if let Some(wake) = wake.filter(|_| fds[1].revents & libc::POLLIN != 0) {
             let mut count = [0u8; 8];

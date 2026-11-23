@@ -51,17 +51,16 @@ pub fn is_test_path(path: &str) -> bool {
         return true;
     }
     let lower = name.to_ascii_lowercase();
-    lower.ends_with("_test.go")
+    ["_test.go", "_tests.rs", "_spec.rb"]
+        .iter()
+        .any(|s| lower.ends_with(s))
+        || ["Test.java", "Tests.java", "Test.kt", "Tests.cs"]
+            .iter()
+            .any(|s| name.ends_with(s))
         || (lower.ends_with(".py") && (lower.starts_with("test_") || lower.ends_with("_test.py")))
         || lower == "conftest.py"
         || lower.contains(".test.")
         || lower.contains(".spec.")
-        || lower.ends_with("_tests.rs")
-        || lower.ends_with("_spec.rb")
-        || name.ends_with("Test.java")
-        || name.ends_with("Tests.java")
-        || name.ends_with("Test.kt")
-        || name.ends_with("Tests.cs")
 }
 
 /// `TEST` and `INLINE_TESTS` flags from the path and test markers. A Rust
@@ -79,13 +78,51 @@ pub fn test_flags(path: &str, text: &str) -> u32 {
     out
 }
 
-/// Whether the predicate after `#[cfg(` names `test` outside a `not(..)`.
-fn enables_test(rest: &str) -> bool {
-    let predicate = rest.split(")]").next().unwrap_or_default();
-    let words = predicate.replace("not(test)", "");
-    words
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .any(|word| word == "test")
+/// Whether the predicate after `#[cfg(` requires `test` (top level or under
+/// `all(..)`, never inside `not(..)` or `any(..)`).
+fn enables_test(mut rest: &str) -> bool {
+    let (mut depth, mut blocked) = (1usize, None);
+    while depth > 0 {
+        let Some(ch) = rest.chars().next() else {
+            break;
+        };
+        match ch {
+            '"' => {
+                let mut chars = rest[1..].chars();
+                while let Some(c) = chars.next() {
+                    if c == '\\' {
+                        chars.next();
+                    } else if c == '"' {
+                        break;
+                    }
+                }
+                rest = chars.as_str();
+            }
+            '(' | ')' => {
+                depth = if ch == '(' { depth + 1 } else { depth - 1 };
+                if blocked.is_some_and(|at| depth <= at) {
+                    blocked = None;
+                }
+                rest = &rest[1..];
+            }
+            c if c.is_ascii_alphabetic() || c == '_' => {
+                let end = rest
+                    .find(|x: char| !x.is_ascii_alphanumeric() && x != '_')
+                    .unwrap_or(rest.len());
+                let (word, tail) = rest.split_at(end);
+                let next = tail.trim_start().as_bytes().first().copied();
+                if matches!(word, "not" | "any") && next == Some(b'(') {
+                    blocked.get_or_insert(depth);
+                } else if word == "test" && blocked.is_none() && !matches!(next, Some(b'(' | b'='))
+                {
+                    return true;
+                }
+                rest = tail;
+            }
+            _ => rest = &rest[ch.len_utf8()..],
+        }
+    }
+    false
 }
 
 /// Every edge from one file acting as a test.
@@ -93,16 +130,16 @@ pub fn covers_for(test: &CoverFile, graph: &dyn CoverGraph) -> crate::Result<Vec
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     let mut add = |out: &mut Vec<Cover>, target: i64, how: CoverHow, via_helper: bool| {
-        if seen.insert(target) {
-            out.push(Cover {
-                test_file: test.id,
-                target_file: target,
-                how,
-                via_helper,
-            });
-            return true;
-        }
-        false
+        seen.insert(target)
+            .then(|| {
+                out.push(Cover {
+                    test_file: test.id,
+                    target_file: target,
+                    how,
+                    via_helper,
+                });
+            })
+            .is_some()
     };
     if test.flags & flags::INLINE_TESTS != 0 {
         add(&mut out, test.id, CoverHow::Inline, false);
@@ -139,11 +176,6 @@ pub fn covers_for(test: &CoverFile, graph: &dyn CoverGraph) -> crate::Result<Vec
     Ok(out)
 }
 
-fn split(path: &str) -> (&str, &str) {
-    path.rfind('/')
-        .map_or(("", path), |at| path.split_at(at + 1))
-}
-
 fn parent(dir: &str) -> &str {
     let trimmed = dir.trim_end_matches('/');
     trimmed.rfind('/').map_or("", |at| &trimmed[..=at])
@@ -151,33 +183,28 @@ fn parent(dir: &str) -> &str {
 
 /// Source files a test's name says it covers.
 fn name_candidates(path: &str) -> Vec<String> {
-    let (dir, name) = split(path);
+    let (dir, name) = path
+        .rfind('/')
+        .map_or(("", path), |at| path.split_at(at + 1));
     let mut out = Vec::new();
     if let Some(stem) = name.strip_suffix("_test.go") {
         out.push(format!("{dir}{stem}.go"));
     }
-    if let Some(rest) = name.strip_suffix(".py")
-        && let Some(stem) = rest
-            .strip_prefix("test_")
-            .or_else(|| rest.strip_suffix("_test"))
+    if let Some(stem) = name
+        .strip_suffix(".py")
+        .and_then(|r| r.strip_prefix("test_").or_else(|| r.strip_suffix("_test")))
     {
-        for base in [
-            dir.to_owned(),
-            parent(dir).to_owned(),
-            format!("{}src/", parent(dir)),
-        ] {
-            out.push(format!("{base}{stem}.py"));
-        }
+        let up = parent(dir);
+        out.extend([
+            format!("{dir}{stem}.py"),
+            format!("{up}{stem}.py"),
+            format!("{up}src/{stem}.py"),
+        ]);
     }
     for marker in [".test.", ".spec."] {
-        if let Some(at) = name.find(marker) {
-            let stem = &name[..at];
-            let ext = &name[at + marker.len()..];
-            let mut dirs = vec![dir];
-            if dir.ends_with("__tests__/") {
-                dirs.push(parent(dir));
-            }
-            for base in dirs {
+        if let Some((stem, ext)) = name.split_once(marker) {
+            let up = dir.ends_with("__tests__/").then(|| parent(dir));
+            for base in std::iter::once(dir).chain(up) {
                 for ext in [ext, "ts", "tsx", "js", "jsx"] {
                     out.push(format!("{base}{stem}.{ext}"));
                 }
@@ -195,8 +222,10 @@ fn name_candidates(path: &str) -> Vec<String> {
         }
     }
     if let (Some(stem), Some(krate)) = (name.strip_suffix(".rs"), dir.strip_suffix("tests/")) {
-        out.push(format!("{krate}src/{stem}.rs"));
-        out.push(format!("{krate}src/{stem}/mod.rs"));
+        out.extend([
+            format!("{krate}src/{stem}.rs"),
+            format!("{krate}src/{stem}/mod.rs"),
+        ]);
     }
     out
 }

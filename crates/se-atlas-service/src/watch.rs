@@ -245,7 +245,7 @@ impl Thread<'_> {
         }
     }
 
-    /// The channel only closes once the watcher itself is gone.
+    /// Block until the native watch or stop signals.
     #[cfg(any(windows, target_os = "macos"))]
     fn sleep(&mut self, woken: &Woken) -> bool {
         woken.recv().is_ok()
