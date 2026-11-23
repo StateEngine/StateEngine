@@ -11,14 +11,26 @@ struct State {
     current: Vec<(RecordFeedScope, u64)>,
     #[cfg(feature = "listener")]
     interests: Vec<se_types::ProjectId>,
-    #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+    #[cfg(all(
+        feature = "listener",
+        any(target_os = "linux", target_os = "macos", windows)
+    ))]
     activity: Vec<se_types::ProjectId>,
-    #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+    #[cfg(all(
+        feature = "listener",
+        any(target_os = "linux", target_os = "macos", windows)
+    ))]
     activity_overflow: bool,
-    #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+    #[cfg(all(
+        feature = "listener",
+        any(target_os = "linux", target_os = "macos", windows)
+    ))]
     registry_dirty: bool,
 }
-#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+#[cfg(all(
+    feature = "listener",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 pub(crate) struct Activity {
     pub projects: Vec<se_types::ProjectId>,
     pub overflow: bool,
@@ -79,7 +91,7 @@ impl RecordFeedFence {
         let guard = self.before_write()?;
         if let se_store::Scope::Project(project) = scope {
             self.interest(project)?;
-            #[cfg(any(target_os = "linux", windows))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             {
                 let mut state = self.lock()?;
                 if !state.activity.contains(project) {
@@ -91,7 +103,7 @@ impl RecordFeedFence {
                 }
             }
         }
-        #[cfg(any(target_os = "linux", windows))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         if matches!(scope, se_store::Scope::Registry) {
             self.lock()?.registry_dirty = true;
         }
@@ -100,7 +112,10 @@ impl RecordFeedFence {
     /// Drain only settled authoritative activity. The source owner performs
     /// all cache/queue IO in its background work; core writers only set bounded
     /// hints. Overflow requests a paged catalogue pass instead of dropping work.
-    #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+    #[cfg(all(
+        feature = "listener",
+        any(target_os = "linux", target_os = "macos", windows)
+    ))]
     pub(crate) fn take_activity(&self) -> Result<Option<Activity>> {
         let mut state = self.lock()?;
         if state.pending != 0 {

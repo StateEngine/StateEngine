@@ -1,60 +1,86 @@
+//! Feed one worktree's engine the next chunk of its project's committed
+//! records. The ticket predates the core snapshot; only an exhausted feed
+//! certifies this root and store epoch as current.
 use super::*;
 use crate::atlas_runtime::record_fence::RecordFeedScope;
-use se_atlas::cache::connection::CacheConnection;
-use se_core::admission::read_scope;
-/// One authoritative record per chunk. The ticket predates the core snapshot;
-/// only an exhausted, committed feed can certify this exact root and epoch.
-pub(super) fn chunk(
-    host: &dyn AtlasHost,
-    owner: &HumanId,
-    controller: &NativeController<NativeRenewal>,
-    root: &RootId,
-) -> Result<bool> {
+use se_core::{admission::read_scope, ops::transcript::tool::ObservedPath};
+use se_types::code::RelativePath;
+use std::path::{Component, Path};
+
+/// Bound for one feed chunk's write.
+const FEED_WRITE: Duration = Duration::from_secs(1);
+
+pub(super) fn chunk(host: &dyn AtlasHost, owner: &HumanId, root: &Root) -> Result<bool> {
     let Some(ticket) = host.records().ticket()? else {
         return Ok(false);
     };
-    let admitted = admission(
-        host,
-        owner,
-        Scope::Project(controller.summary(root)?.project),
-    );
+    let Some(epoch) = root.summary()?.epoch else {
+        return Ok(false);
+    };
+    let spec = root.spec();
+    let admitted = admission(host, owner, Scope::Project(spec.project.clone()));
     let phase = host.checked_read_phase()?;
     let mut snapshot = phase
         .into_snapshot(read_scope(&admitted))
         .map_err(|e| store_error(&e))?;
-    let result = controller.runtime().with_writer(
-        root,
-        Instant::now() + Duration::from_millis(100),
-        |cache, source| {
-            let after = cursor(cache)?;
-            let feed = crate::atlas_records::next_feed(&mut snapshot, &admitted, after, source)?;
-            let complete = match feed {
-                Some(feed) => {
-                    se_atlas::records::apply(
-                        cache,
-                        &feed,
-                        Instant::now() + Duration::from_millis(100),
-                    )?
-                    .complete
-                }
-                None => true,
-            };
-            if complete {
-                return host
-                    .records()
-                    .mark_current(RecordFeedScope::from(cache.identity()), ticket);
-            }
-            Ok(false)
-        },
-    );
+    let result = (|| {
+        let after = root.feed_cursor()?;
+        let feed = se_core::atlas_records::feed::next_with_paths(
+            &mut snapshot,
+            &admitted,
+            after,
+            &mut |path| tool_path(root, path),
+        )?;
+        let complete = match feed {
+            Some(feed) => root.apply_feed(feed, FEED_WRITE)?.complete,
+            None => true,
+        };
+        if !complete {
+            return Ok(false);
+        }
+        host.records().mark_current(
+            RecordFeedScope {
+                project: spec.project.clone(),
+                root: spec.root.clone(),
+                epoch,
+            },
+            ticket,
+        )
+    })();
     close_read(result, snapshot.close())
 }
-fn cursor(cache: &mut CacheConnection<'_>) -> Result<Option<se_types::EventId>> {
-    cache.read(Instant::now() + Duration::from_millis(100), |sql| {
-        let after: Option<String> = sql
-            .prepare("SELECT last_event FROM record_feed WHERE singleton=1")?
-            .query_row([], |r| r.get(0))
-            .map_err(|e| se_core::scope::unreadable("Atlas feed cursor", &e.to_string()))?;
-        after.map(|id| id.parse()).transpose()
-    })
+
+/// A captured tool path inside this worktree, if it names an indexable file
+/// that exists there now. Parent references and private paths never count.
+fn tool_path(root: &Root, path: &ObservedPath) -> Result<Option<RelativePath>> {
+    let spelling = Path::new(&path.spelling);
+    if spelling
+        .components()
+        .any(|p| matches!(p, Component::ParentDir))
+    {
+        return Ok(None);
+    }
+    let absolute = if spelling.is_absolute() {
+        spelling.to_path_buf()
+    } else {
+        let Some(cwd) = path.cwd.as_deref().map(Path::new).filter(|cwd| {
+            cwd.is_absolute() && !cwd.components().any(|p| matches!(p, Component::ParentDir))
+        }) else {
+            return Ok(None);
+        };
+        cwd.join(spelling)
+    };
+    let Ok(relative) = absolute.strip_prefix(&root.spec().source) else {
+        return Ok(None);
+    };
+    let Some(relative) = relative.to_str() else {
+        return Ok(None);
+    };
+    let relative = relative.replace(std::path::MAIN_SEPARATOR, "/");
+    if se_atlas_service::classify(&relative) != se_atlas_service::Reported::Source
+        || !root.has_file(&relative)?
+    {
+        return Ok(None);
+    }
+    Ok(RelativePath::new(relative).ok())
 }

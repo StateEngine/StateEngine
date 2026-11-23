@@ -1,37 +1,13 @@
-//! Independent native component measurements, kept separate from joined admission.
+//! Legacy native component measurements, kept for installers that still
+//! pass them. The v5 engine runs no native parser and ignores them.
 use super::*;
 #[cfg(any(
     all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"),
     all(windows, target_arch = "x86_64")
 ))]
-use se_atlas::parse::ParserPlacement;
+use se_atlas::{model::Language, parse::ParserPlacement};
 impl NativeAtlasQualification {
-    /// Ordinary installation uses the independently measured Linux components.
-    /// Explicit SQL/parser selections retain their bounds; unknown targets
-    /// still carry None. Source beyond the measured 64 KiB stays deferred.
-    #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
-    pub(super) fn with_native_sql(mut self) -> Result<Self> {
-        if self.sql.is_none() {
-            if self.parsers.is_empty() {
-                return Self::measured_linux_components();
-            }
-            self.sql = Some(SqlProfile::from_qualified_overhead(93_702)?);
-        }
-        Ok(self)
-    }
-    #[cfg(all(windows, target_arch = "x86_64"))]
-    pub(super) fn with_native_sql(self) -> Result<Self> {
-        Ok(self)
-    }
-    #[cfg(not(any(
-        all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"),
-        all(windows, target_arch = "x86_64")
-    )))]
-    pub(super) fn with_native_sql(self) -> Result<Self> {
-        Ok(self)
-    }
-    /// The measured six-grammar Linux/glibc component profile is the default.
-    /// This does not qualify the joined owner/watch/query peak or other targets.
+    /// The measured six-grammar Linux/glibc component profile.
     #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
     pub fn measured_linux_components() -> Result<Self> {
         let parsers = [
@@ -60,8 +36,7 @@ impl NativeAtlasQualification {
             parsers,
         })
     }
-    /// The measured Windows x64 component profile does not qualify the joined
-    /// owner, watcher and query peak or shared grammar pages.
+    /// The measured Windows x64 component profile.
     #[cfg(all(windows, target_arch = "x86_64"))]
     pub fn measured_windows_components() -> Result<Self> {
         let parsers = [
@@ -88,16 +63,5 @@ impl NativeAtlasQualification {
             sql: Some(SqlProfile::from_qualified_joined(643_072)?),
             parsers,
         })
-    }
-    pub(super) fn memory(&self) -> MemoryBudget {
-        MemoryBudget {
-            anonymous_ceiling_bytes: ANONYMOUS_BYTES,
-            shared_grammar_pages: self
-                .parsers
-                .iter()
-                .filter_map(|profile| profile.shared_grammar_pages)
-                .max_by_key(|pages| pages.reserved_bytes),
-            joined_qualified: false,
-        }
     }
 }

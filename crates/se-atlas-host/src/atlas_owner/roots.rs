@@ -1,28 +1,23 @@
+//! Registered worktrees from the authoritative catalogue.
 use super::*;
 use se_core::admission::read_scope;
 use se_store::{EventBody, ReadBudget};
 use sha2::{Digest, Sha256};
-use std::{io::Read, num::NonZeroU32};
+use std::num::NonZeroU32;
+
+/// A paged walk of every registered project.
 #[derive(Default)]
 pub(super) struct Scan {
     after: Option<se_types::Cursor>,
-    reconcile_all: bool,
 }
+
 impl Scan {
-    pub(super) fn new(reconcile_all: bool) -> Self {
-        Self {
-            after: None,
-            reconcile_all,
-        }
-    }
-    /// Stream the authoritative catalogue into disk metadata. No project count
-    /// becomes an in-memory registration or a native watch admission limit.
+    /// Register one page of projects. True once the catalogue is exhausted.
     pub(super) fn page(
         &mut self,
         host: &dyn AtlasHost,
         owner: &HumanId,
-        home: &std::path::Path,
-        work: &ProjectWork,
+        service: &Service,
     ) -> Result<bool> {
         let admitted = admission(host, owner, Scope::Registry);
         let phase = host.checked_read_phase()?;
@@ -35,7 +30,7 @@ impl Scan {
                     after: self.after.clone(),
                     limit: NonZeroU32::new(32)
                         .ok_or_else(|| SeError::invalid("Atlas catalogue", "positive limit"))?,
-                    max_bytes: NonZeroU32::new(131072)
+                    max_bytes: NonZeroU32::new(131_072)
                         .ok_or_else(|| SeError::invalid("Atlas catalogue", "positive byte cap"))?,
                 },
                 deadline: Duration::from_millis(100),
@@ -54,11 +49,7 @@ impl Scan {
             match record.current.body {
                 EventBody::ProjectRegistered { project, roots, .. }
                 | EventBody::ProjectUpdated { project, roots, .. } => {
-                    let changed =
-                        work.register(&project, registrations(&project, &roots, home)?)?;
-                    if self.reconcile_all && !changed {
-                        work.request(&project)?;
-                    }
+                    service.register(&project, specs(&project, &roots, &service.home)?)?;
                 }
                 _ => {
                     return Err(SeError::invalid(
@@ -71,11 +62,13 @@ impl Scan {
         Ok(complete)
     }
 }
-pub(super) fn registrations(
+
+/// Each worktree's stable root id and private store directory.
+pub(super) fn specs(
     project: &ProjectId,
     roots: &[se_store::Root],
     home: &std::path::Path,
-) -> Result<Vec<RootRegistration>> {
+) -> Result<Vec<RootSpec>> {
     roots
         .iter()
         .map(|root| {
@@ -94,101 +87,12 @@ pub(super) fn registrations(
                     "an absolute committed native root",
                 ));
             }
-            Ok(RootRegistration {
+            Ok(RootSpec {
                 project: project.clone(),
-                root: id.clone(),
-                canonical_source_root: source,
-                cache: CacheLocation {
-                    directory: home.join(project.as_str()).join(id.as_str()),
-                },
-                git_metadata: None,
+                directory: home.join(project.as_str()).join(id.as_str()),
+                root: id,
+                source,
             })
         })
         .collect()
-}
-pub(super) fn policy(enabled: bool) -> AtlasPolicy {
-    AtlasPolicy {
-        enabled,
-        max_files: 100_000,
-        max_change_rows: 50_000,
-        change_retention_days: 30,
-        max_cache_bytes: 512_000_000,
-        total_reserved_bytes: ANONYMOUS_BYTES,
-        parse: ParseBudget {
-            max_source_bytes: 524288,
-            max_rows: 65536,
-            max_work: Duration::from_millis(200),
-            reserved_bytes: PARSER_BYTES,
-        },
-        ignore: IgnorePolicy {
-            global_patterns: vec!["target/".into(), "node_modules/".into()],
-            generated_prefixes: Vec::new(),
-            digest: ContentHash(
-                Sha256::digest(b"Atlas defaults v1: target/,node_modules/,private-path-denial-v1")
-                    .into(),
-            ),
-        },
-        watch: WatchBudget {
-            max_directories: 1024,
-            max_mapping_bytes: 16384,
-            observed_os_limit: None,
-        },
-    }
-}
-pub(super) fn git(root: &std::path::Path) -> Result<Option<GitMetadataRegistration>> {
-    let source = se_proc::NativeSourceRoot::open(root).map_err(native)?;
-    let git = match source.open_directory(".git") {
-        Ok(Some(_)) => root.join(".git"),
-        Ok(None) => return Ok(None),
-        Err(e) if e.kind() == std::io::ErrorKind::NotADirectory => {
-            let Some(mut file) = source.open_relative(".git").map_err(native)? else {
-                return Ok(None);
-            };
-            let mut text = String::new();
-            (&mut file)
-                .take(4097)
-                .read_to_string(&mut text)
-                .map_err(native)?;
-            if text.len() > 4096 || !file.validate_name().map_err(native)? {
-                return Err(SeError::invalid(
-                    "Git metadata",
-                    "a stable bounded .git pointer",
-                ));
-            }
-            let spelling = text
-                .trim()
-                .strip_prefix("gitdir: ")
-                .ok_or_else(|| SeError::invalid("Git metadata", "a gitdir pointer"))?;
-            root.join(spelling).canonicalize().map_err(native)?
-        }
-        Err(e) => return Err(native(e)),
-    };
-    let git_root = se_proc::NativeSourceRoot::open(&git).map_err(native)?;
-    let common = if let Some(mut file) = git_root.open_relative("commondir").map_err(native)? {
-        let mut text = String::new();
-        (&mut file)
-            .take(4097)
-            .read_to_string(&mut text)
-            .map_err(native)?;
-        if text.len() > 4096 || !file.validate_name().map_err(native)? {
-            return Err(SeError::invalid(
-                "Git metadata",
-                "a stable bounded common-directory pointer",
-            ));
-        }
-        git.join(text.trim()).canonicalize().map_err(native)?
-    } else {
-        git.clone()
-    };
-    let common_root = se_proc::NativeSourceRoot::open(&common).map_err(native)?;
-    Ok(Some(GitMetadataRegistration {
-        physical_git_directory: git,
-        physical_common_directory: common,
-        git_directory_identity: git_root.physical_identity().map_err(native)?,
-        common_directory_identity: common_root.physical_identity().map_err(native)?,
-    }))
-}
-fn native(error: std::io::Error) -> SeError {
-    se_core::scope::unreadable("Atlas registered Git metadata", &error.to_string())
-        .with_cause(error)
 }

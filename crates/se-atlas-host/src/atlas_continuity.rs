@@ -1,10 +1,6 @@
 //! Optional code context borrows the same admitted snapshot as core continuity.
 //! Consumers without an acknowledgement discard the offer and may see it again.
-use crate::{
-    atlas_records::AtlasRecordReader,
-    atlas_runtime::{read_port::AtlasOwnerPort, record_fence::RecordFeedTicket},
-};
-use se_atlas::query::{QueryReader, ReaderContext};
+use crate::atlas_runtime::{read_port::AtlasOwnerPort, record_fence::RecordFeedTicket};
 use se_store::{Actor, Admission, Scope, SqliteSnapshot};
 use se_types::{Read, Result, SeError, code::*};
 use std::time::{Duration, Instant};
@@ -14,7 +10,6 @@ pub(crate) fn source(
     ticket: Option<RecordFeedTicket>,
     read: &mut SqliteSnapshot,
     admission: &Admission,
-    now: i64,
 ) -> Result<ResumeCode> {
     let started = Instant::now();
     let (Scope::Project(project), Actor::Agent(viewer)) = (&admission.scope, &admission.actor)
@@ -60,42 +55,28 @@ pub(crate) fn source(
             return Err(se_core::scope::unreadable(&source, &reason));
         }
     };
-    let mut output = None;
-    owner.with_observed_reader(
-        project,
-        Some(&index.root),
-        ticket,
-        &mut |cache, source, observed| {
-            if output.is_some() || cache.identity().epoch != *epoch {
-                return Err(SeError::invalid(
-                    "Atlas continuity epoch",
-                    "one unchanged borrowed epoch",
-                ));
-            }
-            let records = AtlasRecordReader::new(read, admission);
-            let mut query = QueryReader::new(
-                cache,
-                ReaderContext {
-                    memory: observed.summary.memory,
-                    viewer: AtlasPrincipal::Agent(viewer.clone()),
-                    records: &records,
-                    source: Some(source),
-                    hostless: false,
-                    epoch_retired: observed.epoch_retired,
-                    now_unix_ms: Some(now),
-                    record_feed_current: observed.record_feed_current,
-                },
-            )
-            .with_source_state(observed.summary.state);
-            output = Some(query.resume_code(&ResumeRequest {
-                viewer: viewer.clone(),
-                saved_cursor: saved_cursor.clone(),
-                cursor_revision,
-                recently_edited_symbols: Vec::new(),
-            })?);
-            Ok(())
-        },
-    )?;
+    let engine = owner.engine(project, Some(&index.root))?;
+    let mut output = engine.resume(&ResumeRequest {
+        viewer: viewer.clone(),
+        saved_cursor,
+        cursor_revision,
+        recently_edited_symbols: Vec::new(),
+    })?;
+    if output.index.epoch.as_ref() != Some(epoch) {
+        return Err(SeError::invalid(
+            "Atlas continuity epoch",
+            "one unchanged store epoch",
+        ));
+    }
+    let scope = crate::atlas_runtime::record_fence::RecordFeedScope {
+        project: project.clone(),
+        root: index.root.clone(),
+        epoch: epoch.clone(),
+    };
+    if !owner.records.is_current(&scope, ticket)? {
+        output.index.note(CoverageReason::RecordFeedLag);
+    }
+    fit(&mut output);
     if started.elapsed() > Duration::from_millis(20) {
         return Err(se_types::SeError::new(
             se_types::Detail::AtlasResourceBudget(se_types::details::AtlasResourceBudget {
@@ -105,8 +86,33 @@ pub(crate) fn source(
             }),
         ));
     }
-    output
-        .ok_or_else(|| SeError::invalid("Atlas continuity read", "one completed borrowed callback"))
+    Ok(output)
+}
+/// Drop items until the rendered context fits; past that, no offer at all.
+fn fit(output: &mut ResumeCode) {
+    loop {
+        if se_atlas::render::resume(output).is_ok() {
+            return;
+        }
+        if output.items.pop().is_none() {
+            output.state = ResumeCodeState::BudgetExceeded;
+            output.omitted_since = None;
+            output.advance = None;
+            output.diagnostic = Some(
+                SeError::new(se_types::Detail::AtlasResourceBudget(
+                    se_types::details::AtlasResourceBudget {
+                        resource: "Atlas resume context including retrieval".into(),
+                        requested: 601,
+                        available: 600,
+                    },
+                ))
+                .body,
+            );
+            return;
+        }
+        output.omitted = output.omitted.map(|n| n + 1);
+        output.complete = false;
+    }
 }
 fn short_circuit_state(state: &IndexState) -> Option<ResumeCodeState> {
     match state {
@@ -152,7 +158,7 @@ pub fn attach(
     ) {
         return Ok(());
     }
-    let source = source(owner, ticket, read, admission, now_unix_ms()?);
+    let source = source(owner, ticket, read, admission);
     match output {
         se_core::ops::AnyOutput::Resume(value) => match source {
             Ok(source) => {
@@ -210,20 +216,11 @@ pub fn attach_model(
             "one bound project and agent",
         ));
     };
-    let source =
-        source(owner, ticket, read, admission, now_unix_ms()?).map_err(|error| failed(&error));
+    let source = source(owner, ticket, read, admission).map_err(|error| failed(&error));
     // The current linked consumer has no acknowledgement for this section.
     // Preserve its cursor instead of equating returning a future with delivery.
     drop(se_core::atlas_resume::attach_model_input(
         text, source, project, viewer, maximum, 600,
     )?);
     Ok(())
-}
-
-fn now_unix_ms() -> Result<i64> {
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| se_core::scope::unreadable("system clock", &e.to_string()))?;
-    i64::try_from(elapsed.as_millis())
-        .map_err(|_| SeError::invalid("system clock", "representable milliseconds"))
 }

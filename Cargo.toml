@@ -30,6 +30,7 @@ members = [
     "crates/se-atlas-index",
     "crates/se-atlas-search",
     "crates/se-atlas-query",
+    "crates/se-atlas-service",
     "crates/se-atlas-host",
     "crates/se-identifiers",
     "crates/se-repository",
