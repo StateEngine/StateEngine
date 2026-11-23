@@ -27,36 +27,15 @@ pub(super) fn job_name(reservation: &LaunchReservation) -> ProcResult<String> {
     ))
 }
 fn departed(expected: &ProcessIdentity) -> ProcResult<RootWitness> {
-    let Some(pin) = lookup(expected.pid)? else {
-        return Ok(RootWitness::Identified {
-            expected: expected.clone(),
-            evidence: Box::new(ExitEvidence::Absent),
-            status: ExitStatus::Unavailable {
-                reason: ExitStatusUnavailable::NotOurChild,
+    match inspect_root(expected)? {
+        Err(witness) => Ok(witness),
+        Ok(_) => Err(error(
+            ProcErrorCode::RecoveryUnproved,
+            ProcErrorDetail::Input {
+                field: "cold Windows recovery".into(),
+                reason: "original owner or root is still live; retain its obligation and do not launch a replacement".into(),
             },
-        });
-    };
-    // Join this retained process object to the original birth before asking
-    // for its image. A signalled original object can prove exit even after
-    // Windows has made its executable unreadable; an image error alone cannot.
-    if birth(&pin)? != expected.start || expected.boot != BootIdentity::WindowsAbsoluteCreationClock
-    {
-        let actual = identity(expected.machine.clone(), expected.pid, &pin)?;
-        return Ok(RootWitness::Identified {
-            expected: expected.clone(),
-            evidence: Box::new(ExitEvidence::Replaced { observed: actual }),
-            status: ExitStatus::Unavailable {
-                reason: ExitStatusUnavailable::NotOurChild,
-            },
-        });
-    }
-    match observe(expected, &pin)? {
-        ProcessObservation::Exited { evidence, status, .. } => Ok(RootWitness::Identified {
-            expected: expected.clone(), evidence: Box::new(evidence), status,
-        }),
-        ProcessObservation::Live(_) => Err(error(ProcErrorCode::RecoveryUnproved,
-            ProcErrorDetail::Input { field: "cold Windows recovery".into(),
-                reason: "original owner or root is still live; retain its obligation and do not launch a replacement".into() })),
+        )),
     }
 }
 fn empty_job(scope: &ScopeIdentity) -> ProcResult<ScopeObservation> {
@@ -73,8 +52,20 @@ fn empty_job(scope: &ScopeIdentity) -> ProcResult<ScopeObservation> {
     if raw.is_null() {
         let cause = std::io::Error::last_os_error();
         return if cause.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32) {
+            if *persistent {
+                // Without KILL_ON_JOB_CLOSE, the job name vanishes once the host
+                // and root exit even if a descendant without the anchor handle
+                // remains alive in the unnamed job. Absence cannot prove empty.
+                return Err(error(
+                    ProcErrorCode::RecoveryUnproved,
+                    ProcErrorDetail::Input {
+                        field: "cold recovery job".into(),
+                        reason: "persistent job name is absent after owner/root exit, so remaining descendants cannot be observed; verify no StateEngine-started processes remain and stop them before retrying or removing the record".into(),
+                    },
+                ));
+            }
             // Protected provenance plus outside original-owner/root exit joins
-            // disappearance. This is not an arbitrary pathname absence oracle.
+            // disappearance under KILL_ON_JOB_CLOSE.
             empty(scope.clone())
         } else {
             Err(native(
@@ -102,7 +93,7 @@ fn empty_job(scope: &ScopeIdentity) -> ProcResult<ScopeObservation> {
         .map_err(|e| native(ProcErrorCode::RecoveryUnproved, e.operation, e.source))?;
     if active != 0 {
         return Err(error(ProcErrorCode::RecoveryUnproved, ProcErrorDetail::Input {
-            field: "cold recovery job".into(), reason: "old job remains populated or another owner retains custody; no replacement or signal is authorized".into() }));
+            field: "cold recovery job".into(), reason: "old job remains populated or another owner retains custody; no replacement or signal is authorized; verify and stop the remaining processes in the job before retrying or removing the record".into() }));
     }
     empty(scope.clone())
 }
@@ -242,9 +233,10 @@ impl Driver {
             JOB_OBJECT_QUERY | JOB_OBJECT_SET_ATTRIBUTES | JOB_OBJECT_TERMINATE | READ_CONTROL;
         let job_handle = open_persistent_job(name, &pin, CONTROL_ACCESS)?;
         let notification = self.collector.register(hub)?;
+        // SAFETY: retained verified job handle with JOB_OBJECT_SET_ATTRIBUTES.
+        let cleared = unsafe { job::clear_iocp(job_handle.0) };
         // SAFETY: retained verified job handle and live collector IOCP handle.
         unsafe {
-            job::clear_iocp(job_handle.0);
             job::associate_iocp(
                 job_handle.0,
                 self.collector.handle.0,
@@ -252,7 +244,18 @@ impl Driver {
                 "reassociate persistent job IOCP",
             )
         }
-        .map_err(|e| native(ProcErrorCode::ContainmentUnavailable, e.operation, e.source))?;
+        .map_err(|e| {
+            let mut err = native(ProcErrorCode::ContainmentUnavailable, e.operation, e.source);
+            if let Err(clear_err) = cleared
+                && let ProcErrorDetail::Input { reason, .. } = err.detail.as_mut()
+            {
+                reason.push_str(&format!(
+                    "; prior {} failed: {}",
+                    clear_err.operation, clear_err.source
+                ));
+            }
+            err
+        })?;
         let mut scope = Scope {
             job: job_handle,
             child: Some(spawn::Child {
@@ -275,8 +278,11 @@ impl Driver {
             interrupt_helper: None,
             _notification: notification,
         };
-        // Post-arm reread closes exit/registration races.
-        scope.observe()?;
+        // Post-arm reread closes exit/registration races; if the job emptied
+        // before IOCP was armed, refuse adoption so the caller reconciles.
+        if scope.observe()?.remaining.population == Population::Empty {
+            return Err(changed(&record.root, None));
+        }
         Ok(scope)
     }
 }

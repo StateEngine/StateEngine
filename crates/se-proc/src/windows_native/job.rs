@@ -201,20 +201,24 @@ pub(crate) unsafe fn associate_iocp(
 }
 
 /// SAFETY: caller retains the live job handle with JOB_OBJECT_SET_ATTRIBUTES.
-pub(crate) unsafe fn clear_iocp(job: HANDLE) {
+pub(crate) unsafe fn clear_iocp(job: HANDLE) -> Result<(), Error> {
     let clear = JOBOBJECT_ASSOCIATE_COMPLETION_PORT {
         CompletionKey: ptr::null_mut(),
         CompletionPort: ptr::null_mut(),
     };
     // SAFETY: Windows 8+ clears a prior completion port when CompletionPort is null.
-    let _ = unsafe {
+    if unsafe {
         SetInformationJobObject(
             job,
             JobObjectAssociateCompletionPortInformation,
             (&clear as *const JOBOBJECT_ASSOCIATE_COMPLETION_PORT).cast(),
             size_of_val(&clear) as u32,
         )
-    };
+    } == 0
+    {
+        return Err(last("clear persistent job IOCP"));
+    }
+    Ok(())
 }
 
 /// SAFETY: caller retains the live query-capable job handle.
