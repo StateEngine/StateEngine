@@ -35,7 +35,7 @@ fn live_watcher_settles_tracks_edits_deletes_and_git_head() -> TestResult {
     let summary = wait_current(live.root()?, SETTLE_TIMEOUT)?;
     assert!(
         started.elapsed() < SETTLE_TIMEOUT,
-        "clean repo must settle under 5s"
+        "clean repo must settle under {SETTLE_TIMEOUT:?}"
     );
     assert!(summary.coverage.watch_discovery_complete);
     assert!(summary.coverage.watched_directories >= 1);
