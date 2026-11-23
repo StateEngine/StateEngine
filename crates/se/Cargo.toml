@@ -48,7 +48,7 @@ name = "host_e3"
 harness = false
 
 [dev-dependencies]
-se-atlas = { path = "../se-atlas" }
+se-atlas-index = { path = "../se-atlas-index" }
 rusqlite = { version = "0.41", features = ["bundled"] }
 
 [[bin]]
