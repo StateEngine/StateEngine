@@ -1,4 +1,5 @@
 //! Reservation, native creation and C3 activation store barriers.
+use super::super::session_reference as sref;
 use super::*;
 
 /// C1: process reservation and both prepared credentials precede all native
@@ -73,24 +74,18 @@ fn initial_bodies(
             } else {
                 se_store::SessionSurface::Window
             }),
-            native_ref: match &plan.conversation {
-                se_types::Read::Present { value } => value.to_string(),
-                _ if plan.profile.provider == se_store::Provider::Codex => format!(
-                    "{}{}",
-                    super::super::session_reference::CODEX_PENDING,
-                    plan.session
-                ),
-                _ if plan.profile.provider == se_store::Provider::Acp => format!(
-                    "{}{}",
-                    super::super::session_reference::ACP_PENDING,
-                    plan.session
-                ),
-                _ if plan.profile.provider == se_store::Provider::SeCode => format!(
-                    "{}{}",
-                    super::super::session_reference::SECODE_PENDING,
-                    plan.session
-                ),
-                _ => plan.session.as_str()[se_types::SessionId::PREFIX.len()..].into(),
+            native_ref: match (&plan.conversation, plan.profile.provider) {
+                (se_types::Read::Present { value }, _) => value.to_string(),
+                (_, se_store::Provider::Codex) => {
+                    format!("{}{}", sref::CODEX_PENDING, plan.session)
+                }
+                (_, se_store::Provider::Acp) => format!("{}{}", sref::ACP_PENDING, plan.session),
+                (_, se_store::Provider::SeCode) => {
+                    format!("{}{}", sref::SECODE_PENDING, plan.session)
+                }
+                (_, se_store::Provider::Claude) => {
+                    plan.session.as_str()[se_types::SessionId::PREFIX.len()..].into()
+                }
             },
             consent: if plan.capture {
                 se_store::Consent::Capture
