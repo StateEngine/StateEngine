@@ -39,7 +39,7 @@ fn authenticated_mcp_keeps_rename_owner_only() -> Check {
                     credential: id,
                     session,
                     expected: revision(1)?,
-                    first_request: support::session::record()?,
+                    first_request: Some(support::session::record()?),
                 },
             ],
         )?,

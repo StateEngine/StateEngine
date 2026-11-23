@@ -164,7 +164,7 @@ fn check(image: Option<std::path::PathBuf>) -> Check {
                 credential,
                 session: discovery_session.clone(),
                 expected: revision(1)?,
-                first_request: transport::session::record()?,
+                first_request: Some(transport::session::record()?),
             });
         }
         store.append(

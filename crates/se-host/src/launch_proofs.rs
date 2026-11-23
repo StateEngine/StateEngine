@@ -152,6 +152,26 @@ impl PreparedRequestProofs {
             tokio::time::timeout_at(tokio::time::Instant::from_std(deadline.at()),changed).await.map_err(|_|proof_error("credential readiness","actual first-use request witnesses did not arrive before the original launch deadline; no credential was activated"))?;
         }
     }
+    /// Return whichever first-use request witnesses have already arrived for
+    /// this session without fabricating missing IDs. Used by ACP launches that
+    /// already proved direct child ownership over their private stdio handshake.
+    pub fn observed(&self, session: &SessionId) -> Result<ObservedFirstRequests> {
+        let slots = self
+            .0
+            .slots
+            .lock()
+            .map_err(|_| proof_error("credential readiness", "poisoned verifier registry"))?;
+        let slot = slots.get(session).ok_or_else(|| {
+            proof_error(
+                "credential readiness",
+                "the exact issued session has no retained verifier slot",
+            )
+        })?;
+        Ok(ObservedFirstRequests {
+            session_request: slot.first[0],
+            http_request: slot.first[1],
+        })
+    }
     pub fn remove(&self, session: &SessionId) -> Result<()> {
         self.0
             .slots
@@ -167,6 +187,12 @@ impl PreparedRequestProofs {
 pub struct PreparedFirstRequests {
     pub session_request: RecordId,
     pub http_request: RecordId,
+}
+/// Observed first-use request identities for launches whose MCP transports may
+/// connect lazily or use stdio only; `None` records absence honestly.
+pub struct ObservedFirstRequests {
+    pub session_request: Option<RecordId>,
+    pub http_request: Option<RecordId>,
 }
 fn proof_error(subject: &str, cause: impl std::fmt::Debug) -> se_types::SeError {
     se_core::scope::unreadable(subject, &format!("{cause:?}"))

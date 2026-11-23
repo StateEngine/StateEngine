@@ -173,7 +173,7 @@ fn setup(f: &Fixture) -> Check {
                 },
                 sessions::activated(&session)?,
                 EventBody::CredentialActivated {
-                    first_request: sessions::record()?,
+                    first_request: Some(sessions::record()?),
                     credential,
                     session,
                     expected: revision(1)?,

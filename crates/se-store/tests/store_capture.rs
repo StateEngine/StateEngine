@@ -214,7 +214,7 @@ fn credential_transitions_and_session_end_have_current_revocation_metadata() -> 
                     credential,
                     session: id.clone(),
                     expected: revision(1)?,
-                    first_request: record()?
+                    first_request: Some(record()?)
                 }]
             )?,
             &*lease
@@ -235,7 +235,7 @@ fn credential_transitions_and_session_end_have_current_revocation_metadata() -> 
                     credential,
                     session: id.clone(),
                     expected: revision(1)?,
-                    first_request: record()?,
+                    first_request: Some(record()?),
                 },
             ],
         )?,

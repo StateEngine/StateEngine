@@ -131,7 +131,7 @@ fn cached_connection_observes_newly_committed_activation_and_revocation() -> Che
                     credential,
                     session: session.clone(),
                     expected: revision(1)?,
-                    first_request: record()?,
+                    first_request: Some(record()?),
                 },
             ],
         )?,

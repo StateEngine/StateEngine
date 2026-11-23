@@ -220,7 +220,7 @@ pub enum EventBody<T> {
         credential: RecordId,
         session: SessionId,
         expected: Expected,
-        first_request: RecordId,
+        first_request: Option<RecordId>,
     },
     CredentialRotated {
         credential: RecordId,

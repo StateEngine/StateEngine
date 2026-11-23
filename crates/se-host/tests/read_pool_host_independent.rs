@@ -42,7 +42,7 @@ fn active(f: &Fixture) -> Result<se_store::RecordId, Box<dyn std::error::Error>>
                     credential: id,
                     session,
                     expected: revision(1)?,
-                    first_request: session::record()?,
+                    first_request: Some(session::record()?),
                 },
                 EventBody::WorkingStateSet {
                     agent: f.a.clone(),

@@ -1,4 +1,5 @@
 //! Reservation, native creation and C3 activation store barriers.
+use super::super::session_reference as sref;
 use super::*;
 
 /// C1: process reservation and both prepared credentials precede all native
@@ -73,24 +74,18 @@ fn initial_bodies(
             } else {
                 se_store::SessionSurface::Window
             }),
-            native_ref: match &plan.conversation {
-                se_types::Read::Present { value } => value.to_string(),
-                _ if plan.profile.provider == se_store::Provider::Codex => format!(
-                    "{}{}",
-                    super::super::session_reference::CODEX_PENDING,
-                    plan.session
-                ),
-                _ if plan.profile.provider == se_store::Provider::Acp => format!(
-                    "{}{}",
-                    super::super::session_reference::ACP_PENDING,
-                    plan.session
-                ),
-                _ if plan.profile.provider == se_store::Provider::SeCode => format!(
-                    "{}{}",
-                    super::super::session_reference::SECODE_PENDING,
-                    plan.session
-                ),
-                _ => plan.session.as_str()[se_types::SessionId::PREFIX.len()..].into(),
+            native_ref: match (&plan.conversation, plan.profile.provider) {
+                (se_types::Read::Present { value }, _) => value.to_string(),
+                (_, se_store::Provider::Codex) => {
+                    format!("{}{}", sref::CODEX_PENDING, plan.session)
+                }
+                (_, se_store::Provider::Acp) => format!("{}{}", sref::ACP_PENDING, plan.session),
+                (_, se_store::Provider::SeCode) => {
+                    format!("{}{}", sref::SECODE_PENDING, plan.session)
+                }
+                (_, se_store::Provider::Claude) => {
+                    plan.session.as_str()[se_types::SessionId::PREFIX.len()..].into()
+                }
             },
             consent: if plan.capture {
                 se_store::Consent::Capture
@@ -242,8 +237,8 @@ pub struct CaptureActivation {
     pub incarnation: Vec<u8>,
 }
 pub struct CredentialActivation {
-    pub session_request: RecordId,
-    pub http_request: RecordId,
+    pub session_request: Option<RecordId>,
+    pub http_request: Option<RecordId>,
 }
 pub struct Activation {
     pub capture: Option<CaptureActivation>,
@@ -307,16 +302,21 @@ pub fn activate<R: Snapshot>(
             expected: Expected::Absent,
         });
     }
-    for purpose in ["session", "http"] {
+    for (purpose, first_request) in [
+        ("session", credentials.session_request),
+        ("http", credentials.http_request),
+    ] {
+        if plan.profile.provider != se_store::Provider::Acp && first_request.is_none() {
+            return Err(se_types::SeError::invalid(
+                "credential activation",
+                "verified first-use request identities for both credentials",
+            ));
+        }
         bodies.push(EventBody::CredentialActivated {
             credential: credential_id(plan, purpose)?,
             session: plan.session.clone(),
             expected: revision(1)?,
-            first_request: if purpose == "session" {
-                credentials.session_request
-            } else {
-                credentials.http_request
-            },
+            first_request,
         });
     }
     batch(

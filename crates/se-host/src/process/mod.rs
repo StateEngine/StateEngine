@@ -366,7 +366,9 @@ impl LaunchCoordinator {
         let acp = Arc::new(crate::harness::acp::AcpHarness::new(
             io.clone(),
             options.configuration.clone(),
+            options.helper_executable.to_local()?,
             options.home.clone(),
+            options.http_port,
         ));
         Ok(ProviderHarnesses {
             claude,

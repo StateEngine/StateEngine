@@ -284,28 +284,8 @@ impl LaunchCoordinator {
         };
         // Re-read the native pinned instance after the async provider handshake.
         // An already-exited provider cannot be published as running.
-        let native = self.native.clone();
-        let agent = plan.agent.id.clone();
-        let observed_until = deadline.at();
-        let observation = self
-            .store
-            .pool
-            .run_owned(deadline, move || {
-                native
-                    .observe_until(&owner, observed_until)
-                    .map_err(|e| refused(&agent, "readiness process witness", format!("{e:?}")))
-            })
+        self.ensure_live(&owner, &plan.agent.id, false, deadline)
             .await?;
-        if !matches!(observation.root, se_proc::ProcessObservation::Live(_)) {
-            return Err(refused(
-                &plan.agent.id,
-                "provider readiness",
-                format!(
-                    "provider exited before publication as running: {:?}",
-                    observation.root
-                ),
-            ));
-        }
         let stored = native_record::identity(
             &plan,
             CheckpointKind::Process(record.clone()),
@@ -320,59 +300,29 @@ impl LaunchCoordinator {
             _ => None,
         };
         let previous = self.head(work, deadline).await?;
-        let first = loop {
-            let changed = work.wake.event.notified();
-            tokio::pin!(changed);
-            changed.as_mut().enable();
-            work.wake.require_startup()?;
-            let native = self.native.clone();
-            let agent = plan.agent.id.clone();
-            let observed_until = deadline.at();
-            let owner = work
-                .process
-                .clone()
-                .ok_or_else(|| error("credential readiness", "native owner absent"))?;
-            let observed = self
-                .store
-                .pool
-                .run_owned(deadline, move || {
-                    native.observe_until(&owner, observed_until).map_err(|e| {
-                        refused(
-                            &agent,
-                            "credential readiness process witness",
-                            format!("{e:?}"),
-                        )
-                    })
-                })
-                .await?;
-            if !matches!(observed.root, se_proc::ProcessObservation::Live(_)) {
-                return Err(refused(
-                    &plan.agent.id,
-                    "credential readiness",
-                    format!(
-                        "provider exited before verified first use; no credential was activated: {:?}",
-                        observed.root
-                    ),
-                ));
-            }
-            let proof = self.proofs.wait(&plan.session, deadline);
-            tokio::pin!(proof);
-            let result = std::future::poll_fn(|cx| {
-                use std::future::Future;
-                use std::task::Poll;
-                if let Poll::Ready(result) = proof.as_mut().poll(cx) {
-                    return Poll::Ready(Some(result));
+        let (session_request, http_request) = if plan.profile.provider == se_store::Provider::Acp {
+            let observed = self.proofs.observed(&plan.session)?;
+            (observed.session_request, observed.http_request)
+        } else {
+            let first = loop {
+                let changed = work.wake.event.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                work.wake.require_startup()?;
+                self.ensure_live(&owner, &plan.agent.id, true, deadline)
+                    .await?;
+                let proof = self.proofs.wait(&plan.session, deadline);
+                tokio::select! {
+                    biased;
+                    result = proof => break result?,
+                    () = changed => {}
                 }
-                changed.as_mut().poll(cx).map(|()| None)
-            })
-            .await;
-            if let Some(result) = result {
-                break result?;
-            }
+            };
+            (Some(first.session_request), Some(first.http_request))
         };
         let credentials = process_commit::CredentialActivation {
-            session_request: first.session_request,
-            http_request: first.http_request,
+            session_request,
+            http_request,
         };
         let committed_plan = plan.clone();
         work.wake.require_startup()?;
@@ -585,5 +535,49 @@ impl LaunchCoordinator {
                 argv: resume.map(|value| value.argv),
             },
         })
+    }
+    async fn ensure_live(
+        &self,
+        owner: &Arc<se_proc::OwnedProcess>,
+        agent: &se_types::AgentId,
+        credential: bool,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let (witness, stage, exited) = if credential {
+            (
+                "credential readiness process witness",
+                "credential readiness",
+                "provider exited before verified first use; no credential was activated",
+            )
+        } else {
+            (
+                "readiness process witness",
+                "provider readiness",
+                "provider exited before publication as running",
+            )
+        };
+        let (native, id, until, probe) = (
+            self.native.clone(),
+            agent.clone(),
+            deadline.at(),
+            owner.clone(),
+        );
+        let observed = self
+            .store
+            .pool
+            .run_owned(deadline, move || {
+                native
+                    .observe_until(&probe, until)
+                    .map_err(|e| refused(&id, witness, format!("{e:?}")))
+            })
+            .await?;
+        if !matches!(observed.root, se_proc::ProcessObservation::Live(_)) {
+            return Err(refused(
+                agent,
+                stage,
+                format!("{exited}: {:?}", observed.root),
+            ));
+        }
+        Ok(())
     }
 }

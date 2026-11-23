@@ -131,7 +131,7 @@ fn seed(f: &Fixture) -> Check {
                     credential,
                     session,
                     expected: revision(1)?,
-                    first_request: session_fixture::record()?,
+                    first_request: Some(session_fixture::record()?),
                 },
             ],
         )?,

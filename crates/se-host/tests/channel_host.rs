@@ -140,7 +140,7 @@ fn current_agent_session_cannot_enter_native_owner_channel_frames() -> Check {
                     credential: credential_id,
                     session: s,
                     expected: revision(1)?,
-                    first_request: session::record()?,
+                    first_request: Some(session::record()?),
                 },
             ],
         )?,

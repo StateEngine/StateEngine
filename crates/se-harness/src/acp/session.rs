@@ -118,6 +118,11 @@ impl Session {
     pub fn subscribe(&self) -> watch::Receiver<u64> {
         self.changed.subscribe()
     }
+    pub fn supports_http_mcp(&self, unadvertised: bool) -> Result<bool> {
+        let state = self.lock()?;
+        ready(&state)?;
+        Ok(http_mcp_allowed(&state, unadvertised))
+    }
     pub fn observe(&self) -> Result<Observation> {
         let state = self
             .state
@@ -202,12 +207,7 @@ impl Session {
             if mcp_servers
                 .iter()
                 .any(|v| v.get("type").and_then(Value::as_str) == Some("http"))
-                && !unadvertised_http_mcp
-                && state
-                    .capabilities
-                    .pointer("/mcpCapabilities/http")
-                    .and_then(Value::as_bool)
-                    != Some(true)
+                && !http_mcp_allowed(&state, unadvertised_http_mcp)
             {
                 return Err(failure(
                     "ACP MCP",
@@ -257,6 +257,42 @@ impl Session {
                 "session response did not establish its identity",
             )
         })
+    }
+    pub async fn set_model(&self, model: &str, cx: CallContext) -> Result<()> {
+        valid_id(model)?;
+        let until = super::connection::until(&cx)?;
+        let _input = tokio::time::timeout_at(until, self.input.lock())
+            .await
+            .map_err(|_| failure("ACP input queue", "original admission deadline expired"))?;
+        let conversation = {
+            let state = self.lock()?;
+            ready(&state)?;
+            state.conversation.clone().ok_or_else(|| {
+                failure("ACP model", "open a conversation before setting its model")
+            })?
+        };
+        if let Err(err) = self
+            .connection
+            .request(
+                "session/set_model",
+                json!({"sessionId": conversation, "modelId": model}),
+                remaining(&cx, until)?,
+            )
+            .await
+        {
+            if super::wire::is_protocol_error(&err, super::wire::METHOD_NOT_FOUND_CODE) {
+                return Err(failure(
+                    "ACP model",
+                    format!(
+                        "The selected harness does not support ACP session/set_model for model {model:?}. Omit --model to use its native default, or configure a {{model}} argv slot or model_environment in its harness descriptor, then retry launch."
+                    ),
+                ));
+            }
+            return Err(err);
+        }
+        self.synchronize(until).await?;
+        ready(&*self.lock()?)?;
+        Ok(())
     }
     /// Offers one input once. The request ID proves neither durable provider
     /// acceptance nor canonical capture; keep its original key on uncertainty.
@@ -615,6 +651,15 @@ fn same_history(expected: &[CapturedMessage], replay: &[CapturedMessage]) -> boo
             .iter()
             .zip(replay)
             .all(|(a, b)| a.role == b.role && a.text.trim() == b.text.trim())
+}
+
+fn http_mcp_allowed(state: &State, unadvertised: bool) -> bool {
+    unadvertised
+        || state
+            .capabilities
+            .pointer("/mcpCapabilities/http")
+            .and_then(Value::as_bool)
+            == Some(true)
 }
 
 fn remaining(cx: &CallContext, until: tokio::time::Instant) -> Result<CallContext> {

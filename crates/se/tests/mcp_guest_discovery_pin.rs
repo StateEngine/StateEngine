@@ -313,7 +313,7 @@ mod served {
             credential: id,
             session: session.clone(),
             expected: revision(1)?,
-            first_request: support::session::record()?,
+            first_request: Some(support::session::record()?),
         });
         let request = Some(fixture::request("guest-pin-fixture")?);
         writer.append(f.batch(f.owner_project(), request, events)?, &*lease)?;

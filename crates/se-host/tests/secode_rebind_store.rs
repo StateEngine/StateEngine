@@ -55,7 +55,7 @@ fn setup(h: &Harness) -> Result<se_types::SessionId, Box<dyn std::error::Error>>
             credential: process_commit::session_credential_id(&session, purpose)?,
             session: session.clone(),
             expected: revision(1)?,
-            first_request: capture::record()?,
+            first_request: Some(capture::record()?),
         });
     }
     h.write(events)?;

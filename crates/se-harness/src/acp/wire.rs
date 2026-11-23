@@ -133,12 +133,7 @@ fn decode(bytes: &[u8]) -> Result<Envelope> {
                 .get("code")
                 .and_then(Value::as_i64)
                 .ok_or_else(|| failure("ACP response", "error code absent"))?;
-            // An agent can echo credentials from a rejected MCP request in its
-            // message/data. Public diagnostics retain only its numeric code.
-            Err(failure(
-                "ACP operation",
-                format!("agent returned protocol error {code}; original request is not replayed"),
-            ))
+            Err(protocol_error(code))
         }
         _ => {
             return Err(failure(
@@ -148,4 +143,21 @@ fn decode(bytes: &[u8]) -> Result<Envelope> {
         }
     };
     Ok(Envelope::Response { id, outcome })
+}
+
+pub(super) const METHOD_NOT_FOUND_CODE: i64 = -32601;
+
+pub(super) fn is_protocol_error(err: &se_types::SeError, code: i64) -> bool {
+    err.body
+        .message()
+        .contains(&format!("agent returned protocol error {code};"))
+}
+
+fn protocol_error(code: i64) -> se_types::SeError {
+    // An agent can echo credentials from a rejected MCP request in its
+    // message/data. Public diagnostics retain only its numeric code.
+    failure(
+        "ACP operation",
+        format!("agent returned protocol error {code}; original request is not replayed"),
+    )
 }

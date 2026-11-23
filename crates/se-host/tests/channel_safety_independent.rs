@@ -156,7 +156,7 @@ fn setup(f: &Fixture, agent_session: bool) -> Check {
                 credential,
                 session,
                 expected: revision(1)?,
-                first_request: session::record()?,
+                first_request: Some(session::record()?),
             },
         ]);
     }
