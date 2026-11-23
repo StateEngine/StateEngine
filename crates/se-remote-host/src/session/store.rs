@@ -15,6 +15,7 @@ pub struct SecurityStore {
     pub info: StoreInfo,
     pub generation: u64,
     pub owner: HumanId,
+    pub home: Option<std::path::PathBuf>,
     owner_fault: Option<std::sync::Arc<dyn crate::WriterFaultObserver>>,
 }
 impl SecurityStore {
@@ -38,6 +39,7 @@ impl SecurityStore {
             info,
             generation,
             owner,
+            home: None,
             owner_fault: None,
         })
     }

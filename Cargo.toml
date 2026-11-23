@@ -16,6 +16,7 @@ members = [
     "crates/se-state-files",
     "crates/se-trusted-path",
     "crates/se-native-path",
+    "crates/se-custody",
     "crates/se-fsevents",
     "crates/se-secode-image",
     "crates/se-local-socket",

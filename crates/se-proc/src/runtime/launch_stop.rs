@@ -35,6 +35,7 @@ impl ProcessRuntime for NativeProcessRuntime {
             inner: Arc::new(Arena {
                 config,
                 owner: owner.identity,
+                macos_boot_session: super::reboot::macos_boot_session()?,
                 driver,
                 slots: Mutex::new(HashMap::new()),
                 revision: AtomicU64::new(0),

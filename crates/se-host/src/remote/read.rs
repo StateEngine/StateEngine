@@ -105,7 +105,7 @@ impl SecurityStoreRead for SecurityStore {
         })?;
         facts
             .into_iter()
-            .map(|facts| observe(facts, deadline))
+            .map(|facts| observe(facts, deadline, self.home.as_deref()))
             .collect()
     }
     fn target_page(
@@ -125,7 +125,7 @@ impl SecurityStoreRead for SecurityStore {
         })?;
         facts
             .into_iter()
-            .map(|facts| observe(facts, deadline))
+            .map(|facts| observe(facts, deadline, self.home.as_deref()))
             .collect()
     }
 }
@@ -269,7 +269,11 @@ fn status_of(
         }
     }
 }
-fn observe(facts: TargetFacts, deadline: Instant) -> Result<RemoteAgentView> {
+fn observe(
+    facts: TargetFacts,
+    deadline: Instant,
+    home: Option<&std::path::Path>,
+) -> Result<RemoteAgentView> {
     if Instant::now() >= deadline {
         return Err(scope::unreadable(
             "remote metadata",
@@ -282,6 +286,12 @@ fn observe(facts: TargetFacts, deadline: Instant) -> Result<RemoteAgentView> {
         provider,
     } = identity(facts.principal, facts.profile)?;
     let mut session = session_view(&facts.session, &facts.target.agent)?;
+    let recorded_exit = match &facts.process {
+        Read::Present { value } => {
+            crate::agent_observation::RecordedExit::from_event(&value.current.body)
+        }
+        _ => crate::agent_observation::RecordedExit::Other,
+    };
     let process = process_state(
         facts.process,
         &facts.session,
@@ -337,8 +347,14 @@ fn observe(facts: TargetFacts, deadline: Instant) -> Result<RemoteAgentView> {
         facts.target.project.clone(),
         row.clone(),
         process,
+        recorded_exit,
         recorded_session,
     );
+    let plan = if let Some(home) = home {
+        plan.with_command_home(home)
+    } else {
+        plan
+    };
     crate::observe_agent(plan, deadline)?.apply(&mut row)?;
     let status = status_of(recovering, &row, lifecycle);
     Ok(RemoteAgentView {

@@ -35,6 +35,37 @@ pub(crate) fn boot() -> Result<BootIdentity> {
         microseconds: time.tv_usec,
     })
 }
+pub(crate) fn boot_session() -> Result<se_types::BootId> {
+    let mut bytes = [0_u8; 37];
+    let mut size = bytes.len();
+    // SAFETY: static sysctl name, correctly sized output buffer, and no write.
+    if unsafe {
+        libc::sysctlbyname(
+            c"kern.bootsessionuuid".as_ptr(),
+            bytes.as_mut_ptr().cast(),
+            &mut size,
+            ptr::null_mut(),
+            0,
+        )
+    } != 0
+    {
+        return Err(native("read boot session UUID", io::Error::last_os_error()));
+    }
+    if size != bytes.len() || bytes[36] != 0 {
+        return Err(refuse("read boot session UUID", "invalid native UUID size"));
+    }
+    let id = std::str::from_utf8(&bytes[..36])
+        .map_err(|_| refuse("read boot session UUID", "invalid UUID encoding"))?;
+    let boot = se_types::BootId::new(format!("macos:{}", id.to_ascii_lowercase()))
+        .map_err(|_| refuse("read boot session UUID", "invalid UUID encoding"))?;
+    if !matches!(
+        crate::RebootBoot::parse(&boot),
+        Some(crate::RebootBoot::MacOs(_))
+    ) {
+        return Err(refuse("read boot session UUID", "invalid native UUID"));
+    }
+    Ok(boot)
+}
 fn info(pid: ProcessId) -> Result<libc::proc_bsdinfo> {
     if pid.0 == 0 || pid.0 > i32::MAX as u32 {
         return Err(refuse("read owner ancestry", "invalid process ID"));

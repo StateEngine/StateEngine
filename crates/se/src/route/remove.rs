@@ -94,7 +94,7 @@ fn finish<R: ReadStore>(
                 .unwrap_or("graceful shutdown obligations remain"),
         ));
     }
-    super::process::witness_exit(&target.epoch.owner, bound)?;
+    super::process::witness_exit(files, &target.epoch.owner, bound)?;
     value.runtime.action = "stopped".into();
     value.runtime.witness = witnessed(
         "authenticated graceful down and exact native process exit",

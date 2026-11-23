@@ -37,6 +37,7 @@ pub fn unobserved_session() -> SessionView {
     SessionView {
         state: "unknown".into(),
         recorded_state: None,
+        end_reason: None,
         process_state: Read::Absent {
             checked: "No session process selected yet".into(),
         },

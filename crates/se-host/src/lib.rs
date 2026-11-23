@@ -18,6 +18,7 @@ pub mod channels;
 #[cfg(feature = "listener")]
 pub(crate) use se_harness::child_io;
 pub mod client;
+pub mod host_process;
 pub mod remote;
 #[cfg(feature = "remote")]
 mod return_mail;
@@ -58,6 +59,11 @@ pub(crate) use se_harness::model;
     any(target_os = "linux", target_os = "macos", windows)
 ))]
 mod process;
+#[cfg(all(
+    feature = "listener",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
+mod reboot;
 #[cfg(feature = "listener")]
 pub(crate) use se_harness::process_io;
 #[cfg(feature = "listener")]

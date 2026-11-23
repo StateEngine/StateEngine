@@ -23,29 +23,34 @@ use se_types::{EventId, IdempotencyKey, Result};
 use sha2::{Digest, Sha256};
 use std::num::NonZeroU64;
 
+pub const ENDED_BY_REBOOT: &str = "ended-by-reboot";
 pub fn credential_id(plan: &LaunchPlan, purpose: &str) -> Result<RecordId> {
     session_credential_id(&plan.session, purpose)
+}
+fn derived_parts(seed: [u8; 16], salt: &[u8]) -> (u64, [u8; 10]) {
+    let mut time = [0; 8];
+    time[2..].copy_from_slice(&seed[..6]);
+    let digest = Sha256::new()
+        .chain_update(seed)
+        .chain_update(salt)
+        .finalize();
+    let mut random = [0; 10];
+    random.copy_from_slice(&digest[..10]);
+    (u64::from_be_bytes(time), random)
 }
 pub fn session_credential_id(session: &se_types::SessionId, purpose: &str) -> Result<RecordId> {
     let bytes = session
         .canonical_bytes()?
         .ok_or_else(|| scope::unreadable("launch session", "noncanonical identity"))?;
-    let mut time = [0; 8];
-    time[2..].copy_from_slice(&bytes[..6]);
-    let mut digest = Sha256::new();
-    digest.update(bytes);
-    digest.update(purpose.as_bytes());
-    let mut random = [0; 10];
-    random.copy_from_slice(&digest.finalize()[..10]);
-    RecordId::from_parts(u64::from_be_bytes(time), random)
-        .map_err(|e| crate::store_error::store_error(&e))
+    let (time, random) = derived_parts(bytes, purpose.as_bytes());
+    RecordId::from_parts(time, random).map_err(|e| crate::store_error::store_error(&e))
 }
 pub fn phase_key(key: &IdempotencyKey, phase: &str) -> Result<IdempotencyKey> {
-    let mut hash = Sha256::new();
-    hash.update(key.as_str());
-    hash.update([0]);
-    hash.update(phase);
-    let value = hash.finalize();
+    let value = Sha256::new()
+        .chain_update(key.as_str())
+        .chain_update([0])
+        .chain_update(phase)
+        .finalize();
     format!(
         "process-{}",
         value.iter().map(|b| format!("{b:02x}")).collect::<String>()
@@ -76,14 +81,8 @@ pub(crate) fn batch<R: Snapshot>(
                 kernel.facts()?.event.canonical_bytes()?.ok_or_else(|| {
                     scope::unreadable("lifecycle event", "noncanonical allocation")
                 })?;
-            let mut hash = Sha256::new();
-            hash.update(seed);
-            hash.update((index as u64).to_le_bytes());
-            let mut random = [0; 10];
-            random.copy_from_slice(&hash.finalize()[..10]);
-            let mut time = [0; 8];
-            time[2..].copy_from_slice(&seed[..6]);
-            event.header.event = EventId::from_parts(u64::from_be_bytes(time), random)?;
+            let (time, random) = derived_parts(seed, &(index as u64).to_le_bytes());
+            event.header.event = EventId::from_parts(time, random)?;
         }
         events.push(event);
     }
@@ -138,6 +137,27 @@ pub fn retire_session<R: Snapshot>(
 ) -> Result<AtomicBatch> {
     retire_binding(kernel, plan.session.clone(), active, reason, cx)
 }
+fn terminal_session(
+    session: se_types::SessionId,
+    active: bool,
+    reason: String,
+) -> Result<EventBody<InputText>> {
+    Ok(if active {
+        EventBody::SessionEnded {
+            session,
+            expected: revision(2)?,
+            reason: InputText::Inline(reason),
+            final_turn: None,
+            final_cursor: None,
+        }
+    } else {
+        EventBody::SessionRevoked {
+            session,
+            expected: revision(1)?,
+            reason: InputText::Inline(reason),
+        }
+    })
+}
 pub fn retire_binding<R: Snapshot>(
     kernel: &Kernel,
     session: se_types::SessionId,
@@ -153,21 +173,7 @@ pub fn retire_binding<R: Snapshot>(
             reason: InputText::Inline(reason.clone()),
         });
     }
-    bodies.push(if active {
-        EventBody::SessionEnded {
-            session: session.clone(),
-            expected: revision(2)?,
-            reason: InputText::Inline(reason),
-            final_turn: None,
-            final_cursor: None,
-        }
-    } else {
-        EventBody::SessionRevoked {
-            session: session.clone(),
-            expected: revision(1)?,
-            reason: InputText::Inline(reason),
-        }
-    });
+    bodies.push(terminal_session(session.clone(), active, reason)?);
     batch(
         kernel,
         "agent.launch",
@@ -210,21 +216,7 @@ pub fn end_binding<R: Snapshot>(
     reason: String,
     cx: &Cx<'_, R>,
 ) -> Result<AtomicBatch> {
-    let body = if active {
-        EventBody::SessionEnded {
-            session: session.clone(),
-            expected: revision(2)?,
-            reason: InputText::Inline(reason),
-            final_turn: None,
-            final_cursor: None,
-        }
-    } else {
-        EventBody::SessionRevoked {
-            session: session.clone(),
-            expected: revision(1)?,
-            reason: InputText::Inline(reason),
-        }
-    };
+    let body = terminal_session(session.clone(), active, reason)?;
     batch(
         kernel,
         "agent.launch",

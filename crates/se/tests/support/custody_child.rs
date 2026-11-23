@@ -49,7 +49,8 @@ pub fn identity(
     session: &SessionId,
     child: &Child,
 ) -> Result<(ProcessIdentityRecord, p::ProcessRecord), Box<dyn std::error::Error>> {
-    let machine = se_types::MachineId::new("public-custody-cli")?;
+    let files = se_host::state_files::Files::open(&f.options.state_directory)?;
+    let machine = se_host::state_files::machine_identity(&files)?;
     let observed = p::read_process(machine.clone(), p::ProcessId(child.0.id()))
         .map_err(|e| format!("native child: {e:?}"))?;
     let p::ProcessRead::Present(observed) = observed else {
@@ -63,6 +64,7 @@ pub fn identity(
         Sha256::digest(std::fs::read(format!("/proc/{}/cmdline", child.0.id()))?).into();
     let lifecycle = LifecycleId::from_parts(1_700_000_000_000 + serial(), [81; 10])?;
     let record = p::ProcessRecord {
+        macos_boot_session: None,
         format_version: 1,
         lifecycle: lifecycle.clone(),
         host: p::HostInstanceId([7; 16]),

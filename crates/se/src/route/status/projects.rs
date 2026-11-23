@@ -4,6 +4,7 @@ use super::*;
 pub(super) fn page<R: ReadStore>(
     reader: &R,
     admission: &Admission,
+    home: &std::path::Path,
 ) -> Result<se_types::Page<ProjectSummary>> {
     let deadline = super::super::session_observation::deadline()?;
     let page = registered_projects_page(reader, admission)?;
@@ -14,7 +15,9 @@ pub(super) fn page<R: ReadStore>(
     let next = page.next().cloned();
     let mut rows = Vec::new();
     for record in page.into_items() {
-        rows.push(project_summary_row(reader, admission, deadline, record)?);
+        rows.push(project_summary_row(
+            reader, admission, deadline, home, record,
+        )?);
     }
     fields.returned = rows.len() as u64;
     fields.bytes = serde_json::to_vec(&rows)
@@ -42,6 +45,7 @@ fn project_summary_row<R: ReadStore>(
     reader: &R,
     admission: &Admission,
     deadline: std::time::Instant,
+    home: &std::path::Path,
     record: se_store::ProjectionRecord,
 ) -> Result<ProjectSummary> {
     let Some((id, name, roots)) = super::super::select::active_project(&record.current.body) else {
@@ -90,7 +94,7 @@ fn project_summary_row<R: ReadStore>(
                     errors.push(store_error(&error).body);
                     owner_unread = None;
                 }
-                Ok(()) => match observed.and_then(|rows| count_running(rows, deadline)) {
+                Ok(()) => match observed.and_then(|rows| count_running(rows, deadline, home)) {
                     Ok(count) => agents_running = Some(count),
                     Err(error) => errors.push(error.body),
                 },
@@ -139,10 +143,11 @@ fn prepare_running<S: Snapshot>(
 fn count_running(
     rows: Vec<(AgentRow, se_host::AgentObservationPlan)>,
     deadline: std::time::Instant,
+    home: &std::path::Path,
 ) -> Result<u64> {
     let mut running = 0;
     for (mut row, plan) in rows {
-        se_host::observe_agent(plan, deadline)?.apply(&mut row)?;
+        se_host::observe_agent(plan.with_command_home(home), deadline)?.apply(&mut row)?;
         match &row.session.liveness {
             Read::Unknown { what } => {
                 return Err(scope::unreadable(

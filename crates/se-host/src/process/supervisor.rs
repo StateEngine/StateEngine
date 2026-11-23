@@ -27,6 +27,7 @@ pub(super) struct Job {
     pub lifecycle: se_types::LifecycleId,
     /// Fixed for the lifecycle; lets a login's shared server count its agents.
     pub provider: se_store::Provider,
+    pub ended_by_reboot: bool,
     /// Immutable metadata shared with Work; pending replies never wait on its lock.
     pub plan: Option<Arc<LaunchPlan>>,
     pub takeover: Option<se_core::ops::agent_launch::TakeoverReport>,
@@ -195,6 +196,7 @@ impl LaunchCoordinator {
                 }
                 let wake = work.wake.clone();
                 let job = Arc::new(Job {
+                    ended_by_reboot: false,
                     intent,
                     target,
                     session: work.meta.session.clone(),

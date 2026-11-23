@@ -10,25 +10,7 @@ impl LaunchCoordinator {
         fallback: Option<se_types::Read<se_types::ProviderSessionId>>,
     ) -> Result<AnyOutput> {
         let mut reports = stopped.lock().await;
-        let replan = || {
-            let (input, seed, configuration) = (
-                plan.input.clone(),
-                plan.seed.clone(),
-                self.options.configuration.clone(),
-            );
-            move |cx: &mut se_core::commit::Cx<'_, _>| {
-                let mut facts = crate::runtime::start::allocate_facts()?;
-                facts.event = seed;
-                se_core::ops::process_plan::launch(
-                    &se_core::dispatch::Kernel::new(facts)?,
-                    input,
-                    &configuration,
-                    cx,
-                )
-            }
-        };
-        let store = &self.store;
-        let mut checked = store.read(admission.clone(), deadline, replan()).await?;
+        let mut checked = self.replan_launch(&plan, &admission, deadline).await?;
         checked.prepare_replacement(&plan, None, false)?;
         let mut failures = Vec::new();
         let embedded = self
@@ -84,8 +66,8 @@ impl LaunchCoordinator {
                 .chain(embedded.iter().map(|binding| binding.report()))
                 .collect(),
         )?;
-        let mut next = store
-            .read(admission.clone(), deadline, replan())
+        let mut next = self
+            .replan_launch(&plan, &admission, deadline)
             .await
             .map_err(|failure| successor_failure(&report, failure))?;
         next.prepare_replacement(&plan, fallback, report.new_conversation)
@@ -102,5 +84,27 @@ impl LaunchCoordinator {
         .await
         .map_err(|failure| successor_failure(&report, failure))
         .map(AnyOutput::from)
+    }
+    pub(crate) async fn replan_launch(
+        &self,
+        plan: &LaunchPlan,
+        admission: &Admission,
+        deadline: &Deadline,
+    ) -> Result<LaunchPlan> {
+        let input = plan.input.clone();
+        let seed = plan.seed.clone();
+        let configuration = self.options.configuration.clone();
+        self.store
+            .read(admission.clone(), deadline, move |cx| {
+                let mut facts = crate::runtime::start::allocate_facts()?;
+                facts.event = seed;
+                se_core::ops::process_plan::launch(
+                    &se_core::dispatch::Kernel::new(facts)?,
+                    input,
+                    &configuration,
+                    cx,
+                )
+            })
+            .await
     }
 }
