@@ -186,7 +186,7 @@ fn feed_edit_change<R: Snapshot>(
                 body: tool.description(),
                 body_truncated: false,
                 visibility: audience(event),
-                mentions,
+                mentions: bound_mentions(mentions),
             };
             record.validate()?;
             changes.push(RecordFeedChange::Upsert(record));
@@ -294,14 +294,8 @@ fn feed_upsert<R: Snapshot>(
         Read::Present { value } => {
             let mut body = value.body;
             let truncated = body.len() > 65536;
-            if truncated {
-                let mut end = 65536;
-                while !body.is_char_boundary(end) {
-                    end -= 1;
-                }
-                body.truncate(end);
-            }
-            let record = FeedRecord {
+            body.truncate(body.floor_char_boundary(65536));
+            let mut record = FeedRecord {
                 pointer,
                 project: project.clone(),
                 actor: value.actor,
@@ -310,8 +304,12 @@ fn feed_upsert<R: Snapshot>(
                 visibility: audience(event),
                 body,
                 body_truncated: truncated,
-                mentions: explicit_mentions(read, event, project)?,
+                mentions: bound_mentions(explicit_mentions(read, event, project)?),
             };
+            record.title.truncate(record.title.floor_char_boundary(160));
+            if let Some(actor) = record.actor.as_mut() {
+                actor.name.truncate(actor.name.floor_char_boundary(160));
+            }
             record.validate()?;
             changes.push(RecordFeedChange::Upsert(record));
         }
@@ -371,6 +369,13 @@ fn explicit_mentions<R: Snapshot>(
         }
     }
     Ok(output)
+}
+
+fn bound_mentions(mut out: Vec<MentionTarget>) -> Vec<MentionTarget> {
+    while out.len() > 256 || serde_json::to_vec(&out).map_or(usize::MAX, |v| v.len()) > 32768 {
+        out.pop();
+    }
+    out
 }
 
 // These hints mirror the store's SelfOnly event visibility. Ordinary record
