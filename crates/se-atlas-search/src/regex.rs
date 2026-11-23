@@ -11,8 +11,10 @@
 //! longer than the index's 128-byte token cap, which no row records.
 //!
 //! Not covered: a piece inside a single unbroken run of letters longer than
-//! 128 bytes, or a case-insensitive piece that the text's own casing splits
-//! inside a token longer than 128 bytes. The index records neither.
+//! 128 bytes, a case-insensitive piece that the text's own casing splits
+//! inside a token longer than 128 bytes, or a joined name such as `a_b` whose
+//! only occurrence is inside a token longer than 128 bytes. The index records
+//! none of them.
 use crate::{
     Budget, HitField, MatchKind, ScanReason, Scope, SearchOutcome, SearchRequest, confirm,
     rank::{Candidate, Candidates, TermHit},

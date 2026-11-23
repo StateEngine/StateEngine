@@ -32,7 +32,7 @@ pub use watch_directory::NativeWatchDirectory;
 #[cfg(target_os = "linux")]
 mod watch_linux;
 #[cfg(target_os = "linux")]
-pub use watch_linux::{NativeSourceWatch, NativeWatchEvents};
+pub use watch_linux::{NativeSourceWatch, NativeWatchEvents, NativeWatchWake};
 #[cfg(windows)]
 #[path = "../source_watch/windows.rs"]
 mod watch_windows;

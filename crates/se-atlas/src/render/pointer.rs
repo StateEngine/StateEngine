@@ -14,9 +14,11 @@ pub(super) fn location(path: &RelativePath, span: Option<Span>) -> String {
         if last > span.start.line {
             output.push_str(&format!("-{last}"));
         }
-        output.push_str(&format!(" ({} B)", span.end_byte - span.start_byte));
-    } else {
-        output.push_str(" (size unavailable)");
+    }
+    // An empty byte range is an extent nobody measured, not zero bytes.
+    match span.filter(|span| span.end_byte > span.start_byte) {
+        Some(span) => output.push_str(&format!(" ({} B)", span.end_byte - span.start_byte)),
+        None => output.push_str(" (size unavailable)"),
     }
     output
 }

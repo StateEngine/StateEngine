@@ -513,7 +513,7 @@ must match both before any image, token or project is staged.
 
 ## Optional code navigation (Atlas)
 
-Atlas is the optional code index. Its background indexer currently runs on Linux.
+Atlas is the optional code index. Its background indexer runs on Linux, Windows and macOS.
 It is enabled by default. If you disabled it, edit the `config.toml` in the data home printed by `se status` (or
 the file selected by `SE_CONFIG`), set `enabled = true` in `[atlas]`, then run
 `se down` and `se up` with the same `--home` you normally use. `se config set`

@@ -30,12 +30,12 @@ pub mod flags {
     pub const TEST: u32 = 1 << 3;
     pub const GENERATED: u32 = 1 << 4;
     pub const EXTRACT_FAILED: u32 = 1 << 5;
-    /// The file carries inline unit tests (Rust `#[cfg(test)]`).
+    /// The file carries inline unit tests (a Rust `#[cfg(..)]` naming `test`).
     pub const INLINE_TESTS: u32 = 1 << 6;
 }
 
 /// Raised whenever extraction changes its output, so stored indexes rebuild.
-pub const EXTRACTOR_VERSION: i64 = 2;
+pub const EXTRACTOR_VERSION: i64 = 3;
 const BINARY_SNIFF: usize = 8 * 1024;
 const MAX_LINE: usize = 4 * 1024;
 const MINIFIED_AVERAGE_LINE: usize = 300;
@@ -370,12 +370,5 @@ fn generated(path: &str, text: &str) -> bool {
 
 /// The longest prefix of at most `limit` bytes that ends on a char boundary.
 pub fn char_prefix(text: &str, limit: usize) -> &str {
-    if text.len() <= limit {
-        return text;
-    }
-    let mut end = limit;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[..end]
+    &text[..text.floor_char_boundary(limit)]
 }

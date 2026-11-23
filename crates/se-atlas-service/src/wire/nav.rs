@@ -12,6 +12,7 @@ use crate::{
     read::{RecordCheck, STARTING},
     root::{Dirty, Shared},
 };
+use se_atlas_index::extract::covers::CoverHow;
 use se_atlas_query::{
     Answer as Found, Target,
     impact::{CallerVia, ImpactRequest},
@@ -308,7 +309,11 @@ pub(crate) fn impact(
             dropped += 1;
             continue;
         };
-        let hops = hop(&test.path, fresh, Accuracy::ImportedFile)?;
+        // A defining file's own inline tests are zero hops from it.
+        let hops = match test.how {
+            Some(CoverHow::Inline) => Vec::new(),
+            _ => hop(&test.path, fresh, Accuracy::ImportedFile)?,
+        };
         tests.push(dependent(site(&test.path, fresh)?, hops));
     }
     // Every visibility is a candidate; only core's check makes a hit.

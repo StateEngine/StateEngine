@@ -64,20 +64,28 @@ pub fn is_test_path(path: &str) -> bool {
         || name.ends_with("Tests.cs")
 }
 
-/// `TEST` and `INLINE_TESTS` flags from the path and test markers.
+/// `TEST` and `INLINE_TESTS` flags from the path and test markers. A Rust
+/// file with a test-gated item, such as `#[cfg(all(test, feature = ".."))]`,
+/// holds inline tests and is not itself a test file.
 pub fn test_flags(path: &str, text: &str) -> u32 {
-    let inline = path.ends_with(".rs") && text.contains("#[cfg(test)]");
+    let inline = path.ends_with(".rs") && text.split("#[cfg(").skip(1).any(enables_test);
     let markers = ["#[test]", "describe(", "def test_", "func Test", "@Test"]
         .iter()
         .any(|marker| text.contains(marker));
-    let mut out = 0;
-    if inline {
-        out |= flags::INLINE_TESTS;
-    }
+    let mut out = if inline { flags::INLINE_TESTS } else { 0 };
     if is_test_path(path) || (markers && !inline) {
         out |= flags::TEST;
     }
     out
+}
+
+/// Whether the predicate after `#[cfg(` names `test` outside a `not(..)`.
+fn enables_test(rest: &str) -> bool {
+    let predicate = rest.split(")]").next().unwrap_or_default();
+    let words = predicate.replace("not(test)", "");
+    words
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .any(|word| word == "test")
 }
 
 /// Every edge from one file acting as a test.
@@ -133,7 +141,7 @@ pub fn covers_for(test: &CoverFile, graph: &dyn CoverGraph) -> crate::Result<Vec
 
 fn split(path: &str) -> (&str, &str) {
     path.rfind('/')
-        .map_or(("", path), |at| (&path[..=at], &path[at + 1..]))
+        .map_or(("", path), |at| path.split_at(at + 1))
 }
 
 fn parent(dir: &str) -> &str {

@@ -5,6 +5,8 @@
 //! queue overflow, a moved directory, a failed read) mark the dirty set
 //! overflowed, which makes the writer reconcile the tree by file stats. A
 //! watch that cannot be kept marks the root unwatched instead of current.
+//! The thread drains what is queued, then sleeps with no timer until the
+//! watch signals more events or [`Watcher::stop`] wakes it.
 use crate::{
     dirty::Change,
     filter::{self, Reported},
@@ -13,30 +15,37 @@ use crate::{
     settle::Watch,
 };
 use se_proc::{NativeSourceRoot, NativeSourceWatch, NativeWatchAction, NativeWatchEvents};
+#[cfg(any(windows, target_os = "macos"))]
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::{
     collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::{Receiver, SyncSender, sync_channel},
     },
     thread::JoinHandle,
-    time::Duration,
 };
 
 const BUFFER: usize = 16 * 1024;
 /// Directories one new folder may add to a per-directory watch.
 #[cfg(target_os = "linux")]
 const MAX_NEW_DIRECTORIES: u64 = 4096;
-/// The longest the thread sleeps before it looks for events again.
+
+/// What wakes the sleeping thread, and what it sleeps on. Linux blocks in
+/// the inotify source itself; Windows and macOS signal a channel whenever
+/// they queue an event.
 #[cfg(target_os = "linux")]
-const POLL: Duration = Duration::from_millis(50);
+type Wake = se_proc::NativeWatchWake;
+#[cfg(target_os = "linux")]
+type Woken = ();
 #[cfg(any(windows, target_os = "macos"))]
-const POLL: Duration = Duration::from_millis(250);
+type Wake = SyncSender<()>;
+#[cfg(any(windows, target_os = "macos"))]
+type Woken = Receiver<()>;
 
 pub(crate) struct Watcher {
     stop: Arc<AtomicBool>,
-    wake: SyncSender<()>,
+    wake: Wake,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -48,8 +57,7 @@ impl Watcher {
         let watch = NativeSourceWatch::new().map_err(|e| e.to_string())?;
         let (names, watched) = subscribe(&watch, &root, directories)?;
         let stop = Arc::new(AtomicBool::new(false));
-        let (wake, woken) = sync_channel(1);
-        signal(&watch, &wake)?;
+        let (wake, woken) = signal(&watch)?;
         let thread = std::thread::Builder::new()
             .name("atlas-watch".into())
             .spawn({
@@ -76,9 +84,12 @@ impl Watcher {
         ))
     }
 
-    /// Stop the thread at once, without waiting out its poll interval.
+    /// Stop the thread at once: it is woken, not left to find out later.
     pub fn stop(mut self) {
         self.stop.store(true, Ordering::Release);
+        #[cfg(target_os = "linux")]
+        let _ = self.wake.wake();
+        #[cfg(any(windows, target_os = "macos"))]
         let _ = self.wake.try_send(());
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -86,20 +97,22 @@ impl Watcher {
     }
 }
 
-/// Windows and macOS signal queued events; Linux is polled.
+/// Windows and macOS signal each queued event on a one-slot channel.
 #[cfg(any(windows, target_os = "macos"))]
-fn signal(watch: &NativeSourceWatch, wake: &SyncSender<()>) -> Result<(), String> {
-    let wake = wake.clone();
+fn signal(watch: &NativeSourceWatch) -> Result<(Wake, Woken), String> {
+    let (wake, woken) = sync_channel(1);
+    let signal = wake.clone();
     watch
         .set_signal(Arc::new(move || {
-            let _ = wake.try_send(());
+            let _ = signal.try_send(());
         }))
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok((wake, woken))
 }
 
 #[cfg(target_os = "linux")]
-fn signal(_: &NativeSourceWatch, _: &SyncSender<()>) -> Result<(), String> {
-    Ok(())
+fn signal(watch: &NativeSourceWatch) -> Result<(Wake, Woken), String> {
+    Ok((watch.wake_handle().map_err(|e| e.to_string())?, ()))
 }
 
 /// Descriptor to root-relative directory, for watches that report leaf names.
@@ -199,26 +212,43 @@ struct Thread<'a> {
 }
 
 impl Thread<'_> {
-    fn run(&mut self, stop: &AtomicBool, woken: &Receiver<()>) {
+    /// Drain first, then sleep: an event queued after the drain signals the
+    /// sleep, so none waits for a timer and an idle watch never wakes.
+    fn run(&mut self, stop: &AtomicBool, woken: &Woken) {
         let mut buffer = vec![0u8; BUFFER];
         while !stop.load(Ordering::Acquire) {
-            let _ = woken.recv_timeout(POLL);
-            if stop.load(Ordering::Acquire) {
-                break;
-            }
-            loop {
-                match self.watch.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(read) => self.events(&buffer[..read]),
-                    Err(error) => {
-                        self.fail(&error.to_string());
-                        return;
-                    }
+            match self.watch.read(&mut buffer) {
+                Ok(0) => {}
+                Ok(read) => {
+                    self.events(&buffer[..read]);
+                    continue;
                 }
+                Err(error) => return self.fail(&error.to_string()),
+            }
+            if stop.load(Ordering::Acquire) || !self.sleep(woken) {
+                break;
             }
         }
         #[cfg(windows)]
-        let _ = self.watch.shutdown(Duration::from_secs(1));
+        let _ = self.watch.shutdown(std::time::Duration::from_secs(1));
+    }
+
+    /// Block until events or a stop arrive. False when the thread must end.
+    #[cfg(target_os = "linux")]
+    fn sleep(&mut self, _: &Woken) -> bool {
+        match self.watch.wait() {
+            Ok(()) => true,
+            Err(error) => {
+                self.fail(&error.to_string());
+                false
+            }
+        }
+    }
+
+    /// The channel only closes once the watcher itself is gone.
+    #[cfg(any(windows, target_os = "macos"))]
+    fn sleep(&mut self, woken: &Woken) -> bool {
+        woken.recv().is_ok()
     }
 
     fn events(&mut self, bytes: &[u8]) {

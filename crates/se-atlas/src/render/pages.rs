@@ -127,17 +127,20 @@ pub fn impact(answer: &Answer<Read<Impact>>, max: usize) -> AtlasResult<String> 
                 },
                 if is_test { " · possible test" } else { "" }
             ));
-            for hop in &dependent.hops {
-                output.push_str(&format!(" → {} ({:?})", pointer(&hop.site), hop.accuracy));
-            }
-            for hop in &dependent.file_hops {
-                output.push_str(&format!(
-                    " → {} bytes {}..{} ({:?})",
-                    pointer(&hop.site),
-                    hop.start_byte,
-                    hop.end_byte,
-                    hop.accuracy
-                ));
+            let hops = dependent.hops.iter().map(|h| (&h.site, 0, 0, h.accuracy));
+            let files = dependent
+                .file_hops
+                .iter()
+                .map(|h| (&h.site, h.start_byte, h.end_byte, h.accuracy));
+            for (site, start, end, accuracy) in hops.chain(files) {
+                // A site that only repeats the dependent's own pointer adds nothing.
+                if *site != dependent.pointer {
+                    output.push_str(&format!(" → {}", pointer(site)));
+                }
+                if end > start {
+                    output.push_str(&format!(" bytes {start}..{end}"));
+                }
+                output.push_str(&format!(" ({accuracy:?})"));
             }
             output.push('\n');
         }
