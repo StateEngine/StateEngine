@@ -54,7 +54,7 @@ fn scope(value: &ScopeIdentity) -> Result<()> {
             )?;
             identity(root)
         }
-        ScopeIdentity::WindowsJob { host, name } => require(
+        ScopeIdentity::WindowsJob { host, name, .. } => require(
             host.0 != [0; 16] && !name.is_empty() && name.len() <= 1024 && !name.contains('\0'),
             "invalid named job identity",
         ),

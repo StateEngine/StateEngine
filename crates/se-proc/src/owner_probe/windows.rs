@@ -267,7 +267,7 @@ pub(super) fn observe(
         {
             Some(AgentTreeBasis::Ancestor)
         } else {
-            let ScopeIdentity::WindowsJob { host, name } = &record.scope else {
+            let ScopeIdentity::WindowsJob { host, name, .. } = &record.scope else {
                 return Err(refuse(
                     "inspect managed job",
                     "unresolved recorded job scope",

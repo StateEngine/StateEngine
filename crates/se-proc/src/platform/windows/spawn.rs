@@ -38,7 +38,7 @@ pub(super) struct Child {
     pub identity: Option<ProcessIdentity>,
     pub pid: ProcessId,
 }
-pub(super) fn create(spec: LaunchSpec, job: &Handle) -> ProcResult<Child> {
+pub(super) fn create(spec: LaunchSpec, job: &Handle, persistent: bool) -> ProcResult<Child> {
     // Keep exclusion through CreateProcess, then permit ordinary package updates.
     let custody = spec.executable_custody;
     let creation = custody
@@ -55,6 +55,18 @@ pub(super) fn create(spec: LaunchSpec, job: &Handle) -> ProcResult<Child> {
             },
         ));
     }
+    let capabilities = if persistent {
+        // Keep one minimal non-privileged handle in the child so Windows
+        // retains the named job in the object namespace after host exit.
+        vec![capability(
+            job,
+            SYNCHRONIZE,
+            ProcErrorCode::LaunchFailed,
+            "duplicate persistent job anchor",
+        )?]
+    } else {
+        Vec::new()
+    };
     let result = create_command(
         Command {
             executable: custody
@@ -65,7 +77,7 @@ pub(super) fn create(spec: LaunchSpec, job: &Handle) -> ProcResult<Child> {
             stdio: spec.stdio,
             mode: spec.mode,
             cwd: spec.cwd,
-            capabilities: Vec::new(),
+            capabilities,
         },
         job,
     );
@@ -94,10 +106,14 @@ pub(super) fn interrupt_helper(
     let root_pin = capability(
         root_pin,
         PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+        ProcErrorCode::StopDispatchFailed,
+        "duplicate console capability",
     )?;
     let job_pin = capability(
         job,
         windows_sys::Win32::System::SystemServices::JOB_OBJECT_QUERY | READ_CONTROL,
+        ProcErrorCode::StopDispatchFailed,
+        "duplicate console capability",
     )?;
     let request = serde_json::to_string(&super::interrupt::Request {
         root: root.clone(),
@@ -127,7 +143,7 @@ pub(super) fn interrupt_helper(
         job,
     )
 }
-fn capability(source: &Handle, rights: u32) -> ProcResult<Handle> {
+fn capability(source: &Handle, rights: u32, code: ProcErrorCode, api: &str) -> ProcResult<Handle> {
     let mut copy = ptr::null_mut();
     // SAFETY: live original object, explicit reduced rights, unique inheritable
     // duplicate retained until atomic handle-list creation has completed.
@@ -143,12 +159,9 @@ fn capability(source: &Handle, rights: u32) -> ProcResult<Handle> {
         )
     } == 0
     {
-        return Err(last(
-            ProcErrorCode::StopDispatchFailed,
-            "duplicate console capability",
-        ));
+        return Err(last(code, api));
     }
-    Handle::new(copy, "own console capability")
+    Handle::new(copy, api)
 }
 #[expect(
     clippy::too_many_lines,

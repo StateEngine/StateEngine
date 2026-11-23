@@ -174,6 +174,7 @@ pub enum RecoverySource {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RecoveryDisposition {
     ReattachLinuxScope,
+    ReattachWindowsJob,
     VerifyExitedThenResume,
     InspectTrackedMacOs,
     ReconcileReservation,

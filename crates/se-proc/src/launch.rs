@@ -34,6 +34,10 @@ pub enum LaunchMode {
     /// Redirected streams with an independent hidden Windows console for
     /// native Ctrl+C cancellation. Equivalent to Headless on Unix.
     HeadlessConsole,
+    /// Headless launch whose native Windows job omits KILL_ON_JOB_CLOSE so
+    /// the process survives host exit and can be re-adopted cold. Equivalent
+    /// to Headless on Unix.
+    HeadlessPersistent,
     Window,
 }
 impl LaunchMode {

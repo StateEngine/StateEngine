@@ -666,7 +666,7 @@ fn codex_server_spec(
             stdout: None,
             stderr: None,
         },
-        mode: se_proc::LaunchMode::Headless,
+        mode: se_proc::LaunchMode::HeadlessPersistent,
         window: None,
         // Each agent's sandbox is set on its own thread; the server's scope
         // only routes its temporary files.

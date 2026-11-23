@@ -626,6 +626,8 @@ impl LaunchCoordinator {
             se_proc::LaunchMode::Window
         } else if plan.profile.provider == se_store::Provider::SeCode {
             se_proc::LaunchMode::HeadlessConsole
+        } else if plan.profile.provider == se_store::Provider::Codex {
+            se_proc::LaunchMode::HeadlessPersistent
         } else {
             se_proc::LaunchMode::Headless
         };

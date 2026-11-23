@@ -1,9 +1,6 @@
-use super::SlotEntry;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use super::{Slot, notify::Hub};
+use super::{Slot, SlotEntry, notify::Hub};
 use crate::support::*;
 use crate::*;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::{
     sync::{Arc, Mutex},
     time::Instant,
@@ -40,6 +37,14 @@ pub(super) fn plan(
                 RecoveryDisposition::ReleaseUncontainedOwnership
             } else if record.state == LifecycleState::Exited {
                 RecoveryDisposition::ReleaseExitedScope
+            } else if matches!(
+                record.scope,
+                ScopeIdentity::WindowsJob {
+                    persistent: true,
+                    ..
+                }
+            ) {
+                RecoveryDisposition::ReattachWindowsJob
             } else if matches!(record.scope, ScopeIdentity::WindowsJob { .. }) {
                 RecoveryDisposition::VerifyExitedThenResume
             } else if matches!(record.scope, ScopeIdentity::MacOsTracked { .. }) {
@@ -55,9 +60,7 @@ pub(super) fn plan(
         disposition,
     })
 }
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct Silent;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl ExitSink for Silent {
     fn notify(&self, _notice: ExitNotice) {}
 }
@@ -267,6 +270,9 @@ pub(super) fn recover(
     }
     #[cfg(windows)]
     {
+        if checked.disposition == RecoveryDisposition::ReattachWindowsJob {
+            return cold_windows_persistent(runtime, checked, reservation, generation);
+        }
         match runtime.inner.driver.reconcile(&checked.source) {
             Ok(witness) => Ok(RecoveryOutcome::Exited(Box::new(witness))),
             Err(error) => Ok(RecoveryOutcome::Unproved {
@@ -278,11 +284,47 @@ pub(super) fn recover(
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     cold_unix_tracked(runtime, checked, reservation, generation)
 }
+#[cfg(windows)]
+fn cold_windows_persistent(
+    runtime: &NativeProcessRuntime,
+    checked: RecoveryPlan,
+    reservation: LaunchReservation,
+    generation: GenerationId,
+) -> ProcResult<RecoveryOutcome> {
+    let RecoverySource::Record(record) = &checked.source else {
+        return Ok(unproved(
+            checked.source,
+            "persistent Windows recovery requires a published process record",
+        ));
+    };
+    match runtime.inner.driver.reconcile_persistent(record) {
+        Ok(Some(witness)) => return Ok(RecoveryOutcome::Exited(Box::new(witness))),
+        Ok(None) => (),
+        Err(error) => {
+            return Ok(RecoveryOutcome::Unproved {
+                source: Box::new(checked.source),
+                error,
+            });
+        }
+    }
+    let record = (**record).clone();
+    adopt_cold_record(
+        runtime,
+        checked.source,
+        record,
+        reservation,
+        generation,
+        |record, hub| {
+            runtime.inner.driver.recover(
+                record,
+                runtime.inner.config.instance,
+                runtime.inner.config.limits,
+                hub,
+            )
+        },
+    )
+}
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn cold_unix_tracked(
     runtime: &NativeProcessRuntime,
     checked: RecoveryPlan,
@@ -329,6 +371,29 @@ fn cold_unix_tracked(
             });
         }
     }
+    let record = (**record).clone();
+    adopt_cold_record(
+        runtime,
+        checked.source,
+        record,
+        reservation,
+        generation,
+        |record, hub| {
+            runtime
+                .inner
+                .driver
+                .recover(record, runtime.inner.config.limits, hub)
+        },
+    )
+}
+fn adopt_cold_record(
+    runtime: &NativeProcessRuntime,
+    source: RecoverySource,
+    record: ProcessRecord,
+    reservation: LaunchReservation,
+    generation: GenerationId,
+    recover: impl FnOnce(&ProcessRecord, &Arc<Hub>) -> ProcResult<crate::platform::Scope>,
+) -> ProcResult<RecoveryOutcome> {
     let hub = Arc::new(Hub::new(
         record.lifecycle.clone(),
         generation,
@@ -336,7 +401,7 @@ fn cold_unix_tracked(
     ));
     // Reserve capacity before native recovery obtains any new descriptor.
     let slot = Arc::new(Mutex::new(Slot {
-        reservation: reservation.clone(),
+        reservation,
         checkpoint: None,
         root_checkpoint: None,
         record: None,
@@ -383,14 +448,13 @@ fn cold_unix_tracked(
         .inner
         .reference(&slot, record.lifecycle.clone(), generation);
     let result = runtime.inner.apply(&key, false, |s| {
-        let native = runtime
-            .inner
-            .driver
-            .recover(record, runtime.inner.config.limits, &hub)?;
+        let native = recover(&record, &hub)?;
+        let scope = native.scope.clone();
         s.native = Some(native);
-        let mut current = (**record).clone();
+        let mut current = record.clone();
         current.host = runtime.inner.config.instance;
         current.owner = runtime.inner.owner.clone();
+        current.scope = scope;
         current.macos_boot_session = runtime.inner.macos_boot_session.clone();
         current.generation = generation;
         s.phase = current.state;
@@ -405,7 +469,7 @@ fn cold_unix_tracked(
         Err(error) => {
             runtime.inner.remove(&key)?;
             Ok(RecoveryOutcome::Unproved {
-                source: Box::new(checked.source),
+                source: Box::new(source),
                 error,
             })
         }
