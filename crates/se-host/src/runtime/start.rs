@@ -288,6 +288,9 @@ fn prepare(
         },
         _lock: lock,
     });
+    // The epoch names this process before its image is read; a starting host's
+    // early proof overlaps the reads above. The store open below can migrate,
+    // so it and ownership wait for this full proof.
     let peer =
         se_proc::native_ipc::observe_ipc_self().map_err(crate::client::lease::native_error)?;
     peer.verify_instance(&options.epoch.owner, peer.image_sha256())

@@ -1,6 +1,6 @@
 use super::*;
 use se_config::config_policy::ConfigFile;
-use se_types::{HostEpoch, HostGeneration, NativePath, ProcessFields, ProcessInstance, Sha256};
+use se_types::{HostEpoch, HostGeneration, NativePath, Sha256};
 use sha2::{Digest, Sha256 as Hasher};
 use std::{
     num::{NonZeroU16, NonZeroU32},
@@ -141,14 +141,18 @@ fn serve(
     ready: &mut (dyn FnMut(&se_host::HostedListener) -> Result<()> + Send),
 ) -> Result<u8> {
     let mut phases = super::startup_log::StartupLog::success_phases(&home);
+    // Read the executable alongside configuration and startup reads. The host
+    // store opens and ownership commits only after this full proof is checked.
+    se_proc::native_ipc::begin_ipc_self_proof();
     note(&mut phases, "Host process preparation started");
     #[cfg(windows)]
     se_proc::initialize_host_console_policy().map_err(native_error)?;
     let initialized = se_host::initialize_host_process()?;
     let (config, blocking_jobs) = configure(&home, &configuration)?;
-    let epoch = verify_epoch(machine, generation, guard, &mut phases)?;
-    // The same native image was just verified against the bootstrap and peer;
-    // no PATH/cwd lookup may select a different helper for owned agent custody.
+    let epoch = host_epoch(machine, generation, guard)?;
+    // The bootstrap's own native image, which prepare proves against the native
+    // peer before opening the host store; no PATH/cwd lookup may select a
+    // different helper for owned agent custody.
     let helper_executable = epoch.owner.fields().executable.clone();
     let maximum_sessions = positive(256)?;
     let engine = standalone_engine(blocking_jobs)?;
@@ -257,13 +261,12 @@ fn configure(
     config.value.runtime.captain_nudge()?;
     Ok((config, blocking_jobs))
 }
-/// Proves this process is the bootstrap's unchanged native identity and binds
-/// its verified image to the host epoch.
-fn verify_epoch(
+/// Binds this process, the bootstrap's unchanged native identity, to the host
+/// epoch. Prepare proves its image digest before opening the host store.
+fn host_epoch(
     machine: se_types::MachineId,
     generation: HostGeneration,
     guard: &Option<se_proc::RuntimeBootstrap>,
-    phases: &mut Option<super::startup_log::StartupLog>,
 ) -> Result<HostEpoch> {
     let identity = se_proc::current_runtime_identity(machine).map_err(native_error)?;
     if guard
@@ -272,27 +275,12 @@ fn verify_epoch(
     {
         return Err(invalid("the native bootstrap's unchanged process identity"));
     }
-    note(phases, "Native host executable verification started");
-    let peer = se_proc::native_ipc::observe_ipc_self().map_err(|e| {
-        se_core::scope::unreadable("native host self", &e.to_string()).with_cause(e)
-    })?;
-    let epoch = HostEpoch {
-        owner: ProcessInstance::from_observation(ProcessFields {
-            machine: identity.process.machine,
-            boot: identity.boot_id,
-            pid: positive(peer.pid())?,
-            started: peer.started().clone(),
-            executable: NativePath::from_local(identity.process.image)?,
-            argv_sha256: argv_digest(),
-        })?,
+    Ok(HostEpoch {
+        owner: identity
+            .process
+            .instance(&identity.boot_id, argv_digest())?,
         generation,
-    };
-    peer.verify_instance(&epoch.owner, peer.image_sha256())
-        .map_err(|e| {
-            se_core::scope::unreadable("native host epoch", &e.to_string()).with_cause(e)
-        })?;
-    note(phases, "Native host executable verification finished");
-    Ok(epoch)
+    })
 }
 /// Standalone owns one runtime; all library methods use its Handle.
 fn standalone_engine(blocking_jobs: NonZeroU32) -> Result<tokio::runtime::Runtime> {

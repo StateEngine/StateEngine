@@ -60,6 +60,39 @@ impl ProcessIdentity {
             && self.pid == other.pid
             && self.start == other.start
     }
+    /// The canonical instance for this native birth, recorded image and
+    /// argument digest. It reads nothing; image content is proved separately.
+    pub fn instance(
+        &self,
+        boot: &se_types::BootId,
+        argv_sha256: se_types::Sha256,
+    ) -> se_types::Result<se_types::ProcessInstance> {
+        use se_types::{NativePath, ProcessFields, ProcessInstance, SeError};
+        use std::num::{NonZeroU32, NonZeroU64};
+        let started = match self.start {
+            StartIdentity::Linux { start_ticks } => se_types::StartIdentity::Linux { start_ticks },
+            StartIdentity::Windows { creation_filetime } => se_types::StartIdentity::Windows {
+                creation_filetime: NonZeroU64::new(creation_filetime)
+                    .ok_or_else(|| SeError::invalid("native creation time", "nonzero"))?,
+            },
+            StartIdentity::MacOs {
+                seconds,
+                microseconds,
+            } => se_types::StartIdentity::Macos {
+                start_seconds: seconds,
+                start_micros: microseconds,
+            },
+        };
+        ProcessInstance::from_observation(ProcessFields {
+            machine: self.machine.clone(),
+            boot: boot.clone(),
+            pid: NonZeroU32::new(self.pid.0)
+                .ok_or_else(|| SeError::invalid("native PID", "nonzero"))?,
+            started,
+            executable: NativePath::from_local(self.image.clone())?,
+            argv_sha256,
+        })
+    }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

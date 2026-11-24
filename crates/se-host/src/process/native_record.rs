@@ -6,8 +6,7 @@ use se_proc::{
 use se_store::{
     Actor, ContainmentFact, ProcessIdentityRecord, RecordedIdentity, RootIdentityState,
 };
-use se_types::{BootId, NativePath, ProcessFields, ProcessInstance, Result, Sha256};
-use std::num::{NonZeroU32, NonZeroU64};
+use se_types::{BootId, ProcessInstance, Result, Sha256};
 
 pub(super) fn identity(
     plan: &se_core::ops::agent_launch::LaunchPlan,
@@ -117,29 +116,5 @@ pub(super) fn instance(
     argv: [u8; 32],
     boot: &BootId,
 ) -> Result<ProcessInstance> {
-    let started = match root.start {
-        se_proc::StartIdentity::Linux { start_ticks } => {
-            se_types::StartIdentity::Linux { start_ticks }
-        }
-        se_proc::StartIdentity::Windows { creation_filetime } => se_types::StartIdentity::Windows {
-            creation_filetime: NonZeroU64::new(creation_filetime)
-                .ok_or_else(|| se_types::SeError::invalid("native creation time", "nonzero"))?,
-        },
-        se_proc::StartIdentity::MacOs {
-            seconds,
-            microseconds,
-        } => se_types::StartIdentity::Macos {
-            start_seconds: seconds,
-            start_micros: microseconds,
-        },
-    };
-    ProcessInstance::from_observation(ProcessFields {
-        machine: root.machine.clone(),
-        boot: boot.clone(),
-        pid: NonZeroU32::new(root.pid.0)
-            .ok_or_else(|| se_types::SeError::invalid("native PID", "nonzero"))?,
-        started,
-        executable: NativePath::from_local(root.image.clone())?,
-        argv_sha256: Sha256::from_bytes(argv),
-    })
+    root.instance(boot, Sha256::from_bytes(argv))
 }

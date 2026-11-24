@@ -5,7 +5,7 @@ use std::{
     io,
     path::Path,
     sync::{
-        Arc,
+        Arc, Condvar, Mutex, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
     time::Instant,
@@ -249,6 +249,65 @@ pub fn observe_ipc_self_bounded(bound: &IpcIoBound) -> IpcNativeResult<NativeIpc
     bound
         .remaining()
         .map_err(|e| error("begin native self proof", e))?;
+    wait_for_self_proof(bound)?;
+    self_peer(bound)
+}
+/// Whether an early self proof is still reading. Waiters wake when it finishes.
+static SELF_PROOF: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+/// Start this process's full self proof on its own thread, so independent
+/// startup work can overlap its content read. It only warms the process-local
+/// image cache: a later self observation waits for that read to finish, then
+/// pins and rechecks the file itself. It reads the image again if the early
+/// proof failed, the file changed, or no reusable cache key exists (a Windows
+/// image without writer exclusion). If the thread cannot start, that
+/// observation reads the image itself.
+pub fn begin_ipc_self_proof() {
+    {
+        let mut reading = SELF_PROOF.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if *reading {
+            return;
+        }
+        *reading = true;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("se-self-proof".into())
+        .spawn(|| {
+            let _done = SelfProofDone;
+            // Not a verdict: a success is reachable only through the cache key
+            // the caller rechecks; after a failure the caller reads the image
+            // under its own deadline and reports its own error.
+            let _ = self_peer(&proof_bound(std::time::Duration::from_secs(30)));
+        });
+    if spawned.is_err() {
+        drop(SelfProofDone);
+    }
+}
+/// Wait for an early self proof still reading, within the caller's deadline.
+fn wait_for_self_proof(bound: &IpcIoBound) -> IpcNativeResult<()> {
+    let mut reading = SELF_PROOF.0.lock().unwrap_or_else(PoisonError::into_inner);
+    while *reading {
+        // Recheck cancellation at least this often.
+        let slice = bound
+            .remaining()
+            .map_err(|e| error("wait for native self proof", e))?
+            .min(std::time::Duration::from_millis(10));
+        reading = SELF_PROOF
+            .1
+            .wait_timeout(reading, slice)
+            .unwrap_or_else(PoisonError::into_inner)
+            .0;
+    }
+    Ok(())
+}
+/// Clears the pending proof even if its thread panics.
+struct SelfProofDone;
+impl Drop for SelfProofDone {
+    fn drop(&mut self) {
+        *SELF_PROOF.0.lock().unwrap_or_else(PoisonError::into_inner) = false;
+        SELF_PROOF.1.notify_all();
+    }
+}
+fn self_peer(bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
     #[cfg(unix)]
     {
         unix::self_peer(bound)
