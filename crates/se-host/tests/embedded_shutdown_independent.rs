@@ -226,13 +226,95 @@ fn failed_linked_drain_refuses_close_and_retains_lease_until_application_exit() 
     _root_owner.finish(Ok(()))
 }
 
+/// Wait for the embedding application to publish readiness while it runs.
+fn wait_ready(child: &mut std::process::Child, root: &Path) -> Check {
+    let until = Instant::now() + Duration::from_secs(100);
+    while !root.join("ready.json").try_exists()? {
+        if let Some(status) = child.try_wait()? {
+            return Err(format!("positive application exited before readiness: {status}").into());
+        }
+        check(Instant::now() < until, "positive readiness timed out")?;
+        std::thread::park_timeout(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
+/// Run public `down` from outside and witness closure while the embedding
+/// application stays alive: lease free, endpoint gone, receipt keeps the key.
+fn observe_down(
+    child: &mut std::process::Child,
+    image: &Path,
+    root: &Path,
+    key: &str,
+) -> Check<serde_json::Value> {
+    wait_ready(child, root)?;
+    let output = Command::new(image)
+        .args(["down", "--home"])
+        .arg(root.join("state"))
+        .args(["--key", key, "--json"])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").ok_or("PATH absent")?)
+        .env("HOME", root)
+        .env("USERPROFILE", root)
+        .output()?;
+    fs::write(root.join("down.stdout"), &output.stdout)?;
+    fs::write(root.join("down.stderr"), &output.stderr)?;
+    let files = se_host::state_files::Files::open(&root.join("state"))?;
+    let receipt = se_host::client::closure::read(&files, &root.join("state"))?;
+    let probe = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join("state/runtime.lock"))?;
+    let held = matches!(probe.try_lock(), Err(fs::TryLockError::WouldBlock));
+    let alive = child.try_wait()?.is_none();
+    fs::write(
+        root.join("before-api-cleanup.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "application_alive":alive,"outside_lease_held":held,"endpoint_absent":!root.join("state/endpoint.json").try_exists()?,
+            "matching_key":receipt.as_ref().is_some_and(|v|v.key.as_str()==key),"resources_closed":receipt.as_ref().map(|v|v.resources_closed)
+        }))?,
+    )?;
+    drop(probe);
+    check(
+        output.status.success(),
+        "public embedded down failed; original output retained",
+    )?;
+    let down: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    check(
+        down["schema"] == "se.runtime-stop/v1"
+            && down["complete"] == true
+            && down["witness"]["state"] == "witnessed",
+        "embedded down did not report complete witnessed closure",
+    )?;
+    check(
+        child.try_wait()?.is_none(),
+        "public down terminated the embedding application",
+    )?;
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join("state/runtime.lock"))?;
+    lock.try_lock()
+        .map_err(|e| format!("complete embedded down retained the OS lease: {e}"))?;
+    check(
+        !root.join("state/endpoint.json").try_exists()?,
+        "embedded endpoint remains under exclusive lease",
+    )?;
+    let files = se_host::state_files::Files::open(&root.join("state"))?;
+    let receipt = se_host::client::closure::read(&files, &root.join("state"))?
+        .ok_or("protected closure receipt absent")?;
+    check(
+        receipt.key.as_str() == key && receipt.resources_closed,
+        "protected receipt lost original key or resource closure",
+    )?;
+    Ok(
+        serde_json::json!({"application_alive":true,"outside_lease_free":true,"outside_endpoint_absent":true,"original_key":key,"resources_closed":receipt.resources_closed}),
+    )
+}
+
 /// Protects: public CLI down proves resource closure and releases the lease
 /// while the embedding application is still alive; API drain/close replay it.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn public_down_closes_an_embedded_host_without_claiming_application_exit() -> Check {
     let image = helper()?;
     let entropy =
@@ -264,80 +346,7 @@ fn public_down_closes_an_embedded_host_without_claiming_application_exit() -> Ch
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()?;
-    let observed = (|| -> Check<serde_json::Value> {
-        let until = Instant::now() + Duration::from_secs(100);
-        while !root.join("ready.json").try_exists()? {
-            if let Some(status) = child.try_wait()? {
-                return Err(
-                    format!("positive application exited before readiness: {status}").into(),
-                );
-            }
-            check(Instant::now() < until, "positive readiness timed out")?;
-            std::thread::park_timeout(Duration::from_millis(10));
-        }
-        let output = Command::new(&image)
-            .args(["down", "--home"])
-            .arg(root.join("state"))
-            .args(["--key", &key, "--json"])
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").ok_or("PATH absent")?)
-            .env("HOME", &root)
-            .env("USERPROFILE", &root)
-            .output()?;
-        fs::write(root.join("down.stdout"), &output.stdout)?;
-        fs::write(root.join("down.stderr"), &output.stderr)?;
-        let files = se_host::state_files::Files::open(&root.join("state"))?;
-        let receipt = se_host::client::closure::read(&files, &root.join("state"))?;
-        let probe = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(root.join("state/runtime.lock"))?;
-        let held = matches!(probe.try_lock(), Err(fs::TryLockError::WouldBlock));
-        let alive = child.try_wait()?.is_none();
-        fs::write(
-            root.join("before-api-cleanup.json"),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "application_alive":alive,"outside_lease_held":held,"endpoint_absent":!root.join("state/endpoint.json").try_exists()?,
-                "matching_key":receipt.as_ref().is_some_and(|v|v.key.as_str()==key),"resources_closed":receipt.as_ref().map(|v|v.resources_closed)
-            }))?,
-        )?;
-        drop(probe);
-        check(
-            output.status.success(),
-            "public embedded down failed; original output retained",
-        )?;
-        let down: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-        check(
-            down["schema"] == "se.runtime-stop/v1"
-                && down["complete"] == true
-                && down["witness"]["state"] == "witnessed",
-            "embedded down did not report complete witnessed closure",
-        )?;
-        check(
-            child.try_wait()?.is_none(),
-            "public down terminated the embedding application",
-        )?;
-        let lock = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(root.join("state/runtime.lock"))?;
-        lock.try_lock()
-            .map_err(|e| format!("complete embedded down retained the OS lease: {e}"))?;
-        check(
-            !root.join("state/endpoint.json").try_exists()?,
-            "embedded endpoint remains under exclusive lease",
-        )?;
-        let files = se_host::state_files::Files::open(&root.join("state"))?;
-        let receipt = se_host::client::closure::read(&files, &root.join("state"))?
-            .ok_or("protected closure receipt absent")?;
-        check(
-            receipt.key.as_str() == key && receipt.resources_closed,
-            "protected receipt lost original key or resource closure",
-        )?;
-        Ok(
-            serde_json::json!({"application_alive":true,"outside_lease_free":true,"outside_endpoint_absent":true,"original_key":key,"resources_closed":receipt.resources_closed}),
-        )
-    })();
+    let observed = observe_down(&mut child, &image, &root, &key);
     fs::write(
         root.join("observer-finished"),
         b"outside observer settled\n",

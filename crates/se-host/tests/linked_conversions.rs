@@ -290,16 +290,22 @@ fn fields(
 
 /// Protects: linked windows require producer accounting; wire-only and Atlas views refuse honestly.
 #[test]
-#[expect(
-    clippy::cognitive_complexity,
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn linked_windows_and_pages_retain_source_bounds_and_refuse_unsupported() -> Check {
     let store = core::StoreId::from_parts(1_700_000_000_000, [3; 10])?;
     let project = core::ProjectId::from_parts(1_700_000_000_000, [4; 10])?;
     let host = epoch()?;
-    let linked_host = linked::host_epoch(&host)?;
+    let linked_host = host_epoch_converts(&host)?;
+    sources_convert_with_windows_and_pages(&store, &project, host, linked_host)?;
+    omissions_and_stop_reasons_convert()?;
+    partial_windows_keep_counts_and_atlas_refuses(project)
+}
+
+/// The host epoch converts exactly, and a foreign platform's birth identity or
+/// executable path is refused instead of silently converted.
+fn host_epoch_converts(
+    host: &core::HostEpoch,
+) -> Result<api::HostEpoch, Box<dyn std::error::Error>> {
+    let linked_host = linked::host_epoch(host)?;
     assert_eq!(linked_host.generation.0, 7);
     assert_eq!(linked_host.owner.pid, 17);
     assert_eq!(linked_host.owner.machine, "judge-machine");
@@ -366,6 +372,17 @@ fn linked_windows_and_pages_retain_source_bounds_and_refuse_unsupported() -> Che
             );
         }
     }
+    Ok(linked_host)
+}
+
+/// Every supported source converts, and a window and page over it keep the
+/// producer's accounting; wire-only aggregates and failing items refuse.
+fn sources_convert_with_windows_and_pages(
+    store: &core::StoreId,
+    project: &core::ProjectId,
+    host: core::HostEpoch,
+    linked_host: api::HostEpoch,
+) -> Check {
     let sources = [
         (
             core::Source::Store {
@@ -439,6 +456,11 @@ fn linked_windows_and_pages_retain_source_bounds_and_refuse_unsupported() -> Che
             .is_err()
         );
     }
+    Ok(())
+}
+
+/// Every omission reason (known and unknown counts) and stop reason converts.
+fn omissions_and_stop_reasons_convert() -> Check {
     for (reason, expected) in [
         (core::OmissionReason::Limit, api::OmissionReason::Limit),
         (core::OmissionReason::Budget, api::OmissionReason::Budget),
@@ -509,6 +531,12 @@ fn linked_windows_and_pages_retain_source_bounds_and_refuse_unsupported() -> Che
         )?)?;
         assert_eq!(linked::window(&window)?.stop_reason, expected);
     }
+    Ok(())
+}
+
+/// A partial window keeps its unreadable count and earlier omission, and an
+/// Atlas source or window is refused rather than converted.
+fn partial_windows_keep_counts_and_atlas_refuses(project: core::ProjectId) -> Check {
     let mut partial = fields(
         core::Source::Configuration {
             location: "partial earlier range".into(),
@@ -555,12 +583,15 @@ fn linked_windows_and_pages_retain_source_bounds_and_refuse_unsupported() -> Che
 
 /// Protects: every ErrorBody class and Retry arm stays typed; literal CLI remedy arguments survive conversion.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn linked_errors_preserve_classes_retries_and_literal_remedies() -> Check {
     let cx = core::RenderCx::default();
+    error_classes_convert(&cx)?;
+    retries_convert(&cx)?;
+    remedy_commands_convert()
+}
+
+/// Every ErrorBody class maps to its API failure kind with code and message.
+fn error_classes_convert(cx: &core::RenderCx) -> Check {
     let cases = [
         (
             "usage-unknown-command",
@@ -611,12 +642,17 @@ fn linked_errors_preserve_classes_retries_and_literal_remedies() -> Check {
     ];
     for (code, detail, expected) in cases {
         let body: core::ErrorBody = serde_json::from_value(json!({"code":code,"detail":detail}))?;
-        let output = linked::error_body(&body, &cx)?;
+        let output = linked::error_body(&body, cx)?;
         assert_eq!(output.kind, expected);
         assert_eq!(output.code, code);
         assert_eq!(output.message, body.message());
         assert!(!output.remedy.text.is_empty());
     }
+    Ok(())
+}
+
+/// Every Retry arm stays typed; an unrepresentable delay is refused.
+fn retries_convert(cx: &core::RenderCx) -> Check {
     for (retry, expected) in [
         (core::Retry::Never, api::ApiRetry::Never),
         (core::Retry::AfterReread, api::ApiRetry::AfterRefresh),
@@ -627,19 +663,26 @@ fn linked_errors_preserve_classes_retries_and_literal_remedies() -> Check {
         ),
     ] {
         assert_eq!(
-            linked::error_body(&issue().with_retry(retry), &cx)?.retry,
+            linked::error_body(&issue().with_retry(retry), cx)?.retry,
             expected
         );
     }
     assert!(
-        linked::error_body(&issue().with_retry(core::Retry::After(Duration::MAX)), &cx).is_err()
+        linked::error_body(&issue().with_retry(core::Retry::After(Duration::MAX)), cx).is_err()
     );
-    struct Commands(Option<core::Cmd>);
-    impl core::RemedyCommands for Commands {
-        fn for_error(&self, _: &core::ErrorBody) -> core::Result<Option<core::Cmd>> {
-            Ok(self.0.clone())
-        }
+    Ok(())
+}
+
+struct Commands(Option<core::Cmd>);
+impl core::RemedyCommands for Commands {
+    fn for_error(&self, _: &core::ErrorBody) -> core::Result<Option<core::Cmd>> {
+        Ok(self.0.clone())
     }
+}
+
+/// Literal CLI remedy arguments survive conversion; tool commands stay typed
+/// and absent or manual commands stay manual.
+fn remedy_commands_convert() -> Check {
     let argv = vec![
         "msg".to_owned(),
         "send".into(),

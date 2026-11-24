@@ -99,48 +99,10 @@ async fn until(
     }
 }
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() -> Check {
     let f = Fixture::new()?;
     seed(&f)?;
-    let (mut writer, lease) = direct(&f)?;
-    writer.append(
-        f.batch(
-            f.owner_project(),
-            Some(fixture::request("idle-receiver-setup")?),
-            vec![
-                EventBody::PrincipalRegistered {
-                    principal: Actor::Human(f.owner.clone()),
-                    kind: PrincipalKind::Human,
-                    owner: f.owner.clone(),
-                    created_by: None,
-                    name: "Owner".into(),
-                    role: "owner".into(),
-                    ephemeral: None,
-                    expected: Expected::Absent,
-                },
-                EventBody::ProfileSaved {
-                    agent: f.a.clone(),
-                    profile: Profile {
-                        provider_settings: Default::default(),
-                        provider: se_store::Provider::Claude,
-                        model: None,
-                        permission: PermissionProfile::WorkspaceWrite,
-                        harness: None,
-                        named_profile: "claude".into(),
-                        effort: None,
-                    },
-                    expected: Expected::Absent,
-                },
-            ],
-        )?,
-        &*lease,
-    )?;
-    writer.close()?;
-    drop(lease);
+    seed_owner_and_profile(&f)?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -204,48 +166,7 @@ fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() 
                     if round == 63 {
                         let challenge = std::str::from_utf8(connected.ticket.expose_link())?
                             .split_once("?start=").ok_or("challenge absent")?.1;
-                        provider.wire.push(1, format!("/start {challenge}"))?;
-                        let waiting = until(&channels, &id, |p| matches!(
-                            p.connections.first().map(|c| &c.pairing),
-                            Some(PairingPresentation::AwaitingApproval { .. }),
-                        )).await?;
-                        channels.confirm_pairing(
-                            ConfirmPairing {
-                                connection: id.clone(),
-                                expected_pairing_revision: waiting.connections[0].revision,
-                                key: key("idle-pair-confirm")?,
-                            },
-                            &bound()?,
-                        ).await?;
-                        provider.wire.push(2, "Message at the first refill".into())?;
-                        until(&channels, &id, |p| p.receipts.len() == 1).await?;
-                        // Observe a successful empty completion for this
-                        // connection before the next delivery; drop any
-                        // earlier observation so the gate only passes on a
-                        // poll that returned empty after the last delivery.
-                        provider
-                            .emptied
-                            .lock()
-                            .map_err(|_| "quiet observations poisoned")?
-                            .remove(token.as_bytes());
-                        let quiet_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-                        loop {
-                            if provider
-                                .emptied
-                                .lock()
-                                .map_err(|_| "quiet observations poisoned")?
-                                .contains(token.as_bytes())
-                            {
-                                break;
-                            }
-                            if tokio::time::Instant::now() >= quiet_deadline {
-                                return Err("No empty poll cycle completed during the quiet window".into());
-                            }
-                            tokio::time::sleep(Duration::from_millis(10)).await;
-                        }
-                        provider.wire.push(3, "Message after the channel was quiet".into())?;
-                        let delivered = until(&channels, &id, |p| p.receipts.len() == 2).await?;
-                        assert_ne!(delivered.receipts[0].message, delivered.receipts[1].message);
+                        pair_and_deliver_twice(&provider, &channels, &id, &token, challenge).await?;
                     }
                     let current = page(&channels, &id).await?;
                     let disconnected = channels.disconnect(
@@ -271,6 +192,109 @@ fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() 
         assert!(report.transport_closed && report.endpoint_retired);
         result
     })
+}
+
+/// Register the Owner and the target agent's saved profile in one batch.
+fn seed_owner_and_profile(f: &Fixture) -> Check {
+    let (mut writer, lease) = direct(f)?;
+    writer.append(
+        f.batch(
+            f.owner_project(),
+            Some(fixture::request("idle-receiver-setup")?),
+            vec![
+                EventBody::PrincipalRegistered {
+                    principal: Actor::Human(f.owner.clone()),
+                    kind: PrincipalKind::Human,
+                    owner: f.owner.clone(),
+                    created_by: None,
+                    name: "Owner".into(),
+                    role: "owner".into(),
+                    ephemeral: None,
+                    expected: Expected::Absent,
+                },
+                EventBody::ProfileSaved {
+                    agent: f.a.clone(),
+                    profile: Profile {
+                        provider_settings: Default::default(),
+                        provider: se_store::Provider::Claude,
+                        model: None,
+                        permission: PermissionProfile::WorkspaceWrite,
+                        harness: None,
+                        named_profile: "claude".into(),
+                        effort: None,
+                    },
+                    expected: Expected::Absent,
+                },
+            ],
+        )?,
+        &*lease,
+    )?;
+    writer.close()?;
+    drop(lease);
+    Ok(())
+}
+
+/// Pair the last connection, deliver once, wait for an empty poll cycle after
+/// that delivery, then deliver again: both messages are saved, distinctly.
+async fn pair_and_deliver_twice(
+    provider: &Provider,
+    channels: &Channels,
+    id: &ChannelId,
+    token: &str,
+    challenge: &str,
+) -> Check {
+    provider.wire.push(1, format!("/start {challenge}"))?;
+    let waiting = until(channels, id, |p| {
+        matches!(
+            p.connections.first().map(|c| &c.pairing),
+            Some(PairingPresentation::AwaitingApproval { .. }),
+        )
+    })
+    .await?;
+    channels
+        .confirm_pairing(
+            ConfirmPairing {
+                connection: id.clone(),
+                expected_pairing_revision: waiting.connections[0].revision,
+                key: key("idle-pair-confirm")?,
+            },
+            &bound()?,
+        )
+        .await?;
+    provider
+        .wire
+        .push(2, "Message at the first refill".into())?;
+    until(channels, id, |p| p.receipts.len() == 1).await?;
+    // Observe a successful empty completion for this
+    // connection before the next delivery; drop any
+    // earlier observation so the gate only passes on a
+    // poll that returned empty after the last delivery.
+    provider
+        .emptied
+        .lock()
+        .map_err(|_| "quiet observations poisoned")?
+        .remove(token.as_bytes());
+    let quiet_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if provider
+            .emptied
+            .lock()
+            .map_err(|_| "quiet observations poisoned")?
+            .contains(token.as_bytes())
+        {
+            break;
+        }
+        if tokio::time::Instant::now() >= quiet_deadline {
+            return Err("No empty poll cycle completed during the quiet window".into());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    provider
+        .wire
+        .push(3, "Message after the channel was quiet".into())?;
+    let delivered = until(channels, id, |p| p.receipts.len() == 2).await?;
+    assert_ne!(delivered.receipts[0].message, delivered.receipts[1].message);
+    Ok(())
 }
 
 impl transport::FixturePoll for Provider {
