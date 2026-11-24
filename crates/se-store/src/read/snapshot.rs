@@ -527,7 +527,8 @@ impl Snapshot for SqliteSnapshot {
     fn principal_retired(&mut self, agent: AgentId) -> StoreResult<bool> {
         self.require_local_port()?;
         let p = self.project_bytes()?;
-        let a = self.agent_bytes(&agent)?;
+        let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
+        let a = key(&self.db, "agent", agent.as_str(), &scope, false)?;
         self.is_principal_retired(&p, &a)
     }
     fn active_ephemeral_agents(
