@@ -8,7 +8,7 @@ publish.workspace = true
 
 [features]
 default = ["runtime", "listener", "channels"]
-import = ["se-core/import", "dep:se-history-import"]
+import = ["se-core/import", "dep:se-history-import", "se-history-import/import"]
 runtime = ["se-harness/runtime", "dep:tokio"]
 listener = ["runtime", "se-harness/listener", "se-remote/listener", "se-atlas-host/listener", "dep:reqwest", "tokio/macros", "tokio/net", "tokio/io-util", "tokio/time", "tokio/sync", "tokio/process", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio-tungstenite", "dep:futures-util", "dep:base64", "dep:se-secode-image", "dep:se-provider-image", "dep:se-secode-service"]
 channels = ["listener", "se-harness/channels", "dep:se-channels"]

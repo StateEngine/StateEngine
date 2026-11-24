@@ -1,5 +1,6 @@
 //! Explicit owner history migration over native read pins and the existing
 //! bounded writer. A read transaction never survives native IO or an await.
+#![cfg(feature = "import")]
 mod batch;
 mod chain;
 mod commit;

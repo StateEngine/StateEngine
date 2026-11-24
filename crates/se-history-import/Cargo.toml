@@ -6,8 +6,13 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# Off by default: a workspace build without `import` must not unify
+# `se-core/import` into crates built without it.
+import = ["se-core/import"]
+
 [dependencies]
-se-core = { path = "../se-core", features = ["import"] }
+se-core = { path = "../se-core" }
 se-harness = { path = "../se-harness" }
 se-proc = { path = "../se-proc" }
 se-store = { path = "../se-store" }
