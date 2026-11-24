@@ -4,6 +4,8 @@
 mod cleanup_directory;
 #[path = "../../se-proc/tests/support/detachment_venue.rs"]
 mod detachment_venue;
+#[path = "../../test-support/home_reaper.rs"]
+mod home_reaper;
 #[path = "../../test-support/provider_home.rs"]
 mod provider_home;
 use std::{
@@ -33,6 +35,8 @@ struct Fixture {
     home: PathBuf,
     host: Option<se_proc::ProcessIdentity>,
     root_owner: Option<cleanup_directory::PrivateDirectory>,
+    // Declared last: it disarms only after Drop has stopped the host.
+    _reaper: Option<home_reaper::HomeReaper>,
 }
 impl Fixture {
     fn new(_case: &str) -> Result<Self> {
@@ -49,6 +53,7 @@ impl Fixture {
             executable,
             host: None,
             root_owner: Some(root_owner),
+            _reaper: None,
         };
         fs::create_dir(fixture.root.join("repo"))?;
         fixture.ok(&[
@@ -149,6 +154,11 @@ impl Fixture {
         Ok(Some(live.identity))
     }
     fn run_strict(&mut self, refuse: bool) -> Result {
+        // A killed test process runs no Drop; the reaper then stops this
+        // home's runtime with the fixture's own public down.
+        let mut down = self.command();
+        down.arg("down");
+        self._reaper = Some(home_reaper::HomeReaper::arm(&down, &self.home, false)?);
         let powershell = se_proc::windows_directory()
             .map_err(|e| format!("native Windows directory: {e:?}"))?
             .join("System32/WindowsPowerShell/v1.0/powershell.exe");

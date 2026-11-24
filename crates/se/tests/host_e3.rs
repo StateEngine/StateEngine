@@ -19,6 +19,8 @@ mod eight_clients_judge;
 mod executor_judge;
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
+#[path = "../../test-support/home_reaper.rs"]
+mod home_reaper;
 #[path = "../src/runtime/host.rs"]
 #[allow(
     unused_imports,
@@ -31,6 +33,10 @@ mod host_fixture;
 mod ipc;
 #[path = "support/host_presence.rs"]
 mod presence_judge;
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
+#[path = "support/host_reaper_guard.rs"]
+mod reaper_guard;
 #[path = "support/host_recovery.rs"]
 mod recovery_judge;
 #[path = "support/host_route.rs"]
