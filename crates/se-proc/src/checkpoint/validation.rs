@@ -325,10 +325,6 @@ fn source_root(value: &CheckpointSource) -> Option<&ProcessIdentity> {
         _ => None,
     }
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn checkpoint(value: &Checkpoint) -> Result<()> {
     require(
         value.format_version == 1,
@@ -354,165 +350,11 @@ pub(super) fn checkpoint(value: &Checkpoint) -> Result<()> {
         CheckpointKind::Released {
             source: retained,
             release,
-        } => {
-            source(retained, &value.lifecycle)?;
-            remaining(&release.remaining)?;
-            scope(&release.scope)?;
-            let (expected, generation, publication) = match retained.as_ref() {
-                CheckpointSource::Reservation(v) => {
-                    let scope = match v.parent {
-                        ReservationParent::LinuxTracked => ScopeIdentity::LinuxPrepared {
-                            nonce: v.scope_nonce,
-                        },
-                        ReservationParent::MacOs => ScopeIdentity::MacOsPrepared {
-                            nonce: v.scope_nonce,
-                        },
-                        _ => {
-                            return Err(invalid(
-                                "owner release cannot relinquish a kernel-contained reservation",
-                            ));
-                        }
-                    };
-                    (scope, v.generation, RootPublication::NoChildCreated)
-                }
-                CheckpointSource::Scope(v) => (
-                    v.scope.clone(),
-                    v.reservation.generation,
-                    RootPublication::Unpublished,
-                ),
-                CheckpointSource::Root(v) => (
-                    v.scope.scope.clone(),
-                    v.scope.reservation.generation,
-                    RootPublication::Identified,
-                ),
-                CheckpointSource::Process(v) => {
-                    require(
-                        v.ownership_release.is_none(),
-                        "release source already carries a release marker",
-                    )?;
-                    (v.scope.clone(), v.generation, RootPublication::Identified)
-                }
-            };
-            require(
-                matches!(
-                    expected,
-                    ScopeIdentity::LinuxPrepared { .. }
-                        | ScopeIdentity::LinuxTracked { .. }
-                        | ScopeIdentity::MacOsPrepared { .. }
-                        | ScopeIdentity::MacOsTracked { .. }
-                ),
-                "owner release cannot relinquish a kernel job or cgroup",
-            )?;
-            require(
-                release.lifecycle == value.lifecycle
-                    && release.scope == expected
-                    && release.generation.get() >= generation.get()
-                    && release.released_at_unix_ns != 0
-                    && release.remaining.observed_at_unix_ns <= release.released_at_unix_ns,
-                "owner release lifecycle/scope/generation/time differs from retained custody",
-            )?;
-            publication
-        }
+        } => released(retained, release, &value.lifecycle)?,
         CheckpointKind::Exit {
             source: retained,
             witness,
-        } => {
-            source(retained, &value.lifecycle)?;
-            scope(&witness.scope)?;
-            remaining(&witness.scope_exit.remaining)?;
-            require(
-                witness.lifecycle == value.lifecycle
-                    && witness.scope == witness.scope_exit.scope
-                    && witness.scope_exit.remaining.population == Population::Empty
-                    && witness.scope_exit.exit_basis.is_some(),
-                "exit witness lifecycle/scope/empty proof mismatch",
-            )?;
-            let (owner, host, guarantee) = match retained.as_ref() {
-                CheckpointSource::Reservation(v) => (&v.owner, &v.host, None),
-                CheckpointSource::Scope(v) => (
-                    &v.reservation.owner,
-                    &v.reservation.host,
-                    Some(&v.guarantee),
-                ),
-                CheckpointSource::Root(v) => (
-                    &v.scope.reservation.owner,
-                    &v.scope.reservation.host,
-                    Some(&v.scope.guarantee),
-                ),
-                CheckpointSource::Process(v) => (&v.owner, &v.host, Some(&v.guarantee)),
-            };
-            binding(&witness.scope, owner, host, None, &witness.guarantee)?;
-            require(
-                guarantee.is_none_or(|expected| expected == &witness.guarantee),
-                "exit guarantee differs from retained custody",
-            )?;
-            require(
-                witness.scope_exit.exit_basis != Some(ScopeExitBasis::RemovedPinnedLinuxCgroup)
-                    || matches!(witness.scope, ScopeIdentity::LinuxCgroup { .. }),
-                "removed-cgroup exit evidence requires a recorded cgroup",
-            )?;
-            if let Some(scope) = source_scope(retained) {
-                require(
-                    scope == &witness.scope,
-                    "exit witness differs from retained scope",
-                )?;
-            }
-            let reboot = matches!(&witness.root, RootWitness::Identified { evidence, .. }
-                if matches!(evidence.as_ref(), ExitEvidence::BootChanged { .. }));
-            require(
-                reboot == witness.ended_by_reboot(),
-                "boot change must prove both the root exit and the scope closure",
-            )?;
-            match &witness.root {
-                RootWitness::NoChildCreated => {
-                    require(
-                        source_root(retained).is_none(),
-                        "no-child witness contradicts identified root",
-                    )?;
-                    RootPublication::NoChildCreated
-                }
-                RootWitness::UnpublishedScope => {
-                    require(
-                        source_root(retained).is_none(),
-                        "unpublished witness contradicts identified root",
-                    )?;
-                    RootPublication::Unpublished
-                }
-                RootWitness::PinnedUnpublished { pid, .. } => {
-                    require(
-                        pid.0 != 0 && source_root(retained).is_none(),
-                        "invalid unpublished root witness",
-                    )?;
-                    RootPublication::Unpublished
-                }
-                RootWitness::Identified {
-                    expected, evidence, ..
-                } => {
-                    identity(expected)?;
-                    if let Some(root) = source_root(retained) {
-                        require(root == expected, "exit root differs from retained root")?;
-                    }
-                    match evidence.as_ref() {
-                        ExitEvidence::NativeExitedRecord { state } => require(
-                            matches!(state, NativeState::Exited | NativeState::ExitedAwaitingReap),
-                            "live state in exit evidence",
-                        )?,
-                        ExitEvidence::Replaced { observed } => {
-                            identity(observed)?;
-                            require(
-                                observed.pid == expected.pid && observed != expected,
-                                "invalid replaced-process evidence",
-                            )?;
-                        }
-                        ExitEvidence::BootChanged { previous, observed } => {
-                            validate_reboot(retained, expected, previous, observed)?;
-                        }
-                        _ => {}
-                    }
-                    RootPublication::Identified
-                }
-            }
-        }
+        } => exit(retained, witness, &value.lifecycle)?,
         CheckpointKind::FailedReservation {
             reservation: v,
             no_scope_created,
@@ -543,6 +385,180 @@ pub(super) fn checkpoint(value: &Checkpoint) -> Result<()> {
         value.root_identity == expected_root,
         "indexed root publication state differs from checkpoint",
     )
+}
+/// Owner release of uncontained custody: the release must name exactly the
+/// retained scope and generation, and never a kernel job or cgroup.
+fn released(
+    retained: &CheckpointSource,
+    release: &UnwitnessedRelease,
+    lifecycle: &LifecycleId,
+) -> Result<RootPublication> {
+    source(retained, lifecycle)?;
+    remaining(&release.remaining)?;
+    scope(&release.scope)?;
+    let (expected, generation, publication) = match retained {
+        CheckpointSource::Reservation(v) => {
+            let scope = match v.parent {
+                ReservationParent::LinuxTracked => ScopeIdentity::LinuxPrepared {
+                    nonce: v.scope_nonce,
+                },
+                ReservationParent::MacOs => ScopeIdentity::MacOsPrepared {
+                    nonce: v.scope_nonce,
+                },
+                _ => {
+                    return Err(invalid(
+                        "owner release cannot relinquish a kernel-contained reservation",
+                    ));
+                }
+            };
+            (scope, v.generation, RootPublication::NoChildCreated)
+        }
+        CheckpointSource::Scope(v) => (
+            v.scope.clone(),
+            v.reservation.generation,
+            RootPublication::Unpublished,
+        ),
+        CheckpointSource::Root(v) => (
+            v.scope.scope.clone(),
+            v.scope.reservation.generation,
+            RootPublication::Identified,
+        ),
+        CheckpointSource::Process(v) => {
+            require(
+                v.ownership_release.is_none(),
+                "release source already carries a release marker",
+            )?;
+            (v.scope.clone(), v.generation, RootPublication::Identified)
+        }
+    };
+    require(
+        matches!(
+            expected,
+            ScopeIdentity::LinuxPrepared { .. }
+                | ScopeIdentity::LinuxTracked { .. }
+                | ScopeIdentity::MacOsPrepared { .. }
+                | ScopeIdentity::MacOsTracked { .. }
+        ),
+        "owner release cannot relinquish a kernel job or cgroup",
+    )?;
+    require(
+        &release.lifecycle == lifecycle
+            && release.scope == expected
+            && release.generation.get() >= generation.get()
+            && release.released_at_unix_ns != 0
+            && release.remaining.observed_at_unix_ns <= release.released_at_unix_ns,
+        "owner release lifecycle/scope/generation/time differs from retained custody",
+    )?;
+    Ok(publication)
+}
+/// A stop witness must prove the retained scope empty under its own binding.
+fn exit(
+    retained: &CheckpointSource,
+    witness: &StopWitness,
+    lifecycle: &LifecycleId,
+) -> Result<RootPublication> {
+    source(retained, lifecycle)?;
+    scope(&witness.scope)?;
+    remaining(&witness.scope_exit.remaining)?;
+    require(
+        &witness.lifecycle == lifecycle
+            && witness.scope == witness.scope_exit.scope
+            && witness.scope_exit.remaining.population == Population::Empty
+            && witness.scope_exit.exit_basis.is_some(),
+        "exit witness lifecycle/scope/empty proof mismatch",
+    )?;
+    let (owner, host, guarantee) = match retained {
+        CheckpointSource::Reservation(v) => (&v.owner, &v.host, None),
+        CheckpointSource::Scope(v) => (
+            &v.reservation.owner,
+            &v.reservation.host,
+            Some(&v.guarantee),
+        ),
+        CheckpointSource::Root(v) => (
+            &v.scope.reservation.owner,
+            &v.scope.reservation.host,
+            Some(&v.scope.guarantee),
+        ),
+        CheckpointSource::Process(v) => (&v.owner, &v.host, Some(&v.guarantee)),
+    };
+    binding(&witness.scope, owner, host, None, &witness.guarantee)?;
+    require(
+        guarantee.is_none_or(|expected| expected == &witness.guarantee),
+        "exit guarantee differs from retained custody",
+    )?;
+    require(
+        witness.scope_exit.exit_basis != Some(ScopeExitBasis::RemovedPinnedLinuxCgroup)
+            || matches!(witness.scope, ScopeIdentity::LinuxCgroup { .. }),
+        "removed-cgroup exit evidence requires a recorded cgroup",
+    )?;
+    if let Some(scope) = source_scope(retained) {
+        require(
+            scope == &witness.scope,
+            "exit witness differs from retained scope",
+        )?;
+    }
+    let reboot = matches!(&witness.root, RootWitness::Identified { evidence, .. }
+        if matches!(evidence.as_ref(), ExitEvidence::BootChanged { .. }));
+    require(
+        reboot == witness.ended_by_reboot(),
+        "boot change must prove both the root exit and the scope closure",
+    )?;
+    exit_root(retained, &witness.root)
+}
+/// The root witness must agree with what the retained custody published.
+fn exit_root(retained: &CheckpointSource, root: &RootWitness) -> Result<RootPublication> {
+    Ok(match root {
+        RootWitness::NoChildCreated => {
+            require(
+                source_root(retained).is_none(),
+                "no-child witness contradicts identified root",
+            )?;
+            RootPublication::NoChildCreated
+        }
+        RootWitness::UnpublishedScope => {
+            require(
+                source_root(retained).is_none(),
+                "unpublished witness contradicts identified root",
+            )?;
+            RootPublication::Unpublished
+        }
+        RootWitness::PinnedUnpublished { pid, .. } => {
+            require(
+                pid.0 != 0 && source_root(retained).is_none(),
+                "invalid unpublished root witness",
+            )?;
+            RootPublication::Unpublished
+        }
+        RootWitness::Identified {
+            expected, evidence, ..
+        } => {
+            identity(expected)?;
+            if let Some(retained_root) = source_root(retained) {
+                require(
+                    retained_root == expected,
+                    "exit root differs from retained root",
+                )?;
+            }
+            match evidence.as_ref() {
+                ExitEvidence::NativeExitedRecord { state } => require(
+                    matches!(state, NativeState::Exited | NativeState::ExitedAwaitingReap),
+                    "live state in exit evidence",
+                )?,
+                ExitEvidence::Replaced { observed } => {
+                    identity(observed)?;
+                    require(
+                        observed.pid == expected.pid && observed != expected,
+                        "invalid replaced-process evidence",
+                    )?;
+                }
+                ExitEvidence::BootChanged { previous, observed } => {
+                    validate_reboot(retained, expected, previous, observed)?;
+                }
+                _ => {}
+            }
+            RootPublication::Identified
+        }
+    })
 }
 fn validate_reboot(
     retained: &CheckpointSource,
