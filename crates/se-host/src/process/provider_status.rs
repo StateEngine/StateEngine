@@ -136,7 +136,7 @@ impl LaunchCoordinator {
                 error: Some(Box::new(error.body)),
             },
         });
-        row.background = crate::agent_observation::background(row.provider, &self.native, found);
+        row.background = se_agent_observation::background(row.provider, &self.native, found);
         if row.provider == se_types::Provider::Codex {
             row.codex_login = Some(match &row.session.session_id {
                 Some(session) => self.recorded_codex_login(session),

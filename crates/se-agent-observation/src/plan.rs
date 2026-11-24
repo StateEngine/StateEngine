@@ -4,7 +4,7 @@ use se_core::{ops::process_commit, scope, store_error::store_error};
 use se_store::{Actor, Consent, EventBody, Snapshot, StoredText};
 
 impl RecordedExit {
-    pub(crate) fn from_event(event: &EventBody<StoredText>) -> Self {
+    pub fn from_event(event: &EventBody<StoredText>) -> Self {
         match event {
             EventBody::ProcessTransition {
                 to: se_store::ProcessState::Exited,
@@ -33,7 +33,7 @@ pub fn prepare_agent_observation<S: Snapshot>(
                     .session
                     .session_id
                     .clone()
-                    .map(|session| crate::SessionIdentity {
+                    .map(|session| SessionIdentity {
                         project: project.clone(),
                         agent: row.id.clone(),
                         session,
@@ -177,7 +177,7 @@ fn prepare<S: Snapshot>(
     Ok(AgentObservationPlan {
         project: project.clone(),
         command_home: None,
-        identity: Some(crate::SessionIdentity {
+        identity: Some(SessionIdentity {
             project: project.clone(),
             agent: row.id.clone(),
             session,
@@ -356,7 +356,7 @@ fn capture_evidence<S: Snapshot>(
 
 /// Copy the same trusted file evidence used by status before a native reopen.
 /// Historical imports and event-only capture do not assert a local file path.
-pub(crate) fn resume_source<S: Snapshot>(
+pub fn resume_source<S: Snapshot>(
     plan: &se_core::ops::agent_launch::LaunchPlan,
     read: &mut S,
 ) -> Result<Option<se_types::NativePath>> {

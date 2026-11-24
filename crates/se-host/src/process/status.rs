@@ -23,11 +23,8 @@ impl LaunchCoordinator {
             .store
             .read(admission, deadline, move |cx| {
                 let output = crate::runtime::status::prepare(input, &home, cx)?;
-                let plans = crate::agent_observation::output::prepare(
-                    &cx.admission.scope,
-                    &output,
-                    cx.read,
-                )?;
+                let plans =
+                    se_agent_observation::output::prepare(&cx.admission.scope, &output, cx.read)?;
                 Ok((output, plans))
             })
             .await?;
@@ -38,7 +35,13 @@ impl LaunchCoordinator {
             .pool
             .run(BlockingClass::Foreground, deadline, move || {
                 bound.remaining()?;
-                crate::agent_observation::output::observe(&mut output, plans, bound.at(), &home)?;
+                se_agent_observation::output::observe(
+                    &mut output,
+                    plans,
+                    bound.at(),
+                    &home,
+                    crate::agent_observation::machine_identity,
+                )?;
                 coordinator.observe_repository(&mut output, fresh, watch_only, &bound)?;
                 coordinator.observe_status(&mut output, &observed_admission, &bound)?;
                 bound.remaining()?;

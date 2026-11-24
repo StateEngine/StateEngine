@@ -28,9 +28,9 @@ use se_ssh_transport as ssh_transport;
 #[path = "../../test-support/directory.rs"]
 mod test_directory;
 #[cfg(feature = "runtime")]
-pub use agent_observation::{
-    AgentObservation, AgentObservationPlan, observe_agent, prepare_agent_observation,
-};
+pub use agent_observation::observe_agent;
+#[cfg(feature = "runtime")]
+pub use se_agent_observation::{AgentObservation, AgentObservationPlan, prepare_agent_observation};
 pub(crate) use se_harness::harness;
 pub mod harness_setup;
 mod owner_inventory;

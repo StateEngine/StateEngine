@@ -30,8 +30,7 @@ impl LaunchCoordinator {
         }
         state.mail.last_nudge = Some(now);
         // A process the agent left running is work in progress, not a stall.
-        if crate::agent_observation::busy(state.meta.provider, &self.native, state.process.clone())
-        {
+        if se_agent_observation::busy(state.meta.provider, &self.native, state.process.clone()) {
             return Some(now + interval);
         }
         if let Err(error) = self.send_nudge(state, attempts, deadline).await {

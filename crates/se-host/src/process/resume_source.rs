@@ -24,7 +24,7 @@ impl LaunchCoordinator {
         let source = self
             .store
             .read(admission.clone(), deadline, move |cx| {
-                crate::agent_observation::resume_source(&selected, cx.read)
+                se_agent_observation::resume_source(&selected, cx.read)
             })
             .await
             .map_err(|mut failure| {

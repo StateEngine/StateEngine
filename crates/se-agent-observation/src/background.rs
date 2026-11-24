@@ -14,7 +14,7 @@ const CONSOLE_HOSTS: [&str; 2] = ["conhost.exe", "openconsole.exe"];
 /// The row's field, read after the agent's lock is released: none without a
 /// retained live scope. Codex runs tool commands in its shared app-server, so
 /// they are never attributed to one agent and the row says so instead of zero.
-pub(crate) fn row(
+pub fn row(
     provider: se_types::Provider,
     native: &NativeProcessRuntime,
     process: Option<std::sync::Arc<OwnedProcess>>,
@@ -32,7 +32,7 @@ pub(crate) fn row(
 /// Whether the agent has a background process running now. Codex tool commands
 /// are not attributed to one agent, and an unreadable scope is not known to be
 /// busy, so both read as not running.
-pub(crate) fn busy(
+pub fn busy(
     provider: se_store::Provider,
     native: &NativeProcessRuntime,
     process: Option<std::sync::Arc<OwnedProcess>>,
