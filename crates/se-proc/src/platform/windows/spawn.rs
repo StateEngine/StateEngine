@@ -1,13 +1,15 @@
 use super::identity::*;
 use crate::support::*;
-use crate::*;
+use crate::{windows_native::attributes::Attributes, *};
 use std::{
     ffi::OsStr,
     mem::{size_of, zeroed},
     os::windows::{ffi::OsStrExt, io::AsRawHandle},
     ptr,
 };
-use windows_sys::Win32::{Foundation::*, Storage::FileSystem::*, System::Threading::*};
+use windows_sys::Win32::{
+    Foundation::*, Security::SECURITY_ATTRIBUTES, Storage::FileSystem::*, System::Threading::*,
+};
 
 fn quoted(arg: &OsStr) -> Vec<u16> {
     let mut out = vec![b'"' as u16];
@@ -17,14 +19,12 @@ fn quoted(arg: &OsStr) -> Vec<u16> {
             slashes += 1;
             continue;
         }
-        out.extend(std::iter::repeat_n(
-            b'\\' as u16,
-            if unit == b'"' as u16 {
-                slashes * 2 + 1
-            } else {
-                slashes
-            },
-        ));
+        let count = if unit == b'"' as u16 {
+            slashes * 2 + 1
+        } else {
+            slashes
+        };
+        out.extend(std::iter::repeat_n(b'\\' as u16, count));
         slashes = 0;
         out.push(unit);
     }
@@ -225,8 +225,7 @@ fn prepare_stdio_handles(mode: LaunchMode, stdio: StandardIo) -> ProcResult<Vec<
             Handle(duplicate)
         } else {
             // SAFETY: native security POD starts zeroed, with its size/inheritance filled next.
-            let mut security: windows_sys::Win32::Security::SECURITY_ATTRIBUTES =
-                unsafe { zeroed() };
+            let mut security: SECURITY_ATTRIBUTES = unsafe { zeroed() };
             security.nLength = size_of_val(&security) as u32;
             security.bInheritHandle = 1;
             Handle::new(
@@ -250,6 +249,11 @@ fn prepare_stdio_handles(mode: LaunchMode, stdio: StandardIo) -> ProcResult<Vec<
     }
     Ok(inherited)
 }
+fn set_attr<'a>(attrs: &mut Attributes<'a>, key: u32, value: &'a [HANDLE]) -> ProcResult<()> {
+    attrs
+        .set(key as usize, value, "UpdateProcThreadAttribute")
+        .map_err(|e| native(ProcErrorCode::LaunchFailed, e.operation, e.source))
+}
 fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
     let line = command_line(spec.executable.as_os_str(), &spec.arguments)?;
     let env = environment_block(spec.environment);
@@ -266,38 +270,25 @@ fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
     inherited.extend(spec.capabilities);
     let jobs = [job.0];
     let handles: Vec<_> = inherited.iter().map(|h| h.0).collect();
-    let mut attributes = crate::windows_native::attributes::Attributes::new(
+    let mut attributes = Attributes::new(
         if inherited.is_empty() { 1 } else { 2 },
         "size process attributes",
         "initialize process attributes",
     )
     .map_err(|e| native(ProcErrorCode::LaunchFailed, e.operation, e.source))?;
-    attributes
-        .set(
-            PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
-            &jobs,
-            "UpdateProcThreadAttribute",
-        )
-        .map_err(|e| native(ProcErrorCode::LaunchFailed, e.operation, e.source))?;
+    set_attr(&mut attributes, PROC_THREAD_ATTRIBUTE_JOB_LIST, &jobs)?;
     if !handles.is_empty() {
-        attributes
-            .set(
-                PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
-                &handles,
-                "UpdateProcThreadAttribute",
-            )
-            .map_err(|e| native(ProcErrorCode::LaunchFailed, e.operation, e.source))?;
+        set_attr(&mut attributes, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &handles)?;
     }
     startup.lpAttributeList = attributes.pointer();
     // SAFETY: native process output is POD; ownership is taken only on success.
     let mut info: PROCESS_INFORMATION = unsafe { zeroed() };
-    let flags = CREATE_UNICODE_ENVIRONMENT
-        | EXTENDED_STARTUPINFO_PRESENT
-        | if spec.mode.is_headless() {
-            CREATE_NO_WINDOW
-        } else {
-            CREATE_NEW_CONSOLE
-        };
+    let mode_flag = if spec.mode.is_headless() {
+        CREATE_NO_WINDOW
+    } else {
+        CREATE_NEW_CONSOLE
+    };
+    let flags = CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | mode_flag;
     let application = wide(spec.executable.as_os_str());
     let cwd = wide(spec.cwd.as_os_str());
     let create = |flags, info: &mut PROCESS_INFORMATION| {
@@ -306,7 +297,7 @@ fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
         // SAFETY: application/cwd/environment/argv and aligned attribute backing
         // storage live for the call. JOB_LIST is atomic creation membership. Only
         // the closed explicit stream/capability handle list is inherited.
-        let created = unsafe {
+        if unsafe {
             CreateProcessW(
                 application.as_ptr(),
                 command_line.as_mut_ptr(),
@@ -319,8 +310,8 @@ fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
                 &startup.StartupInfo,
                 info,
             )
-        };
-        if created == 0 {
+        } == 0
+        {
             Err(std::io::Error::last_os_error())
         } else {
             Ok(())
