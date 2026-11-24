@@ -78,6 +78,7 @@ pub fn create<R: Snapshot>(
             created_by: Some(cx.admission.actor.clone()),
             name: input.name,
             role: String::new(),
+            ephemeral: None,
             expected: Expected::Absent,
         },
         cx,

@@ -11,6 +11,7 @@ mod cold_stop;
 mod control;
 mod dispatch;
 mod embedded_stop;
+mod ephemeral;
 mod events;
 mod files;
 mod git_workspace;

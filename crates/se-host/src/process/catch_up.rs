@@ -50,6 +50,9 @@ impl LaunchCoordinator {
             }
             job.wake.event.notify_one();
         }
+        if let Err(error) = self.sweep_ephemeral_expired(deadline).await {
+            first_failure.get_or_insert(error);
+        }
         match first_failure {
             Some(error) => Err(error),
             None => Ok(()),

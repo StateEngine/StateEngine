@@ -292,7 +292,8 @@ fn input_command_project(name: &str, c: Command) -> Command {
                 .help("The folder the repository now lives in; verified against the git identity recorded at se init"),
         ),
         "project.status" => c.arg(toggle("all").help("Also summarize every registered project, with its owner-mail counts"))
-            .arg(toggle("fresh").help("Scan the working tree now instead of using watched status")),
+            .arg(toggle("fresh").help("Scan the working tree now instead of using watched status"))
+            .arg(toggle("include-temp").help("Include retired temporary agents in the status roster")),
         "project.remove" => c
             .arg(toggle("all").conflicts_with("project").help("Remove every registered project in this home"))
             .arg(toggle("keep-integrations").help("Keep registered integrations while removing the project")),
@@ -319,7 +320,8 @@ fn input_command_agent(name: &str, c: Command) -> Command {
         "agent.show" => c.arg(positional("agent", 1, true).help("Saved agent name or ID to inspect")),
         "agent.list" => c
             .arg(value("limit").default_value("20").help("Maximum agents in this page"))
-            .arg(value("cursor").help("Cursor from a previous page of this same read")),
+            .arg(value("cursor").help("Cursor from a previous page of this same read"))
+            .arg(toggle("include-temp").help("Include retired temporary agents in this page")),
         "agent.create" => c
             .arg(value("harness").help("Choose claude, codex, secode or a configured protocol harness"))
             .arg(positional("name", 1, true).help("Name for the new saved agent"))

@@ -442,6 +442,7 @@ fn dispatch_with_cold_recovery(
             pending.is_some() && matches!(&op, AnyOp::ProjectStatus(input) if !input.fresh);
         #[cfg(not(any(windows, target_os = "macos")))]
         let defer_git = false;
+        let include_temp = matches!(&op, AnyOp::ProjectStatus(input) if input.include_temp);
         let result = super::status::observe_snapshot_watched(
             cx,
             &mut snapshot,
@@ -450,6 +451,7 @@ fn dispatch_with_cold_recovery(
             &caller.admission,
             None,
             defer_git,
+            include_temp,
         );
         #[cfg(any(windows, target_os = "macos"))]
         let early = early_status(&pending, &op, defer_git && result.is_ok());

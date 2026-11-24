@@ -224,6 +224,7 @@ pub(super) fn owner<R: Snapshot>(
             created_by: None,
             name: display_name,
             role: "historical human identity".into(),
+            ephemeral: None,
             expected: Expected::Absent,
         },
     )?);

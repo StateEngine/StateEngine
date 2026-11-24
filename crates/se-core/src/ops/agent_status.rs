@@ -9,7 +9,21 @@ pub fn page<R: Snapshot>(
     budget: se_store::ReadBudget,
     cx: &mut Cx<'_, R>,
 ) -> Result<se_types::Page<AgentRow>> {
-    let principals = cx.read.principals(budget).map_err(|e| store_error(&e))?;
+    page_with_temp(budget, false, cx)
+}
+
+/// Agents in a finite principal page; hides retired ephemeral agents unless `include_temp` is set.
+pub fn page_with_temp<R: Snapshot>(
+    budget: se_store::ReadBudget,
+    include_temp: bool,
+    cx: &mut Cx<'_, R>,
+) -> Result<se_types::Page<AgentRow>> {
+    let principals = if include_temp {
+        cx.read.principals(budget)
+    } else {
+        cx.read.active_principals(budget)
+    }
+    .map_err(|e| store_error(&e))?;
     let mut fields = principals.window().fields().cloned().ok_or_else(|| {
         scope::unreadable(
             "agent status page",
@@ -108,6 +122,11 @@ fn from_principal<R: Snapshot>(
     cx: &mut Cx<'_, R>,
 ) -> Result<AgentStatusOutput> {
     let (name, role) = principal_name_role(&principal)?;
+    let (ephemeral, created_by) = principal_ephemeral_creator(&principal);
+    let retired = cx
+        .read
+        .principal_retired(agent.clone())
+        .map_err(|error| store_error(&error))?;
     let profile = saved_profile_record(&agent, controlled_profile, cx)?;
     let saved = match profile.into_present() {
         Ok(value) => value,
@@ -177,9 +196,27 @@ fn from_principal<R: Snapshot>(
                 }),
                 working_note: Some(working_note),
                 background: None,
+                ephemeral,
+                retired,
+                created_by,
             },
         },
     })
+}
+
+fn principal_ephemeral_creator(principal: &ProjectionRecord) -> (bool, Option<String>) {
+    let first = principal.original.as_deref().unwrap_or(&principal.current);
+    match &first.body {
+        EventBody::PrincipalRegistered {
+            ephemeral,
+            created_by,
+            ..
+        } => (
+            ephemeral.is_some(),
+            created_by.as_ref().map(|actor| actor.wire().to_owned()),
+        ),
+        _ => (false, None),
+    }
 }
 
 fn principal_name_role(principal: &ProjectionRecord) -> Result<(String, Option<String>)> {

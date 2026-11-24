@@ -135,6 +135,7 @@ pub(super) fn decode<R: ImportSnapshot>(
                     },
                     name: str_at(row, "agent_name")?.into(),
                     role: str_at(row, "agent_role")?.into(),
+                    ephemeral: None,
                     expected: Expected::Absent,
                 }
             }

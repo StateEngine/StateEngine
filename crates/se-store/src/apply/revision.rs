@@ -78,6 +78,7 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
         ErasureRequested { .. } | TurnErased { .. } | MessageErased { .. } => Ok(1),
         ErasureCompleted { .. } => Ok(2),
         RecoveryRecorded { .. } => Ok(1),
+        AgentRetired { .. } => Ok(1),
         EventBody::DecisionProposed { .. }
         | EventBody::DecisionRatified { .. }
         | EventBody::DecisionRejected { .. }

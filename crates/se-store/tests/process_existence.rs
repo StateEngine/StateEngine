@@ -216,6 +216,7 @@ fn another_projects_process_is_in_the_home_wide_fact() -> Check {
             created_by: None,
             name: "Other agent".into(),
             role: "builder".into(),
+            ephemeral: None,
             expected: Expected::Absent,
         }],
     )?)?)??;

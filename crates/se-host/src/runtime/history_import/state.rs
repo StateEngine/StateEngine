@@ -183,6 +183,7 @@ pub(super) fn owner_project(
             // OS display name can retain its original ID and spelling.
             name: format!("Current owner ({name})"),
             role: "project owner".into(),
+            ephemeral: None,
             expected: Expected::Absent,
         },
     )?;

@@ -131,6 +131,7 @@ fn foreign_ids_refuse_before_payload_and_preserve_history_scope() -> Check {
                 created_by: None,
                 name: "Foreign private metadata".into(),
                 role: "owner".into(),
+                ephemeral: None,
                 expected: Expected::Absent,
             }],
         )?;

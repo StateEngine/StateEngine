@@ -118,6 +118,7 @@ fn setup(f: &Fixture, agent_session: bool) -> Check {
             created_by: None,
             name: "Owner".into(),
             role: "owner".into(),
+            ephemeral: None,
             expected: Expected::Absent,
         },
         EventBody::ProfileSaved {

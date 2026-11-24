@@ -44,6 +44,7 @@ fn selectors_use_id_order_and_stale_on_catalog_changes_only() -> Check {
                     created_by: None,
                     name: agent.into(),
                     role: "builder".into(),
+                    ephemeral: None,
                     expected: Expected::Absent,
                 }],
             )?,

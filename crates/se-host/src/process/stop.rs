@@ -536,6 +536,8 @@ impl LaunchCoordinator {
             .await?;
         work.session_retired = true;
         self.proofs.remove(&work.meta.session)?;
+        Box::pin(self.cascade_parent_ended(&work.meta.project.id, &work.meta.agent.id, deadline))
+            .await;
         Ok(())
     }
 }

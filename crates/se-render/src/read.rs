@@ -109,17 +109,57 @@ fn runtime_lines(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     }
     Ok(())
 }
+pub(super) fn order_with_children(
+    items: &[se_core::ops::AgentRow],
+) -> Vec<(&'static str, &se_core::ops::AgentRow)> {
+    let mut out = Vec::with_capacity(items.len());
+    let mut emitted = vec![false; items.len()];
+    for (idx, row) in items.iter().enumerate() {
+        if row.ephemeral
+            && let Some(parent) = row.created_by.as_deref()
+            && items
+                .iter()
+                .any(|candidate| candidate.id.as_str() == parent)
+        {
+            continue;
+        }
+        emitted[idx] = true;
+        out.push(("", row));
+        for (child_idx, child) in items.iter().enumerate() {
+            if !emitted[child_idx]
+                && child.ephemeral
+                && child.created_by.as_deref() == Some(row.id.as_str())
+            {
+                emitted[child_idx] = true;
+                out.push(("  ", child));
+            }
+        }
+    }
+    for (idx, row) in items.iter().enumerate() {
+        if !emitted[idx] {
+            out.push(("", row));
+        }
+    }
+    out
+}
+
 fn agents_section(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     if let Some(agents) = &value.agents {
-        for agent in agents.items() {
+        for (indent, agent) in order_with_children(agents.items()) {
             let state = match &agent.state {
                 Some(state) if agent.session.state != "never-launched" => crew_state(state),
                 _ if agent.session.state == "never-launched" => "not started yet".into(),
                 _ => agent.session.state.clone(),
             };
+            let badge = match (agent.ephemeral, agent.retired) {
+                (true, true) => " [temp, retired]",
+                (true, false) => " [temp]",
+                (false, true) => " [retired]",
+                (false, false) => "",
+            };
             writeln!(
                 out,
-                "  Agent {}: {state} — unread messages {}",
+                "  {indent}Agent {}{badge}: {state} — unread messages {}",
                 agent.name,
                 count(agent.unread)
             )?;

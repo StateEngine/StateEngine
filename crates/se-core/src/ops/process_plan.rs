@@ -49,6 +49,16 @@ pub fn target<R: Snapshot>(
         }
     }
 }
+pub(crate) fn retired_agent_refusal(op: &str) -> SeError {
+    let mut error = SeError::invalid(op, "an active agent; this temporary agent is retired");
+    error.body = error.body.with_remedy(se_types::Remedy {
+        text: "This temporary agent is retired; start a new helper with se delegate --handoff ..."
+            .into(),
+        command: Some(se_types::Cmd::Manual),
+    });
+    error
+}
+
 pub fn launch<R: Snapshot>(
     kernel: &Kernel,
     mut input: AgentLaunch,
@@ -68,6 +78,9 @@ pub fn launch<R: Snapshot>(
         "launch target",
         "Choose a saved agent in this project that you own or are currently allowed to control.",
     )?;
+    if control.retired {
+        return Err(retired_agent_refusal("agent.launch"));
+    }
     let name = match &control.principal.current.body {
         EventBody::PrincipalRegistered { name, .. } | EventBody::PrincipalRenamed { name, .. } => {
             name.clone()

@@ -122,6 +122,17 @@ impl SqliteSnapshot {
             Some("first_seq"),
             &load,
         )?;
+        let retired = if self.info.schema_version >= 17 {
+            self.db
+                .query_row(
+                    "SELECT retired_seq IS NOT NULL FROM principals WHERE project_id=? AND principal_id=?",
+                    crate::sql_value::sql_params![p, a],
+                    |r| r.get::<_, bool>(0),
+                )
+                .map_err(|error| self.read_sql(error))?
+        } else {
+            false
+        };
         Ok(Read::Present {
             value: ControlTarget {
                 principal,
@@ -132,6 +143,7 @@ impl SqliteSnapshot {
                 resume_session,
                 latest_process,
                 moved_from_roots: moved_from,
+                retired,
             },
         })
     }

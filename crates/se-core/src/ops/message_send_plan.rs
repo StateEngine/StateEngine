@@ -24,6 +24,13 @@ fn resolve_recipient<R: Snapshot>(
                     "registered canonical agents in this project",
                 ));
             }
+            if cx
+                .read
+                .principal_retired(agent.clone())
+                .map_err(|error| store_error(&error))?
+            {
+                return Err(super::process_plan::retired_agent_refusal("message.send"));
+            }
         }
         return Ok(None);
     }
@@ -54,7 +61,18 @@ fn resolve_recipient<R: Snapshot>(
     }
     match remote {
         Some(actor) => Ok(Some(actor)),
-        None => Ok(Some(scope::selected_actor(cx, selector)?)),
+        None => {
+            let actor = scope::selected_actor(cx, selector)?;
+            if let Actor::Agent(agent) = &actor
+                && cx
+                    .read
+                    .principal_retired(agent.clone())
+                    .map_err(|error| store_error(&error))?
+            {
+                return Err(super::process_plan::retired_agent_refusal("message.send"));
+            }
+            Ok(Some(actor))
+        }
     }
 }
 /// Checks a replacement target through the sender's own read port: it must be

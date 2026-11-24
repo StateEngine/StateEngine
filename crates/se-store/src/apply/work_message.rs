@@ -74,6 +74,7 @@ pub(super) fn send(
                 "work addressee is not registered in this project",
             ));
         }
+        principal::refuse_retired(c, &project, &recipient)?;
         c.execute("INSERT INTO message_deliveries(project_id,message_id,sent_seq,sender_id,recipient_id,message_kind,is_floor,revision) VALUES(?,?,?,?,?,?,1,?)",crate::sql_value::sql_params![project,message,seq,sender,recipient,kind,revision]).map_err(sql)?;
         notification::sent(c, seq, &recipient, quiet)?;
         count(c, &project, &recipient, 1, seq)?;

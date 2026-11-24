@@ -89,6 +89,10 @@ fn main_agent() -> String {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent status query flags required by CLI and MCP wire schema"
+)]
 pub struct ProjectStatus {
     #[serde(skip)]
     #[schemars(skip)]
@@ -99,6 +103,9 @@ pub struct ProjectStatus {
     /// Return only a watched observation; the caller supplies any fresh fallback.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub watch_only: bool,
+    /// Include retired temporary agents in the status roster.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_temp: bool,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

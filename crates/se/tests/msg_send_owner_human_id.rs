@@ -69,6 +69,7 @@ fn setup() -> Result<(Fixture, SqliteDirect, Arc<Lease>), Box<dyn std::error::Er
                 created_by: None,
                 name: "Owner".into(),
                 role: "owner".into(),
+                ephemeral: None,
                 expected: Expected::Absent,
             }],
         )?,

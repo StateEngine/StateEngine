@@ -303,36 +303,26 @@ fn recorded(x: Ctx<'_>, body: EventBody<InputText>, lease: &LeaseIdentity) -> St
             let a = x.actor(&principal)?;
             c.execute("UPDATE principals SET display_name=?,revision=?,last_seq=? WHERE project_id=? AND principal_id=?",crate::sql_value::sql_params![name,revision,seq,x.project()?,a]).map_err(sql)?;
         }
-        ProfileSaved { agent, profile, .. } => {
-            profile
-                .provider_settings
-                .validate(profile.provider.into())
-                .map_err(|_| invalid("invalid saved provider settings"))?;
-            if matches!(profile.permission, PermissionProfile::NamedFullBypass)
-                && profile.named_profile.is_empty()
-            {
-                return Err(invalid("bypass needs an explicit named profile"));
-            }
-            let a = key(c, "agent", agent.as_str(), s, true)?;
-            c.execute("INSERT INTO profiles(project_id,agent_id,revision,last_seq) VALUES(?,?,?,?) ON CONFLICT(project_id,agent_id)
-                    DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq WHERE profiles.revision=excluded.revision-1",crate::sql_value::sql_params![x.project()?,a,revision,seq]).map_err(sql)?;
-        }
+        AgentRetired {
+            agent,
+            final_session,
+            ..
+        } => principal::retire(
+            c,
+            header,
+            s,
+            x.project()?,
+            &agent,
+            final_session.as_ref(),
+            seq,
+        )?,
+        ProfileSaved { agent, profile, .. } => save_profile(&x, &agent, &profile)?,
         GrantRecorded {
             principal,
             key: grant,
             active,
             ..
-        } => {
-            if !matches!(header.actor, Actor::Human(_)) {
-                return Err(fail(
-                    StoreErrorCode::CreatorControlRefused,
-                    "only owner may change grants",
-                ));
-            }
-            c.execute("INSERT INTO grants(scope_key,principal_id,grant_key,revision,last_seq,active) VALUES(?,?,?,?,?,?)
-                    ON CONFLICT(scope_key,principal_id,grant_key) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq,active=excluded.active
-                    WHERE grants.revision=excluded.revision-1",crate::sql_value::sql_params![s,x.actor(&principal)?,codec::encode(&grant)?,revision,seq,active]).map_err(sql)?;
-        }
+        } => record_grant(&x, &principal, &grant, active)?,
         b @ RuntimeOwnerEstablished { .. } => runtime_owner(x, b, lease)?,
         DecisionProposed { .. }
         | DecisionRatified { .. }
@@ -371,6 +361,41 @@ fn recorded(x: Ctx<'_>, body: EventBody<InputText>, lease: &LeaseIdentity) -> St
         ErasureCompleted { erasure, .. } => crate::erasure::apply::completed(c, seq, &erasure)?,
         _ => return later("projection"),
     }
+    Ok(())
+}
+fn save_profile(x: &Ctx<'_>, agent: &se_types::AgentId, profile: &Profile) -> StoreResult<()> {
+    profile
+        .provider_settings
+        .validate(profile.provider.into())
+        .map_err(|_| invalid("invalid saved provider settings"))?;
+    if matches!(profile.permission, PermissionProfile::NamedFullBypass)
+        && profile.named_profile.is_empty()
+    {
+        return Err(invalid("bypass needs an explicit named profile"));
+    }
+    let a = key(x.c, "agent", agent.as_str(), x.s, true)?;
+    x.c.execute(
+        "INSERT INTO profiles(project_id,agent_id,revision,last_seq) VALUES(?,?,?,?) ON CONFLICT(project_id,agent_id)
+                DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq WHERE profiles.revision=excluded.revision-1",
+        crate::sql_value::sql_params![x.project()?, a, x.revision, x.seq],
+    )
+    .map_err(sql)?;
+    Ok(())
+}
+fn record_grant(x: &Ctx<'_>, principal: &Actor, grant: &GrantKey, active: bool) -> StoreResult<()> {
+    if !matches!(x.header.actor, Actor::Human(_)) {
+        return Err(fail(
+            StoreErrorCode::CreatorControlRefused,
+            "only owner may change grants",
+        ));
+    }
+    x.c.execute(
+        "INSERT INTO grants(scope_key,principal_id,grant_key,revision,last_seq,active) VALUES(?,?,?,?,?,?)
+                ON CONFLICT(scope_key,principal_id,grant_key) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq,active=excluded.active
+                WHERE grants.revision=excluded.revision-1",
+        crate::sql_value::sql_params![x.s, x.actor(principal)?, codec::encode(grant)?, x.revision, x.seq, active],
+    )
+    .map_err(sql)?;
     Ok(())
 }
 fn change_captain(x: Ctx<'_>, target: &ProjectId, captain: Option<Actor>) -> StoreResult<()> {
@@ -468,11 +493,21 @@ fn register_principal(x: Ctx<'_>, body: EventBody<InputText>) -> StoreResult<()>
         owner,
         created_by,
         name,
+        ephemeral,
         ..
     } = body
     else {
         return later("projection");
     };
+    if let Some(spec) = ephemeral {
+        principal::require_ephemeral_schema(c)?;
+        if !matches!(kind, PrincipalKind::Agent) || x.pk.is_none() {
+            return Err(invalid("ephemeral registration requires a project agent"));
+        }
+        if spec.ttl_seconds == 0 || spec.ttl_seconds > 86_400 {
+            return Err(invalid("ephemeral ttl_seconds must be within 1..=86400"));
+        }
+    }
     if name.is_empty() || name.len() > 64 {
         return Err(invalid("principal name bounds"));
     }
@@ -523,8 +558,17 @@ fn register_principal(x: Ctx<'_>, body: EventBody<InputText>) -> StoreResult<()>
             ));
         }
         let creator = created_by.as_ref().map(|a| x.actor(a)).transpose()?;
-        c.execute("INSERT INTO principals(project_id,principal_id,principal_kind,owner_id,created_by,display_name,first_seq,revision,last_seq)
+        if connection::info(c)?.schema_version >= 17 {
+            let (one_shot, ttl): (i64, Option<i64>) = match ephemeral {
+                Some(spec) => (i64::from(spec.one_shot), Some(i64::from(spec.ttl_seconds))),
+                None => (0, None),
+            };
+            c.execute("INSERT INTO principals(project_id,principal_id,principal_kind,owner_id,created_by,display_name,first_seq,revision,last_seq,ephemeral_one_shot,ephemeral_ttl_seconds)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![x.project()?,a,if matches!(kind,PrincipalKind::Agent){"agent"}else{"human"},own,creator,name,seq,revision,seq,one_shot,ttl]).map_err(sql)?;
+        } else {
+            c.execute("INSERT INTO principals(project_id,principal_id,principal_kind,owner_id,created_by,display_name,first_seq,revision,last_seq)
                     VALUES(?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![x.project()?,a,if matches!(kind,PrincipalKind::Agent){"agent"}else{"human"},own,creator,name,seq,revision,seq]).map_err(sql)?;
+        }
         c.execute("INSERT INTO resume_heads(project_id,principal_id,unread_count,pending_effect_count,last_seq) VALUES(?,?,0,0,?)",crate::sql_value::sql_params![x.project()?,a,seq]).map_err(sql)?;
     }
     Ok(())
@@ -572,6 +616,9 @@ fn send_message(x: Ctx<'_>, body: EventBody<InputText>) -> StoreResult<()> {
             StoreErrorCode::ReferenceMissing,
             "message recipient is not registered in this project",
         ));
+    }
+    if exists {
+        principal::refuse_retired(c, x.project()?, &recipient)?;
     }
     let body = payload(
         c,

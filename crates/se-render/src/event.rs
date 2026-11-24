@@ -111,6 +111,7 @@ fn title(kind: &str) -> &str {
         "working_state.set" => "Working notes saved",
         "principal.registered" => "Identity registered",
         "principal.renamed" => "Identity renamed",
+        "agent.retired" => "Temporary agent retired",
         "profile.saved" => "Agent settings saved",
         "grant.recorded" => "Agent creation permission changed",
         "decision.proposed" => "Decision proposed",
@@ -159,6 +160,11 @@ fn summary_fields(kind: &str) -> &'static [(&'static str, &'static str)] {
         ],
         "working_state.set" => &[("Agent", "/agent/name"), ("Text", "/body/text")],
         "principal.registered" | "principal.renamed" => &[("Name", "/name"), ("Role", "/role")],
+        "agent.retired" => &[
+            ("Agent", "/agent/name"),
+            ("Reason", "/reason"),
+            ("Final session", "/final_session"),
+        ],
         "profile.saved" => &[
             ("Agent", "/agent/name"),
             ("Profile", "/profile/named_profile"),

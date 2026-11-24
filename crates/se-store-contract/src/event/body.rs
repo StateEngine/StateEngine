@@ -19,6 +19,7 @@ pub enum EventKind {
     ProjectRemoved,
     PrincipalRegistered,
     PrincipalRenamed,
+    AgentRetired,
     AliasImported,
     ProfileSaved,
     GrantRecorded,
@@ -153,12 +154,18 @@ pub enum EventBody<T> {
         created_by: Option<Actor>,
         name: String,
         role: String,
+        ephemeral: Option<EphemeralSpec>,
         expected: Expected,
     },
     PrincipalRenamed {
         principal: Actor,
         name: String,
         expected: Expected,
+    },
+    AgentRetired {
+        agent: AgentId,
+        reason: RetirementReason,
+        final_session: Option<SessionId>,
     },
     AliasImported {
         alias: String,

@@ -338,6 +338,9 @@ fn observe(
         acp_runtime: None,
         codex_login: None,
         harness_policy_notice: None,
+        ephemeral: false,
+        retired: false,
+        created_by: None,
     };
     let recorded_session = match &facts.session {
         Read::Present { value } => Some(value),

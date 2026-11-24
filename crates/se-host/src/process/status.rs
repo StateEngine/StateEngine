@@ -78,6 +78,7 @@ impl LaunchCoordinator {
             all: false,
             fresh: false,
             watch_only: true,
+            include_temp: false,
         };
         // The same observation chain every host read gets (SE Code, ACP and
         // provider), so each peer's state settles from the same facts.

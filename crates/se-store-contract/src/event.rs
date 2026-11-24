@@ -107,6 +107,22 @@ pub enum PrincipalKind {
     Human,
     Agent,
 }
+/// Ephemeral lifecycle policy recorded at registration for temporary agents.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EphemeralSpec {
+    pub one_shot: bool,
+    pub ttl_seconds: u32,
+}
+/// Terminal reason why an ephemeral agent was retired.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetirementReason {
+    Completed,
+    Cancelled,
+    ParentEnded,
+    Expired,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Consent {
     Capture,

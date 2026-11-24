@@ -31,6 +31,7 @@ pub fn owner<R: Snapshot>(
             created_by: None,
             name: "owner".into(),
             role: "owner".into(),
+            ephemeral: None,
             expected: Expected::Absent,
         },
         cx,

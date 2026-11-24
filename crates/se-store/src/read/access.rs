@@ -138,6 +138,7 @@ impl SqliteSnapshot {
         let who = Actor::Agent(agent.clone());
         Ok(Some(match body {
             EventBody::PrincipalRegistered { principal, .. } => *principal == who,
+            EventBody::AgentRetired { agent: target, .. } => target == agent,
             EventBody::SessionPrepared { agent: owner, .. } => owner == agent,
             EventBody::SessionActivated { session, .. }
             | EventBody::SessionEnded { session, .. }

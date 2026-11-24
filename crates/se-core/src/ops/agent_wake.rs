@@ -105,6 +105,9 @@ pub fn plan<R: Snapshot>(input: AgentWake, cx: &mut Cx<'_, R>) -> Result<WakePla
         "wake target",
         "Choose your own agent or a direct child you are currently allowed to control.",
     )?;
+    if control.retired {
+        return Err(process_plan::retired_agent_refusal("agent.wake"));
+    }
     let name = match &control.principal.current.body {
         EventBody::PrincipalRegistered { name, .. } | EventBody::PrincipalRenamed { name, .. } => {
             name.clone()

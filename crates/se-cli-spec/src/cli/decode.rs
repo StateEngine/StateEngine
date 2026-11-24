@@ -176,6 +176,7 @@ fn decode_agent(
                 .parse()
                 .map_err(|_| SeError::invalid("limit", "1..100"))?,
             cursor: text(m, "cursor").map(Cursor::new).transpose()?,
+            include_temp: flag(m, "include-temp"),
         }),
         "agent.show" => AnyOp::AgentShow(AgentShow {
             target_agent_id: None,
@@ -277,6 +278,7 @@ fn decode_project(
         "project.status" => AnyOp::ProjectStatus(ProjectStatus {
             fresh: !path.is_empty() && flag(m, "fresh"),
             watch_only: false,
+            include_temp: !path.is_empty() && flag(m, "include-temp"),
             all: if path.is_empty() {
                 false
             } else {

@@ -17,6 +17,7 @@ fn duplicate_registration_and_rename_keep_the_existing_identity_and_head() -> Ch
             created_by: None,
             name: "Sable".into(),
             role: "".into(),
+            ephemeral: None,
             expected: Expected::Absent,
         },
         EventBody::PrincipalRenamed {
@@ -55,6 +56,7 @@ fn duplicate_registration_and_rename_keep_the_existing_identity_and_head() -> Ch
                 created_by: None,
                 name: "Meridian".into(),
                 role: "".into(),
+                ephemeral: None,
                 expected: Expected::Absent,
             }],
         )
