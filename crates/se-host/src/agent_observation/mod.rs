@@ -108,76 +108,58 @@ impl AgentObservation {
         Ok(())
     }
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-pub fn observe_agent(
-    mut plan: AgentObservationPlan,
-    deadline: Instant,
-) -> Result<AgentObservation> {
-    let observed = (|| {
-        bound(deadline)?;
-        if plan.identity.is_some() && !matches!(&plan.process, Read::Unreadable { .. }) {
-            native::observe(&mut plan, deadline)?;
-            capture::observe(&mut plan, deadline)?;
+fn launch_command(plan: &AgentObservationPlan, fresh: bool) -> Option<se_core::ops::AgentCommand> {
+    match &plan.command_home {
+        Some(home) => {
+            se_core::ops::AgentCommand::launch_in_home(&plan.row.id, home, &plan.project, fresh)
         }
-        Ok(())
-    })();
-    if let Err(error) = observed {
-        degrade(&mut plan.row, &error);
+        None => Some(se_core::ops::AgentCommand::launch(
+            &plan.row.id,
+            None,
+            Some(&plan.project),
+            fresh,
+        )),
     }
-    if let Some(reason) = &plan.control_failure {
-        plan.row.session.state = "recovery-pending".into();
-        plan.row.resume.ready = false;
-        plan.row.resume.mode = "reconcile".into();
-        let stop = match &plan.command_home {
-            Some(home) => {
-                se_core::ops::AgentCommand::stop_in_home(&plan.row.id, home, &plan.project)
-            }
-            None => Some(se_core::ops::AgentCommand::stop(
-                &plan.row.id,
-                None,
-                Some(&plan.project),
-            )),
-        };
-        let remedy = stop.map_or_else(
-            || se_core::ops::AgentCommand::HOME_UNAVAILABLE.into(),
-            |stop| {
-                format!(
-                    "Run `{}` to reconcile exact native ownership before resuming.",
-                    stop.command
-                )
-            },
-        );
-        plan.row.resume.reason = Some(format!(
-            "Agent {} ({}) session {}: {reason}. Preserve the original provider and session; restore its protected custody/session records. {remedy}",
-            plan.row.name,
-            plan.row.id,
-            plan.identity
-                .as_ref()
-                .map(|id| id.session.as_str())
-                .unwrap_or("unknown"),
-        ));
-        plan.row.resume.command = None;
-        plan.row.resume.argv = None;
-    }
+}
+fn apply_control_failure(plan: &mut AgentObservationPlan) {
+    let Some(reason) = &plan.control_failure else {
+        return;
+    };
+    plan.row.session.state = "recovery-pending".into();
+    plan.row.resume.ready = false;
+    plan.row.resume.mode = "reconcile".into();
+    let stop = match &plan.command_home {
+        Some(home) => se_core::ops::AgentCommand::stop_in_home(&plan.row.id, home, &plan.project),
+        None => Some(se_core::ops::AgentCommand::stop(
+            &plan.row.id,
+            None,
+            Some(&plan.project),
+        )),
+    };
+    let remedy = stop.map_or_else(
+        || se_core::ops::AgentCommand::HOME_UNAVAILABLE.into(),
+        |stop| {
+            format!(
+                "Run `{}` to reconcile exact native ownership before resuming.",
+                stop.command
+            )
+        },
+    );
+    plan.row.resume.reason = Some(format!(
+        "Agent {} ({}) session {}: {reason}. Preserve the original provider and session; restore its protected custody/session records. {remedy}",
+        plan.row.name,
+        plan.row.id,
+        plan.identity
+            .as_ref()
+            .map(|id| id.session.as_str())
+            .unwrap_or("unknown"),
+    ));
+    plan.row.resume.command = None;
+    plan.row.resume.argv = None;
+}
+fn apply_resume_and_setup(plan: &mut AgentObservationPlan) {
     if plan.row.resume.argv.is_some() {
-        let command = match &plan.command_home {
-            Some(home) => se_core::ops::AgentCommand::launch_in_home(
-                &plan.row.id,
-                home,
-                &plan.project,
-                plan.row.resume.mode == "new",
-            ),
-            None => Some(se_core::ops::AgentCommand::launch(
-                &plan.row.id,
-                None,
-                Some(&plan.project),
-                plan.row.resume.mode == "new",
-            )),
-        };
-        if let Some(command) = command {
+        if let Some(command) = launch_command(plan, plan.row.resume.mode == "new") {
             let command =
                 command.with_detach(plan.row.session.surface.as_deref() != Some("window"));
             plan.row.resume.command = Some(command.command);
@@ -206,18 +188,7 @@ pub fn observe_agent(
         } else {
             "The replacement setup failed before connecting to StateEngine. Launch this agent again to retry; completed onboarding and existing mail holds are retained."
         }.into());
-        let command = match &plan.command_home {
-            Some(home) => {
-                se_core::ops::AgentCommand::launch_in_home(&plan.row.id, home, &plan.project, true)
-            }
-            None => Some(se_core::ops::AgentCommand::launch(
-                &plan.row.id,
-                None,
-                Some(&plan.project),
-                true,
-            )),
-        }
-        .map(|command| command.with_detach(false));
+        let command = launch_command(plan, true).map(|command| command.with_detach(false));
         plan.row.resume.command = command.as_ref().map(|command| command.command.clone());
         plan.row.resume.argv = command.map(|command| command.argv);
     } else if live
@@ -229,6 +200,24 @@ pub fn observe_agent(
         plan.row.resume.reason = Some("Waiting for Claude to connect. Complete any welcome or workspace trust prompt in its window; StateEngine is still watching the same process.".into());
         plan.row.resume.mode = "running".into();
     }
+}
+pub fn observe_agent(
+    mut plan: AgentObservationPlan,
+    deadline: Instant,
+) -> Result<AgentObservation> {
+    let observed = (|| {
+        bound(deadline)?;
+        if plan.identity.is_some() && !matches!(&plan.process, Read::Unreadable { .. }) {
+            native::observe(&mut plan, deadline)?;
+            capture::observe(&mut plan, deadline)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = observed {
+        degrade(&mut plan.row, &error);
+    }
+    apply_control_failure(&mut plan);
+    apply_resume_and_setup(&mut plan);
     let pending = approval::observe(&plan, deadline);
     Ok(AgentObservation {
         identity: plan.identity,

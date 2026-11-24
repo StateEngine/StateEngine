@@ -50,10 +50,67 @@ pub fn prepare_agent_observation<S: Snapshot>(
         }
     }
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+type SessionProcess = (
+    Read<se_store::ProcessIdentityRecord>,
+    Option<String>,
+    RecordedExit,
+);
+
+fn resolve_session_process<S: Snapshot>(
+    row: &AgentRow,
+    session: &se_types::SessionId,
+    head: &se_store::ProjectionRecord,
+    read: &mut S,
+) -> Result<SessionProcess> {
+    let process = match &head.current.body {
+        EventBody::SessionActivated {
+            process: Some(process),
+            ..
+        } => read.process(process.clone()).map_err(|e| store_error(&e))?,
+        _ => match read
+            .control_target(row.id.clone())
+            .map_err(|e| store_error(&e))?
+        {
+            Read::Present { value } => value.latest_process,
+            other => missing(other),
+        },
+    };
+    let mut control_failure = None;
+    let mut recorded_exit = RecordedExit::Other;
+    let process = match process {
+        Read::Present { value } => {
+            let exit = RecordedExit::from_event(&value.current.body);
+            let failure = match &value.current.body {
+                EventBody::ProcessTransition {
+                    to: se_store::ProcessState::StopUnproved | se_store::ProcessState::Lost,
+                    outcome,
+                    ..
+                } => Some(outcome.clone()),
+                _ => None,
+            };
+            let identity = match value.current.body {
+                EventBody::ProcessRegistered { identity, .. }
+                | EventBody::ProcessTransition { identity, .. } => *identity,
+                _ => return Err(invalid("the matching immutable process projection")),
+            };
+            if identity.session.as_ref() != Some(session) {
+                Read::Absent {
+                    checked: "the latest recorded process belongs to a different session; it is not substituted for this session".into(),
+                }
+            } else if identity.principal != Actor::Agent(row.id.clone()) {
+                return Err(invalid(
+                    "a process projection belonging to this exact agent session",
+                ));
+            } else {
+                control_failure = failure;
+                recorded_exit = exit;
+                Read::Present { value: identity }
+            }
+        }
+        other => missing(other),
+    };
+    Ok((process, control_failure, recorded_exit))
+}
 fn prepare<S: Snapshot>(
     project: &ProjectId,
     row: &AgentRow,
@@ -107,53 +164,8 @@ fn prepare<S: Snapshot>(
     {
         return Err(invalid("the original session/agent/conversation binding"));
     }
-    let process = match &head.current.body {
-        EventBody::SessionActivated {
-            process: Some(process),
-            ..
-        } => read.process(process.clone()).map_err(|e| store_error(&e))?,
-        _ => match read
-            .control_target(row.id.clone())
-            .map_err(|e| store_error(&e))?
-        {
-            Read::Present { value } => value.latest_process,
-            other => missing(other),
-        },
-    };
-    let mut control_failure = None;
-    let mut recorded_exit = RecordedExit::Other;
-    let process = match process {
-        Read::Present { value } => {
-            let exit = RecordedExit::from_event(&value.current.body);
-            let failure = match &value.current.body {
-                EventBody::ProcessTransition {
-                    to: se_store::ProcessState::StopUnproved | se_store::ProcessState::Lost,
-                    outcome,
-                    ..
-                } => Some(outcome.clone()),
-                _ => None,
-            };
-            let identity = match value.current.body {
-                EventBody::ProcessRegistered { identity, .. }
-                | EventBody::ProcessTransition { identity, .. } => *identity,
-                _ => return Err(invalid("the matching immutable process projection")),
-            };
-            if identity.session.as_ref() != Some(&session) {
-                Read::Absent {
-                    checked: "the latest recorded process belongs to a different session; it is not substituted for this session".into(),
-                }
-            } else if identity.principal != Actor::Agent(row.id.clone()) {
-                return Err(invalid(
-                    "a process projection belonging to this exact agent session",
-                ));
-            } else {
-                control_failure = failure;
-                recorded_exit = exit;
-                Read::Present { value: identity }
-            }
-        }
-        other => missing(other),
-    };
+    let (process, control_failure, recorded_exit) =
+        resolve_session_process(row, &session, &head, read)?;
     let capture = capture_evidence(
         project,
         &session,
@@ -180,10 +192,109 @@ fn prepare<S: Snapshot>(
         setup_retryable: se_core::ops::agent_launch::retryable_attended_setup(&head),
     })
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+fn check_capture_outcome<S: Snapshot>(
+    source_id: se_store::RecordId,
+    session: &se_types::SessionId,
+    read: &mut S,
+) -> Result<Option<Read<SourceEvidence>>> {
+    // Native exit and session retirement do not erase a failed final capture.
+    // Keep its diagnostic until capture advances the cursor or a trusted final
+    // reader verifies EOF at that cursor, including a retry with no new records.
+    let outcome = read
+        .capture_outcome(source_id, None)
+        .map_err(|e| store_error(&e))?;
+    let failure = match &outcome {
+        Read::Present { value } => Some(value),
+        Read::Absent { .. } => None,
+        _ => return Err(invalid("the latest capture outcome is unavailable")),
+    };
+    if let Some(failure) = failure {
+        match &failure.body {
+            EventBody::CaptureVerified {
+                source: found,
+                session: recorded,
+                ..
+            } if *found == source_id && recorded == session => (),
+            EventBody::CaptureFailed {
+                source,
+                session: found,
+                cause,
+                code,
+                ..
+            } if *source == source_id && found == session => {
+                return Ok(Some(unreadable(
+                    "transcript capture",
+                    format!(
+                        "Capture failed since the last committed turn ({code:?}): {cause}. The saved cursor is preserved; retry capture or stop to reconcile."
+                    ),
+                )));
+            }
+            _ => return Err(invalid("the exact session/source capture failure")),
+        }
+    }
+    Ok(None)
+}
+fn verify_turn_evidence<S: Snapshot>(
+    session: &se_types::SessionId,
+    agent: &se_types::AgentId,
+    progress: (&[u8], u64, u64, Option<&SourceEvidence>),
+    turn: se_store::StoredEvent,
+    read: &mut S,
+) -> Result<Read<SourceEvidence>> {
+    let (incarnation, from, to, replay) = progress;
+    if let Some(evidence) = replay {
+        let EventBody::SessionTurn {
+            agent: selected_agent,
+            provider: backend @ (se_store::Provider::Claude | se_store::Provider::Codex),
+            vendor_ref,
+            text: StoredText::Present(_),
+            ..
+        } = &turn.body
+        else {
+            return Err(invalid("a retained Claude or Codex conversation item"));
+        };
+        let original = scope::require_present(
+            read.native_turn(session.clone(), *backend, vendor_ref)
+                .map_err(|e| store_error(&e))?,
+            "resumed native item",
+            scope::COMMITTED_READ_RECOVERY,
+        )?;
+        if selected_agent == agent
+            && original.header.event == turn.header.event
+            && evidence.incarnation == incarnation
+            && evidence.offset == from
+            && evidence.offset.checked_add(evidence.length) == Some(to)
+            && evidence.sha256.is_some()
+        {
+            return Ok(Read::Present {
+                value: evidence.clone(),
+            });
+        }
+        return Err(invalid(
+            "the current native conversation and verified replay range",
+        ));
+    }
+    match turn.body {
+        EventBody::SessionTurn {
+            session: found,
+            agent: principal,
+            evidence,
+            text: StoredText::Present(_),
+            ..
+        } if &found == session
+            && &principal == agent
+            && evidence.incarnation == incarnation
+            && evidence.offset == from
+            && evidence.offset.checked_add(evidence.length) == Some(to)
+            && evidence.sha256.is_some() =>
+        {
+            Ok(Read::Present { value: evidence })
+        }
+        _ => Err(invalid(
+            "the current capture cursor and its exact original source evidence",
+        )),
+    }
+}
 fn capture_evidence<S: Snapshot>(
     project: &ProjectId,
     session: &se_types::SessionId,
@@ -212,42 +323,8 @@ fn capture_evidence<S: Snapshot>(
             what: "No capture consent and source are bound to this session".into(),
         });
     }
-    // Native exit and session retirement do not erase a failed final capture.
-    // Keep its diagnostic until capture advances the cursor or a trusted final
-    // reader verifies EOF at that cursor, including a retry with no new records.
-    {
-        let outcome = read
-            .capture_outcome(source_id, None)
-            .map_err(|e| store_error(&e))?;
-        let failure = match &outcome {
-            Read::Present { value } => Some(value),
-            Read::Absent { .. } => None,
-            _ => return Err(invalid("the latest capture outcome is unavailable")),
-        };
-        if let Some(failure) = failure {
-            match &failure.body {
-                EventBody::CaptureVerified {
-                    source: found,
-                    session: recorded,
-                    ..
-                } if *found == source_id && recorded == session => (),
-                EventBody::CaptureFailed {
-                    source,
-                    session: found,
-                    cause,
-                    code,
-                    ..
-                } if *source == source_id && found == session => {
-                    return Ok(unreadable(
-                        "transcript capture",
-                        format!(
-                            "Capture failed since the last committed turn ({code:?}): {cause}. The saved cursor is preserved; retry capture or stop to reconcile."
-                        ),
-                    ));
-                }
-                _ => return Err(invalid("the exact session/source capture failure")),
-            };
-        }
+    if let Some(failed) = check_capture_outcome(source_id, session, read)? {
+        return Ok(failed);
     }
     let (incarnation, from, to, turn, replay) = match &source.current.body {
         EventBody::CaptureProgress {
@@ -262,7 +339,7 @@ fn capture_evidence<S: Snapshot>(
             *old_offset,
             *new_offset,
             *last_turn,
-            replay_evidence,
+            replay_evidence.as_ref(),
         ),
         _ => {
             return Ok(Read::Unknown {
@@ -274,58 +351,7 @@ fn capture_evidence<S: Snapshot>(
         Read::Present { value } => value,
         other => return Ok(missing(other)),
     };
-    if let Some(evidence) = replay {
-        let EventBody::SessionTurn {
-            agent: selected_agent,
-            provider: backend @ (se_store::Provider::Claude | se_store::Provider::Codex),
-            vendor_ref,
-            text: StoredText::Present(_),
-            ..
-        } = &turn.body
-        else {
-            return Err(invalid("a retained Claude or Codex conversation item"));
-        };
-        let original = scope::require_present(
-            read.native_turn(session.clone(), *backend, vendor_ref)
-                .map_err(|e| store_error(&e))?,
-            "resumed native item",
-            scope::COMMITTED_READ_RECOVERY,
-        )?;
-        if selected_agent == agent
-            && original.header.event == turn.header.event
-            && &evidence.incarnation == incarnation
-            && evidence.offset == from
-            && evidence.offset.checked_add(evidence.length) == Some(to)
-            && evidence.sha256.is_some()
-        {
-            return Ok(Read::Present {
-                value: evidence.clone(),
-            });
-        }
-        return Err(invalid(
-            "the current native conversation and verified replay range",
-        ));
-    }
-    match turn.body {
-        EventBody::SessionTurn {
-            session: found,
-            agent: principal,
-            evidence,
-            text: StoredText::Present(_),
-            ..
-        } if &found == session
-            && &principal == agent
-            && &evidence.incarnation == incarnation
-            && evidence.offset == from
-            && evidence.offset.checked_add(evidence.length) == Some(to)
-            && evidence.sha256.is_some() =>
-        {
-            Ok(Read::Present { value: evidence })
-        }
-        _ => Err(invalid(
-            "the current capture cursor and its exact original source evidence",
-        )),
-    }
+    verify_turn_evidence(session, agent, (incarnation, from, to, replay), turn, read)
 }
 
 /// Copy the same trusted file evidence used by status before a native reopen.

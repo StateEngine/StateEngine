@@ -268,36 +268,27 @@ fn set_hold(path: &std::path::Path, held: bool, reason: Option<&str>) -> Result<
         .map_err(|e| invalid(&e.to_string()))
 }
 
-/// Only this mail endpoint accepts a mail-only signature. It cannot be used as
-/// an MCP capability or carry a raw secret through a redirecting fetch API.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-pub(crate) async fn respond(
-    router: &crate::HostedRouter,
-    request: hyper::Request<hyper::body::Incoming>,
-    active: Arc<Mutex<Option<tokio::sync::OwnedSemaphorePermit>>>,
-) -> hyper::Response<http_body_util::Full<hyper::body::Bytes>> {
-    use http_body_util::BodyExt;
-    use hyper::{StatusCode, header};
-    type Reply = hyper::Response<http_body_util::Full<hyper::body::Bytes>>;
-    fn response(status: StatusCode, text: String, proof: Option<String>) -> Reply {
-        let mut reply =
-            hyper::Response::new(http_body_util::Full::new(hyper::body::Bytes::from(text)));
-        *reply.status_mut() = status;
-        reply.headers_mut().insert(
-            header::CONTENT_TYPE,
-            hyper::header::HeaderValue::from_static("application/json"),
-        );
-        if let Some(proof) = proof.and_then(|p| hyper::header::HeaderValue::from_str(&p).ok()) {
-            reply.headers_mut().insert("x-se-mail-proof", proof);
-        }
-        reply
+type MailReply = hyper::Response<http_body_util::Full<hyper::body::Bytes>>;
+
+fn json_response(status: hyper::StatusCode, text: String, proof: Option<String>) -> MailReply {
+    let mut reply = hyper::Response::new(http_body_util::Full::new(hyper::body::Bytes::from(text)));
+    *reply.status_mut() = status;
+    reply.headers_mut().insert(
+        hyper::header::CONTENT_TYPE,
+        hyper::header::HeaderValue::from_static("application/json"),
+    );
+    if let Some(proof) = proof.and_then(|p| hyper::header::HeaderValue::from_str(&p).ok()) {
+        reply.headers_mut().insert("x-se-mail-proof", proof);
     }
-    let method = request.method().as_str().to_owned();
+    reply
+}
+
+fn parse_auth_headers(headers: &hyper::HeaderMap) -> Result<(SessionId, String, String, String)> {
+    if headers.contains_key(hyper::header::AUTHORIZATION) {
+        return Err(invalid("one mail authentication scheme"));
+    }
     let one = |name: &str| -> Result<String> {
-        let mut values = request.headers().get_all(name).iter();
+        let mut values = headers.get_all(name).iter();
         let value = values
             .next()
             .and_then(|v| v.to_str().ok())
@@ -307,20 +298,68 @@ pub(crate) async fn respond(
         }
         Ok(value.to_owned())
     };
-    let fields = (|| -> Result<_> {
-        if request.headers().contains_key(header::AUTHORIZATION) {
-            return Err(invalid("one mail authentication scheme"));
-        }
-        Ok((
-            one("x-se-mail-session")?.parse::<SessionId>()?,
-            one("x-se-mail-nonce")?,
-            one("x-se-mail-time")?,
-            one("x-se-mail-proof")?,
-        ))
-    })();
-    let (session, nonce, issued, proof) = match fields {
+    Ok((
+        one("x-se-mail-session")?.parse::<SessionId>()?,
+        one("x-se-mail-nonce")?,
+        one("x-se-mail-time")?,
+        one("x-se-mail-proof")?,
+    ))
+}
+
+async fn execute_bell_action(
+    router: &crate::HostedRouter,
+    auth: &Authenticated,
+    method: &str,
+    body: &str,
+    after: Option<String>,
+    active: Arc<Mutex<Option<tokio::sync::OwnedSemaphorePermit>>>,
+) -> Result<serde_json::Value> {
+    let deadline = crate::client::lease::Deadline::from_options(&crate::client::ClientOptions {
+        expected_generation: None,
+        timeout: Duration::from_secs(30),
+        cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    })?;
+    if method == "GET" && body.is_empty() {
+        return serde_json::to_value(
+            router
+                .next_mail(auth.bearer.clone(), after, active, &deadline)
+                .await?,
+        )
+        .map_err(|_| invalid("encodable bounded mail page"));
+    }
+    if method != "POST" {
+        return Err(invalid("GET wait or POST hold transition"));
+    }
+    let page = router.mail_page(auth.bearer.clone(), &deadline).await?;
+    if page.session != auth.session {
+        return Err(invalid("the exact authenticated recipient session"));
+    }
+    let action: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| invalid("one bounded hold transition"))?;
+    let reason = action.get("hold").and_then(|v| v.as_str());
+    let is_hold = matches!(reason, Some("human-stop" | "session-end" | "revocation"));
+    let resume = action == serde_json::json!({"resume":true});
+    if (!is_hold && !resume) || (is_hold && action != serde_json::json!({"hold":reason})) {
+        return Err(invalid("one explicit hold or resume transition"));
+    }
+    set_hold(&auth.hold, is_hold, reason)?;
+    router.execution.mail_waits.interrupt(&auth.session)?;
+    Ok(serde_json::json!({"held":is_hold}))
+}
+
+/// Only this mail endpoint accepts a mail-only signature. It cannot be used as
+/// an MCP capability or carry a raw secret through a redirecting fetch API.
+pub(crate) async fn respond(
+    router: &crate::HostedRouter,
+    request: hyper::Request<hyper::body::Incoming>,
+    active: Arc<Mutex<Option<tokio::sync::OwnedSemaphorePermit>>>,
+) -> MailReply {
+    use http_body_util::BodyExt;
+    use hyper::StatusCode;
+    let method = request.method().as_str().to_owned();
+    let (session, nonce, issued, proof) = match parse_auth_headers(request.headers()) {
         Ok(fields) => fields,
-        Err(_) => return response(StatusCode::UNAUTHORIZED, "{}".into(), None),
+        Err(_) => return json_response(StatusCode::UNAUTHORIZED, "{}".into(), None),
     };
     let after = match request.headers().get("last-event-id") {
         Some(value) => match value
@@ -329,7 +368,7 @@ pub(crate) async fn respond(
             .and_then(|s| se_types::Cursor::new(s).ok())
         {
             Some(cursor) => Some(cursor.as_str().to_owned()),
-            None => return response(StatusCode::BAD_REQUEST, "{}".into(), None),
+            None => return json_response(StatusCode::BAD_REQUEST, "{}".into(), None),
         },
         None => None,
     };
@@ -341,9 +380,9 @@ pub(crate) async fn respond(
     {
         Ok(Ok(body)) => match String::from_utf8(body.to_bytes().to_vec()) {
             Ok(body) => body,
-            Err(_) => return response(StatusCode::BAD_REQUEST, "{}".into(), None),
+            Err(_) => return json_response(StatusCode::BAD_REQUEST, "{}".into(), None),
         },
-        _ => return response(StatusCode::BAD_REQUEST, "{}".into(), None),
+        _ => return json_response(StatusCode::BAD_REQUEST, "{}".into(), None),
     };
     let auth = match router
         .execution
@@ -352,56 +391,22 @@ pub(crate) async fn respond(
         .authenticate(session, nonce, &issued, &proof, &method, &body)
     {
         Ok(auth) => auth,
-        Err(_) => return response(StatusCode::UNAUTHORIZED, "{}".into(), None),
+        Err(_) => return json_response(StatusCode::UNAUTHORIZED, "{}".into(), None),
     };
-    let result = async {
-        let deadline =
-            crate::client::lease::Deadline::from_options(&crate::client::ClientOptions {
-                expected_generation: None,
-                timeout: Duration::from_secs(30),
-                cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            })?;
-        if method == "GET" && body.is_empty() {
-            return serde_json::to_value(
-                router
-                    .next_mail(auth.bearer.clone(), after, active, &deadline)
-                    .await?,
-            )
-            .map_err(|_| invalid("encodable bounded mail page"));
-        }
-        if method != "POST" {
-            return Err(invalid("GET wait or POST hold transition"));
-        }
-        let page = router.mail_page(auth.bearer.clone(), &deadline).await?;
-        if page.session != auth.session {
-            return Err(invalid("the exact authenticated recipient session"));
-        }
-        let action: serde_json::Value =
-            serde_json::from_str(&body).map_err(|_| invalid("one bounded hold transition"))?;
-        let reason = action.get("hold").and_then(|v| v.as_str());
-        let is_hold = matches!(reason, Some("human-stop" | "session-end" | "revocation"));
-        let resume = action == serde_json::json!({"resume":true});
-        if (!is_hold && !resume) || (is_hold && action != serde_json::json!({"hold":reason})) {
-            return Err(invalid("one explicit hold or resume transition"));
-        }
-        set_hold(&auth.hold, is_hold, reason)?;
-        router.execution.mail_waits.interrupt(&auth.session)?;
-        Ok(serde_json::json!({"held":is_hold}))
-    }
-    .await;
-    let (status, value) = match result {
-        Ok(value) => (StatusCode::OK, value),
-        Err(error) => (
-            StatusCode::CONFLICT,
-            serde_json::json!({"error":error.body}),
-        ),
-    };
+    let (status, value) =
+        match execute_bell_action(router, &auth, &method, &body, after, active).await {
+            Ok(value) => (StatusCode::OK, value),
+            Err(error) => (
+                StatusCode::CONFLICT,
+                serde_json::json!({"error":error.body}),
+            ),
+        };
     let text = match serde_json::to_string(&value) {
         Ok(text) => text,
-        Err(_) => return response(StatusCode::INTERNAL_SERVER_ERROR, "{}".into(), None),
+        Err(_) => return json_response(StatusCode::INTERNAL_SERVER_ERROR, "{}".into(), None),
     };
     let signed = auth.response_mac(status.as_u16(), &text).ok();
-    response(status, text, signed)
+    json_response(status, text, signed)
 }
 impl Authenticated {
     pub(crate) fn response_mac(&self, status: u16, body: &str) -> Result<String> {
