@@ -9,27 +9,14 @@ use std::{
     ptr,
 };
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "One POSIX spawn transaction retains every descriptor until native creation is returned."
-)]
+/// One POSIX spawn transaction: every descriptor, argv/envp buffer and action
+/// list stays owned here until native creation is returned.
 pub(in crate::bootstrap) fn spawn(spec: &RuntimeLaunchSpec, frame: Frame) -> ProcResult<Created> {
     let bytes = serde_json::to_vec(&frame).map_err(|e| input("runtime frame", &e.to_string()))?;
     if bytes.len() > MAX_FRAME {
         return Err(capacity("runtime frame bytes", MAX_FRAME as u64));
     }
-    let image =
-        File::open(&spec.executable).map_err(|e| fail("pin installed runtime executable", e))?;
-    if !image
-        .metadata()
-        .map_err(|e| fail("read installed runtime image", e))?
-        .is_file()
-    {
-        return Err(input(
-            "installed runtime executable",
-            "regular native executable required",
-        ));
-    }
+    let image = pin_image(spec)?;
     let executable = CString::new(spec.executable.as_os_str().as_bytes())
         .map_err(|_| input("runtime image", "NUL in native path"))?;
     let marker =
@@ -39,15 +26,7 @@ pub(in crate::bootstrap) fn spawn(spec: &RuntimeLaunchSpec, frame: Frame) -> Pro
         marker.as_ptr().cast_mut(),
         ptr::null_mut(),
     ];
-    let mut environment = Vec::new();
-    for (key, value) in &spec.environment.entries {
-        let mut bytes = key.as_bytes().to_vec();
-        bytes.push(b'=');
-        bytes.extend(value.as_bytes());
-        environment.push(
-            CString::new(bytes).map_err(|_| input("runtime environment", "NUL in native entry"))?,
-        );
-    }
+    let environment = environment(spec)?;
     let envp: Vec<_> = environment
         .iter()
         .map(|v| v.as_ptr().cast_mut())
@@ -65,37 +44,12 @@ pub(in crate::bootstrap) fn spawn(spec: &RuntimeLaunchSpec, frame: Frame) -> Pro
         .open("/dev/null")
         .map_err(|e| fail("open runtime null streams", e))?;
     let null = duplicate(&null)?;
-    // SAFETY: actions is initialized by the immediately following POSIX call.
-    let mut storage: libc::posix_spawn_file_actions_t = unsafe { std::mem::zeroed() };
-    // SAFETY: exact writable POSIX action-list storage.
-    code(
-        // SAFETY: writable native action storage is initialized exactly once.
-        unsafe { libc::posix_spawn_file_actions_init(&mut storage) },
-        "initialize bootstrap spawn actions",
-    )?;
-    let mut actions = Actions(storage);
-    for (source, target) in [
+    let actions = descriptor_actions([
         (plan_read.as_raw_fd(), 0),
         (null.as_raw_fd(), 1),
         (diagnostic_writer.as_raw_fd(), 2),
         (child.as_raw_fd(), 3),
-    ] {
-        // SAFETY: sources are retained >=10; targets are distinct reserved startup descriptors.
-        code(
-            // SAFETY: retained source descriptor is duplicated to a distinct reserved startup descriptor.
-            unsafe { libc::posix_spawn_file_actions_adddup2(&mut actions.0, source, target) },
-            "set exact runtime descriptors",
-        )?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        // SAFETY: child-only action preserves exactly the reserved descriptors 0..3.
-        code(
-            // SAFETY: initialized child action excludes only unrelated inherited descriptors.
-            unsafe { libc::posix_spawn_file_actions_addclosefrom_np(&mut actions.0, 4) },
-            "close unrelated runtime descriptors",
-        )?;
-    }
+    ])?;
     #[cfg(target_os = "linux")]
     let inherited_cgroup = crate::platform::runtime_cgroup()?;
     #[cfg(target_os = "macos")]
@@ -137,6 +91,67 @@ pub(in crate::bootstrap) fn spawn(spec: &RuntimeLaunchSpec, frame: Frame) -> Pro
         error: None,
         diagnostics,
     })
+}
+
+fn pin_image(spec: &RuntimeLaunchSpec) -> ProcResult<File> {
+    let image =
+        File::open(&spec.executable).map_err(|e| fail("pin installed runtime executable", e))?;
+    if !image
+        .metadata()
+        .map_err(|e| fail("read installed runtime image", e))?
+        .is_file()
+    {
+        return Err(input(
+            "installed runtime executable",
+            "regular native executable required",
+        ));
+    }
+    Ok(image)
+}
+
+fn environment(spec: &RuntimeLaunchSpec) -> ProcResult<Vec<CString>> {
+    let mut environment = Vec::new();
+    for (key, value) in &spec.environment.entries {
+        let mut bytes = key.as_bytes().to_vec();
+        bytes.push(b'=');
+        bytes.extend(value.as_bytes());
+        environment.push(
+            CString::new(bytes).map_err(|_| input("runtime environment", "NUL in native entry"))?,
+        );
+    }
+    Ok(environment)
+}
+
+/// Map each retained source descriptor onto its reserved startup number. The
+/// caller keeps every source open until `posix_spawn` returns.
+fn descriptor_actions(descriptors: [(i32, i32); 4]) -> ProcResult<Actions> {
+    // SAFETY: actions is initialized by the immediately following POSIX call.
+    let mut storage: libc::posix_spawn_file_actions_t = unsafe { std::mem::zeroed() };
+    // SAFETY: exact writable POSIX action-list storage.
+    code(
+        // SAFETY: writable native action storage is initialized exactly once.
+        unsafe { libc::posix_spawn_file_actions_init(&mut storage) },
+        "initialize bootstrap spawn actions",
+    )?;
+    let mut actions = Actions(storage);
+    for (source, target) in descriptors {
+        // SAFETY: sources are retained >=10; targets are distinct reserved startup descriptors.
+        code(
+            // SAFETY: retained source descriptor is duplicated to a distinct reserved startup descriptor.
+            unsafe { libc::posix_spawn_file_actions_adddup2(&mut actions.0, source, target) },
+            "set exact runtime descriptors",
+        )?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: child-only action preserves exactly the reserved descriptors 0..3.
+        code(
+            // SAFETY: initialized child action excludes only unrelated inherited descriptors.
+            unsafe { libc::posix_spawn_file_actions_addclosefrom_np(&mut actions.0, 4) },
+            "close unrelated runtime descriptors",
+        )?;
+    }
+    Ok(actions)
 }
 
 pub(in crate::bootstrap) fn receive() -> ProcResult<(Frame, File, File, File, Instant)> {

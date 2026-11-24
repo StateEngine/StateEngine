@@ -35,10 +35,6 @@ fn is_socket(fd: libc::c_int) -> bool {
     mode & libc::S_IFMT == libc::S_IFSOCK
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn observe(
     pid: ProcessId,
     expected: Option<&StartIdentity>,
@@ -58,102 +54,13 @@ pub(super) fn observe(
     #[cfg(target_os = "macos")]
     let ancestry = &walk.verified;
     #[cfg(target_os = "linux")]
-    let mut ancestry = Vec::new();
-    #[cfg(target_os = "linux")]
-    let mut next = pid;
-    #[cfg(target_os = "linux")]
-    while next.0 != 0 {
-        if ancestry.len() >= 4096 || ancestry.iter().any(|p: &ProcessStamp| p.pid == next) {
-            return Err(refuse(
-                "read owner ancestry",
-                "ancestry cycle or capacity exceeded",
-            ));
-        }
-        let current = os::stamp(next, &boot)?;
-        next = current.parent;
-        ancestry.push(current);
-    }
+    let ancestry = &linux_ancestry(pid, &boot)?;
     let current = ancestry
         .first()
         .ok_or_else(|| refuse("read owner ancestry", "current process absent"))?;
     let mut matches = Vec::new();
     for (record_index, record) in records.iter().enumerate() {
-        // A boot mismatch is positive evidence that an old native scope cannot
-        // contain this process. It is not a missing-record inference.
-        if record.root.boot != boot {
-            continue;
-        }
-        let basis = if current.instance_matches(&record.root) {
-            Some(AgentTreeBasis::ExactRoot)
-        } else if ancestry
-            .iter()
-            .skip(1)
-            .any(|p| p.instance_matches(&record.root))
-        {
-            Some(AgentTreeBasis::Ancestor)
-        } else {
-            match &record.scope {
-                ScopeIdentity::LinuxTracked {
-                    process_group,
-                    root,
-                } if cfg!(target_os = "linux") => {
-                    if root != &record.root || process_group.0 == 0 {
-                        return Err(refuse(
-                            "inspect managed group",
-                            "inconsistent recorded group/root",
-                        ));
-                    }
-                    if current.group == *process_group {
-                        Some(AgentTreeBasis::ProcessGroup)
-                    } else if current.session == root.pid {
-                        Some(AgentTreeBasis::Session)
-                    } else {
-                        None
-                    }
-                }
-                ScopeIdentity::MacOsTracked {
-                    process_group,
-                    root,
-                } if cfg!(target_os = "macos") => {
-                    if root != &record.root || process_group.0 == 0 {
-                        return Err(refuse(
-                            "inspect managed group",
-                            "inconsistent recorded group/root",
-                        ));
-                    }
-                    if current.session == root.pid {
-                        Some(AgentTreeBasis::Session)
-                    } else if current.group == *process_group {
-                        Some(AgentTreeBasis::ProcessGroup)
-                    } else {
-                        None
-                    }
-                }
-                #[cfg(target_os = "linux")]
-                ScopeIdentity::LinuxCgroup {
-                    path,
-                    device,
-                    inode,
-                    boot_id,
-                } => {
-                    if (BootIdentity::Linux { boot_id: *boot_id }) != boot {
-                        return Err(refuse("inspect managed cgroup", "inconsistent cgroup boot"));
-                    }
-                    if os::in_cgroup(pid, path, *device, *inode)? {
-                        Some(AgentTreeBasis::Cgroup)
-                    } else {
-                        None
-                    }
-                }
-                _ => {
-                    return Err(refuse(
-                        "inspect managed scope",
-                        "unresolved or incompatible recorded scope",
-                    ));
-                }
-            }
-        };
-        if let Some(basis) = basis {
+        if let Some(basis) = record_basis(record, pid, current, ancestry, &boot)? {
             matches.push(AgentTreeMatch {
                 record_index,
                 basis,
@@ -187,5 +94,114 @@ pub(super) fn observe(
         ancestry_bound: AncestryBound::Complete,
         #[cfg(target_os = "macos")]
         ancestry_bound: walk.bound,
+    })
+}
+
+/// Walk the parent chain from `pid` to the root, refusing cycles and runaway depth.
+#[cfg(target_os = "linux")]
+fn linux_ancestry(pid: ProcessId, boot: &BootIdentity) -> Result<Vec<ProcessStamp>> {
+    let mut ancestry = Vec::new();
+    let mut next = pid;
+    while next.0 != 0 {
+        if ancestry.len() >= 4096 || ancestry.iter().any(|p: &ProcessStamp| p.pid == next) {
+            return Err(refuse(
+                "read owner ancestry",
+                "ancestry cycle or capacity exceeded",
+            ));
+        }
+        let current = os::stamp(next, boot)?;
+        next = current.parent;
+        ancestry.push(current);
+    }
+    Ok(ancestry)
+}
+
+/// How this process belongs to one recorded agent tree, if it does. A record
+/// from another boot is positive evidence of no containment; an inconsistent or
+/// unresolved scope is refused rather than read as Outside.
+fn record_basis(
+    record: &ProcessRecord,
+    pid: ProcessId,
+    current: &ProcessStamp,
+    ancestry: &[ProcessStamp],
+    boot: &BootIdentity,
+) -> Result<Option<AgentTreeBasis>> {
+    // Only the Linux cgroup scope reads the target's membership directly.
+    #[cfg(target_os = "macos")]
+    let _ = pid;
+    // A boot mismatch is positive evidence that an old native scope cannot
+    // contain this process. It is not a missing-record inference.
+    if record.root.boot != *boot {
+        return Ok(None);
+    }
+    Ok(if current.instance_matches(&record.root) {
+        Some(AgentTreeBasis::ExactRoot)
+    } else if ancestry
+        .iter()
+        .skip(1)
+        .any(|p| p.instance_matches(&record.root))
+    {
+        Some(AgentTreeBasis::Ancestor)
+    } else {
+        match &record.scope {
+            ScopeIdentity::LinuxTracked {
+                process_group,
+                root,
+            } if cfg!(target_os = "linux") => {
+                if root != &record.root || process_group.0 == 0 {
+                    return Err(refuse(
+                        "inspect managed group",
+                        "inconsistent recorded group/root",
+                    ));
+                }
+                if current.group == *process_group {
+                    Some(AgentTreeBasis::ProcessGroup)
+                } else if current.session == root.pid {
+                    Some(AgentTreeBasis::Session)
+                } else {
+                    None
+                }
+            }
+            ScopeIdentity::MacOsTracked {
+                process_group,
+                root,
+            } if cfg!(target_os = "macos") => {
+                if root != &record.root || process_group.0 == 0 {
+                    return Err(refuse(
+                        "inspect managed group",
+                        "inconsistent recorded group/root",
+                    ));
+                }
+                if current.session == root.pid {
+                    Some(AgentTreeBasis::Session)
+                } else if current.group == *process_group {
+                    Some(AgentTreeBasis::ProcessGroup)
+                } else {
+                    None
+                }
+            }
+            #[cfg(target_os = "linux")]
+            ScopeIdentity::LinuxCgroup {
+                path,
+                device,
+                inode,
+                boot_id,
+            } => {
+                if (BootIdentity::Linux { boot_id: *boot_id }) != *boot {
+                    return Err(refuse("inspect managed cgroup", "inconsistent cgroup boot"));
+                }
+                if os::in_cgroup(pid, path, *device, *inode)? {
+                    Some(AgentTreeBasis::Cgroup)
+                } else {
+                    None
+                }
+            }
+            _ => {
+                return Err(refuse(
+                    "inspect managed scope",
+                    "unresolved or incompatible recorded scope",
+                ));
+            }
+        }
     })
 }

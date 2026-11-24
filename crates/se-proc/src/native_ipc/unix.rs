@@ -96,7 +96,7 @@ use std::{
     io::{Read, Write},
     mem::{size_of, zeroed},
     os::{
-        fd::{AsFd, FromRawFd},
+        fd::{AsFd, AsRawFd, FromRawFd},
         unix::{
             ffi::OsStrExt,
             fs::{FileTypeExt, MetadataExt, PermissionsExt},
@@ -210,10 +210,6 @@ pub struct NativeUnixStream {
     bound: IpcIoBound,
 }
 impl NativeUnixStream {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub fn connect(path: &Path, bound: IpcIoBound) -> IpcNativeResult<Self> {
         let parent = path.parent().ok_or_else(|| {
             refuse(
@@ -223,52 +219,15 @@ impl NativeUnixStream {
         })?;
         let directory = private_directory(parent)?;
         let before = socket_stamp(path)?;
-        let bytes = path.as_os_str().as_bytes();
-        // SAFETY: zeroed sockaddr_un is valid storage; AF_UNIX and the exact
-        // bounded pathname are initialized before connect sees the pointer.
-        let mut address: libc::sockaddr_un = unsafe { zeroed() };
-        if bytes.contains(&0) || bytes.len() >= address.sun_path.len() {
-            return Err(refuse(
-                IpcNativeErrorCode::UnsafeEndpoint,
-                "bounded pathname socket required",
-            ));
-        }
-        address.sun_family = libc::AF_UNIX as _;
-        for (slot, byte) in address.sun_path.iter_mut().zip(bytes) {
-            *slot = *byte as _;
-        }
-        #[cfg(target_os = "macos")]
-        {
-            address.sun_len = size_of::<libc::sockaddr_un>() as u8;
-        }
-        #[cfg(target_os = "linux")]
-        let flags = libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
-        #[cfg(not(target_os = "linux"))]
-        let flags = libc::SOCK_STREAM;
-        // SAFETY: AF_UNIX and these flags request one fresh socket; no borrowed pointer is passed.
-        let raw = unsafe { libc::socket(libc::AF_UNIX, flags, 0) };
-        if raw < 0 {
-            return Err(last("create IPC client socket"));
-        }
-        // SAFETY: successful socket allocation transfers unique FD ownership.
-        let stream = unsafe { UnixStream::from_raw_fd(raw) };
-        // CLOEXEC is set before publication to a caller and never inherited.
-        // SAFETY: this newly owned live socket FD is configured with the documented close-on-exec flag.
-        if unsafe { libc::fcntl(raw, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
-            return Err(last("protect IPC client descriptor"));
-        }
-        #[cfg(target_os = "macos")]
-        macos_io::configure(&stream).map_err(|e| error("configure native IPC socket", e))?;
-        stream
-            .set_nonblocking(true)
-            .map_err(|e| error("set IPC connect nonblocking", e))?;
+        let address = socket_address(path)?;
+        let stream = client_socket()?;
         bound
             .remaining()
             .map_err(|e| error("connect IPC deadline", e))?;
         // SAFETY: the exact initialized sockaddr_un buffer and live socket outlive synchronous connect.
         let rc = unsafe {
             libc::connect(
-                raw,
+                stream.as_raw_fd(),
                 (&address as *const libc::sockaddr_un).cast(),
                 size_of::<libc::sockaddr_un>() as _,
             )
@@ -281,35 +240,7 @@ impl NativeUnixStream {
             ) {
                 return Err(error("connect native IPC", cause));
             }
-            loop {
-                let remaining = bound
-                    .remaining()
-                    .map_err(|e| error("connect IPC deadline", e))?;
-                let mut wait = libc::pollfd {
-                    fd: raw,
-                    events: libc::POLLOUT,
-                    revents: 0,
-                };
-                // SAFETY: one live descriptor and stack pollfd for this call.
-                let ready =
-                    unsafe { libc::poll(&mut wait, 1, remaining.as_millis().clamp(1, 10) as i32) };
-                if ready < 0 {
-                    let e = io::Error::last_os_error();
-                    if e.kind() == io::ErrorKind::Interrupted {
-                        continue;
-                    }
-                    return Err(error("poll IPC connect", e));
-                }
-                if ready > 0 {
-                    if let Some(e) = stream
-                        .take_error()
-                        .map_err(|e| error("read IPC connect result", e))?
-                    {
-                        return Err(error("complete IPC connect", e));
-                    }
-                    break;
-                }
-            }
+            await_connect(&stream, &bound)?;
         }
         if stamp(&private_directory(parent)?)? != stamp(&directory)?
             || socket_stamp(path)? != before
@@ -337,6 +268,86 @@ impl NativeUnixStream {
     }
     pub fn channel(&self) -> BorrowedIpc<'_> {
         self.stream.as_fd()
+    }
+}
+/// The exact bounded pathname address; abstract or oversized names are refused.
+fn socket_address(path: &Path) -> IpcNativeResult<libc::sockaddr_un> {
+    let bytes = path.as_os_str().as_bytes();
+    // SAFETY: zeroed sockaddr_un is valid storage; AF_UNIX and the exact
+    // bounded pathname are initialized before connect sees the pointer.
+    let mut address: libc::sockaddr_un = unsafe { zeroed() };
+    if bytes.contains(&0) || bytes.len() >= address.sun_path.len() {
+        return Err(refuse(
+            IpcNativeErrorCode::UnsafeEndpoint,
+            "bounded pathname socket required",
+        ));
+    }
+    address.sun_family = libc::AF_UNIX as _;
+    for (slot, byte) in address.sun_path.iter_mut().zip(bytes) {
+        *slot = *byte as _;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        address.sun_len = size_of::<libc::sockaddr_un>() as u8;
+    }
+    Ok(address)
+}
+
+/// A fresh nonblocking client socket that is close-on-exec before any caller sees it.
+fn client_socket() -> IpcNativeResult<UnixStream> {
+    #[cfg(target_os = "linux")]
+    let flags = libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
+    #[cfg(not(target_os = "linux"))]
+    let flags = libc::SOCK_STREAM;
+    // SAFETY: AF_UNIX and these flags request one fresh socket; no borrowed pointer is passed.
+    let raw = unsafe { libc::socket(libc::AF_UNIX, flags, 0) };
+    if raw < 0 {
+        return Err(last("create IPC client socket"));
+    }
+    // SAFETY: successful socket allocation transfers unique FD ownership.
+    let stream = unsafe { UnixStream::from_raw_fd(raw) };
+    // CLOEXEC is set before publication to a caller and never inherited.
+    // SAFETY: this newly owned live socket FD is configured with the documented close-on-exec flag.
+    if unsafe { libc::fcntl(raw, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+        return Err(last("protect IPC client descriptor"));
+    }
+    #[cfg(target_os = "macos")]
+    macos_io::configure(&stream).map_err(|e| error("configure native IPC socket", e))?;
+    stream
+        .set_nonblocking(true)
+        .map_err(|e| error("set IPC connect nonblocking", e))?;
+    Ok(stream)
+}
+
+/// Wait within `bound` for an in-progress connect, then report its native result.
+fn await_connect(stream: &UnixStream, bound: &IpcIoBound) -> IpcNativeResult<()> {
+    loop {
+        let remaining = bound
+            .remaining()
+            .map_err(|e| error("connect IPC deadline", e))?;
+        let mut wait = libc::pollfd {
+            fd: stream.as_raw_fd(),
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        // SAFETY: one live descriptor and stack pollfd for this call.
+        let ready = unsafe { libc::poll(&mut wait, 1, remaining.as_millis().clamp(1, 10) as i32) };
+        if ready < 0 {
+            let e = io::Error::last_os_error();
+            if e.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error("poll IPC connect", e));
+        }
+        if ready > 0 {
+            if let Some(e) = stream
+                .take_error()
+                .map_err(|e| error("read IPC connect result", e))?
+            {
+                return Err(error("complete IPC connect", e));
+            }
+            return Ok(());
+        }
     }
 }
 impl Read for NativeUnixStream {
