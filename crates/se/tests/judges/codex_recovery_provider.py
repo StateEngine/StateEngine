@@ -4,7 +4,8 @@ The first transport supports the actual readiness, policy echo and MCP discovery
 A disconnected transport leaves its native process alive, as the persistent
 app-server does. A later connection resumes its saved thread and policy.
 The slow control pauses both native processes before reconnect, so silence is
-independent of an actual successful reconnect. Neither authorizes reaping.
+independent of an actual successful reconnect. The refused control answers the
+reconnect's resume with a JSON-RPC error. None of them authorizes reaping.
 """
 import base64
 import hashlib
@@ -115,6 +116,13 @@ def connection(stream, number, codex_home, saved):
                 if original is None:
                     raise ValueError('reconnect did not select the original conversation')
                 policy, session = original
+                if (codex_home / 'refuse-reconnect').is_file():
+                    witness(Path(policy['cwd']) / 'provider-refused.json',
+                            {'connection': number, 'helper_pid': os.getpid(),
+                             'native_pid': os.getppid(), 'thread_id': thread})
+                    send(stream, json.dumps({'id':value['id'], 'error':{'code':-32601,
+                         'message':'thread/resume is unavailable on this control'}}).encode())
+                    continue
                 result = policy | {'thread': policy['thread'] |
                                    {'turns': [], 'status': {'type': 'idle'}}}
                 recovered = {

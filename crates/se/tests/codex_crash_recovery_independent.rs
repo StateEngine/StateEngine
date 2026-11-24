@@ -44,3 +44,9 @@ fn runtime_crash_preserves_orphan_until_explicit_forced_relaunch()
 fn runtime_crash_never_reaps_a_slow_live_provider() -> Result<(), Box<dyn std::error::Error>> {
     judge("slow")
 }
+
+#[test]
+fn runtime_crash_preserves_a_provider_that_refuses_reconnect()
+-> Result<(), Box<dyn std::error::Error>> {
+    judge("refused")
+}
