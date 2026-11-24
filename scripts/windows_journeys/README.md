@@ -81,7 +81,7 @@ installation ownership before reusing the installation account.
 | Cell | Required observation |
 | --- | --- |
 | J1 | Read the authenticated bundled release or download a public release, then install; a new terminal discovers the exact image and version through native PATH. |
-| J2 | Adopt committed, staged, unstaged and untracked Git work; a real agent writes new bytes and its assistant turn is captured. |
+| J2 | Adopt committed, staged, unstaged and untracked Git work (with `--adopt` user-started hook installation in the private provider home on Windows); a real agent writes new bytes and its assistant turn is captured. |
 | J3 | Close agents and runtime; execute public reopen argv; recover a random phrase omitted from the recall prompt. |
 | J4 | Two real agents exchange a keyed request; observe the durable message, authenticated recipient read and recipient file work. |
 | J5 | Remove and uninstall; preserve user files, Git and exact saved event payloads; restore USER Path and prove process/credential closure. |

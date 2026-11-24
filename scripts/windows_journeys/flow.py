@@ -50,6 +50,40 @@ class Journeys(Smoke):
         if self.foreground:
             self.foreground.start(phase)
 
+    def supports_native_adoption(self):
+        return sys.platform in ('win32', 'linux') and self.settings['provider'] in ('claude', 'codex')
+
+    def adoption_journal(self):
+        name = 'claude-adoption.json' if self.settings['provider'] == 'claude' else 'codex-adoption.json'
+        return self.state / name
+
+    def verify_native_adoption(self, initialized):
+        provider = self.settings['provider']
+        expected_entry = ('Claude Code user-started session hooks' if provider == 'claude'
+                          else 'Codex user-started session hooks')
+        config_home = 'CLAUDE_CONFIG_DIR' if provider == 'claude' else 'CODEX_HOME'
+        integrations = initialized.get('integrations')
+        require(isinstance(integrations, list), 'Init --adopt did not report integrations')
+        matches = [row for row in integrations
+                   if isinstance(row, dict) and row.get('entry') == expected_entry]
+        require(len(matches) == 1, f'Init --adopt did not install {expected_entry}')
+        effect = matches[0]
+        require(effect.get('action') in ('written', 'unchanged'),
+                f'Unexpected adoption action for {provider}: {effect.get("action")}')
+        witness = effect.get('witness') if isinstance(effect.get('witness'), dict) else {}
+        accepted_states = ('witnessed',) if provider == 'claude' else ('witnessed', 'unknown')
+        require(witness.get('state') in accepted_states,
+                f'Unexpected adoption witness state for {provider}: {witness.get("state")}')
+        settings_path = Path(effect['path']).resolve(strict=True)
+        fixture_config = Path(self.commands.environment[config_home]).resolve(strict=True)
+        require(settings_path.is_file() and settings_path.is_relative_to(fixture_config),
+                f'Adoption settings path escaped the private {config_home} fixture')
+        journal = self.adoption_journal()
+        require(journal.is_file(), f'Adoption journal is absent: {journal.name}')
+        return dict(provider=provider, entry=effect['entry'], action=effect['action'],
+                    witness_state=witness['state'], journal=journal.name,
+                    settings_within_fixture=True)
+
     def observe_host(self, label):
         if self.foreground is not None:
             return
@@ -197,8 +231,12 @@ class Journeys(Smoke):
         self.commands.environment.update(self.credentials.environment())
         self.credentials.install(self.home, self.commands.environment)
         self.initialization_attempted = True
-        initialized = self.call(['init', '--repo', self.repository, '--agent', 'main',
-                                 '--provider', self.settings['provider']], 'adopt', terminal=True, project=False)
+        init_args = ['init', '--repo', self.repository, '--agent', 'main',
+                     '--provider', self.settings['provider']]
+        if self.supports_native_adoption():
+            init_args.insert(1, '--adopt')
+        initialized = self.call(init_args, 'adopt', terminal=True, project=False)
+        adoption = self.verify_native_adoption(initialized) if self.supports_native_adoption() else None
         self.project, self.agent, self.owner = (initialized['profile'][key]
                                                for key in ('project', 'agent_id', 'human_id'))
         self.preserve_work()
@@ -211,6 +249,8 @@ class Journeys(Smoke):
                 'Actual native permission profile differs')
         self.initial = dict(conversation=launched['conversation_id'], session=launched['session_id'])
         observed = self.file_turn(work, 'work.txt', (work + '\n').encode())
+        if adoption is not None:
+            observed['native_adoption'] = adoption
         self.remember(observed, 'work.txt')
         self.preserve_work()
         return observed
@@ -293,6 +333,9 @@ class Journeys(Smoke):
                     'Saved conversation event changed or is unavailable after removal')
         self.uninstall()
         require(not self.binary.exists(), 'Uninstall retained the installed command')
+        if self.supports_native_adoption():
+            require(not self.adoption_journal().exists(),
+                    'Uninstall retained the provider adoption journal')
         require(self.user_path() == self.original_path, 'Uninstall did not restore the original USER Path')
         require(self.commands.observer.observe() == [], 'Owned processes remain after uninstall')
         self.preserve_work()
