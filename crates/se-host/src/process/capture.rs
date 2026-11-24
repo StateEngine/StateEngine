@@ -5,6 +5,14 @@ use crate::client::lease::Deadline;
 use se_types::{Read, Result};
 mod recovery;
 impl LaunchCoordinator {
+    pub(super) fn session_admission(&self, work: &Work) -> se_store::Admission {
+        se_store::Admission {
+            scope: se_store::Scope::Project(work.meta.project.id.clone()),
+            actor: se_store::Actor::Agent(work.meta.agent.id.clone()),
+            session: Some(work.meta.session.clone()),
+            generation: self.store.generation.get(),
+        }
+    }
     /// A complete canonical read must cover the durable capture cursor.
     pub(super) async fn verify_captured_end(
         &self,
@@ -17,9 +25,7 @@ impl LaunchCoordinator {
         self.store
             .read(admission, deadline, move |cx| {
                 let source = se_core::scope::require_present(
-                    cx.read
-                        .capture_source(source)
-                        .map_err(|e| se_core::store_error::store_error(&e))?,
+                    cx.read.capture_source(source).map_err(store_error)?,
                     "captured prefix",
                     "Preserve the original source and cursor.",
                 )?;
@@ -51,19 +57,9 @@ impl LaunchCoordinator {
             return self.retire_capture(work, deadline).await;
         }
         self.capture_progress(work, deadline).await?;
-        let session = work.meta.session.clone();
-        let owner = work.meta.owner.clone();
-        let admission = se_store::Admission {
-            scope: se_store::Scope::Project(work.meta.project.id.clone()),
-            actor: se_store::Actor::Agent(work.meta.agent.id.clone()),
-            session: Some(session.clone()),
-            generation: self.store.generation.get(),
-        };
+        let admission = self.session_admission(work);
         if let Err(error) = self
-            .store
-            .commit(admission, deadline, None, move |kernel, cx| {
-                se_core::ops::process_commit::capture_verified(kernel, session, &owner, None, cx)
-            })
+            .commit_capture_verified(work, admission, deadline, None)
             .await
         {
             self.report_capture_failure(work, &error).await?;
@@ -82,11 +78,7 @@ impl LaunchCoordinator {
         work.transcript = None;
         self.capture
             .retire(
-                crate::SessionIdentity {
-                    project: work.meta.project.id.clone(),
-                    agent: work.meta.agent.id.clone(),
-                    session: work.meta.session.clone(),
-                },
+                work.session_identity(),
                 work.capture_flushed || !work.activated || !work.meta.capture,
                 deadline,
             )
@@ -128,12 +120,7 @@ impl LaunchCoordinator {
         // Give only this durable diagnostic its own short, finite write bound.
         let diagnostic = Deadline::idle()?.stage(std::time::Duration::from_secs(2))?;
         let session = work.meta.session.clone();
-        let admission = se_store::Admission {
-            scope: se_store::Scope::Project(work.meta.project.id.clone()),
-            actor: se_store::Actor::Agent(work.meta.agent.id.clone()),
-            session: Some(session.clone()),
-            generation: self.store.generation.get(),
-        };
+        let admission = self.session_admission(work);
         let body = failure.body.clone();
         let owner = work.session_retired.then(|| work.meta.owner.clone());
         self.store
@@ -147,10 +134,54 @@ impl LaunchCoordinator {
             .map_err(|cause| error("live capture diagnostic", format!("capture failed: {failure}; retaining its public failure also failed: {cause}")).with_cause(cause))?;
         Ok(())
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
+    async fn ensure_transcript_binding(
+        &self,
+        work: &mut Work,
+        deadline: &Deadline,
+        capture: &crate::runtime::CaptureHandle,
+    ) -> Result<crate::TranscriptPin> {
+        if let Some(transcript) = work.transcript.clone() {
+            return Ok(transcript);
+        }
+        let identity = work.session_identity();
+        let restored = if work.native_already_reconciled || work.session_retired {
+            capture.recover_binding(identity, deadline).await?
+        } else {
+            capture.binding(identity)?
+        };
+        let transcript = se_core::scope::require_present(
+            restored,
+            "final transcript capture",
+            "Restore the original protected binding and native file incarnation; preserve the committed cursor.",
+        )?;
+        if !matches!(&work.meta.conversation, Read::Present { value } if value == &transcript.conversation)
+        {
+            return Err(error(
+                "final transcript capture",
+                "restored binding differs from the original saved conversation",
+            ));
+        }
+        work.transcript = Some(transcript.clone());
+        Ok(transcript)
+    }
+    async fn commit_capture_verified(
+        &self,
+        work: &Work,
+        admission: se_store::Admission,
+        deadline: &Deadline,
+        observed: Option<(u64, se_types::EventId)>,
+    ) -> Result<()> {
+        let session = work.meta.session.clone();
+        let owner = work.meta.owner.clone();
+        self.store
+            .commit(admission, deadline, None, move |kernel, cx| {
+                se_core::ops::process_commit::capture_verified(
+                    kernel, session, &owner, observed, cx,
+                )
+            })
+            .await?;
+        Ok(())
+    }
     async fn capture_progress_inner(
         &self,
         work: &mut Work,
@@ -170,38 +201,10 @@ impl LaunchCoordinator {
         if work.meta.provider == se_store::Provider::Acp {
             return self.capture_acp(work, deadline).await;
         }
-        if work.transcript.is_none() {
-            let identity = crate::SessionIdentity {
-                project: work.meta.project.id.clone(),
-                agent: work.meta.agent.id.clone(),
-                session: work.meta.session.clone(),
-            };
-            let restored = if work.native_already_reconciled || work.session_retired {
-                capture.recover_binding(identity, deadline).await?
-            } else {
-                capture.binding(identity)?
-            };
-            let transcript = se_core::scope::require_present(
-                restored,
-                "final transcript capture",
-                "Restore the original protected binding and native file incarnation; preserve the committed cursor.",
-            )?;
-            if !matches!(&work.meta.conversation, Read::Present { value } if value == &transcript.conversation)
-            {
-                return Err(error(
-                    "final transcript capture",
-                    "restored binding differs from the original saved conversation",
-                ));
-            }
-            work.transcript = Some(transcript);
-        }
-        let transcript=work.transcript.clone().ok_or_else(||error("final transcript capture","trusted binding is unavailable; retain the revoked session and committed cursor for recovery"))?;
-        let admission = se_store::Admission {
-            scope: se_store::Scope::Project(work.meta.project.id.clone()),
-            actor: se_store::Actor::Agent(work.meta.agent.id.clone()),
-            session: Some(work.meta.session.clone()),
-            generation: self.store.generation.get(),
-        };
+        let transcript = self
+            .ensure_transcript_binding(work, deadline, capture)
+            .await?;
+        let admission = self.session_admission(work);
         let result = if (work.process_retired || work.native_already_reconciled)
             && work.last_witness.is_some()
         {
@@ -250,25 +253,14 @@ impl LaunchCoordinator {
         // An accepted final write can outlive its hook and precede the failure
         // diagnostic. Replaying that write leaves the cursor unchanged, so
         // acknowledge only a fresh pinned EOF observation of that failure.
-        if !work.session_retired && !work.native_already_reconciled {
-            let observed = capture
+        if !work.session_retired
+            && !work.native_already_reconciled
+            && let Some(observed) = capture
                 .unresolved_at_eof(admission.clone(), deadline)
+                .await?
+        {
+            self.commit_capture_verified(work, admission, deadline, Some(observed))
                 .await?;
-            if let Some(observed) = observed {
-                let session = work.meta.session.clone();
-                let owner = work.meta.owner.clone();
-                self.store
-                    .commit(admission, deadline, None, move |kernel, cx| {
-                        se_core::ops::process_commit::capture_verified(
-                            kernel,
-                            session,
-                            &owner,
-                            Some(observed),
-                            cx,
-                        )
-                    })
-                    .await?;
-            }
         }
         Ok(())
     }

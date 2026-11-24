@@ -108,6 +108,13 @@ pub(super) struct Work {
     pub files: Vec<(PathBuf, [u8; 32])>,
 }
 impl Work {
+    pub(super) fn session_identity(&self) -> crate::SessionIdentity {
+        crate::SessionIdentity {
+            project: self.meta.project.id.clone(),
+            agent: self.meta.agent.id.clone(),
+            session: self.meta.session.clone(),
+        }
+    }
     pub fn new(plan: Arc<LaunchPlan>, admission: Admission) -> Self {
         let mut work = Self::recovered(LifecycleMetadata::from_launch(&plan), admission);
         work.plan = Some(plan);

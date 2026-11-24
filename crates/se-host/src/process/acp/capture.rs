@@ -14,7 +14,7 @@ fn identity() -> Result<(se_store::RecordId, se_types::EventId, i64)> {
     let mut entropy = [0; 10];
     se_proc::fill_entropy(&mut entropy).map_err(|e| error("ACP capture identity", e))?;
     let id = se_store::RecordId::from_parts(facts.occurred_at_us as u64 / 1000, entropy)
-        .map_err(|e| se_core::store_error::store_error(&e))?;
+        .map_err(store_error)?;
     Ok((id, facts.event, facts.occurred_at_us))
 }
 impl LaunchCoordinator {
@@ -61,12 +61,7 @@ impl LaunchCoordinator {
             .capture_source
             .ok_or_else(|| error("ACP capture", "original source absent"))?;
         let incarnation = binding.source()?;
-        let admission = se_store::Admission {
-            scope: se_store::Scope::Project(work.meta.project.id.clone()),
-            actor: se_store::Actor::Agent(work.meta.agent.id.clone()),
-            session: Some(work.meta.session.clone()),
-            generation: self.store.generation.get(),
-        };
+        let admission = self.session_admission(work);
         let mut groups = observation
             .completed
             .iter()
@@ -242,9 +237,6 @@ impl LaunchCoordinator {
     }
 }
 
-fn store_error(error: Box<se_store::StoreError>) -> se_types::SeError {
-    se_core::store_error::store_error(&error)
-}
 fn bound_cursor(
     row: &se_store::ProjectionRecord,
     session: &se_types::SessionId,

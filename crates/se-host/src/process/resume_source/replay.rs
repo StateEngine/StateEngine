@@ -101,7 +101,7 @@ impl LaunchCoordinator {
                                 deadline: budget,
                             },
                         )
-                        .map_err(|e| se_core::store_error::store_error(&e))?;
+                        .map_err(store_error)?;
                     let mut selected = Vec::new();
                     for event in page.items() {
                         let EventBody::SessionTurn {
@@ -123,7 +123,7 @@ impl LaunchCoordinator {
                                     session,
                                     "capture-source",
                                 )?)
-                                .map_err(|e| se_core::store_error::store_error(&e))?,
+                                .map_err(store_error)?,
                             "ACP replay source",
                             "Restore its original capture binding.",
                         )?;

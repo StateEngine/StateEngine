@@ -94,9 +94,7 @@ impl LaunchCoordinator {
                 .store
                 .read(admission.clone(), deadline, move |cx| {
                     se_core::scope::require_present(
-                        cx.read
-                            .process(id)
-                            .map_err(|e| se_core::store_error::store_error(&e))?,
+                        cx.read.process(id).map_err(store_error)?,
                         "retained process",
                         "Keep its recorded identity for owner reconciliation.",
                     )

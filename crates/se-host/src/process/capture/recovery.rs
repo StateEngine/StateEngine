@@ -23,7 +23,7 @@ impl LaunchCoordinator {
                 let outcome = cx
                     .read
                     .capture_outcome(source_id, None)
-                    .map_err(|cause| se_core::store_error::store_error(&cause))?;
+                    .map_err(store_error)?;
                 let event = match &outcome {
                     se_types::Read::Present { value } => Some(&value.body),
                     se_types::Read::Absent { .. } => None,

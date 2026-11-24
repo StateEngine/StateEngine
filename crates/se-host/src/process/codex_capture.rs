@@ -29,12 +29,7 @@ impl LaunchCoordinator {
         }
         let pending = binding.retained_notifications()?;
         let mut committed = Vec::new();
-        let admission = se_store::Admission {
-            scope: se_store::Scope::Project(work.meta.project.id.clone()),
-            actor: se_store::Actor::Agent(work.meta.agent.id.clone()),
-            session: Some(work.meta.session.clone()),
-            generation: self.store.generation.get(),
-        };
+        let admission = self.session_admission(work);
         for notification in &pending {
             let tool =
                 crate::harness::tool_capture::codex::notification(notification, &conversation)?;

@@ -106,11 +106,7 @@ impl LaunchCoordinator {
         if work.meta.capture {
             self.capture_progress(work, deadline).await?;
         }
-        let identity = crate::SessionIdentity {
-            project: work.meta.project.id.clone(),
-            agent: work.meta.agent.id.clone(),
-            session: work.meta.session.clone(),
-        };
+        let identity = work.session_identity();
         let conversation = se_core::scope::require_present(
             work.meta.conversation.clone(),
             "provider recovery conversation",
@@ -204,14 +200,10 @@ impl LaunchCoordinator {
                         "protected pin differs from the original committed session",
                     ));
                 }
-                let phase = reader
-                    .read_phase()
-                    .map_err(|e| se_core::store_error::store_error(&e))?;
+                let phase = reader.read_phase().map_err(store_error)?;
                 let result = (|| {
                     let credential = se_core::scope::require_present(
-                        phase
-                            .credential(actual)
-                            .map_err(|e| se_core::store_error::store_error(&e))?,
+                        phase.credential(actual).map_err(store_error)?,
                         "provider recovery credential",
                         "Restore the original active session credential.",
                     )?;
