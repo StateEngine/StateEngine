@@ -63,6 +63,18 @@ impl LaunchCoordinator {
                     | EventBody::PrincipalRenamed { name, .. } => name.clone(),
                     _ => return Err(error("recovery principal", "current name unavailable")),
                 };
+                let registration = control
+                    .principal
+                    .original
+                    .as_deref()
+                    .unwrap_or(&control.principal.current);
+                let ephemeral_one_shot = matches!(
+                    registration.body,
+                    EventBody::PrincipalRegistered {
+                        ephemeral: Some(spec),
+                        ..
+                    } if spec.one_shot
+                );
                 let session_head = se_core::scope::require_present(
                     cx.read
                         .session(session.clone())
@@ -131,6 +143,7 @@ impl LaunchCoordinator {
                         capture,
                         provider,
                         attended,
+                        ephemeral_one_shot,
                     },
                     active,
                     retired,

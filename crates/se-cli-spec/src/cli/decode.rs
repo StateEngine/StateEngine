@@ -231,6 +231,12 @@ fn decode_agent(
                 })
                 .transpose()?,
             model: text(m, "model"),
+            profile: text(m, "profile"),
+            idempotency_key: key()?,
+        }),
+        "delegate.start" => decode_delegate_start(m, key)?,
+        "delegate.cancel" => AnyOp::DelegateCancel(DelegateCancel {
+            agent: required(m, "agent")?,
             idempotency_key: key()?,
         }),
         "agent.rename" => AnyOp::AgentRename(AgentRename {
@@ -241,6 +247,55 @@ fn decode_agent(
         _ => return Ok(None),
     };
     Ok(Some(op))
+}
+fn decode_delegate_start(
+    m: &ArgMatches,
+    key: &impl Fn() -> Result<IdempotencyKey>,
+) -> Result<AnyOp> {
+    let handoff_from = text(m, "handoff_from");
+    let handoff_budget = text(m, "handoff_budget")
+        .map(|v| {
+            v.parse::<u32>()
+                .map_err(|_| SeError::invalid("handoff-budget", "256..=8192"))
+        })
+        .transpose()?;
+    let handoff_since = text(m, "handoff_since")
+        .map(se_core::ops::continuity::resume_since)
+        .transpose()?;
+    let handoff = if flag(m, "handoff")
+        || handoff_from.is_some()
+        || handoff_budget.is_some()
+        || handoff_since.is_some()
+    {
+        Some(Box::new(DelegateHandoff {
+            from: handoff_from,
+            budget: handoff_budget,
+            since: handoff_since,
+        }))
+    } else {
+        None
+    };
+    Ok(AnyOp::DelegateStart(DelegateStart {
+        task: required(m, "task")?,
+        role: text(m, "role"),
+        provider: text(m, "provider")
+            .map(|value| {
+                serde_json::from_value(serde_json::Value::String(value))
+                    .map_err(|_| SeError::invalid("provider", "claude, codex, secode or acp"))
+            })
+            .transpose()?,
+        harness: text(m, "harness"),
+        model: text(m, "model"),
+        profile: text(m, "profile"),
+        handoff,
+        ttl_seconds: text(m, "ttl")
+            .map(|v| {
+                v.parse::<u32>()
+                    .map_err(|_| SeError::invalid("ttl", "1..=86400 seconds"))
+            })
+            .transpose()?,
+        idempotency_key: key()?,
+    }))
 }
 fn decode_config(
     name: &str,

@@ -155,6 +155,9 @@ impl LaunchCoordinator {
                         return;
                     }
                     Ok(_) => {
+                        if self.maybe_stop_one_shot(&mut state, &job, &deadline).await {
+                            return;
+                        }
                         pace_at = self.mail_pace(&state, &job);
                         if !state.setup_expired
                             && retry_at.is_none_or(|at| tokio::time::Instant::now() >= at)

@@ -16,6 +16,7 @@ pub(super) struct LifecycleMetadata {
     pub provider: se_store::Provider,
     pub capture: bool,
     pub attended: bool,
+    pub ephemeral_one_shot: bool,
 }
 impl LifecycleMetadata {
     pub fn from_launch(plan: &LaunchPlan) -> Self {
@@ -31,6 +32,7 @@ impl LifecycleMetadata {
             provider: plan.profile.provider,
             capture: plan.capture,
             attended: !plan.input.detach,
+            ephemeral_one_shot: plan.ephemeral_one_shot,
         }
     }
 }

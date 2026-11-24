@@ -17,6 +17,9 @@ pub struct AgentCreate {
     pub name: String,
     pub provider: Option<Provider>,
     pub model: Option<String>,
+    /// Optional named permission profile; validated against `[delegation].allow` for agent callers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     pub idempotency_key: IdempotencyKey,
 }
 fn provider_settings_empty(settings: &se_types::ProviderSettings) -> bool {
@@ -30,6 +33,9 @@ impl Validate for AgentCreate {
         }
         if let Some(model) = &self.model {
             bounded("model", model, 256, false)?;
+        }
+        if let Some(profile) = &self.profile {
+            bounded("profile", profile, 64, false)?;
         }
         Ok(())
     }

@@ -220,6 +220,14 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
                     .agent_wake(plan, admission, deadline)
                     .await
                     .map(AnyOutput::from),
+                CustodyPlan::DelegateStart(plan) => self
+                    .delegate_start(*plan, admission, deadline)
+                    .await
+                    .map(AnyOutput::from),
+                CustodyPlan::DelegateCancel(plan) => self
+                    .delegate_cancel(plan, admission, deadline)
+                    .await
+                    .map(AnyOutput::from),
                 CustodyPlan::Remove(plan) => self
                     .remove(*plan, admission, deadline)
                     .await

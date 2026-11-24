@@ -94,6 +94,8 @@ pub enum HumanKind {
     Wake,
     Resume,
     Handoff,
+    DelegateStart,
+    DelegateCancel,
     WorkingState,
     WorkingStateReceipt,
     SearchPage,

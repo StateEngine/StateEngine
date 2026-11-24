@@ -526,6 +526,7 @@ impl LaunchCoordinator {
         };
         let session = work.meta.session.clone();
         let active = work.active;
+        let outcome = reason.clone();
         self.store
             .commit(
                 work.cleanup_admission.clone(),
@@ -536,13 +537,19 @@ impl LaunchCoordinator {
             .await?;
         work.session_retired = true;
         self.proofs.remove(&work.meta.session)?;
-        Box::pin(self.cascade_parent_ended(
-            &work.meta.project.id,
-            &work.meta.agent.id,
-            &work.meta.lifecycle,
-            deadline,
-        ))
-        .await;
+        if work.meta.ephemeral_one_shot {
+            let capture_verified = work.meta.capture && work.capture_failure.is_none();
+            self.finalize_one_shot_completion(work, outcome, capture_verified, deadline)
+                .await;
+        } else {
+            Box::pin(self.cascade_parent_ended(
+                &work.meta.project.id,
+                &work.meta.agent.id,
+                &work.meta.lifecycle,
+                deadline,
+            ))
+            .await;
+        }
         Ok(())
     }
 }

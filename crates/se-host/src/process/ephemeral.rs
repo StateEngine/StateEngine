@@ -11,21 +11,86 @@ use std::{num::NonZeroU32, sync::atomic::Ordering, time::Duration};
 pub(super) const SWEEP_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 const PAGE_SIZE: u32 = 100;
 
+/// Single deadline-driven timer slot for ephemeral TTL sweeps. When `None`,
+/// no background task is running (zero idle wakeups or open read connections).
+pub(super) struct TtlTimer {
+    next_deadline: std::sync::Mutex<Option<tokio::time::Instant>>,
+    wake: tokio::sync::Notify,
+}
+
+impl TtlTimer {
+    pub(super) fn new() -> Self {
+        Self {
+            next_deadline: std::sync::Mutex::new(None),
+            wake: tokio::sync::Notify::new(),
+        }
+    }
+}
+
 impl LaunchCoordinator {
-    /// Deadline-driven TTL sweeper: sleeps until the earliest remaining
-    /// ephemeral TTL deadline (recomputing after each sweep), and exits as soon
-    /// as no unretired TTL-bearing ephemeral agents remain so an idle host has
-    /// zero periodic wakeups or resident read connections.
-    pub(super) fn spawn_ephemeral_ttl_timer(self: &Arc<Self>, mut delay: Duration) {
+    /// Arm or shorten the host's single deadline-driven TTL sweeper.
+    /// Spawns a background task only when none is currently active; if a timer
+    /// is already sleeping for a later deadline, wakes it so it shortens its
+    /// sleep immediately.
+    pub(super) fn arm_ephemeral_ttl(self: &Arc<Self>, delay: Duration) {
+        if self.stopping.load(Ordering::Acquire) {
+            return;
+        }
+        let target = tokio::time::Instant::now() + delay;
+        let should_spawn = {
+            let Ok(mut slot) = self.ephemeral_ttl.next_deadline.lock() else {
+                return;
+            };
+            match *slot {
+                None => {
+                    *slot = Some(target);
+                    true
+                }
+                Some(existing) if target < existing => {
+                    *slot = Some(target);
+                    drop(slot);
+                    self.ephemeral_ttl.wake.notify_one();
+                    false
+                }
+                Some(_) => false,
+            }
+        };
+        if !should_spawn {
+            return;
+        }
         let coordinator = Arc::downgrade(self);
         tokio::spawn(async move {
             let mut last_warning: Option<String> = None;
             loop {
-                tokio::time::sleep(delay).await;
                 let Some(current) = coordinator.upgrade() else {
                     return;
                 };
                 if current.stopping.load(Ordering::Acquire) {
+                    if let Ok(mut slot) = current.ephemeral_ttl.next_deadline.lock() {
+                        *slot = None;
+                    }
+                    return;
+                }
+                let target = {
+                    let Ok(slot) = current.ephemeral_ttl.next_deadline.lock() else {
+                        return;
+                    };
+                    *slot
+                };
+                let Some(target) = target else {
+                    return;
+                };
+                let woken_early = tokio::select! {
+                    () = tokio::time::sleep_until(target) => false,
+                    () = current.ephemeral_ttl.wake.notified() => true,
+                };
+                if woken_early {
+                    continue;
+                }
+                if current.stopping.load(Ordering::Acquire) {
+                    if let Ok(mut slot) = current.ephemeral_ttl.next_deadline.lock() {
+                        *slot = None;
+                    }
                     return;
                 }
                 let swept = async {
@@ -33,19 +98,36 @@ impl LaunchCoordinator {
                     current.sweep_ephemeral_expired(&deadline).await
                 }
                 .await;
+                let now = tokio::time::Instant::now();
+                let Ok(mut slot) = current.ephemeral_ttl.next_deadline.lock() else {
+                    return;
+                };
                 match swept {
                     Ok(Some(next_delay)) => {
                         last_warning = None;
-                        delay = next_delay;
+                        let candidate = now + next_delay;
+                        *slot = Some(match *slot {
+                            Some(existing) if existing != target => existing.min(candidate),
+                            _ => candidate,
+                        });
                     }
-                    Ok(None) => return,
+                    Ok(None) => {
+                        if *slot == Some(target) {
+                            *slot = None;
+                            return;
+                        }
+                    }
                     Err(failure) => {
                         let msg = failure.body.to_string();
                         if last_warning.as_deref() != Some(msg.as_str()) {
                             eprintln!("Ephemeral TTL sweep incomplete: {msg}");
                             last_warning = Some(msg);
                         }
-                        delay = SWEEP_RETRY_INTERVAL;
+                        let retry = now + SWEEP_RETRY_INTERVAL;
+                        *slot = Some(match *slot {
+                            Some(existing) if existing != target => existing.min(retry),
+                            _ => retry,
+                        });
                     }
                 }
             }
@@ -153,6 +235,14 @@ impl LaunchCoordinator {
         for child in active {
             if self.stopping.load(Ordering::Acquire) {
                 break;
+            }
+            if child.one_shot
+                && let Some(session_id) = &child.latest_session
+                && self
+                    .finish_ended_one_shot(project, &child.agent, session_id, deadline)
+                    .await?
+            {
+                continue;
             }
             let Some(ttl_seconds) = child.ttl_seconds else {
                 continue;
@@ -292,7 +382,91 @@ impl LaunchCoordinator {
         }
     }
 
-    async fn has_unresolved_live_work(
+    /// Crash-recovery re-derivation (`B3`): if a one-shot temporary agent's
+    /// latest session has already committed `SessionEnded` (with no live
+    /// sessions or processes remaining) but `retired_seq` is still NULL, commit
+    /// the exact same idempotent completion notice + `AgentRetired { Completed }`
+    /// batch. Returns `Ok(true)` if the child was finalized.
+    async fn finish_ended_one_shot(
+        &self,
+        project: &ProjectId,
+        agent: &AgentId,
+        session: &SessionId,
+        deadline: &Deadline,
+    ) -> Result<bool> {
+        let admission = self.owner_project_admission(project);
+        let target_agent = agent.clone();
+        let target_session = session.clone();
+        let owner = self.capability_admission.owner.clone();
+        let project_id = project.clone();
+        let recovered = self
+            .store
+            .read(admission, deadline, move |cx| {
+                let Read::Present { value: control } = cx
+                    .read
+                    .control_target(target_agent.clone())
+                    .map_err(|e| store_error(&e))?
+                else {
+                    return Ok(None);
+                };
+                if control.retired || !control.sessions.is_empty() || !control.processes.is_empty()
+                {
+                    return Ok(None);
+                }
+                let Read::Present {
+                    value: session_head,
+                } = cx
+                    .read
+                    .session(target_session.clone())
+                    .map_err(|e| store_error(&e))?
+                else {
+                    return Ok(None);
+                };
+                let EventBody::SessionEnded { reason, .. } = &session_head.current.body else {
+                    return Ok(None);
+                };
+                let name = match &control.principal.current.body {
+                    EventBody::PrincipalRegistered { name, .. }
+                    | EventBody::PrincipalRenamed { name, .. } => name.clone(),
+                    _ => target_agent.as_str().to_owned(),
+                };
+                let (provider, model) = match control.profile {
+                    Read::Present { value } => match value.current.body {
+                        EventBody::ProfileSaved { profile, .. } => {
+                            (profile.provider, profile.model)
+                        }
+                        _ => (se_store::Provider::Claude, None),
+                    },
+                    _ => (se_store::Provider::Claude, None),
+                };
+                let outcome = match reason {
+                    se_store::StoredText::Present(text) => text.clone(),
+                    _ => "session ended".to_owned(),
+                };
+                let capture_verified = !outcome.contains("capture incomplete");
+                Ok(Some(super::delegate::OneShotCompletion {
+                    project: project_id,
+                    agent: se_types::Named {
+                        id: target_agent,
+                        name,
+                    },
+                    owner,
+                    child_session: target_session,
+                    provider,
+                    model,
+                    outcome,
+                    capture_verified,
+                }))
+            })
+            .await?;
+        let Some(info) = recovered else {
+            return Ok(false);
+        };
+        self.commit_one_shot_completion(info, deadline).await?;
+        Ok(true)
+    }
+
+    pub(super) async fn has_unresolved_live_work(
         &self,
         project: &ProjectId,
         agent: &AgentId,
@@ -324,7 +498,7 @@ impl LaunchCoordinator {
             .await
     }
 
-    fn owner_project_admission(&self, project: &ProjectId) -> Admission {
+    pub(super) fn owner_project_admission(&self, project: &ProjectId) -> Admission {
         Admission {
             scope: Scope::Project(project.clone()),
             actor: Actor::Human(self.capability_admission.owner.clone()),
@@ -335,13 +509,14 @@ impl LaunchCoordinator {
 
     /// Filter jobs by `(project, agent)` and `exclude_lifecycle` BEFORE locking
     /// any `job.state` mutex so a parent's retirement never self-deadlocks.
-    async fn stop_ephemeral_jobs(
+    /// Returns `true` if at least one active lifecycle job was stopped.
+    pub(super) async fn stop_ephemeral_jobs(
         &self,
         project: &ProjectId,
         agent: &AgentId,
         exclude_lifecycle: Option<&LifecycleId>,
         deadline: &Deadline,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let matching: Vec<_> = self
             .jobs
             .0
@@ -356,6 +531,7 @@ impl LaunchCoordinator {
             })
             .cloned()
             .collect();
+        let mut stopped = false;
         for job in matching {
             let mut work = crate::runtime::pool::within(deadline, job.state.lock()).await?;
             if !work.released && !work.session_retired {
@@ -371,11 +547,12 @@ impl LaunchCoordinator {
                     self.activity
                         .send_modify(|count| *count = count.saturating_sub(1));
                 }
+                stopped = true;
             }
             work.wake.event.notify_waiters();
             work.wake.event.notify_one();
         }
-        Ok(())
+        Ok(stopped)
     }
 
     async fn commit_agent_retired(

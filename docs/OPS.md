@@ -123,6 +123,8 @@ Plain `se init` (including `--repo DIR`) is managed setup and writes nothing ins
 | `agent.launch` | `launch AGENT [--resume [SESSION] --provider PROVIDER --model MODEL --task TEXT --detach]` | `stateengine_agent_launch` — bound self or explicit creator-authorized `target_agent_id`, never an actor override | either | custody | owner selector, implicit self or direct-created target with current create grant; fresh conversation by default or explicit verified saved-conversation resume, optional provider/model/task/detach; existing-but-missing/unverifiable references refuse | `LaunchResult`: launch/session/lifecycle IDs, provider conversation, readiness/refusal, running vs finished facts and resume instruction | J2–J4 |
 | `agent.stop` | `stop AGENT [--release] \| --all` | `stateengine_agent_stop` — bound self or explicit creator-authorized `target_agent_id`; all is owner-only | either | custody | owner selector/all, implicit self or direct-created target with current create grant; exact owned lifecycle resolved and rechecked | `StopReceipt`: per-agent exact-instance witness or unknown population with reason and original-conversation resume command; release command/result: 50 A.6; native mechanics: 30; persistence/recovery: 20 | J3, J5 |
 | `agent.wake` | `agent wake AGENT` | `stateengine_agent_wake` — explicit `target_agent_id` and creator authorization for sessions | either | custody | explicit running agent target and observed lifecycle; owner or its direct creator with current create grant | `WakeReceipt`: offered/delivered/pending/refused facts; never a spawn or a recipient-read claim | J4 |
+| `delegate.start` | `delegate --task TEXT [--role ROLE --provider PROVIDER --harness HARNESS --model MODEL --profile PROFILE --handoff --ttl SECONDS]` | `stateengine_delegate` | either | custody | task, optional role/provider/harness/model/profile/handoff/ttl; owner or agent with active `can-create` grant and allowlisted `(provider, profile)` | `DelegateStartOutput`: temporary agent ID, name, session ID, provider, model, profile, TTL and handoff state | J2–J4 |
+| `delegate.cancel` | `delegate cancel AGENT` | `stateengine_delegate_cancel` | either | custody | temporary agent ID or name; owner or direct creator with active `can-create` grant | `DelegateCancelOutput`: agent ID, name, retirement and lifecycle stop facts | J3, J4 |
 | `continuity.resume` | `resume [--since CURSOR --budget BYTES --limit N] [--preview AGENT]` | `stateengine_resume` | either | read | opaque since cursor, bounded context budget; preview target only for owner | `Resume`: verified principal, continuity/working state, required reads, omissions/deferred retrieval, next cursor and integrity/readiness facts | J3, J4 |
 | `handoff.export` | `handoff export [--from AGENT --budget BYTES --since CURSOR]` | `stateengine_handoff_export` | either | read | optional agent selector (required for owner; bound agents default to self), bounded UTF-8 byte budget (256..16384, default 8192), optional opaque since cursor | `HandoffOutput`: deterministic model-agnostic handoff text, byte count, cursor, honest completeness, agent and session | J3, J4 |
 | `working_state.get` | `working-state [--agent AGENT]` | `stateengine_working_state_get` | either | read | owner selector or implicit self | `Read<WorkingState>`: text and revision/absence fact | J3 |
@@ -277,7 +279,7 @@ Crew can omit the recipient for a `question`, `blocker`, or `done` message to se
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 60 operations (54 core, 6 Atlas), 30 MCP tools (25 core, 5 Atlas). Planned: 6 operations, 2 MCP tools.
+Registered: 62 operations (56 core, 6 Atlas), 32 MCP tools (27 core, 5 Atlas). Planned: 6 operations, 2 MCP tools.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -334,6 +336,8 @@ Registered: 60 operations (54 core, 6 Atlas), 30 MCP tools (25 core, 5 Atlas). P
 | `agent.launch` | launch | `stateengine_agent_launch` | either | custody |
 | `agent.stop` | stop | `stateengine_agent_stop` | either | custody |
 | `agent.wake` | agent wake | `stateengine_agent_wake` | either | custody |
+| `delegate.start` | delegate | `stateengine_delegate` | either | custody |
+| `delegate.cancel` | delegate cancel | `stateengine_delegate_cancel` | either | custody |
 | `store.restore` | restore | none | owner | custody |
 | `store.forget` | forget | none | owner | custody |
 | `project.remove` | remove | none | owner | custody |

@@ -6,6 +6,7 @@ pub mod atlas_resume;
 pub mod clock;
 /// Synchronous read/batch/typed-continuation seam.
 pub mod commit;
+pub mod delegate;
 pub mod dispatch;
 pub mod ports;
 pub mod scope;

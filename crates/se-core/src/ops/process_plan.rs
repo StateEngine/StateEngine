@@ -54,7 +54,9 @@ pub(crate) fn retired_agent_refusal(op: &str) -> SeError {
         se_types::details::StateConflict {
             subject: op.into(),
             reason: "this temporary agent is retired".into(),
-            next_step: "This temporary agent is retired; export its history with se handoff export --from <agent> and create a new agent with se agent add.".into(),
+            next_step:
+                "This temporary agent is retired; start a new helper with se delegate --handoff ..."
+                    .into(),
         },
     ))
 }
@@ -63,7 +65,7 @@ fn refuse_retired_or_expired(
     kernel: &Kernel,
     control: &se_store::ControlTarget,
     op: &str,
-) -> Result<()> {
+) -> Result<Option<se_store::EphemeralSpec>> {
     if control.retired {
         return Err(retired_agent_refusal(op));
     }
@@ -72,12 +74,11 @@ fn refuse_retired_or_expired(
         .original
         .as_deref()
         .unwrap_or(&control.principal.current);
-    if let EventBody::PrincipalRegistered {
-        ephemeral: Some(se_store::EphemeralSpec { ttl_seconds, .. }),
-        ..
-    } = &registration.body
-    {
-        let ttl_us = i64::from(*ttl_seconds).saturating_mul(1_000_000);
+    let EventBody::PrincipalRegistered { ephemeral, .. } = &registration.body else {
+        return Ok(None);
+    };
+    if let Some(spec) = ephemeral {
+        let ttl_us = i64::from(spec.ttl_seconds).saturating_mul(1_000_000);
         if kernel
             .facts()?
             .occurred_at_us
@@ -86,6 +87,28 @@ fn refuse_retired_or_expired(
         {
             return Err(retired_agent_refusal(op));
         }
+    }
+    Ok(*ephemeral)
+}
+
+fn recheck_delegated_launch(
+    actor: &Actor,
+    target: &AgentId,
+    ephemeral: Option<se_store::EphemeralSpec>,
+    provider: Provider,
+    profile: &se_store::Profile,
+    configuration: &ConfigFile,
+) -> Result<()> {
+    if matches!(actor, Actor::Agent(caller) if caller != target || ephemeral.is_some()) {
+        if !profile.provider_settings.is_empty() {
+            return Err(SeError::invalid(
+                "provider_settings",
+                "delegated launches cannot use custom provider_settings or base_url",
+            ));
+        }
+        configuration
+            .delegation
+            .require_allowed(provider, &profile.named_profile)?;
     }
     Ok(())
 }
@@ -109,7 +132,7 @@ pub fn launch<R: Snapshot>(
         "launch target",
         "Choose a saved agent in this project that you own or are currently allowed to control.",
     )?;
-    refuse_retired_or_expired(kernel, &control, "agent.launch")?;
+    let ephemeral = refuse_retired_or_expired(kernel, &control, "agent.launch")?;
     let name = match &control.principal.current.body {
         EventBody::PrincipalRegistered { name, .. } | EventBody::PrincipalRenamed { name, .. } => {
             name.clone()
@@ -127,6 +150,14 @@ pub fn launch<R: Snapshot>(
         "Save a profile for this agent before launching it.",
     )?;
     let (mut profile, provider) = saved_profile(&mut input, &control, saved)?;
+    recheck_delegated_launch(
+        &cx.admission.actor,
+        &agent,
+        ephemeral,
+        provider,
+        &profile,
+        configuration,
+    )?;
     let resolved = configuration.resolve_profile(&profile.named_profile, provider, input.detach)?;
     let permission = match resolved.sandbox {
         EffectiveSandbox::ReadOnly => PermissionProfile::ReadOnly,
@@ -171,6 +202,7 @@ pub fn launch<R: Snapshot>(
         conversation,
         saved_conversation_age,
         capture: configuration.capture.enabled,
+        ephemeral_one_shot: ephemeral.is_some_and(|spec| spec.one_shot),
         control,
         seed,
         replayed,

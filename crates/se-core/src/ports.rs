@@ -21,6 +21,8 @@ pub enum CustodyPlan {
     AtlasAugment(crate::ops::AtlasAugment),
     Launch(Box<crate::ops::agent_launch::LaunchPlan>),
     Stop(Box<crate::ops::stop_plan::StopPlan>),
+    DelegateStart(Box<crate::ops::delegate::DelegateStartPlan>),
+    DelegateCancel(crate::ops::delegate::DelegateCancelPlan),
     Remove(Box<crate::ops::project_remove::RemovePlan>),
     ClaudeHook(crate::ops::hook::HookClaude),
     Initialize(ProjectInit),
