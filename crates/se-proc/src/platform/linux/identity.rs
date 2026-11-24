@@ -141,100 +141,55 @@ pub(crate) fn verify_live_identity(expected: &ProcessIdentity) -> ProcResult<()>
     }
     Ok(())
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-pub(crate) fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<ProcessRead> {
-    let boot = boot()?;
-    let Some(before) = stat(pid)? else {
-        return Ok(ProcessRead::Absent {
-            pid,
-            observed_at_unix_ns: now()?,
-        });
-    };
-    let start = StartIdentity::Linux {
-        start_ticks: before.start,
-    };
-    if before.state == NativeState::ExitedAwaitingReap {
-        return Ok(ProcessRead::ExitedRecord {
-            pid,
-            boot,
-            start,
-            state: before.state,
-            status: ExitStatus::Unavailable {
-                reason: ExitStatusUnavailable::NotOurChild,
-            },
-            observed_at_unix_ns: now()?,
-        });
-    }
-    let image = fs::read_link(format!("/proc/{}/exe", pid.0));
-    let Some(after) = stat(pid)? else {
-        return Ok(ProcessRead::Absent {
-            pid,
-            observed_at_unix_ns: now()?,
-        });
-    };
-    if before.start != after.start {
-        return Err(error(
-            ProcErrorCode::IdentityChanged,
-            ProcErrorDetail::Identity {
-                pid,
-                expected_start: Some(start),
-                found_start: Some(StartIdentity::Linux {
-                    start_ticks: after.start,
-                }),
-                expected: None,
-                found: None,
-            },
-        ));
-    }
-    if after.state == NativeState::ExitedAwaitingReap {
-        return Ok(ProcessRead::ExitedRecord {
-            pid,
-            boot,
-            start,
-            state: after.state,
-            status: ExitStatus::Unavailable {
-                reason: ExitStatusUnavailable::NotOurChild,
-            },
-            observed_at_unix_ns: now()?,
-        });
-    }
-    let mut image = match image {
-        Ok(image) => image,
-        Err(cause) => return executable_failure(machine, pid, before.start, boot, cause),
-    };
-    // A live group member may exec between image reads. Resample at most three
-    // times, retaining the original birth; no cached identity or renewed clock.
+fn absent_read(pid: ProcessId) -> ProcResult<ProcessRead> {
+    Ok(ProcessRead::Absent {
+        pid,
+        observed_at_unix_ns: now()?,
+    })
+}
+fn exited_record(
+    pid: ProcessId,
+    boot: BootIdentity,
+    start: StartIdentity,
+    state: NativeState,
+) -> ProcResult<ProcessRead> {
+    Ok(ProcessRead::ExitedRecord {
+        pid,
+        boot,
+        start,
+        state,
+        status: ExitStatus::Unavailable {
+            reason: ExitStatusUnavailable::NotOurChild,
+        },
+        observed_at_unix_ns: now()?,
+    })
+}
+// A live group member may exec between image reads. Resample at most three
+// times, retaining the original birth; no cached identity or renewed clock.
+fn stabilize_image(
+    machine: MachineId,
+    pid: ProcessId,
+    boot: BootIdentity,
+    start_ticks: u64,
+    mut image: std::path::PathBuf,
+) -> ProcResult<ProcessRead> {
+    let start = StartIdentity::Linux { start_ticks };
     for _ in 0..3 {
         let final_image = match fs::read_link(format!("/proc/{}/exe", pid.0)) {
             Ok(image) => image,
-            Err(cause) => return executable_failure(machine, pid, before.start, boot, cause),
+            Err(cause) => return executable_failure(machine, pid, start_ticks, boot, cause),
         };
         let Some(final_stat) = stat(pid)? else {
-            return Ok(ProcessRead::Absent {
-                pid,
-                observed_at_unix_ns: now()?,
-            });
+            return absent_read(pid);
         };
-        if final_stat.start != before.start {
+        if final_stat.start != start_ticks {
             return Err(input(
                 "process image",
                 "native birth changed during final image read",
             ));
         }
         if final_stat.state == NativeState::ExitedAwaitingReap {
-            return Ok(ProcessRead::ExitedRecord {
-                pid,
-                boot,
-                start,
-                state: final_stat.state,
-                status: ExitStatus::Unavailable {
-                    reason: ExitStatusUnavailable::NotOurChild,
-                },
-                observed_at_unix_ns: now()?,
-            });
+            return exited_record(pid, boot, start, final_stat.state);
         }
         if image == final_image {
             return Ok(ProcessRead::Present(LiveObservation {
@@ -257,6 +212,44 @@ pub(crate) fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<Pro
         "exec changed during identity read; retry observation",
     ))
 }
+pub(crate) fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<ProcessRead> {
+    let boot = boot()?;
+    let Some(before) = stat(pid)? else {
+        return absent_read(pid);
+    };
+    let start = StartIdentity::Linux {
+        start_ticks: before.start,
+    };
+    if before.state == NativeState::ExitedAwaitingReap {
+        return exited_record(pid, boot, start, before.state);
+    }
+    let image = fs::read_link(format!("/proc/{}/exe", pid.0));
+    let Some(after) = stat(pid)? else {
+        return absent_read(pid);
+    };
+    if before.start != after.start {
+        return Err(error(
+            ProcErrorCode::IdentityChanged,
+            ProcErrorDetail::Identity {
+                pid,
+                expected_start: Some(start),
+                found_start: Some(StartIdentity::Linux {
+                    start_ticks: after.start,
+                }),
+                expected: None,
+                found: None,
+            },
+        ));
+    }
+    if after.state == NativeState::ExitedAwaitingReap {
+        return exited_record(pid, boot, start, after.state);
+    }
+    let image = match image {
+        Ok(image) => image,
+        Err(cause) => return executable_failure(machine, pid, before.start, boot, cause),
+    };
+    stabilize_image(machine, pid, boot, before.start, image)
+}
 fn executable_failure(
     _machine: MachineId,
     pid: ProcessId,
@@ -269,25 +262,16 @@ fn executable_failure(
     // a running process without a readable image remains an error.
     if absent(&cause) {
         match stat(pid)? {
-            None => {
-                return Ok(ProcessRead::Absent {
-                    pid,
-                    observed_at_unix_ns: now()?,
-                });
-            }
+            None => return absent_read(pid),
             Some(found)
                 if found.start == start && found.state == NativeState::ExitedAwaitingReap =>
             {
-                return Ok(ProcessRead::ExitedRecord {
+                return exited_record(
                     pid,
                     boot,
-                    start: StartIdentity::Linux { start_ticks: start },
-                    state: found.state,
-                    status: ExitStatus::Unavailable {
-                        reason: ExitStatusUnavailable::NotOurChild,
-                    },
-                    observed_at_unix_ns: now()?,
-                });
+                    StartIdentity::Linux { start_ticks: start },
+                    found.state,
+                );
             }
             Some(found) if found.start != start => {
                 return Err(input(
