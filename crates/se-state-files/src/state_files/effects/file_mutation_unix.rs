@@ -153,80 +153,15 @@ impl Pin {
             )),
         }
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(in crate::state_files) fn replace(self, expected: [u8; 32], bytes: &[u8]) -> Result<()> {
         self.check()?;
         verify(&self.file, &self.path, expected)?;
-        let random = super::super::random(&self.path)?;
-        let suffix: String = se_types::hex_lower(&random);
-        let stage_path = self
-            .path
-            .with_file_name(format!(".se-edit-backup-{suffix}"));
-        let stage_name = name(
-            stage_path
-                .file_name()
-                .ok_or_else(|| unsafe_path("staging leaf missing", &stage_path))?,
-            &stage_path,
-        )?;
-        // SAFETY: same held parent and exclusive no-follow creation; no existing
-        // entry is overwritten; inherited staging ACLs are cleared before writing.
-        #[cfg(not(target_os = "macos"))]
-        let mut stage = owned(
-            unsafe {
-                libc::openat(
-                    self.parent.as_raw_fd(),
-                    stage_name.as_ptr(),
-                    libc::O_RDWR
-                        | libc::O_CREAT
-                        | libc::O_EXCL
-                        | libc::O_NOFOLLOW
-                        | libc::O_CLOEXEC,
-                    0o600,
-                )
-            },
-            "create owned profile staging",
-            &stage_path,
-        )?;
-        #[cfg(target_os = "macos")]
-        let stage = private_stage::create_profile(&stage_path, &self.file, |file| {
-            file.write_all(bytes)
-                .map_err(|e| io_error("write staged profile", &stage_path, e))
-        })?;
+        let (stage_path, stage_name, stage) = self.create_stage(bytes)?;
         let stage_identity = id(&stage, &stage_path, false, true)?;
         let wanted: [u8; 32] = Sha256::digest(bytes).into();
         let mut swapped = false;
         let result = (|| {
-            #[cfg(not(target_os = "macos"))]
-            stage
-                .write_all(bytes)
-                .map_err(|e| io_error("write staged profile", &stage_path, e))?;
-            let security = self
-                .file
-                .metadata()
-                .map_err(|e| io_error("read original profile security", &self.path, e))?;
-            metadata::copy(&self.file, &stage, &self.path)?;
-            if self.private {
-                super::super::metadata(&stage, &stage_path, false)?;
-            }
-            stage
-                .sync_all()
-                .map_err(|e| io_error("sync staged profile", &stage_path, e))?;
-            self.check()?;
-            verify(&self.file, &self.path, expected)?;
-            self.check()?;
-            let current_security = self
-                .file
-                .metadata()
-                .map_err(|e| io_error("recheck profile security", &self.path, e))?;
-            if metadata::stamp(&security) != metadata::stamp(&current_security) {
-                return Err(changed(
-                    "profile security changed before publication",
-                    &self.path,
-                ));
-            }
+            self.prepare_stage(&stage, &stage_path, bytes, expected)?;
             exchange(&self.parent, &stage_name, &self.name, &self.path)?;
             swapped = true;
             let displaced = leaf(&self.parent, &stage_name, &stage_path, false)?;
@@ -255,74 +190,176 @@ impl Pin {
             self.parent
                 .sync_all()
                 .map_err(|e| io_error("sync profile replacement", &self.path, e))?;
-            self.check_parent()?;
-            let observed = leaf(&self.parent, &self.name, &self.path, false)?;
-            if id(&observed, &self.path, false, true)? != id(&stage, &stage_path, false, true)?
-                || digest(&observed, &self.path)? != <[u8; 32]>::from(Sha256::digest(bytes))
-            {
-                return Err(changed("profile replacement readback differs", &self.path));
-            }
-            if self.private {
-                super::super::metadata(&observed, &self.path, false)?;
-            }
-            // SAFETY: the displaced entry's exact identity and digest were checked
-            // after atomic exchange; unlink only that held original name.
-            if unsafe { libc::unlinkat(self.parent.as_raw_fd(), stage_name.as_ptr(), 0) } < 0 {
-                return Err(io_error(
-                    "remove displaced original profile",
-                    &stage_path,
-                    io::Error::last_os_error(),
-                ));
-            }
-            let retired = self
-                .file
-                .metadata()
-                .map_err(|e| io_error("read displaced original link count", &stage_path, e))?;
-            if retired.nlink() != 0 {
-                return Err(changed(
-                    "profile exchange did not retire the held original",
-                    &stage_path,
-                ));
-            }
-            if !matches!(digest(&self.file, &self.path), Ok(value) if value == expected) {
-                let (retained_path, retained_name) = recovery_name(&self.path)?;
-                self.retain_raced_bytes(&retained_path, &retained_name)?;
-                return Err(changed(
-                    "profile changed through an open displaced handle; recovery copy retained",
-                    &retained_path,
-                ));
-            }
-            self.parent
-                .sync_all()
-                .map_err(|e| io_error("sync retired profile sibling", &self.path, e))?;
-            Ok(())
+            self.retire_displaced(&stage, &stage_path, &stage_name, bytes, expected)
         })();
-        // An uncertain exchange retains both versions. After a successful rollback,
-        // only our original staging object is eligible for cleanup.
-        // SAFETY: this random O_EXCL-created literal name belongs to this operation.
         if result.is_err() && !swapped {
-            let cleanup = leaf(&self.parent, &stage_name, &stage_path, false)?;
-            if id(&cleanup, &stage_path, false, true)? != stage_identity {
-                return Err(changed(
-                    "profile staging changed before cleanup",
-                    &stage_path,
-                ));
-            }
+            self.cleanup_stage(&stage_path, &stage_name, stage_identity)?;
         }
-        // SAFETY: only the checked uniquely-created staging entry is removed.
-        if result.is_err()
-            && !swapped
-            // SAFETY: retained parent descriptor and NUL-terminated staging leaf;
-            // this removes only the validated staging name within that parent.
-            && unsafe { libc::unlinkat(self.parent.as_raw_fd(), stage_name.as_ptr(), 0) } < 0
+        result
+    }
+    /// Create a uniquely named staging sibling in the held parent, without following
+    /// or overwriting any existing entry.
+    fn create_stage(&self, bytes: &[u8]) -> Result<(std::path::PathBuf, CString, File)> {
+        let random = super::super::random(&self.path)?;
+        let suffix: String = se_types::hex_lower(&random);
+        let stage_path = self
+            .path
+            .with_file_name(format!(".se-edit-backup-{suffix}"));
+        let stage_name = name(
+            stage_path
+                .file_name()
+                .ok_or_else(|| unsafe_path("staging leaf missing", &stage_path))?,
+            &stage_path,
+        )?;
+        // SAFETY: same held parent and exclusive no-follow creation; no existing
+        // entry is overwritten; inherited staging ACLs are cleared before writing.
+        #[cfg(not(target_os = "macos"))]
+        let stage = owned(
+            unsafe {
+                libc::openat(
+                    self.parent.as_raw_fd(),
+                    stage_name.as_ptr(),
+                    libc::O_RDWR
+                        | libc::O_CREAT
+                        | libc::O_EXCL
+                        | libc::O_NOFOLLOW
+                        | libc::O_CLOEXEC,
+                    0o600,
+                )
+            },
+            "create owned profile staging",
+            &stage_path,
+        )?;
+        // macOS writes the bytes inside its private staging callback instead.
+        #[cfg(not(target_os = "macos"))]
+        let _ = bytes;
+        #[cfg(target_os = "macos")]
+        let stage = private_stage::create_profile(&stage_path, &self.file, |file| {
+            file.write_all(bytes)
+                .map_err(|e| io_error("write staged profile", &stage_path, e))
+        })?;
+        Ok((stage_path, stage_name, stage))
+    }
+    /// Write, secure and flush the staged bytes, then prove the original and its
+    /// security metadata are unchanged immediately before publication.
+    fn prepare_stage(
+        &self,
+        stage: &File,
+        stage_path: &Path,
+        bytes: &[u8],
+        expected: [u8; 32],
+    ) -> Result<()> {
+        #[cfg(not(target_os = "macos"))]
+        (&*stage)
+            .write_all(bytes)
+            .map_err(|e| io_error("write staged profile", stage_path, e))?;
+        // macOS already wrote the bytes while creating its private stage.
+        #[cfg(target_os = "macos")]
+        let _ = bytes;
+        let security = self
+            .file
+            .metadata()
+            .map_err(|e| io_error("read original profile security", &self.path, e))?;
+        metadata::copy(&self.file, stage, &self.path)?;
+        if self.private {
+            super::super::metadata(stage, stage_path, false)?;
+        }
+        stage
+            .sync_all()
+            .map_err(|e| io_error("sync staged profile", stage_path, e))?;
+        self.check()?;
+        verify(&self.file, &self.path, expected)?;
+        self.check()?;
+        let current_security = self
+            .file
+            .metadata()
+            .map_err(|e| io_error("recheck profile security", &self.path, e))?;
+        if metadata::stamp(&security) != metadata::stamp(&current_security) {
+            return Err(changed(
+                "profile security changed before publication",
+                &self.path,
+            ));
+        }
+        Ok(())
+    }
+    /// After a durable exchange: read back the published file, unlink only the
+    /// verified displaced original, and retain bytes written through its handle.
+    fn retire_displaced(
+        &self,
+        stage: &File,
+        stage_path: &Path,
+        stage_name: &CString,
+        bytes: &[u8],
+        expected: [u8; 32],
+    ) -> Result<()> {
+        self.check_parent()?;
+        let observed = leaf(&self.parent, &self.name, &self.path, false)?;
+        if id(&observed, &self.path, false, true)? != id(stage, stage_path, false, true)?
+            || digest(&observed, &self.path)? != <[u8; 32]>::from(Sha256::digest(bytes))
+        {
+            return Err(changed("profile replacement readback differs", &self.path));
+        }
+        if self.private {
+            super::super::metadata(&observed, &self.path, false)?;
+        }
+        // SAFETY: the displaced entry's exact identity and digest were checked
+        // after atomic exchange; unlink only that held original name.
+        if unsafe { libc::unlinkat(self.parent.as_raw_fd(), stage_name.as_ptr(), 0) } < 0 {
+            return Err(io_error(
+                "remove displaced original profile",
+                stage_path,
+                io::Error::last_os_error(),
+            ));
+        }
+        let retired = self
+            .file
+            .metadata()
+            .map_err(|e| io_error("read displaced original link count", stage_path, e))?;
+        if retired.nlink() != 0 {
+            return Err(changed(
+                "profile exchange did not retire the held original",
+                stage_path,
+            ));
+        }
+        if !matches!(digest(&self.file, &self.path), Ok(value) if value == expected) {
+            let (retained_path, retained_name) = recovery_name(&self.path)?;
+            self.retain_raced_bytes(&retained_path, &retained_name)?;
+            return Err(changed(
+                "profile changed through an open displaced handle; recovery copy retained",
+                &retained_path,
+            ));
+        }
+        self.parent
+            .sync_all()
+            .map_err(|e| io_error("sync retired profile sibling", &self.path, e))
+    }
+    /// An uncertain exchange retains both versions. After a successful rollback,
+    /// only our original staging object is eligible for cleanup.
+    fn cleanup_stage(
+        &self,
+        stage_path: &Path,
+        stage_name: &CString,
+        stage_identity: (u64, u64),
+    ) -> Result<()> {
+        // SAFETY: this random O_EXCL-created literal name belongs to this operation.
+        let cleanup = leaf(&self.parent, stage_name, stage_path, false)?;
+        if id(&cleanup, stage_path, false, true)? != stage_identity {
+            return Err(changed(
+                "profile staging changed before cleanup",
+                stage_path,
+            ));
+        }
+        // SAFETY: retained parent descriptor and NUL-terminated staging leaf;
+        // this removes only the validated staging name within that parent.
+        if unsafe { libc::unlinkat(self.parent.as_raw_fd(), stage_name.as_ptr(), 0) } < 0
             && io::Error::last_os_error().kind() != io::ErrorKind::NotFound
         {
             return Err(io_error(
                 "cleanup owned profile staging failed",
-                &stage_path,
+                stage_path,
                 io::Error::last_os_error(),
             ));
         }
-        result
+        Ok(())
     }
 }
