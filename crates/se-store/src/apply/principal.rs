@@ -1,4 +1,5 @@
 //! Name uniqueness, terminal retirement, and retired-target guards inside the writer transaction.
+use super::{invalid_transition, reference_missing};
 use crate::{connection, error::*, identity, *};
 use rusqlite::{Connection, OptionalExtension};
 
@@ -196,7 +197,7 @@ pub(super) fn refuse_retired(
         .optional()
         .map_err(sql)?;
     if matches!(retired, Some(Some(_))) {
-        return Err(fail(StoreErrorCode::InvalidTransition, RETIRED_REFUSAL));
+        return Err(invalid_transition(RETIRED_REFUSAL));
     }
     Ok(())
 }
@@ -217,8 +218,7 @@ fn refuse_live_work(c: &Connection, project: &[u8], target: &[u8]) -> StoreResul
         )
         .map_err(sql)?;
     if has_live_session || has_unreleased_process {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
+        return Err(invalid_transition(
             "cannot retire an agent while it still has live sessions or unreleased processes",
         ));
     }
@@ -253,22 +253,17 @@ pub(super) fn retire(
         .optional()
         .map_err(sql)?;
     let Some((owner_bytes, retired_seq, is_ephemeral)) = row else {
-        return Err(fail(
-            StoreErrorCode::ReferenceMissing,
+        return Err(reference_missing(
             "retirement target agent is not registered in this project",
         ));
     };
     if !is_ephemeral {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
+        return Err(invalid_transition(
             "only ephemeral temporary agents can be retired; saved seats remain permanent",
         ));
     }
     if retired_seq.is_some() {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
-            "agent is already retired",
-        ));
+        return Err(invalid_transition("agent is already retired"));
     }
     match &header.actor {
         Actor::Human(human) => {
@@ -300,8 +295,7 @@ pub(super) fn retire(
             )
             .map_err(sql)?;
         if !exists {
-            return Err(fail(
-                StoreErrorCode::ReferenceMissing,
+            return Err(reference_missing(
                 "final_session does not belong to this agent in this project",
             ));
         }
@@ -316,10 +310,7 @@ pub(super) fn retire(
         )
         .map_err(sql)?;
     if changed != 1 {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
-            "agent is already retired",
-        ));
+        return Err(invalid_transition("agent is already retired"));
     }
     Ok(())
 }

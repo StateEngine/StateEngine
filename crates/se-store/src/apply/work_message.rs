@@ -52,8 +52,7 @@ pub(super) fn send(
             )
             .map_err(sql)?;
         if !exists {
-            return Err(fail(
-                StoreErrorCode::ReferenceMissing,
+            return Err(reference_missing(
                 "work message ref outside scope or absent",
             ));
         }
@@ -69,8 +68,7 @@ pub(super) fn send(
         let recipient = key(c, "agent", agent.as_str(), &scope, false)?;
         let exists: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM principals WHERE project_id=? AND principal_id=? AND principal_kind='agent')",crate::sql_value::sql_params![project,recipient],|r|r.get(0)).map_err(sql)?;
         if !exists {
-            return Err(fail(
-                StoreErrorCode::ReferenceMissing,
+            return Err(reference_missing(
                 "work addressee is not registered in this project",
             ));
         }
@@ -110,10 +108,7 @@ pub(super) fn mark(
         _ => return Err(invalid("message mark dispatch")),
     };
     if header.actor != recipient && tag != "delivered" {
-        return Err(fail(
-            StoreErrorCode::ScopeMismatch,
-            "recipient marker actor differs",
-        ));
+        return Err(scope_mismatch("recipient marker actor differs"));
     }
     let scope = scope_key(c, &header.scope, false)?;
     let project = project_id(c, &header.scope, false)?;
@@ -135,10 +130,9 @@ pub(super) fn mark(
         .optional()
         .map_err(sql)?
         .ok_or_else(|| {
-            fail(
-                StoreErrorCode::ScopeMismatch,
-                format!("message {message_id} unavailable to the named recipient"),
-            )
+            scope_mismatch(format!(
+                "message {message_id} unavailable to the named recipient"
+            ))
         })?;
     let evidence = evidence
         .map(|v| key(c, "event", v.as_str(), &scope, false))

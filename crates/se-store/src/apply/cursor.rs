@@ -107,10 +107,7 @@ pub(super) fn apply(
                 )
                 .map_err(sql)?;
             if acknowledged.is_some() {
-                return Err(fail(
-                    StoreErrorCode::InvalidTransition,
-                    "this cursor was already acknowledged",
-                ));
+                return Err(invalid_transition("this cursor was already acknowledged"));
             }
             let evidence_seq: Option<i64> = c
                 .query_row(
@@ -121,8 +118,7 @@ pub(super) fn apply(
                 .optional()
                 .map_err(sql)?;
             if evidence_seq.is_none_or(|e| e <= last) {
-                return Err(fail(
-                    StoreErrorCode::InvalidTransition,
+                return Err(invalid_transition(
                     "acknowledgment evidence must be committed after the cursor was issued",
                 ));
             }
@@ -142,10 +138,7 @@ pub(super) fn apply(
                 )
                 .map_err(sql)?;
             if changed != 1 {
-                return Err(fail(
-                    StoreErrorCode::RevisionConflict,
-                    "cursor head changed",
-                ));
+                return Err(revision_conflict("cursor head changed"));
             }
             a
         }
@@ -220,10 +213,7 @@ fn record(
         )
         .map_err(sql)?;
     if changed != 1 {
-        return Err(fail(
-            StoreErrorCode::RevisionConflict,
-            "cursor head changed",
-        ));
+        return Err(revision_conflict("cursor head changed"));
     }
     Ok(a)
 }
@@ -248,8 +238,7 @@ fn admit_window(
             .map_err(sql)?;
         let scoped = matches!(&h.scope, Scope::Project(id) if project.as_ref() == Some(id));
         if canonical(store.as_str()).as_deref() != Some(this.as_slice()) || !scoped {
-            return Err(fail(
-                StoreErrorCode::ScopeMismatch,
+            return Err(scope_mismatch(
                 "cursor window names another store or project",
             ));
         }
@@ -310,12 +299,9 @@ fn prior_confirmed(
                 .map_or(prior_from, |last| last.clamp(prior_from, prior_to)),
         };
         if from > limit {
-            return Err(fail(
-                StoreErrorCode::InvalidTransition,
-                format!(
-                    "cursor window would skip unconfirmed work: it must start at or before {limit}"
-                ),
-            ));
+            return Err(invalid_transition(format!(
+                "cursor window would skip unconfirmed work: it must start at or before {limit}"
+            )));
         }
     }
     Ok(())
@@ -346,8 +332,7 @@ fn permitted(
     if ok {
         Ok(())
     } else {
-        Err(fail(
-            StoreErrorCode::ScopeMismatch,
+        Err(scope_mismatch(
             "cursor actor differs from its agent and owner",
         ))
     }

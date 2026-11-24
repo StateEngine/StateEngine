@@ -2,10 +2,148 @@
 use super::*;
 use crate::channel::{Disposition, OutputOutcome};
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+fn recorded_at(c: &Connection, seq: i64) -> StoreResult<i64> {
+    c.query_row(
+        "SELECT recorded_at_us FROM events WHERE seq=?",
+        [seq],
+        |r| crate::sql_value::value(r, 0),
+    )
+    .map_err(sql)
+}
+fn outbox_status(
+    c: &Connection,
+    connection_id: &str,
+) -> StoreResult<(&'static str, Option<String>)> {
+    let pending:i64=c.query_row("SELECT count(*) FROM(SELECT 1 FROM channel_outbox WHERE connection_id=? AND state IN ('queued','sending') LIMIT ?)",crate::sql_value::sql_params![connection_id,crate::channel::MAX_PENDING as i64],|r|crate::sql_value::value(r,0)).map_err(sql)?;
+    if pending >= crate::channel::MAX_PENDING as i64 {
+        Ok((
+            "failed",
+            Some(codec::encode(&se_types::MessagingChannelError::QueueFull)?),
+        ))
+    } else {
+        Ok(("queued", None))
+    }
+}
+fn validate_disposition<'a>(
+    c: &Connection,
+    h: &EventHeader,
+    state: &ChannelConnection,
+    seq: i64,
+    disposition: &'a Disposition,
+) -> StoreResult<(Option<&'a str>, Option<Vec<u8>>)> {
+    match disposition {
+        Disposition::Saved {
+            receipt,
+            message,
+            subject,
+            private_chat,
+        } => {
+            if !super::capacity(c, &state.id)? {
+                return Err(fail(
+                    StoreErrorCode::Backpressure,
+                    "channel pending input or output limit",
+                ));
+            }
+            let Pairing::Paired { phone } = &state.pairing else {
+                return Err(invalid("unpaired channel cannot save Owner mail"));
+            };
+            if phone.subject != *subject || phone.private_chat != *private_chat {
+                return Err(invalid("phone is outside exact approved binding"));
+            }
+            let scope = scope_key(c, &h.scope, false)?;
+            let p = project_id(c, &h.scope, false)?;
+            let m = key(c, "message", message.as_str(), &scope, false)?;
+            let sender = key(c, "human", state.owner.as_str(), &[0], false)?;
+            let recipient = key(c, "agent", state.target.agent.as_str(), &scope, false)?;
+            // Must be ordinary mail from the same writer operation, not a
+            // historical ID or a message saved after the provider ACK.
+            let valid: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM messages m JOIN events e ON e.seq=m.sent_seq JOIN events current ON current.seq=? WHERE m.project_id=? AND m.message_id=? AND m.sender_id=? AND m.recipient_id=? AND e.operation_id=current.operation_id)", crate::sql_value::sql_params![seq,p,m,sender,recipient], |r| crate::sql_value::value(r, 0)).map_err(sql)?;
+            if !valid {
+                return Err(invalid(
+                    "Saved requires ordinary exact-recipient Owner mail in this transaction",
+                ));
+            }
+            Ok((Some(receipt.as_str()), Some(m)))
+        }
+        Disposition::Action { action } => {
+            let value = super::resume::action(c, action)?;
+            if value.connection != state.id || value.state != "confirmed" {
+                return Err(invalid("provider callback has no confirmed scoped action"));
+            }
+            Ok((None, None))
+        }
+        Disposition::RejectedPaired {
+            reason,
+            subject,
+            private_chat,
+        } => {
+            let Pairing::Paired { phone } = &state.pairing else {
+                return Err(invalid("private rejection requires current approved phone"));
+            };
+            if phone.subject != *subject
+                || phone.private_chat != *private_chat
+                || !matches!(
+                    reason,
+                    crate::channel::Rejection::TooLarge
+                        | crate::channel::Rejection::QueueFull
+                        | crate::channel::Rejection::Unsupported
+                        | crate::channel::Rejection::Expired
+                )
+            {
+                return Err(invalid("private rejection scope/reason differs"));
+            }
+            Ok((None, None))
+        }
+        Disposition::Rejected { .. } => Ok((None, None)),
+    }
+}
+fn apply_output_finished(
+    c: &Connection,
+    state: &ChannelConnection,
+    seq: i64,
+    output: &str,
+    attempt: u64,
+    outcome: &OutputOutcome,
+) -> StoreResult<()> {
+    let revoked = matches!(state.pairing, Pairing::Revoked);
+    let (status, provider, retry) = match outcome {
+        OutputOutcome::Sent { provider_message } => ("sent", Some(provider_message.clone()), None),
+        OutputOutcome::PartSent {
+            part,
+            provider_message,
+        } => {
+            let changed = c.execute("UPDATE channel_outbox SET provider_messages=json_insert(provider_messages,'$[#]',?),last_seq=? WHERE connection_id=? AND output_id=? AND attempt=? AND state='sending' AND json_array_length(provider_messages)=? AND ?<32", rusqlite::params![provider_message,seq,state.id.as_str(),output,i64::try_from(attempt).map_err(invalid)?,part,part]).map_err(sql)?;
+            if changed != 1 {
+                return Err(invalid("output part has no exact in-flight predecessor"));
+            }
+            return Ok(());
+        }
+        OutputOutcome::Unknown => ("unknown", None, None),
+        OutputOutcome::Failed { .. } => ("failed", None, None),
+        OutputOutcome::Retry { after_us } if *after_us > 0 => (
+            if revoked { "revoked" } else { "queued" },
+            None,
+            Some(*after_us),
+        ),
+        OutputOutcome::Retry { .. } => return Err(invalid("retry requires a positive deadline")),
+    };
+    // A revoke cannot recall bytes released before it: retain Sent/Unknown.
+    let failure = match outcome {
+        OutputOutcome::Failed { reason } => Some(codec::encode(reason)?),
+        _ => None,
+    };
+    let changed = c.execute("UPDATE channel_outbox SET provider_messages=CASE WHEN ?='sent' AND json_array_length(provider_messages)=0 THEN json_array(?) ELSE provider_messages END,state=?,provider_message=?,retry_at_us=?,last_seq=?,failure=? WHERE connection_id=? AND output_id=? AND attempt=? AND state='sending'",crate::sql_value::sql_params![status,provider,status,provider,retry,seq,failure,state.id.as_str(),output,attempt]).map_err(sql)?;
+    if changed != 1 {
+        return Err(invalid("outbox completion has no owned in-flight attempt"));
+    }
+    if matches!(outcome, OutputOutcome::Failed { .. }) && !revoked {
+        let reply:Option<(Vec<u8>,Vec<u8>)>=c.query_row("SELECT original_id,reply_id FROM channel_outbox WHERE output_id=? AND kind='reply'",[output],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?))).optional().map_err(sql)?;
+        if let Some((original, reply)) = reply {
+            enqueue(c, state, Some(&original), Some(&reply), "reply_failed", seq)?;
+        }
+    }
+    Ok(())
+}
 pub(super) fn apply(
     c: &Connection,
     h: &EventHeader,
@@ -39,84 +177,10 @@ pub(super) fn apply(
             if *binding_revision != state.revision {
                 return Err(invalid("stale channel binding or invalid provider update"));
             }
-            let (receipt, message) = match disposition {
-                Disposition::Saved {
-                    receipt,
-                    message,
-                    subject,
-                    private_chat,
-                } => {
-                    if !super::capacity(c, &state.id)? {
-                        return Err(fail(
-                            StoreErrorCode::Backpressure,
-                            "channel pending input or output limit",
-                        ));
-                    }
-                    let Pairing::Paired { phone } = &state.pairing else {
-                        return Err(invalid("unpaired channel cannot save Owner mail"));
-                    };
-                    if phone.subject != *subject || phone.private_chat != *private_chat {
-                        return Err(invalid("phone is outside exact approved binding"));
-                    }
-                    let scope = scope_key(c, &h.scope, false)?;
-                    let p = project_id(c, &h.scope, false)?;
-                    let m = key(c, "message", message.as_str(), &scope, false)?;
-                    let sender = key(c, "human", state.owner.as_str(), &[0], false)?;
-                    let recipient = key(c, "agent", state.target.agent.as_str(), &scope, false)?;
-                    // Must be ordinary mail from the same writer operation, not a
-                    // historical ID or a message saved after the provider ACK.
-                    let valid: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM messages m JOIN events e ON e.seq=m.sent_seq JOIN events current ON current.seq=? WHERE m.project_id=? AND m.message_id=? AND m.sender_id=? AND m.recipient_id=? AND e.operation_id=current.operation_id)", crate::sql_value::sql_params![seq,p,m,sender,recipient], |r| crate::sql_value::value(r, 0)).map_err(sql)?;
-                    if !valid {
-                        return Err(invalid(
-                            "Saved requires ordinary exact-recipient Owner mail in this transaction",
-                        ));
-                    }
-                    (Some(receipt.as_str()), Some(m))
-                }
-                Disposition::Action { action } => {
-                    let value = super::resume::action(c, action)?;
-                    if value.connection != state.id || value.state != "confirmed" {
-                        return Err(invalid("provider callback has no confirmed scoped action"));
-                    }
-                    (None, None)
-                }
-                Disposition::RejectedPaired {
-                    reason,
-                    subject,
-                    private_chat,
-                } => {
-                    let Pairing::Paired { phone } = &state.pairing else {
-                        return Err(invalid("private rejection requires current approved phone"));
-                    };
-                    if phone.subject != *subject
-                        || phone.private_chat != *private_chat
-                        || !matches!(
-                            reason,
-                            crate::channel::Rejection::TooLarge
-                                | crate::channel::Rejection::QueueFull
-                                | crate::channel::Rejection::Unsupported
-                                | crate::channel::Rejection::Expired
-                        )
-                    {
-                        return Err(invalid("private rejection scope/reason differs"));
-                    }
-                    (None, None)
-                }
-                Disposition::Rejected { .. } => (None, None),
-            };
+            let (receipt, message) = validate_disposition(c, h, state, seq, disposition)?;
             let pending = message.is_some();
-            let at: i64 = c
-                .query_row(
-                    "SELECT recorded_at_us FROM events WHERE seq=?",
-                    [seq],
-                    |r| crate::sql_value::value(r, 0),
-                )
-                .map_err(sql)?;
-            let due = if pending {
-                Some(at.saturating_add(channel_delay_us))
-            } else {
-                None
-            };
+            let at = recorded_at(c, seq)?;
+            let due = pending.then(|| at.saturating_add(channel_delay_us));
             c.execute("INSERT INTO channel_updates(bot_id,update_id,cursor,connection_id,handled_seq,disposition,receipt_id,message_id,pending,status_due_at_us) VALUES(?,?,?,?,?,?,?,?,?,?)", crate::sql_value::sql_params![state.bot.id,update,cursor,state.id.as_str(),seq,codec::encode(disposition)?,receipt,message,pending,due]).map_err(sql)?;
             checkpoint(
                 c,
@@ -171,15 +235,8 @@ pub(super) fn apply(
             {
                 return Err(invalid("private output binding revoked or changed"));
             }
-            let output = output.as_str();
-            let now: i64 = c
-                .query_row(
-                    "SELECT recorded_at_us FROM events WHERE seq=?",
-                    [seq],
-                    |r| crate::sql_value::value(r, 0),
-                )
-                .map_err(sql)?;
-            let changed = c.execute("UPDATE channel_outbox SET state='sending',last_seq=?,attempt=attempt+1 WHERE connection_id=? AND output_id=? AND binding_revision=? AND attempt=? AND state='queued' AND (retry_at_us IS NULL OR retry_at_us<=?)",crate::sql_value::sql_params![seq,state.id.as_str(),output,binding_revision,expected_attempt,now]).map_err(sql)?;
+            let now = recorded_at(c, seq)?;
+            let changed = c.execute("UPDATE channel_outbox SET state='sending',last_seq=?,attempt=attempt+1 WHERE connection_id=? AND output_id=? AND binding_revision=? AND attempt=? AND state='queued' AND (retry_at_us IS NULL OR retry_at_us<=?)",crate::sql_value::sql_params![seq,state.id.as_str(),output.as_str(),binding_revision,expected_attempt,now]).map_err(sql)?;
             if changed != 1 {
                 return Err(invalid("outbox entry is not ready for a new attempt"));
             }
@@ -190,48 +247,7 @@ pub(super) fn apply(
             outcome,
             ..
         } => {
-            let output = output.as_str();
-            let revoked = matches!(state.pairing, Pairing::Revoked);
-            let (status, provider, retry) = match outcome {
-                OutputOutcome::Sent { provider_message } => {
-                    ("sent", Some(provider_message.clone()), None)
-                }
-                OutputOutcome::PartSent {
-                    part,
-                    provider_message,
-                } => {
-                    let changed = c.execute("UPDATE channel_outbox SET provider_messages=json_insert(provider_messages,'$[#]',?),last_seq=? WHERE connection_id=? AND output_id=? AND attempt=? AND state='sending' AND json_array_length(provider_messages)=? AND ?<32", rusqlite::params![provider_message,seq,state.id.as_str(),output,i64::try_from(*attempt).map_err(invalid)?,part,part]).map_err(sql)?;
-                    if changed != 1 {
-                        return Err(invalid("output part has no exact in-flight predecessor"));
-                    }
-                    return Ok(());
-                }
-                OutputOutcome::Unknown => ("unknown", None, None),
-                OutputOutcome::Failed { .. } => ("failed", None, None),
-                OutputOutcome::Retry { after_us } if *after_us > 0 => (
-                    if revoked { "revoked" } else { "queued" },
-                    None,
-                    Some(*after_us),
-                ),
-                OutputOutcome::Retry { .. } => {
-                    return Err(invalid("retry requires a positive deadline"));
-                }
-            };
-            // A revoke cannot recall bytes released before it: retain Sent/Unknown.
-            let failure = match outcome {
-                OutputOutcome::Failed { reason } => Some(codec::encode(reason)?),
-                _ => None,
-            };
-            let changed = c.execute("UPDATE channel_outbox SET provider_messages=CASE WHEN ?='sent' AND json_array_length(provider_messages)=0 THEN json_array(?) ELSE provider_messages END,state=?,provider_message=?,retry_at_us=?,last_seq=?,failure=? WHERE connection_id=? AND output_id=? AND attempt=? AND state='sending'",crate::sql_value::sql_params![status,provider,status,provider,retry,seq,failure,state.id.as_str(),output,attempt]).map_err(sql)?;
-            if changed != 1 {
-                return Err(invalid("outbox completion has no owned in-flight attempt"));
-            }
-            if matches!(outcome, OutputOutcome::Failed { .. }) && !revoked {
-                let reply:Option<(Vec<u8>,Vec<u8>)>=c.query_row("SELECT original_id,reply_id FROM channel_outbox WHERE output_id=? AND kind='reply'",[output],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?))).optional().map_err(sql)?;
-                if let Some((original, reply)) = reply {
-                    enqueue(c, state, Some(&original), Some(&reply), "reply_failed", seq)?;
-                }
-            }
+            apply_output_finished(c, state, seq, output.as_str(), *attempt, outcome)?;
         }
         _ => return Err(invalid("channel update dispatch")),
     }
@@ -307,17 +323,7 @@ pub(super) fn enqueue(
     hash.update(original.unwrap_or_default());
     hash.update(reply.unwrap_or_default());
     let id = format!("cho-{}", se_types::hex_lower(&hash.finalize()[..16]));
-    let pending:i64=c.query_row("SELECT count(*) FROM(SELECT 1 FROM channel_outbox WHERE connection_id=? AND state IN ('queued','sending') LIMIT ?)",crate::sql_value::sql_params![state.id.as_str(),crate::channel::MAX_PENDING as i64],|r|crate::sql_value::value(r,0)).map_err(sql)?;
-    let status = if pending >= crate::channel::MAX_PENDING as i64 {
-        "failed"
-    } else {
-        "queued"
-    };
-    let failure = if status == "failed" {
-        Some(codec::encode(&se_types::MessagingChannelError::QueueFull)?)
-    } else {
-        None
-    };
+    let (status, failure) = outbox_status(c, state.id.as_str())?;
     c.execute("INSERT INTO channel_outbox(output_id,connection_id,binding_revision,kind,original_id,reply_id,queued_seq,last_seq,state,failure) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(output_id) DO NOTHING",crate::sql_value::sql_params![id,state.id.as_str(),state.revision,kind,original,reply,seq,seq,status,failure]).map_err(sql)?;
     Ok(())
 }
@@ -377,17 +383,7 @@ fn enqueue_rejected(
         hash.update(update.as_str().as_bytes());
     }
     let id = format!("cho-{}", se_types::hex_lower(&hash.finalize()[..16]));
-    let pending:i64=c.query_row("SELECT count(*) FROM(SELECT 1 FROM channel_outbox WHERE connection_id=? AND state IN ('queued','sending') LIMIT ?)",crate::sql_value::sql_params![state.id.as_str(),crate::channel::MAX_PENDING as i64],|r|crate::sql_value::value(r,0)).map_err(sql)?;
-    let status = if pending >= crate::channel::MAX_PENDING as i64 {
-        "failed"
-    } else {
-        "queued"
-    };
-    let failure = if status == "failed" {
-        Some(codec::encode(&se_types::MessagingChannelError::QueueFull)?)
-    } else {
-        None
-    };
+    let (status, failure) = outbox_status(c, state.id.as_str())?;
     c.execute("INSERT INTO channel_outbox(output_id,connection_id,binding_revision,kind,provider_update,queued_seq,last_seq,state,failure) VALUES(?,?,?,'rejected',?,?,?,?,?) ON CONFLICT(output_id) DO NOTHING",crate::sql_value::sql_params![id,state.id.as_str(),state.revision,update,seq,seq,status,failure]).map_err(sql)?;
     Ok(())
 }

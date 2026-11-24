@@ -25,8 +25,7 @@ pub(super) fn require_closed(c: &Connection, project: &[u8]) -> StoreResult<()> 
         [project], |row| row.get(0),
     ).map_err(sql)?;
     if open {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
+        return Err(invalid_transition(
             "finish or hand back open and blocked assignments first",
         ));
     }
@@ -39,8 +38,7 @@ pub(super) fn check_route(c: &Connection, h: &EventHeader, expected: &Actor) -> 
         || &h.actor == expected
         || captain(c, &project)?.as_ref() != Some(expected)
     {
-        return Err(fail(
-            StoreErrorCode::RevisionConflict,
+        return Err(revision_conflict(
             "captain changed or sender is not crew; retry with the same request key",
         ));
     }
@@ -148,8 +146,7 @@ fn require_current_captain(
         _ => return Err(invalid("assignment projection dispatch")),
     };
     if current_captain != Some(expected_captain) {
-        return Err(fail(
-            StoreErrorCode::RevisionConflict,
+        return Err(revision_conflict(
             "captain changed; retry the same assignment request key",
         ));
     }
@@ -186,8 +183,7 @@ pub(super) fn apply(
             ..
         } => {
             if &project != project_id || !(owner || current_captain.as_ref() == Some(&h.actor)) {
-                return Err(fail(
-                    StoreErrorCode::ScopeMismatch,
+                return Err(scope_mismatch(
                     "only the project owner or captain can assign work",
                 ));
             }
@@ -203,10 +199,7 @@ pub(super) fn apply(
             let a = key(c, "agent", assignee.as_str(), &scope, false)?;
             let registered: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM principals WHERE project_id=? AND principal_id=? AND principal_kind='agent')", crate::sql_value::sql_params![p, a], |row| row.get(0)).map_err(sql)?;
             if !registered {
-                return Err(fail(
-                    StoreErrorCode::ReferenceMissing,
-                    "choose a registered project agent",
-                ));
+                return Err(reference_missing("choose a registered project agent"));
             }
             (assignment, a, AssignmentState::Open, true)
         }
@@ -298,10 +291,7 @@ fn write_projection(
     } else {
         let changed = c.execute("UPDATE assignments SET state=?,revision=?,last_seq=? WHERE project_id=? AND assignment_id=? AND revision=?", crate::sql_value::sql_params![state_name(next),revision,seq,project,id,revision-1]).map_err(sql)?;
         if changed != 1 {
-            return Err(fail(
-                StoreErrorCode::RevisionConflict,
-                "assignment changed before update",
-            ));
+            return Err(revision_conflict("assignment changed before update"));
         }
     }
     Ok(())
