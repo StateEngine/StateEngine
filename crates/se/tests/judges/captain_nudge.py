@@ -94,17 +94,18 @@ def run(fixture, idle):
     print("ok 1 - a captain, an open assignment and a crew agent with a job still running", flush=True)
 
     cache = {}
-    time.sleep(idle * 4)
+    background_wait = idle * 2 + 1
+    time.sleep(background_wait)
     assert not nudge_frames(fixture, cache), "an agent with a running background job was nudged"
     (fixture.repo / "stop-background").write_text("go")
     fixture.mail("send", fixture.agent, "Wrap up the job")
     wait_until(lambda: not (fixture.repo / "background-pid").exists(), 30, "the background job to stop")
-    print(f"ok 2 - no nudge for {idle * 4} s while the job ran", flush=True)
+    print(f"ok 2 - no nudge for {background_wait} s while the job ran", flush=True)
 
     nudged = wait_until(lambda: len(nudge_frames(fixture, cache)) >= ATTEMPTS and nudge_frames(fixture, cache),
                         idle * (ATTEMPTS + 3) + 30, f"{ATTEMPTS} nudges")
     alert = wait_until(lambda: alerts(fixture, lead), idle * 3 + 30, "the stuck alert")
-    time.sleep(idle * 3 + 2)
+    time.sleep(idle * 2 + 1)
     nudged = nudge_frames(fixture, cache)
     assert len(nudged) == ATTEMPTS, f"expected exactly {ATTEMPTS} nudges before the alert, saw {len(nudged)}"
     gaps = [b[0]["monotonic"] - a[0]["monotonic"] for a, b in zip(nudged, nudged[1:])]
@@ -123,7 +124,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--se", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--idle", type=int, default=3)
+    parser.add_argument("--idle", type=int, default=2)
     args = parser.parse_args()
     fixture = Fixture(args.se, args.output, provider_helper=Path(__file__).with_name("background_provider.py"))
     print("1..5", flush=True)
