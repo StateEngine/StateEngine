@@ -41,7 +41,9 @@ pub struct ApiVersion {
 /// Internal CLI/IPC version, distinct from the alpha release's linked API version ownership.
 pub const API_VERSION: ApiVersion = ApiVersion { major: 1, minor: 0 };
 
-/// Shared default and bounds for finite work and its matching store reader budget.
+/// Harness/test fallback for `BlockingPool::new`; the hosted runtime instead
+/// defaults to the native core count within the shared 2..=8 bounds that also
+/// cap finite work and its matching store reader budget.
 /// Effective one-core execution retains its separate legacy fallback.
 pub const DEFAULT_BLOCKING_JOBS: u32 = 2;
 pub const MIN_BLOCKING_JOBS: u32 = 2;
