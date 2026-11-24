@@ -1,6 +1,5 @@
 //! Current-owner defaults repair profile-less historical registrations only.
 use super::*;
-use se_types::PageRequest;
 
 pub(super) async fn ensure(
     context: &ExecutionContext,
@@ -13,16 +12,12 @@ pub(super) async fn ensure(
         let (next, complete, batches) = job(context, deadline, move |context| {
             read::snapshot(context, &readcx.admission, |read| {
                 let page = read
-                    .principals(ReadBudget {
-                        page: PageRequest {
-                            after,
-                            limit: std::num::NonZeroU32::new(100)
-                                .ok_or_else(|| scope::unreadable("import agents", "zero limit"))?,
-                            max_bytes: std::num::NonZeroU32::new(1024 * 1024)
-                                .ok_or_else(|| scope::unreadable("import agents", "zero bytes"))?,
-                        },
-                        deadline: std::time::Duration::from_millis(250),
-                    })
+                    .principals(crate::read_budget(
+                        after,
+                        100,
+                        1024 * 1024,
+                        std::time::Duration::from_millis(250),
+                    ))
                     .map_err(|e| store_error(&e))?;
                 let mut batches = Vec::new();
                 for principal in page.items() {
@@ -37,15 +32,13 @@ pub(super) async fn ensure(
                     if original.header.door != Door::Import {
                         continue;
                     }
-                    match read.profile(agent.clone()).map_err(|e| store_error(&e))? {
-                        Read::Present { .. } => continue,
-                        Read::Absent { .. } => (),
-                        Read::Unreadable { source, reason, .. } => {
-                            return Err(scope::unreadable(&source, &reason));
-                        }
-                        Read::Unknown { what } => {
-                            return Err(scope::unreadable("imported agent profile", &what));
-                        }
+                    if crate::read_optional(
+                        read.profile(agent.clone()).map_err(|e| store_error(&e))?,
+                        "imported agent profile",
+                    )?
+                    .is_some()
+                    {
+                        continue;
                     }
                     let profile =
                         node::profile::safe_default(&readcx, None).map_err(|e| store_error(&e))?;

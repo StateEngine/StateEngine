@@ -274,14 +274,7 @@ impl Generation {
                 let page = read
                     .mail_notices(
                         agent.clone(),
-                        se_store::ReadBudget {
-                            page: se_types::PageRequest {
-                                after: None,
-                                limit: std::num::NonZeroU32::MIN.saturating_add(99),
-                                max_bytes: std::num::NonZeroU32::MIN.saturating_add(262143),
-                            },
-                            deadline: Duration::from_secs(1),
-                        },
+                        crate::read_budget(None, 100, 262_144, Duration::from_secs(1)),
                     )
                     .map_err(|e| store_error(&e))?;
                 if !page.window().complete() {

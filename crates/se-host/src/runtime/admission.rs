@@ -656,23 +656,7 @@ impl AdmissionContext {
         }
         let records = decode_owner_inventory(&inventory)?;
         let native = peer.native();
-        let start = match native.started() {
-            se_types::StartIdentity::Linux { start_ticks } => se_proc::StartIdentity::Linux {
-                start_ticks: *start_ticks,
-            },
-            se_types::StartIdentity::Macos {
-                start_seconds,
-                start_micros,
-            } => se_proc::StartIdentity::MacOs {
-                seconds: *start_seconds,
-                microseconds: *start_micros,
-            },
-            se_types::StartIdentity::Windows { creation_filetime } => {
-                se_proc::StartIdentity::Windows {
-                    creation_filetime: creation_filetime.get(),
-                }
-            }
-        };
+        let start = crate::host_process::proc_start(native.started());
         let observed = se_proc::observe_owner(
             se_proc::OwnerTarget::Process {
                 pid: se_proc::ProcessId(native.pid()),

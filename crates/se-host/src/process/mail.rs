@@ -6,7 +6,7 @@ use se_core::{ops::mail as core, scope, store_error::store_error};
 use se_store::{Actor, EventBody, RecordId, RecordIdentity, Snapshot, mail::MailSnapshot};
 use se_types::{Body, IdempotencyKey, Read, Result};
 use sha2::{Digest, Sha256};
-use std::{num::NonZeroU32, time::Duration};
+use std::time::Duration;
 pub(in crate::process) mod commit;
 pub(super) mod diagnostic;
 mod notice;
@@ -60,14 +60,7 @@ fn id() -> Result<RecordId> {
     RecordId::from_bytes(*uuid.as_bytes()).map_err(|e| store_error(&e))
 }
 fn budget() -> se_store::ReadBudget {
-    se_store::ReadBudget {
-        page: se_types::PageRequest {
-            after: None,
-            limit: NonZeroU32::new(100).unwrap_or(NonZeroU32::MIN),
-            max_bytes: NonZeroU32::new(262144).unwrap_or(NonZeroU32::MIN),
-        },
-        deadline: Duration::from_secs(1),
-    }
+    crate::read_budget(None, 100, 262_144, Duration::from_secs(1))
 }
 fn admission(target: &core::MailTarget) -> se_store::Admission {
     se_store::Admission {

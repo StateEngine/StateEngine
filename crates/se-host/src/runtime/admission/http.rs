@@ -5,7 +5,7 @@ use se_store::{
     Snapshot,
     mail::{MailSnapshot, MailThrough},
 };
-use std::{num::NonZeroU32, time::Duration};
+use std::time::Duration;
 
 impl AdmissionContext {
     pub(crate) fn mail_page(&self, secret: &se_types::Secret) -> Result<crate::http::mail::Page> {
@@ -58,14 +58,7 @@ impl AdmissionContext {
             let page = read
                 .mail_pending(
                     agent.clone(),
-                    se_store::ReadBudget {
-                        page: se_types::PageRequest {
-                            after: None,
-                            limit: NonZeroU32::new(32).unwrap_or(NonZeroU32::MIN),
-                            max_bytes: NonZeroU32::new(262144).unwrap_or(NonZeroU32::MIN),
-                        },
-                        deadline: Duration::from_secs(1),
-                    },
+                    crate::read_budget(None, 32, 262_144, Duration::from_secs(1)),
                 )
                 .map_err(|e| store_error(&e))?;
             let window = page.window().fields().ok_or_else(|| {

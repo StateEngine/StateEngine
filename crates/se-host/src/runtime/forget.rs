@@ -1,6 +1,6 @@
 //! Owner erasure: plan first, then erase on the authoritative writer only after
 //! the owner confirms the printed plan. The CLI already proved human presence.
-use super::{BlockingClass, ExecutionContext, executor};
+use super::{ExecutionContext, executor};
 use crate::client::lease::Deadline;
 use se_core::{
     ops::{
@@ -13,17 +13,6 @@ use se_core::{
 use se_store::*;
 use se_types::Result;
 
-async fn job<T: Send + 'static>(
-    context: &ExecutionContext,
-    deadline: &Deadline,
-    work: impl FnOnce(&ExecutionContext) -> Result<T> + Send + 'static,
-) -> Result<T> {
-    let copy = context.clone();
-    context
-        .blocking
-        .run(BlockingClass::Foreground, deadline, move || work(&copy))
-        .await
-}
 fn receipt(input: &StoreForget, plan: &ErasurePlan, outcome: &str) -> Result<ErasureReceipt> {
     Ok(ErasureReceipt {
         idempotency_key: input.idempotency_key.clone(),
@@ -70,15 +59,16 @@ pub(super) async fn execute(
             ));
         }
     };
-    let incarnation = job(&context, deadline, |context| {
-        executor::check_generation(&context.reader, context.generation)?;
-        Ok(context
-            .reader
-            .info()
-            .map_err(|e| store_error(&e))?
-            .incarnation)
-    })
-    .await?;
+    let incarnation = context
+        .run_foreground(deadline, |context| {
+            executor::check_generation(&context.reader, context.generation)?;
+            Ok(context
+                .reader
+                .info()
+                .map_err(|e| store_error(&e))?
+                .incarnation)
+        })
+        .await?;
     let planning = context
         .writer
         .erasure_plan(input.events.clone())

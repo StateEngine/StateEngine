@@ -24,14 +24,12 @@ pub(in crate::runtime::history_import) fn suffix(recorded: &str, human: &HumanId
 pub(super) fn available<R: Snapshot>(read: &mut R, planned: &str) -> StoreResult<String> {
     let mut after = None;
     for _ in 0..64 {
-        let page = read.principals(ReadBudget {
-            page: se_types::PageRequest {
-                after,
-                limit: std::num::NonZeroU32::MIN.saturating_add(99),
-                max_bytes: std::num::NonZeroU32::MIN.saturating_add(1024 * 1024 - 1),
-            },
-            deadline: std::time::Duration::from_secs(5),
-        })?;
+        let page = read.principals(crate::read_budget(
+            after,
+            100,
+            1024 * 1024,
+            std::time::Duration::from_secs(5),
+        ))?;
         for item in page.items() {
             let name = match &item.current.body {
                 EventBody::PrincipalRegistered { name, .. }

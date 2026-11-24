@@ -46,7 +46,6 @@ pub fn observe(endpoint: &EndpointRecord, bound: &Deadline) -> Result<ProcessVie
     from_identity(&live.identity, bound)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub fn same_start(
     native: &se_proc::StartIdentity,
     recorded: &se_types::StartIdentity,
@@ -76,6 +75,24 @@ pub fn same_start(
         ) => seconds == start_seconds && microseconds == start_micros,
         _ => return None,
     })
+}
+
+pub(crate) fn proc_start(start: &se_types::StartIdentity) -> se_proc::StartIdentity {
+    match start {
+        se_types::StartIdentity::Linux { start_ticks } => se_proc::StartIdentity::Linux {
+            start_ticks: *start_ticks,
+        },
+        se_types::StartIdentity::Macos {
+            start_seconds,
+            start_micros,
+        } => se_proc::StartIdentity::MacOs {
+            seconds: *start_seconds,
+            microseconds: *start_micros,
+        },
+        se_types::StartIdentity::Windows { creation_filetime } => se_proc::StartIdentity::Windows {
+            creation_filetime: creation_filetime.get(),
+        },
+    }
 }
 /// A native committed startup supplies its exact retained identity directly.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]

@@ -28,38 +28,36 @@ fn read_source_humans(
     deadline: &Deadline,
 ) -> Result<BTreeMap<HumanId, Option<String>>> {
     let mut humans = BTreeMap::new();
-    match source::SourceFile::open(root.join(".stateengine/humans.jsonl"), None, deadline)? {
-        Read::Present { mut value } => {
-            while let Some(row) = value.next(deadline)? {
-                let Some(row) = row.value else { continue };
-                let Some(text) = row.get("human_id").and_then(serde_json::Value::as_str) else {
-                    continue;
-                };
-                let id = HumanId::from_legacy(text)?;
-                let name = row
-                    .get("display_name")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned);
-                if let Some(previous) = humans.insert(id, name.clone())
-                    && previous != name
-                {
-                    return Err(scope::unreadable(
-                        "source human names",
-                        "one source ID has conflicting recorded names",
-                    ));
-                }
-                if humans.len() > 4096 {
-                    return Err(scope::unreadable(
-                        "source human names",
-                        "more than 4096 source humans",
-                    ));
-                }
+    if let Some(mut value) = crate::read_optional(
+        source::SourceFile::open(root.join(".stateengine/humans.jsonl"), None, deadline)?,
+        "source human names",
+    )? {
+        while let Some(row) = value.next(deadline)? {
+            let Some(row) = row.value else { continue };
+            let Some(text) = row.get("human_id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let id = HumanId::from_legacy(text)?;
+            let name = row
+                .get("display_name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            if let Some(previous) = humans.insert(id, name.clone())
+                && previous != name
+            {
+                return Err(scope::unreadable(
+                    "source human names",
+                    "one source ID has conflicting recorded names",
+                ));
             }
-            value.verify(deadline)?;
+            if humans.len() > 4096 {
+                return Err(scope::unreadable(
+                    "source human names",
+                    "more than 4096 source humans",
+                ));
+            }
         }
-        Read::Absent { .. } => (),
-        Read::Unreadable { source, reason, .. } => return Err(scope::unreadable(&source, &reason)),
-        Read::Unknown { what } => return Err(scope::unreadable("source human names", &what)),
+        value.verify(deadline)?;
     }
     Ok(humans)
 }
@@ -75,33 +73,27 @@ fn verify_project_correspondence(
         let target = mappings.get(source).unwrap_or(source);
         let key = format!("owned:owners:human:{source}");
         let event = node::event_id(&own.scope, &key).map_err(|e| store_error(&e))?;
-        match read.event(event).map_err(|e| store_error(&e))? {
-            Read::Present { value } => {
-                let EventBody::LegacyRetained { mapped_id, .. } = value.body else {
-                    return Err(scope::unreadable(
-                        "human correspondence",
-                        "original source owner has another event kind",
-                    ));
-                };
-                let proposed = import::LegacyTarget::Principal(Actor::Human(target.clone()));
-                if mapped_id != proposed {
-                    return Err(se_types::SeError::new(se_types::Detail::StateConflict(
-                        se_types::details::StateConflict {
-                            subject: "historical human correspondence".into(),
-                            reason: format!(
-                                "source human {source} in project {project_id} has earlier correspondence {mapped_id:?}; requested target is {target}"
-                            ),
-                            next_step: "Reuse the earlier correspondence, including its --map-human argument; another request key cannot replace it. Preserve this home and use a separate destination for a different identity correspondence.".into(),
-                        },
-                    )));
-                }
-            }
-            Read::Absent { .. } => (),
-            Read::Unreadable { source, reason, .. } => {
-                return Err(scope::unreadable(&source, &reason));
-            }
-            Read::Unknown { what } => {
-                return Err(scope::unreadable("human correspondence", &what));
+        if let Some(value) = crate::read_optional(
+            read.event(event).map_err(|e| store_error(&e))?,
+            "human correspondence",
+        )? {
+            let EventBody::LegacyRetained { mapped_id, .. } = value.body else {
+                return Err(scope::unreadable(
+                    "human correspondence",
+                    "original source owner has another event kind",
+                ));
+            };
+            let proposed = import::LegacyTarget::Principal(Actor::Human(target.clone()));
+            if mapped_id != proposed {
+                return Err(se_types::SeError::new(se_types::Detail::StateConflict(
+                    se_types::details::StateConflict {
+                        subject: "historical human correspondence".into(),
+                        reason: format!(
+                            "source human {source} in project {project_id} has earlier correspondence {mapped_id:?}; requested target is {target}"
+                        ),
+                        next_step: "Reuse the earlier correspondence, including its --map-human argument; another request key cannot replace it. Preserve this home and use a separate destination for a different identity correspondence.".into(),
+                    },
+                )));
             }
         }
     }
@@ -111,25 +103,19 @@ fn verify_project_correspondence(
         if own.actor == Actor::Human(target.clone()) {
             continue;
         }
-        match read
-            .principal(Actor::Human(target.clone()))
-            .map_err(|e| store_error(&e))?
+        if crate::read_optional(
+            read.principal(Actor::Human(target.clone()))
+                .map_err(|e| store_error(&e))?,
+            "--map-human target",
+        )?
+        .is_none()
         {
-            Read::Present { .. } => (),
-            Read::Absent { .. } => {
-                return Err(scope::unreadable(
-                    "--map-human target",
-                    &format!(
-                        "source human {source} names target {target}, which is not registered in project {project_id}; no import run or project was adopted"
-                    ),
-                ));
-            }
-            Read::Unreadable { source, reason, .. } => {
-                return Err(scope::unreadable(&source, &reason));
-            }
-            Read::Unknown { what } => {
-                return Err(scope::unreadable("--map-human target", &what));
-            }
+            return Err(scope::unreadable(
+                "--map-human target",
+                &format!(
+                    "source human {source} names target {target}, which is not registered in project {project_id}; no import run or project was adopted"
+                ),
+            ));
         }
     }
     Ok(())

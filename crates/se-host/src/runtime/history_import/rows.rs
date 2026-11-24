@@ -4,7 +4,7 @@ pub(super) mod rejected;
 use super::{super::ExecutionContext, batch, read};
 use se_core::{scope, store_error::store_error};
 use se_store::{import::LegacyTarget, *};
-use se_types::{Read, Result};
+use se_types::Result;
 use sha2::{Digest, Sha256};
 pub(super) enum RowPlan {
     Skipped,
@@ -16,14 +16,6 @@ pub(super) struct PlannedRow {
     pub counts: ImportCounts,
     pub resume: Vec<node::ResumeFact>,
     pub reason: Option<String>,
-}
-fn expect_read<T>(read: Read<T>, unknown_source: &str) -> Result<Option<T>> {
-    match read {
-        Read::Present { value } => Ok(Some(value)),
-        Read::Absent { .. } => Ok(None),
-        Read::Unreadable { source, reason, .. } => Err(scope::unreadable(&source, &reason)),
-        Read::Unknown { what } => Err(scope::unreadable(unknown_source, &what)),
-    }
 }
 fn same_retained(
     body: &EventBody<StoredText>,
@@ -124,7 +116,7 @@ fn materialize(
     events: &mut Vec<NewEvent>,
 ) -> Result<Vec<node::ResumeFact>> {
     let units = decoded.dispositions.as_ref().map(|d| d.read).unwrap_or(1);
-    if let Some(value) = expect_read(
+    if let Some(value) = crate::read_optional(
         snapshot
             .import_legacy(cx.import, decoded.family, &decoded.legacy_id)
             .map_err(|e| store_error(&e))?,
@@ -148,7 +140,7 @@ fn materialize(
         decoded.legacy_id
     );
     let owner_id = node::event_id(&cx.admission.scope, &owner_key).map_err(|e| store_error(&e))?;
-    if let Some(value) = expect_read(
+    if let Some(value) = crate::read_optional(
         snapshot
             .event(owner_id.clone())
             .map_err(|e| store_error(&e))?,
@@ -218,7 +210,7 @@ fn check_replay_markers(
     units: u64,
 ) -> Result<bool> {
     let hex = se_types::hex_lower(&state.key);
-    let Some(value) = expect_read(
+    let Some(value) = crate::read_optional(
         snapshot
             .import_legacy(
                 cx.import,
@@ -238,7 +230,7 @@ fn check_replay_markers(
             "the deferred row no longer matches its original native range",
         ));
     }
-    if expect_read(
+    if crate::read_optional(
         snapshot
             .import_legacy(
                 cx.import,

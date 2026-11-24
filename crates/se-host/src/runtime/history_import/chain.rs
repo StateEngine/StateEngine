@@ -2,17 +2,18 @@
 use super::source::SourceFile;
 use crate::client::lease::Deadline;
 use se_core::scope;
-use se_types::{Read, Result};
+use se_types::Result;
 use std::path::Path;
 fn refused(reason: &str) -> se_types::SeError {
     scope::unreadable("Node ledger source integrity", reason)
 }
 pub(super) fn validate(path: &Path, deadline: &Deadline) -> Result<()> {
-    let mut source = match SourceFile::open(path.to_path_buf(), None, deadline)? {
-        Read::Absent { .. } => return Ok(()),
-        Read::Present { value } => value,
-        Read::Unreadable { source, reason, .. } => return Err(scope::unreadable(&source, &reason)),
-        Read::Unknown { what } => return Err(refused(&what)),
+    let Some(mut source) = crate::read_optional(
+        SourceFile::open(path.to_path_buf(), None, deadline)?,
+        "Node ledger source integrity",
+    )?
+    else {
+        return Ok(());
     };
     let mut count = 0u64;
     let mut seq = 0u64;

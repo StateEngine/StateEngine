@@ -47,6 +47,20 @@ pub struct ExecutionContext {
     pub(crate) custody: Arc<std::sync::OnceLock<Arc<dyn CustodyExecutor>>>,
     pub(crate) ownership_fault: Arc<super::tasks::OwnershipFault>,
 }
+impl ExecutionContext {
+    pub(super) async fn run_foreground<T: Send + 'static>(
+        &self,
+        deadline: &crate::client::lease::Deadline,
+        work: impl FnOnce(&Self) -> se_types::Result<T> + Send + 'static,
+    ) -> se_types::Result<T> {
+        let copy = self.clone();
+        self.blocking
+            .run(super::BlockingClass::Foreground, deadline, move || {
+                work(&copy)
+            })
+            .await
+    }
+}
 /// The launch/stop/remove coordinator's entry: it resolves a core custody plan
 /// (native effects plus their FULL commits) for one admitted caller. Installed
 /// through `HostedRuntime::install_custody`; absent, custody plans refuse.
