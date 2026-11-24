@@ -228,9 +228,7 @@ fn run(
         None => backup.through.storage_parts().0.clone(),
     };
     drop(live);
-    restore(
-        cx, &files, &options, backup, &request, target, &owner, planned,
-    )
+    restore(&files, &options, backup, &request, target, &owner, planned)
 }
 /// The result this request already recorded, when it restored the store.
 fn replayed(
@@ -302,12 +300,7 @@ fn stop_host(
         )),
     }
 }
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the checked plan crosses into the store once"
-)]
 fn restore(
-    cx: &Bootstrap,
     files: &Files,
     options: &StoreOptions,
     backup: BackupGeneration,
@@ -328,7 +321,7 @@ fn restore(
     // the plan still blocks.
     let generated_at = receipt::timestamp(execute::now_us()?)?;
     let mut unchecked = None;
-    match setup::inspect(&cx.home, generated_at) {
+    match setup::inspect(&options.state_directory, generated_at) {
         Ok(setup::Setup::Present(reader)) => {
             let blocking = agents(&reader, &owner::inventory(&reader, files)?, owner);
             if !blocking.is_empty() {
