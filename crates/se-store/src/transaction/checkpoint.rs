@@ -12,7 +12,6 @@ const RESTART_WAIT: Duration = Duration::from_millis(10);
 /// retries. The pacing is by growth, not progress, so a pinned reader or a
 /// backup costs one attempt per step instead of one per commit.
 const STEP_FRAMES: i64 = 1024;
-/// Only the background task holds the gate while the writer waits for it.
 const GATE_HELD: &str = "another checkpoint exceeded this connection's busy timeout";
 
 #[derive(Default)]
@@ -68,14 +67,7 @@ pub(crate) struct Wal {
 /// every connection's NOOP reports the same log/done/bytes: done == log means
 /// every frame is in the main database and no reader pins an older snapshot.
 pub(crate) fn probe(db: &Connection) -> StoreResult<Wal> {
-    let (log, done) = db
-        .query_row("PRAGMA wal_checkpoint(NOOP)", [], |r| {
-            Ok((
-                crate::sql_value::value::<i64>(r, 1)?,
-                crate::sql_value::value::<i64>(r, 2)?,
-            ))
-        })
-        .map_err(sql)?;
+    let (_, log, done) = wal_checkpoint(db, "NOOP")?;
     if log == -1 && done == -1 {
         return Ok(Wal {
             log,
@@ -132,9 +124,6 @@ fn classify_checkpoint(
     }
 }
 impl Engine {
-    fn wal(&self) -> StoreResult<Wal> {
-        probe(&self.db)
-    }
     fn checkpoint_suppressed(&self, wal: &Wal) -> bool {
         self.backup
             .as_ref()
@@ -163,7 +152,7 @@ impl Engine {
         (Some(elapsed), failure)
     }
     pub(crate) fn require_wal_capacity(&mut self) -> StoreResult<Option<Duration>> {
-        let wal = self.wal()?;
+        let wal = probe(&self.db)?;
         if wal.bytes < MAX_WAL_BYTES {
             return Ok(None);
         }
@@ -175,13 +164,13 @@ impl Engine {
         }
         // Whatever held the WAL cannot turn a failed pressure checkpoint into
         // permission to keep appending. The preceding commit stays known.
-        if self.wal()?.bytes >= MAX_WAL_BYTES {
+        if probe(&self.db)?.bytes >= MAX_WAL_BYTES {
             return Err(cutoff_refusal(failure.as_deref()));
         }
         Ok(elapsed)
     }
     pub(crate) fn checkpoint_due(&mut self) -> Option<Duration> {
-        let wal = match self.wal() {
+        let wal = match probe(&self.db) {
             Ok(wal) => wal,
             Err(error) => {
                 self.maintenance = Some(error);
@@ -239,13 +228,11 @@ impl Engine {
                 self.checkpoints.pending = false;
                 self.maintenance = None;
             }
-            Ok(_) => {
+            other => {
                 self.checkpoints.restart_mark = wal.log;
-                self.defer_checkpoint();
-            }
-            Err(error) => {
-                self.checkpoints.restart_mark = wal.log;
-                self.maintenance = Some(error);
+                if let Err(error) = other {
+                    self.maintenance = Some(error);
+                }
                 self.defer_checkpoint();
             }
         }
@@ -276,7 +263,7 @@ impl Engine {
     }
 }
 /// Names what held the WAL: a backup suppressed the checkpoint, the background
-/// task kept the gate, or a reader pinned frames past the copy.
+/// task (the only other gate holder) kept the gate, or a reader pinned frames.
 fn cutoff_refusal(failure: Option<&StoreError>) -> Box<StoreError> {
     let holder = match failure.map(|error| error.cause.as_str()) {
         None => "let the running or aborted backup close",
@@ -289,13 +276,11 @@ fn cutoff_refusal(failure: Option<&StoreError>) -> Box<StoreError> {
 /// Protects: our own maintenance holding the gate is never blamed on readers.
 #[cfg(test)]
 #[test]
-fn cutoff_refusal_names_own_maintenance() -> StoreResult<()> {
+fn cutoff_refusal_names_own_maintenance() {
     let gate = Gate::default();
-    let _held = gate.acquire(Duration::ZERO)?;
-    let held = gate.acquire(Duration::from_millis(1)).err();
-    let cause = cutoff_refusal(held.as_deref()).cause;
+    let _held = gate.acquire(Duration::ZERO);
+    let cause = cutoff_refusal(gate.acquire(Duration::ZERO).err().as_deref()).cause;
     assert!(cause.contains("background store maintenance"), "{cause}");
-    Ok(())
 }
 /// Protects: equal negative frame counts are Unreadable, not the success arm.
 #[cfg(test)]
