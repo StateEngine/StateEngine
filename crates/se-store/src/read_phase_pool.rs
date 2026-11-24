@@ -32,7 +32,6 @@ struct State {
 }
 pub(crate) struct Recycle {
     pool: ReadPhasePool,
-    identity: Arc<dyn ReadConnectionIdentity>,
 }
 impl SqliteReader {
     /// Construct a host-owned idle cache sharing this reader's capacity budget.
@@ -62,6 +61,8 @@ impl ReadPhasePool {
         })
     }
     /// Native identity, fresh BEGIN and header validation occur on every checkout.
+    /// A cold open is checked before and after SQLite opens the name; a retained
+    /// connection does no named I/O, so its check after the snapshot suffices.
     /// The returned phase is synchronous and cannot cross an external await.
     pub fn read_phase(&self) -> StoreResult<ReadPhase> {
         let reader = &self.0.reader;
@@ -82,24 +83,23 @@ impl ReadPhasePool {
             })?;
             (state.idle.pop(), identity)
         };
-        identity.validate(&reader.path)?;
         let db = match idle {
             Some(db) => db,
             None => {
+                // Never let SQLite open a name that no longer matches custody.
+                identity.validate(&reader.path)?;
                 let db = reader.connect()?;
-                // A cold open crosses native I/O; a retained connection does
-                // no work between the entry check and its fresh snapshot.
                 identity.validate(&reader.path)?;
                 db
             }
         };
-        let mut phase = reader.read_phase_on(slot, db)?;
-        // Recheck after SQLite established its fresh snapshot as well.
+        // A moved or deleted database reports custody first, as a cold checkout does.
+        let mut phase = reader
+            .read_phase_on(slot, db)
+            .map_err(|error| identity.validate(&reader.path).err().unwrap_or(error))?;
+        // Every checkout proves custody after SQLite established its snapshot.
         identity.validate(&reader.path)?;
-        phase.recycle = Some(Recycle {
-            pool: self.clone(),
-            identity,
-        });
+        phase.recycle = Some(Recycle { pool: self.clone() });
         Ok(phase)
     }
     /// Seal checkout and close every idle handle before releasing host custody.
@@ -136,8 +136,8 @@ impl ReadPhasePool {
     }
 }
 impl Recycle {
+    /// The next checkout revalidates a retained connection after its snapshot.
     pub(crate) fn release(self, db: Connection) -> StoreResult<()> {
-        self.identity.validate(&self.pool.0.reader.path)?;
         let mut state = self.pool.state()?;
         if !state.closed && state.idle.len() < self.pool.0.reader.slots.capacity() {
             state.idle.push(db);
