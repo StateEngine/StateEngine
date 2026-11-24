@@ -141,7 +141,7 @@ async fn observe_status(root: &Path, deadline: Instant) -> Result<StatusRead> {
 fn spawn_status(root: &Path) -> Result<Option<tokio::process::Child>> {
     let mut command = tokio::process::Command::from(se_proc::background_command("git"));
     configured(root, &mut command)
-        .args(["status", "--porcelain=v2", "--branch"])
+        .args(["status", "--porcelain=v2", "--branch", "--no-ahead-behind"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -10,7 +10,7 @@ pub(super) struct Prepared {
     repository: Repository,
     key: PathBuf,
     facts: Facts,
-    untracked: bool,
+    scan: crate::fast_scan::ScanConfig,
     #[cfg(any(windows, target_os = "macos"))]
     config_token: [u8; 32],
 }
@@ -86,27 +86,7 @@ impl Prepared {
                 );
             }
         }
-        for name in [
-            "core.sparseCheckout",
-            "index.sparse",
-            "extensions.worktreeConfig",
-        ] {
-            match config.get_bool(name) {
-                Ok(true) => return Err(format!("{name} requires the command-line observer")),
-                Ok(false) => {}
-                Err(error) if error.code() == ErrorCode::NotFound => {}
-                Err(error) => return Err(describe(error)),
-            }
-        }
-        let untracked = match config.get_string("status.showUntrackedFiles") {
-            Ok(value) => match value.as_str() {
-                "no" => false,
-                "normal" | "all" => true,
-                _ => return Err("unsupported status.showUntrackedFiles value".into()),
-            },
-            Err(error) if error.code() == ErrorCode::NotFound => true,
-            Err(error) => return Err(describe(error)),
-        };
+        let scan = read_scan_config(&config)?;
         let key = repository
             .workdir()
             .ok_or("repository has no working tree")?
@@ -118,7 +98,7 @@ impl Prepared {
             repository,
             key,
             facts,
-            untracked,
+            scan,
             #[cfg(any(windows, target_os = "macos"))]
             config_token: config_hash.finalize().into(),
         })
@@ -154,7 +134,7 @@ impl Prepared {
             hash.update((bytes.len() as u64).to_le_bytes());
             hash.update(bytes);
         }
-        hash.update([u8::from(self.untracked)]);
+        hash.update([u8::from(self.scan.untracked)]);
         Ok(hash
             .finalize()
             .iter()
@@ -272,11 +252,11 @@ impl Prepared {
             &self.key,
             &tracked,
             &directories,
-            self.untracked,
+            self.scan.untracked,
         )?;
         let mut options = StatusOptions::new();
         options
-            .include_untracked(self.untracked)
+            .include_untracked(self.scan.untracked)
             .recurse_untracked_dirs(false)
             .include_ignored(false)
             .include_unmodified(false)
@@ -329,15 +309,29 @@ impl Prepared {
             return Err("working-tree status contains an unreadable path".into());
         }
         let mut relevant = status & !Status::IGNORED;
-        if !self.untracked {
+        if !self.scan.untracked {
             relevant.remove(Status::WT_NEW);
         }
         Ok(relevant != Status::CURRENT)
     }
     pub(super) fn scan(self) -> Result<bool, String> {
+        let dirty = if let Some(head) = self.facts.head.as_deref() {
+            match crate::fast_scan::try_scan(&self.repository, head, &self.scan)? {
+                Some(dirty) => dirty,
+                None => self.scan_libgit2()?,
+            }
+        } else {
+            self.scan_libgit2()?
+        };
+        if header(&self.repository)? != self.facts {
+            return Err("repository HEAD or branch changed during the working-tree scan".into());
+        }
+        Ok(dirty)
+    }
+    fn scan_libgit2(&self) -> Result<bool, String> {
         let mut options = StatusOptions::new();
         options
-            .include_untracked(self.untracked)
+            .include_untracked(self.scan.untracked)
             // One untracked directory already proves dirtiness. Its contents
             // need not be retained to answer this boolean observation.
             .recurse_untracked_dirs(false)
@@ -356,21 +350,16 @@ impl Prepared {
             .repository
             .statuses(Some(&mut options))
             .map_err(describe)?;
-        let mut dirty = false;
         for entry in statuses.iter() {
             let status = entry.status();
             if status.contains(Status::WT_UNREADABLE) {
                 return Err("working-tree status contains an unreadable path".into());
             }
             if status != Status::CURRENT && status != Status::IGNORED {
-                dirty = true;
-                break;
+                return Ok(true);
             }
         }
-        if header(&self.repository)? != self.facts {
-            return Err("repository HEAD or branch changed during the working-tree scan".into());
-        }
-        Ok(dirty)
+        Ok(false)
     }
 }
 
@@ -464,6 +453,57 @@ fn branch_name(bytes: &[u8]) -> Result<String, String> {
         .strip_prefix("refs/heads/")
         .map(str::to_owned)
         .ok_or_else(|| "invalid branch reference".into())
+}
+
+fn read_scan_config(config: &git2::Config) -> Result<crate::fast_scan::ScanConfig, String> {
+    for name in [
+        "core.sparseCheckout",
+        "index.sparse",
+        "extensions.worktreeConfig",
+    ] {
+        match config.get_bool(name) {
+            Ok(true) => return Err(format!("{name} requires the command-line observer")),
+            Ok(false) => {}
+            Err(error) if error.code() == ErrorCode::NotFound => {}
+            Err(error) => return Err(describe(error)),
+        }
+    }
+    let untracked = match config.get_string("status.showUntrackedFiles") {
+        Ok(value) => match value.as_str() {
+            "no" => false,
+            "normal" | "all" => true,
+            _ => return Err("unsupported status.showUntrackedFiles value".into()),
+        },
+        Err(error) if error.code() == ErrorCode::NotFound => true,
+        Err(error) => return Err(describe(error)),
+    };
+    #[cfg(unix)]
+    let filemode = config_bool(config, "core.filemode", true)?;
+    let trustctime = config_bool(config, "core.trustctime", true)?;
+    let case_policy = if config_bool(
+        config,
+        "core.ignorecase",
+        cfg!(any(windows, target_os = "macos")),
+    )? {
+        crate::fast_scan::CasePolicy::Insensitive
+    } else {
+        crate::fast_scan::CasePolicy::Sensitive
+    };
+    Ok(crate::fast_scan::ScanConfig {
+        untracked,
+        #[cfg(unix)]
+        filemode,
+        trustctime,
+        case_policy,
+    })
+}
+
+fn config_bool(config: &git2::Config, name: &str, default: bool) -> Result<bool, String> {
+    match config.get_bool(name) {
+        Ok(value) => Ok(value),
+        Err(error) if error.code() == ErrorCode::NotFound => Ok(default),
+        Err(error) => Err(describe(error)),
+    }
 }
 
 fn describe(error: git2::Error) -> String {
