@@ -38,6 +38,7 @@ pub struct Observation {
     pub conversation: Option<String>,
     pub active_input: Option<String>,
     pub cancelling: bool,
+    pub phase_started: Option<std::time::Instant>,
     pub current_mode: Option<String>,
     pub permissions: Vec<PermissionView>,
     pub completed: Vec<u64>,
@@ -70,6 +71,7 @@ struct State {
     next_permission: u64,
     cancelling: bool,
     cancel_written: bool,
+    phase_started: Option<std::time::Instant>,
     processed: u64,
     failure: Option<ErrorBody>,
 }
@@ -135,6 +137,7 @@ impl Session {
             conversation: state.conversation.clone(),
             active_input: state.active.as_ref().map(|v| v.input_key.clone()),
             cancelling: state.cancelling,
+            phase_started: state.phase_started,
             current_mode: state.current_mode.clone(),
             permissions: state.permissions.values().map(|v| v.view.clone()).collect(),
             completed: state.completed.iter().map(|v| v.request).collect(),
@@ -313,7 +316,7 @@ impl Session {
         let _input = tokio::time::timeout_at(until, self.input.lock())
             .await
             .map_err(|_| failure("ACP input queue", "The admission wait expired before writing. Inspect status, let the current input settle, then retry this retained offer."))?;
-        let id = {
+        let (id, prior_phase) = {
             let mut state = self.lock()?;
             ready(&state)?;
             if state.active.is_some()
@@ -340,12 +343,14 @@ impl Session {
                 .clone()
                 .ok_or_else(|| failure("ACP input", "No loaded conversation exists. Launch the agent and wait for readiness before offering this input."))?;
             let turn = Turn::new(key.clone(), text.clone())?;
+            let prior_phase = state.phase_started;
             state.used_keys.insert(key.clone());
             state.active = Some(turn);
+            state.phase_started = Some(std::time::Instant::now());
             state.permission_refusal = None;
             state.cancelling = false;
             state.cancel_written = false;
-            id
+            (id, prior_phase)
         };
         self.signal();
         // Publish intent before stdio; only a witnessed zero-byte outcome can
@@ -380,11 +385,11 @@ impl Session {
                     {
                         state.active = None;
                         state.used_keys.remove(&key);
+                        state.phase_started = prior_phase;
                     }
-                } else {
-                    state
-                        .failure
-                        .get_or_insert_with(|| offer_error.error.body.clone());
+                } else if state.failure.is_none() {
+                    state.failure = Some(offer_error.error.body.clone());
+                    state.phase_started = Some(std::time::Instant::now());
                 }
                 drop(state);
                 self.signal();
@@ -584,7 +589,12 @@ impl Session {
             .map_err(|_| failure("ACP session", "poisoned state"))
     }
     fn fail(&self, body: ErrorBody) -> Result<()> {
-        self.lock()?.failure.get_or_insert(body);
+        let mut state = self.lock()?;
+        if state.failure.is_none() {
+            state.failure = Some(body);
+            state.phase_started = Some(std::time::Instant::now());
+        }
+        drop(state);
         self.notify_owner();
         self.signal();
         Ok(())

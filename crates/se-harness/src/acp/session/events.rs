@@ -346,6 +346,7 @@ fn response_prompt(state: &mut State, id: u64, result: Value) -> Result<()> {
     // A validation failure must retain the original input as uncertain.
     let completed = turn.seal(id, &result)?;
     state.active = None;
+    state.phase_started = Some(std::time::Instant::now());
     if state.cancel_written {
         state.cancelling = false;
     }

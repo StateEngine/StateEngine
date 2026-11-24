@@ -29,14 +29,25 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
     plan.row.resume.mode = if running { "running" } else { "resume" }.into();
     plan.row.resume.command = None;
     plan.row.resume.argv = None;
-    let verified = match &plan.capture {
+    let verified: std::result::Result<(), String> = match &plan.capture {
         Read::Present { value } if plan.row.provider == se_types::Provider::Acp => {
-            verify_acp(plan, value)
+            verify_acp(plan, value).map_err(|e| e.to_string())
         }
-        Read::Present { value } => verify(value, deadline),
-        Read::Absent { checked } => Err(invalid(checked)),
-        Read::Unknown { what } => Err(invalid(what)),
-        Read::Unreadable { reason, .. } => Err(invalid(reason)),
+        Read::Present { value } => verify(value, deadline).map_err(|e| e.to_string()),
+        Read::Absent { .. } if plan.row.conversation.id.is_none() => {
+            plan.row.conversation.state = "none".into();
+            plan.row.resume.ready = false;
+            plan.row.resume.mode = if running { "running" } else { "new" }.into();
+            plan.row.resume.reason =
+                Some("No provider conversation has been recorded for this agent.".into());
+            return Ok(());
+        }
+        Read::Absent { .. } => Err(
+            "No capture source has been recorded for this session; its conversation cannot be verified for resume."
+                .into(),
+        ),
+        Read::Unknown { what } => Err(what.clone()),
+        Read::Unreadable { reason, .. } => Err(reason.clone()),
     };
     match verified {
         Ok(()) => {
@@ -68,17 +79,17 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
                 plan.row.resume.argv = Some(command.argv);
             }
         }
-        Err(error) => {
+        Err(reason) => {
             if plan.row.session.state == "stopped"
                 && plan.row.session.recorded_state.as_deref() == Some("activated")
             {
                 plan.control_failure.get_or_insert_with(|| format!(
-                    "Final transcript capture is pending: {error}. Restore the original transcript and protected binding without replacing their native identity"
+                    "Final transcript capture is pending: {reason}. Restore the original transcript and protected binding without replacing their native identity"
                 ));
             }
             plan.row.conversation.state = "unverifiable".into();
             plan.row.resume.ready = false;
-            plan.row.resume.reason = Some(error.to_string());
+            plan.row.resume.reason = Some(reason);
             plan.row.resume.command = None;
             plan.row.resume.argv = None;
         }

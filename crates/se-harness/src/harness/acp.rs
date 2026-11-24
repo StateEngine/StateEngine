@@ -30,6 +30,40 @@ pub struct Binding {
     interrupted_prefix: Mutex<Option<(String, String)>>,
     cwd: String,
 }
+impl Binding {
+    pub fn runtime_view(&self) -> Result<se_core::ops::AcpRuntimeView> {
+        let observed = self.session.observe()?;
+        let phase_started_at = observed.phase_started.and_then(|at| {
+            let wall = std::time::SystemTime::now().checked_sub(at.elapsed())?;
+            let micros = wall.duration_since(std::time::UNIX_EPOCH).ok()?.as_micros();
+            se_types::format_timestamp(i64::try_from(micros).ok()?).ok()
+        });
+        Ok(se_core::ops::AcpRuntimeView {
+            activity: if observed.failure.is_some() {
+                "failed"
+            } else if observed.cancelling {
+                "cancelling"
+            } else if observed.active_input.is_some() {
+                "working"
+            } else {
+                "idle"
+            }
+            .into(),
+            phase_started_at,
+            phase_seconds: observed.phase_started.map(|at| at.elapsed().as_secs()),
+            mode: observed.current_mode,
+            last_permission_refusal: observed.permission_refusal.map(|v| v.reason.into()),
+            provisional_reply: observed
+                .provisional_text
+                .map(|v| se_core::ops::AcpReplyPreview {
+                    text: v.text,
+                    total_bytes: v.total_bytes,
+                    omitted_bytes: v.omitted_bytes,
+                }),
+            failure: observed.failure,
+        })
+    }
+}
 fn error(reason: impl std::fmt::Display) -> SeError {
     se_core::scope::unreadable("ACP binding", &reason.to_string())
 }

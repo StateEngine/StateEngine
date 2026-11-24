@@ -1,6 +1,6 @@
 //! Join only the exact current protocol owner; stored liveness stays separate.
 use super::*;
-use se_core::ops::{AcpReplyPreview, AcpRuntimeView, AgentRow, AnyOutput};
+use se_core::ops::{AcpRuntimeView, AgentRow, AnyOutput};
 use se_types::{Page, Read, Window};
 impl LaunchCoordinator {
     pub(in crate::process) fn observe_acp_output(
@@ -49,7 +49,8 @@ impl LaunchCoordinator {
         if row.provider != se_types::Provider::Acp {
             return;
         }
-        let read = || -> Result<Read<AcpRuntimeView>> {
+        let mut found = None;
+        let mut read = || -> Result<Read<AcpRuntimeView>> {
             let Some(session) = &row.session.session_id else {
                 return Ok(Read::Absent {
                     checked: "This agent has no launched protocol session".into(),
@@ -61,7 +62,7 @@ impl LaunchCoordinator {
                 .lock()
                 .map_err(|_| error("ACP status", "launch registry is poisoned"))?
                 .values()
-                .find(|job| &job.session == session)
+                .find(|job| &job.session == session && job.target.1 == row.id)
                 .cloned();
             let Some(job) = job else {
                 return Ok(Read::Absent {
@@ -69,12 +70,20 @@ impl LaunchCoordinator {
                         .into(),
                 });
             };
+            if job.settled.load(std::sync::atomic::Ordering::Acquire) {
+                return Ok(Read::Absent {
+                    checked:
+                        "The protocol lifecycle has settled; read saved history for its final outcome"
+                            .into(),
+                });
+            }
             let state = job.state.try_lock().map_err(|_| {
                 error(
                     "ACP status",
                     "the original owner is handling an accepted operation; retry status",
                 )
             })?;
+            found = state.process.clone();
             let Some(binding) = state
                 .binding
                 .as_ref()
@@ -85,28 +94,8 @@ impl LaunchCoordinator {
                         .into(),
                 });
             };
-            let observed = binding.session.observe()?;
             Ok(Read::Present {
-                value: AcpRuntimeView {
-                    activity: if observed.failure.is_some() {
-                        "failed"
-                    } else if observed.cancelling {
-                        "cancelling"
-                    } else if observed.active_input.is_some() {
-                        "working"
-                    } else {
-                        "idle"
-                    }
-                    .into(),
-                    mode: observed.current_mode,
-                    last_permission_refusal: observed.permission_refusal.map(|v| v.reason.into()),
-                    provisional_reply: observed.provisional_text.map(|v| AcpReplyPreview {
-                        text: v.text,
-                        total_bytes: v.total_bytes,
-                        omitted_bytes: v.omitted_bytes,
-                    }),
-                    failure: observed.failure,
-                },
+                value: binding.runtime_view()?,
             })
         };
         row.acp_runtime = Some(match read() {
@@ -117,5 +106,6 @@ impl LaunchCoordinator {
                 error: Some(Box::new(error.body)),
             },
         });
+        row.background = crate::agent_observation::background(row.provider, &self.native, found);
     }
 }

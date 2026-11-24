@@ -148,30 +148,54 @@ pub fn settle(output: &mut AnyOutput, now_us: i64) -> Result<()> {
     Ok(())
 }
 
+fn unreadable<T>(source: &str, reason: &str) -> Read<T> {
+    Read::Unreadable {
+        source: source.into(),
+        reason: reason.into(),
+        error: None,
+    }
+}
+
 fn derive(row: &AgentRow, now_us: i64) -> Result<AgentStateView> {
     let waiting_on = row.state.as_ref().and_then(|s| s.waiting_on.clone());
     let review = row.state.as_ref().and_then(|s| s.review.clone());
     let local = background(row, now_us);
-    let activity = match &row.provider_activity {
-        Some(Read::Present { value }) => Some(value),
-        _ => None,
+    let phase_of =
+        |at: &Option<String>, secs: Option<u64>| at.as_ref().zip(secs).map(|(a, s)| (a.clone(), s));
+    let (activity, phase, activity_unreadable) = match (&row.provider_activity, &row.acp_runtime) {
+        (Some(Read::Present { value }), _) => (
+            Some(value.activity.as_str()),
+            phase_of(&value.phase_started_at, value.phase_seconds),
+            false,
+        ),
+        (Some(Read::Unreadable { .. }), _) => (None, None, true),
+        (_, Some(Read::Present { value })) => (
+            Some(value.activity.as_str()),
+            phase_of(&value.phase_started_at, value.phase_seconds),
+            false,
+        ),
+        (_, Some(Read::Unreadable { .. })) => (None, None, true),
+        _ => (None, None, false),
     };
-    let phase = activity.and_then(|a| Some((a.phase_started_at.clone()?, a.phase_seconds?)));
     let (state, elapsed) = match row.session.state.as_str() {
         "stopped" | "never-launched" => ("stopped", None),
         "starting" => ("starting", None),
         "stopping" => ("stopping", None),
-        "running" => match activity.map(|a| a.activity.as_str()) {
-            Some("awaiting-provider" | "waiting" | "retrying-authentication") => ("working", phase),
+        "running" => match activity {
+            Some(
+                "awaiting-provider"
+                | "waiting"
+                | "retrying-authentication"
+                | "working"
+                | "cancelling",
+            ) => ("working", phase),
             Some("interrupted" | "failed" | "authentication-required") => ("attention", phase),
             _ if waiting_on.is_some() => ("blocked", None),
             // Local work still running outranks waiting on a reviewer.
             Some("turn-completed" | "idle") if local.is_some() => ("background", local),
             _ if review.is_some() => ("review", None),
             // An unreadable observation is not an absent one.
-            _ if matches!(row.provider_activity, Some(Read::Unreadable { .. })) => {
-                ("turn-unreadable", None)
-            }
+            _ if activity_unreadable => ("turn-unreadable", None),
             Some("turn-completed" | "idle") => ("idle", phase),
             // Alive, but no host observed its turns: not claimed idle.
             _ => ("running", None),
@@ -179,19 +203,17 @@ fn derive(row: &AgentRow, now_us: i64) -> Result<AgentStateView> {
         // Lost, unknown or unverifiable liveness is never reported as stopped.
         _ => ("unreachable", None),
     };
-    let (since, elapsed) = match (state, &waiting_on, elapsed) {
-        ("blocked", Some(question), _) => {
-            let seconds = u64::try_from((now_us - question.asked_at_us).max(0) / 1_000_000).ok();
-            (Some(question.asked_at.clone()), seconds)
-        }
-        (_, _, Some((started, seconds))) => (Some(started), Some(seconds)),
-        _ => match (state, &review) {
-            ("review", Some(handoff)) => {
-                let seconds = (now_us - handoff.handed_at_us).max(0) / 1_000_000;
-                (Some(handoff.handed_at.clone()), u64::try_from(seconds).ok())
-            }
-            _ => (None, None),
-        },
+    let since_us = |at: &str, at_us: i64| {
+        (
+            Some(at.to_owned()),
+            u64::try_from((now_us - at_us).max(0) / 1_000_000).ok(),
+        )
+    };
+    let (since, elapsed) = match (state, &waiting_on, &review, elapsed) {
+        ("blocked", Some(q), _, _) => since_us(&q.asked_at, q.asked_at_us),
+        (_, _, _, Some((started, seconds))) => (Some(started), Some(seconds)),
+        ("review", _, Some(h), _) => since_us(&h.handed_at, h.handed_at_us),
+        _ => (None, None),
     };
     Ok(AgentStateView {
         state: state.into(),
@@ -263,19 +285,20 @@ pub(crate) fn working_note<R: Snapshot>(
         Err(other) => return Ok(other),
     };
     let saved_at = super::receipt::timestamp(super::receipt::event_time(&record.current))?;
-    let se_store::EventBody::WorkingStateSet { text, .. } = &record.current.body else {
-        return Ok(Read::Unreadable {
-            source: "working note".into(),
-            reason: "the current working-state event has another kind".into(),
-            error: None,
-        });
-    };
-    let se_store::StoredText::Present(text) = text else {
-        return Ok(Read::Unreadable {
-            source: "working note".into(),
-            reason: "its stored content was erased".into(),
-            error: None,
-        });
+    let text = match &record.current.body {
+        se_store::EventBody::WorkingStateSet {
+            text: se_store::StoredText::Present(text),
+            ..
+        } => text,
+        se_store::EventBody::WorkingStateSet { .. } => {
+            return Ok(unreadable("working note", "its stored content was erased"));
+        }
+        _ => {
+            return Ok(unreadable(
+                "working note",
+                "the current working-state event has another kind",
+            ));
+        }
     };
     let (short, truncated) = first_line(text);
     Ok(Read::Present {
@@ -291,11 +314,10 @@ pub(crate) fn working_note<R: Snapshot>(
 /// but the caller, reduced to the fields a peer row holds.
 pub fn peer_rows(owner: &AnyOutput, caller: &AgentId) -> Read<Vec<PeerRow>> {
     let AnyOutput::ProjectStatus(status) = owner else {
-        return Read::Unreadable {
-            source: "peer summaries".into(),
-            reason: "the owner read returned another operation family".into(),
-            error: None,
-        };
+        return unreadable(
+            "peer summaries",
+            "the owner read returned another operation family",
+        );
     };
     let Some(agents) = &status.value.agents else {
         return Read::Absent {
@@ -343,11 +365,10 @@ pub fn host_peers(
                 what: "the host answered without peer summaries".into(),
             },
         },
-        Some(Ok(_)) => Read::Unreadable {
-            source: "peer summaries".into(),
-            reason: "the host returned a different operation family".into(),
-            error: None,
-        },
+        Some(Ok(_)) => unreadable(
+            "peer summaries",
+            "the host returned a different operation family",
+        ),
         Some(Err(error)) => Read::Unreadable {
             source: "peer summaries".into(),
             reason: error.to_string(),

@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct AcpRuntimeView {
     pub activity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_seconds: Option<u64>,
     pub mode: Option<String>,
     pub last_permission_refusal: Option<String>,
     pub provisional_reply: Option<AcpReplyPreview>,
