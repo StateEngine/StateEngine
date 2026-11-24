@@ -2,10 +2,8 @@
 //! snapshot is created by this handoff. Explicit queries may notify the
 //! existing background owner of project interest.
 use super::record_fence::*;
-#[cfg(feature = "listener")]
-use se_types::SeError;
 use se_types::{
-    ProjectId, Result,
+    ProjectId, Result, SeError,
     code::{IndexSummary, RootId},
 };
 use std::sync::{Arc, OnceLock};
@@ -75,7 +73,7 @@ impl AtlasOwnerPort {
         match self.reader.get() {
             Some(reader) => reader.status(project, root),
             None => Ok(se_types::Read::Absent {
-                checked: "No Atlas controller is installed in this host.".into(),
+                checked: "No Atlas controller is installed in this host. Run the standalone host with `se up` to enable Atlas.".into(),
             }),
         }
     }
@@ -90,7 +88,10 @@ impl AtlasOwnerPort {
         Ok(())
     }
     pub fn summary(&self, project: &ProjectId, root: Option<&RootId>) -> Result<IndexSummary> {
-        self.reader.get().ok_or_else(|| se_core::scope::unreadable("Atlas owner read port", "the owner has not installed its controller; no registered root summary is available"))?.summary(project, root)
+        self.reader
+            .get()
+            .ok_or_else(no_controller)?
+            .summary(project, root)
     }
     /// The engine an admitted query reads; never starts indexing itself.
     pub fn engine(
@@ -100,12 +101,7 @@ impl AtlasOwnerPort {
     ) -> Result<Arc<se_atlas_service::Root>> {
         self.reader
             .get()
-            .ok_or_else(|| {
-                se_core::scope::unreadable(
-                    "Atlas owner read port",
-                    "the owner has not installed its controller",
-                )
-            })?
+            .ok_or_else(no_controller)?
             .engine(project, root)
     }
     #[cfg(feature = "listener")]
@@ -118,6 +114,17 @@ impl AtlasOwnerPort {
         })
     }
 }
+fn no_controller() -> SeError {
+    SeError::new(se_types::Detail::FeatureUnavailable(
+        se_types::details::FeatureUnavailable {
+            subject: "Atlas".into(),
+            reason: "no Atlas controller is installed in this host".into(),
+            next_step:
+                "Run the standalone host with `se up` using the same --home to enable Atlas.".into(),
+        },
+    ))
+}
+
 #[cfg(all(test, feature = "listener"))]
 mod availability_tests {
     use super::*;
@@ -141,6 +148,37 @@ mod availability_tests {
         let enabled = AtlasOwnerPort::default();
         enabled.install(Arc::new(Stub(true)))?;
         assert!(enabled.is_available(), "enabled controller hidden");
+        Ok(())
+    }
+
+    #[test]
+    fn absent_controller_refuses_with_feature_unavailable_and_actionable_status() -> Result<()> {
+        let absent = AtlasOwnerPort::default();
+        let project = ProjectId::from_parts(1, [7; 10])?;
+        let status = absent.status(&project, None)?;
+        assert!(
+            matches!(status, se_types::Read::Absent { checked } if checked.contains("No Atlas controller") && checked.contains("se up")),
+            "absent controller status must name the missing controller and a working next step"
+        );
+        for result in [
+            absent.summary(&project, None).map(|_| ()),
+            absent.engine(&project, None).map(|_| ()),
+        ] {
+            let error = result.err().ok_or_else(|| {
+                SeError::invalid(
+                    "absent controller",
+                    "an explicit FeatureUnavailable refusal",
+                )
+            })?;
+            assert!(
+                matches!(
+                    error.body.detail(),
+                    se_types::Detail::FeatureUnavailable(detail)
+                        if detail.next_step.contains("se up")
+                ),
+                "unexpected absent controller error: {error:?}"
+            );
+        }
         Ok(())
     }
 }

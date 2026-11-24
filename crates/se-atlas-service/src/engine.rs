@@ -521,7 +521,8 @@ impl<'a> Engine<'a> {
                 // Unknown children: the next pass reconciles the tree.
                 Err(_) => self.lose(),
             }
-        } else if self.ignores.ignored(&self.source, &path.path) {
+        }
+        if self.ignores.ignored(&self.source, &path.path) {
             self.forget(&path.path);
             return;
         }

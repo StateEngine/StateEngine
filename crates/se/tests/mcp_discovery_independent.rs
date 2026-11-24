@@ -1,6 +1,6 @@
 //! Real stdio discovery must expose the same complete catalogue as HTTP.
 //! Catalogue bytes are also a model-context cost, separate from transport limits.
-#![cfg(any(target_os = "linux", windows))]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 use se_host::*;
 use se_store::*;
 use serde_json::{Value, json};
