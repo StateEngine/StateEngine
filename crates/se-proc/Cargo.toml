@@ -23,6 +23,9 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 sha2 = { workspace = true, features = ["asm"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+se-user-manager = { path = "../se-user-manager" }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

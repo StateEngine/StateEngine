@@ -1,11 +1,9 @@
 //! Bind the private manager peer to the system manager's exact user-service PID.
 //! User managers may deliberately deny even their owner access to /proc/pid/exe.
 use super::{
-    INTERFACE, MANAGER,
     bus::{Bus, name},
-    in_group,
+    linux::{INTERFACE, MANAGER, in_group},
 };
-use crate::ProcessId;
 use std::{
     ffi::CStr,
     fs::{self, File},
@@ -53,7 +51,7 @@ pub(super) fn verify(bus: &Bus<'_>, uid: u32, deadline: Instant) -> Result<(), S
         .rsplit_once(')')
         .and_then(|(_, tail)| tail.split_whitespace().nth(1));
     let group = format!("/user.slice/user-{uid}.slice/user@{uid}.service/init.scope");
-    if parent != Some("1") || !in_group(ProcessId(credentials.pid as u32), &group)? {
+    if parent != Some("1") || !in_group(credentials.pid as u32, &group)? {
         return Err("The private peer is outside the native user-manager service".into());
     }
     let manager = system_manager_pid(bus, uid, deadline)?;

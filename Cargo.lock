@@ -1876,6 +1876,7 @@ dependencies = [
  "se-source-watch",
  "se-state-files",
  "se-types",
+ "se-user-manager",
  "serde",
  "serde_json",
  "sha2",
@@ -2092,6 +2093,15 @@ dependencies = [
  "url",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "se-user-manager"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "libc",
+ "se-state-files",
+ "se-types",
 ]
 
 [[package]]

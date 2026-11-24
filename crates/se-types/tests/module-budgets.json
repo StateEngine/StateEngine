@@ -6,9 +6,10 @@
  "crates": {
   "se-host": 66152,
   "se-channels": 6750,
-  "se-proc": 24483,
+  "se-proc": 23439,
   "se-native-ipc": 4600,
   "se-source-watch": 2430,
+  "se-user-manager": 1044,
   "se-store": 26140,
   "se-trusted-path": 312,
   "se-native-path": 327,
