@@ -24,10 +24,6 @@ pub struct BootstrapSession {
 }
 
 impl Control {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) async fn bootstrap(
         &self,
         router: &crate::HostedRouter,
@@ -43,21 +39,13 @@ impl Control {
             ));
         }
         let _configure = self.configure.lock().await;
-        let files = self.files.clone();
-        let security = self.security.clone();
+        let (files, security) = (self.files.clone(), self.security.clone());
         let root = router.execution.state_directory.clone();
-        let (mut pending,mut hash) = router.execution.blocking.run_owned(deadline, move || {
+        let session = router.execution.blocking.run_owned(deadline, move || {
             let directory = root.join("remote-sessions");
             let path = directory.join(format!("{}.json", source_host.0.hex()));
             let pending = match files.readback(&path).map_err(|e| store_error(&e))? {
-                Read::Absent { .. } => {
-                    let pending = fresh(&security, source_host)?;
-                    let bytes = zeroize::Zeroizing::new(serde_json::to_vec(&pending).map_err(|_| SeError::invalid("machine session", "serializable protected record"))?);
-                    files.prepare_directory(&directory).map_err(|e| store_error(&e))?;
-                    files.replace_owned(&path, None, &bytes).map_err(|e| store_error(&e))?;
-                    let hash=Sha256::digest(&*bytes).into();
-                    (pending,hash)
-                }
+                Read::Absent { .. } => publish_fresh(&*files, &security, &directory, source_host, None)?,
                 read => {
                     let file = se_core::scope::require_present(read, "machine session", "Restore readable protected session custody; an unreadable record is never replaced.")?;
                     let mut bytes = zeroize::Zeroizing::new(Vec::new());
@@ -72,7 +60,52 @@ impl Control {
             {return Err(SeError::invalid("machine session", "the original source, destination and store"));}
             Ok(pending)
         }).await?;
-        let grant = loop {
+        let (grant, secret) = self
+            .connect(router, &owner, source_host, session, deadline)
+            .await?;
+        let enabled = self
+            .start(
+                router,
+                "127.0.0.1:0"
+                    .parse()
+                    .map_err(|_| SeError::invalid("listener", "loopback"))?,
+                deadline,
+            )
+            .await?;
+        let address: std::net::SocketAddr = serde_json::from_value(enabled["address"].clone())
+            .map_err(|_| SeError::invalid("remote listener", "its actual bound address"))?;
+        self.persist(router, owner, Some(address), deadline).await?;
+        let session = BootstrapSession {
+            device: MachineSession {
+                host: grant.host,
+                grant: grant.grant,
+                device: grant.device,
+                subject: grant.subject,
+                scope: grant.scope,
+                authority_revision: grant.authority_revision.value.get(),
+                expires_at: se_types::UnixMicros::new(
+                    u64::try_from(grant.expires_at_us)
+                        .map_err(|_| SeError::invalid("session expiry", "nonnegative time"))?,
+                )?,
+            },
+            secret,
+            port: address.port(),
+        };
+        serde_json::to_value(session).map_err(|_| {
+            SeError::invalid("machine session", "bounded protected bootstrap response")
+        })
+    }
+    /// Connect the protected session's grant until the store reports it active
+    /// and unexpired; an inactive grant is replaced by a fresh session record.
+    async fn connect(
+        &self,
+        router: &crate::HostedRouter,
+        owner: &auth::VerifiedLocalOwner,
+        source_host: RemoteHostId,
+        (mut pending, mut hash): (PendingSession, [u8; 32]),
+        deadline: &crate::client::lease::Deadline,
+    ) -> Result<(GrantRecord, LinkSecret)> {
+        loop {
             let key = IdempotencyKey::new(format!("ssh-session-{}", pending.grant.grant))?;
             let transition = SecurityTransition::Connect {
                 grant: Box::new(pending.grant.clone()),
@@ -92,72 +125,31 @@ impl Control {
             if grant.state == GrantState::Active
                 && grant.expires_at_us > crate::remote::session::now()?
             {
-                break grant;
+                return Ok((grant, pending.secret));
             }
             // This is explicit, native-owner SSH setup, not agent discovery. New
             // session ids leave old grant tombstones and agent policy intact.
-            let files = self.files.clone();
-            let security = self.security.clone();
-            let root = router.execution.state_directory.clone();
+            let (files, security) = (self.files.clone(), self.security.clone());
+            let directory = router.execution.state_directory.join("remote-sessions");
             (pending, hash) = router
                 .execution
                 .blocking
                 .run_owned(deadline, move || {
-                    let pending = fresh(&security, source_host)?;
-                    let bytes =
-                        zeroize::Zeroizing::new(serde_json::to_vec(&pending).map_err(|_| {
-                            SeError::invalid("machine session", "serializable protected record")
-                        })?);
-                    files
-                        .replace_owned(
-                            &root
-                                .join("remote-sessions")
-                                .join(format!("{}.json", source_host.0.hex())),
-                            Some(hash),
-                            &bytes,
-                        )
-                        .map_err(|e| store_error(&e))?;
-                    let hash = Sha256::digest(&*bytes).into();
-                    Ok((pending, hash))
+                    publish_fresh(&*files, &security, &directory, source_host, Some(hash))
                 })
                 .await?;
-        };
-        let enabled = self
-            .start(
-                router,
-                "127.0.0.1:0"
-                    .parse()
-                    .map_err(|_| SeError::invalid("listener", "loopback"))?,
-                deadline,
-            )
-            .await?;
-        let address: std::net::SocketAddr = serde_json::from_value(enabled["address"].clone())
-            .map_err(|_| SeError::invalid("remote listener", "its actual bound address"))?;
-        self.persist(router, owner, Some(address), deadline).await?;
-        let session = BootstrapSession {
-            device: MachineSession {
-                host: grant.host,
-
-                grant: grant.grant,
-                device: grant.device,
-                subject: grant.subject,
-                scope: grant.scope,
-                authority_revision: grant.authority_revision.value.get(),
-                expires_at: se_types::UnixMicros::new(
-                    u64::try_from(grant.expires_at_us)
-                        .map_err(|_| SeError::invalid("session expiry", "nonnegative time"))?,
-                )?,
-            },
-            secret: pending.secret,
-            port: address.port(),
-        };
-        serde_json::to_value(session).map_err(|_| {
-            SeError::invalid("machine session", "bounded protected bootstrap response")
-        })
+        }
     }
 }
-
-fn fresh(security: &auth::Security, source_host: RemoteHostId) -> Result<PendingSession> {
+/// Publish a newly issued session over `expected`. With none it is the first
+/// record, so its directory is prepared just before publication.
+fn publish_fresh(
+    files: &dyn se_store::StateFiles,
+    security: &auth::Security,
+    directory: &std::path::Path,
+    source_host: RemoteHostId,
+    expected: Option<[u8; 32]>,
+) -> Result<(PendingSession, [u8; 32])> {
     let at = crate::remote::session::now()?;
     let millis = u64::try_from(at / 1000)
         .map_err(|_| SeError::invalid("machine session clock", "nonnegative time"))?;
@@ -186,5 +178,19 @@ fn fresh(security: &auth::Security, source_host: RemoteHostId) -> Result<Pending
             .ok_or_else(|| SeError::invalid("session lease", "valid timestamp"))?,
         lease_revision: revision,
     };
-    Ok(PendingSession { grant, secret })
+    let pending = PendingSession { grant, secret };
+    let bytes = zeroize::Zeroizing::new(
+        serde_json::to_vec(&pending)
+            .map_err(|_| SeError::invalid("machine session", "serializable protected record"))?,
+    );
+    if expected.is_none() {
+        files
+            .prepare_directory(directory)
+            .map_err(|e| store_error(&e))?;
+    }
+    let path = directory.join(format!("{}.json", source_host.0.hex()));
+    files
+        .replace_owned(&path, expected, &bytes)
+        .map_err(|e| store_error(&e))?;
+    Ok((pending, Sha256::digest(&*bytes).into()))
 }
