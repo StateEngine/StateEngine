@@ -593,5 +593,10 @@ fn run(
                 return Ok(DrainedHost { host, report });
             }
         }
+        // A large uncopied backlog is copied while traffic continues, so the
+        // capacity cutoff below owes only the frames since that copy.
+        if host.engine.take_copy_request() {
+            status.request_copy();
+        }
     }
 }
