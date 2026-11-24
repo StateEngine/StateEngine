@@ -207,3 +207,10 @@ impl Control {
         failure.map_or(Ok(()), Err)
     }
 }
+/// A caller's optional expected revision; zero is refused under `subject`.
+fn revision(value: Option<u64>, subject: &str) -> Result<Option<se_store::Revision>> {
+    value
+        .map(|value| std::num::NonZeroU64::new(value).map(|value| se_store::Revision { value }))
+        .map(|revision| revision.ok_or_else(|| SeError::invalid(subject, "nonzero")))
+        .transpose()
+}

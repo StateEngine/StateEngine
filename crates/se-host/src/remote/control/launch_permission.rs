@@ -60,14 +60,7 @@ impl Control {
         }
         let changed = if let Some(change) = request.change {
             let _configure = self.configure.lock().await;
-            let expected = change
-                .expected_revision
-                .map(|value| {
-                    std::num::NonZeroU64::new(value)
-                        .map(|value| se_store::Revision { value })
-                        .ok_or_else(|| SeError::invalid("launch permission revision", "nonzero"))
-                })
-                .transpose()?;
+            let expected = revision(change.expected_revision, "launch permission revision")?;
             let result = self
                 .security
                 .set_launch_permission(
