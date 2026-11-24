@@ -18,22 +18,64 @@ pub(super) struct Terminal {
     saved: libc::termios,
     retain_viewer: bool,
 }
+fn launch_err(api: &str) -> ProcError {
+    native(ProcErrorCode::LaunchFailed, api, io::Error::last_os_error())
+}
 fn descriptor(value: i32, api: &str) -> ProcResult<File> {
     if value < 0 {
-        return Err(native(
-            ProcErrorCode::LaunchFailed,
-            api,
-            io::Error::last_os_error(),
-        ));
+        return Err(launch_err(api));
     }
     // SAFETY: the successful allocation returned a new owned descriptor.
     Ok(unsafe { File::from_raw_fd(value) })
 }
+fn open_pty_pair() -> ProcResult<(File, File, CString, libc::termios)> {
+    // SAFETY: posix_openpt allocates one private close-on-exec master.
+    let master = descriptor(
+        unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) },
+        "open terminal master",
+    )?;
+    // SAFETY: both functions operate on our live private PTY master.
+    if unsafe { libc::grantpt(master.as_raw_fd()) < 0 || libc::unlockpt(master.as_raw_fd()) < 0 } {
+        return Err(launch_err("unlock private PTY"));
+    }
+    let mut name = [0i8; 256];
+    // SAFETY: the bounded initialized output has its exact capacity.
+    let code = unsafe { libc::ptsname_r(master.as_raw_fd(), name.as_mut_ptr(), name.len()) };
+    if code != 0 {
+        return Err(native(
+            ProcErrorCode::LaunchFailed,
+            "private PTY name",
+            io::Error::from_raw_os_error(code),
+        ));
+    }
+    // SAFETY: successful ptsname_r supplies a NUL-terminated name in name.
+    let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }.to_owned();
+    // SAFETY: the prepared native path is NUL terminated and opened without acquiring a controlling tty here.
+    let slave = descriptor(
+        unsafe {
+            libc::open(
+                name.as_ptr(),
+                libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
+            )
+        },
+        "open terminal slave",
+    )?;
+    // SAFETY: termios is POD, and tcgetattr initializes it before use.
+    let mut saved: libc::termios = unsafe { std::mem::zeroed() };
+    // SAFETY: live owned slave descriptor and valid output.
+    if unsafe { libc::tcgetattr(slave.as_raw_fd(), &mut saved) } < 0 {
+        return Err(launch_err("read terminal settings"));
+    }
+    let mut handshake = saved;
+    // Disable echo only while consuming xterm's native WINDOWID handshake.
+    handshake.c_lflag &= !libc::ECHO;
+    // SAFETY: live slave and initialized settings, before any child exists.
+    if unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &handshake) } < 0 {
+        return Err(launch_err("set terminal handshake"));
+    }
+    Ok((master, slave, name, saved))
+}
 impl Terminal {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub fn prepare(spec: &LaunchSpec) -> ProcResult<Option<Self>> {
         if spec.mode.is_headless() {
             return Ok(None);
@@ -71,64 +113,7 @@ impl Terminal {
         }
         let executable = CString::new(executable.as_os_str().as_bytes())
             .map_err(|_| input("terminal", "NUL in executable"))?;
-        // SAFETY: posix_openpt allocates one private close-on-exec master.
-        let master = descriptor(
-            unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) },
-            "open terminal master",
-        )?;
-        // SAFETY: both functions operate on our live private PTY master.
-        if unsafe {
-            libc::grantpt(master.as_raw_fd()) < 0 || libc::unlockpt(master.as_raw_fd()) < 0
-        } {
-            return Err(native(
-                ProcErrorCode::LaunchFailed,
-                "unlock private PTY",
-                io::Error::last_os_error(),
-            ));
-        }
-        let mut name = [0i8; 256];
-        // SAFETY: the bounded initialized output has its exact capacity.
-        let code = unsafe { libc::ptsname_r(master.as_raw_fd(), name.as_mut_ptr(), name.len()) };
-        if code != 0 {
-            return Err(native(
-                ProcErrorCode::LaunchFailed,
-                "private PTY name",
-                io::Error::from_raw_os_error(code),
-            ));
-        }
-        // SAFETY: successful ptsname_r supplies a NUL-terminated name in name.
-        let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) };
-        // SAFETY: the prepared native path is NUL terminated and opened without acquiring a controlling tty here.
-        let slave = descriptor(
-            unsafe {
-                libc::open(
-                    name.as_ptr(),
-                    libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
-                )
-            },
-            "open terminal slave",
-        )?;
-        // SAFETY: termios is POD, and tcgetattr initializes it before use.
-        let mut saved: libc::termios = unsafe { std::mem::zeroed() };
-        // SAFETY: live owned slave descriptor and valid output.
-        if unsafe { libc::tcgetattr(slave.as_raw_fd(), &mut saved) } < 0 {
-            return Err(native(
-                ProcErrorCode::LaunchFailed,
-                "read terminal settings",
-                io::Error::last_os_error(),
-            ));
-        }
-        let mut handshake = saved;
-        // Disable echo only while consuming xterm's native WINDOWID handshake.
-        handshake.c_lflag &= !libc::ECHO;
-        // SAFETY: live slave and initialized settings, before any child exists.
-        if unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &handshake) } < 0 {
-            return Err(native(
-                ProcErrorCode::LaunchFailed,
-                "set terminal handshake",
-                io::Error::last_os_error(),
-            ));
-        }
+        let (master, slave, name, saved) = open_pty_pair()?;
         let option = format!("-S{}/{}", name.to_string_lossy(), master.as_raw_fd());
         let arguments = [
             executable.clone(),
@@ -142,11 +127,7 @@ impl Terminal {
         let mut clock: libc::timespec = unsafe { std::mem::zeroed() };
         // SAFETY: CLOCK_MONOTONIC fills a valid timespec output.
         if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut clock) } < 0 {
-            return Err(native(
-                ProcErrorCode::LaunchFailed,
-                "terminal deadline",
-                io::Error::last_os_error(),
-            ));
+            return Err(launch_err("terminal deadline"));
         }
         let deadline_ns = i128::from(clock.tv_sec) * 1_000_000_000
             + i128::from(clock.tv_nsec)
@@ -177,66 +158,54 @@ impl Terminal {
             .chain(Some(std::ptr::null()))
             .collect()
     }
-    /// Called only in the already-authorized fork child. No allocator or lock.
-    /// The caller reports an errno on the retained exec channel on failure.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
-    pub unsafe fn start(
+    /// Called only in the viewer fork child. Async-signal-safe; never returns.
+    unsafe fn exec_viewer(
         &self,
         arguments: &[*const libc::c_char],
         environment: &[*const libc::c_char],
         error_fd: i32,
-        authorization_fd: i32,
-    ) -> i32 {
+    ) -> ! {
         // SAFETY: all descriptors and pointer arrays are prepared before fork;
         // this branch uses native async-signal-safe calls and never unwinds.
         unsafe {
-            if libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
-                return *libc::__errno_location();
-            }
-            let viewer = libc::fork();
-            if viewer < 0 {
-                return *libc::__errno_location();
-            }
-            if viewer == 0 {
-                // The viewer must not keep a slave endpoint alive after the
-                // provider closes its console. Only its inherited master lives.
-                let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
-                if null < 0 {
-                    libc::_exit(127);
-                }
-                for stream in 0..3 {
-                    if libc::dup2(null, stream) < 0 {
-                        libc::_exit(127);
-                    }
-                }
-                if null > 2 {
-                    libc::close(null);
-                }
-                if libc::fcntl(self.master.as_raw_fd(), libc::F_SETFD, 0) < 0 {
-                    libc::_exit(127);
-                }
-                libc::execve(
-                    self.executable.as_ptr(),
-                    arguments.as_ptr(),
-                    environment.as_ptr(),
-                );
-                let number = *libc::__errno_location();
-                let packet = [
-                    b'E',
-                    number as u8,
-                    (number >> 8) as u8,
-                    (number >> 16) as u8,
-                    (number >> 24) as u8,
-                ];
-                libc::write(error_fd, packet.as_ptr().cast(), packet.len());
+            // The viewer must not keep a slave endpoint alive after the
+            // provider closes its console. Only its inherited master lives.
+            let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
+            if null < 0 {
                 libc::_exit(127);
             }
-            libc::close(self.master.as_raw_fd());
-            // xterm -S writes its mapped window ID to the slave. A successful
-            // exec alone cannot claim the viewer opened a usable terminal.
+            for stream in 0..3 {
+                if libc::dup2(null, stream) < 0 {
+                    libc::_exit(127);
+                }
+            }
+            if null > 2 {
+                libc::close(null);
+            }
+            if libc::fcntl(self.master.as_raw_fd(), libc::F_SETFD, 0) < 0 {
+                libc::_exit(127);
+            }
+            libc::execve(
+                self.executable.as_ptr(),
+                arguments.as_ptr(),
+                environment.as_ptr(),
+            );
+            let number = *libc::__errno_location();
+            let packet = [
+                b'E',
+                number as u8,
+                (number >> 8) as u8,
+                (number >> 16) as u8,
+                (number >> 24) as u8,
+            ];
+            libc::write(error_fd, packet.as_ptr().cast(), packet.len());
+            libc::_exit(127);
+        }
+    }
+    /// Consume xterm's hex WINDOWID handshake from stdin before `deadline_ns`.
+    unsafe fn await_window_handshake(&self) -> i32 {
+        // SAFETY: async-signal-safe poll/read loop in the fork child.
+        unsafe {
             let mut ready = libc::pollfd {
                 fd: 0,
                 events: libc::POLLIN,
@@ -275,8 +244,37 @@ impl Terminal {
                 name[length] = byte;
                 length += 1;
             }
-            if length == 0 {
-                return libc::EPROTO;
+            if length == 0 { libc::EPROTO } else { 0 }
+        }
+    }
+    /// Called only in the already-authorized fork child. No allocator or lock.
+    /// The caller reports an errno on the retained exec channel on failure.
+    pub unsafe fn start(
+        &self,
+        arguments: &[*const libc::c_char],
+        environment: &[*const libc::c_char],
+        error_fd: i32,
+        authorization_fd: i32,
+    ) -> i32 {
+        // SAFETY: all descriptors and pointer arrays are prepared before fork;
+        // this branch uses native async-signal-safe calls and never unwinds.
+        unsafe {
+            if libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
+                return *libc::__errno_location();
+            }
+            let viewer = libc::fork();
+            if viewer < 0 {
+                return *libc::__errno_location();
+            }
+            if viewer == 0 {
+                self.exec_viewer(arguments, environment, error_fd);
+            }
+            libc::close(self.master.as_raw_fd());
+            // xterm -S writes its mapped window ID to the slave. A successful
+            // exec alone cannot claim the viewer opened a usable terminal.
+            let handshake = self.await_window_handshake();
+            if handshake != 0 {
+                return handshake;
             }
             if self.retain_viewer {
                 // The private pre-exec channel identifies the viewer we created,
