@@ -80,10 +80,25 @@ impl Operation {
         matches!(self.status, Status::Pending)
     }
 }
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+#[derive(PartialEq, Eq)]
+pub(super) enum Gates {
+    Open,
+    Write,
+    All,
+}
+impl Gates {
+    pub(super) fn gate(&mut self, all: bool) {
+        *self = if all || matches!(self, Self::All) {
+            Self::All
+        } else {
+            Self::Write
+        };
+    }
+}
+pub(super) struct EndState {
+    pub released: bool,
+    pub abandoned: bool,
+}
 pub(super) struct State {
     pub identity: StdioIdentity,
     pub limits: StdioLimits,
@@ -97,10 +112,8 @@ pub(super) struct State {
     pub notices: BTreeSet<u64>,
     pub binding_notice: bool,
     pub close: Option<u64>,
-    pub write_gated: bool,
-    pub all_gated: bool,
-    pub released: bool,
-    pub abandoned: bool,
+    pub gates: Gates,
+    pub end: EndState,
     pub failure: Option<ProcError>,
 }
 impl State {
@@ -118,10 +131,11 @@ impl State {
             notices: BTreeSet::new(),
             binding_notice: false,
             close: None,
-            write_gated: false,
-            all_gated: false,
-            released: false,
-            abandoned: false,
+            gates: Gates::Open,
+            end: EndState {
+                released: false,
+                abandoned: false,
+            },
             failure: None,
         }
     }
@@ -139,7 +153,7 @@ impl State {
         }
     }
     pub fn ready(&self) -> ProcResult<()> {
-        if self.released || self.abandoned {
+        if self.end.released || self.end.abandoned {
             return Err(transition("port has been released"));
         }
         if let Some(failure) = &self.failure {

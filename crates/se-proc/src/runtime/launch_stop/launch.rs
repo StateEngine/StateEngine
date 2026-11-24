@@ -26,7 +26,10 @@ impl NativeProcessRuntime {
             record: None,
             native: None,
             spec: Some(spec),
-            stdio_bound,
+            launch: LaunchFacts {
+                stdio_bound,
+                launched: false,
+            },
             #[cfg(windows)]
             stdio: None,
             deadline,
@@ -34,7 +37,6 @@ impl NativeProcessRuntime {
             hub: hub.clone(),
             generation,
             phase: LifecycleState::Reserved,
-            launched: false,
             released: false,
             poisoned: false,
             failure: None,
@@ -72,7 +74,7 @@ impl NativeProcessRuntime {
     ) -> ProcResult<()> {
         let key = &prepared.key;
         self.inner.apply(key, false, |slot| {
-            if slot.launched || slot.phase != LifecycleState::Starting {
+            if slot.launch.launched || slot.phase != LifecycleState::Starting {
                 return Err(state(&key.lifecycle, slot.phase, "bind_stdio"));
             }
             let result = (|| {
@@ -88,7 +90,7 @@ impl NativeProcessRuntime {
                         },
                     ));
                 }
-                if slot.stdio_bound {
+                if slot.launch.stdio_bound {
                     return Err(input(
                         "stdio",
                         "prepared launch already owns stream bindings",
@@ -110,7 +112,7 @@ impl NativeProcessRuntime {
                     ));
                 }
                 spec.stdio = child;
-                slot.stdio_bound = true;
+                slot.launch.stdio_bound = true;
                 Ok(())
             })();
             if let Err(failure) = &result {
@@ -122,7 +124,7 @@ impl NativeProcessRuntime {
     pub(super) fn native_begin_launch(&self, prepared: PreparedLaunch) -> LaunchStart {
         let key = prepared.key;
         let result = self.inner.apply(&key, false, |s| {
-            if s.launched || s.phase != LifecycleState::Starting {
+            if s.launch.launched || s.phase != LifecycleState::Starting {
                 return Err(state(&key.lifecycle, s.phase, "begin_launch"));
             }
             if let Some(failure) = &s.failure {
@@ -130,7 +132,7 @@ impl NativeProcessRuntime {
             }
             #[cfg(windows)]
             if let Some(stdio) = &s.stdio {
-                if !s.stdio_bound {
+                if !s.launch.stdio_bound {
                     return Err(input(
                         "stdio",
                         "created provider streams must bind before vendor execution",
@@ -147,7 +149,7 @@ impl NativeProcessRuntime {
                     },
                 ));
             }
-            s.launched = true;
+            s.launch.launched = true;
             let spec = s
                 .spec
                 .take()

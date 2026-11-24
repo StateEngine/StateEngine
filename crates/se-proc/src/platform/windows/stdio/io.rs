@@ -9,7 +9,7 @@ impl NativeStdio {
     pub fn read(&self, stream: StdioReadStream, maximum: u32) -> ProcResult<u64> {
         let mut state = self.lock();
         state.ready()?;
-        if state.all_gated {
+        if state.gates == Gates::All {
             return Err(transition("output close has begun"));
         }
         if maximum == 0 {
@@ -39,7 +39,7 @@ impl NativeStdio {
         let mut state = self.lock();
         let validation = (|| {
             state.ready()?;
-            if state.write_gated || state.all_gated {
+            if state.gates != Gates::Open {
                 return Err(transition("stdin close has begun"));
             }
             if state.operations.values().any(|op| op.kind == Kind::Write) {

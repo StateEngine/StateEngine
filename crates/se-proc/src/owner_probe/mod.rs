@@ -49,18 +49,21 @@ pub enum AncestryBound {
         reason: String,
     },
 }
+/// Which owner standard streams are attached to a console.
+#[derive(Debug)]
+enum ConsolePresence {
+    Neither,
+    Stdin,
+    Stdout,
+    Both,
+}
 /// Constructible only by the native observer. Callers cannot assert owner or
 /// terminal flags. Environment values (including session credentials) are not
 /// retained or exposed.
 #[derive(Debug)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub struct OwnerObservation {
     owner: NativeOwner,
-    stdin_console: bool,
-    stdout_console: bool,
+    console: ConsolePresence,
     session_present: bool,
     provider_marker_present: bool,
     agent_trees: Vec<AgentTreeMatch>,
@@ -71,10 +74,13 @@ impl OwnerObservation {
         &self.owner
     }
     pub fn stdin_console(&self) -> bool {
-        self.stdin_console
+        matches!(self.console, ConsolePresence::Stdin | ConsolePresence::Both)
     }
     pub fn stdout_console(&self) -> bool {
-        self.stdout_console
+        matches!(
+            self.console,
+            ConsolePresence::Stdout | ConsolePresence::Both
+        )
     }
     pub fn session_present(&self) -> bool {
         self.session_present
@@ -199,8 +205,12 @@ pub fn observe_owner_self(records: &[ProcessRecord]) -> Result<OwnerObservation>
     let (stdin_console, stdout_console) = windows::console_presence()?;
     Ok(OwnerObservation {
         owner: observed.owner,
-        stdin_console,
-        stdout_console,
+        console: match (stdin_console, stdout_console) {
+            (false, false) => ConsolePresence::Neither,
+            (true, false) => ConsolePresence::Stdin,
+            (false, true) => ConsolePresence::Stdout,
+            (true, true) => ConsolePresence::Both,
+        },
         session_present: std::env::var_os("SE_SESSION").is_some(),
         provider_marker_present: ["CLAUDECODE", "CODEX_THREAD_ID", "CODEX_CI"]
             .iter()

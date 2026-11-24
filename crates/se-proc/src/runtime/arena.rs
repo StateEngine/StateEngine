@@ -38,10 +38,12 @@ pub(crate) struct Reference {
     pub lifecycle: LifecycleId,
     pub generation: GenerationId,
 }
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+/// Launch progress observed so far: streams bound, then process launched.
+#[derive(Clone, Copy)]
+pub(crate) struct LaunchFacts {
+    pub stdio_bound: bool,
+    pub launched: bool,
+}
 pub(crate) struct Slot {
     pub reservation: LaunchReservation,
     pub checkpoint: Option<ScopeCheckpoint>,
@@ -49,7 +51,7 @@ pub(crate) struct Slot {
     pub record: Option<ProcessRecord>,
     pub native: Option<crate::platform::Scope>,
     pub spec: Option<LaunchSpec>,
-    pub stdio_bound: bool,
+    pub launch: LaunchFacts,
     #[cfg(windows)]
     pub stdio: Option<Arc<crate::platform::NativeStdio>>,
     pub deadline: std::time::Instant,
@@ -57,7 +59,6 @@ pub(crate) struct Slot {
     pub hub: Arc<Hub>,
     pub generation: GenerationId,
     pub phase: LifecycleState,
-    pub launched: bool,
     pub released: bool,
     pub poisoned: bool,
     pub failure: Option<ProcError>,

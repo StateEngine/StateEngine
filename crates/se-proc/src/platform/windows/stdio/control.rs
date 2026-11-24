@@ -3,7 +3,7 @@ use super::*;
 impl NativeStdio {
     pub fn close(&self, scope: StdioCloseScope) -> ProcResult<u64> {
         let mut state = self.lock();
-        if state.released || state.abandoned {
+        if state.end.released || state.end.abandoned {
             return Err(transition("port has been released"));
         }
         let id = if let Some(id) = state.close {
@@ -32,8 +32,7 @@ impl NativeStdio {
             state.operations.get(&id).map(|op| op.kind),
             Some(Kind::Close(StdioCloseScope::All))
         );
-        state.write_gated = true;
-        state.all_gated |= all;
+        state.gates.gate(all);
         drop(state);
         if all {
             self.cancel_all();
@@ -54,7 +53,7 @@ impl NativeStdio {
                 .filter(|op| op.pending())
                 .map(|op| (id, op.kind))
         });
-        let scope = if state.abandoned {
+        let scope = if state.end.abandoned {
             Some(StdioCloseScope::All)
         } else {
             close.and_then(|(_, kind)| {
@@ -214,13 +213,13 @@ impl NativeStdio {
         }
         if !state.operations.is_empty()
             || state.handles.iter().any(Option::is_some)
-            || !state.all_gated
+            || state.gates != Gates::All
         {
             return Err(transition(
                 "all endpoints must close and every operation must release before the port",
             ));
         }
-        state.released = true;
+        state.end.released = true;
         state.binding.disable();
         drop(state);
         self.queue()?.unregister();

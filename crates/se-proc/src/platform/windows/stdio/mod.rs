@@ -95,15 +95,15 @@ impl NativeStdio {
     }
     pub fn validate(&self, identity: &StdioIdentity, binding: u64) -> ProcResult<()> {
         let state = self.lock();
-        if &state.identity != identity || state.binding_serial != binding || state.released {
+        if &state.identity != identity || state.binding_serial != binding || state.end.released {
             return Err(transition("stale stream identity or binding"));
         }
         Ok(())
     }
     pub fn attach(&self, config: &StdioConfig) -> ProcResult<()> {
         let mut state = self.lock();
-        if state.released
-            || state.abandoned
+        if state.end.released
+            || state.end.abandoned
             || (state.bound && state.binding_state() == StdioBinding::Draining)
         {
             return Err(transition("port cannot bind while released or draining"));
@@ -141,13 +141,13 @@ impl NativeStdio {
     pub fn launch_ready(&self) -> ProcResult<()> {
         let state = self.lock();
         state.ready()?;
-        if state.all_gated {
+        if state.gates == Gates::All {
             return Err(transition("stream shutdown began before vendor execution"));
         }
         Ok(())
     }
     pub fn released(&self) -> bool {
-        self.lock().released
+        self.lock().end.released
     }
 }
 impl CompletionTarget for NativeStdio {
@@ -195,9 +195,8 @@ impl CompletionTarget for NativeStdio {
     fn shutdown(&self) {
         {
             let mut state = self.lock();
-            state.abandoned = true;
-            state.all_gated = true;
-            state.write_gated = true;
+            state.end.abandoned = true;
+            state.gates = Gates::All;
             state.binding.disable();
         }
         self.cancel_all();
@@ -205,6 +204,6 @@ impl CompletionTarget for NativeStdio {
     }
     fn drained(&self) -> bool {
         let state = self.lock();
-        state.abandoned && !state.native_pending() && state.handles.iter().all(Option::is_none)
+        state.end.abandoned && !state.native_pending() && state.handles.iter().all(Option::is_none)
     }
 }
