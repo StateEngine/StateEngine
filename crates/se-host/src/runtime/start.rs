@@ -4,7 +4,7 @@ use super::*;
 use crate::client::lease::Deadline;
 use crate::state_files::{FilePolicy, Files};
 use se_core::store_error::store_error;
-use se_store::{HostStore, ReadStore, RuntimeLease, StateFiles, WriterOwner};
+use se_store::{HostStore, RuntimeLease, StateFiles, WriterOwner};
 use se_types::{Generation, HostEpoch, Read, Result, SeError};
 use std::{fs::File, num::NonZeroU32, path::PathBuf, sync::Arc, time::Duration};
 use tokio::runtime::Handle;
@@ -241,17 +241,35 @@ fn prepare(
         .limits
         .blocking_jobs
         .max(NonZeroU32::MIN.saturating_add(1));
-    let reader = present(
-        se_store::SqliteFactory::open_reader_with_capacity(&store_options, reader_capacity)
-            .map_err(|e| store_error(&e))?,
+    let (reader, admission_reads) = present(
+        se_store::SqliteFactory::open_reader_with_pool(
+            &store_options,
+            reader_capacity,
+            super::admission_reads::pin,
+        )
+        .map_err(|e| store_error(&e))?,
         "state store",
     )?;
-    let admission_reads = reader
-        .phase_pool(super::admission_reads::pin)
-        .map_err(|error| store_error(&error))?;
-    let inventory = reader
-        .owner_guard(&files, owner_budget()?)
-        .map_err(|e| store_error(&e))?;
+    // Reuse one pooled read phase for owner inventory, prior runtime owner,
+    // and remote-mail contact check instead of opening three extra connections.
+    let mut phase = admission_reads.read_phase().map_err(|e| store_error(&e))?;
+    let preflight = (|| -> Result<_> {
+        let inventory = phase
+            .owner_guard(&files, owner_budget()?)
+            .map_err(|e| store_error(&e))?;
+        let old = phase.runtime_owner().map_err(|e| store_error(&e))?;
+        #[cfg(feature = "remote")]
+        let has_remote_contacts = phase
+            .has_remote_mail_contacts()
+            .map_err(|e| store_error(&e))?;
+        #[cfg(not(feature = "remote"))]
+        let has_remote_contacts = false;
+        Ok((inventory, old, has_remote_contacts))
+    })();
+    let (inventory, old, has_remote_contacts) =
+        super::executor::close_read(preflight, phase.close())?;
+    #[cfg(not(feature = "remote"))]
+    let _ = has_remote_contacts;
     let [owner] = inventory.owners.as_slice() else {
         return Err(SeError::invalid("host owner", "one protected store owner"));
     };
@@ -260,7 +278,6 @@ fn prepare(
     // runs before readiness; it never blocks taking ownership.
     let retained_custody = inventory.processes.clone();
     deadline.remaining()?;
-    let old = reader.runtime_owner().map_err(|e| store_error(&e))?;
     let (previous, expected) = match old {
         Read::Present { value } => (
             Some(value.generation),
@@ -347,15 +364,8 @@ fn prepare(
         super::failure::PendingWrites::new(options.writer.queue_requests.get() as usize);
     let mail_waits = crate::http::mail::Waits::new(options.limits.sessions.get() as usize);
     #[cfg(feature = "remote")]
-    {
-        let phase = reader.read_phase().map_err(|e| store_error(&e))?;
-        let known = phase
-            .has_remote_mail_contacts()
-            .map_err(|e| store_error(&e));
-        let known = super::executor::close_read(known, phase.close())?;
-        if known {
-            mail_waits.enable_return_mail();
-        }
+    if has_remote_contacts {
+        mail_waits.enable_return_mail();
     }
     let writer = host
         .start_writer(options.writer, lease.clone())
