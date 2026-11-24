@@ -155,7 +155,7 @@ fn parent_pin(path: &Path, temporary: bool) -> IpcNativeResult<File> {
     if !temporary {
         return private_directory(path);
     }
-    let file = crate::state_files::pin_runtime_temporary_parent(path)
+    let file = se_state_files::state_files::pin_runtime_temporary_parent(path)
         .map_err(|e| error("pin runtime temporary parent", io::Error::other(e)))?;
     let m = file
         .metadata()
@@ -204,7 +204,7 @@ fn prepare_child(parent: &Path, pin: &File, child: &str) -> IpcNativeResult<()> 
     let path = parent.join(child);
     #[cfg(target_os = "macos")]
     if result == 0 {
-        crate::state_files::protect_created_ipc_directory(&file, &path).map_err(|e| {
+        se_state_files::state_files::protect_created_ipc_directory(&file, &path).map_err(|e| {
             error(
                 "protect newly created IPC directory ACL",
                 io::Error::other(e),

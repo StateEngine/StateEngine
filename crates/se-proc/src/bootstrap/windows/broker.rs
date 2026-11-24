@@ -103,7 +103,8 @@ impl Broker {
                 _ => continue,
             };
             // The open handle pins the birth; do not trust a second PID-only read after reuse.
-            let start = crate::windows_native::process_start(process.as_raw_handle())
+            // SAFETY: `process` is a retained query-capable process handle.
+            let start = unsafe { crate::windows_native::process_start(process.as_raw_handle()) }
                 .map_err(|e| fail(e.operation, e.source))?;
             if identity.start
                 != (StartIdentity::Windows {

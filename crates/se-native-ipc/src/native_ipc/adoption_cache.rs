@@ -5,7 +5,7 @@ use super::{
     image_cache::{Entry, read, store},
     *,
 };
-use crate::{NativeStateFiles, OwnedFile, StateFileErrorCode};
+use se_state_files::{NativeStateFiles, OwnedFile, StateFileErrorCode};
 use sha2::{Digest, Sha256 as Hasher};
 use std::{fs::File, time::Duration};
 

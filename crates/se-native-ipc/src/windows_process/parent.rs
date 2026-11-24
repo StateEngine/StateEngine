@@ -6,7 +6,10 @@ use std::{io, mem::size_of};
 use windows_sys::Win32::{Foundation::*, System::Threading::PROCESS_BASIC_INFORMATION};
 /// None means this query is unavailable for the retained handle; it never means
 /// the creator is absent. The caller must use its complete Toolhelp fallback.
-pub(crate) fn parent(process: HANDLE, expected_pid: u32) -> Result<Option<u32>> {
+///
+/// # Safety
+/// `process` must be a valid query-capable Windows process handle (or current-process pseudo handle).
+pub unsafe fn parent(process: HANDLE, expected_pid: u32) -> Result<Option<u32>> {
     let Some(query) = query() else {
         return Ok(None);
     };
@@ -64,7 +67,9 @@ mod tests {
         // SAFETY: GetCurrentProcess returns a non-owning process-lifetime pseudo handle.
         let process = unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() };
         let pid = std::process::id();
-        let creator = parent(process, pid).map_err(|e| format!("{}: {}", e.operation, e.source))?;
+        // SAFETY: `process` is the current-process pseudo handle obtained above.
+        let creator = unsafe { parent(process, pid) }
+            .map_err(|e| format!("{}: {}", e.operation, e.source))?;
         let snapshot =
             super::super::parents().map_err(|e| format!("{}: {}", e.operation, e.source))?;
         assert_eq!(creator, snapshot.get(&pid).copied());
@@ -72,10 +77,9 @@ mod tests {
             creator.is_some(),
             "supported Windows query unexpectedly fell back"
         );
-        assert!(
-            parent(process, pid.wrapping_add(1)).is_err(),
-            "a wrong claimed PID was accepted"
-        );
+        // SAFETY: `process` is the current-process pseudo handle obtained above.
+        let wrong_pid = unsafe { parent(process, pid.wrapping_add(1)) };
+        assert!(wrong_pid.is_err(), "a wrong claimed PID was accepted");
         Ok(())
     }
 }

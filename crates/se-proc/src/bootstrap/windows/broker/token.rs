@@ -128,9 +128,11 @@ fn token_context(token: HANDLE) -> ProcResult<Context> {
         65536,
     )?;
     // SAFETY: successful aligned label output remains retained through SID conversion.
-    let integrity = crate::windows_native::sid_text(unsafe {
-        (*buffer.as_ptr().cast::<TOKEN_MANDATORY_LABEL>()).Label.Sid
-    })
+    let integrity = unsafe {
+        crate::windows_native::sid_text(
+            (*buffer.as_ptr().cast::<TOKEN_MANDATORY_LABEL>()).Label.Sid,
+        )
+    }
     .map_err(|e| fail(e.operation, e.source))?;
     Ok(Context {
         user: {
@@ -138,7 +140,8 @@ fn token_context(token: HANDLE) -> ProcResult<Context> {
             // SAFETY: successful native TOKEN_USER output and its pointed SID remain retained.
             let user = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User };
             (
-                crate::windows_native::sid_text(user.Sid)
+                // SAFETY: `user.Sid` points into the retained `buffer` above.
+                unsafe { crate::windows_native::sid_text(user.Sid) }
                     .map_err(|e| fail(e.operation, e.source))?,
                 user.Attributes,
             )
@@ -184,7 +187,9 @@ fn groups(token: HANDLE) -> ProcResult<Vec<(String, u32)>> {
     let mut result = Vec::with_capacity(count);
     for value in values {
         result.push((
-            crate::windows_native::sid_text(value.Sid).map_err(|e| fail(e.operation, e.source))?,
+            // SAFETY: `value.Sid` points into the retained `buffer` above.
+            unsafe { crate::windows_native::sid_text(value.Sid) }
+                .map_err(|e| fail(e.operation, e.source))?,
             value.Attributes,
         ));
     }

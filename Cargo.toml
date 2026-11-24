@@ -13,6 +13,7 @@ members = [
     "crates/se-core",
     "crates/se-cli-spec",
     "crates/se-proc",
+    "crates/se-native-ipc",
     "crates/se-state-files",
     "crates/se-trusted-path",
     "crates/se-native-path",

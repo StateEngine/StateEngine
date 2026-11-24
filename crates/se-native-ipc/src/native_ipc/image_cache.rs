@@ -2,7 +2,7 @@
 //! A remote bootstrap copy has its own bounded hint, never replacing the host hint.
 use super::image::{ImageKey, key, remember};
 use super::*;
-use crate::{NativeStateFiles, OwnedFile};
+use se_state_files::{NativeStateFiles, OwnedFile};
 use sha2::{Digest, Sha256 as Hasher};
 use std::{
     fs::File,

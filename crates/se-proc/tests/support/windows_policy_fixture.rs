@@ -99,7 +99,7 @@ pub(crate) fn set_dacl(raw: HANDLE, kind: SE_OBJECT_TYPE, text: &str) -> Check {
 }
 pub(crate) fn user() -> Check<String> {
     // SAFETY: current-process pseudo handle is always valid for token query.
-    crate::windows_native::process_sid(unsafe { GetCurrentProcess() })
+    unsafe { crate::windows_native::process_sid(GetCurrentProcess()) }
         .map_err(|e| format!("{}: {}", e.operation, e.source).into())
 }
 pub(crate) struct Home(pub(crate) cleanup_directory::PrivateDirectory);

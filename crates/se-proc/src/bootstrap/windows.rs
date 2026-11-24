@@ -27,7 +27,8 @@ fn last(api: &str) -> ProcError {
     fail(api, io::Error::last_os_error())
 }
 fn handle(raw: HANDLE, api: &'static str) -> ProcResult<OwnedHandle> {
-    crate::windows_native::handle(raw, api).map_err(|e| fail(e.operation, e.source))
+    // SAFETY: callers pass only newly created/opened Win32 handles (or null/INVALID_HANDLE_VALUE).
+    unsafe { crate::windows_native::handle(raw, api) }.map_err(|e| fail(e.operation, e.source))
 }
 fn duplicate(raw: HANDLE, inherit: bool) -> ProcResult<OwnedHandle> {
     let mut out = ptr::null_mut();
@@ -247,7 +248,8 @@ pub(super) fn alive(child: &Child, identity: &ProcessIdentity) -> ProcResult<()>
             "exact child exited or became unreadable",
         ));
     }
-    let start = crate::windows_native::process_start(process.as_raw_handle())
+    // SAFETY: `process` is a retained query-capable process handle.
+    let start = unsafe { crate::windows_native::process_start(process.as_raw_handle()) }
         .map_err(|e| fail(e.operation, e.source))?;
     if identity.start
         != (StartIdentity::Windows {

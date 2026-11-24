@@ -1,8 +1,8 @@
 //! Shared runtime binding for read-only retained-process queries.
 use std::{ffi::c_void, fs::File, os::windows::io::AsRawHandle, sync::OnceLock};
 use windows_sys::Win32::{Foundation::*, System::LibraryLoader::*};
-type Query = unsafe extern "system" fn(HANDLE, i32, *mut c_void, u32, *mut u32) -> NTSTATUS;
-pub(super) fn query() -> Option<Query> {
+pub type Query = unsafe extern "system" fn(HANDLE, i32, *mut c_void, u32, *mut u32) -> NTSTATUS;
+pub fn query() -> Option<Query> {
     static QUERY: OnceLock<Option<Query>> = OnceLock::new();
     *QUERY.get_or_init(|| {
         let name: Vec<u16> = "ntdll.dll".encode_utf16().chain(Some(0)).collect();
@@ -22,7 +22,10 @@ pub(super) fn query() -> Option<Query> {
 
 /// Positive kernel comparison with the file section used to start this process.
 /// A pathname reopened after a rename does not establish this relationship.
-pub(crate) fn maps_executable(process: HANDLE, file: &File) -> bool {
+///
+/// # Safety
+/// `process` must be a valid query-capable Windows process handle (or current-process pseudo handle).
+pub unsafe fn maps_executable(process: HANDLE, file: &File) -> bool {
     const PROCESS_IMAGE_FILE_MAPPING: i32 = 44;
     let Some(query) = query() else { return false };
     let mut handle = file.as_raw_handle();

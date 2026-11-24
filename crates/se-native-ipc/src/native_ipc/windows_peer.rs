@@ -52,7 +52,8 @@ pub(super) fn shared_mapped_image(expected: &ProcessInstance) -> Option<File> {
         unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, 0, fields.pid.get()) };
     let process = owned(process, "pin expected IPC image process").ok()?;
     let raw = process.as_raw_handle();
-    if crate::windows_native::process_start(raw).ok()? != creation_filetime.get()
+    // SAFETY: `raw` is a retained query-capable process handle pinned above.
+    if unsafe { crate::windows_process::process_start(raw) }.ok()? != creation_filetime.get()
         || security::process_sid(raw).ok()? != security::current_sid().ok()?
     {
         return None;
@@ -65,8 +66,11 @@ pub(super) fn shared_mapped_image(expected: &ProcessInstance) -> Option<File> {
         .ok()?;
     // SAFETY: this pseudo-handle refers to the current process throughout the query.
     let current = unsafe { GetCurrentProcess() };
-    let matching = crate::windows_native::maps_executable(current, &file)
-        && crate::windows_native::maps_executable(raw, &file);
+    // SAFETY: `current` is the current-process pseudo handle and `raw` is the retained process handle.
+    let matching = unsafe {
+        crate::windows_process::maps_executable(current, &file)
+            && crate::windows_process::maps_executable(raw, &file)
+    };
     // SAFETY: the original process handle remains pinned and the wait is nonblocking.
     let live = unsafe { WaitForSingleObject(raw, 0) } == WAIT_TIMEOUT;
     (matching && live).then_some(file)
@@ -133,8 +137,9 @@ fn process_identity(pid: u32) -> IpcNativeResult<(OwnedHandle, String, NonZeroU6
             "IPC peer process SID differs from current user",
         ));
     }
+    // SAFETY: `process` is a retained query-capable process handle pinned above.
     let creation_filetime = NonZeroU64::new(
-        crate::windows_native::process_start(process.as_raw_handle())
+        unsafe { crate::windows_process::process_start(process.as_raw_handle()) }
             .map_err(|e| process_error(&process, error(e.operation, e.source)))?,
     )
     .ok_or_else(|| {

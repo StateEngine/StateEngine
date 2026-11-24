@@ -61,7 +61,7 @@ pub struct IpcNativeError {
     pub operation: &'static str,
     pub source: io::Error,
 }
-crate::native_error::native_error!(IpcNativeError, |error, out| {
+se_state_files::native_error::native_error!(IpcNativeError, |error, out| {
     write!(out, "{}: {:?}: {}", error.operation, error.code, error.source)
 }; source Some(&error.source));
 pub type IpcNativeResult<T> = std::result::Result<T, IpcNativeError>;
@@ -298,6 +298,6 @@ fn current_uid() -> u32 {
 
 /// Native local-socket credentials only; callers separately validate birth and image.
 #[cfg(target_os = "macos")]
-pub(crate) fn local_socket_credentials(channel: BorrowedIpc<'_>) -> IpcNativeResult<(u32, u32)> {
+pub fn local_socket_credentials(channel: BorrowedIpc<'_>) -> IpcNativeResult<(u32, u32)> {
     macos::credentials(channel)
 }

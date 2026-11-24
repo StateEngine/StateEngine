@@ -2,11 +2,11 @@
 //! Callers retain their own byte bounds, native error context, absence handling
 //! and repeated observations across image pins or effects.
 
-pub(crate) const STAT_BYTES: usize = 4096;
-pub(crate) const BOOT_ID_BYTES: usize = 64;
+pub const STAT_BYTES: usize = 4096;
+pub const BOOT_ID_BYTES: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum StatError {
+pub enum StatError {
     MissingDelimiter,
     InvalidState,
     TruncatedNumber,
@@ -14,11 +14,11 @@ pub(crate) enum StatError {
     PidOverflow,
 }
 
-pub(crate) struct ProcStat<'a> {
+pub struct ProcStat<'a> {
     fields: [&'a [u8]; 20],
 }
 impl<'a> ProcStat<'a> {
-    pub(crate) fn parse(bytes: &'a [u8]) -> Result<Self, StatError> {
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, StatError> {
         // comm is arbitrary bytes, including whitespace, ')' and non-UTF8.
         let end = bytes
             .windows(2)
@@ -34,7 +34,7 @@ impl<'a> ProcStat<'a> {
         })
     }
 
-    pub(crate) fn state(&self) -> Result<u8, StatError> {
+    pub fn state(&self) -> Result<u8, StatError> {
         match self.fields.first().copied() {
             Some([state]) => Ok(*state),
             _ => Err(StatError::InvalidState),
@@ -54,21 +54,21 @@ impl<'a> ProcStat<'a> {
     fn pid(&self, index: usize) -> Result<u32, StatError> {
         u32::try_from(self.number(index)?).map_err(|_| StatError::PidOverflow)
     }
-    pub(crate) fn parent(&self) -> Result<u32, StatError> {
+    pub fn parent(&self) -> Result<u32, StatError> {
         self.pid(1)
     }
-    pub(crate) fn group(&self) -> Result<u32, StatError> {
+    pub fn group(&self) -> Result<u32, StatError> {
         self.pid(2)
     }
-    pub(crate) fn session(&self) -> Result<u32, StatError> {
+    pub fn session(&self) -> Result<u32, StatError> {
         self.pid(3)
     }
-    pub(crate) fn start_ticks(&self) -> Result<u64, StatError> {
+    pub fn start_ticks(&self) -> Result<u64, StatError> {
         self.number(19)
     }
 }
 
-pub(crate) fn boot_id(bytes: &[u8]) -> Option<[u8; 16]> {
+pub fn boot_id(bytes: &[u8]) -> Option<[u8; 16]> {
     let mut digits = bytes
         .iter()
         .copied()

@@ -31,7 +31,7 @@ pub(crate) struct Security {
 impl Security {
     pub(crate) fn owner_only() -> Result<Self, Error> {
         // SAFETY: immutable current-process pseudo handle; shared token code owns its query reference.
-        let sid = process_sid(unsafe { GetCurrentProcess() })?;
+        let sid = unsafe { process_sid(GetCurrentProcess()) }?;
         let sddl: Vec<u16> = OsStr::new(&format!("O:{sid}D:P(A;;GA;;;SY)(A;;GA;;;{sid})"))
             .encode_wide()
             .chain(Some(0))
@@ -82,13 +82,14 @@ pub(crate) unsafe fn verify_dacl(job: HANDLE) -> Result<(), DaclFailure> {
     }
     .map_err(|e| DaclFailure::Native("read old job protection", e))?;
     // SAFETY: immutable current-process pseudo handle.
-    let current = process_sid(unsafe { GetCurrentProcess() })
+    let current = unsafe { process_sid(GetCurrentProcess()) }
         .map_err(|e| DaclFailure::Native(e.operation, e.source))?;
     let control = descriptor
         .control()
         .map_err(|e| DaclFailure::Native("read old job DACL control", e))?;
-    let owner =
-        sid_text(descriptor.owner).map_err(|e| DaclFailure::Native(e.operation, e.source))?;
+    // SAFETY: `descriptor.owner` points into the retained security descriptor above.
+    let owner = unsafe { sid_text(descriptor.owner) }
+        .map_err(|e| DaclFailure::Native(e.operation, e.source))?;
     if owner != current || control & SE_DACL_PROTECTED == 0 {
         return Err(DaclFailure::Policy(
             "protected current-user job owner/DACL required",
@@ -109,7 +110,8 @@ pub(crate) unsafe fn verify_dacl(job: HANDLE) -> Result<(), DaclFailure> {
             .allowed()
             .filter(|_| entry.header().AceFlags == 0)
             .ok_or(DaclFailure::Policy("unexpected old job ACE"))?;
-        let sid = sid_text((&raw const ace.SidStart).cast_mut().cast())
+        // SAFETY: `ace.SidStart` points into the retained security descriptor above.
+        let sid = unsafe { sid_text((&raw const ace.SidStart).cast_mut().cast()) }
             .map_err(|e| DaclFailure::Native(e.operation, e.source))?;
         let full_access = 0x1f003f; // JOB_OBJECT_ALL_ACCESS, excluding reserved bits.
         if ace.Mask != GENERIC_ALL && ace.Mask != full_access {

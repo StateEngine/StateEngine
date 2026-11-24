@@ -7,7 +7,7 @@ type Check = Result<(), Box<dyn std::error::Error>>;
 /// One connected owner-only pair: the server stream and its client peer.
 fn pair() -> IpcNativeResult<(NativePipeStream, OwnedHandle)> {
     let mut entropy = [0; 16];
-    crate::fill_entropy(&mut entropy)
+    se_state_files::fill_entropy(&mut entropy)
         .map_err(|e| error("allocate EOF control pipe name", io::Error::other(e)))?;
     let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
     let name = std::ffi::OsString::from(format!(r"\\.\pipe\se-eof-review-{suffix}"));

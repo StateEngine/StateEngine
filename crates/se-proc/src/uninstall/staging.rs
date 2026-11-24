@@ -128,8 +128,10 @@ pub(super) fn verify_high(file: &File, directory: bool) -> Result<()> {
                 "applicable inheritable mandatory label required",
             )
         })?;
-    let sid = crate::windows_native::sid_text((&raw const ace.SidStart).cast_mut().cast())
-        .map_err(|e| error(e.operation, e.source))?;
+    // SAFETY: `ace` borrows a validated mandatory-label ACE retained in the descriptor buffer.
+    let sid =
+        unsafe { crate::windows_native::sid_text((&raw const ace.SidStart).cast_mut().cast()) }
+            .map_err(|e| error(e.operation, e.source))?;
     if sid != "S-1-16-12288" || ace.Mask & 1 == 0 {
         return Err(refuse(
             "verify mandatory uninstall label",
@@ -140,11 +142,9 @@ pub(super) fn verify_high(file: &File, directory: bool) -> Result<()> {
 }
 impl Staging {
     pub fn create(parent: &NativeStateFiles) -> Result<Self> {
-        let sid = crate::windows_native::process_sid(
-            // SAFETY: immutable native current-process pseudo handle for token query.
-            unsafe { GetCurrentProcess() },
-        )
-        .map_err(|e| error(e.operation, e.source))?;
+        // SAFETY: immutable native current-process pseudo handle for token query.
+        let sid = unsafe { crate::windows_native::process_sid(GetCurrentProcess()) }
+            .map_err(|e| error(e.operation, e.source))?;
         let descriptor: Vec<_> =
             format!("O:{sid}D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;{sid})S:(ML;OICI;NW;;;HI)")
                 .encode_utf16()

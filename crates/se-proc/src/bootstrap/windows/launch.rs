@@ -345,10 +345,11 @@ pub(in crate::bootstrap) fn receive() -> ProcResult<(Frame, File, File, File, In
     }
     // SAFETY: immutable current-process pseudo handle for the native membership query.
     broker::outside_job(unsafe { GetCurrentProcess() })?;
-    let expected_sid = crate::windows_native::process_sid(parent.as_raw_handle())
+    // SAFETY: `parent` is a retained query-capable process handle.
+    let expected_sid = unsafe { crate::windows_native::process_sid(parent.as_raw_handle()) }
         .map_err(|e| fail(e.operation, e.source))?;
     // SAFETY: immutable current-process pseudo handle for native token observation.
-    let own_sid = crate::windows_native::process_sid(unsafe { GetCurrentProcess() })
+    let own_sid = unsafe { crate::windows_native::process_sid(GetCurrentProcess()) }
         .map_err(|e| fail(e.operation, e.source))?;
     // SAFETY: retained query/synchronize-capable actual parent reference.
     if unsafe { WaitForSingleObject(parent.as_raw_handle(), 0) } != WAIT_TIMEOUT

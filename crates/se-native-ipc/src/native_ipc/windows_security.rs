@@ -1,7 +1,7 @@
 //! Aligned token buffers and LocalFree-owned descriptor/SID allocations stay
 //! alive for every native call that borrows them. Handles are never inherited.
 use super::*;
-use crate::windows_native::allocation::Allocation;
+use crate::windows_process::allocation::Allocation;
 use std::{ffi::OsStr, os::windows::ffi::OsStrExt, ptr};
 use windows_sys::Win32::{
     Foundation::*,
@@ -10,14 +10,17 @@ use windows_sys::Win32::{
 };
 
 fn sid_text(sid: PSID) -> IpcNativeResult<String> {
-    crate::windows_native::sid_text(sid).map_err(|e| error(e.operation, e.source))
+    // SAFETY: callers retain the token/descriptor owning `sid` for the duration of this call.
+    unsafe { crate::windows_process::sid_text(sid) }.map_err(|e| error(e.operation, e.source))
 }
 pub(super) fn current_sid() -> IpcNativeResult<String> {
     // SAFETY: GetCurrentProcess returns the documented borrowed pseudo handle, not an owned allocation.
     process_sid(unsafe { GetCurrentProcess() })
 }
 pub(super) fn process_sid(process: HANDLE) -> IpcNativeResult<String> {
-    crate::windows_native::process_sid(process).map_err(|e| error(e.operation, e.source))
+    // SAFETY: callers pass a retained query-capable process handle or current-process pseudo handle.
+    unsafe { crate::windows_process::process_sid(process) }
+        .map_err(|e| error(e.operation, e.source))
 }
 pub(super) fn descriptor() -> IpcNativeResult<Allocation> {
     let sid = current_sid()?;
@@ -42,7 +45,7 @@ pub(super) fn descriptor() -> IpcNativeResult<Allocation> {
 pub(super) fn verify(handle: HANDLE) -> IpcNativeResult<()> {
     // SAFETY: the caller retains the native handle throughout this query.
     let descriptor = unsafe {
-        crate::windows_native::acl::SecurityDescriptor::query(
+        crate::windows_process::acl::SecurityDescriptor::query(
             handle,
             SE_FILE_OBJECT,
             OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
@@ -101,7 +104,7 @@ pub(super) fn verify(handle: HANDLE) -> IpcNativeResult<()> {
 /// can refuse READ_CONTROL, in which case the caller retains that exact cause.
 pub(super) fn named_owner(name: &[u16]) -> IpcNativeResult<String> {
     // SAFETY: the pipe-name adapter passes its NUL-terminated UTF-16 buffer.
-    let descriptor = unsafe { crate::windows_native::acl::SecurityDescriptor::named_owner(name) }
+    let descriptor = unsafe { crate::windows_process::acl::SecurityDescriptor::named_owner(name) }
         .map_err(|e| error("read existing pipe owner SID", e))?;
     sid_text(descriptor.owner)
 }
