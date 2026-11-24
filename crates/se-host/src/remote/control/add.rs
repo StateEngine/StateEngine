@@ -3,10 +3,6 @@ use super::*;
 use se_types::Read;
 use sha2::Digest;
 impl Control {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) async fn add(
         &self,
         router: &crate::HostedRouter,
@@ -33,14 +29,12 @@ impl Control {
                 "the original destination identity; the incumbent binding was preserved",
             ));
         }
-        let local = if let Some(prior) = &prior {
-            prior.binding.route
-        } else {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0")
-                .map_err(|_| SeError::invalid("SSH forward", "an available local loopback port"))?;
-            listener
+        let local = match &prior {
+            Some(prior) => prior.binding.route,
+            None => std::net::TcpListener::bind("127.0.0.1:0")
+                .map_err(|_| SeError::invalid("SSH forward", "an available local loopback port"))?
                 .local_addr()
-                .map_err(|_| SeError::invalid("SSH forward", "its reserved local address"))?
+                .map_err(|_| SeError::invalid("SSH forward", "its reserved local address"))?,
         };
         let host = session.device.host;
         let binding = bindings::SavedBinding {
@@ -60,82 +54,28 @@ impl Control {
             }),
         };
         let records = self.records.clone();
-        let files = self.files.clone();
         let save = binding.clone();
-        let key = router.execution.blocking.run_owned(deadline, move || {
-            records.check_machine(&save)?;
-            let path = records.key_path(&save.paired.grant);
-            files.prepare_directory(path.parent().ok_or_else(||SeError::invalid("machine credential", "protected parent"))?).map_err(|e|store_error(&e))?;
-            match files.readback(&path).map_err(|e|store_error(&e))? {
-                Read::Absent {..} => files.replace_owned(&path,None,session.secret.expose()).map_err(|e|store_error(&e))?,
-                read => {
-                    use std::io::Read as _;
-                    let file=se_core::scope::require_present(read,"machine credential","Restore the original protected credential; unreadable material is never replaced.")?;
-                    let mut old=zeroize::Zeroizing::new(Vec::new());
-                    file.take(33).read_to_end(&mut old).map_err(|_|SeError::invalid("machine credential","readable original credential"))?;
-                    if old.as_slice()!=session.secret.expose() {return Err(SeError::invalid("machine credential","the original session; preserve conflicting credential material"));}
-                }
-            }
-            keys::ProtectedCredential::open(files,path)
-        }).await?;
+        let secret = session.secret;
+        let key = router
+            .execution
+            .blocking
+            .run_owned(deadline, move || records.keep_credential(&save, &secret))
+            .await?;
         let unchanged = prior
             .as_ref()
             .is_some_and(|prior| prior.binding.same_authority(&binding));
-        let mut expected = prior.as_ref().map(|record| record.sha256);
-        if let Some(prior) = &prior
-            && !unchanged
-        {
-            // Fence cached callers before replacing this source transport.
-            let mut disconnected = prior.binding.clone();
-            disconnected.connected = false;
-            let records = self.records.clone();
-            let owner = owner.clone();
-            let hash = prior.sha256;
-            expected = Some(
-                router
-                    .execution
-                    .blocking
-                    .run_owned(deadline, move || {
-                        records.save(&owner, disconnected, Some(hash))
-                    })
-                    .await?
-                    .sha256,
-            );
-            self.close_source(router, &prior.binding).await?;
-        }
+        let expected = self
+            .fence_prior(router, &owner, prior.as_ref(), unchanged, deadline)
+            .await?;
         let forwards = router.execution.mail_waits.forwards();
         let config = binding
             .forward
             .clone()
             .ok_or_else(|| SeError::invalid("SSH forward", "verified configuration"))?;
         forwards.activate(config.clone()).await?;
-        let result = async {
-            let connector = client::ClientConnector::with_forwards(
-                router.execution.blocking.clone(),
-                forwards.clone(),
-            );
-            let connected = connector
-                .connect(
-                    RemoteRoute {
-                        address: local,
-                        host: binding.paired.host,
-                        forward: binding.forward.clone(),
-                    },
-                    binding.paired.clone(),
-                    Arc::new(key),
-                )
-                .await?;
-            connected.close().await?;
-            let records = self.records.clone();
-            let save = binding.clone();
-            router
-                .execution
-                .blocking
-                .run_owned(deadline, move || records.save(&owner, save, expected))
-                .await?;
-            Ok::<_, SeError>(())
-        }
-        .await;
+        let result = self
+            .verify_and_save(router, owner, &binding, key, expected, deadline)
+            .await;
         if let Err(error) = result {
             if !unchanged && let Err(close) = forwards.disconnect(config).await {
                 return Err(error.with_cause(close));
@@ -145,6 +85,73 @@ impl Control {
         Ok(
             serde_json::json!({"state":"connected","name":alias,"host":binding.paired.host,"reused":prior.is_some()}),
         )
+    }
+    /// Fence cached callers before replacing a changed source transport.
+    /// Returns the saved record hash the new binding must replace.
+    async fn fence_prior(
+        &self,
+        router: &crate::HostedRouter,
+        owner: &auth::VerifiedLocalOwner,
+        prior: Option<&bindings::BindingRecord>,
+        unchanged: bool,
+        deadline: &crate::client::lease::Deadline,
+    ) -> Result<Option<[u8; 32]>> {
+        let Some(prior) = prior else {
+            return Ok(None);
+        };
+        if unchanged {
+            return Ok(Some(prior.sha256));
+        }
+        let mut disconnected = prior.binding.clone();
+        disconnected.connected = false;
+        let records = self.records.clone();
+        let owner = owner.clone();
+        let hash = prior.sha256;
+        let fenced = router
+            .execution
+            .blocking
+            .run_owned(deadline, move || {
+                records.save(&owner, disconnected, Some(hash))
+            })
+            .await?
+            .sha256;
+        self.close_source(router, &prior.binding).await?;
+        Ok(Some(fenced))
+    }
+    /// Prove one reusable connection through the forward before saving its name.
+    async fn verify_and_save(
+        &self,
+        router: &crate::HostedRouter,
+        owner: auth::VerifiedLocalOwner,
+        binding: &bindings::SavedBinding,
+        key: keys::ProtectedCredential,
+        expected: Option<[u8; 32]>,
+        deadline: &crate::client::lease::Deadline,
+    ) -> Result<()> {
+        let connector = client::ClientConnector::with_forwards(
+            router.execution.blocking.clone(),
+            router.execution.mail_waits.forwards(),
+        );
+        let connected = connector
+            .connect(
+                RemoteRoute {
+                    address: binding.route,
+                    host: binding.paired.host,
+                    forward: binding.forward.clone(),
+                },
+                binding.paired.clone(),
+                Arc::new(key),
+            )
+            .await?;
+        connected.close().await?;
+        let records = self.records.clone();
+        let save = binding.clone();
+        router
+            .execution
+            .blocking
+            .run_owned(deadline, move || records.save(&owner, save, expected))
+            .await?;
+        Ok(())
     }
     async fn close_source(
         &self,
@@ -194,17 +201,7 @@ impl Control {
                 Ok((saved.binding, saved.sha256))
             })
             .await?;
-        if let Some(broker) = router.execution.mail_waits.remote() {
-            broker.disconnect(binding.paired.host).await?;
-        }
-        if let Some(config) = binding.forward.clone() {
-            router
-                .execution
-                .mail_waits
-                .forwards()
-                .disconnect(config)
-                .await?;
-        }
+        self.close_source(router, &binding).await?;
         if forget {
             let records = self.records.clone();
             router

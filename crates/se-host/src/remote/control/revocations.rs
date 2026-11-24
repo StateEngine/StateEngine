@@ -206,4 +206,54 @@ impl Control {
             })
             .await
     }
+    /// One explicit Owner revoke, retired from the journal only by its receipt.
+    pub(super) async fn revoke(
+        &self,
+        router: &crate::HostedRouter,
+        owner: auth::VerifiedLocalOwner,
+        grant: se_types::RemoteGrantId,
+        authority_revision: u64,
+        key: IdempotencyKey,
+        deadline: &crate::client::lease::Deadline,
+    ) -> Result<serde_json::Value> {
+        let _configure = self.configure.lock().await;
+        self.security.owner(&owner)?;
+        let revision = se_store::Revision {
+            value: std::num::NonZeroU64::new(authority_revision)
+                .ok_or_else(|| SeError::invalid("grant revision", "nonzero"))?,
+        };
+        let pending = Pending {
+            grant: grant.clone(),
+            authority_revision,
+            key: key.clone(),
+        };
+        // Persist the exact intent before attempting FULL. Cancellation or an
+        // unknown result cannot reopen this grant after a host restart.
+        self.pending_revoke(router, pending.clone(), false, deadline)
+            .await?;
+        let result = self
+            .security
+            .revoke(
+                owner,
+                super::super::session::RevokeGrant {
+                    grant,
+                    expected_revision: revision,
+                    key,
+                },
+            )
+            .await?;
+        let known = crate::runtime::CommittedWrite {
+            operation: "remote.grant.revoke".into(),
+            key: result.receipt.request_key.clone(),
+            natural_events: vec![],
+            committed_events: result.receipt.events.clone(),
+        };
+        self.pending_revoke(router, pending, true, deadline)
+            .await
+            .map_err(|error| known.response_error(error))?;
+        Ok(serde_json::json!({"receipt":receipt(&result.receipt,result.sockets_pending)}))
+    }
+}
+fn receipt(receipt: &se_store::CommitReceipt, sockets_pending: bool) -> serde_json::Value {
+    serde_json::json!({"state":match receipt.state {se_store::CommitState::Committed=>"committed",_=>"replayed"},"event_id":receipt.primary_event,"idempotency_key":receipt.request_key,"sockets_pending":sockets_pending})
 }

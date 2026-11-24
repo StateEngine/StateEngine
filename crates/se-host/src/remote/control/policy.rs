@@ -114,6 +114,21 @@ impl Control {
             Ok(())
         }).await
     }
+    pub(super) async fn disable(
+        &self,
+        router: &crate::HostedRouter,
+        owner: auth::VerifiedLocalOwner,
+        deadline: &crate::client::lease::Deadline,
+    ) -> Result<serde_json::Value> {
+        let _configure = self.configure.lock().await;
+        self.security.owner(&owner)?;
+        self.persist(router, owner, None, deadline).await?;
+        self.stop_listener().await?;
+        Ok(disabled())
+    }
+}
+pub(super) fn disabled() -> serde_json::Value {
+    serde_json::json!({"state":"disabled","connections_closed":true})
 }
 impl crate::HostedRuntime {
     /// Finish protected invalidation before publishing local runtime readiness.
