@@ -18,16 +18,24 @@ fn units(value: &OsStr) -> Vec<u8> {
         value.encode_wide().flat_map(u16::to_le_bytes).collect()
     }
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+/// Checks run in this order, so the same input reports the same first refusal.
 pub(super) fn spec(
     reservation: &LaunchReservation,
     spec: &LaunchSpec,
     config: &HostConfig,
     owner: &ProcessIdentity,
 ) -> ProcResult<[u8; 32]> {
+    preconditions(reservation, spec, config, owner)?;
+    working_directory(spec)?;
+    argv_digest(spec)
+}
+/// Reservation binding, deadline, image custody, capacity, hardening and mode.
+fn preconditions(
+    reservation: &LaunchReservation,
+    spec: &LaunchSpec,
+    config: &HostConfig,
+    owner: &ProcessIdentity,
+) -> ProcResult<()> {
     if reservation.format_version != 1 {
         return Err(input("reservation version", "expected 1"));
     }
@@ -87,6 +95,10 @@ pub(super) fn spec(
             "window launch requires its platform window specification",
         ));
     }
+    Ok(())
+}
+/// The resolved cwd must be a directory inside the selected write policy.
+fn working_directory(spec: &LaunchSpec) -> ProcResult<()> {
     let cwd = std::fs::canonicalize(&spec.cwd)
         .map_err(|e| native(ProcErrorCode::LaunchFailed, "resolve cwd", e))?;
     if !cwd.is_dir() {
@@ -117,6 +129,10 @@ pub(super) fn spec(
     {
         return Err(input("profile", "a bounded saved profile name is required"));
     }
+    Ok(())
+}
+/// Bounded NUL-free native bytes, unique environment keys, and the argv digest.
+fn argv_digest(spec: &LaunchSpec) -> ProcResult<[u8; 32]> {
     let mut size = 0usize;
     let mut check = |value: &OsStr, field: &str| -> ProcResult<Vec<u8>> {
         let bytes = units(value);

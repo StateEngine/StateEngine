@@ -92,10 +92,6 @@ fn cache() -> &'static Mutex<Cache> {
 /// counter also rejects growth beyond the cap during an observation.
 const MAX_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeResult<Sha256> {
     #[cfg(windows)]
     let (mut file, guarded) = match windows::pin(&file) {
@@ -104,7 +100,6 @@ pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeRe
     };
     #[cfg(not(windows))]
     let mut file = file;
-    use std::io::Read;
     let before = file
         .metadata()
         .map_err(|e| error("read pinned image metadata", e))?;
@@ -124,20 +119,8 @@ pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeRe
     let reusable = guarded;
     #[cfg(not(windows))]
     let reusable = true;
-    let cached = if reusable {
-        let cache = cache().lock().map_err(|_| {
-            refuse(
-                IpcNativeErrorCode::Unreadable,
-                "executable cache poisoned; restart the host",
-            )
-        })?;
-        cache.iter().find_map(|(stored, digest, held)| {
-            (stored == &stamp && (stamp.reusable() || held.is_some())).then_some(*digest)
-        })
-    } else {
-        None
-    };
-    if let Some(digest) = cached {
+    let hit = if reusable { cached(&stamp)? } else { None };
+    if let Some(digest) = hit {
         let after = file
             .metadata()
             .map_err(|e| error("reobserve cached executable", e))?;
@@ -152,6 +135,33 @@ pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeRe
         }
         return Ok(digest);
     }
+    let (read, digest) = read_content(&mut file, bound)?;
+    verify_unchanged(&file, &before, read, &stamp, bound)?;
+    #[cfg(windows)]
+    let held = (guarded && !stamp.reusable()).then_some(file);
+    #[cfg(not(windows))]
+    let held = None;
+    if reusable {
+        remember_held(stamp, digest, held)?;
+    }
+    Ok(digest)
+}
+/// A reusable key's digest, or an unqualified key's digest whose writer-excluding
+/// pin is still retained beside it.
+fn cached(stamp: &ImageKey) -> IpcNativeResult<Option<Sha256>> {
+    let cache = cache().lock().map_err(|_| {
+        refuse(
+            IpcNativeErrorCode::Unreadable,
+            "executable cache poisoned; restart the host",
+        )
+    })?;
+    Ok(cache.iter().find_map(|(stored, digest, held)| {
+        (stored == stamp && (stamp.reusable() || held.is_some())).then_some(*digest)
+    }))
+}
+/// Stream the pinned file under the original deadline and byte cap.
+fn read_content(file: &mut File, bound: &IpcIoBound) -> IpcNativeResult<(u64, Sha256)> {
+    use std::io::Read;
     let mut read = 0u64;
     let mut hasher = Hasher::new();
     let mut buffer = [0; 64 * 1024];
@@ -174,6 +184,17 @@ pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeRe
         }
         hasher.update(&buffer[..count]);
     }
+    Ok((read, Sha256::from_bytes(hasher.finalize().into())))
+}
+/// The exact byte count, size, modification clock and native key must match
+/// the observation taken before the read.
+fn verify_unchanged(
+    file: &File,
+    before: &std::fs::Metadata,
+    read: u64,
+    stamp: &ImageKey,
+    bound: &IpcIoBound,
+) -> IpcNativeResult<()> {
     bound
         .remaining()
         .map_err(|e| error("finish peer executable proof", e))?;
@@ -195,21 +216,13 @@ pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeRe
             "executable changed while hashing its native pin",
         ));
     }
-    if key(&file, &after)? != stamp {
+    if key(file, &after)? != *stamp {
         return Err(refuse(
             IpcNativeErrorCode::PeerChanged,
             "executable identity changed while hashing; rediscover and retry the original request",
         ));
     }
-    let digest = Sha256::from_bytes(hasher.finalize().into());
-    #[cfg(windows)]
-    let held = (guarded && !stamp.reusable()).then_some(file);
-    #[cfg(not(windows))]
-    let held = None;
-    if reusable {
-        remember_held(stamp, digest, held)?;
-    }
-    Ok(digest)
+    Ok(())
 }
 
 /// Populate only an absent key. An already-observed process-local proof wins
