@@ -187,11 +187,7 @@ pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
             return Err(format!("private startup: {failure:?}").into());
         }
     };
-    let _cleanup = ChildCleanup {
-        endpoint: &ready.endpoint,
-        identity: &ready.ready.identity,
-        credential: &credential,
-    };
+    let _cleanup = crate::reaper_guard::ReaperGuard::arm(&f, &ready, &credential)?;
     let temporary = f.options.state_directory.join("tmp");
     drop(se_proc::NativeStateFiles::open(&temporary)?);
     #[cfg(target_os = "linux")]

@@ -35,11 +35,7 @@ pub fn check(f: &Fixture, case: Capture<'_>) -> Result<bool, Box<dyn std::error:
         &bound()?,
     )
     .map_err(|error| format!("cold native startup {error:?}"))?;
-    let _cleanup = ChildCleanup {
-        endpoint: &ready.endpoint,
-        identity: &ready.ready.identity,
-        credential: case.machine_key,
-    };
+    let _cleanup = crate::reaper_guard::ReaperGuard::arm(f, &ready, case.machine_key)?;
     let outcome = (|| -> Check {
         let credential =
             || -> Result<se_host::client::lease::ClientCredential, Box<dyn std::error::Error>> {

@@ -92,11 +92,7 @@ pub fn restart_after_crash() -> Check {
         &bound()?,
     )
     .map_err(|error| format!("restart after actual crash with stale endpoint: {error:?}"))?;
-    let _cleanup = ChildCleanup {
-        endpoint: &ready.endpoint,
-        identity: &ready.ready.identity,
-        credential: &credential,
-    };
+    let _cleanup = crate::reaper_guard::ReaperGuard::arm(&f, &ready, &credential)?;
     assert_ne!(ready.ready.identity, observed.identity);
     assert_ne!(ready.endpoint.epoch, endpoint.epoch);
     stop_native(&ready.endpoint, &credential, "recovered-crash-stop")?;
