@@ -33,10 +33,6 @@ fn entry(file: &File, path: &Path, kind: &'static str, sha: Option<[u8; 32]>) ->
 impl NativeUninstallCarrier {
     /// Core has admitted the original record, account and finite directory list.
     /// Nothing here accepts executable text or an alternate image to remove.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub fn prepare(
         files: &NativeStateFiles,
         claim: &NativeInstallationClaim,
@@ -54,13 +50,7 @@ impl NativeUninstallCarrier {
         let script_files = staging.as_ref().map_or(files, |stage| stage.files());
         // Retire both empty names before writing any private data. File-backed
         // envelopes cannot block the CLI on an unavailable interpreter's stdin.
-        let report = script_files
-            .retire_empty_staging(
-                script_files
-                    .create_staging(script_files.root())
-                    .map_err(custody)?,
-            )
-            .map_err(custody)?;
+        let report = fresh_staging(script_files)?;
 
         let parent = native::current_process()?;
         let image = native::process_image(&parent)?;
@@ -70,42 +60,11 @@ impl NativeUninstallCarrier {
         let claim = claim.uninstall_custody().map_err(custody)?;
         let (read, write) = native::pipe()?;
         let (ready, ready_write) = native::pipe()?;
-        let mut owned = Vec::new();
-        let mut entries = Vec::new();
-        for (file, path, kind, digest) in [
+        let objects = [
             (&target, image.as_path(), "image", Some(digest)),
             (&record, record_path, "record", Some(record_digest)),
-        ] {
-            let copy = native::duplicate_same(file.as_raw_handle(), true)?;
-            entries.push(entry(
-                &File::from(native::duplicate_same(copy.as_raw_handle(), false)?),
-                path,
-                kind,
-                digest,
-            )?);
-            if let Some(last) = entries.last_mut() {
-                last.handle = copy.as_raw_handle() as usize as u64;
-            }
-            owned.push(copy);
-        }
-        for path in directories.iter().map(Path::new) {
-            if let Some(file) =
-                crate::state_files::windows::effects::uninstall_directory(path).map_err(custody)?
-            {
-                let copy = native::duplicate_same(file.as_raw_handle(), true)?;
-                let mut observed = entry(&file, path, "directory", None)?;
-                observed.handle = copy.as_raw_handle() as usize as u64;
-                entries.push(observed);
-                owned.push(copy);
-            }
-        }
-        if let Some(stage) = &staging {
-            let copy = native::duplicate_same(stage.pin().as_raw_handle(), true)?;
-            let mut observed = entry(stage.pin(), &stage.directory.path, "staging", None)?;
-            observed.handle = copy.as_raw_handle() as usize as u64;
-            entries.push(observed);
-            owned.push(copy);
-        }
+        ];
+        let (mut entries, mut owned) = build_entries(objects, directories, &staging)?;
         // Keep both original parent directories available for native flushes.
         for path in [image.parent(), record_path.parent()].into_iter().flatten() {
             let file = crate::state_files::windows::effects::uninstall_directory(path)
@@ -132,32 +91,7 @@ impl NativeUninstallCarrier {
         crate::fill_entropy(&mut random)
             .map_err(|cause| error("prepare carrier authorization", io::Error::other(cause)))?;
         let nonce = se_types::hex_lower(&random);
-        let frame = serde_json::json!({"parent":control[0].as_raw_handle() as usize as u64,
-            "claim":control[1].as_raw_handle() as usize as u64,
-            "authorize":control[2].as_raw_handle() as usize as u64,
-            "ready":control[3].as_raw_handle() as usize as u64,
-            "report":control[4].as_raw_handle() as usize as u64,
-            "nonce":nonce,"deadline":deadline,"entries":entries});
-        let mut plan_file = script_files
-            .retire_empty_staging(
-                script_files
-                    .create_staging(script_files.root())
-                    .map_err(custody)?,
-            )
-            .map_err(custody)?;
-        let mut encoded = serde_json::to_vec(&frame)
-            .map_err(|cause| error("encode carrier objects", io::Error::other(cause)))?;
-        if encoded.len() > 2 * 1024 * 1024 {
-            return Err(refuse(
-                "prepare uninstall carrier",
-                "object inventory exceeds two MiB",
-            ));
-        }
-        encoded.push(b'\n');
-        plan_file
-            .write_all(&encoded)
-            .and_then(|()| plan_file.rewind())
-            .map_err(|cause| error("prepare private carrier envelope", cause))?;
+        let plan_file = write_plan(script_files, &control, &nonce, deadline, &entries)?;
         let input = native::duplicate(plan_file.as_raw_handle(), FILE_GENERIC_READ, true)?;
         let handles: Vec<_> = owned
             .iter()
@@ -165,13 +99,7 @@ impl NativeUninstallCarrier {
             .map(AsRawHandle::as_raw_handle)
             .collect();
         let environment = cleanup::environment(script_files.root())?;
-        let mut diagnostic = script_files
-            .retire_empty_staging(
-                script_files
-                    .create_staging(script_files.root())
-                    .map_err(custody)?,
-            )
-            .map_err(custody)?;
+        let mut diagnostic = fresh_staging(script_files)?;
         let helper =
             match helper::Helper::create(script_files, staging.is_some(), &mut target, digest) {
                 Ok(helper) => helper,
@@ -182,95 +110,28 @@ impl NativeUninstallCarrier {
             };
         let helper_path = helper.path().to_owned();
         let mut helper = Some(helper);
-        let mut application: Vec<u16> = helper_path
-            .as_os_str()
-            .encode_wide()
-            .chain(Some(0))
-            .collect();
-        let mut line = vec![u16::from(b'"')];
-        line.extend(helper_path.as_os_str().encode_wide());
-        line.extend("\" ".encode_utf16());
-        line.extend(super::UNINSTALL_CARRIER_ENTRY.encode_utf16());
-        line.push(0);
-        let process = spawn::command(
-            &application,
-            &mut line,
-            &input,
-            &handles,
-            CREATE_NO_WINDOW,
-            Some(&environment),
-            Some(&diagnostic),
-        );
-        let process = match process {
+        let process = match spawn_carrier(&helper_path, &input, &handles, &environment, &diagnostic)
+        {
             Ok(process) => process,
             Err(mut failure) => {
                 cleanup_artifacts(&mut failure, &mut helper, &mut staging);
                 return Err(failure);
             }
         };
-        application.clear();
         drop(input);
         drop(plan_file);
         drop(owned);
         drop(control);
-        let preparation = (|| {
-            let until = clock() + 30000;
-            let mut ready = ready;
-            loop {
-                if native::exited(&process)? {
-                    return Err(refuse(
-                        "prepare uninstall carrier",
-                        "system carrier exited; installation remains unchanged",
-                    ));
-                }
-                if let Some(frame) = native::poll_frame(&mut ready)? {
-                    if frame[0] != b'R' || frame[1..] != random {
-                        return Err(refuse(
-                            "prepare uninstall carrier",
-                            "readiness authentication failed",
-                        ));
-                    }
-                    break;
-                }
-                if clock() >= until {
-                    return Err(refuse(
-                        "prepare uninstall carrier",
-                        "system carrier readiness deadline; installation remains unchanged",
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            helper
-                .as_mut()
-                .ok_or_else(|| refuse("prepare uninstall carrier", "helper custody missing"))?
-                .remove()?;
-            helper.take();
-            // The carrier retains the exact High directory until it can close
-            // its anonymous input, report and diagnostic files after our exit.
-            drop(staging.take());
-            Ok(())
-        })();
-        if let Err(mut failure) = preparation {
-            match cancel_preparation(&process) {
-                Ok(()) => {
-                    failure.source = io::Error::other(format!(
-                        "{}; {}",
-                        failure.source,
-                        diagnostic_text(&mut diagnostic)
-                    ));
-                    cleanup_artifacts(&mut failure, &mut helper, &mut staging);
-                }
-                Err(cause) => {
-                    failure.source = io::Error::other(format!("{}; {}", failure.source, cause));
-                    if helper.is_some() {
-                        failure.pending_paths.push(helper_path.clone());
-                    }
-                    if let Some(stage) = &staging {
-                        failure.pending_paths.push(stage.directory.path.clone());
-                    }
-                }
-            }
-            return Err(failure);
+        let preparation = await_readiness(&process, ready, random, &mut helper, &mut staging);
+        if let Err(failure) = preparation {
+            return Err(report_preparation_failure(
+                &process,
+                failure,
+                &mut helper,
+                &mut staging,
+                &helper_path,
+                &mut diagnostic,
+            ));
         }
         Ok(Self {
             process,
@@ -320,6 +181,187 @@ impl NativeUninstallCarrier {
             .write_all(&authorization)
             .map_err(|cause| error("authorize uninstall carrier", cause))
     }
+}
+
+fn fresh_staging(files: &NativeStateFiles) -> Result<File> {
+    files
+        .retire_empty_staging(files.create_staging(files.root()).map_err(custody)?)
+        .map_err(custody)
+}
+
+fn build_entries(
+    objects: [(&File, &Path, &'static str, Option<[u8; 32]>); 2],
+    directories: &[String],
+    staging: &Option<staging::Staging>,
+) -> Result<(Vec<Entry>, Vec<OwnedHandle>)> {
+    let mut owned = Vec::new();
+    let mut entries = Vec::new();
+    for (file, path, kind, digest) in objects {
+        let copy = native::duplicate_same(file.as_raw_handle(), true)?;
+        entries.push(entry(
+            &File::from(native::duplicate_same(copy.as_raw_handle(), false)?),
+            path,
+            kind,
+            digest,
+        )?);
+        if let Some(last) = entries.last_mut() {
+            last.handle = copy.as_raw_handle() as usize as u64;
+        }
+        owned.push(copy);
+    }
+    for path in directories.iter().map(Path::new) {
+        if let Some(file) =
+            crate::state_files::windows::effects::uninstall_directory(path).map_err(custody)?
+        {
+            let copy = native::duplicate_same(file.as_raw_handle(), true)?;
+            let mut observed = entry(&file, path, "directory", None)?;
+            observed.handle = copy.as_raw_handle() as usize as u64;
+            entries.push(observed);
+            owned.push(copy);
+        }
+    }
+    if let Some(stage) = staging {
+        let copy = native::duplicate_same(stage.pin().as_raw_handle(), true)?;
+        let mut observed = entry(stage.pin(), &stage.directory.path, "staging", None)?;
+        observed.handle = copy.as_raw_handle() as usize as u64;
+        entries.push(observed);
+        owned.push(copy);
+    }
+    Ok((entries, owned))
+}
+
+fn write_plan(
+    script_files: &NativeStateFiles,
+    control: &[OwnedHandle],
+    nonce: &str,
+    deadline: u64,
+    entries: &[Entry],
+) -> Result<File> {
+    let frame = serde_json::json!({"parent":control[0].as_raw_handle() as usize as u64,
+        "claim":control[1].as_raw_handle() as usize as u64,
+        "authorize":control[2].as_raw_handle() as usize as u64,
+        "ready":control[3].as_raw_handle() as usize as u64,
+        "report":control[4].as_raw_handle() as usize as u64,
+        "nonce":nonce,"deadline":deadline,"entries":entries});
+    let mut plan_file = fresh_staging(script_files)?;
+    let mut encoded = serde_json::to_vec(&frame)
+        .map_err(|cause| error("encode carrier objects", io::Error::other(cause)))?;
+    if encoded.len() > 2 * 1024 * 1024 {
+        return Err(refuse(
+            "prepare uninstall carrier",
+            "object inventory exceeds two MiB",
+        ));
+    }
+    encoded.push(b'\n');
+    plan_file
+        .write_all(&encoded)
+        .and_then(|()| plan_file.rewind())
+        .map_err(|cause| error("prepare private carrier envelope", cause))?;
+    Ok(plan_file)
+}
+
+fn spawn_carrier(
+    helper_path: &Path,
+    input: &OwnedHandle,
+    handles: &[HANDLE],
+    environment: &[u16],
+    diagnostic: &File,
+) -> Result<OwnedHandle> {
+    let mut application: Vec<u16> = helper_path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let mut line = vec![u16::from(b'"')];
+    line.extend(helper_path.as_os_str().encode_wide());
+    line.extend("\" ".encode_utf16());
+    line.extend(super::UNINSTALL_CARRIER_ENTRY.encode_utf16());
+    line.push(0);
+    let process = spawn::command(
+        &application,
+        &mut line,
+        input,
+        handles,
+        CREATE_NO_WINDOW,
+        Some(environment),
+        Some(diagnostic),
+    )?;
+    application.clear();
+    Ok(process)
+}
+
+fn await_readiness(
+    process: &OwnedHandle,
+    ready: File,
+    random: [u8; 32],
+    helper: &mut Option<helper::Helper>,
+    staging: &mut Option<staging::Staging>,
+) -> Result<()> {
+    let until = clock() + 30000;
+    let mut ready = ready;
+    loop {
+        if native::exited(process)? {
+            return Err(refuse(
+                "prepare uninstall carrier",
+                "system carrier exited; installation remains unchanged",
+            ));
+        }
+        if let Some(frame) = native::poll_frame(&mut ready)? {
+            if frame[0] != b'R' || frame[1..] != random {
+                return Err(refuse(
+                    "prepare uninstall carrier",
+                    "readiness authentication failed",
+                ));
+            }
+            break;
+        }
+        if clock() >= until {
+            return Err(refuse(
+                "prepare uninstall carrier",
+                "system carrier readiness deadline; installation remains unchanged",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    helper
+        .as_mut()
+        .ok_or_else(|| refuse("prepare uninstall carrier", "helper custody missing"))?
+        .remove()?;
+    helper.take();
+    // The carrier retains the exact High directory until it can close
+    // its anonymous input, report and diagnostic files after our exit.
+    drop(staging.take());
+    Ok(())
+}
+
+fn report_preparation_failure(
+    process: &OwnedHandle,
+    mut failure: UninstallNativeError,
+    helper: &mut Option<helper::Helper>,
+    staging: &mut Option<staging::Staging>,
+    helper_path: &Path,
+    diagnostic: &mut File,
+) -> UninstallNativeError {
+    match cancel_preparation(process) {
+        Ok(()) => {
+            failure.source = io::Error::other(format!(
+                "{}; {}",
+                failure.source,
+                diagnostic_text(diagnostic)
+            ));
+            cleanup_artifacts(&mut failure, helper, staging);
+        }
+        Err(cause) => {
+            failure.source = io::Error::other(format!("{}; {}", failure.source, cause));
+            if helper.is_some() {
+                failure.pending_paths.push(helper_path.to_path_buf());
+            }
+            if let Some(stage) = &staging {
+                failure.pending_paths.push(stage.directory.path.clone());
+            }
+        }
+    }
+    failure
 }
 
 // A preparation failure must also release the exact child's inherited claims.
