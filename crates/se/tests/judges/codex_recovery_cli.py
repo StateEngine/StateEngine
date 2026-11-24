@@ -1,4 +1,4 @@
-"""Independent public-CLI crash recovery and slow-live-provider control on Linux."""
+"""Independent public-CLI crash recovery, slow-live-provider and refused-reconnect controls on Linux."""
 import argparse
 import json
 import os
@@ -166,6 +166,9 @@ class Judge:
             time.sleep(0.05)
         if live(runtime) or not all(live(row) for row in (provider, agent_process)):
             raise AssertionError("the agent and its provider did not survive the runtime exit")
+        if self.args.scenario == "refused":
+            # The original provider stays live and answers, but refuses to reopen.
+            (self.root / "codex" / "refuse-reconnect").write_text("")
         if self.args.scenario == "slow":
             # Stall the one agent's transport when it has its own forwarding
             # process. A private provider continues to own its original pair.
@@ -205,6 +208,17 @@ class Judge:
                         "waited_seconds": round(time.monotonic() - started, 2),
                     }
                     break
+            elif self.args.scenario == "refused":
+                if (self.root / "repo/provider-refused.json").exists():
+                    session = (self.ok("--project", self.project, "status")
+                               ["agents"]["items"][0]["session"])
+                    if session["state"] != "running":
+                        self.result["refused_conclusion"] = {
+                            "state": session["state"],
+                            "process_state": session["process_state"]["value"],
+                            "liveness": session["liveness"]["value"],
+                        }
+                        break
             elif (self.root / "repo/provider-reconnect.json").exists():
                 break
             time.sleep(0.25)
@@ -221,6 +235,16 @@ class Judge:
                 self.signal(process, signal.SIGCONT)
             self.stopped = []
             self.result["passed"] = True
+        elif self.args.scenario == "refused":
+            if not all(live(row) for row in (provider, helper, agent_process)):
+                raise AssertionError("a refused reconnect stopped the original provider")
+            if self.result.get("refused_conclusion") is None:
+                raise AssertionError("the engine did not conclude recovery after the provider refused")
+            if (self.root / "repo/provider-reconnect.json").exists():
+                raise AssertionError("the refused control reported a successful reconnect")
+            self.result["provider_refused"] = json.loads(
+                (self.root / "repo/provider-refused.json").read_text())
+            self.force_takeover(launched, provider, helper, agent_process, shared)
         else:
             if not all(live(row) for row in (provider, helper, agent_process)):
                 raise AssertionError("recovery stopped the original provider without explicit consent")
@@ -231,43 +255,47 @@ class Judge:
                     or recovered["policy"] != ready["policy"]):
                 raise AssertionError("the original provider did not echo its saved policy on reconnect")
             self.result["provider_reconnect"] = recovered
-            refused = self.call("--project", self.project, "launch", self.agent, "--detach")
-            refusal = refused.stdout + refused.stderr
-            self.result["plain_launch_exit"] = refused.returncode
-            if (not refused.returncode or b"launch-confirmation-required" not in refusal
-                    or b"--force" not in refusal or b"Worker" not in refusal
-                    or b"No process was stopped" not in refusal):
-                raise AssertionError(("plain launch did not name the exact force route", refusal.decode()))
-            if not all(live(row) for row in (provider, helper, agent_process)):
-                raise AssertionError("plain launch disturbed the original provider")
-            retry = self.call("--project", self.project, "--key", "crash-force",
-                              "launch", self.agent, "--detach", "--force")
-            self.result["relaunch_exit"] = retry.returncode
-            if retry.returncode:
-                raise AssertionError(("forced relaunch required a hand-run stop", retry.stdout.decode(), retry.stderr.decode()))
-            relaunched = json.loads(retry.stdout)
-            self.result["relaunch"] = relaunched
-            if relaunched["state"] != "running" or live(agent_process):
-                raise AssertionError("relaunch did not replace and retire the old agent")
-            if not shared and (live(provider) or live(helper)):
-                raise AssertionError("relaunch left the old private provider scope active")
-            takeover = relaunched["takeover"]
-            if (takeover["previous_session"] != launched["session_id"]
-                    or relaunched["session_id"] == launched["session_id"]
-                    or takeover.get("inventory_failure")
-                    or takeover.get("jobs_remaining") or takeover.get("jobs_unproved")):
-                raise AssertionError(("forced takeover was not completely witnessed", relaunched))
-            successor = observe(relaunched["process"]["pid"])
-            expected_image = self.args.se if shared else self.args.codex
-            if not successor or not live(successor) or successor["image"] != str(expected_image.resolve()):
-                raise AssertionError("replacement native agent birth absent")
-            self.identities.append(successor)
-            replay = self.ok("--project", self.project, "--key", "crash-force",
-                             "launch", self.agent, "--detach", "--force")
-            if replay["session_id"] != relaunched["session_id"] or not live(successor):
-                raise AssertionError("same-key forced replay replaced its own successor")
-            self.result["force_replay"] = replay
-            self.result["passed"] = True
+            self.force_takeover(launched, provider, helper, agent_process, shared)
+
+    def force_takeover(self, launched, provider, helper, agent_process, shared):
+        """Only the explicit force route may stop the preserved original scope."""
+        refused = self.call("--project", self.project, "launch", self.agent, "--detach")
+        refusal = refused.stdout + refused.stderr
+        self.result["plain_launch_exit"] = refused.returncode
+        if (not refused.returncode or b"launch-confirmation-required" not in refusal
+                or b"--force" not in refusal or b"Worker" not in refusal
+                or b"No process was stopped" not in refusal):
+            raise AssertionError(("plain launch did not name the exact force route", refusal.decode()))
+        if not all(live(row) for row in (provider, helper, agent_process)):
+            raise AssertionError("plain launch disturbed the original provider")
+        retry = self.call("--project", self.project, "--key", "crash-force",
+                          "launch", self.agent, "--detach", "--force")
+        self.result["relaunch_exit"] = retry.returncode
+        if retry.returncode:
+            raise AssertionError(("forced relaunch required a hand-run stop", retry.stdout.decode(), retry.stderr.decode()))
+        relaunched = json.loads(retry.stdout)
+        self.result["relaunch"] = relaunched
+        if relaunched["state"] != "running" or live(agent_process):
+            raise AssertionError("relaunch did not replace and retire the old agent")
+        if not shared and (live(provider) or live(helper)):
+            raise AssertionError("relaunch left the old private provider scope active")
+        takeover = relaunched["takeover"]
+        if (takeover["previous_session"] != launched["session_id"]
+                or relaunched["session_id"] == launched["session_id"]
+                or takeover.get("inventory_failure")
+                or takeover.get("jobs_remaining") or takeover.get("jobs_unproved")):
+            raise AssertionError(("forced takeover was not completely witnessed", relaunched))
+        successor = observe(relaunched["process"]["pid"])
+        expected_image = self.args.se if shared else self.args.codex
+        if not successor or not live(successor) or successor["image"] != str(expected_image.resolve()):
+            raise AssertionError("replacement native agent birth absent")
+        self.identities.append(successor)
+        replay = self.ok("--project", self.project, "--key", "crash-force",
+                         "launch", self.agent, "--detach", "--force")
+        if replay["session_id"] != relaunched["session_id"] or not live(successor):
+            raise AssertionError("same-key forced replay replaced its own successor")
+        self.result["force_replay"] = replay
+        self.result["passed"] = True
 
     def cleanup(self):
         for process in self.stopped:
@@ -306,7 +334,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--se", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--scenario", choices=("crash", "slow"), required=True)
+    parser.add_argument("--scenario", choices=("crash", "slow", "refused"), required=True)
     args = parser.parse_args()
     judge = Judge(args)
     try:
