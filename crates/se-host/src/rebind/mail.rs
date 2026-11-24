@@ -30,26 +30,23 @@ impl LaunchCoordinator {
             return Ok(());
         };
         let mut service = lock_service(&slot, deadline).await?;
-        let Some(restart) = &service.restart else {
+        let Some(restart) = service.restart() else {
             return Ok(());
         };
-        if !restart.adopted {
+        if !restart.adopted() {
             return Err(error(
                 "SE Code restart",
                 "replacement control has not proved possession; unread mail remains retained",
             ));
         }
-        let session_hash = restart.session_hash;
+        let session_hash = restart.session_hash();
         // A previous publication may have succeeded without a readback. Finish
         // that exact write before trusting the in-memory settled marker.
         service.persist_pending(self, deadline).await?;
-        if service.journal.restart_settled {
+        if service.journal().restart_settled {
             work.pin_hash = Some(session_hash);
-            if let Some(restart) = service.restart.as_mut()
-                && !restart.mail_notified
-            {
+            if service.mark_restart_mail_notified() {
                 reoffer_unread(work);
-                restart.mail_notified = true;
             }
             return Ok(());
         }
@@ -58,9 +55,9 @@ impl LaunchCoordinator {
             .flight
             .as_ref()
             .map(|flight| flight.reservation.effect_id);
-        let retained = service.journal.restart_effect.or_else(|| {
+        let retained = service.journal().restart_effect.or_else(|| {
             service
-                .journal
+                .journal()
                 .notice
                 .as_ref()
                 .and_then(|notice| notice.effect)
@@ -73,24 +70,18 @@ impl LaunchCoordinator {
         }
         let mut effect = flight_effect.or(retained);
         if effect.is_none()
-            && let Some(notice) = &service.journal.notice
+            && let Some(notice) = &service.journal().notice
         {
             effect = self.find_restart_notice(work, notice, deadline).await?;
         }
         if let Some(effect) = effect {
-            if service.journal.restart_effect != Some(effect) {
-                service.journal.restart_effect = Some(effect);
-                service.persist(self, deadline).await?;
-            }
+            service
+                .record_restart_effect(self, effect, deadline)
+                .await?;
             self.settle_restart_notice(work, effect, deadline).await?;
         }
-        service.journal.notice = None;
-        service.journal.restart_settled = true;
-        service.persist(self, deadline).await?;
+        service.settle_restart_mail(self, deadline).await?;
         reoffer_unread(work);
-        if let Some(restart) = service.restart.as_mut() {
-            restart.mail_notified = true;
-        }
         work.pin_hash = Some(session_hash);
         Ok(())
     }

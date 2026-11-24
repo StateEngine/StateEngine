@@ -151,14 +151,17 @@ impl Journal {
     ) -> PathBuf {
         se_harness::secode_process::private_profile(home, project, agent)
     }
-    pub fn read(path: &std::path::Path, deadline: &Deadline) -> Result<Option<Self>> {
-        Ok(Self::read_with_digest(path, deadline)?.map(|(value, _)| value))
+    pub fn read<H: crate::HostPort>(
+        path: &std::path::Path,
+        deadline: &Deadline,
+    ) -> Result<Option<Self>> {
+        Ok(Self::read_with_digest::<H>(path, deadline)?.map(|(value, _)| value))
     }
-    pub fn read_with_digest(
+    pub fn read_with_digest<H: crate::HostPort>(
         path: &std::path::Path,
         deadline: &Deadline,
     ) -> Result<Option<(Self, [u8; 32])>> {
-        let Some(mut file) = open_journal(path, deadline)? else {
+        let Some(mut file) = H::open_owned_file(path, "SE Code custody", deadline)? else {
             return Ok(None);
         };
         let bytes = file
@@ -185,7 +188,7 @@ impl Journal {
         }
         Ok(Some((value, Sha256::digest(&bytes).into())))
     }
-    pub fn save(
+    pub fn save<H: crate::HostPort>(
         &self,
         path: &std::path::Path,
         expected: Option<[u8; 32]>,
@@ -201,7 +204,7 @@ impl Journal {
             return Err(error("SE Code custody", "journal exceeds one MiB"));
         }
         let wanted: [u8; 32] = Sha256::digest(&bytes).into();
-        if let Some(mut observed) = open_journal(path, deadline)?
+        if let Some(mut observed) = H::open_owned_file(path, "SE Code custody", deadline)?
             && observed
                 .sha256()
                 .map_err(|e| error("SE Code custody reconciliation", e))?
@@ -210,7 +213,7 @@ impl Journal {
             return Ok(wanted);
         }
         if let Some(hash) = expected {
-            let previous = open_journal(path, deadline)?
+            let previous = H::open_owned_file(path, "SE Code custody", deadline)?
                 .ok_or_else(|| error("SE Code custody update", "original journal absent"))?;
             previous
                 .replace(hash, &bytes)
@@ -229,7 +232,7 @@ impl Journal {
                 .publish_no_replace(&staging.path, path)
                 .map_err(|e| error("SE Code custody publication", e))?;
         }
-        let observed = Self::read(path, deadline)?
+        let observed = Self::read::<H>(path, deadline)?
             .ok_or_else(|| error("SE Code custody readback", "journal absent"))?;
         if serde_json::to_vec(&observed).map_err(|e| error("SE Code custody readback", e))? != bytes
         {
@@ -295,29 +298,4 @@ pub(crate) fn source(checkpoint: &Checkpoint) -> Result<se_proc::RecoverySource>
             ));
         }
     })
-}
-
-// OwnedFile locks the parent as well as the leaf. Independent service journals
-// share that parent, so a sibling publication can briefly contend. Reopen after
-// dropping every failed pin; retry only measured native contention, within the
-// original request's cancellation and deadline bounds.
-fn open_journal(path: &std::path::Path, deadline: &Deadline) -> Result<Option<se_proc::OwnedFile>> {
-    use crate::port::{Acquisition, AcquisitionRetry};
-    let mut retry = AcquisitionRetry::new(deadline.at());
-    deadline.remaining()?;
-    loop {
-        match retry
-            .acquire(|| se_proc::OwnedFile::open(path))
-            .map_err(|failure| failure.into_public(|native| error("SE Code custody", native)))?
-        {
-            Acquisition::Ready(file) => {
-                deadline.remaining()?;
-                return Ok(file);
-            }
-            Acquisition::Wait(delay) => {
-                deadline.remaining()?;
-                std::thread::sleep(delay);
-            }
-        }
-    }
 }

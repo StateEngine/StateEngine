@@ -504,7 +504,7 @@ impl<H: HostPort> Coordinator<'_, H> {
         if let Some(output) = output {
             output.close(deadline).await?;
             let save_deadline = deadline.clone();
-            self.run_blocking(deadline, move || output.save(&save_deadline))
+            self.run_blocking(deadline, move || output.save::<H>(&save_deadline))
                 .await?;
         }
         Ok(())

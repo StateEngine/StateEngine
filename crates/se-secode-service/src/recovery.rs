@@ -10,7 +10,7 @@ impl<H: HostPort> Coordinator<'_, H> {
         let custody_deadline = deadline.clone();
         let inventory = match self
             .0
-            .run_blocking(deadline, move || inventory(&home, &custody_deadline))
+            .run_blocking(deadline, move || inventory::<H>(&home, &custody_deadline))
             .await
         {
             Ok(inventory) => inventory,
@@ -446,7 +446,7 @@ pub(crate) fn recovery_source(source: &CheckpointSource) -> se_proc::RecoverySou
         CheckpointSource::Process(v) => se_proc::RecoverySource::Record(Box::new(v.clone())),
     }
 }
-pub(crate) fn inventory(
+pub(crate) fn inventory<H: HostPort>(
     home: &std::path::Path,
     deadline: &Deadline,
 ) -> Result<Vec<(PathBuf, Journal, [u8; 32])>> {
@@ -482,7 +482,7 @@ pub(crate) fn inventory(
                 "unrecognized retained entry; preserve it for owner reconciliation",
             ));
         }
-        let (journal, digest) = Journal::read_with_digest(&path, deadline)?
+        let (journal, digest) = Journal::read_with_digest::<H>(&path, deadline)?
             .ok_or_else(|| error("SE Code custody inventory", "listed journal disappeared"))?;
         if Journal::path(home, &journal.project, &journal.agent) != path
             || Journal::profile(home, &journal.project, &journal.agent)

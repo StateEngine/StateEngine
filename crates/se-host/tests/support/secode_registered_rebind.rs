@@ -279,8 +279,8 @@ async fn register_fixture(
         )
         .await?;
     let original = service
-        .process
-        .clone()
+        .process()
+        .cloned()
         .ok_or("native service custody absent")?;
     let slot = Arc::new(tokio::sync::Mutex::new(service));
     coordinator
@@ -387,10 +387,10 @@ fn registered_native_service_rebinds_and_releases_the_seat() -> Check {
                 let endpoint = saved["endpoint"].as_str().ok_or("replacement endpoint absent")?;
                 {
                     let service = slot.lock().await;
-                    let restart = service.restart.as_ref().ok_or("rebind not registered")?;
-                    assert_ne!(u64::from(restart.identity.pid.get()), old["pid"].as_u64().ok_or("old PID absent")?);
-                    assert_eq!(restart.identity.image_sha256, observed.image_sha256());
-                    assert!(restart.control.verify_restart(&deadline).await.is_err(), "not-ready challenge was accepted");
+                    let restart = service.restart().ok_or("rebind not registered")?;
+                    assert_ne!(u64::from(restart.identity().pid.get()), old["pid"].as_u64().ok_or("old PID absent")?);
+                    assert_eq!(restart.identity().image_sha256, observed.image_sha256());
+                    assert!(restart.control().verify_restart(&deadline).await.is_err(), "not-ready challenge was accepted");
                 }
                 let state: serde_json::Value = serde_json::from_slice(&std::fs::read(&state_path)?)?;
                 assert!(state["not_ready_count"].as_u64().is_some_and(|count| count > 0));

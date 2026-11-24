@@ -1,6 +1,4 @@
-use super::events;
 use super::*;
-use crate::{CallContext, CancellationState, client::lease::Deadline};
 use se_core::ops::agent_launch::LaunchPlan;
 use se_types::{Result, Secret};
 
@@ -58,28 +56,7 @@ pub fn resolve_provider(
     )
 }
 
-pub(super) fn call(generation: se_types::Generation, deadline: &Deadline) -> Result<CallContext> {
-    Ok(CallContext {
-        generation,
-        timeout: deadline.remaining()?,
-        cancellation: Arc::new(CancellationState { _private: () }),
-    })
-}
-pub(super) async fn wait(wake: &events::Wake, deadline: &Deadline) -> Result<()> {
-    tokio::time::timeout_at(
-        tokio::time::Instant::from_std(deadline.at()),
-        wake.event.notified(),
-    )
-    .await
-    .map_err(|_| {
-        se_core::scope::unreadable(
-            "native process wait",
-            "original launch/stop deadline expired; native custody is retained",
-        )
-    })?;
-    deadline.remaining()?;
-    Ok(())
-}
+pub(super) use se_secode_service::{call_context as call, wait_wake as wait};
 pub(super) fn token(prefix: &str) -> Result<Secret> {
     let random = se_proc::random_secret().map_err(|e| error("session credential entropy", e))?;
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";

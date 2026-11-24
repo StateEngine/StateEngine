@@ -250,6 +250,35 @@ impl HostPort for LaunchCoordinator {
     ) -> Result<se_types::ProcessInstance> {
         super::native_record::instance(root, argv, boot)
     }
+
+    fn allocate_facts() -> Result<se_core::dispatch::CallFacts> {
+        crate::runtime::start::allocate_facts()
+    }
+
+    fn open_owned_file(
+        path: &Path,
+        subject: &str,
+        deadline: &Deadline,
+    ) -> Result<Option<se_proc::OwnedFile>> {
+        use crate::state_files::{Acquisition, AcquisitionRetry};
+        let mut retry = AcquisitionRetry::new(deadline.at());
+        deadline.remaining()?;
+        loop {
+            match retry
+                .acquire(|| se_proc::OwnedFile::open(path))
+                .map_err(|failure| failure.into_public(|native| error(subject, native)))?
+            {
+                Acquisition::Ready(file) => {
+                    deadline.remaining()?;
+                    return Ok(file);
+                }
+                Acquisition::Wait(delay) => {
+                    deadline.remaining()?;
+                    std::thread::sleep(delay);
+                }
+            }
+        }
+    }
 }
 
 impl SecodeWork for owned::Work {
@@ -368,7 +397,7 @@ impl LaunchCoordinator {
     /// Direct down/uninstall must recover auxiliary custody even if no client
     /// process remains in the ordinary session inventory.
     pub fn secode_recovery_required(home: &Path, deadline: &Deadline) -> Result<bool> {
-        se_secode_service::secode_recovery_required(home, deadline)
+        se_secode_service::secode_recovery_required::<LaunchCoordinator>(home, deadline)
     }
     pub(in crate::process) async fn secode_input_intent(
         &self,

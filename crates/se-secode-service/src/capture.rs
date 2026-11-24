@@ -181,7 +181,7 @@ impl<H: HostPort> Coordinator<'_, H> {
                             "history no longer aligns with the original canonical prefix",
                         ));
                     }
-                    let facts = allocate_capture_facts()?;
+                    let facts = allocate_capture_facts::<H>()?;
                     let input = hook::CaptureRequest {
                         recovery_owner,
                         source,
@@ -291,10 +291,10 @@ fn verify_secode_captured_prefix(
     Ok(())
 }
 
-fn allocate_capture_facts() -> Result<hook::CaptureFacts> {
+fn allocate_capture_facts<H: HostPort>() -> Result<hook::CaptureFacts> {
     use se_store::RecordIdentity;
-    let first = port::allocate_facts()?;
-    let second = port::allocate_facts()?;
+    let first = H::allocate_facts()?;
+    let second = H::allocate_facts()?;
     let mut entropy = [0; 10];
     se_proc::fill_entropy(&mut entropy).map_err(|e| error("SE Code capture identity", e))?;
     Ok(hook::CaptureFacts {

@@ -153,7 +153,7 @@ impl<H: HostPort> Coordinator<'_, H> {
         let custody_deadline = deadline.clone();
         if self
             .run_blocking(deadline, move || {
-                Journal::read(&read_path, &custody_deadline)
+                Journal::read::<H>(&read_path, &custody_deadline)
             })
             .await?
             .is_some()

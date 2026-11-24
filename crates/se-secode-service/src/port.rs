@@ -1,14 +1,16 @@
-//! Narrow host port trait and small crate-local runtime adapters for SE Code services.
+//! Narrow host port trait and shared runtime helpers for SE Code services.
 use crate::{Prepared, Service, Services};
 use se_harness::{Deadline, ProviderIoPlatform, SessionIdentity, secode_process::SecodeHarness};
-use se_proc::{ExitNotice, ExitSink, NativeProcessRuntime, StateFileError};
-use se_store::{Admission, CommitReceipt, SqliteSnapshot, StoreDetail, StoreError, StoreErrorCode};
-use se_types::{Read, Remedy, Result, Retry};
+use se_proc::{ExitNotice, ExitSink, NativeProcessRuntime};
+use se_store::{Admission, CommitReceipt, SqliteSnapshot};
+use se_types::{Read, Result};
 use std::{
     future::Future,
     path::{Path, PathBuf},
-    sync::Arc,
-    time::{Duration, Instant},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 pub type PortFuture<'a, T> = std::pin::Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
@@ -117,6 +119,14 @@ pub trait HostPort: Send + Sync {
         argv: [u8; 32],
         boot: &se_types::BootId,
     ) -> Result<se_types::ProcessInstance>;
+
+    fn allocate_facts() -> Result<se_core::dispatch::CallFacts>;
+
+    fn open_owned_file(
+        path: &Path,
+        subject: &str,
+        deadline: &Deadline,
+    ) -> Result<Option<se_proc::OwnedFile>>;
 }
 
 /// Host-owned lifecycle work state accessed by SE Code service operations.
@@ -161,7 +171,9 @@ pub(crate) fn error(subject: &str, cause: impl std::fmt::Debug) -> se_types::SeE
     se_core::scope::unreadable(subject, &format!("{cause:?}"))
 }
 
-pub(crate) fn prepare_error(e: se_proc::ProcError) -> se_types::SeError {
+/// A missing recorded root names its remedy instead of a generic unreadable
+/// blob: a moved repository re-attaches with `se project move`.
+pub fn prepare_error(e: se_proc::ProcError) -> se_types::SeError {
     let missing_root = matches!(
         e.detail.as_ref(),
         se_proc::ProcErrorDetail::Input { field, reason }
@@ -184,7 +196,8 @@ pub(crate) fn prepare_error(e: se_proc::ProcError) -> se_types::SeError {
     error("native scope preparation", e)
 }
 
-pub(crate) fn retain_recovery_artifact(path: &Path) -> Result<bool> {
+/// Preserve native replacement/staging bytes without treating them as custody.
+pub fn retain_recovery_artifact(path: &Path) -> Result<bool> {
     if !path
         .file_name()
         .is_some_and(se_proc::NativeStateFiles::is_recovery_artifact)
@@ -204,34 +217,7 @@ pub(crate) fn retain_recovery_artifact(path: &Path) -> Result<bool> {
     Ok(true)
 }
 
-pub(crate) fn allocate_facts() -> Result<se_core::dispatch::CallFacts> {
-    let time = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| se_core::scope::unreadable("system clock", &e.to_string()))?;
-    let mut random = [0; 60];
-    se_proc::fill_entropy(&mut random)
-        .map_err(|e| se_core::scope::unreadable("host identity entropy", &e.to_string()))?;
-    let chunk = |start: usize| {
-        let mut out = [0; 10];
-        out.copy_from_slice(&random[start..start + 10]);
-        out
-    };
-    let ms = time.as_millis() as u64;
-    Ok(se_core::dispatch::CallFacts {
-        event: se_types::EventId::from_parts(ms, chunk(0))?,
-        message: se_types::MessageId::from_parts(ms, chunk(10))?,
-        agent: se_types::AgentId::from_parts(ms, chunk(20))?,
-        profile_event: se_types::EventId::from_parts(ms, chunk(30))?,
-        notification_event: se_types::EventId::from_parts(ms, chunk(40))?,
-        notification_message: se_types::MessageId::from_parts(ms, chunk(50))?,
-        occurred_at_us: i64::try_from(time.as_micros()).map_err(|_| {
-            se_types::SeError::invalid("system clock", "representable microseconds")
-        })?,
-        door: se_store::Door::Host,
-    })
-}
-
-pub(crate) fn call_context(
+pub fn call_context(
     generation: se_types::Generation,
     deadline: &Deadline,
 ) -> Result<se_harness::CallContext> {
@@ -243,8 +229,53 @@ pub(crate) fn call_context(
 }
 
 #[derive(Default)]
-pub(crate) struct Wake {
-    event: Arc<tokio::sync::Notify>,
+pub struct Wake {
+    pub event: Arc<tokio::sync::Notify>,
+    startup_stop: AtomicBool,
+    pub awaiting_window: AtomicBool,
+}
+
+impl Wake {
+    pub fn request_startup_stop(&self) {
+        self.startup_stop.store(true, Ordering::Release);
+        self.event.notify_waiters();
+        self.event.notify_one();
+    }
+
+    pub fn require_startup(&self) -> Result<()> {
+        if self.startup_stop.load(Ordering::Acquire) {
+            return Err(se_types::SeError::new(se_types::Detail::Cancelled(
+                se_types::details::Cancelled {
+                    op: "agent launch readiness".into(),
+                },
+            )));
+        }
+        Ok(())
+    }
+
+    /// Only provider handshake waits may be interrupted here. The coordinator
+    /// retains native custody, joins accepted effects, and runs normal cleanup;
+    /// this never wraps native allocation or an accepted store commit.
+    pub async fn readiness<T>(&self, future: impl Future<Output = Result<T>>) -> Result<T> {
+        use std::task::Poll;
+        let mut future = std::pin::pin!(future);
+        loop {
+            let changed = self.event.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            self.require_startup()?;
+            let result = std::future::poll_fn(|cx| {
+                if let Poll::Ready(value) = future.as_mut().poll(cx) {
+                    return Poll::Ready(Some(value));
+                }
+                changed.as_mut().poll(cx).map(|()| None)
+            })
+            .await;
+            if let Some(result) = result {
+                return result;
+            }
+        }
+    }
 }
 
 impl ExitSink for Wake {
@@ -254,7 +285,7 @@ impl ExitSink for Wake {
     }
 }
 
-pub(crate) async fn wait_wake(wake: &Wake, deadline: &Deadline) -> Result<()> {
+pub async fn wait_wake(wake: &Wake, deadline: &Deadline) -> Result<()> {
     tokio::time::timeout_at(
         tokio::time::Instant::from_std(deadline.at()),
         wake.event.notified(),
@@ -268,81 +299,4 @@ pub(crate) async fn wait_wake(wake: &Wake, deadline: &Deadline) -> Result<()> {
     })?;
     deadline.remaining()?;
     Ok(())
-}
-
-pub(crate) struct AcquisitionError {
-    error: StateFileError,
-    waited: Duration,
-}
-
-impl AcquisitionError {
-    pub(crate) fn into_public(
-        self,
-        fallback: impl FnOnce(StateFileError) -> se_types::SeError,
-    ) -> se_types::SeError {
-        if !self.error.is_contended() {
-            return fallback(self.error);
-        }
-        let store = StoreError {
-            code: StoreErrorCode::Busy,
-            cause: format!("Native file acquisition remains contended: {}", self.error),
-            detail: StoreDetail::NativeContention {
-                waited_ms: self.waited.as_millis().try_into().unwrap_or(u64::MAX),
-            },
-            remedy: Remedy {
-                text: "Wait for the current file operation to finish, reread the protected state, then retry the same request; preserve the existing files.".into(),
-                command: None,
-            },
-            retry: Retry::AfterReread,
-        };
-        se_core::store_error::store_error(&store)
-    }
-}
-
-pub(crate) struct AcquisitionRetry {
-    deadline: Instant,
-    started: Instant,
-    contended: Option<StateFileError>,
-}
-
-pub(crate) enum Acquisition<T> {
-    Ready(T),
-    Wait(Duration),
-}
-
-impl AcquisitionRetry {
-    pub(crate) fn new(deadline: Instant) -> Self {
-        Self {
-            deadline,
-            started: Instant::now(),
-            contended: None,
-        }
-    }
-
-    pub(crate) fn acquire<T>(
-        &mut self,
-        acquire: impl FnOnce() -> std::result::Result<T, StateFileError>,
-    ) -> std::result::Result<Acquisition<T>, AcquisitionError> {
-        let failed = |error| AcquisitionError {
-            error,
-            waited: self.started.elapsed(),
-        };
-        if Instant::now() >= self.deadline
-            && let Some(error) = self.contended.take()
-        {
-            return Err(failed(error));
-        }
-        match acquire() {
-            Ok(value) => Ok(Acquisition::Ready(value)),
-            Err(error) if error.is_contended() => {
-                let remaining = self.deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    return Err(failed(error));
-                }
-                self.contended = Some(error);
-                Ok(Acquisition::Wait(remaining.min(Duration::from_millis(10))))
-            }
-            Err(error) => Err(failed(error)),
-        }
-    }
 }

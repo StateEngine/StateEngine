@@ -18,12 +18,15 @@ mod retirement;
 mod status;
 mod stop;
 
-pub use port::{HostPort, PortFuture, SecodeWork};
+pub use port::{
+    HostPort, PortFuture, SecodeWork, Wake, call_context, prepare_error, retain_recovery_artifact,
+    wait_wake,
+};
 pub use prepare::ready;
 pub use se_harness::secode_process::Managed as Prepared;
 
 use custody::Journal;
-use port::{Wake, error};
+use port::error;
 use se_harness::{
     Deadline, Harness, HarnessKind, ProbeRequest, ProviderIoPlatform, ProviderStream,
     SessionIdentity, StreamRead,
@@ -55,33 +58,59 @@ struct PendingSave {
 }
 
 pub struct RestartControl {
-    pub control: Arc<se_harness::secode_process::Control>,
-    pub reply_sent: bool,
-    pub mail_notified: bool,
-    pub identity: se_store::CredentialRestart,
-    pub adopted: bool,
-    pub session_hash: [u8; 32],
-    pub restart_key: String,
+    pub(crate) control: Arc<se_harness::secode_process::Control>,
+    pub(crate) reply_sent: bool,
+    pub(crate) mail_notified: bool,
+    pub(crate) identity: se_store::CredentialRestart,
+    pub(crate) adopted: bool,
+    pub(crate) session_hash: [u8; 32],
+    pub(crate) restart_key: String,
+}
+
+impl RestartControl {
+    pub fn control(&self) -> &Arc<se_harness::secode_process::Control> {
+        &self.control
+    }
+
+    pub fn identity(&self) -> &se_store::CredentialRestart {
+        &self.identity
+    }
+
+    pub fn adopted(&self) -> bool {
+        self.adopted
+    }
+
+    pub fn reply_sent(&self) -> bool {
+        self.reply_sent
+    }
+
+    pub fn session_hash(&self) -> [u8; 32] {
+        self.session_hash
+    }
+
+    pub fn restart_key(&self) -> &str {
+        &self.restart_key
+    }
 }
 
 pub struct Service {
-    pub restart: Option<RestartControl>,
-    pub journal: Journal,
+    pub(crate) restart: Option<RestartControl>,
+    pub(crate) journal: Journal,
     path: PathBuf,
     digest: Option<[u8; 32]>,
     pending_save: Option<PendingSave>,
     wake: Arc<Wake>,
     bootstrap: Option<Arc<se_proc::OwnedProcess>>,
-    pub process: Option<Arc<se_proc::OwnedProcess>>,
+    pub(crate) process: Option<Arc<se_proc::OwnedProcess>>,
     retirement: Option<Arc<se_proc::OwnedProcess>>,
     bootstrap_output: Option<Arc<diagnostic::Output>>,
     service_output: Option<Arc<diagnostic::Output>>,
     retirement_output: Option<Arc<diagnostic::Output>>,
-    pub control: Option<Arc<se_harness::secode_process::Control>>,
-    pub failure: Option<String>,
+    pub(crate) control: Option<Arc<se_harness::secode_process::Control>>,
+    pub(crate) failure: Option<String>,
     capability_failure: Option<String>,
-    pub live: se_harness::secode_process::LiveBinding,
-    pub capability_check_at: Option<tokio::time::Instant>,
+    pub(crate) live: se_harness::secode_process::LiveBinding,
+    pub(crate) capability_check_at: Option<tokio::time::Instant>,
 }
 
 #[derive(Default)]
@@ -139,10 +168,187 @@ impl Service {
         }
     }
 
+    pub fn journal(&self) -> &Journal {
+        &self.journal
+    }
+
+    pub fn restart(&self) -> Option<&RestartControl> {
+        self.restart.as_ref()
+    }
+
+    pub fn process(&self) -> Option<&Arc<se_proc::OwnedProcess>> {
+        self.process.as_ref()
+    }
+
     pub fn register_image(&mut self, digest: se_types::Sha256, resume_supported: bool) {
         self.journal.input_free_resume = resume_supported;
         self.journal.server_sha256 = Some(digest);
         self.journal.retired = false;
+    }
+
+    /// Record a newly accepted restart challenge, invalidating the prior live
+    /// binding and persisting the superseded restart key before arming the
+    /// replacement control.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "restart registration pairs control, identity, session hash, and key atomically"
+    )]
+    pub async fn register_restart<H: HostPort>(
+        &mut self,
+        host: &H,
+        restart_key: String,
+        control: Arc<se_harness::secode_process::Control>,
+        identity: se_store::CredentialRestart,
+        session_hash: [u8; 32],
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let same_restart = self
+            .restart
+            .as_ref()
+            .is_some_and(|old| old.restart_key == restart_key);
+        if !same_restart {
+            self.live.invalidate()?;
+        }
+        if self.journal.restart_key.as_deref() != Some(&restart_key) {
+            self.journal.restart_key = Some(restart_key.clone());
+            self.journal.restart_effect = None;
+            self.journal.restart_settled = false;
+            self.journal.restart_reply_sent = false;
+            self.journal.superseded_by_restart = true;
+            self.persist(host, deadline).await?;
+        }
+        if !same_restart {
+            self.restart = Some(RestartControl {
+                control,
+                reply_sent: false,
+                mail_notified: false,
+                identity,
+                adopted: false,
+                session_hash,
+                restart_key,
+            });
+            self.capability_check_at = None;
+        }
+        Ok(())
+    }
+
+    /// Reconstruct pending restart challenge state from committed credential
+    /// heads after a host restart.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "restart restoration pairs control, identity, session hash, and key atomically"
+    )]
+    pub async fn restore_restart<H: HostPort>(
+        &mut self,
+        host: &H,
+        restart_key: String,
+        control: Arc<se_harness::secode_process::Control>,
+        identity: se_store::CredentialRestart,
+        session_hash: [u8; 32],
+        deadline: &Deadline,
+    ) -> Result<()> {
+        if self.journal.restart_key.as_deref() != Some(restart_key.as_str()) {
+            self.journal.restart_key = Some(restart_key.clone());
+            self.journal.restart_effect = None;
+            self.journal.restart_settled = false;
+            self.journal.restart_reply_sent = false;
+            self.journal.superseded_by_restart = true;
+            self.persist(host, deadline).await?;
+        }
+        self.live.invalidate()?;
+        self.restart = Some(RestartControl {
+            control,
+            reply_sent: self.journal.restart_reply_sent,
+            mail_notified: false,
+            identity,
+            adopted: false,
+            session_hash,
+            restart_key,
+        });
+        self.capability_check_at = None;
+        Ok(())
+    }
+
+    /// Mark the matching restart's rebind reply as durably sent and clear any
+    /// cached capability check timer.
+    pub async fn mark_restart_reply_sent<H: HostPort>(
+        &mut self,
+        host: &H,
+        restart_key: &str,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let mut saved = Ok(());
+        if self
+            .restart
+            .as_ref()
+            .is_some_and(|restart| restart.restart_key == restart_key)
+        {
+            if !self.journal.restart_reply_sent {
+                self.journal.restart_reply_sent = true;
+                saved = self.persist(host, deadline).await;
+            }
+            if let Some(restart) = self.restart.as_mut() {
+                restart.reply_sent = true;
+            }
+            self.capability_check_at = None;
+        }
+        saved
+    }
+
+    /// Publish a verified replacement control and binding into `live` and mark
+    /// the restart adopted together so the two states cannot diverge.
+    pub fn publish_adopted_restart(
+        &mut self,
+        control: Arc<se_harness::secode_process::Control>,
+        binding: se_harness::secode_process::NoticeBinding,
+    ) -> Result<()> {
+        self.live.publish_restart(control, binding)?;
+        if let Some(restart) = self.restart.as_mut() {
+            restart.adopted = true;
+        }
+        Ok(())
+    }
+
+    /// Persist the in-flight or discovered restart notice effect before settling it.
+    pub async fn record_restart_effect<H: HostPort>(
+        &mut self,
+        host: &H,
+        effect: se_store::RecordId,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        if self.journal.restart_effect != Some(effect) {
+            self.journal.restart_effect = Some(effect);
+            self.persist(host, deadline).await?;
+        }
+        Ok(())
+    }
+
+    /// Clear any pending pre-restart notice, persist `restart_settled`, and
+    /// mark unread mail notification armed for the adopted restart.
+    pub async fn settle_restart_mail<H: HostPort>(
+        &mut self,
+        host: &H,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        self.journal.notice = None;
+        self.journal.restart_settled = true;
+        self.persist(host, deadline).await?;
+        if let Some(restart) = self.restart.as_mut() {
+            restart.mail_notified = true;
+        }
+        Ok(())
+    }
+
+    /// Mark unread mail notification armed once for an already-settled restart,
+    /// returning `true` only on the first transition.
+    pub fn mark_restart_mail_notified(&mut self) -> bool {
+        if let Some(restart) = self.restart.as_mut()
+            && !restart.mail_notified
+        {
+            restart.mail_notified = true;
+            return true;
+        }
+        false
     }
 
     pub fn current(&self) -> Result<se_harness::secode_process::QualifiedControl> {
@@ -190,7 +396,7 @@ impl Service {
             host.run_blocking(deadline, move || {
                 pending
                     .journal
-                    .save(&path, pending.expected, &custody_deadline)
+                    .save::<H>(&path, pending.expected, &custody_deadline)
             })
             .await?,
         );
@@ -239,8 +445,11 @@ impl Service {
 
 /// Direct down/uninstall must recover auxiliary custody even if no client
 /// process remains in the ordinary session inventory.
-pub fn secode_recovery_required(home: &std::path::Path, deadline: &Deadline) -> Result<bool> {
-    Ok(recovery::inventory(home, deadline)?
+pub fn secode_recovery_required<H: HostPort>(
+    home: &std::path::Path,
+    deadline: &Deadline,
+) -> Result<bool> {
+    Ok(recovery::inventory::<H>(home, deadline)?
         .iter()
         .any(|(_, journal, _)| !journal.retired))
 }

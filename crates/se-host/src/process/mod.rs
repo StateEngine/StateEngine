@@ -407,31 +407,7 @@ impl LaunchCoordinator {
 fn error(subject: &str, cause: impl std::fmt::Debug) -> se_types::SeError {
     se_core::scope::unreadable(subject, &format!("{cause:?}"))
 }
-/// A missing recorded root names its remedy instead of a generic unreadable
-/// blob: a moved repository re-attaches with `se project move`.
-pub(crate) fn prepare_error(e: se_proc::ProcError) -> se_types::SeError {
-    let missing_root = matches!(
-        e.detail.as_ref(),
-        se_proc::ProcErrorDetail::Input { field, reason }
-            if e.code == se_proc::ProcErrorCode::LaunchFailed
-                && field == "native operation"
-                && reason == "resolve cwd"
-                && e
-                    .native
-                    .as_ref()
-                    .is_some_and(|n| n.api == "resolve cwd" && n.code == Some(2))
-    );
-    if missing_root {
-        return se_types::SeError::new(se_types::Detail::SourceUnreadable(
-            se_types::details::SourceUnreadable {
-                subject: "native scope preparation".into(),
-                reason: format!("the recorded project root is missing: {e:?}"),
-                next_step: "If the repository was renamed or moved, run `se project move <new-folder>` (it verifies the recorded git identity) and retry; otherwise restore the folder at the recorded path and retry.".into(),
-            },
-        ));
-    }
-    error("native scope preparation", e)
-}
+pub(crate) use se_secode_service::prepare_error;
 
 fn store_error(error: Box<se_store::StoreError>) -> se_types::SeError {
     se_core::store_error::store_error(&error)
