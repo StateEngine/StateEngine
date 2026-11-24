@@ -1,5 +1,7 @@
 //! Fixture images can briefly have a writable descriptor inherited by another
-//! test's fork. Retry only the kernel's refusal before exec; never a child exit.
+//! test's fork, and on Windows a freshly written image can be held open by the
+//! loader or a malware scan. Retry only those refusals before exec; never a
+//! child exit.
 use std::{
     io,
     process::{Child, Command, ExitStatus, Output},
@@ -20,16 +22,18 @@ fn before_exec<T>(mut launch: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         match launch() {
-            Err(error)
-                if cfg!(target_os = "linux")
-                    && error.raw_os_error() == Some(26)
-                    && Instant::now() < deadline =>
-            {
+            Err(error) if busy_image(&error) && Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(10));
             }
             result => return result,
         }
     }
+}
+
+/// Linux `ETXTBSY` (26) or Windows `ERROR_SHARING_VIOLATION` (32).
+fn busy_image(error: &io::Error) -> bool {
+    let code = error.raw_os_error();
+    (cfg!(target_os = "linux") && code == Some(26)) || (cfg!(windows) && code == Some(32))
 }
 
 impl ExecutableCommand for Command {
