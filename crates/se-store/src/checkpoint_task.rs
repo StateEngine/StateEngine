@@ -6,7 +6,7 @@
 //! large uncopied backlog, so the capacity cutoff owes only a short tail. It
 //! does nothing at all while the host is idle.
 use crate::backup_context::MAX_WAL_BYTES;
-use crate::transaction::checkpoint::probe;
+use crate::transaction::checkpoint::{probe, wal_checkpoint as checkpoint};
 use crate::{error::*, *};
 use rusqlite::Connection;
 use std::{
@@ -463,18 +463,6 @@ fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>,
         Err(error) => status.set(Maint::Failed(error)),
     }
 }
-fn checkpoint(db: &Connection, mode: &str) -> StoreResult<(i64, i64, i64)> {
-    let statement = format!("PRAGMA wal_checkpoint({mode})");
-    db.query_row(statement.as_str(), [], |r| {
-        Ok((
-            crate::sql_value::value::<i64>(r, 0)?,
-            crate::sql_value::value::<i64>(r, 1)?,
-            crate::sql_value::value::<i64>(r, 2)?,
-        ))
-    })
-    .map_err(sql)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -102,6 +102,36 @@ pub(crate) fn probe(db: &Connection) -> StoreResult<Wal> {
         .ok_or_else(|| invalid("WAL size overflow"))?;
     Ok(Wal { log, done, bytes })
 }
+pub(crate) fn wal_checkpoint(db: &Connection, mode: &str) -> StoreResult<(i64, i64, i64)> {
+    let statement = format!("PRAGMA wal_checkpoint({mode})");
+    db.query_row(statement.as_str(), [], |r| {
+        Ok((
+            crate::sql_value::value::<i64>(r, 0)?,
+            crate::sql_value::value::<i64>(r, 1)?,
+            crate::sql_value::value::<i64>(r, 2)?,
+        ))
+    })
+    .map_err(sql)
+}
+fn classify_checkpoint(
+    result: StoreResult<(i64, i64, i64)>,
+    hard: bool,
+) -> Option<Box<StoreError>> {
+    match result {
+        Ok((0, log, done)) if log == done && (!hard || log == 0) => None,
+        Ok((_, log, done)) if (log != -1 || done != -1) && (log < 0 || done < 0 || done > log) => {
+            Some(fail(
+                StoreErrorCode::Unreadable,
+                "WAL checkpoint returned invalid frame counts",
+            ))
+        }
+        Ok(_) => Some(fail(
+            StoreErrorCode::Busy,
+            "committed checkpoint has pending frames",
+        )),
+        Err(error) => Some(error),
+    }
+}
 impl Engine {
     fn wal(&self) -> StoreResult<Wal> {
         probe(&self.db)
@@ -115,51 +145,37 @@ impl Engine {
         // Name the debt on this receipt; the background task owns the retry.
         self.checkpoints.pending = true;
     }
-    fn run_checkpoint(&mut self, wal: &Wal) -> Option<Duration> {
+    fn run_checkpoint(&mut self, wal: &Wal) -> (Option<Duration>, Option<Box<StoreError>>) {
         if self.checkpoint_suppressed(wal) {
             self.defer_checkpoint();
-            return None;
+            return (None, None);
         }
         let start = Instant::now();
         let hard = wal.bytes >= MAX_WAL_BYTES;
         let gate = self.checkpoints.gate.clone();
-        let result = gate.acquire(self.timeout).and_then(|_permit| {
-            self.db
-                .query_row(
-                    if hard {
-                        "PRAGMA wal_checkpoint(TRUNCATE)"
-                    } else {
-                        "PRAGMA wal_checkpoint(PASSIVE)"
-                    },
-                    [],
-                    |r| {
-                        Ok((
-                            crate::sql_value::value::<i64>(r, 0)?,
-                            crate::sql_value::value::<i64>(r, 1)?,
-                            crate::sql_value::value::<i64>(r, 2)?,
-                        ))
-                    },
-                )
-                .map_err(sql)
-        });
+        let mode = if hard { "TRUNCATE" } else { "PASSIVE" };
+        let result = gate
+            .acquire(self.timeout)
+            .and_then(|_permit| wal_checkpoint(&self.db, mode));
         let elapsed = start.elapsed();
-        self.maintenance = match result {
-            Ok((0, log, done)) if log == done && (!hard || log == 0) => None,
-            Ok(_) => Some(fail(
-                StoreErrorCode::Busy,
-                "committed checkpoint has pending frames",
-            )),
-            Err(error) => Some(error),
-        };
+        let failure = classify_checkpoint(result, hard);
+        self.maintenance = failure.clone();
         self.checkpoints.pending = self.maintenance.is_some();
-        Some(elapsed)
+        (Some(elapsed), failure)
     }
     pub(crate) fn require_wal_capacity(&mut self) -> StoreResult<Option<Duration>> {
         let wal = self.wal()?;
         if wal.bytes < MAX_WAL_BYTES {
             return Ok(None);
         }
-        let elapsed = self.run_checkpoint(&wal);
+        let (elapsed, failure) = self.run_checkpoint(&wal);
+        // Propagate genuine storage failures (e.g., DiskFull, Corrupt,
+        // Unreadable) honestly instead of collapsing them into Busy.
+        if let Some(error) = failure
+            && error.code != StoreErrorCode::Busy
+        {
+            return Err(error);
+        }
         // A pinned reader or backup cannot turn a failed pressure checkpoint
         // into permission to keep appending. The preceding commit stays known.
         if self.wal()?.bytes >= MAX_WAL_BYTES {
@@ -180,7 +196,7 @@ impl Engine {
             }
         };
         if wal.bytes >= MAX_WAL_BYTES {
-            return self.run_checkpoint(&wal);
+            return self.run_checkpoint(&wal).0;
         }
         // Restart ahead of the cutoff, at the size the connection keeps after
         // a restart, so the next commit's trim frees only the overshoot.
@@ -218,16 +234,7 @@ impl Engine {
         let gate = self.checkpoints.gate.clone();
         let result = gate.acquire(self.timeout).and_then(|_permit| {
             self.db.busy_timeout(RESTART_WAIT).map_err(sql)?;
-            let result = self
-                .db
-                .query_row("PRAGMA wal_checkpoint(RESTART)", [], |r| {
-                    Ok((
-                        crate::sql_value::value::<i64>(r, 0)?,
-                        crate::sql_value::value::<i64>(r, 1)?,
-                        crate::sql_value::value::<i64>(r, 2)?,
-                    ))
-                })
-                .map_err(sql);
+            let result = wal_checkpoint(&self.db, "RESTART");
             self.db.busy_timeout(self.timeout).map_err(sql)?;
             result
         });
