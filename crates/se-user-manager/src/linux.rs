@@ -1,46 +1,29 @@
 //! Linux background lifetime admission. Failure preserves the existing session host.
-mod bus;
-mod peer;
-mod symbols;
-use crate::support::input;
-use crate::{ProcResult, ProcessId, RuntimeLaunchSpec, RuntimeLifetime, RuntimeUserScope};
-use bus::{Bus, name};
-use peer::verify as verify_peer;
+use super::bus::{Bus, name};
+use super::peer::verify as verify_peer;
+use super::symbols;
 use std::{
     ffi::CStr,
-    fs,
+    fs::{self, File},
     os::{
         fd::{AsRawFd, FromRawFd},
         unix::fs::MetadataExt,
     },
-    path::Path,
-};
-use std::{
-    fs::File,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
-const MANAGER: &CStr = c"/org/freedesktop/systemd1";
-const INTERFACE: &CStr = c"org.freedesktop.systemd1.Manager";
+pub(super) const MANAGER: &CStr = c"/org/freedesktop/systemd1";
+pub(super) const INTERFACE: &CStr = c"org.freedesktop.systemd1.Manager";
 
-pub(crate) fn admit(pin: &File, pid: ProcessId, spec: &RuntimeLaunchSpec) -> RuntimeLifetime {
-    match attempt(pin, pid, spec) {
-        Ok(scope) => RuntimeLifetime {
-            user_scope: Some(scope),
-            session_reason: None,
-        },
-        Err(reason) => RuntimeLifetime {
-            user_scope: None,
-            session_reason: Some(reason),
-        },
-    }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UserScope {
+    pub unit: String,
+    pub invocation: String,
+    pub cgroup: String,
 }
-fn attempt(
-    pin: &File,
-    pid: ProcessId,
-    spec: &RuntimeLaunchSpec,
-) -> Result<RuntimeUserScope, String> {
+
+pub fn admit(pin: &File, pid: u32, deadline: Instant) -> Result<UserScope, String> {
     // SAFETY: immutable native owner query, independent of process environment.
     let uid = unsafe { libc::geteuid() };
     login_bound(pid, uid)?;
@@ -48,11 +31,11 @@ fn attempt(
     let api = symbols::Api::load().ok_or("The native user-manager library is unavailable")?;
     // Manager discovery never accepts a caller-supplied bus address.
     let address = name(&format!("unix:path=/run/user/{uid}/systemd/private"))?;
-    let deadline = admission_deadline(spec.deadline);
+    let deadline = admission_deadline(deadline);
     let bus = Bus::connect(&api, &address, deadline, false)?;
     verify_peer(&bus, uid, deadline)?;
     let mut unit_nonce = [0; 16];
-    crate::fill_entropy(&mut unit_nonce).map_err(|e| e.to_string())?;
+    se_state_files::fill_entropy(&mut unit_nonce).map_err(|e| e.to_string())?;
     let unit = format!("se-runtime-{}.scope", se_types::hex_lower(&unit_nonce));
     let request = bus.request(MANAGER, INTERFACE, c"StartTransientUnit")?;
     request.string(b's', &name(&unit)?)?;
@@ -112,7 +95,7 @@ fn attempt(
             if invocation.iter().all(|b| *b == 0) {
                 return Err("User scope invocation identity is absent".into());
             }
-            return Ok(RuntimeUserScope {
+            return Ok(UserScope {
                 unit,
                 invocation: se_types::hex_lower(&invocation),
                 cgroup: group,
@@ -124,8 +107,8 @@ fn attempt(
         std::thread::sleep(Duration::from_millis(1));
     }
 }
-fn login_bound(pid: ProcessId, uid: u32) -> Result<(), String> {
-    let text = fs::read_to_string(format!("/proc/{}/cgroup", pid.0)).map_err(|e| e.to_string())?;
+fn login_bound(pid: u32, uid: u32) -> Result<(), String> {
+    let text = fs::read_to_string(format!("/proc/{pid}/cgroup")).map_err(|e| e.to_string())?;
     if text.len() > 65536 {
         return Err("The inherited cgroup fact exceeds its bound".into());
     }
@@ -206,15 +189,17 @@ fn valid_group(group: &str, uid: u32, unit: &str) -> bool {
         && group.ends_with(&format!("/{unit}"))
         && !group.split('/').any(|part| matches!(part, "." | ".."))
 }
-pub(crate) fn verify(
-    scope: &RuntimeUserScope,
-    pid: ProcessId,
+pub fn verify(
+    unit: &str,
+    invocation: &str,
+    cgroup: &str,
+    pid: u32,
     deadline: Instant,
 ) -> Result<(), String> {
     lingering()?;
     // SAFETY: immutable native owner query.
     let uid = unsafe { libc::geteuid() };
-    if !valid_group(&scope.cgroup, uid, &scope.unit) || !in_group(pid, &scope.cgroup)? {
+    if !valid_group(cgroup, uid, unit) || !in_group(pid, cgroup)? {
         return Err("The exact runtime is outside its admitted user scope".into());
     }
     let api = symbols::Api::load().ok_or("The native user-manager library became unavailable")?;
@@ -223,9 +208,9 @@ pub(crate) fn verify(
     let bus = Bus::connect(&api, &address, deadline, false)?;
     verify_peer(&bus, uid, deadline)?;
     let request = bus.request(MANAGER, INTERFACE, c"GetUnit")?;
-    request.string(b's', &name(&scope.unit)?)?;
+    request.string(b's', &name(unit)?)?;
     let path = name(&bus.call(&request)?.read_string(b'o')?)?;
-    let invocation = bus
+    let observed_invocation = bus
         .property(
             &path,
             c"org.freedesktop.systemd1.Unit",
@@ -241,7 +226,7 @@ pub(crate) fn verify(
             c"s",
         )?
         .read_string(b's')?;
-    if se_types::hex_lower(&invocation) != scope.invocation || group != scope.cgroup {
+    if se_types::hex_lower(&observed_invocation) != invocation || group != cgroup {
         return Err("The admitted user scope identity changed before runtime authorization".into());
     }
     Ok(())
@@ -252,16 +237,8 @@ fn admission_deadline(deadline: Instant) -> Instant {
     // bootstrap. A slow optional manager is a session-lifetime fallback.
     now + (deadline.saturating_duration_since(now) / 4).min(Duration::from_secs(1))
 }
-/// Re-observe the admitted scope before a status reader reports its lifetime.
-pub fn verify_runtime_user_scope(
-    scope: &RuntimeUserScope,
-    pid: ProcessId,
-    deadline: Instant,
-) -> ProcResult<()> {
-    verify(scope, pid, deadline).map_err(|reason| input("runtime user scope", &reason))
-}
-pub(super) fn in_group(pid: ProcessId, expected: &str) -> Result<bool, String> {
-    let text = fs::read_to_string(format!("/proc/{}/cgroup", pid.0)).map_err(|e| e.to_string())?;
+pub(super) fn in_group(pid: u32, expected: &str) -> Result<bool, String> {
+    let text = fs::read_to_string(format!("/proc/{pid}/cgroup")).map_err(|e| e.to_string())?;
     if text.len() > 65536 {
         return Err("The native cgroup fact exceeds its bound".into());
     }
@@ -269,16 +246,13 @@ pub(super) fn in_group(pid: ProcessId, expected: &str) -> Result<bool, String> {
         .lines()
         .any(|line| line.strip_prefix("0::") == Some(expected)))
 }
-pub(crate) fn pin_launcher(pid: i32) -> ProcResult<File> {
+pub fn pin_launcher(pid: i32) -> Result<File, String> {
     // SAFETY: this is the retained, unreaped direct child; PIDFDs prevent delayed manager requests from attaching a reused PID.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as i32;
     if fd < 0 {
-        return Err(input(
-            "user scope bootstrap",
-            &format!(
-                "native launcher pin is unavailable: {}",
-                std::io::Error::last_os_error()
-            ),
+        return Err(format!(
+            "native launcher pin is unavailable: {}",
+            std::io::Error::last_os_error()
         ));
     }
     // SAFETY: successful pidfd_open transferred this unique descriptor.
@@ -286,17 +260,14 @@ pub(crate) fn pin_launcher(pid: i32) -> ProcResult<File> {
 }
 /// Observe only the recorded unit's kernel cgroup after exact host shutdown.
 /// This never signals a unit or obtains authority over any process in it.
-pub fn runtime_user_scope_empty(scope: &RuntimeUserScope) -> ProcResult<bool> {
+pub fn scope_empty(unit: &str, cgroup: &str) -> Result<bool, String> {
     // SAFETY: immutable native owner query.
     let uid = unsafe { libc::geteuid() };
-    if !scope.unit.starts_with("se-runtime-")
-        || !scope.unit.ends_with(".scope")
-        || !valid_group(&scope.cgroup, uid, &scope.unit)
+    if !unit.starts_with("se-runtime-")
+        || !unit.ends_with(".scope")
+        || !valid_group(cgroup, uid, unit)
     {
-        return Err(input(
-            "runtime user scope",
-            "recorded native cgroup identity is invalid",
-        ));
+        return Err("recorded native cgroup identity is invalid".into());
     }
     // SAFETY: exact native filesystem output for the fixed kernel cgroup mount.
     let mut filesystem: libc::statfs = unsafe { std::mem::zeroed() };
@@ -304,13 +275,10 @@ pub fn runtime_user_scope_empty(scope: &RuntimeUserScope) -> ProcResult<bool> {
     if unsafe { libc::statfs(c"/sys/fs/cgroup".as_ptr(), &mut filesystem) } != 0
         || filesystem.f_type != 0x6367_7270
     {
-        return Err(input(
-            "runtime user scope",
-            "the unified cgroup mount is unreadable",
-        ));
+        return Err("the unified cgroup mount is unreadable".into());
     }
     let path = Path::new("/sys/fs/cgroup")
-        .join(scope.cgroup.trim_start_matches('/'))
+        .join(cgroup.trim_start_matches('/'))
         .join("cgroup.events");
     match fs::read_to_string(path) {
         Ok(events) if events.len() <= 4096 => match events
@@ -319,16 +287,10 @@ pub fn runtime_user_scope_empty(scope: &RuntimeUserScope) -> ProcResult<bool> {
         {
             Some("0") => Ok(true),
             Some("1") => Ok(false),
-            _ => Err(input(
-                "runtime user scope",
-                "native populated state is unreadable",
-            )),
+            _ => Err("native populated state is unreadable".into()),
         },
-        Ok(_) => Err(input(
-            "runtime user scope",
-            "native cgroup event extent exceeds its bound",
-        )),
+        Ok(_) => Err("native cgroup event extent exceeds its bound".into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
-        Err(error) => Err(input("runtime user scope", &error.to_string())),
+        Err(error) => Err(error.to_string()),
     }
 }

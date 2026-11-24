@@ -15,6 +15,7 @@ members = [
     "crates/se-proc",
     "crates/se-native-ipc",
     "crates/se-source-watch",
+    "crates/se-user-manager",
     "crates/se-state-files",
     "crates/se-trusted-path",
     "crates/se-native-path",
