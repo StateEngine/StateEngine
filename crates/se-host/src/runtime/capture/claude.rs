@@ -7,10 +7,6 @@ pub struct TextRecord {
     pub role: se_store::Role,
     pub text: Body,
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<TextRecord>> {
     if bytes
         .iter()
@@ -26,63 +22,7 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("an explicit string record type"))?;
     if kind != "user" && kind != "assistant" {
-        if object.contains_key("sessionId")
-            && object.get("sessionId").and_then(Value::as_str) != Some(conversation.as_str())
-        {
-            return Err(invalid(
-                "the bound conversation when metadata names a session",
-            ));
-        }
-        if noise_kind(kind)
-            && !matches!(kind, "api-request-blob" | "queue-operation")
-            && (object.contains_key("message") || object.contains_key("content"))
-        {
-            return Err(invalid("bookkeeping without message or content fields"));
-        }
-        if !known_metadata(kind)
-            && matches!(
-                object
-                    .get("message")
-                    .and_then(|m| m.get("role"))
-                    .and_then(Value::as_str),
-                Some("user" | "assistant")
-            )
-        {
-            return Err(invalid(
-                "a recognized text record type; an unknown message-bearing record may be a real turn",
-            ));
-        }
-        let mut notice = se_core::ops::transcript::Record::new(
-            kind,
-            object.get("subtype").and_then(Value::as_str),
-        );
-        if kind == "queue-operation"
-            && object.get("operation").and_then(Value::as_str) == Some("enqueue")
-            && object.contains_key("content")
-        {
-            let text = object
-                .get("content")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid("the actual queued input text"))?;
-            if text.is_empty() {
-                return Err(invalid("nonempty queued input text"));
-            }
-            Body::new(text)?;
-            notice.subtype = Some("enqueue".into());
-            notice.queued_input = Some(se_core::ops::queued_input::QueuedInput {
-                enqueue: Some(notice.position.clone()),
-                outcome: se_core::ops::queued_input::Outcome::Unresolved,
-                reason: None,
-                delivery: se_core::ops::queued_input::Delivery::Unresolved,
-                outcome_position: None,
-                text: Some(text.into()),
-            });
-        }
-        return Ok(Some(TextRecord {
-            vendor_turn: String::new(),
-            role: se_store::Role::System,
-            text: notice.body()?,
-        }));
+        return decode_metadata_record(object, kind, conversation);
     }
     if object.get("sessionId").and_then(Value::as_str) != Some(conversation.as_str()) {
         return Err(invalid("the actual bound conversation on a text record"));
@@ -110,6 +50,84 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
     let content = message
         .get("content")
         .ok_or_else(|| invalid("a provider content field"))?;
+    let text = extract_content_text(content, kind)?;
+    if text.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(TextRecord {
+        vendor_turn: vendor_turn.into(),
+        role: if kind == "user" {
+            se_store::Role::User
+        } else {
+            se_store::Role::Assistant
+        },
+        text: Body::new(text)?,
+    }))
+}
+
+fn decode_metadata_record(
+    object: &serde_json::Map<String, Value>,
+    kind: &str,
+    conversation: &ProviderSessionId,
+) -> Result<Option<TextRecord>> {
+    if object.contains_key("sessionId")
+        && object.get("sessionId").and_then(Value::as_str) != Some(conversation.as_str())
+    {
+        return Err(invalid(
+            "the bound conversation when metadata names a session",
+        ));
+    }
+    if noise_kind(kind)
+        && !matches!(kind, "api-request-blob" | "queue-operation")
+        && (object.contains_key("message") || object.contains_key("content"))
+    {
+        return Err(invalid("bookkeeping without message or content fields"));
+    }
+    if !known_metadata(kind)
+        && matches!(
+            object
+                .get("message")
+                .and_then(|m| m.get("role"))
+                .and_then(Value::as_str),
+            Some("user" | "assistant")
+        )
+    {
+        return Err(invalid(
+            "a recognized text record type; an unknown message-bearing record may be a real turn",
+        ));
+    }
+    let mut notice =
+        se_core::ops::transcript::Record::new(kind, object.get("subtype").and_then(Value::as_str));
+    if kind == "queue-operation"
+        && object.get("operation").and_then(Value::as_str) == Some("enqueue")
+        && object.contains_key("content")
+    {
+        let text = object
+            .get("content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid("the actual queued input text"))?;
+        if text.is_empty() {
+            return Err(invalid("nonempty queued input text"));
+        }
+        Body::new(text)?;
+        notice.subtype = Some("enqueue".into());
+        notice.queued_input = Some(se_core::ops::queued_input::QueuedInput {
+            enqueue: Some(notice.position.clone()),
+            outcome: se_core::ops::queued_input::Outcome::Unresolved,
+            reason: None,
+            delivery: se_core::ops::queued_input::Delivery::Unresolved,
+            outcome_position: None,
+            text: Some(text.into()),
+        });
+    }
+    Ok(Some(TextRecord {
+        vendor_turn: String::new(),
+        role: se_store::Role::System,
+        text: notice.body()?,
+    }))
+}
+
+fn extract_content_text(content: &Value, kind: &str) -> Result<String> {
     let mut text = String::new();
     match content {
         Value::String(value) => append(&mut text, value)?,
@@ -138,18 +156,7 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
         }
         _ => return Err(invalid("string or block-array content")),
     }
-    if text.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(TextRecord {
-        vendor_turn: vendor_turn.into(),
-        role: if kind == "user" {
-            se_store::Role::User
-        } else {
-            se_store::Role::Assistant
-        },
-        text: Body::new(text)?,
-    }))
+    Ok(text)
 }
 fn tool_result(content: Option<&Value>) -> Result<()> {
     match content {

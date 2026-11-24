@@ -15,10 +15,155 @@ use std::collections::BTreeMap;
 const TAIL_RECORDS: usize = 1024;
 const TAIL_BYTES: u64 = 4 * 1024 * 1024;
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+struct ScanState {
+    revision: se_store::Revision,
+    offset: u64,
+    consumed: u64,
+    complete: u64,
+    digest: Sha256,
+    noise: BTreeMap<String, Record>,
+    noise_records: usize,
+    tracker: super::queue::Tracker,
+    tool_tracker: crate::harness::tool_capture::claude::Tracker,
+}
+
+enum LineDecision {
+    Continue,
+    Emit {
+        end: u64,
+        main: Option<TextRecord>,
+        queued: Vec<Record>,
+    },
+}
+
+impl ScanState {
+    fn process_line(&mut self, source: &BoundTranscript, line: &[u8]) -> Result<LineDecision> {
+        let decoded = claude::decode(line, &source.binding.conversation)?;
+        let native = if decoded
+            .as_ref()
+            .is_some_and(|r| r.role == se_store::Role::System)
+            || line.iter().all(u8::is_ascii_whitespace)
+        {
+            None
+        } else {
+            Some(
+                serde_json::from_slice::<serde_json::Value>(line)
+                    .map_err(|_| SeError::invalid("native tool record", "complete JSON"))?,
+            )
+        };
+        let tool_count = native
+            .as_ref()
+            .map_or(0, crate::harness::tool_capture::claude::Tracker::count);
+        if tool_count > 32 {
+            return Err(SeError::invalid(
+                "native tools per record",
+                "at most 32 tool facts; preserve the source cursor",
+            ));
+        }
+        if tool_count + self.noise.len() > 32 {
+            return Ok(LineDecision::Emit {
+                end: self.complete,
+                main: None,
+                queued: Vec::new(),
+            });
+        }
+        self.digest.update(line);
+        self.complete = self.consumed;
+        let line_position = Position {
+            offset: self.consumed - line.len() as u64,
+            length: line.len() as u64,
+        };
+        let mut queued = self.tracker.observe(line, line_position.clone())?;
+        if let Some(value) = native {
+            for fact in self.tool_tracker.observe(&value)? {
+                queued.push(fact.record(
+                    &source.binding.identity,
+                    se_store::Provider::Claude,
+                    source.source,
+                    line_position.clone(),
+                )?);
+            }
+        }
+        if queued.len() + self.noise.len() > 32 {
+            return Err(SeError::invalid(
+                "native metadata per record",
+                "at most 32 metadata facts; preserve the source cursor",
+            ));
+        }
+        if let Some(mut record) = decoded {
+            if record.role == se_store::Role::System {
+                let mut notice = if queued.is_empty() {
+                    Record::decode(record.text.as_str())?
+                } else {
+                    queued.remove(0)
+                };
+                notice.position = line_position;
+                if notice.queued_input.is_none() && claude::noise_kind(&notice.kind) {
+                    count(&mut self.noise, notice)?;
+                    self.noise_records += 1;
+                    if self.noise_records >= TAIL_RECORDS
+                        || self.consumed - self.offset >= TAIL_BYTES
+                    {
+                        return Ok(LineDecision::Emit {
+                            end: self.consumed,
+                            main: None,
+                            queued,
+                        });
+                    }
+                    return Ok(LineDecision::Continue);
+                }
+                record.vendor_turn = identity(
+                    source,
+                    if notice.is_compaction() {
+                        "compact"
+                    } else {
+                        "record"
+                    },
+                    notice.position.offset,
+                    "",
+                );
+                record.text = notice.body()?;
+            }
+            return Ok(LineDecision::Emit {
+                end: self.consumed,
+                main: Some(record),
+                queued,
+            });
+        }
+        if !queued.is_empty() {
+            return Ok(LineDecision::Emit {
+                end: self.consumed,
+                main: None,
+                queued,
+            });
+        }
+        Ok(LineDecision::Continue)
+    }
+
+    fn finish(
+        self,
+        source: &mut BoundTranscript,
+        end: u64,
+        main: Option<TextRecord>,
+        queued: Vec<Record>,
+    ) -> Result<TrustedCapture> {
+        finish(
+            source,
+            self.revision,
+            self.offset,
+            end,
+            self.digest,
+            main,
+            Pending {
+                noise: self.noise,
+                queued,
+                tracker: self.tracker,
+                tool_tracker: self.tool_tracker,
+            },
+        )
+    }
+}
+
 pub(super) fn next(
     source: &mut BoundTranscript,
     revision: se_store::Revision,
@@ -30,20 +175,24 @@ pub(super) fn next(
     if provider == se_store::Provider::Codex {
         return super::codex::next(source, revision, offset, deadline, final_capture);
     }
-    let mut tracker = super::queue::restore(source, offset, deadline)?;
-    let mut tool_tracker = super::tools::restore(source, offset, deadline)?;
+    let mut state = ScanState {
+        revision,
+        offset,
+        consumed: offset,
+        complete: offset,
+        digest: Sha256::new(),
+        noise: BTreeMap::new(),
+        noise_records: 0,
+        tracker: super::queue::restore(source, offset, deadline)?,
+        tool_tracker: super::tools::restore(source, offset, deadline)?,
+    };
     let mut position = offset;
-    let mut consumed = offset;
-    let mut complete = offset;
     let mut line = Vec::new();
-    let mut digest = Sha256::new();
-    let mut noise = BTreeMap::<String, Record>::new();
-    let mut noise_records = 0;
     loop {
         deadline.remaining()?;
         let chunk = source.pin.read_at(position, CHUNK).map_err(native_error)?;
         for byte in chunk.bytes {
-            consumed = consumed.checked_add(1).ok_or_else(|| {
+            state.consumed = state.consumed.checked_add(1).ok_or_else(|| {
                 SeError::invalid("capture offset", "a representable source range")
             })?;
             line.push(byte);
@@ -57,179 +206,24 @@ pub(super) fn next(
             if byte != b'\n' {
                 continue;
             }
-            let decoded = claude::decode(&line, &source.binding.conversation)?;
-            let native = if decoded
-                .as_ref()
-                .is_some_and(|r| r.role == se_store::Role::System)
-                || line.iter().all(u8::is_ascii_whitespace)
-            {
-                None
-            } else {
-                Some(
-                    serde_json::from_slice::<serde_json::Value>(&line)
-                        .map_err(|_| SeError::invalid("native tool record", "complete JSON"))?,
-                )
-            };
-            let tool_count = native
-                .as_ref()
-                .map_or(0, crate::harness::tool_capture::claude::Tracker::count);
-            if tool_count > 32 {
-                return Err(SeError::invalid(
-                    "native tools per record",
-                    "at most 32 tool facts; preserve the source cursor",
-                ));
-            }
-            if tool_count + noise.len() > 32 {
-                return finish(
-                    source,
-                    revision,
-                    offset,
-                    complete,
-                    digest,
-                    None,
-                    Pending {
-                        noise,
-                        queued: Vec::new(),
-                        tracker,
-                        tool_tracker,
-                    },
-                )
-                .map(Some);
-            }
-            digest.update(&line);
-            complete = consumed;
-            let mut queued = tracker.observe(
-                &line,
-                Position {
-                    offset: consumed - line.len() as u64,
-                    length: line.len() as u64,
-                },
-            )?;
-            if let Some(value) = native {
-                let position = Position {
-                    offset: consumed - line.len() as u64,
-                    length: line.len() as u64,
-                };
-                for fact in tool_tracker.observe(&value)? {
-                    queued.push(fact.record(
-                        &source.binding.identity,
-                        se_store::Provider::Claude,
-                        source.source,
-                        position.clone(),
-                    )?);
+            match state.process_line(source, &line)? {
+                LineDecision::Continue => line.clear(),
+                LineDecision::Emit { end, main, queued } => {
+                    return state.finish(source, end, main, queued).map(Some);
                 }
             }
-            if queued.len() + noise.len() > 32 {
-                return Err(SeError::invalid(
-                    "native metadata per record",
-                    "at most 32 metadata facts; preserve the source cursor",
-                ));
-            }
-            if let Some(mut record) = decoded {
-                if record.role == se_store::Role::System {
-                    let mut notice = if queued.is_empty() {
-                        Record::decode(record.text.as_str())?
-                    } else {
-                        queued.remove(0)
-                    };
-                    notice.position = Position {
-                        offset: consumed - line.len() as u64,
-                        length: line.len() as u64,
-                    };
-                    if notice.queued_input.is_none() && claude::noise_kind(&notice.kind) {
-                        count(&mut noise, notice)?;
-                        noise_records += 1;
-                        if noise_records >= TAIL_RECORDS || consumed - offset >= TAIL_BYTES {
-                            return finish(
-                                source,
-                                revision,
-                                offset,
-                                consumed,
-                                digest,
-                                None,
-                                Pending {
-                                    noise,
-                                    queued,
-                                    tracker,
-                                    tool_tracker,
-                                },
-                            )
-                            .map(Some);
-                        }
-                        line.clear();
-                        continue;
-                    }
-                    record.vendor_turn = identity(
-                        source,
-                        if notice.is_compaction() {
-                            "compact"
-                        } else {
-                            "record"
-                        },
-                        notice.position.offset,
-                        "",
-                    );
-                    record.text = notice.body()?;
-                }
-                return finish(
-                    source,
-                    revision,
-                    offset,
-                    consumed,
-                    digest,
-                    Some(record),
-                    Pending {
-                        noise,
-                        queued,
-                        tracker,
-                        tool_tracker,
-                    },
-                )
-                .map(Some);
-            }
-            if !queued.is_empty() {
-                return finish(
-                    source,
-                    revision,
-                    offset,
-                    consumed,
-                    digest,
-                    None,
-                    Pending {
-                        noise,
-                        queued,
-                        tracker,
-                        tool_tracker,
-                    },
-                )
-                .map(Some);
-            }
-            line.clear();
         }
         position = chunk.next_offset;
-        if chunk.end_of_file || position == consumed && position == offset {
+        if chunk.end_of_file || position == state.consumed && position == offset {
             if final_capture && !line.is_empty() {
                 return Err(SeError::invalid(
                     "pinned Claude transcript framing",
                     "a newline-terminated final record after the native writer has exited; preserve the source and committed cursor",
                 ));
             }
-            if final_capture && !noise.is_empty() {
-                return finish(
-                    source,
-                    revision,
-                    offset,
-                    complete,
-                    digest,
-                    None,
-                    Pending {
-                        noise,
-                        queued: Vec::new(),
-                        tracker,
-                        tool_tracker,
-                    },
-                )
-                .map(Some);
+            if final_capture && !state.noise.is_empty() {
+                let end = state.complete;
+                return state.finish(source, end, None, Vec::new()).map(Some);
             }
             return Ok(None);
         }
