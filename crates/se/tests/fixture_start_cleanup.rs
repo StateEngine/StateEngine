@@ -39,6 +39,14 @@ fn checked(output: std::process::Output) -> Result<serde_json::Value, Box<dyn st
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 
+fn panic_text(panic: &(dyn std::any::Any + Send)) -> &str {
+    panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("non-text panic payload")
+}
+
 #[test]
 /// Protects: failed reply parsing and a panicked native observation close the published fixture host while retaining its state for diagnosis.
 /// Bug: a detached host could be committed before RunningHost existed to clean up a failed startup observation.
@@ -89,11 +97,17 @@ fn failed_reply_and_panicked_observation_close_the_published_host_but_keep_its_h
         // wrapper, so the existing outside-observer assertion must panic.
         let failure =
             std::panic::catch_unwind(|| runtime_host::RunningHost::start(&wrapper, &home));
-        let refused = match failure {
-            Ok(result) => result.is_err(),
-            Err(_) => true,
+        let (refused, outcome) = match &failure {
+            Ok(Ok(_)) => (false, "a running host".to_owned()),
+            Ok(Err(error)) => (true, format!("error: {error}")),
+            Err(panic) => (true, format!("panic: {}", panic_text(panic.as_ref()))),
         };
-        let endpoint = se_host::client::endpoint::decode_endpoint(&fs::read(&observed_endpoint)?)?;
+        // The wrapper copies the endpoint only after a successful `up`. Without
+        // it, the start outcome is the only witness of why startup failed.
+        let published = fs::read(&observed_endpoint).map_err(|error| {
+            format!("`up` published no endpoint ({error}); fixture start returned {outcome}")
+        })?;
+        let endpoint = se_host::client::endpoint::decode_endpoint(&published)?;
         let expected = endpoint.epoch.owner.fields();
         let se_types::StartIdentity::Linux { start_ticks } = expected.started else {
             return Err("fixture runtime has a foreign native start".into());

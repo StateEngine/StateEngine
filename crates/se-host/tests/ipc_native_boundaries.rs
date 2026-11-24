@@ -127,8 +127,28 @@ fn admitted_peer(
     outcome?;
     joined
 }
+/// Windows briefly keeps a just-written or just-executed image open (loader
+/// teardown, malware scanning) and refuses other openers with a sharing
+/// violation. That outside holder is not the cache behaviour under test, so
+/// only that refusal is retried, for a bounded time; anything else returns.
+fn settled<T>(mut operation: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match operation() {
+            Err(error)
+                if cfg!(windows)
+                    && error.raw_os_error() == Some(ERROR_SHARING_VIOLATION)
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            result => return result,
+        }
+    }
+}
 fn digest(path: &std::path::Path) -> Result<se_types::Sha256, Box<dyn std::error::Error>> {
-    let mut file = fs::File::open(path)?;
+    let mut file = settled(|| fs::File::open(path))?;
     let mut hash = Sha256::new();
     let mut block = [0; 65536];
     loop {
@@ -194,10 +214,7 @@ fn image_cache_invalidates_same_inode_changes_and_same_metadata_replacements() -
         "cached-peer"
     });
     fs::copy(&source, &image)?;
-    fs::OpenOptions::new()
-        .append(true)
-        .open(&image)?
-        .write_all(b"A")?;
+    settled(|| fs::OpenOptions::new().append(true).open(&image))?.write_all(b"A")?;
     let first_time = fs::metadata(&image)?.modified()?;
     let size = fs::metadata(&image)?.len();
     let first = digest(&image)?;
@@ -212,7 +229,7 @@ fn image_cache_invalidates_same_inode_changes_and_same_metadata_replacements() -
     // invalidate the retained entry even though the pathname and inode agree.
     {
         use std::io::{Seek, SeekFrom};
-        let mut file = fs::OpenOptions::new().write(true).open(&image)?;
+        let mut file = settled(|| fs::OpenOptions::new().write(true).open(&image))?;
         file.seek(SeekFrom::End(-1))?;
         file.write_all(b"B")?;
         file.sync_all()?;
@@ -232,15 +249,10 @@ fn image_cache_invalidates_same_inode_changes_and_same_metadata_replacements() -
     )?;
     // Retain the old object under another name, so the new object cannot reuse
     // its identity. Match mtime and size to make native file identity essential.
-    fs::rename(&image, image.with_extension("previous"))?;
+    settled(|| fs::rename(&image, image.with_extension("previous")))?;
     fs::copy(&source, &image)?;
-    fs::OpenOptions::new()
-        .append(true)
-        .open(&image)?
-        .write_all(b"C")?;
-    fs::OpenOptions::new()
-        .write(true)
-        .open(&image)?
+    settled(|| fs::OpenOptions::new().append(true).open(&image))?.write_all(b"C")?;
+    settled(|| fs::OpenOptions::new().write(true).open(&image))?
         .set_times(fs::FileTimes::new().set_modified(second_time))?;
     assert_eq!(fs::metadata(&image)?.modified()?, second_time);
     assert_eq!(fs::metadata(&image)?.len(), size);
