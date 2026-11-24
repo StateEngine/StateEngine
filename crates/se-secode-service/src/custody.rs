@@ -12,7 +12,7 @@ use std::io::Write;
     clippy::struct_excessive_bools,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
-pub(super) struct Journal {
+pub struct Journal {
     pub version: u16,
     #[serde(default)]
     pub retired: bool,
@@ -58,44 +58,44 @@ pub(super) struct Journal {
     #[serde(default)]
     pub server_sha256: Option<se_types::Sha256>,
     pub endpoint: Option<String>,
-    pub identity: Option<crate::harness::secode_process::ServiceIdentity>,
+    pub identity: Option<se_harness::secode_process::ServiceIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capability_repair: Option<crate::harness::secode_process::CapabilityRepair>,
+    pub capability_repair: Option<se_harness::secode_process::CapabilityRepair>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ClientClosed {
+pub struct ClientClosed {
     pub witness: se_proc::StopWitness,
     pub capture_complete: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ResumeRelease {
+pub struct ResumeRelease {
     pub session: se_types::SessionId,
-    pub binding: crate::harness::secode_process::NoticeBinding,
+    pub binding: se_harness::secode_process::NoticeBinding,
     pub completed: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Notice {
+pub struct Notice {
     #[serde(default)]
     pub effect: Option<se_store::RecordId>,
     pub input: String,
-    pub binding: crate::harness::secode_process::NoticeBinding,
+    pub binding: se_harness::secode_process::NoticeBinding,
     pub messages: Vec<String>,
 }
 impl Journal {
-    pub(super) fn unprovisioned(&self) -> bool {
+    pub(crate) fn unprovisioned(&self) -> bool {
         self.identity.is_none() && !self.initial_offered
     }
 
-    pub(super) fn require_registration(&self, current: &[u8]) -> Result<()> {
+    pub(crate) fn require_registration(&self, current: &[u8]) -> Result<()> {
         let matches = if let Some(repair) = self
             .capability_repair
             .as_ref()
             .filter(|repair| repair.owned_binding().is_some())
         {
-            crate::harness::secode_process::CapabilityRepair::fingerprint(
+            se_harness::secode_process::CapabilityRepair::fingerprint(
                 current,
                 &repair.before.service,
             ) == repair.registration
@@ -110,21 +110,24 @@ impl Journal {
         }
         Ok(())
     }
-    pub fn auxiliary(&self, auxiliary: Auxiliary) -> &Option<Checkpoint> {
+    pub(crate) fn auxiliary(&self, auxiliary: Auxiliary) -> &Option<Checkpoint> {
         match auxiliary {
             Auxiliary::Bootstrap => &self.bootstrap,
             Auxiliary::Service => &self.service,
             Auxiliary::Retirement => &self.retirement,
         }
     }
-    pub fn auxiliary_mut(&mut self, auxiliary: Auxiliary) -> &mut Option<Checkpoint> {
+    pub(crate) fn auxiliary_mut(&mut self, auxiliary: Auxiliary) -> &mut Option<Checkpoint> {
         match auxiliary {
             Auxiliary::Bootstrap => &mut self.bootstrap,
             Auxiliary::Service => &mut self.service,
             Auxiliary::Retirement => &mut self.retirement,
         }
     }
-    pub fn checkpoint_lifecycle(&self, auxiliary: Auxiliary) -> Result<se_types::LifecycleId> {
+    pub(crate) fn checkpoint_lifecycle(
+        &self,
+        auxiliary: Auxiliary,
+    ) -> Result<se_types::LifecycleId> {
         let checkpoint = self.auxiliary(auxiliary);
         checkpoint
             .as_ref()
@@ -138,7 +141,7 @@ impl Journal {
     ) -> PathBuf {
         home.join("secode").join(format!(
             "{}.json",
-            crate::harness::secode_process::service_key(project, agent)
+            se_harness::secode_process::service_key(project, agent)
         ))
     }
     pub fn profile(
@@ -146,16 +149,19 @@ impl Journal {
         project: &se_types::ProjectId,
         agent: &se_types::AgentId,
     ) -> PathBuf {
-        crate::harness::secode_process::private_profile(home, project, agent)
+        se_harness::secode_process::private_profile(home, project, agent)
     }
-    pub fn read(path: &std::path::Path, deadline: &Deadline) -> Result<Option<Self>> {
-        Ok(Self::read_with_digest(path, deadline)?.map(|(value, _)| value))
+    pub fn read<H: crate::HostPort>(
+        path: &std::path::Path,
+        deadline: &Deadline,
+    ) -> Result<Option<Self>> {
+        Ok(Self::read_with_digest::<H>(path, deadline)?.map(|(value, _)| value))
     }
-    pub fn read_with_digest(
+    pub fn read_with_digest<H: crate::HostPort>(
         path: &std::path::Path,
         deadline: &Deadline,
     ) -> Result<Option<(Self, [u8; 32])>> {
-        let Some(mut file) = open_journal(path, deadline)? else {
+        let Some(mut file) = H::open_owned_file(path, "SE Code custody", deadline)? else {
             return Ok(None);
         };
         let bytes = file
@@ -182,7 +188,7 @@ impl Journal {
         }
         Ok(Some((value, Sha256::digest(&bytes).into())))
     }
-    pub fn save(
+    pub fn save<H: crate::HostPort>(
         &self,
         path: &std::path::Path,
         expected: Option<[u8; 32]>,
@@ -198,7 +204,7 @@ impl Journal {
             return Err(error("SE Code custody", "journal exceeds one MiB"));
         }
         let wanted: [u8; 32] = Sha256::digest(&bytes).into();
-        if let Some(mut observed) = open_journal(path, deadline)?
+        if let Some(mut observed) = H::open_owned_file(path, "SE Code custody", deadline)?
             && observed
                 .sha256()
                 .map_err(|e| error("SE Code custody reconciliation", e))?
@@ -207,7 +213,7 @@ impl Journal {
             return Ok(wanted);
         }
         if let Some(hash) = expected {
-            let previous = open_journal(path, deadline)?
+            let previous = H::open_owned_file(path, "SE Code custody", deadline)?
                 .ok_or_else(|| error("SE Code custody update", "original journal absent"))?;
             previous
                 .replace(hash, &bytes)
@@ -226,7 +232,7 @@ impl Journal {
                 .publish_no_replace(&staging.path, path)
                 .map_err(|e| error("SE Code custody publication", e))?;
         }
-        let observed = Self::read(path, deadline)?
+        let observed = Self::read::<H>(path, deadline)?
             .ok_or_else(|| error("SE Code custody readback", "journal absent"))?;
         if serde_json::to_vec(&observed).map_err(|e| error("SE Code custody readback", e))? != bytes
         {
@@ -279,7 +285,7 @@ impl Journal {
     }
 }
 
-pub(super) fn source(checkpoint: &Checkpoint) -> Result<se_proc::RecoverySource> {
+pub(crate) fn source(checkpoint: &Checkpoint) -> Result<se_proc::RecoverySource> {
     Ok(match &checkpoint.checkpoint {
         CheckpointKind::Reservation(v) => se_proc::RecoverySource::Reservation(Box::new(v.clone())),
         CheckpointKind::Scope(v) => se_proc::RecoverySource::Prepared(Box::new(v.clone())),
@@ -292,29 +298,4 @@ pub(super) fn source(checkpoint: &Checkpoint) -> Result<se_proc::RecoverySource>
             ));
         }
     })
-}
-
-// OwnedFile locks the parent as well as the leaf. Independent service journals
-// share that parent, so a sibling publication can briefly contend. Reopen after
-// dropping every failed pin; retry only measured native contention, within the
-// original request's cancellation and deadline bounds.
-fn open_journal(path: &std::path::Path, deadline: &Deadline) -> Result<Option<se_proc::OwnedFile>> {
-    use crate::state_files::{Acquisition, AcquisitionRetry};
-    let mut retry = AcquisitionRetry::new(deadline.at());
-    deadline.remaining()?;
-    loop {
-        match retry
-            .acquire(|| se_proc::OwnedFile::open(path))
-            .map_err(|failure| failure.into_public(|native| error("SE Code custody", native)))?
-        {
-            Acquisition::Ready(file) => {
-                deadline.remaining()?;
-                return Ok(file);
-            }
-            Acquisition::Wait(delay) => {
-                deadline.remaining()?;
-                std::thread::sleep(delay);
-            }
-        }
-    }
 }

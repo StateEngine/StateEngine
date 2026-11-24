@@ -4,25 +4,26 @@ use super::*;
 use se_types::Read;
 use sha2::{Digest, Sha256};
 
-pub(in crate::process) fn input(notice: &se_types::NoticeId) -> String {
+pub fn input(notice: &se_types::NoticeId) -> String {
     let digest = Sha256::digest(notice.as_str().as_bytes());
     format!("msg_{}", se_types::hex_lower(&digest[..16]))
 }
-impl LaunchCoordinator {
+impl<H: HostPort> Coordinator<'_, H> {
     /// A lost runtime cannot reconstruct an offer from its replacement epoch.
     /// Keep the original coordinates until actual captured delivery or recipient
     /// disposition is durable; never turn queue admission into a read receipt.
-    pub(in crate::process) async fn reconcile_recovered_secode_notice(
+    pub async fn reconcile_recovered_secode_notice(
         &self,
-        work: &owned::Work,
+        work: &impl SecodeWork,
         deadline: &Deadline,
     ) -> Result<()> {
-        if work.secode.is_none() || work.mail.flight.is_some() {
+        if work.secode().is_none() || work.mail_in_flight() {
             return Ok(());
         }
         let slot = self
-            .secode_services
-            .get(&work.meta.project.id, &work.meta.agent.id, deadline)
+            .0
+            .services()
+            .get(work.project_id(), work.agent_id(), deadline)
             .await?
             .ok_or_else(|| {
                 error(
@@ -36,8 +37,8 @@ impl LaunchCoordinator {
         };
         self.reconcile_secode_notice(work, deadline).await?;
         let ids = notice.messages.clone();
-        let agent = work.meta.agent.id.clone();
-        let resolved = self.store.read(work.cleanup_admission.clone(), deadline, move |cx| {
+        let agent = work.agent_id().clone();
+        let resolved = self.0.store_read(work.cleanup_admission().clone(), deadline, move |cx| {
             use se_store::Snapshot;
             for id in ids {
                 let message = se_core::scope::require_present(cx.read.message(id.parse()?).map_err(|e| se_core::store_error::store_error(&e))?, "SE Code original notice message", "Retain the original coordinates and restore access to this recipient's messages.")?;
@@ -62,17 +63,17 @@ impl LaunchCoordinator {
             ));
         }
         service.journal.notice = None;
-        service.persist(self, deadline).await
+        service.persist(self.0, deadline).await
     }
-    pub(in crate::process) async fn offer_secode_notice(
+    pub async fn offer_secode_notice(
         &self,
-        work: &owned::Work,
+        work: &impl SecodeWork,
         reservation: &se_core::ops::mail::Reservation,
         deadline: &Deadline,
     ) -> Result<String> {
         let managed = work
-            .secode
-            .clone()
+            .secode()
+            .cloned()
             .ok_or_else(|| error("SE Code native notice", "original service binding absent"))?;
         let key = input(&reservation.notice_id);
         let messages = reservation
@@ -81,8 +82,9 @@ impl LaunchCoordinator {
             .map(ToString::to_string)
             .collect::<Vec<_>>();
         let slot = self
-            .secode_services
-            .get(&work.meta.project.id, &work.meta.agent.id, deadline)
+            .0
+            .services()
+            .get(work.project_id(), work.agent_id(), deadline)
             .await?
             .ok_or_else(|| error("SE Code notice custody", "private service absent"))?;
         let mut service = lock_service(&slot, deadline).await?;
@@ -106,7 +108,7 @@ impl LaunchCoordinator {
                 messages,
             };
             service.journal.notice = Some(notice.clone());
-            service.persist(self, deadline).await?;
+            service.persist(self.0, deadline).await?;
             (notice, true)
         };
         drop(service);
@@ -136,17 +138,18 @@ impl LaunchCoordinator {
             )),
         }
     }
-    pub(in crate::process) async fn reconcile_secode_notice(
+    pub async fn reconcile_secode_notice(
         &self,
-        work: &owned::Work,
+        work: &impl SecodeWork,
         deadline: &Deadline,
     ) -> Result<()> {
-        let Some(managed) = &work.secode else {
+        let Some(managed) = work.secode() else {
             return Ok(());
         };
         let slot = self
-            .secode_services
-            .get(&work.meta.project.id, &work.meta.agent.id, deadline)
+            .0
+            .services()
+            .get(work.project_id(), work.agent_id(), deadline)
             .await?
             .ok_or_else(|| error("SE Code notice readback", "original service absent"))?;
         let notice = lock_service(&slot, deadline).await?.journal.notice.clone();
@@ -170,18 +173,19 @@ impl LaunchCoordinator {
             )),
         }
     }
-    pub(in crate::process) async fn retire_secode_notice(
+    pub async fn retire_secode_notice(
         &self,
-        work: &owned::Work,
+        work: &impl SecodeWork,
         notice: &se_types::NoticeId,
         deadline: &Deadline,
     ) -> Result<()> {
-        if work.secode.is_none() || work.mail.flight.is_some() {
+        if work.secode().is_none() || work.mail_in_flight() {
             return Ok(());
         }
         let slot = self
-            .secode_services
-            .get(&work.meta.project.id, &work.meta.agent.id, deadline)
+            .0
+            .services()
+            .get(work.project_id(), work.agent_id(), deadline)
             .await?
             .ok_or_else(|| error("SE Code notice retirement", "original service absent"))?;
         let mut service = lock_service(&slot, deadline).await?;
@@ -197,6 +201,6 @@ impl LaunchCoordinator {
             ));
         }
         service.journal.notice = None;
-        service.persist(self, deadline).await
+        service.persist(self.0, deadline).await
     }
 }

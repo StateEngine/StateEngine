@@ -19,7 +19,6 @@
   "crates/se-store/src/apply": 21,
   "crates/se/src/runtime": 20,
   "crates/se-harness/src/harness/codex_rpc": 20,
-  "crates/se-host/src/secode_service": 22,
   "crates/se-host/src/runtime/capture": 20,
   "crates/se-core/src/ops/outputs": 17,
   "crates/se-proc/src/platform/windows": 17,

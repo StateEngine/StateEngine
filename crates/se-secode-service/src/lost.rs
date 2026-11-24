@@ -2,12 +2,12 @@
 use super::*;
 use se_proc::{CheckpointKind, ProcessRuntime, RecoveryOutcome, StopObservation};
 
-impl LaunchCoordinator {
-    pub(in crate::process) fn secode_loss_error(&self, work: &owned::Work) -> se_types::SeError {
+impl<H: HostPort> Coordinator<'_, H> {
+    pub fn secode_loss_error(&self, work: &impl SecodeWork) -> se_types::SeError {
         let next = se_core::ops::AgentCommand::launch_in_home(
-            &work.meta.agent.id,
-            &self.options.home,
-            &work.meta.project.id,
+            work.agent_id(),
+            self.0.home(),
+            work.project_id(),
             true,
         )
         .map(|command| command.command)
@@ -25,14 +25,15 @@ impl LaunchCoordinator {
         failure
     }
 
-    pub(in crate::process) async fn observe_secode_service_loss(
+    pub async fn observe_secode_service_loss(
         &self,
-        work: &mut owned::Work,
+        work: &mut impl SecodeWork,
         deadline: &Deadline,
     ) -> Result<bool> {
         let Some(slot) = self
-            .secode_services
-            .get(&work.meta.project.id, &work.meta.agent.id, deadline)
+            .0
+            .services()
+            .get(work.project_id(), work.agent_id(), deadline)
             .await?
         else {
             return Ok(false);
@@ -41,7 +42,7 @@ impl LaunchCoordinator {
         if service.restart.is_some() {
             return Ok(false);
         }
-        if service.journal.session != work.meta.session
+        if service.journal.session != *work.session()
             || service
                 .journal
                 .client_closed
@@ -51,11 +52,10 @@ impl LaunchCoordinator {
             return Ok(false);
         }
         if let Some(owner) = service.process.clone() {
-            let native = self.native.clone();
+            let native = self.0.native().clone();
             let observed = self
-                .store
-                .pool
-                .run_owned(deadline, move || {
+                .0
+                .run_blocking(deadline, move || {
                     native
                         .witness_exit(&owner)
                         .map_err(|e| error("SE Code lost service exit", e))
@@ -82,12 +82,11 @@ impl LaunchCoordinator {
                 return Ok(false);
             };
             let source = recovery::recovery_source(source);
-            let native = self.native.clone();
-            let generation = self.options.epoch.generation;
+            let native = self.0.native().clone();
+            let generation = self.0.epoch().generation;
             let observed = self
-                .store
-                .pool
-                .run_owned(deadline, move || {
+                .0
+                .run_blocking(deadline, move || {
                     let plan = native
                         .plan_recovery(source)
                         .map_err(|e| error("SE Code lost service recovery plan", e))?;
@@ -118,12 +117,12 @@ impl LaunchCoordinator {
         service.journal.lost = true;
         service.failure = None;
         service.control = None;
-        service.persist(self, deadline).await?;
-        work.secode_service_lost = true;
+        service.persist(self.0, deadline).await?;
+        work.set_secode_service_lost(true);
         Ok(true)
     }
 
-    pub(super) async fn retire_lost_secode_service(
+    pub(crate) async fn retire_lost_secode_service(
         &self,
         service: &mut Service,
         deadline: &Deadline,
@@ -154,6 +153,6 @@ impl LaunchCoordinator {
         }
         self.retire_secode_registration(service, deadline).await?;
         service.journal.retired = true;
-        service.persist(self, deadline).await
+        service.persist(self.0, deadline).await
     }
 }

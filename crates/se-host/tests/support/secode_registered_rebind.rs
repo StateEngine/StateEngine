@@ -163,25 +163,10 @@ fn service(f: &Fixture, session: se_types::SessionId, profile: &Path) -> Check<S
         identity: None,
         capability_repair: None,
     };
-    Ok(Service {
-        restart: None,
-        path: Journal::path(&f.options.state_directory, &f.project, &f.a),
+    Ok(Service::new(
         journal,
-        digest: None,
-        pending_save: None,
-        wake: Arc::new(events::Wake::default()),
-        bootstrap: None,
-        process: None,
-        retirement: None,
-        bootstrap_output: None,
-        service_output: None,
-        retirement_output: None,
-        control: None,
-        failure: None,
-        capability_failure: None,
-        live: Default::default(),
-        capability_check_at: None,
-    })
+        Journal::path(&f.options.state_directory, &f.project, &f.a),
+    ))
 }
 
 async fn wait_json(path: &Path, field: &str) -> Check<serde_json::Value> {
@@ -279,23 +264,25 @@ async fn register_fixture(
     coordinator
         .start_secode_auxiliary(
             &mut service,
-            Auxiliary::Service,
-            invocation,
-            vec![
-                "--exact".into(),
-                "process::secode::registered_rebind_test::fixture_child".into(),
-                "--ignored".into(),
-                "--nocapture".into(),
-            ],
-            f.home.clone(),
-            policy,
-            None,
+            AuxiliaryLaunch {
+                auxiliary: Auxiliary::Service,
+                executable: invocation,
+                arguments: vec![
+                    "--exact".into(),
+                    "process::secode::registered_rebind_test::fixture_child".into(),
+                    "--ignored".into(),
+                    "--nocapture".into(),
+                ],
+                cwd: f.home.clone(),
+                policy,
+                input: None,
+            },
             deadline,
         )
         .await?;
     let original = service
-        .process
-        .clone()
+        .process()
+        .cloned()
         .ok_or("native service custody absent")?;
     let slot = Arc::new(tokio::sync::Mutex::new(service));
     coordinator
@@ -402,10 +389,10 @@ fn registered_native_service_rebinds_and_releases_the_seat() -> Check {
                 let endpoint = saved["endpoint"].as_str().ok_or("replacement endpoint absent")?;
                 {
                     let service = slot.lock().await;
-                    let restart = service.restart.as_ref().ok_or("rebind not registered")?;
-                    assert_ne!(u64::from(restart.identity.pid.get()), old["pid"].as_u64().ok_or("old PID absent")?);
-                    assert_eq!(restart.identity.image_sha256, observed.image_sha256());
-                    assert!(restart.control.verify_restart(&deadline).await.is_err(), "not-ready challenge was accepted");
+                    let restart = service.restart().ok_or("rebind not registered")?;
+                    assert_ne!(u64::from(restart.identity().pid.get()), old["pid"].as_u64().ok_or("old PID absent")?);
+                    assert_eq!(restart.identity().image_sha256, observed.image_sha256());
+                    assert!(restart.control().verify_restart(&deadline).await.is_err(), "not-ready challenge was accepted");
                 }
                 let state: serde_json::Value = serde_json::from_slice(&std::fs::read(&state_path)?)?;
                 assert!(state["not_ready_count"].as_u64().is_some_and(|count| count > 0));

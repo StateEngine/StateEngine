@@ -1797,6 +1797,7 @@ dependencies = [
  "se-remote-host",
  "se-repository",
  "se-secode-image",
+ "se-secode-service",
  "se-ssh-transport",
  "se-store",
  "se-types",
@@ -1980,6 +1981,25 @@ dependencies = [
  "se-types",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "se-secode-service"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "futures-util",
+ "reqwest",
+ "se-config",
+ "se-core",
+ "se-harness",
+ "se-proc",
+ "se-store",
+ "se-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "zeroize",
 ]
 
 [[package]]

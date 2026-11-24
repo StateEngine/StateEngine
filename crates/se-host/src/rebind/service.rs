@@ -142,14 +142,12 @@ fn validate_rebind_service(
     peer: &crate::PeerProof,
     boot: &se_proc::BootIdentity,
 ) -> Result<()> {
-    if service.journal.retired
-        || service.journal.server_sha256 != Some(peer.native().image_sha256())
-    {
+    let journal = service.journal();
+    if journal.retired || journal.server_sha256 != Some(peer.native().image_sha256()) {
         return Err(refusal(
             "the observed executable is not registered for the selected active seat",
         ));
     }
-    let journal = &service.journal;
     if journal.client_closed.is_some() {
         return Err(refusal(
             "the original client was closed; a restart cannot revive it",
@@ -199,7 +197,7 @@ impl LaunchCoordinator {
             .await?;
         let mut service = lock_service(&slot, deadline).await?;
         validate_rebind_service(&service, peer, &self.owner.boot)?;
-        let journal = &service.journal;
+        let journal = service.journal();
         let project = journal.project.clone();
         let agent = journal.agent.clone();
         let session = journal.session.clone();
@@ -217,12 +215,11 @@ impl LaunchCoordinator {
         let session_hash = Sha256::digest(capability.expose()).into();
         let http_hash = Sha256::digest(http_bearer.expose()).into();
         let key = se_types::IdempotencyKey::new(format!("secode.rebind.{restart_key}"))?;
-        let same_restart = service
-            .restart
-            .as_ref()
-            .is_some_and(|old| old.restart_key == restart_key);
-        let control = if let Some(existing) = service.restart.as_ref().filter(|_| same_restart) {
-            existing.control.clone()
+        let control = if let Some(existing) = service
+            .restart()
+            .filter(|old| old.restart_key() == restart_key)
+        {
+            existing.control().clone()
         } else {
             self.restart_control(
                 &service,
@@ -247,29 +244,18 @@ impl LaunchCoordinator {
             http_hash,
         };
         self.rotate_if_new(&selected, request, deadline).await?;
-        if !same_restart {
-            service.live.invalidate()?;
-        }
-        if service.journal.restart_key.as_deref() != Some(&restart_key) {
-            service.journal.restart_key = Some(restart_key.clone());
-            service.journal.restart_effect = None;
-            service.journal.restart_settled = false;
-            service.journal.restart_reply_sent = false;
-            service.journal.superseded_by_restart = true;
-            service.persist(self, deadline).await?;
-        }
-        if !same_restart {
-            service.restart = Some(RestartControl {
-                control,
-                reply_sent: false,
-                mail_notified: false,
-                identity: restart,
-                adopted: false,
-                session_hash,
-                restart_key: restart_key.clone(),
-            });
-            service.capability_check_at = None;
-        }
+        service
+            .register_restart(
+                self,
+                PendingRestart {
+                    key: restart_key.clone(),
+                    control,
+                    identity: restart,
+                    session_hash,
+                },
+                deadline,
+            )
+            .await?;
         let cursor = self
             .rebind_readback(&selected, &capability, &http_bearer, deadline)
             .await?;
@@ -358,7 +344,7 @@ impl LaunchCoordinator {
         restart_bytes: [u8; 32],
         deadline: &Deadline,
     ) -> Result<Arc<crate::harness::secode_process::Control>> {
-        let profile = service.journal.profile.to_local()?;
+        let profile = service.journal().profile.to_local()?;
         let endpoint = control_endpoint.to_owned();
         let proof = Secret::new(capability.expose().to_vec())?;
         self.store
@@ -440,24 +426,12 @@ impl LaunchCoordinator {
             .await?
             .ok_or_else(|| refusal("service custody disappeared after reply"))?;
         let mut service = lock_service(&slot, deadline).await?;
-        if service.journal.session != reply.session {
+        if service.journal().session != reply.session {
             return Err(refusal("service session changed after reply"));
         }
-        let mut saved = Ok(());
-        if service
-            .restart
-            .as_ref()
-            .is_some_and(|restart| restart.restart_key == reply.restart_key)
-        {
-            if !service.journal.restart_reply_sent {
-                service.journal.restart_reply_sent = true;
-                saved = service.persist(self, deadline).await;
-            }
-            if let Some(restart) = service.restart.as_mut() {
-                restart.reply_sent = true;
-            }
-            service.capability_check_at = None;
-        }
+        let saved = service
+            .mark_restart_reply_sent(self, &reply.restart_key, deadline)
+            .await;
         drop(service);
         use std::sync::atomic::Ordering;
         let jobs = self
@@ -480,24 +454,21 @@ impl LaunchCoordinator {
         service: &mut Service,
         deadline: &Deadline,
     ) -> Result<()> {
-        let Some(restart) = &service.restart else {
+        let Some(restart) = service.restart() else {
             return Ok(());
         };
-        if restart.adopted {
+        if restart.adopted() {
             return Ok(());
         }
-        if !restart.reply_sent {
+        if !restart.reply_sent() {
             return Err(refusal("the restart reply has not been delivered"));
         }
-        let control = restart.control.clone();
+        let control = restart.control().clone();
         control.verify_restart(deadline).await?;
         let binding = control
-            .binding(&service.journal.vendor_session, deadline)
+            .binding(&service.journal().vendor_session, deadline)
             .await?;
-        service.live.publish_restart(control, binding)?;
-        if let Some(restart) = service.restart.as_mut() {
-            restart.adopted = true;
-        }
+        service.publish_adopted_restart(control, binding)?;
         Ok(())
     }
 
@@ -516,7 +487,7 @@ impl LaunchCoordinator {
         let Ok(service) = lock_service(&slot, deadline).await else {
             return false;
         };
-        service.restart.is_some()
+        service.restart().is_some()
     }
 
     pub(in crate::process) async fn restart_session_hash(
@@ -532,10 +503,10 @@ impl LaunchCoordinator {
             return Ok(None);
         };
         let service = lock_service(&slot, deadline).await?;
-        if service.journal.session != work.meta.session {
+        if service.journal().session != work.meta.session {
             return Err(refusal("retained restart session differs"));
         }
-        Ok(service.restart.as_ref().map(|restart| restart.session_hash))
+        Ok(service.restart().map(RestartControl::session_hash))
     }
 
     /// Reconstruct pending challenge state from the committed credential heads.
@@ -544,12 +515,12 @@ impl LaunchCoordinator {
         service: &mut Service,
         deadline: &Deadline,
     ) -> Result<()> {
-        if service.journal.retired {
+        if service.journal().retired {
             return Ok(());
         }
-        let session = service.journal.session.clone();
-        let project = service.journal.project.clone();
-        let agent = service.journal.agent.clone();
+        let session = service.journal().session.clone();
+        let project = service.journal().project.clone();
+        let agent = service.journal().agent.clone();
         let admission = Admission {
             scope: Scope::Project(project.clone()),
             actor: Actor::Human(self.human.clone()),
@@ -601,7 +572,7 @@ impl LaunchCoordinator {
         let machine_key = self.capability_admission.machine_key()?;
         let capability = secret(&machine_key, "session", &session, &identity)?;
         let session_hash = Sha256::digest(capability.expose()).into();
-        let profile = service.journal.profile.to_local()?;
+        let profile = service.journal().profile.to_local()?;
         let endpoint = restart.control_endpoint.clone();
         let control = self
             .store
@@ -616,25 +587,17 @@ impl LaunchCoordinator {
                 .map(Arc::new)
             })
             .await?;
-        if service.journal.restart_key.as_deref() != Some(restart_key.as_str()) {
-            service.journal.restart_key = Some(restart_key.clone());
-            service.journal.restart_effect = None;
-            service.journal.restart_settled = false;
-            service.journal.restart_reply_sent = false;
-            service.journal.superseded_by_restart = true;
-            service.persist(self, deadline).await?;
-        }
-        service.live.invalidate()?;
-        service.restart = Some(RestartControl {
-            control,
-            reply_sent: service.journal.restart_reply_sent,
-            mail_notified: false,
-            identity: restart,
-            adopted: false,
-            session_hash,
-            restart_key,
-        });
-        service.capability_check_at = None;
-        Ok(())
+        service
+            .restore_restart(
+                self,
+                PendingRestart {
+                    key: restart_key,
+                    control,
+                    identity: restart,
+                    session_hash,
+                },
+                deadline,
+            )
+            .await
     }
 }

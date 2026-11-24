@@ -1,8 +1,8 @@
 //! Current authenticated provider reads, separate from retained custody. One
 //! unreadable service does not conceal other rows or invent an empty execution.
 use super::*;
-use crate::harness::secode_process::{Control, QualifiedControl};
 use se_core::ops::{AgentRow, AnyOutput, SecodeRuntimeView};
+use se_harness::secode_process::{Control, QualifiedControl};
 use se_types::{Page, Read, Window};
 use serde_json::Value;
 
@@ -24,8 +24,8 @@ struct ActiveExecution {
     execution_id: Read<String>,
 }
 
-impl LaunchCoordinator {
-    pub(in crate::process) async fn observe_secode_output(
+impl<H: HostPort> Coordinator<'_, H> {
+    pub async fn observe_secode_output(
         &self,
         mut output: AnyOutput,
         deadline: &Deadline,
@@ -90,7 +90,7 @@ impl LaunchCoordinator {
                 if resume_ready {
                     let command = se_core::ops::AgentCommand::launch_in_home(
                         &row.id,
-                        &self.options.home,
+                        self.0.home(),
                         &project,
                         false,
                     );
@@ -203,7 +203,7 @@ impl LaunchCoordinator {
     ) -> Result<ServiceCustodySnapshot> {
         let services = tokio::time::timeout_at(
             tokio::time::Instant::from_std(deadline.at()),
-            self.secode_services.0.lock(),
+            self.0.services().0.lock(),
         )
         .await
         .map_err(|_| error("SE Code runtime observation", "service registry is busy"))?;
@@ -230,7 +230,7 @@ impl LaunchCoordinator {
         if service.journal.lost && service.restart.is_none() {
             let next = se_core::ops::AgentCommand::launch_in_home(
                 &row.id,
-                &self.options.home,
+                self.0.home(),
                 &service.journal.project,
                 true,
             )
@@ -270,58 +270,7 @@ impl LaunchCoordinator {
         })
     }
     fn secode_stream(&self, project: &se_types::ProjectId, row: &AgentRow) -> Result<Read<String>> {
-        let Some(job) = self.find_job(project, &row.id)? else {
-            return Ok(Read::Unknown {
-                what: "This runtime has no retained original client stream binding.".into(),
-            });
-        };
-        let Ok(work) = job.state.try_lock() else {
-            return Ok(Read::Unknown {
-                what: "The original client binding is busy; no stream observation was made.".into(),
-            });
-        };
-        let Some(binding) = work
-            .binding
-            .as_ref()
-            .and_then(|binding| binding.get::<crate::secode_process::Binding>())
-        else {
-            return Ok(Read::Absent {
-                checked:
-                    "The original stream binding has been retired; no replacement pipe was opened."
-                        .into(),
-            });
-        };
-        let diagnostics = binding
-            .diagnostics
-            .lock()
-            .map_err(|_| error("SE Code stream observation", "poisoned diagnostics"))?;
-        if let Some(failure) = &diagnostics.failure {
-            return Ok(Read::Unreadable {
-                source: "original SE Code output".into(),
-                reason: se_types::SeError::from(failure.clone()).to_string(),
-                error: Some(Box::new(failure.clone())),
-            });
-        }
-        if diagnostics.recovered {
-            return Ok(Read::Absent {checked:"The former runtime's streams were lost; authenticated canonical reads continue and no old pipe was reopened.".into()});
-        }
-        Ok(Read::Present {
-            value: format!(
-                "stdout {}; stderr {}; {} retained diagnostic bytes, {} omitted bytes. Stream state does not imply client or service liveness.",
-                if diagnostics.output_closed {
-                    "closed"
-                } else {
-                    "open"
-                },
-                if diagnostics.error_closed {
-                    "closed"
-                } else {
-                    "open"
-                },
-                diagnostics.stderr.len(),
-                diagnostics.omitted_stderr_bytes
-            ),
-        })
+        self.0.observe_client_stream(project, &row.id)
     }
 }
 

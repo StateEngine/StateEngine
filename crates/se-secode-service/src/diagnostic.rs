@@ -1,7 +1,6 @@
 //! Auxiliary streams are drained independently of readiness and retain bounded
 //! private diagnostics. A caller leaving never leaves an open, undrained pipe.
 use super::*;
-use crate::{ProviderStream, StreamRead};
 use serde::Serialize;
 use std::{io::Write, num::NonZeroU32, sync::Mutex};
 
@@ -26,9 +25,9 @@ struct Diagnostics {
     stdout: Stream,
     stderr: Stream,
 }
-pub(super) struct Output {
+pub(crate) struct Output {
     io: Arc<dyn ProviderIoPlatform>,
-    transport: crate::ProviderTransport,
+    transport: se_harness::ProviderTransport,
     diagnostics: Mutex<Diagnostics>,
     tasks: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     generation: se_types::Generation,
@@ -37,7 +36,7 @@ pub(super) struct Output {
 impl Output {
     pub fn new(
         io: Arc<dyn ProviderIoPlatform>,
-        transport: crate::ProviderTransport,
+        transport: se_harness::ProviderTransport,
         generation: se_types::Generation,
         path: PathBuf,
     ) -> Arc<Self> {
@@ -59,11 +58,11 @@ impl Output {
             }));
         }
     }
-    fn context(&self, timeout: std::time::Duration) -> crate::CallContext {
-        crate::CallContext {
+    fn context(&self, timeout: std::time::Duration) -> se_harness::CallContext {
+        se_harness::CallContext {
             generation: self.generation,
             timeout,
-            cancellation: Arc::new(crate::CancellationState { _private: () }),
+            cancellation: Arc::new(se_harness::CancellationState { _private: () }),
         }
     }
     pub async fn finish_input(&self, deadline: &Deadline) -> Result<()> {
@@ -163,7 +162,7 @@ impl Output {
             .close(&self.transport, self.context(deadline.remaining()?))
             .await
     }
-    pub fn save(&self, deadline: &Deadline) -> Result<()> {
+    pub fn save<H: crate::HostPort>(&self, deadline: &Deadline) -> Result<()> {
         deadline.remaining()?;
         let diagnostics = self
             .diagnostics
@@ -177,7 +176,9 @@ impl Output {
             .ok_or_else(|| error("SE Code auxiliary diagnostics", "parent absent"))?;
         let files = se_proc::NativeStateFiles::create(parent)
             .map_err(|e| error("SE Code auxiliary diagnostics", e))?;
-        if let Some(mut existing) = self.open_file(deadline)? {
+        if let Some(mut existing) =
+            H::open_owned_file(&self.path, "SE Code auxiliary diagnostics", deadline)?
+        {
             let hash = existing
                 .sha256()
                 .map_err(|e| error("SE Code auxiliary diagnostics", e))?;
@@ -198,12 +199,15 @@ impl Output {
                 .publish_no_replace(&staged.path, &self.path)
                 .map_err(|e| error("SE Code auxiliary diagnostics", e))?;
         }
-        let mut observed = self.open_file(deadline)?.ok_or_else(|| {
-            error(
-                "SE Code auxiliary diagnostics",
-                "published diagnostics absent",
-            )
-        })?;
+        let mut observed =
+            H::open_owned_file(&self.path, "SE Code auxiliary diagnostics", deadline)?.ok_or_else(
+                || {
+                    error(
+                        "SE Code auxiliary diagnostics",
+                        "published diagnostics absent",
+                    )
+                },
+            )?;
         if observed
             .read(1024 * 1024)
             .map_err(|e| error("SE Code auxiliary diagnostics", e))?
@@ -213,24 +217,6 @@ impl Output {
         }
         deadline.remaining()?;
         Ok(())
-    }
-    fn open_file(&self, deadline: &Deadline) -> Result<Option<se_proc::OwnedFile>> {
-        use crate::state_files::{Acquisition, AcquisitionRetry};
-        let mut retry = AcquisitionRetry::new(deadline.at());
-        loop {
-            deadline.remaining()?;
-            match retry
-                .acquire(|| se_proc::OwnedFile::open(&self.path))
-                .map_err(|failure| {
-                    failure.into_public(|native| error("SE Code auxiliary diagnostics", native))
-                })? {
-                Acquisition::Ready(file) => {
-                    deadline.remaining()?;
-                    return Ok(file);
-                }
-                Acquisition::Wait(delay) => std::thread::sleep(delay),
-            }
-        }
     }
     pub fn path(&self) -> &std::path::Path {
         &self.path

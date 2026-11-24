@@ -5,16 +5,17 @@ use se_store::{EventBody, Snapshot};
 use se_types::Read;
 use sha2::{Digest, Sha256};
 
-impl LaunchCoordinator {
-    pub(in crate::process) async fn secode_client_closed(
+impl<H: HostPort> Coordinator<'_, H> {
+    pub async fn secode_client_closed(
         &self,
-        work: &owned::Work,
+        work: &impl SecodeWork,
         witness: &se_proc::StopWitness,
         deadline: &Deadline,
     ) -> Result<()> {
         let Some(slot) = self
-            .secode_services
-            .get(&work.meta.project.id, &work.meta.agent.id, deadline)
+            .0
+            .services()
+            .get(work.project_id(), work.agent_id(), deadline)
             .await?
         else {
             return if matches!(witness.root, se_proc::RootWitness::NoChildCreated) {
@@ -27,13 +28,13 @@ impl LaunchCoordinator {
             };
         };
         let mut service = lock_service(&slot, deadline).await?;
-        if witness.lifecycle != work.meta.lifecycle {
+        if witness.lifecycle != *work.lifecycle() {
             return Err(error(
                 "SE Code client closure",
                 "original lifecycle differs",
             ));
         }
-        if service.journal.session != work.meta.session {
+        if service.journal.session != *work.session() {
             // A rejected replacement can fail before acquiring the service
             // journal. Its proved no-child reservation has no provider input
             // to settle and cannot overwrite its predecessor's closure.
@@ -45,21 +46,21 @@ impl LaunchCoordinator {
         }
         service.journal.client_closed = Some(custody::ClientClosed {
             witness: witness.clone(),
-            capture_complete: work.capture_failure.is_none()
-                && (work.capture_flushed || !work.meta.capture || !work.activated),
+            capture_complete: work.capture_failure().is_none()
+                && (work.capture_flushed() || !work.capture_enabled() || !work.activated()),
         });
-        service.persist(self, deadline).await
+        service.persist(self.0, deadline).await
     }
 
     #[expect(
         clippy::too_many_lines,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
-    pub(super) async fn replace_secode_session(
+    pub(crate) async fn replace_secode_session(
         &self,
         service: &mut Service,
-        work: &owned::Work,
-        request: &crate::HarnessRequest,
+        work: &impl SecodeWork,
+        request: &se_harness::HarnessRequest,
         deadline: &Deadline,
     ) -> Result<()> {
         let resuming = match &request.resume {
@@ -111,7 +112,7 @@ impl LaunchCoordinator {
             ));
         }
         let old = service.journal.session.clone();
-        self.store.read(work.cleanup_admission.clone(), deadline, move |cx| {
+        self.0.store_read(work.cleanup_admission().clone(), deadline, move |cx| {
             let session = se_core::scope::require_present(cx.read.session(old.clone()).map_err(|e| se_core::store_error::store_error(&e))?, "SE Code predecessor", "Reconcile the original session before replacement.")?;
             if !matches!(&session.current.body, EventBody::SessionEnded {session,..} | EventBody::SessionRevoked {session,..} if session==&old) {
                 return Err(error("SE Code session replacement", "original engine session is not terminal"));
@@ -150,7 +151,7 @@ impl LaunchCoordinator {
             let before = qualified
                 .binding(&service.journal.vendor_session, deadline)
                 .await?;
-            if before.status == crate::harness::secode_process::NoticeStatus::Ready
+            if before.status == se_harness::secode_process::NoticeStatus::Ready
                 && !(resuming
                     && service
                         .journal
@@ -191,9 +192,8 @@ impl LaunchCoordinator {
             // start from the qualified service without rewriting its history.
             let profile = service.journal.profile.to_local()?;
             let registration = self
-                .store
-                .pool
-                .run_owned(deadline, move || retirement::registration(&profile))
+                .0
+                .run_blocking(deadline, move || retirement::registration(&profile))
                 .await?
                 .ok_or_else(|| {
                     error(
@@ -223,8 +223,8 @@ impl LaunchCoordinator {
             service.journal.stop_failure = None;
         }
         service.journal.session = request.identity.session.clone();
-        service.journal.vendor_session = crate::harness::secode_process::vendor_session(request)?;
-        service.journal.initial_input = crate::harness::secode_process::initial_input(request);
+        service.journal.vendor_session = se_harness::secode_process::vendor_session(request)?;
+        service.journal.initial_input = se_harness::secode_process::initial_input(request);
         service.journal.initial_sha256 = se_types::Sha256::from_bytes(
             Sha256::digest(request.initial_input.as_str().as_bytes()).into(),
         );
@@ -242,6 +242,6 @@ impl LaunchCoordinator {
         service.journal.capability_repair = None;
         service.live.invalidate()?;
         service.live = Default::default();
-        service.persist(self, deadline).await
+        service.persist(self.0, deadline).await
     }
 }

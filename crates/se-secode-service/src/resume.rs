@@ -1,13 +1,13 @@
 //! Human resume releases the exact retained stop before capability replacement.
 //! A lost response is read back; neither input nor a later hold is retried.
 use super::*;
-use crate::harness::secode_process::{NoticeBinding, probe};
+use se_harness::secode_process::{NoticeBinding, probe};
 
-impl LaunchCoordinator {
-    pub(super) async fn release_secode_hold(
+impl<H: HostPort> Coordinator<'_, H> {
+    pub(crate) async fn release_secode_hold(
         &self,
         service: &mut Service,
-        request: &crate::HarnessRequest,
+        request: &se_harness::HarnessRequest,
         current: NoticeBinding,
         deadline: &Deadline,
     ) -> Result<()> {
@@ -43,15 +43,14 @@ impl LaunchCoordinator {
                 .server_sha256
                 .ok_or_else(|| error("SE Code resume image", "original image digest absent"))?;
             let server = self
-                .store
-                .pool
-                .run_owned(deadline, move || {
+                .0
+                .run_blocking(deadline, move || {
                     let cli = server.with_file_name(if cfg!(windows) {
                         "secode.exe"
                     } else {
                         "secode"
                     });
-                    let mut images = crate::harness::secode_process::Images::open(&cli)?;
+                    let mut images = se_harness::secode_process::Images::open(&cli)?;
                     if images.server != server || images.server_sha256() != expected {
                         return Err(error(
                             "SE Code resume image",
@@ -62,7 +61,7 @@ impl LaunchCoordinator {
                 })
                 .await?;
             if !probe::supports_resume(&probe::capabilities(server, deadline).await?) {
-                return Err(crate::harness::secode_process::incompatible(
+                return Err(se_harness::secode_process::incompatible(
                     "the retained service has no fenced input-free hold release",
                 ));
             }
@@ -71,7 +70,7 @@ impl LaunchCoordinator {
                 binding: current.clone(),
                 completed: false,
             });
-            service.persist(self, deadline).await?;
+            service.persist(self.0, deadline).await?;
             (current, true)
         };
         let write_error = if offered {
@@ -95,6 +94,6 @@ impl LaunchCoordinator {
             .as_mut()
             .ok_or_else(|| error("SE Code resume", "original release intent is unavailable"))?;
         release.completed = true;
-        service.persist(self, deadline).await
+        service.persist(self.0, deadline).await
     }
 }
