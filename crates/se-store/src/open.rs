@@ -98,7 +98,7 @@ impl SqliteReader {
         if !matches {
             return Err(self.identity_changed("SQLite's opened database file no longer matches"));
         }
-        if check_path {
+        if check_path || cfg!(unix) {
             self.validate_identity()?;
         }
         Ok(())

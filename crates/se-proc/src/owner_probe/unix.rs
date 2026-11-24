@@ -50,6 +50,7 @@ pub(super) fn observe(
     }
     let owner = os::owner(pid)?;
     if records.is_empty() {
+        recheck_self(pid, &boot, &owner, &first)?;
         return Ok(OwnerTreeObservation {
             owner,
             pid,
@@ -88,12 +89,7 @@ pub(super) fn observe(
     }
     #[cfg(target_os = "macos")]
     walk.recheck()?;
-    if owner != os::owner(pid)? || os::stamp(pid, &boot)? != first {
-        return Err(refuse(
-            "recheck native owner",
-            "target owner or process changed during observation",
-        ));
-    }
+    recheck_self(pid, &boot, &owner, &first)?;
     Ok(OwnerTreeObservation {
         owner,
         pid,
@@ -104,6 +100,21 @@ pub(super) fn observe(
         #[cfg(target_os = "macos")]
         ancestry_bound: walk.bound,
     })
+}
+
+fn recheck_self(
+    pid: ProcessId,
+    boot: &BootIdentity,
+    owner: &NativeOwner,
+    first: &ProcessStamp,
+) -> Result<()> {
+    if *owner != os::owner(pid)? || os::stamp(pid, boot)? != *first {
+        return Err(refuse(
+            "recheck native owner",
+            "target owner or process changed during observation",
+        ));
+    }
+    Ok(())
 }
 
 /// Walk the parent chain from `pid` to the root, refusing cycles and runaway depth.
