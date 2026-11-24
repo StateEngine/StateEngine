@@ -1,9 +1,28 @@
 //! Current authenticated provider reads, separate from retained custody. One
 //! unreadable service does not conceal other rows or invent an empty execution.
 use super::*;
+use crate::harness::secode_process::{Control, QualifiedControl};
 use se_core::ops::{AgentRow, AnyOutput, SecodeRuntimeView};
 use se_types::{Page, Read, Window};
 use serde_json::Value;
+
+struct ObservedRuntime {
+    view: SecodeRuntimeView,
+    resume_ready: bool,
+    project: se_types::ProjectId,
+}
+
+struct ServiceCustodySnapshot {
+    qualified: QualifiedControl,
+    initial_sha256: se_types::Sha256,
+    resume_proved: bool,
+    project: se_types::ProjectId,
+}
+
+struct ActiveExecution {
+    active: bool,
+    execution_id: Read<String>,
+}
 
 impl LaunchCoordinator {
     pub(in crate::process) async fn observe_secode_output(
@@ -63,8 +82,12 @@ impl LaunchCoordinator {
         }
         let observed = self.secode_runtime(row, deadline).await;
         row.secode_runtime = Some(match observed {
-            Ok((value, ready, project)) => {
-                if ready {
+            Ok(ObservedRuntime {
+                view,
+                resume_ready,
+                project,
+            }) => {
+                if resume_ready {
                     let command = se_core::ops::AgentCommand::launch_in_home(
                         &row.id,
                         &self.options.home,
@@ -79,7 +102,7 @@ impl LaunchCoordinator {
                     row.resume.command = command.as_ref().map(|c| c.command.clone());
                     row.resume.argv = command.map(|c| c.argv);
                 }
-                Read::Present { value }
+                Read::Present { value: view }
             }
             Err(error) => Read::Unreadable {
                 source: "SE Code runtime".into(),
@@ -88,15 +111,7 @@ impl LaunchCoordinator {
             },
         });
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
-    async fn secode_runtime(
-        &self,
-        row: &AgentRow,
-        deadline: &Deadline,
-    ) -> Result<(SecodeRuntimeView, bool, se_types::ProjectId)> {
+    async fn secode_runtime(&self, row: &AgentRow, deadline: &Deadline) -> Result<ObservedRuntime> {
         let retained = match &row.secode_binding {
             Some(Read::Present { value }) => value,
             _ => {
@@ -106,6 +121,86 @@ impl LaunchCoordinator {
                 ));
             }
         };
+        let custody = self
+            .snapshot_secode_custody(row, retained, deadline)
+            .await?;
+        let control = &custody.qualified.control;
+        let session = &retained.session_id;
+        let binding = custody.qualified.binding(session, deadline).await?;
+        let execution = read_active_execution(control, session, deadline).await?;
+        let saved = control.read(&["api", "session", session], deadline).await?;
+        let provider = saved
+            .pointer("/data/model/providerID")
+            .and_then(Value::as_str)
+            .ok_or_else(|| error("SE Code actual model", "saved provider absent"))?;
+        let model = saved
+            .pointer("/data/model/id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| error("SE Code actual model", "saved model absent"))?;
+        let preset = control
+            .read(&["api", "session", session, "preset"], deadline)
+            .await?;
+        let preset = preset
+            .pointer("/data/effective")
+            .and_then(Value::as_str)
+            .ok_or_else(|| error("SE Code actual permissions", "effective preset absent"))?
+            .to_owned();
+        let pending_permissions = count_pending_permissions(control, session, deadline).await?;
+        let receipt = control
+            .acceptance(
+                &custody.qualified.service,
+                session,
+                &retained.initial_input_id,
+                deadline,
+            )
+            .await?;
+        let initial_input = match receipt.data {
+            Some(data) => {
+                data.require_initial_hash(session, &retained.initial_input_id, custody.initial_sha256)?;
+                Read::Present {
+                    value: "accepted; queue admission does not imply model consumption".into(),
+                }
+            }
+            None => Read::Absent {
+                checked: "Original input key is absent in this authenticated service incarnation; no replay is authorized.".into(),
+            },
+        };
+        let after = custody.qualified.binding(session, deadline).await?;
+        let resume_ready = custody.resume_proved
+            && !execution.active
+            && matches!(initial_input, Read::Present { .. })
+            && binding.require_held().is_ok()
+            && after.require_held().is_ok()
+            && binding.hold_id == after.hold_id
+            && binding.target_id == after.target_id
+            && binding.binding == after.binding
+            && row.session.state == "stopped"
+            && matches!(
+                row.session.recorded_state.as_deref(),
+                Some("ended" | "revoked")
+            )
+            && matches!(&row.session.process_state, Read::Present { value } if value == "exited");
+        Ok(ObservedRuntime {
+            view: SecodeRuntimeView {
+                service_state: "live".into(),
+                active: execution.active,
+                execution_id: execution.execution_id,
+                model: format!("{provider}/{model}"),
+                permission_preset: preset,
+                pending_permissions,
+                initial_input,
+                output_stream: self.secode_stream(&custody.project, row)?,
+            },
+            resume_ready,
+            project: custody.project,
+        })
+    }
+    async fn snapshot_secode_custody(
+        &self,
+        row: &AgentRow,
+        retained: &se_core::ops::SecodeBindingView,
+        deadline: &Deadline,
+    ) -> Result<ServiceCustodySnapshot> {
         let services = tokio::time::timeout_at(
             tokio::time::Instant::from_std(deadline.at()),
             self.secode_services.0.lock(),
@@ -156,148 +251,23 @@ impl LaunchCoordinator {
             return Err(error("SE Code runtime observation", failure));
         }
         self.observe_secode_birth(&service, deadline).await?;
-        let qualified = service.current()?;
-        let control = qualified.control.clone();
-        let initial_sha256 = service.journal.initial_sha256;
-        let resume_proved = service.journal.input_free_resume
-            && service
-                .journal
-                .client_closed
-                .as_ref()
-                .is_some_and(|closed| closed.capture_complete)
-            && service.journal.notice.is_none()
-            && service
-                .journal
-                .resume_release
-                .as_ref()
-                .is_none_or(|release| release.completed);
-        let project = service.journal.project.clone();
-        drop(service);
-        let binding = qualified.binding(&retained.session_id, deadline).await?;
-        let active = control
-            .read(&["api", "session", "active"], deadline)
-            .await?;
-        let active = active["data"]
-            .as_object()
-            .ok_or_else(|| error("SE Code active executions", "complete session map absent"))?;
-        let current = active.get(&retained.session_id);
-        let execution_id = match current {
-            None => Read::Absent {
-                checked: "Session absent from the complete authenticated active-execution map."
-                    .into(),
-            },
-            Some(value) => match value.get("executionID").and_then(Value::as_str) {
-                Some(value) => Read::Present {
-                    value: value.to_owned(),
-                },
-                None => Read::Unknown {
-                    what: "Session is active but its execution ID is unavailable.".into(),
-                },
-            },
-        };
-        let saved = control
-            .read(&["api", "session", &retained.session_id], deadline)
-            .await?;
-        let provider = saved
-            .pointer("/data/model/providerID")
-            .and_then(Value::as_str)
-            .ok_or_else(|| error("SE Code actual model", "saved provider absent"))?;
-        let model = saved
-            .pointer("/data/model/id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| error("SE Code actual model", "saved model absent"))?;
-        let preset = control
-            .read(
-                &["api", "session", &retained.session_id, "preset"],
-                deadline,
-            )
-            .await?;
-        let preset = preset
-            .pointer("/data/effective")
-            .and_then(Value::as_str)
-            .ok_or_else(|| error("SE Code actual permissions", "effective preset absent"))?
-            .to_owned();
-        let permissions = control
-            .read(
-                &["api", "session", &retained.session_id, "permission"],
-                deadline,
-            )
-            .await?;
-        if permissions["hasMore"] != false {
-            return Err(error(
-                "SE Code pending permissions",
-                "permission inventory is incomplete",
-            ));
-        }
-        let permissions = permissions["data"].as_array().ok_or_else(|| {
-            error(
-                "SE Code pending permissions",
-                "complete permissions array absent",
-            )
-        })?;
-        let mut pending_permissions = 0;
-        for permission in permissions {
-            match permission.get("status").and_then(Value::as_str) {
-                Some("pending") => pending_permissions += 1,
-                Some("suspended") => {
-                    return Err(error(
-                        "SE Code pending permissions",
-                        "a permission is suspended; its outcome remains unproved",
-                    ));
-                }
-                Some("approved" | "denied" | "rejected" | "replied") => (),
-                _ => {
-                    return Err(error(
-                        "SE Code pending permissions",
-                        "permission status absent or unsupported",
-                    ));
-                }
-            }
-        }
-        let receipt = control
-            .acceptance(
-                &qualified.service,
-                &retained.session_id,
-                &retained.initial_input_id,
-                deadline,
-            )
-            .await?;
-        let initial_input=match receipt.data {
-            Some(data)=> {
-                data.require_initial_hash(&retained.session_id,&retained.initial_input_id,initial_sha256)?;
-                Read::Present {value:"accepted; queue admission does not imply model consumption".into()}
-            },
-            None=>Read::Absent {checked:"Original input key is absent in this authenticated service incarnation; no replay is authorized.".into()},
-        };
-        let after = qualified.binding(&retained.session_id, deadline).await?;
-        let resume_ready = resume_proved
-            && current.is_none()
-            && matches!(initial_input, Read::Present { .. })
-            && binding.require_held().is_ok()
-            && after.require_held().is_ok()
-            && binding.hold_id == after.hold_id
-            && binding.target_id == after.target_id
-            && binding.binding == after.binding
-            && row.session.state == "stopped"
-            && matches!(
-                row.session.recorded_state.as_deref(),
-                Some("ended" | "revoked")
-            )
-            && matches!(&row.session.process_state, Read::Present { value } if value == "exited");
-        Ok((
-            SecodeRuntimeView {
-                service_state: "live".into(),
-                active: current.is_some(),
-                execution_id,
-                model: format!("{provider}/{model}"),
-                permission_preset: preset,
-                pending_permissions,
-                initial_input,
-                output_stream: self.secode_stream(&project, row)?,
-            },
-            resume_ready,
-            project,
-        ))
+        Ok(ServiceCustodySnapshot {
+            qualified: service.current()?,
+            initial_sha256: service.journal.initial_sha256,
+            resume_proved: service.journal.input_free_resume
+                && service
+                    .journal
+                    .client_closed
+                    .as_ref()
+                    .is_some_and(|closed| closed.capture_complete)
+                && service.journal.notice.is_none()
+                && service
+                    .journal
+                    .resume_release
+                    .as_ref()
+                    .is_none_or(|release| release.completed),
+            project: service.journal.project.clone(),
+        })
     }
     fn secode_stream(&self, project: &se_types::ProjectId, row: &AgentRow) -> Result<Read<String>> {
         let Some(job) = self.find_job(project, &row.id)? else {
@@ -353,4 +323,77 @@ impl LaunchCoordinator {
             ),
         })
     }
+}
+
+async fn read_active_execution(
+    control: &Control,
+    session_id: &str,
+    deadline: &Deadline,
+) -> Result<ActiveExecution> {
+    let active = control
+        .read(&["api", "session", "active"], deadline)
+        .await?;
+    let active = active["data"]
+        .as_object()
+        .ok_or_else(|| error("SE Code active executions", "complete session map absent"))?;
+    let current = active.get(session_id);
+    let execution_id = match current {
+        None => Read::Absent {
+            checked: "Session absent from the complete authenticated active-execution map.".into(),
+        },
+        Some(value) => match value.get("executionID").and_then(Value::as_str) {
+            Some(value) => Read::Present {
+                value: value.to_owned(),
+            },
+            None => Read::Unknown {
+                what: "Session is active but its execution ID is unavailable.".into(),
+            },
+        },
+    };
+    Ok(ActiveExecution {
+        active: current.is_some(),
+        execution_id,
+    })
+}
+
+async fn count_pending_permissions(
+    control: &Control,
+    session_id: &str,
+    deadline: &Deadline,
+) -> Result<u64> {
+    let permissions = control
+        .read(&["api", "session", session_id, "permission"], deadline)
+        .await?;
+    if permissions["hasMore"] != false {
+        return Err(error(
+            "SE Code pending permissions",
+            "permission inventory is incomplete",
+        ));
+    }
+    let permissions = permissions["data"].as_array().ok_or_else(|| {
+        error(
+            "SE Code pending permissions",
+            "complete permissions array absent",
+        )
+    })?;
+    let mut pending_permissions = 0;
+    for permission in permissions {
+        match permission.get("status").and_then(Value::as_str) {
+            Some("pending") => pending_permissions += 1,
+            Some("suspended") => {
+                return Err(error(
+                    "SE Code pending permissions",
+                    "a permission is suspended; its outcome remains unproved",
+                ));
+            }
+            Some("approved" | "denied" | "rejected" | "replied") => (),
+            _ => {
+                return Err(error(
+                    "SE Code pending permissions",
+                    "permission status absent or unsupported",
+                ));
+            }
+        }
+    }
+    Ok(pending_permissions)
 }
