@@ -75,7 +75,7 @@ impl LaunchCoordinator {
         deadline: &Deadline,
     ) -> Read<Vec<PeerRow>> {
         let input = ProjectStatus {
-            all: false,
+            scope: StatusScope::Selected,
             fresh: false,
             watch_only: true,
             include_temp: false,

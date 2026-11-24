@@ -7,6 +7,110 @@ const LIVE_LIMIT: usize = 16;
 /// More recorded moves than this refuses instead of truncating.
 const MOVED_LIMIT: usize = 64;
 impl SqliteSnapshot {
+    pub(super) fn is_principal_retired(&self, project: &[u8], agent: &[u8]) -> StoreResult<bool> {
+        if self.info.schema_version < 17 {
+            return Ok(false);
+        }
+        self.db
+            .query_row(
+                "SELECT retired_seq IS NOT NULL FROM principals WHERE project_id=? AND principal_id=?",
+                crate::sql_value::sql_params![project, agent],
+                |r| r.get::<_, bool>(0),
+            )
+            .optional()
+            .map_err(|error| self.read_sql(error))
+            .map(|row| row.unwrap_or(false))
+    }
+
+    pub(super) fn read_active_ephemeral_agents(
+        &mut self,
+        after_seq: Option<u64>,
+        limit: u32,
+    ) -> StoreResult<(Vec<EphemeralAgentRecord>, Option<u64>)> {
+        self.require_local_port()?;
+        if !matches!(self.scope.visibility, Visibility::Owner) {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "active ephemeral agent sweep requires owner visibility",
+            ));
+        }
+        if self.info.schema_version < 17 {
+            return Ok((Vec::new(), None));
+        }
+        let limit = limit.clamp(1, 256);
+        let after = i64::try_from(after_seq.unwrap_or(0)).map_err(invalid)?;
+        let p = self.project_bytes()?;
+        let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
+        let mut stmt = self
+            .db
+            .prepare(
+                "SELECT p.first_seq, p.principal_id, p.created_by, p.ephemeral_one_shot, p.ephemeral_ttl_seconds, e.recorded_at_us,
+                 (SELECT s.session_id FROM sessions s WHERE s.project_id=p.project_id AND s.agent_id=p.principal_id ORDER BY s.first_seq DESC LIMIT 1)
+                 FROM principals p
+                 JOIN events e ON e.seq=p.first_seq
+                 WHERE p.project_id=? AND p.principal_kind='agent' AND p.retired_seq IS NULL
+                   AND (p.ephemeral_one_shot=1 OR p.ephemeral_ttl_seconds IS NOT NULL)
+                   AND p.first_seq>?
+                 ORDER BY p.first_seq ASC LIMIT ?",
+            )
+            .map_err(|error| self.read_sql(error))?;
+        let fetch = i64::from(limit) + 1;
+        let rows = stmt
+            .query_map(crate::sql_value::sql_params![p, after, fetch], |r| {
+                Ok((
+                    crate::sql_value::value::<i64>(r, 0)?,
+                    crate::sql_value::value::<Vec<u8>>(r, 1)?,
+                    r.get::<_, Option<Vec<u8>>>(2)?,
+                    crate::sql_value::value::<i64>(r, 3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                    crate::sql_value::value::<i64>(r, 5)?,
+                    r.get::<_, Option<Vec<u8>>>(6)?,
+                ))
+            })
+            .map_err(|error| self.read_sql(error))?;
+        let mut out = Vec::new();
+        let mut last_seq = None;
+        let mut has_more = false;
+        for row in rows {
+            let (
+                first_seq,
+                agent_bytes,
+                created_bytes,
+                one_shot,
+                ttl,
+                registered_at_us,
+                session_bytes,
+            ) = row.map_err(|error| self.read_sql(error))?;
+            if out.len() == limit as usize {
+                has_more = true;
+                break;
+            }
+            let Actor::Agent(agent) = actor(&self.db, &agent_bytes, &scope)? else {
+                continue;
+            };
+            let created_by = created_bytes
+                .map(|bytes| actor(&self.db, &bytes, &scope))
+                .transpose()?;
+            let latest_session = session_bytes
+                .map(|bytes| {
+                    wire(&self.db, "session", &bytes, &scope)
+                        .and_then(|value| value.try_into().map_err(invalid))
+                })
+                .transpose()?;
+            let ttl_seconds = ttl.map(|v| u32::try_from(v).map_err(invalid)).transpose()?;
+            out.push(EphemeralAgentRecord {
+                agent,
+                created_by,
+                one_shot: one_shot != 0,
+                ttl_seconds,
+                registered_at_us,
+                latest_session,
+            });
+            last_seq = Some(u64::try_from(first_seq).map_err(invalid)?);
+        }
+        Ok((out, if has_more { last_seq } else { None }))
+    }
+
     pub(super) fn read_control_session(
         &self,
         target: AgentId,
@@ -122,17 +226,7 @@ impl SqliteSnapshot {
             Some("first_seq"),
             &load,
         )?;
-        let retired = if self.info.schema_version >= 17 {
-            self.db
-                .query_row(
-                    "SELECT retired_seq IS NOT NULL FROM principals WHERE project_id=? AND principal_id=?",
-                    crate::sql_value::sql_params![p, a],
-                    |r| r.get::<_, bool>(0),
-                )
-                .map_err(|error| self.read_sql(error))?
-        } else {
-            false
-        };
+        let retired = self.is_principal_retired(&p, &a)?;
         Ok(Read::Present {
             value: ControlTarget {
                 principal,

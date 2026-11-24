@@ -106,7 +106,7 @@ impl CliSelections {
         }
         if self.status_all {
             match op {
-                AnyOp::ProjectStatus(input) => input.all = true,
+                AnyOp::ProjectStatus(input) => input.scope = StatusScope::All,
                 _ => {
                     return Err(unknown_flag(
                         "--all",

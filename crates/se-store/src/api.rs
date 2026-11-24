@@ -385,17 +385,15 @@ pub trait Snapshot {
     fn open_assignments(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
     fn principals(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
     /// Non-retired project principals (hiding retired ephemeral agents on schema >= 17).
-    fn active_principals(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
-        self.principals(budget)
-    }
+    fn active_principals(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
     /// Whether this agent has been terminally retired (`principals.retired_seq IS NOT NULL`).
-    fn principal_retired(&mut self, _agent: AgentId) -> StoreResult<bool> {
-        Ok(false)
-    }
-    /// Unretired ephemeral agents in the admitted project for host cascade and TTL sweeps.
-    fn active_ephemeral_agents(&mut self) -> StoreResult<Vec<EphemeralAgentRecord>> {
-        Ok(Vec::new())
-    }
+    fn principal_retired(&mut self, agent: AgentId) -> StoreResult<bool>;
+    /// Paginated unretired ephemeral agents in the admitted project for host cascade and TTL sweeps.
+    fn active_ephemeral_agents(
+        &mut self,
+        after_seq: Option<u64>,
+        limit: u32,
+    ) -> StoreResult<(Vec<EphemeralAgentRecord>, Option<u64>)>;
     fn principal(&mut self, id: Actor) -> StoreResult<Read<ProjectionRecord>>;
     fn profile(&mut self, agent: AgentId) -> StoreResult<Read<ProjectionRecord>>;
     /// Current permission projection. SelfOnly may read its own AgentCanCreate

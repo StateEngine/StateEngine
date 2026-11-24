@@ -8,7 +8,7 @@ pub(crate) fn prepare<S: Snapshot>(
     home: &std::path::Path,
     cx: &mut Cx<'_, S>,
 ) -> Result<AnyOutput> {
-    if input.all {
+    if input.is_all() {
         return Err(error("host status", "use the owner CLI for status --all"));
     }
     let generated = receipt::timestamp(super::start::now_unix_micros()?)?;

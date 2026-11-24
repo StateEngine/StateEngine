@@ -112,6 +112,11 @@ fn current_control<R: Snapshot>(
         "launch control",
         "Restore the current create grant or use the owner's terminal.",
     )?;
+    if current.retired {
+        return Err(super::super::process_plan::retired_agent_refusal(
+            "agent.launch",
+        ));
+    }
     if !current.processes.is_empty() {
         return Err(se_types::SeError::invalid(
             "launch target",

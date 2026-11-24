@@ -526,85 +526,16 @@ impl Snapshot for SqliteSnapshot {
     }
     fn principal_retired(&mut self, agent: AgentId) -> StoreResult<bool> {
         self.require_local_port()?;
-        if self.info.schema_version < 17 {
-            return Ok(false);
-        }
         let p = self.project_bytes()?;
         let a = self.agent_bytes(&agent)?;
-        self.db
-            .query_row(
-                "SELECT retired_seq IS NOT NULL FROM principals WHERE project_id=? AND principal_id=?",
-                crate::sql_value::sql_params![p, a],
-                |r| r.get::<_, bool>(0),
-            )
-            .optional()
-            .map_err(|error| self.read_sql(error))
-            .map(|row| row.unwrap_or(false))
+        self.is_principal_retired(&p, &a)
     }
-    fn active_ephemeral_agents(&mut self) -> StoreResult<Vec<EphemeralAgentRecord>> {
-        self.require_local_port()?;
-        if !matches!(self.scope.visibility, Visibility::Owner) {
-            return Err(fail(
-                StoreErrorCode::ScopeMismatch,
-                "active ephemeral agent sweep requires owner visibility",
-            ));
-        }
-        if self.info.schema_version < 17 {
-            return Ok(Vec::new());
-        }
-        let p = self.project_bytes()?;
-        let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
-        let mut stmt = self
-            .db
-            .prepare(
-                "SELECT p.principal_id, p.created_by, p.ephemeral_one_shot, p.ephemeral_ttl_seconds, e.recorded_at_us,
-                 (SELECT s.session_id FROM sessions s WHERE s.project_id=p.project_id AND s.agent_id=p.principal_id ORDER BY s.first_seq DESC LIMIT 1)
-                 FROM principals p
-                 JOIN events e ON e.seq=p.first_seq
-                 WHERE p.project_id=? AND p.principal_kind='agent' AND p.retired_seq IS NULL
-                   AND (p.ephemeral_one_shot=1 OR p.ephemeral_ttl_seconds IS NOT NULL)
-                 ORDER BY p.first_seq ASC LIMIT 256",
-            )
-            .map_err(|error| self.read_sql(error))?;
-        let rows = stmt
-            .query_map([&p], |r| {
-                Ok((
-                    crate::sql_value::value::<Vec<u8>>(r, 0)?,
-                    r.get::<_, Option<Vec<u8>>>(1)?,
-                    crate::sql_value::value::<i64>(r, 2)?,
-                    r.get::<_, Option<i64>>(3)?,
-                    crate::sql_value::value::<i64>(r, 4)?,
-                    r.get::<_, Option<Vec<u8>>>(5)?,
-                ))
-            })
-            .map_err(|error| self.read_sql(error))?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (agent_bytes, created_bytes, one_shot, ttl, registered_at_us, session_bytes) =
-                row.map_err(|error| self.read_sql(error))?;
-            let Actor::Agent(agent) = actor(&self.db, &agent_bytes, &scope)? else {
-                continue;
-            };
-            let created_by = created_bytes
-                .map(|bytes| actor(&self.db, &bytes, &scope))
-                .transpose()?;
-            let latest_session = session_bytes
-                .map(|bytes| {
-                    wire(&self.db, "session", &bytes, &scope)
-                        .and_then(|value| value.try_into().map_err(invalid))
-                })
-                .transpose()?;
-            let ttl_seconds = ttl.map(|v| u32::try_from(v).map_err(invalid)).transpose()?;
-            out.push(EphemeralAgentRecord {
-                agent,
-                created_by,
-                one_shot: one_shot != 0,
-                ttl_seconds,
-                registered_at_us,
-                latest_session,
-            });
-        }
-        Ok(out)
+    fn active_ephemeral_agents(
+        &mut self,
+        after_seq: Option<u64>,
+        limit: u32,
+    ) -> StoreResult<(Vec<EphemeralAgentRecord>, Option<u64>)> {
+        self.read_active_ephemeral_agents(after_seq, limit)
     }
     fn session(&mut self, _id: SessionId) -> StoreResult<Read<ProjectionRecord>> {
         self.read_session(_id)

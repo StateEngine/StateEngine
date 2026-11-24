@@ -170,12 +170,7 @@ pub(super) fn agents(
     let items = value.page.items();
     let ordered = super::read::order_with_children(items);
     for (indent, agent) in ordered {
-        let badge = match (agent.ephemeral, agent.retired) {
-            (true, true) => " [temp, retired]",
-            (true, false) => " [temp]",
-            (false, true) => " [retired]",
-            (false, false) => "",
-        };
+        let badge = super::read::agent_badge(agent);
         writeln!(
             out,
             "{indent}{} ({}){badge} — {}; saved profile {}",

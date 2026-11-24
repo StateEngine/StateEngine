@@ -295,7 +295,7 @@ fn recorded(x: Ctx<'_>, body: EventBody<InputText>, lease: &LeaseIdentity) -> St
             ..
         } => change_captain(x, &target, captain)?,
         b @ ProjectRegistered { .. } => register_project(x, b)?,
-        b @ PrincipalRegistered { .. } => register_principal(x, b)?,
+        b @ PrincipalRegistered { .. } => principal::register(&x, b)?,
         PrincipalRenamed {
             principal, name, ..
         } => {
@@ -482,94 +482,6 @@ fn register_project(x: Ctx<'_>, body: EventBody<InputText>) -> StoreResult<()> {
             crate::sql_value::sql_params![p, root.canonical_key, encoded, seq],
         )
         .map_err(sql)?;
-    }
-    Ok(())
-}
-fn register_principal(x: Ctx<'_>, body: EventBody<InputText>) -> StoreResult<()> {
-    let (c, header, seq, revision) = (x.c, x.header, x.seq, x.revision);
-    let EventBody::PrincipalRegistered {
-        principal,
-        kind,
-        owner,
-        created_by,
-        name,
-        ephemeral,
-        ..
-    } = body
-    else {
-        return later("projection");
-    };
-    if let Some(spec) = ephemeral {
-        principal::require_ephemeral_schema(c)?;
-        if !matches!(kind, PrincipalKind::Agent) || x.pk.is_none() {
-            return Err(invalid("ephemeral registration requires a project agent"));
-        }
-        if spec.ttl_seconds == 0 || spec.ttl_seconds > 86_400 {
-            return Err(invalid("ephemeral ttl_seconds must be within 1..=86400"));
-        }
-    }
-    if name.is_empty() || name.len() > 64 {
-        return Err(invalid("principal name bounds"));
-    }
-    if matches!(principal, Actor::Agent(_))
-        && (!name.as_bytes()[0].is_ascii_alphanumeric()
-            || !name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b" ._-".contains(&b)))
-    {
-        return Err(invalid("agent name grammar"));
-    }
-    if matches!(kind, PrincipalKind::Agent) != matches!(principal, Actor::Agent(_)) {
-        return Err(invalid("principal kind differs from ID"));
-    }
-    principal::name_available(c, &header.scope, &principal, &name)?;
-    let a = x.actor(&principal)?;
-    if matches!(principal, Actor::Agent(_)) {
-        let collision: bool = c
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM owners WHERE human_id=?)",
-                [&a],
-                |r| crate::sql_value::value(r, 0),
-            )
-            .map_err(sql)?;
-        if collision {
-            return Err(fail(
-                StoreErrorCode::EventIdConflict,
-                "agent identity bytes collide with an existing human; allocate a fresh agent ID",
-            ));
-        }
-    }
-    let own = key(c, "human", owner.as_str(), &[0], true)?;
-    if x.pk.is_none() {
-        if principal != Actor::Human(owner) || header.actor != principal || created_by.is_some() {
-            return Err(invalid(
-                "registry owner bootstrap requires self owner, no invented creator",
-            ));
-        }
-        c.execute("INSERT INTO owners(human_id,display_name,first_seq,revision,last_seq) VALUES(?,?,?,?,?)",crate::sql_value::sql_params![a,name,seq,revision,seq]).map_err(sql)?;
-    } else {
-        if header.door != Door::Import
-            && header.actor != Actor::Human(owner.clone())
-            && created_by.as_ref() != Some(&header.actor)
-        {
-            return Err(fail(
-                StoreErrorCode::CreatorControlRefused,
-                "creator differs from admitted actor",
-            ));
-        }
-        let creator = created_by.as_ref().map(|a| x.actor(a)).transpose()?;
-        if connection::info(c)?.schema_version >= 17 {
-            let (one_shot, ttl): (i64, Option<i64>) = match ephemeral {
-                Some(spec) => (i64::from(spec.one_shot), Some(i64::from(spec.ttl_seconds))),
-                None => (0, None),
-            };
-            c.execute("INSERT INTO principals(project_id,principal_id,principal_kind,owner_id,created_by,display_name,first_seq,revision,last_seq,ephemeral_one_shot,ephemeral_ttl_seconds)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![x.project()?,a,if matches!(kind,PrincipalKind::Agent){"agent"}else{"human"},own,creator,name,seq,revision,seq,one_shot,ttl]).map_err(sql)?;
-        } else {
-            c.execute("INSERT INTO principals(project_id,principal_id,principal_kind,owner_id,created_by,display_name,first_seq,revision,last_seq)
-                    VALUES(?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![x.project()?,a,if matches!(kind,PrincipalKind::Agent){"agent"}else{"human"},own,creator,name,seq,revision,seq]).map_err(sql)?;
-        }
-        c.execute("INSERT INTO resume_heads(project_id,principal_id,unread_count,pending_effect_count,last_seq) VALUES(?,?,0,0,?)",crate::sql_value::sql_params![x.project()?,a,seq]).map_err(sql)?;
     }
     Ok(())
 }

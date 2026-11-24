@@ -50,13 +50,13 @@ pub fn target<R: Snapshot>(
     }
 }
 pub(crate) fn retired_agent_refusal(op: &str) -> SeError {
-    let mut error = SeError::invalid(op, "an active agent; this temporary agent is retired");
-    error.body = error.body.with_remedy(se_types::Remedy {
-        text: "This temporary agent is retired; start a new helper with se delegate --handoff ..."
-            .into(),
-        command: Some(se_types::Cmd::Manual),
-    });
-    error
+    SeError::new(se_types::Detail::StateConflict(
+        se_types::details::StateConflict {
+            subject: op.into(),
+            reason: "this temporary agent is retired".into(),
+            next_step: "This temporary agent is retired; export its history with se handoff export --from <agent> and create a new agent with se agent add.".into(),
+        },
+    ))
 }
 
 pub fn launch<R: Snapshot>(

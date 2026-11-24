@@ -143,6 +143,14 @@ pub(super) fn order_with_children(
     out
 }
 
+pub(super) fn agent_badge(agent: &se_core::ops::AgentRow) -> &'static str {
+    match (agent.ephemeral, agent.retired) {
+        (true, true) => " [temp, retired]",
+        (true, false) => " [temp]",
+        (false, true) => " [retired]",
+        (false, false) => "",
+    }
+}
 fn agents_section(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     if let Some(agents) = &value.agents {
         for (indent, agent) in order_with_children(agents.items()) {
@@ -151,16 +159,11 @@ fn agents_section(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> 
                 _ if agent.session.state == "never-launched" => "not started yet".into(),
                 _ => agent.session.state.clone(),
             };
-            let badge = match (agent.ephemeral, agent.retired) {
-                (true, true) => " [temp, retired]",
-                (true, false) => " [temp]",
-                (false, true) => " [retired]",
-                (false, false) => "",
-            };
             writeln!(
                 out,
-                "  {indent}Agent {}{badge}: {state} — unread messages {}",
+                "  {indent}Agent {}{}: {state} — unread messages {}",
                 agent.name,
+                agent_badge(agent),
                 count(agent.unread)
             )?;
             if let Some(question) = agent.state.as_ref().and_then(|s| s.waiting_on.as_ref()) {

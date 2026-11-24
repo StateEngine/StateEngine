@@ -34,6 +34,13 @@ pub fn observe<R: ReadStore>(
         }),
     }
 }
+#[derive(Default)]
+pub struct ObserveOptions<'a> {
+    pub watched: Option<&'a AnyOutput>,
+    pub defer_git: bool,
+    pub include_temp: bool,
+}
+
 pub fn observe_snapshot<S: Snapshot>(
     cx: &Bootstrap,
     snap: &mut S,
@@ -41,12 +48,11 @@ pub fn observe_snapshot<S: Snapshot>(
     files: &Files,
     admission: &Admission,
 ) -> Result<AnyOutput> {
-    observe_snapshot_watched(cx, snap, owner, files, admission, None, false, false)
+    observe_snapshot_watched(cx, snap, owner, files, admission, ObserveOptions::default())
 }
 
 #[expect(
     clippy::too_many_lines,
-    clippy::too_many_arguments,
     reason = "Status assembles one finite snapshot before native observation."
 )]
 pub fn observe_snapshot_watched<S: Snapshot>(
@@ -55,10 +61,13 @@ pub fn observe_snapshot_watched<S: Snapshot>(
     owner: Option<Read<RuntimeOwnerHead>>,
     files: &Files,
     admission: &Admission,
-    watched: Option<&AnyOutput>,
-    defer_git: bool,
-    include_temp: bool,
+    options: ObserveOptions<'_>,
 ) -> Result<AnyOutput> {
+    let ObserveOptions {
+        watched,
+        defer_git,
+        include_temp,
+    } = options;
     #[cfg(not(any(windows, target_os = "macos")))]
     let _ = watched;
     let generated = receipt::timestamp(execute::now_us()?)?;

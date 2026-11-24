@@ -279,10 +279,10 @@ fn decode_project(
             fresh: !path.is_empty() && flag(m, "fresh"),
             watch_only: false,
             include_temp: !path.is_empty() && flag(m, "include-temp"),
-            all: if path.is_empty() {
-                false
+            scope: if !path.is_empty() && flag(m, "all") {
+                StatusScope::All
             } else {
-                flag(m, "all")
+                StatusScope::Selected
             },
         }),
         "project.init" => AnyOp::ProjectInit(ProjectInit {
