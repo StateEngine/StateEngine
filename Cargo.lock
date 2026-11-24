@@ -1940,6 +1940,7 @@ version = "0.0.1-alpha.1"
 dependencies = [
  "git2",
  "se-proc",
+ "sha1",
  "sha2",
 ]
 

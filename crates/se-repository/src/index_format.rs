@@ -41,12 +41,12 @@ pub(super) struct ParsedIndex {
 }
 
 impl ParsedIndex {
-    pub(super) fn path<'a>(&'a self, raw: &'a [u8], entry: &IndexEntry) -> &'a str {
+    pub(super) fn path<'a>(&'a self, raw: &'a [u8], entry: &IndexEntry) -> Option<&'a str> {
         let bytes = match entry.path_range {
-            PathRange::Raw(start, end) => &raw[start..end],
-            PathRange::Arena(start, end) => &self.v4_arena[start..end],
+            PathRange::Raw(start, end) => raw.get(start..end)?,
+            PathRange::Arena(start, end) => self.v4_arena.get(start..end)?,
         };
-        std::str::from_utf8(bytes).unwrap_or("")
+        std::str::from_utf8(bytes).ok()
     }
 }
 
@@ -60,6 +60,14 @@ pub(super) fn parse_index(bytes: &[u8]) -> Option<ParsedIndex> {
     }
     let count = read_u32(bytes, 8)? as usize;
     let body_end = bytes.len().checked_sub(20)?;
+    let trailer = &bytes[body_end..];
+    // Git writes an all-zero 20-byte trailer when index.skipHash=true
+    // (e.g. feature.manyFiles=true); verify only nonzero trailers.
+    if trailer != [0u8; 20]
+        && <sha1::Sha1 as sha1::Digest>::digest(&bytes[..body_end]).as_slice() != trailer
+    {
+        return None;
+    }
     let mut pos = 12usize;
     let mut entries = Vec::with_capacity(count.min(65_536));
     let mut v4_arena = Vec::new();

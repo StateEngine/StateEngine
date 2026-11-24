@@ -329,6 +329,18 @@ impl Prepared {
         Ok(dirty)
     }
     fn scan_libgit2(&self) -> Result<bool, String> {
+        // With core.ignorecase=true on a case-sensitive filesystem, libgit2
+        // folds case-only renames to clean while `git status` reports dirty.
+        // Probe lowercase "head" (Git always writes "HEAD") to detect a case-sensitive filesystem.
+        if self.scan.case_policy == crate::fast_scan::CasePolicy::Insensitive
+            && std::fs::symlink_metadata(self.repository.path().join("head"))
+                .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        {
+            return Err(
+                "core.ignorecase on a case-sensitive filesystem requires the command-line observer"
+                    .into(),
+            );
+        }
         let mut options = StatusOptions::new();
         options
             .include_untracked(self.scan.untracked)
