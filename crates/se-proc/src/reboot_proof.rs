@@ -7,44 +7,6 @@ use se_types::{BootId, MachineId, ProcessInstance};
 
 pub use se_custody::{RebootBoot, match_recorded_root};
 
-pub(crate) fn valid_witness_boots(
-    source: &CheckpointSource,
-    root: &ProcessIdentity,
-    previous: &BootId,
-    observed: &BootId,
-) -> bool {
-    if !matches!(
-        source,
-        CheckpointSource::Root(_) | CheckpointSource::Process(_)
-    ) {
-        return false;
-    }
-    let (Some(before), Some(after)) = (RebootBoot::parse(previous), RebootBoot::parse(observed))
-    else {
-        return false;
-    };
-    if std::mem::discriminant(&before) != std::mem::discriminant(&after) || before == after {
-        return false;
-    }
-    match (&root.boot, &before, source) {
-        (crate::BootIdentity::Linux { boot_id }, RebootBoot::Linux(id), _) => {
-            id.as_str() == format!("linux:{}", se_types::hex_lower(boot_id))
-        }
-        (crate::BootIdentity::WindowsAbsoluteCreationClock, RebootBoot::Windows(_), _) => true,
-        (
-            crate::BootIdentity::MacOs { .. },
-            RebootBoot::MacOs(id),
-            CheckpointSource::Root(root),
-        ) => root.macos_boot_session.as_ref() == Some(id),
-        (
-            crate::BootIdentity::MacOs { .. },
-            RebootBoot::MacOs(id),
-            CheckpointSource::Process(record),
-        ) => record.macos_boot_session.as_ref() == Some(id),
-        _ => false,
-    }
-}
-
 /// The machine is independently read from the protected local home.
 pub struct ObservedBoot {
     pub machine: MachineId,

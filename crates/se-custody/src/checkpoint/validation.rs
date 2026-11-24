@@ -567,7 +567,7 @@ fn validate_reboot(
     observed: &se_types::BootId,
 ) -> Result<()> {
     require(
-        crate::reboot_proof::valid_witness_boots(retained, expected, previous, observed),
+        super::valid_witness_boots(retained, expected, previous, observed),
         "boot change must identify two distinct boots of the recorded platform",
     )
 }

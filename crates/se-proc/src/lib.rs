@@ -23,15 +23,15 @@ pub use windows_package::process_has_package_identity;
 mod allocator;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub use allocator::{reclaim_unused_allocator_pages, release_read_only_mapped_pages};
-mod checkpoint;
+pub(crate) use se_custody::checkpoint;
 mod command;
 pub use checkpoint::{
     Checkpoint, CheckpointError, CheckpointKind, CheckpointPrincipal, CheckpointSource,
     HistoricalCheckpoint, RootPublication, decode_checkpoint, encode_checkpoint,
 };
 pub use command::background_command;
+pub use se_custody::{NativeFailure, ProcError, ProcErrorCode, ProcErrorDetail, ProcResult};
 pub use se_native_ipc::canonicalize_path;
-mod error;
 pub use se_state_files::NativeFileIdentity;
 mod identity;
 mod reboot_proof;
@@ -85,7 +85,6 @@ mod stdio;
 #[cfg(windows)]
 pub use child_pipe::NativeChildPipe;
 
-pub use error::*;
 pub use identity::*;
 pub use launch::*;
 #[cfg(target_os = "linux")]
@@ -121,7 +120,7 @@ pub use platform::{
 };
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod runtime;
-mod support;
+pub(crate) use se_custody::support;
 #[cfg(windows)]
 mod windows_native;
 #[cfg(windows)]

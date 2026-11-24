@@ -4,7 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub(crate) fn now() -> ProcResult<u128> {
+pub fn now() -> ProcResult<u128> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -16,7 +16,7 @@ pub(crate) fn now() -> ProcResult<u128> {
             )
         })
 }
-pub(crate) fn input(field: &str, reason: &str) -> ProcError {
+pub fn input(field: &str, reason: &str) -> ProcError {
     error(
         ProcErrorCode::InvalidInput,
         ProcErrorDetail::Input {
@@ -25,14 +25,14 @@ pub(crate) fn input(field: &str, reason: &str) -> ProcError {
         },
     )
 }
-pub(crate) fn error(code: ProcErrorCode, detail: ProcErrorDetail) -> ProcError {
+pub fn error(code: ProcErrorCode, detail: ProcErrorDetail) -> ProcError {
     ProcError {
         code,
         detail: Box::new(detail),
         native: None,
     }
 }
-pub(crate) fn native(code: ProcErrorCode, api: &str, cause: io::Error) -> ProcError {
+pub fn native(code: ProcErrorCode, api: &str, cause: io::Error) -> ProcError {
     ProcError {
         code,
         detail: Box::new(ProcErrorDetail::Input {
@@ -46,7 +46,7 @@ pub(crate) fn native(code: ProcErrorCode, api: &str, cause: io::Error) -> ProcEr
         }),
     }
 }
-pub(crate) fn capacity(resource: &str, limit: u64) -> ProcError {
+pub fn capacity(resource: &str, limit: u64) -> ProcError {
     error(
         ProcErrorCode::ResourceLimit,
         ProcErrorDetail::Capacity {
@@ -55,7 +55,7 @@ pub(crate) fn capacity(resource: &str, limit: u64) -> ProcError {
         },
     )
 }
-pub(crate) fn state(lifecycle: &LifecycleId, from: LifecycleState, operation: &str) -> ProcError {
+pub fn state(lifecycle: &LifecycleId, from: LifecycleState, operation: &str) -> ProcError {
     error(
         ProcErrorCode::IllegalTransition,
         ProcErrorDetail::State {
@@ -65,7 +65,7 @@ pub(crate) fn state(lifecycle: &LifecycleId, from: LifecycleState, operation: &s
         },
     )
 }
-pub(crate) fn unsupported(reason: &str) -> ProcError {
+pub fn unsupported(reason: &str) -> ProcError {
     error(
         ProcErrorCode::UnsupportedPlatform,
         ProcErrorDetail::Input {
@@ -74,7 +74,7 @@ pub(crate) fn unsupported(reason: &str) -> ProcError {
         },
     )
 }
-pub(crate) fn changed(expected: &ProcessIdentity, found: Option<&ProcessIdentity>) -> ProcError {
+pub fn changed(expected: &ProcessIdentity, found: Option<&ProcessIdentity>) -> ProcError {
     error(
         ProcErrorCode::IdentityChanged,
         ProcErrorDetail::Identity {
@@ -87,7 +87,7 @@ pub(crate) fn changed(expected: &ProcessIdentity, found: Option<&ProcessIdentity
     )
 }
 
-pub(crate) fn check_stop_deadline(deadline: std::time::Instant) -> ProcResult<()> {
+pub fn check_stop_deadline(deadline: std::time::Instant) -> ProcResult<()> {
     if std::time::Instant::now() >= deadline {
         return Err(error(
             ProcErrorCode::StopTokenExpired,
