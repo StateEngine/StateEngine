@@ -42,7 +42,7 @@ class ForegroundRuntime:
                             and receipt.get('process', {}).get('pid') == self.child.pid
                             and type(receipt.get('generation')) is int and receipt['generation'] > 0,
                             'Foreground startup did not identify the owned host')
-                    self.commands.observer.observe(self.child.pid)
+                    self.commands.observer.observe(self.child.pid, expected_exe=self.argv[0])
                     row.update(readiness='witnessed', startup=receipt)
                     return
                 require(self.child.poll() is None, 'Foreground host exited before readiness')
