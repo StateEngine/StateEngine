@@ -2,8 +2,9 @@
 //! in a dedicated thread, so checkpoint I/O never shares the writer task.
 //! PASSIVE in WAL mode does not block the writer, and a slow checkpoint must
 //! not stall appends either. The task runs when the writer goes idle after a
-//! write, which keeps the WAL far below the 64 MiB capacity cutoff instead of
-//! accumulating toward it, and does nothing at all while the host is idle.
+//! write, and copies (never resets) during traffic once the writer reports a
+//! large uncopied backlog, so the capacity cutoff owes only a short tail. It
+//! does nothing at all while the host is idle.
 use crate::backup_context::MAX_WAL_BYTES;
 use crate::transaction::checkpoint::probe;
 use crate::{error::*, *};
@@ -75,6 +76,8 @@ impl State {
 pub(crate) struct Status {
     state: Arc<State>,
     idle: Arc<AtomicBool>,
+    /// The writer reported a backlog worth copying during traffic.
+    copy: Arc<AtomicBool>,
     /// Latest idle edge, coalesced until the writer has stayed quiet for TICK.
     /// Shutdown also signals this condition so no timer delays joining.
     notify: Arc<(Mutex<Option<Instant>>, Condvar)>,
@@ -86,6 +89,7 @@ impl Default for Status {
         Self {
             state: Arc::default(),
             idle: Arc::new(AtomicBool::new(false)),
+            copy: Arc::new(AtomicBool::new(false)),
             notify: Arc::new((Mutex::new(None), Condvar::new())),
         }
     }
@@ -120,6 +124,14 @@ impl Status {
     fn idle(&self) -> bool {
         self.idle.load(Ordering::Acquire)
     }
+    /// Ask for a PASSIVE copy now, without waiting for a quiet interval.
+    pub(crate) fn request_copy(&self) {
+        self.copy.store(true, Ordering::Release);
+        self.wake();
+    }
+    fn take_copy(&self) -> bool {
+        self.copy.swap(false, Ordering::AcqRel)
+    }
     /// Signal the maintenance task: the writer has gone idle, or the task must
     /// stop. Cheap enough for the writer's idle edge, and lost notifications
     /// never matter because the task re-reads the real flags after waking.
@@ -143,6 +155,9 @@ impl Status {
         let (lock, condvar) = &*self.notify;
         let mut seen = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         while !closed.load(Ordering::Acquire) {
+            if self.copy.load(Ordering::Acquire) {
+                break;
+            }
             // An idle edge during the wait restarts the quiet interval. Only
             // retained maintenance debt uses the retry deadline without an edge.
             let ready = seen.map(|edge| edge + TICK).or(deadline);
@@ -335,9 +350,9 @@ fn run(
     }
 }
 fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>, status: &Status) {
-    if !status.idle() {
-        // The writer has traffic: checkpoint I/O now would fight its commits
-        // for the WAL write lock and push them past the busy timeout.
+    let copy = status.take_copy();
+    if !status.idle() && !copy {
+        // The writer has traffic and no backlog worth copying yet.
         return;
     }
     // The writer validates its lease before every operation; the task mirrors
@@ -376,6 +391,18 @@ fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>,
     }
     if context.suppress_checkpoint(wal.log, wal.bytes >= MAX_WAL_BYTES) {
         status.set(Maint::Pending);
+        return;
+    }
+    if !status.idle() {
+        // Traffic: copy frames only. PASSIVE takes no WAL write lock, so
+        // commits keep appending while it runs. A reset needs the writer
+        // quiet and stays with the idle path or the writer's own cutoff.
+        if wal.log > wal.done {
+            status.set(match checkpoint(db, "PASSIVE") {
+                Ok(_) => Maint::Pending,
+                Err(error) => Maint::Failed(error),
+            });
+        }
         return;
     }
     if wal.log == wal.done && wal.log >= RESET_MIN_FRAMES {

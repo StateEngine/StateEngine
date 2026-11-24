@@ -1,13 +1,23 @@
 //! WAL maintenance state shared by the commit path and the background task.
 //! COMMIT still establishes every receipt; maintenance never relabels its result.
 use super::*;
+use crate::backup_context::MAX_WAL_BYTES;
 use std::sync::{Arc, Condvar, Mutex};
 
 const SOFT_FRAMES: i64 = 256;
+/// Growth past the cutoff that means a restart did not happen (a reader
+/// slipped in before the append), so the next cut truncates instead.
+const RESTART_SLACK: u64 = 8 * 1024 * 1024;
+/// WAL file length kept after a restart; only the overshoot past it is freed.
+const KEEP_WAL_BYTES: i64 = (MAX_WAL_BYTES - 4 * 1024 * 1024) as i64;
+/// Uncopied frames (about 4 MiB) worth a background copy during traffic, so a
+/// continuous writer never reaches the cutoff owing the whole WAL.
+const COPY_FRAMES: i64 = 1024;
 
 #[derive(Default)]
 pub(crate) struct Schedule {
     pending: bool,
+    copy: bool,
     pub gate: Gate,
 }
 /// SQLite does not invoke the busy handler when another checkpoint owns its
@@ -95,29 +105,36 @@ impl Engine {
         probe(&self.db)
     }
     fn checkpoint_suppressed(&self, wal: &Wal) -> bool {
-        self.backup.as_ref().is_some_and(|c| {
-            c.suppress_checkpoint(wal.log, wal.bytes >= crate::backup_context::MAX_WAL_BYTES)
-        })
+        self.backup
+            .as_ref()
+            .is_some_and(|c| c.suppress_checkpoint(wal.log, wal.bytes >= MAX_WAL_BYTES))
     }
     fn defer_checkpoint(&mut self) {
         // Name the debt on this receipt; the background task owns the retry.
         self.checkpoints.pending = true;
     }
-    fn run_checkpoint(&mut self, wal: &Wal) -> Option<Duration> {
+    /// The capacity checkpoint; true means every frame is copied and no reader
+    /// pins the WAL, so the next write starts at frame 0. RESTART copies only
+    /// what the background task has not, and reuses the file instead of
+    /// freeing 64 MiB; the size limit trims the overshoot on the next commit.
+    fn run_checkpoint(&mut self, wal: &Wal) -> (Option<Duration>, bool) {
         if self.checkpoint_suppressed(wal) {
             self.defer_checkpoint();
-            return None;
+            return (None, false);
         }
         let start = Instant::now();
-        let hard = wal.bytes >= crate::backup_context::MAX_WAL_BYTES;
+        let truncate = wal.bytes >= MAX_WAL_BYTES + RESTART_SLACK;
         let gate = self.checkpoints.gate.clone();
         let result = gate.acquire(self.timeout).and_then(|_permit| {
             self.db
+                .pragma_update(None, "journal_size_limit", KEEP_WAL_BYTES)
+                .map_err(sql)?;
+            self.db
                 .query_row(
-                    if hard {
+                    if truncate {
                         "PRAGMA wal_checkpoint(TRUNCATE)"
                     } else {
-                        "PRAGMA wal_checkpoint(PASSIVE)"
+                        "PRAGMA wal_checkpoint(RESTART)"
                     },
                     [],
                     |r| {
@@ -132,7 +149,7 @@ impl Engine {
         });
         let elapsed = start.elapsed();
         self.maintenance = match result {
-            Ok((0, log, done)) if log == done && (!hard || log == 0) => None,
+            Ok((0, log, done)) if log == done && (!truncate || log == 0) => None,
             Ok(_) => Some(fail(
                 StoreErrorCode::Busy,
                 "committed checkpoint has pending frames",
@@ -140,17 +157,17 @@ impl Engine {
             Err(error) => Some(error),
         };
         self.checkpoints.pending = self.maintenance.is_some();
-        Some(elapsed)
+        (Some(elapsed), self.maintenance.is_none())
     }
     pub(crate) fn require_wal_capacity(&mut self) -> StoreResult<Option<Duration>> {
         let wal = self.wal()?;
-        if wal.bytes < crate::backup_context::MAX_WAL_BYTES {
+        if wal.bytes < MAX_WAL_BYTES {
             return Ok(None);
         }
-        let elapsed = self.run_checkpoint(&wal);
+        let (elapsed, reusable) = self.run_checkpoint(&wal);
         // A pinned reader or backup cannot turn a failed pressure checkpoint
         // into permission to keep appending. The preceding commit stays known.
-        if self.wal()?.bytes >= crate::backup_context::MAX_WAL_BYTES {
+        if !reusable {
             return Err(fail(
                 StoreErrorCode::Busy,
                 "WAL reached its 64 MiB maintenance cutoff; release pinned readers or let the aborted backup close, then retry the original operation",
@@ -167,8 +184,9 @@ impl Engine {
                 return None;
             }
         };
-        if wal.bytes >= crate::backup_context::MAX_WAL_BYTES {
-            return self.run_checkpoint(&wal);
+        self.checkpoints.copy = wal.log - wal.done >= COPY_FRAMES;
+        if wal.bytes >= MAX_WAL_BYTES {
+            return self.run_checkpoint(&wal).0;
         }
         if wal.log >= SOFT_FRAMES && wal.log > wal.done {
             // Name the debt on this receipt. Direct/bootstrap connections have
@@ -183,6 +201,11 @@ impl Engine {
             }
         }
         None
+    }
+    /// Whether the last commit left enough uncopied frames for a background
+    /// copy during traffic. Reading it consumes the request.
+    pub(crate) fn take_copy_request(&mut self) -> bool {
+        std::mem::take(&mut self.checkpoints.copy)
     }
     pub(crate) fn checkpoint_pending(&self) -> bool {
         self.checkpoints.pending
