@@ -21,6 +21,7 @@ impl LaunchCoordinator {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // Startup already ran an initial sweep; wait one interval first.
             interval.tick().await;
+            let mut last_warning: Option<String> = None;
             loop {
                 interval.tick().await;
                 let Some(current) = coordinator.upgrade() else {
@@ -34,8 +35,15 @@ impl LaunchCoordinator {
                     current.sweep_ephemeral_expired(&deadline).await
                 }
                 .await;
-                if let Err(failure) = swept {
-                    eprintln!("Ephemeral TTL sweep incomplete: {}", failure.body);
+                match swept {
+                    Ok(()) => last_warning = None,
+                    Err(failure) => {
+                        let msg = failure.body.to_string();
+                        if last_warning.as_deref() != Some(msg.as_str()) {
+                            eprintln!("Ephemeral TTL sweep incomplete: {msg}");
+                            last_warning = Some(msg);
+                        }
+                    }
                 }
             }
         });
@@ -44,6 +52,9 @@ impl LaunchCoordinator {
     /// When a non-owner agent's session ends (outside host shutdown), stop its
     /// active ephemeral children so each child's own `SessionEnded` path finishes
     /// cleanly without retiring live helpers mid-task during `se down`.
+    /// Caps cascade work at half of the parent's remaining stop budget (at most
+    /// 15s) and never propagates errors, so `retire_files` and native release
+    /// always keep enough budget to settle the parent.
     pub(super) async fn cascade_parent_ended(
         &self,
         project: &ProjectId,
@@ -54,7 +65,14 @@ impl LaunchCoordinator {
         if self.stopping.load(Ordering::Acquire) {
             return;
         }
-        let Ok(bound) = deadline.stage(Duration::from_secs(15)) else {
+        let Ok(remaining) = deadline.remaining() else {
+            return;
+        };
+        let cap = (remaining / 2).min(Duration::from_secs(15));
+        if cap.is_zero() {
+            return;
+        }
+        let Ok(bound) = deadline.stage(cap) else {
             return;
         };
         let Ok(children) = self.all_active_ephemeral_agents(project, &bound).await else {

@@ -387,6 +387,8 @@ pub trait Snapshot {
     /// Non-retired project principals (hiding retired ephemeral agents on schema >= 17).
     fn active_principals(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
     /// Whether this agent has been terminally retired (`principals.retired_seq IS NOT NULL`).
+    /// Project-scoped roster visibility (same as `principals()` and `active_principals()`):
+    /// readable under `Visibility::SelfOnly` for peer addressing without exposing private agent data.
     fn principal_retired(&mut self, agent: AgentId) -> StoreResult<bool>;
     /// Paginated unretired ephemeral agents in the admitted project for host cascade and TTL sweeps.
     fn active_ephemeral_agents(

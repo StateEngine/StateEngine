@@ -7,7 +7,7 @@
   "se-host": 66712,
   "se-channels": 6750,
   "se-proc": 31513,
-  "se-store": 25903,
+  "se-store": 25905,
   "se-trusted-path": 312,
   "se-native-path": 327,
   "se-custody": 1100,
@@ -42,7 +42,7 @@
  "directories": {
   "crates/se-host/src/runtime": 25027,
   "crates/se-core/src/ops": 20495,
-  "crates/se-host/src/process": 14687,
+  "crates/se-host/src/process": 14702,
   "crates/se-harness/src/harness": 13328,
   "crates/se-host/src/remote": 6921,
   "crates/se/src/route": 11045,
