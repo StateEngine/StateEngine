@@ -51,10 +51,6 @@ pub fn observe_snapshot<S: Snapshot>(
     observe_snapshot_watched(cx, snap, owner, files, admission, ObserveOptions::default())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "Status assembles one finite snapshot before native observation."
-)]
 pub fn observe_snapshot_watched<S: Snapshot>(
     cx: &Bootstrap,
     snap: &mut S,
@@ -63,13 +59,6 @@ pub fn observe_snapshot_watched<S: Snapshot>(
     admission: &Admission,
     options: ObserveOptions<'_>,
 ) -> Result<AnyOutput> {
-    let ObserveOptions {
-        watched,
-        defer_git,
-        include_temp,
-    } = options;
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = watched;
     let generated = receipt::timestamp(execute::now_us()?)?;
     let mut output = status::missing(
         cx.home.display().to_string(),
@@ -97,116 +86,150 @@ pub fn observe_snapshot_watched<S: Snapshot>(
         output.runtime.state = "stopped".into();
     }
     if let Scope::Project(project) = &admission.scope {
-        let result = (|| {
-            let record = scope::require_present(
-                snap.project(project.clone()).map_err(|e| store_error(&e))?,
-                "selected project",
-                "Select an existing project in this data home with --project, or restore its original project metadata.",
-            )?;
-            if let Some(removal) = project_remove::removed_view(&record)? {
-                output.scope = "project".into();
-                output.project = Read::Absent {
-                    checked: format!(
-                        "registry: last registration of {} was removed",
-                        removal.project.name
-                    ),
-                };
-                output.capture.state = "off".into();
-                output.atlas.state = "absent".into();
-                let quoted_root = if cfg!(windows) {
-                    format!("'{}'", removal.root.replace('\'', "''"))
-                } else {
-                    format!("'{}'", removal.root.replace('\'', "'\"'\"'"))
-                };
-                output.next = NextStep {
-                    text: "Re-adopt this folder".into(),
-                    command: format!("se init --repo {quoted_root}"),
-                    argv: vec![
-                        "se".into(),
-                        "init".into(),
-                        "--repo".into(),
-                        removal.root.clone(),
-                    ],
-                };
-                output.removal = Some(removal);
-                return Ok(());
-            }
-            let Some((_, name, roots)) = super::select::active_project(&record.current.body) else {
-                return Err(scope::unreadable(
-                    "project status",
-                    "selected project metadata is not active",
-                ));
-            };
-            output.scope = "project".into();
-            let root = roots
-                .first()
-                .map(|r| r.path.to_local().map(|p| p.display().to_string()))
-                .transpose()?
-                .unwrap_or_default();
-            let git = if defer_git || root.is_empty() {
-                None
-            } else {
-                git_observation(cx, files, project, &root, watched, &mut output.pending)
-            };
-            output.project = Read::Present {
-                value: ProjectView {
-                    id: project.clone(),
-                    name: name.to_owned(),
-                    root,
-                    registered_at: receipt::timestamp(
-                        record
-                            .original
-                            .as_deref()
-                            .unwrap_or(&record.current)
-                            .recorded_at_us,
-                    )?,
-                    git,
-                },
-            };
-            let query = MessageQuery {
-                sender: None,
-                recipient: Some(admission.actor.clone()),
-                kind: None,
-                unread_only: true,
-                full_body: false,
-                direction: MailDirection::OldestFirst,
-            };
-            let unread = snap.message_count(query).map_err(|e| store_error(&e))?;
-            output.agents = Some(agent_status::page_with_temp(
-                super::select::budget(None)?,
-                include_temp,
-                &mut se_core::commit::Cx {
-                    read: snap,
-                    admission,
-                },
-            )?);
-            match &admission.actor {
-                Actor::Remote(_) | Actor::Guest => {
-                    return Err(se_types::SeError::invalid(
-                        "local status",
-                        "local human or agent authority",
-                    ));
-                }
-                Actor::Human(_) => output.inbox.owner_unread = Some(unread),
-                Actor::Agent(agent) => {
-                    output.inbox.self_unread = Some(unread);
-                    let selected = receipt::named_agent(snap, agent)?;
-                    if let Some(session) = &admission.session {
-                        output.principal = Some(PrincipalView {
-                            project: Named {
-                                id: project.clone(),
-                                name: name.to_owned(),
-                            },
-                            agent: selected,
-                            session_id: session.clone(),
-                        });
-                    }
-                }
-            }
-            Ok(())
-        })();
-        result?;
+        observe_project(cx, snap, files, admission, project, &options, &mut output)?;
     }
+    observe_runtime(files, owner, lease.is_some(), generated, &mut output)?;
+    Ok(output.into())
+}
+
+/// The selected project's view, the caller's unread count and saved agents.
+fn observe_project<S: Snapshot>(
+    cx: &Bootstrap,
+    snap: &mut S,
+    files: &Files,
+    admission: &Admission,
+    project: &se_types::ProjectId,
+    options: &ObserveOptions<'_>,
+    output: &mut StatusOutput,
+) -> Result<()> {
+    let ObserveOptions {
+        watched,
+        defer_git,
+        include_temp,
+    } = *options;
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let _ = watched;
+    let record = scope::require_present(
+        snap.project(project.clone()).map_err(|e| store_error(&e))?,
+        "selected project",
+        "Select an existing project in this data home with --project, or restore its original project metadata.",
+    )?;
+    if let Some(removal) = project_remove::removed_view(&record)? {
+        show_removed(output, removal);
+        return Ok(());
+    }
+    let Some((_, name, roots)) = super::select::active_project(&record.current.body) else {
+        return Err(scope::unreadable(
+            "project status",
+            "selected project metadata is not active",
+        ));
+    };
+    output.scope = "project".into();
+    let root = roots
+        .first()
+        .map(|r| r.path.to_local().map(|p| p.display().to_string()))
+        .transpose()?
+        .unwrap_or_default();
+    let git = if defer_git || root.is_empty() {
+        None
+    } else {
+        git_observation(cx, files, project, &root, watched, &mut output.pending)
+    };
+    output.project = Read::Present {
+        value: ProjectView {
+            id: project.clone(),
+            name: name.to_owned(),
+            root,
+            registered_at: receipt::timestamp(
+                record
+                    .original
+                    .as_deref()
+                    .unwrap_or(&record.current)
+                    .recorded_at_us,
+            )?,
+            git,
+        },
+    };
+    let query = MessageQuery {
+        sender: None,
+        recipient: Some(admission.actor.clone()),
+        kind: None,
+        unread_only: true,
+        full_body: false,
+        direction: MailDirection::OldestFirst,
+    };
+    let unread = snap.message_count(query).map_err(|e| store_error(&e))?;
+    output.agents = Some(agent_status::page_with_temp(
+        super::select::budget(None)?,
+        include_temp,
+        &mut se_core::commit::Cx {
+            read: snap,
+            admission,
+        },
+    )?);
+    match &admission.actor {
+        Actor::Remote(_) | Actor::Guest => {
+            return Err(se_types::SeError::invalid(
+                "local status",
+                "local human or agent authority",
+            ));
+        }
+        Actor::Human(_) => output.inbox.owner_unread = Some(unread),
+        Actor::Agent(agent) => {
+            output.inbox.self_unread = Some(unread);
+            let selected = receipt::named_agent(snap, agent)?;
+            if let Some(session) = &admission.session {
+                output.principal = Some(PrincipalView {
+                    project: Named {
+                        id: project.clone(),
+                        name: name.to_owned(),
+                    },
+                    agent: selected,
+                    session_id: session.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A removed registration reads as absent, with the command that re-adopts it.
+fn show_removed(output: &mut StatusOutput, removal: RemovalView) {
+    output.scope = "project".into();
+    output.project = Read::Absent {
+        checked: format!(
+            "registry: last registration of {} was removed",
+            removal.project.name
+        ),
+    };
+    output.capture.state = "off".into();
+    output.atlas.state = "absent".into();
+    let quoted_root = if cfg!(windows) {
+        format!("'{}'", removal.root.replace('\'', "''"))
+    } else {
+        format!("'{}'", removal.root.replace('\'', "'\"'\"'"))
+    };
+    output.next = NextStep {
+        text: "Re-adopt this folder".into(),
+        command: format!("se init --repo {quoted_root}"),
+        argv: vec![
+            "se".into(),
+            "init".into(),
+            "--repo".into(),
+            removal.root.clone(),
+        ],
+    };
+    output.removal = Some(removal);
+}
+
+/// The published runtime endpoint, checked against the store's current owner.
+fn observe_runtime(
+    files: &Files,
+    owner: Option<Read<RuntimeOwnerHead>>,
+    lease_held: bool,
+    generated: String,
+    output: &mut StatusOutput,
+) -> Result<()> {
     match execute::endpoint(files) {
         Ok(Read::Present { value: endpoint }) => {
             let owner = scope::require_present(
@@ -225,9 +248,9 @@ pub fn observe_snapshot_watched<S: Snapshot>(
                     "protected endpoint does not match the store's exact current owner generation",
                 ));
             }
-            if lease.is_some() {
+            if lease_held {
                 output.pending.push(PendingFact{what:"stale endpoint".into(),since:None,detail:"The shared native writer lease is held by this observation; the published endpoint is not an active host owner.".into()});
-                return Ok(output.into());
+                return Ok(());
             }
             let options = execute::options();
             let observation_bound = se_host::client::lease::Deadline::from_options(&options)?;
@@ -297,8 +320,9 @@ pub fn observe_snapshot_watched<S: Snapshot>(
             detail: error.to_string(),
         }),
     }
-    Ok(output.into())
+    Ok(())
 }
+
 fn git_observation(
     cx: &Bootstrap,
     files: &Files,

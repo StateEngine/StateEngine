@@ -18,6 +18,7 @@ use se_store::{DirectStore, Snapshot, SqliteFactory, StateFiles, StoreFactory, S
 use se_types::{AgentId, EventId, MessageId, Read, Result, SeError, Secret};
 use std::{
     io::Read as _,
+    ops::ControlFlow,
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
@@ -325,28 +326,29 @@ fn finish_status_observation(
         .flatten())
 }
 
-struct StatusDispatch<'a> {
+/// The admitted caller and store handles every store-backed route shares.
+#[derive(Clone, Copy)]
+struct RouteContext<'a> {
     cx: &'a Bootstrap,
     files: &'a Files,
     reader: &'a se_store::SqliteReader,
     caller: &'a super::admit::Caller,
     selections: &'a se_core::ops::CliSelections,
-    op: &'a AnyOp,
     observation_deadline: std::time::Instant,
 }
 
 fn dispatch_status(
-    req: StatusDispatch<'_>,
+    req: RouteContext<'_>,
+    op: &AnyOp,
     mut snapshot: se_store::SqliteSnapshot,
     owner: Option<Read<se_store::RuntimeOwnerHead>>,
 ) -> Result<AnyOutput> {
-    let StatusDispatch {
+    let RouteContext {
         cx,
         files,
         reader,
         caller,
         selections,
-        op,
         observation_deadline,
     } = req;
     // Ask the daemon concurrently with this process's own build. The local
@@ -438,10 +440,6 @@ fn dispatch_status(
     super::status::finish(cx, reader, output, &caller.admission)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn dispatch_with_cold_recovery(
     cx: &Bootstrap,
     op: AnyOp,
@@ -449,45 +447,10 @@ fn dispatch_with_cold_recovery(
     recover_cold: bool,
 ) -> Result<AnyOutput> {
     let observation_deadline = super::session_observation::deadline()?;
-    #[cfg(feature = "import")]
-    let op = {
-        let mut op = op;
-        if let AnyOp::ImportNode(input) = &mut op {
-            let path = std::path::PathBuf::from(&input.from_node);
-            let absolute = if path.is_absolute() {
-                path
-            } else {
-                cx.cwd.join(path)
-            };
-            input.from_node = absolute
-                .to_str()
-                .ok_or_else(|| {
-                    SeError::invalid(
-                        "Node source path",
-                        "an exact UTF-8 CLI path; lossy path conversion is refused",
-                    )
-                })?
-                .into();
-        }
-        op
+    let op = match route_without_store(cx, op, diagnostic)? {
+        ControlFlow::Break(output) => return Ok(output),
+        ControlFlow::Continue(op) => op,
     };
-    if let AnyOp::DiagnosticBundle(input) = op {
-        return super::diagnostic_bundle::execute(cx, input);
-    }
-    if let AnyOp::ProjectInit(input) = op {
-        return super::init::execute(cx, input);
-    }
-    if let AnyOp::StoreRestore(input) = op {
-        return super::restore::execute(cx, input, diagnostic);
-    }
-    if let AnyOp::Uninstall(input) = op {
-        return Ok(super::uninstall::execute(cx, input, diagnostic)?.into());
-    }
-    if matches!(op, AnyOp::DoctorInspect(_) | AnyOp::DoctorRepair(_))
-        && let Some(output) = super::doctor::permissions::recover(cx, &op, diagnostic)?
-    {
-        return Ok(output);
-    }
     let (files, (reader, mut phase)) =
         match setup::inspect_short(&cx.home, se_core::ops::receipt::timestamp(now_us()?)?)? {
             setup::Setup::Absent(output) if matches!(op, AnyOp::ProjectStatus(_)) => {
@@ -531,20 +494,16 @@ fn dispatch_with_cold_recovery(
     if let se_store::Scope::Project(project) = &caller.admission.scope {
         selections.project = Some(project.clone());
     }
+    let ctx = RouteContext {
+        cx,
+        files: &files,
+        reader: &reader,
+        caller: &caller,
+        selections: &selections,
+        observation_deadline,
+    };
     if matches!(op, AnyOp::ProjectStatus(_)) {
-        return dispatch_status(
-            StatusDispatch {
-                cx,
-                files: &files,
-                reader: &reader,
-                caller: &caller,
-                selections: &selections,
-                op: &op,
-                observation_deadline,
-            },
-            snapshot,
-            owner,
-        );
+        return dispatch_status(ctx, &op, snapshot, owner);
     }
     if matches!(op, AnyOp::DoctorInspect(_) | AnyOp::DoctorRepair(_)) {
         snapshot.close().map_err(|e| store_error(&e))?;
@@ -555,70 +514,159 @@ fn dispatch_with_cold_recovery(
         RuntimeNeed::Host | RuntimeNeed::HostAutoStart
     );
     if op.meta().effect == Effect::Read && !host_required {
-        let observation_op = op.clone();
-        let observed = se_types::UnixMicros::new(u64::try_from(now_us()?).map_err(|_| {
-            SeError::invalid("read observation clock", "nonnegative Unix microseconds")
-        })?)?;
-        let read_kernel = Kernel::read_only_at(observed)
-            .with_command_home(&cx.home)
-            .with_configuration(cx.config.value.clone())?
-            .with_config_origin(cx.config.origin.label());
-        let result = direct::plan_snapshot(
-            &mut snapshot,
-            &caller.admission,
-            &caller.terminal,
-            &read_kernel,
-            op,
-            &selections,
-        )
-        .and_then(|step| match step {
-            se_core::commit::OpStep::Complete(output) => Ok(output),
-            _ => Err(SeError::invalid(
-                "direct read plan",
-                "a read without commit or custody",
-            )),
-        })
-        .and_then(|output| {
-            super::session_observation::prepare(
-                output,
-                &mut snapshot,
-                &caller.admission,
-                observation_deadline,
-            )
-        });
-        let prepared = finish_read(result, snapshot.close().map_err(|e| store_error(&e)))?;
-        let mut output = super::session_observation::finish(prepared, &cx.home)?;
-        if super::session_observation::has_runtime_observation(&output) {
-            let live = match endpoint(&files) {
-                Ok(Read::Present { .. }) => Some(super::hosted::forward(
-                    cx,
-                    &files,
-                    &reader,
-                    &caller,
-                    observation_op,
-                    &selections,
-                    diagnostic,
-                )),
-                Ok(Read::Absent { .. }) => None,
-                Ok(Read::Unreadable { source, reason, .. }) => {
-                    Some(Err(scope::unreadable(&source, &reason)))
-                }
-                Ok(Read::Unknown { what }) => {
-                    Some(Err(scope::unreadable("runtime endpoint", &what)))
-                }
-                Err(error) => Some(Err(error)),
-            };
-            if let Some(live) = live {
-                output = super::session_observation::merge_runtime_observation(output, live)?;
-            }
-        }
-        return super::status::finish(cx, &reader, output, &caller.admission);
+        return dispatch_read(ctx, op, snapshot, diagnostic);
     }
     let identity = snapshot
         .info()
         .direct_lease_identity(caller.admission.generation);
     // End the finite auth/selection pin before stdin, IPC, writer or custody work.
     snapshot.close().map_err(|e| store_error(&e))?;
+    dispatch_write(ctx, op, identity, host_required, recover_cold, diagnostic)
+}
+
+/// Routes that answer before the store is opened: setup, recovery and
+/// uninstall paths, and a Node import path made absolute.
+fn route_without_store(
+    cx: &Bootstrap,
+    op: AnyOp,
+    diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<ControlFlow<AnyOutput, AnyOp>> {
+    #[cfg(feature = "import")]
+    let op = {
+        let mut op = op;
+        if let AnyOp::ImportNode(input) = &mut op {
+            let path = std::path::PathBuf::from(&input.from_node);
+            let absolute = if path.is_absolute() {
+                path
+            } else {
+                cx.cwd.join(path)
+            };
+            input.from_node = absolute
+                .to_str()
+                .ok_or_else(|| {
+                    SeError::invalid(
+                        "Node source path",
+                        "an exact UTF-8 CLI path; lossy path conversion is refused",
+                    )
+                })?
+                .into();
+        }
+        op
+    };
+    if let AnyOp::DiagnosticBundle(input) = op {
+        return super::diagnostic_bundle::execute(cx, input).map(ControlFlow::Break);
+    }
+    if let AnyOp::ProjectInit(input) = op {
+        return super::init::execute(cx, input).map(ControlFlow::Break);
+    }
+    if let AnyOp::StoreRestore(input) = op {
+        return super::restore::execute(cx, input, diagnostic).map(ControlFlow::Break);
+    }
+    if let AnyOp::Uninstall(input) = op {
+        return Ok(ControlFlow::Break(
+            super::uninstall::execute(cx, input, diagnostic)?.into(),
+        ));
+    }
+    if matches!(op, AnyOp::DoctorInspect(_) | AnyOp::DoctorRepair(_))
+        && let Some(output) = super::doctor::permissions::recover(cx, &op, diagnostic)?
+    {
+        return Ok(ControlFlow::Break(output));
+    }
+    Ok(ControlFlow::Continue(op))
+}
+
+/// A read that needs no host: plan it on the finite snapshot, then merge a
+/// live runtime observation when the output asks for one.
+fn dispatch_read(
+    ctx: RouteContext<'_>,
+    op: AnyOp,
+    mut snapshot: se_store::SqliteSnapshot,
+    diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<AnyOutput> {
+    let RouteContext {
+        cx,
+        files,
+        reader,
+        caller,
+        selections,
+        observation_deadline,
+    } = ctx;
+    let observation_op = op.clone();
+    let observed = se_types::UnixMicros::new(u64::try_from(now_us()?).map_err(|_| {
+        SeError::invalid("read observation clock", "nonnegative Unix microseconds")
+    })?)?;
+    let read_kernel = Kernel::read_only_at(observed)
+        .with_command_home(&cx.home)
+        .with_configuration(cx.config.value.clone())?
+        .with_config_origin(cx.config.origin.label());
+    let result = direct::plan_snapshot(
+        &mut snapshot,
+        &caller.admission,
+        &caller.terminal,
+        &read_kernel,
+        op,
+        selections,
+    )
+    .and_then(|step| match step {
+        se_core::commit::OpStep::Complete(output) => Ok(output),
+        _ => Err(SeError::invalid(
+            "direct read plan",
+            "a read without commit or custody",
+        )),
+    })
+    .and_then(|output| {
+        super::session_observation::prepare(
+            output,
+            &mut snapshot,
+            &caller.admission,
+            observation_deadline,
+        )
+    });
+    let prepared = finish_read(result, snapshot.close().map_err(|e| store_error(&e)))?;
+    let mut output = super::session_observation::finish(prepared, &cx.home)?;
+    if super::session_observation::has_runtime_observation(&output) {
+        let live = match endpoint(files) {
+            Ok(Read::Present { .. }) => Some(super::hosted::forward(
+                cx,
+                files,
+                reader,
+                caller,
+                observation_op,
+                selections,
+                diagnostic,
+            )),
+            Ok(Read::Absent { .. }) => None,
+            Ok(Read::Unreadable { source, reason, .. }) => {
+                Some(Err(scope::unreadable(&source, &reason)))
+            }
+            Ok(Read::Unknown { what }) => Some(Err(scope::unreadable("runtime endpoint", &what))),
+            Err(error) => Some(Err(error)),
+        };
+        if let Some(live) = live {
+            output = super::session_observation::merge_runtime_observation(output, live)?;
+        }
+    }
+    super::status::finish(cx, reader, output, &caller.admission)
+}
+
+/// Writes and host operations: authorize, then forward to the host or take
+/// the direct writer lease.
+fn dispatch_write(
+    ctx: RouteContext<'_>,
+    op: AnyOp,
+    identity: se_store::LeaseIdentity,
+    host_required: bool,
+    recover_cold: bool,
+    diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<AnyOutput> {
+    let RouteContext {
+        cx,
+        files,
+        reader,
+        caller,
+        selections,
+        ..
+    } = ctx;
     se_core::admission::authorize(op.meta(), &caller.admission)?;
     // Refuse before acquiring writer custody or looking for a busy host's
     // endpoint; Kernel::plan still enforces policy for every execution path.
@@ -630,44 +678,44 @@ fn dispatch_with_cold_recovery(
         )?;
     }
     if let AnyOp::ProjectRemove(input) = &op
-        && let Some(absent) = super::remove::absent(cx, &files, &reader, &caller.admission, input)?
+        && let Some(absent) = super::remove::absent(cx, files, reader, &caller.admission, input)?
     {
         return Ok(absent);
     }
     if let AnyOp::ProjectMove(input) = &op {
-        return super::project_move::execute(cx, &reader, &caller, input.clone());
+        return super::project_move::execute(cx, reader, caller, input.clone());
     }
     if let AnyOp::RuntimeDown(input) = op {
-        return super::runtime_control::down(cx, &files, &reader, input, recover_cold);
+        return super::runtime_control::down(cx, files, reader, input, recover_cold);
     }
     if host_required && !matches!(op, AnyOp::RuntimeUp(_)) {
         let retry = super::startup_retry::Retry::capture(cx, &caller.admission, &op);
-        return super::hosted::forward(cx, &files, &reader, &caller, op, &selections, diagnostic)
+        return super::hosted::forward(cx, files, reader, caller, op, selections, diagnostic)
             .map_err(|error| retry.attach(error));
     }
     reader.validate_identity().map_err(|e| store_error(&e))?;
-    let lease = DirectLease::acquire(&files, &cx.home.join("runtime.lock"), identity)
+    let lease = DirectLease::acquire(files, &cx.home.join("runtime.lock"), identity)
         .map_err(|e| store_error(&e))?;
     let retry = super::startup_retry::Retry::capture(cx, &caller.admission, &op);
     if let AnyOp::RuntimeUp(input) = op {
         // Activation requires the host's exclusive lease, so the direct shared
         // lease must be gone before spawning or rendezvousing with it.
         drop(lease);
-        return super::runtime_control::up(cx, &files, &caller, input, diagnostic)
+        return super::runtime_control::up(cx, files, caller, input, diagnostic)
             .map_err(|error| retry.attach(error));
     }
     let Some(lease) = lease else {
         let target = scope::require_present(
-            endpoint(&files)?,
+            endpoint(files)?,
             "live runtime endpoint while the writer lease is busy",
             "Wait for the current runtime to publish its endpoint, then retry with the original --key; do not remove runtime.lock or bypass its holder.",
         )?;
-        let forwarding = forwarding_options(cx, &files, &target)?;
+        let forwarding = forwarding_options(cx, files, &target)?;
         return crate::ipc::forward(
             &target,
-            credential(cx, &files)?,
+            credential(cx, files)?,
             op,
-            &selections,
+            selections,
             caller
                 .owner
                 .as_ref()
@@ -675,8 +723,18 @@ fn dispatch_with_cold_recovery(
             &forwarding,
         );
     };
+    execute_direct(ctx, op, lease)
+}
+
+/// Execute under the direct writer lease, naming a committed operation when
+/// the store close fails after COMMIT.
+fn execute_direct(
+    ctx: RouteContext<'_>,
+    op: AnyOp,
+    lease: DirectLease<&Files>,
+) -> Result<AnyOutput> {
     let store_options = StoreOptions {
-        state_directory: cx.home.clone(),
+        state_directory: ctx.cx.home.clone(),
         busy_timeout: Duration::from_millis(250),
     };
     let mut store = scope::require_present(
@@ -685,17 +743,17 @@ fn dispatch_with_cold_recovery(
         "Restore access to the initialized store in this same data home before retrying with the original --key; do not recreate or replace the store.",
     )?;
     let kernel = Kernel::new(facts()?)?
-        .with_configuration(cx.config.value.clone())?
-        .with_config_origin(cx.config.origin.label());
+        .with_configuration(ctx.cx.config.value.clone())?
+        .with_config_origin(ctx.cx.config.origin.label());
     let operation_name = op.meta().name;
     let result = direct::execute(
         &mut store,
         &lease,
-        &caller.admission,
-        &caller.terminal,
+        &ctx.caller.admission,
+        &ctx.caller.terminal,
         &kernel,
         op,
-        &selections,
+        ctx.selections,
     );
     let closed = store.close().map_err(|e| store_error(&e));
     match result {
@@ -717,7 +775,7 @@ fn dispatch_with_cold_recovery(
                     _ => error,
                 });
             }
-            complete(outcome)
+            outcome.into_output()
         }
         Err(error) => Err(match closed {
             Ok(()) => error,
@@ -725,6 +783,7 @@ fn dispatch_with_cold_recovery(
         }),
     }
 }
+
 pub(super) fn finish_read<T>(result: Result<T>, closed: Result<()>) -> Result<T> {
     match result {
         Ok(value) => {
@@ -735,40 +794,5 @@ pub(super) fn finish_read<T>(result: Result<T>, closed: Result<()>) -> Result<T>
             Ok(()) => error,
             Err(close) => error.with_cause(close),
         }),
-    }
-}
-
-fn complete(outcome: direct::Outcome) -> Result<AnyOutput> {
-    match outcome {
-        direct::Outcome::Complete(output) | direct::Outcome::Committed { output, .. } => Ok(output),
-        direct::Outcome::Custody(plan) => Err(SeError::new(se_types::Detail::Internal(
-            se_types::details::Internal {
-                report_id: "unrouted-cli-custody".into(),
-                location: match plan {
-                    se_core::ports::CustodyPlan::AtlasAugment(_) => {
-                        "host Atlas augmentation reader"
-                    }
-                    se_core::ports::CustodyPlan::AtlasRead(_) => "host Atlas reader",
-                    se_core::ports::CustodyPlan::ClaudeHook(_) => "hook",
-                    se_core::ports::CustodyPlan::Initialize(_) => "init",
-                    #[cfg(feature = "import")]
-                    se_core::ports::CustodyPlan::ImportNode(_) => "host history importer",
-                    se_core::ports::CustodyPlan::ObserveStatus(_) => "status",
-                    se_core::ports::CustodyPlan::RuntimeUp(_) => "runtime.up",
-                    se_core::ports::CustodyPlan::RuntimeDown(_) => "runtime.down",
-                    se_core::ports::CustodyPlan::Uninstall(_) => "uninstall",
-                    se_core::ports::CustodyPlan::Launch(_) => "host launch coordinator",
-                    se_core::ports::CustodyPlan::Stop(_) => "host stop coordinator",
-                    se_core::ports::CustodyPlan::AgentWake(_) => "host wake coordinator",
-                    se_core::ports::CustodyPlan::DelegateStart(_)
-                    | se_core::ports::CustodyPlan::DelegateCancel(_) => {
-                        "host delegation coordinator"
-                    }
-                    se_core::ports::CustodyPlan::Remove(_) => "host removal coordinator",
-                    se_core::ports::CustodyPlan::Forget(_) => "host erasure coordinator",
-                }
-                .into(),
-            },
-        ))),
     }
 }

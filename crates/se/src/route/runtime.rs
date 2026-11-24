@@ -388,17 +388,13 @@ fn down_live<R: se_store::ReadStore>(
         error
     })
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn down_endpoint(
     files: &Files,
     endpoint: &se_host::EndpointRecord,
     input: RuntimeDown,
     options: &se_host::client::ClientOptions,
 ) -> Result<AnyOutput> {
-    use se_host::client::endpoint::{RuntimeStopFact as Fact, RuntimeStopOutcome};
+    use se_host::client::endpoint::RuntimeStopOutcome;
     let bound = Deadline::from_options(options)?;
     se_proc::native_ipc::restore_image_cache(
         files.0.root(),
@@ -433,109 +429,130 @@ pub(super) fn down_endpoint(
             cause: None,
         }),
         RuntimeStopOutcome::Facts {
-            mut achieved,
+            achieved,
             retained_resume,
-            mut pending,
-        } => {
-            // The fixed reply precedes native closure. A protected post-transport
-            // record supplies per-lifecycle facts without changing stop/v1.
-            let mut report: Option<se_host::client::closure::RuntimeClosure> = None;
-            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-            match completion::report(files, endpoint, &original_key, &bound) {
-                Ok(value) => report = value,
-                Err(error) => pending.push(format!(
-                    "Post-transport shutdown facts remain unproved: {error}"
-                )),
+            pending,
+        } => stop_verdict(
+            files,
+            endpoint,
+            &original_key,
+            &bound,
+            achieved,
+            retained_resume,
+            pending,
+        )
+        .map(Into::into),
+    }
+}
+
+/// Combine the stop reply with the post-transport closure record into one
+/// verdict: complete only when every shutdown fact and stop is witnessed.
+fn stop_verdict(
+    files: &Files,
+    endpoint: &se_host::EndpointRecord,
+    original_key: &se_types::IdempotencyKey,
+    bound: &Deadline,
+    mut achieved: Vec<se_host::client::endpoint::RuntimeStopFact>,
+    retained_resume: Vec<se_host::client::endpoint::RuntimeStopResume>,
+    mut pending: Vec<String>,
+) -> Result<RuntimeStop> {
+    use se_host::client::endpoint::RuntimeStopFact as Fact;
+    // The fixed reply precedes native closure. A protected post-transport
+    // record supplies per-lifecycle facts without changing stop/v1.
+    let mut report: Option<se_host::client::closure::RuntimeClosure> = None;
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    match completion::report(files, endpoint, original_key, bound) {
+        Ok(value) => report = value,
+        Err(error) => pending.push(format!(
+            "Post-transport shutdown facts remain unproved: {error}"
+        )),
+    }
+    if let Some(report) = &report {
+        for reason in &report.pending {
+            if !pending.contains(reason) {
+                pending.push(reason.clone());
             }
-            if let Some(report) = &report {
-                for reason in &report.pending {
-                    if !pending.contains(reason) {
-                        pending.push(reason.clone());
-                    }
-                }
-                if !report.resources_closed {
-                    pending.push("The original stop's post-transport receipt does not prove complete runtime resource closure.".into());
-                }
-            }
-            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-            if pending.is_empty() {
-                match completion::witness(files, endpoint, &original_key, &bound) {
-                    Ok(()) => achieved.extend([Fact::ResourcesClosed, Fact::LeaseReleased]),
-                    Err(error) => pending.push(format!(
-                        "Final native resource/lease release remains unproved: {error}"
-                    )),
-                }
-            }
-            let observed_at = receipt::timestamp(execute::now_us()?)?;
-            let retained_count = retained_resume.len();
-            let projects = retained_resume
-                .iter()
-                .map(|saved| saved.project.clone())
-                .chain(
-                    report
-                        .iter()
-                        .flat_map(|report| report.stops.iter().map(|stop| stop.project.clone())),
-                )
-                .collect();
-            let stops = stops::render(report.as_ref(), retained_resume, &observed_at, &mut pending);
-            let missing: Vec<_> = [
-                Fact::AgentsStopped,
-                Fact::ResumeSaved,
-                Fact::CaptureFlushed,
-                Fact::DebtFlushed,
-                Fact::WriterJoined,
-                Fact::ResourcesClosed,
-                Fact::LeaseReleased,
-            ]
-            .into_iter()
-            .filter(|fact| !achieved.contains(fact))
-            .collect();
-            if !missing.is_empty() {
-                let missing = missing
-                    .iter()
-                    .map(shutdown_fact)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                pending.push(format!("Shutdown has not verified: {missing}. Preserve this data home and resolve these pending shutdown steps."));
-            }
-            let complete = pending.is_empty() && stops.iter().all(|stop| stop.complete);
-            if !complete {
-                pending.push(retry_cleanup(files, projects));
-            }
-            let mut detail = format!(
-                "Verified: {}; saved conversation references: {retained_count}.",
-                achieved
-                    .iter()
-                    .map(shutdown_fact)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            if !pending.is_empty() {
-                detail.push_str(&format!(" Pending: {}", pending.join("; ")));
-            }
-            Ok(RuntimeStop {
-                complete,
-                already_down: false,
-                stops,
-                witness: Witness {
-                    state: if complete {
-                        WitnessState::Witnessed
-                    } else {
-                        WitnessState::Unknown
-                    },
-                    method: if complete {
-                        "authenticated shutdown stages and outside native completion readback"
-                    } else {
-                        "authenticated shutdown stages with pending completion readback"
-                    }
-                    .into(),
-                    observed_at: receipt::timestamp(execute::now_us()?)?,
-                    detail: Some(detail),
-                },
-            }
-            .into())
+        }
+        if !report.resources_closed {
+            pending.push("The original stop's post-transport receipt does not prove complete runtime resource closure.".into());
         }
     }
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    if pending.is_empty() {
+        match completion::witness(files, endpoint, original_key, bound) {
+            Ok(()) => achieved.extend([Fact::ResourcesClosed, Fact::LeaseReleased]),
+            Err(error) => pending.push(format!(
+                "Final native resource/lease release remains unproved: {error}"
+            )),
+        }
+    }
+    let observed_at = receipt::timestamp(execute::now_us()?)?;
+    let retained_count = retained_resume.len();
+    let projects = retained_resume
+        .iter()
+        .map(|saved| saved.project.clone())
+        .chain(
+            report
+                .iter()
+                .flat_map(|report| report.stops.iter().map(|stop| stop.project.clone())),
+        )
+        .collect();
+    let stops = stops::render(report.as_ref(), retained_resume, &observed_at, &mut pending);
+    let missing: Vec<_> = [
+        Fact::AgentsStopped,
+        Fact::ResumeSaved,
+        Fact::CaptureFlushed,
+        Fact::DebtFlushed,
+        Fact::WriterJoined,
+        Fact::ResourcesClosed,
+        Fact::LeaseReleased,
+    ]
+    .into_iter()
+    .filter(|fact| !achieved.contains(fact))
+    .collect();
+    if !missing.is_empty() {
+        let missing = missing
+            .iter()
+            .map(shutdown_fact)
+            .collect::<Vec<_>>()
+            .join(", ");
+        pending.push(format!("Shutdown has not verified: {missing}. Preserve this data home and resolve these pending shutdown steps."));
+    }
+    let complete = pending.is_empty() && stops.iter().all(|stop| stop.complete);
+    if !complete {
+        pending.push(retry_cleanup(files, projects));
+    }
+    let mut detail = format!(
+        "Verified: {}; saved conversation references: {retained_count}.",
+        achieved
+            .iter()
+            .map(shutdown_fact)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    if !pending.is_empty() {
+        detail.push_str(&format!(" Pending: {}", pending.join("; ")));
+    }
+    Ok(RuntimeStop {
+        complete,
+        already_down: false,
+        stops,
+        witness: Witness {
+            state: if complete {
+                WitnessState::Witnessed
+            } else {
+                WitnessState::Unknown
+            },
+            method: if complete {
+                "authenticated shutdown stages and outside native completion readback"
+            } else {
+                "authenticated shutdown stages with pending completion readback"
+            }
+            .into(),
+            observed_at: receipt::timestamp(execute::now_us()?)?,
+            detail: Some(detail),
+        },
+    })
 }
 
 fn retry_cleanup(files: &Files, projects: Vec<se_types::ProjectId>) -> String {
