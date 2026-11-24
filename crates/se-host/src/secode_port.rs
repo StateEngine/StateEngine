@@ -9,7 +9,7 @@ mod restart_mail;
 
 use super::*;
 use crate::client::lease::Deadline;
-#[cfg(test)]
+#[cfg(all(test, feature = "listener", any(target_os = "linux", windows)))]
 use se_secode_service::{Auxiliary, custody::Journal};
 use se_secode_service::{
     Coordinator, HostPort, PortFuture, SecodeWork, Service, ServiceSlot, lock_service,
@@ -452,7 +452,7 @@ impl LaunchCoordinator {
             .secode_client_closed(work, witness, deadline)
             .await
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "listener", any(target_os = "linux", windows)))]
     #[allow(
         clippy::too_many_arguments,
         reason = "forwards to native auxiliary launch with distinct custody and policy coordinates"
