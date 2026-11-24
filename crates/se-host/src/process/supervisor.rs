@@ -6,6 +6,7 @@ use crate::client::lease::Deadline;
 use se_core::ops::{
     LaunchPending, LaunchPendingState, LaunchReply, LaunchResult, agent_launch::LaunchPlan,
 };
+use se_core::scope::unreadable;
 use se_store::Admission;
 use se_types::{ErrorBody, Result, SeError};
 use sha2::{Digest, Sha256};
@@ -15,8 +16,12 @@ use std::{
         Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
-use tokio::sync::{Mutex as AsyncMutex, watch};
+use tokio::{
+    sync::{Mutex as AsyncMutex, watch},
+    time::{Instant, timeout_at},
+};
 
 #[derive(Default)]
 pub(super) struct Jobs(pub Mutex<BTreeMap<String, Arc<Job>>>);
@@ -73,60 +78,40 @@ impl Job {
         if self.wake.awaiting_window.load(Ordering::Acquire) {
             return Err(refused());
         }
-        let bound = deadline.stage(std::time::Duration::from_secs(1))?;
-        tokio::time::timeout_at(
-            tokio::time::Instant::from_std(bound.at()),
-            self.state.lock(),
-        )
-        .await
-        .map_err(|_| refused())
+        let bound = deadline.stage(Duration::from_secs(1))?;
+        timeout_at(Instant::from_std(bound.at()), self.state.lock())
+            .await
+            .map_err(|_| refused())
     }
 }
+struct AdmittedJob {
+    job: Arc<Job>,
+    created: bool,
+}
+
+fn ready_reply(
+    ready: &watch::Receiver<Option<std::result::Result<LaunchResult, ErrorBody>>>,
+) -> Option<Result<LaunchReply>> {
+    ready.borrow().clone().map(|result| {
+        result
+            .map(LaunchReply::from)
+            .map_err(|body| SeError { body, cause: None })
+    })
+}
+
 impl LaunchCoordinator {
     /// Includes prepared launches and unresolved cleanup, not just providers
     /// currently running. The host's one empty-host timer may arm only at zero.
     pub fn subscribe_activity(&self) -> watch::Receiver<u32> {
         self.activity.subscribe()
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
-    pub(super) async fn launch_prepared(
-        self: &Arc<Self>,
+    fn admit_job(
+        &self,
         plan: LaunchPlan,
         admission: Admission,
-        deadline: &Deadline,
         takeover: Option<se_core::ops::agent_launch::TakeoverReport>,
         #[cfg(feature = "remote")] permit: Option<crate::remote::auth::AdmissionPermit>,
-    ) -> Result<LaunchReply> {
-        if self.stopping.load(Ordering::Acquire) {
-            return Err(se_core::scope::unreadable(
-                "launch admission",
-                "the host is joining its owned processes; reconnect after shutdown completes",
-            ));
-        }
-        // Readiness leaves six seconds for retained cleanup and two for its
-        // response, rather than spending the caller's whole clock first.
-        let retained_deadline = deadline.retained().stage(
-            deadline
-                .remaining()?
-                .saturating_sub(std::time::Duration::from_secs(8)),
-        )?;
-        let attended = !plan.input.detach && plan.profile.provider == se_store::Provider::Claude;
-        let waiter = if attended {
-            // The CLI's call budget also covers cold host startup. Return a
-            // useful pending result before that client clock expires; this
-            // does not shorten native custody or the human onboarding wait.
-            deadline.stage(
-                deadline
-                    .remaining()?
-                    .saturating_sub(std::time::Duration::from_secs(2))
-                    .min(std::time::Duration::from_secs(15)),
-            )?
-        } else {
-            deadline.clone()
-        };
+    ) -> Result<AdmittedJob> {
         let key = format!(
             "{:?}/{:?}/{}",
             admission.scope, admission.actor, plan.input.idempotency_key
@@ -136,96 +121,99 @@ impl LaunchCoordinator {
                 .map_err(|e| error("launch intent", e))?,
         )
         .into();
-        let (job, new) = {
-            let mut jobs = self
-                .jobs
-                .0
-                .lock()
-                .map_err(|_| SeError::invalid("launch supervisors", "unpoisoned registry"))?;
-            if self.stopping.load(Ordering::Acquire) {
-                return Err(se_core::scope::unreadable(
-                    "launch admission",
-                    "shutdown began before lifecycle reservation",
+        let mut jobs = self
+            .jobs
+            .0
+            .lock()
+            .map_err(|_| SeError::invalid("launch supervisors", "unpoisoned registry"))?;
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(unreadable(
+                "launch admission",
+                "shutdown began before lifecycle reservation",
+            ));
+        }
+        if let Some(job) = jobs.get(&key) {
+            if job.intent != intent {
+                return Err(SeError::invalid(
+                    "launch request key",
+                    "the original arguments and target",
                 ));
             }
-            if let Some(job) = jobs.get(&key) {
-                if job.intent != intent {
-                    return Err(SeError::invalid(
-                        "launch request key",
-                        "the original arguments and target",
-                    ));
-                }
-                (job.clone(), false)
-            } else {
-                if jobs.values().any(|job| {
-                    job.target == (plan.project.id.clone(), plan.agent.id.clone())
-                        && !job.settled.load(Ordering::Acquire)
-                }) {
-                    return Err(SeError::invalid(
-                        "launch target",
-                        "stop or finish the existing launch before starting a different request",
-                    ));
-                }
-                // Keep only a bounded result cache. Retained store receipts
-                // remain authoritative after eviction; no duplicate C1 spawns.
-                let bound = (self.options.maximum_sessions as usize)
-                    .saturating_mul(4)
-                    .max(16);
-                if jobs.len() >= bound
-                    && let Some(old) = jobs
-                        .iter()
-                        .find(|(_, j)| j.settled.load(Ordering::Acquire))
-                        .map(|(k, _)| k.clone())
-                {
-                    jobs.remove(&old);
-                }
-                if jobs.len() >= bound {
-                    return Err(SeError::invalid(
-                        "launch capacity",
-                        "resolve retained active/cleanup jobs before launching more agents",
-                    ));
-                }
-                let target = (plan.project.id.clone(), plan.agent.id.clone());
-                let lifecycle = plan.lifecycle.clone();
-                let plan = Arc::new(plan);
-                let mut work = Work::new(plan.clone(), admission);
-                work.takeover = takeover.clone();
-                #[cfg(feature = "remote")]
-                {
-                    work.remote_permit = permit;
-                }
-                let wake = work.wake.clone();
-                let job = Arc::new(Job {
-                    ended_by_reboot: false,
-                    intent,
-                    target,
-                    session: work.meta.session.clone(),
-                    lifecycle,
-                    provider: work.meta.provider,
-                    plan: Some(plan),
-                    takeover,
-                    state: AsyncMutex::new(work),
-                    ready: watch::channel(None).0,
-                    settled: AtomicBool::new(false),
-                    mail_pending: AtomicBool::new(true),
-                    mail_reoffer: AtomicBool::new(false),
-                    capture_pending: AtomicBool::new(false),
-                    wake,
-                    task: Mutex::new(None),
-                    fault: Mutex::new(None),
-                });
-                jobs.insert(key, job.clone());
-                self.activity
-                    .send_modify(|count| *count = count.saturating_add(1));
-                (job, true)
-            }
-        };
-        if new {
-            let coordinator = self.clone();
-            let owned = job.clone();
-            let sign_in = crate::launch_sign_in::current(); // `None` for a host restore.
-            let task = self.store.pool.handle().spawn(async move {
-                let completed = crate::runtime::tasks::caught(async {
+            return Ok(AdmittedJob {
+                job: job.clone(),
+                created: false,
+            });
+        }
+        let target = (plan.project.id.clone(), plan.agent.id.clone());
+        if jobs
+            .values()
+            .any(|job| job.target == target && !job.settled.load(Ordering::Acquire))
+        {
+            return Err(SeError::invalid(
+                "launch target",
+                "stop or finish the existing launch before starting a different request",
+            ));
+        }
+        // Keep only a bounded result cache. Retained store receipts
+        // remain authoritative after eviction; no duplicate C1 spawns.
+        let bound = (self.options.maximum_sessions as usize)
+            .saturating_mul(4)
+            .max(16);
+        if jobs.len() >= bound
+            && let Some(old) = jobs
+                .iter()
+                .find(|(_, j)| j.settled.load(Ordering::Acquire))
+                .map(|(k, _)| k.clone())
+        {
+            jobs.remove(&old);
+        }
+        if jobs.len() >= bound {
+            return Err(SeError::invalid(
+                "launch capacity",
+                "resolve retained active/cleanup jobs before launching more agents",
+            ));
+        }
+        let lifecycle = plan.lifecycle.clone();
+        let plan = Arc::new(plan);
+        let mut work = Work::new(plan.clone(), admission);
+        work.takeover = takeover.clone();
+        #[cfg(feature = "remote")]
+        {
+            work.remote_permit = permit;
+        }
+        let wake = work.wake.clone();
+        let job = Arc::new(Job {
+            ended_by_reboot: false,
+            intent,
+            target,
+            session: work.meta.session.clone(),
+            lifecycle,
+            provider: work.meta.provider,
+            plan: Some(plan),
+            takeover,
+            state: AsyncMutex::new(work),
+            ready: watch::channel(None).0,
+            settled: AtomicBool::new(false),
+            mail_pending: AtomicBool::new(true),
+            mail_reoffer: AtomicBool::new(false),
+            capture_pending: AtomicBool::new(false),
+            wake,
+            task: Mutex::new(None),
+            fault: Mutex::new(None),
+        });
+        jobs.insert(key, job.clone());
+        self.inc_activity();
+        Ok(AdmittedJob { job, created: true })
+    }
+    fn spawn_launch_task(
+        self: &Arc<Self>,
+        job: &Arc<Job>,
+        retained_deadline: Deadline,
+    ) -> Result<()> {
+        let (coordinator, owned) = (self.clone(), job.clone());
+        let sign_in = crate::launch_sign_in::current(); // `None` for a host restore.
+        let task = self.store.pool.handle().spawn(async move {
+            let completed = crate::runtime::tasks::caught(async {
                 let deadline = retained_deadline;
                 let mut state = owned.state.lock().await;
                 let start = crate::launch_sign_in::scope(sign_in, coordinator.start(&mut state, &deadline));
@@ -257,7 +245,7 @@ impl LaunchCoordinator {
                         let cleanup = Deadline::idle().and_then(|value| value.stage(std::time::Duration::from_secs(6)));
                         let result = match cleanup { Ok(cleanup) => coordinator.cleanup_failed(&mut state, &cleanup).await, Err(error) => Err(error) };
                         let failure = match result {
-                            Ok(()) => { owned.settled.store(true,Ordering::Release); coordinator.activity.send_modify(|count| *count=count.saturating_sub(1)); original.body }
+                            Ok(()) => { owned.settled.store(true, Ordering::Release); coordinator.dec_activity(); original.body }
                             Err(cleanup) => {
                                 state.cleanup_failure = Some(cleanup.body.clone());
                                 if matches!(original.body.detail(), se_types::Detail::LaunchFailed(_)) {
@@ -278,38 +266,74 @@ impl LaunchCoordinator {
                         }
                     }
                 }
-                }, false).await;
-                if completed.is_err() {
-                    let failure = error("session supervisor", "panicked; original lifecycle custody remains retained for explicit stop or reconciliation");
-                    if let Ok(mut fault) = owned.fault.lock() { *fault = Some("session supervisor panicked; explicit reconciliation required".into()); }
-                    owned.ready.send_replace(Some(Err(failure.body)));
-                }
-            });
-            *job.task
-                .lock()
-                .map_err(|_| SeError::invalid("launch task", "unpoisoned retained task slot"))? =
-                Some(task);
+            }, false).await;
+            if completed.is_err() {
+                let failure = error("session supervisor", "panicked; original lifecycle custody remains retained for explicit stop or reconciliation");
+                if let Ok(mut fault) = owned.fault.lock() { *fault = Some("session supervisor panicked; explicit reconciliation required".into()); }
+                owned.ready.send_replace(Some(Err(failure.body)));
+            }
+        });
+        *job.task
+            .lock()
+            .map_err(|_| SeError::invalid("launch task", "unpoisoned retained task slot"))? =
+            Some(task);
+        Ok(())
+    }
+    pub(super) async fn launch_prepared(
+        self: &Arc<Self>,
+        plan: LaunchPlan,
+        admission: Admission,
+        deadline: &Deadline,
+        takeover: Option<se_core::ops::agent_launch::TakeoverReport>,
+        #[cfg(feature = "remote")] permit: Option<crate::remote::auth::AdmissionPermit>,
+    ) -> Result<LaunchReply> {
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(unreadable(
+                "launch admission",
+                "the host is joining its owned processes; reconnect after shutdown completes",
+            ));
         }
+        // Readiness leaves six seconds for retained cleanup and two for its
+        // response, rather than spending the caller's whole clock first.
+        let retained_deadline = deadline
+            .retained()
+            .stage(deadline.remaining()?.saturating_sub(Duration::from_secs(8)))?;
+        let attended = !plan.input.detach && plan.profile.provider == se_store::Provider::Claude;
+        let waiter = if attended {
+            // The CLI's call budget also covers cold host startup. Return a
+            // useful pending result before that client clock expires; this
+            // does not shorten native custody or the human onboarding wait.
+            deadline.stage(
+                deadline
+                    .remaining()?
+                    .saturating_sub(Duration::from_secs(2))
+                    .min(Duration::from_secs(15)),
+            )?
+        } else {
+            deadline.clone()
+        };
+        let admitted = self.admit_job(
+            plan,
+            admission,
+            takeover,
+            #[cfg(feature = "remote")]
+            permit,
+        )?;
+        if admitted.created {
+            self.spawn_launch_task(&admitted.job, retained_deadline)?;
+        }
+        let job = &admitted.job;
         let mut ready = job.ready.subscribe();
         loop {
-            if let Some(result) = ready.borrow().clone() {
-                return result
-                    .map(LaunchReply::from)
-                    .map_err(|body| SeError { body, cause: None });
+            if let Some(reply) = ready_reply(&ready) {
+                return reply;
             }
-            match tokio::time::timeout_at(
-                tokio::time::Instant::from_std(waiter.at()),
-                ready.changed(),
-            )
-            .await
-            {
+            match timeout_at(Instant::from_std(waiter.at()), ready.changed()).await {
                 Ok(changed) => changed.map_err(|e| error("launch supervisor result", e))?,
                 Err(_) if attended => {
                     // Completion can race the waiter; never hide an already known failure.
-                    if let Some(result) = ready.borrow().clone() {
-                        return result
-                            .map(LaunchReply::from)
-                            .map_err(|body| SeError { body, cause: None });
+                    if let Some(reply) = ready_reply(&ready) {
+                        return reply;
                     }
                     deadline.remaining()?;
                     job.wake.require_startup()?;
@@ -318,18 +342,21 @@ impl LaunchCoordinator {
                     } else {
                         LaunchPendingState::Starting
                     };
-                    return Ok(LaunchReply::Pending(Box::new(LaunchPending::new(
-                        job.plan.as_deref().ok_or_else(|| error(
+                    let plan = job.plan.as_deref().ok_or_else(|| {
+                        error(
                             "launch pending metadata",
                             "the original launch plan is unavailable; inspect the retained lifecycle",
-                        ))?,
+                        )
+                    })?;
+                    return Ok(LaunchReply::Pending(Box::new(LaunchPending::new(
+                        plan,
                         state,
                         &self.options.home,
                         job.takeover.clone(),
                     ))));
                 }
                 Err(_) => {
-                    return Err(se_core::scope::unreadable(
+                    return Err(unreadable(
                         "launch request wait",
                         "the supervisor retains the original request; retry with the same key",
                     ));
