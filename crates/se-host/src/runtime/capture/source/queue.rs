@@ -19,10 +19,6 @@ struct Prompt {
     position: Position,
 }
 impl Tracker {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) fn observe(&mut self, bytes: &[u8], position: Position) -> Result<Vec<Record>> {
         let value: Value = serde_json::from_slice(bytes)
             .map_err(|_| SeError::invalid("queue provenance", "a complete native JSON record"))?;
@@ -31,55 +27,9 @@ impl Tracker {
         if kind == Some("queue-operation") {
             match value.get("operation").and_then(Value::as_str) {
                 Some("enqueue") => {
-                    // Stock Claude also writes queue bookkeeping without input.
-                    // The scanner counts it; no prompt or outcome can be inferred.
-                    let Some(content) = value.get("content") else {
-                        return Ok(outcomes);
-                    };
-                    let text = content.as_str().ok_or_else(|| {
-                        SeError::invalid("queued input", "the native enqueue string")
-                    })?;
-                    if text.is_empty() {
-                        return Err(SeError::invalid("queued input", "nonempty native input"));
+                    if let Some(record) = self.observe_enqueue(&value, position)? {
+                        outcomes.push(record);
                     }
-                    while self.pending.len() >= 4096
-                        || text.len() > (16 * 1024 * 1024usize).saturating_sub(self.bytes)
-                    {
-                        let completed = self
-                            .pending
-                            .iter()
-                            .position(|prompt| prompt.operation != Outcome::Unresolved);
-                        let Some(completed) = completed else {
-                            return Err(SeError::invalid(
-                                "pending queued input",
-                                "at most 4096 unresolved inputs and 16 MiB; preserve the source cursor and resolve pending input",
-                            ));
-                        };
-                        // Resolved-operation FIFO: under entry/text pressure,
-                        // retire the oldest native queue outcome, even if delivery
-                        // stays unknown. Its durable provenance is never changed.
-                        // An unresolved native queue operation is never retired.
-                        let retired = self.pending.remove(completed);
-                        self.bytes -= retired.text.len();
-                    }
-                    self.bytes += text.len();
-                    self.pending.push(Prompt {
-                        text: text.into(),
-                        operation: Outcome::Unresolved,
-                        matched: false,
-                        position: position.clone(),
-                    });
-                    let mut record = Record::new("queue-operation", Some("enqueue"));
-                    record.position = position.clone();
-                    record.queued_input = Some(QueuedInput {
-                        enqueue: Some(position),
-                        outcome: Outcome::Unresolved,
-                        reason: None,
-                        delivery: Delivery::Unresolved,
-                        outcome_position: None,
-                        text: Some(text.into()),
-                    });
-                    outcomes.push(record);
                 }
                 Some("dequeue") => {
                     if let Some(index) = self
@@ -91,55 +41,7 @@ impl Tracker {
                     }
                 }
                 Some("remove") => {
-                    let Some(content) = value.get("content") else {
-                        return Ok(outcomes);
-                    };
-                    let text = content.as_str().ok_or_else(|| {
-                        SeError::invalid("native queue remove", "the native input string")
-                    })?;
-                    let reason = match value.get("reason") {
-                        None | Some(Value::Null) => None,
-                        Some(Value::String(reason))
-                            if reason.len() <= 4096 && !reason.contains('\0') =>
-                        {
-                            Some(reason.clone())
-                        }
-                        _ => {
-                            return Err(SeError::invalid(
-                                "native queue reason",
-                                "a bounded native reason string",
-                            ));
-                        }
-                    };
-                    let index = self
-                        .pending
-                        .iter()
-                        .position(|p| p.text.as_ref() == text && p.operation == Outcome::Unresolved)
-                        .or_else(|| self.pending.iter().rposition(|p| p.text.as_ref() == text));
-                    if let Some(index) = index {
-                        outcomes.push(self.resolve(index, Outcome::Removed, reason, &position));
-                    } else {
-                        // Native logs can start after enqueue, remove transformed
-                        // text, or outlive a resolved-operation correlation window.
-                        // Retain the operation without inventing an enqueue relationship.
-                        let mut record = Record::new("queue-operation", Some("remove"));
-                        record.position = position.clone();
-                        let delivery = if matches!(
-                            reason.as_deref(),
-                            Some("absorbed_mid_turn" | "delivered_to_agent")
-                        ) {
-                            Delivery::NativeReason
-                        } else {
-                            Delivery::Unresolved
-                        };
-                        record.queued_input = Some(QueuedInput {
-                            enqueue: None,
-                            outcome: Outcome::Removed,
-                            reason,
-                            delivery,
-                            outcome_position: Some(position.clone()),
-                            text: Some(text.into()),
-                        });
+                    if let Some(record) = self.observe_remove(&value, position)? {
                         outcomes.push(record);
                     }
                 }
@@ -148,27 +50,7 @@ impl Tracker {
         } else if kind == Some("user")
             && value.get("isSidechain").and_then(Value::as_bool) != Some(true)
         {
-            let content = value.pointer("/message/content");
-            let text = match content {
-                Some(Value::String(text)) => text.clone(),
-                Some(Value::Array(parts)) => parts
-                    .iter()
-                    .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
-                    .filter_map(|b| b.get("text").and_then(Value::as_str))
-                    .collect::<String>(),
-                _ => String::new(),
-            };
-            // A native prompt may wrap several inputs. Require their complete
-            // bytes at line boundaries; a substring or quote is not delivery.
-            let mut index = 0;
-            while index < self.pending.len() {
-                if !self.pending[index].matched
-                    && anchored_input(&text, self.pending[index].text.as_ref())
-                {
-                    outcomes.push(self.resolve(index, Outcome::Delivered, None, &position));
-                }
-                index += 1;
-            }
+            self.observe_user_delivery(&value, &position, &mut outcomes);
         }
         if outcomes.len() > 32 {
             return Err(SeError::invalid(
@@ -177,6 +59,143 @@ impl Tracker {
             ));
         }
         Ok(outcomes)
+    }
+
+    fn observe_enqueue(&mut self, value: &Value, position: Position) -> Result<Option<Record>> {
+        // Stock Claude also writes queue bookkeeping without input.
+        // The scanner counts it; no prompt or outcome can be inferred.
+        let Some(content) = value.get("content") else {
+            return Ok(None);
+        };
+        let text = content
+            .as_str()
+            .ok_or_else(|| SeError::invalid("queued input", "the native enqueue string"))?;
+        if text.is_empty() {
+            return Err(SeError::invalid("queued input", "nonempty native input"));
+        }
+        while self.pending.len() >= 4096
+            || text.len() > (16 * 1024 * 1024usize).saturating_sub(self.bytes)
+        {
+            let completed = self
+                .pending
+                .iter()
+                .position(|prompt| prompt.operation != Outcome::Unresolved);
+            let Some(completed) = completed else {
+                return Err(SeError::invalid(
+                    "pending queued input",
+                    "at most 4096 unresolved inputs and 16 MiB; preserve the source cursor and resolve pending input",
+                ));
+            };
+            // Resolved-operation FIFO: under entry/text pressure,
+            // retire the oldest native queue outcome, even if delivery
+            // stays unknown. Its durable provenance is never changed.
+            // An unresolved native queue operation is never retired.
+            let retired = self.pending.remove(completed);
+            self.bytes -= retired.text.len();
+        }
+        self.bytes += text.len();
+        self.pending.push(Prompt {
+            text: text.into(),
+            operation: Outcome::Unresolved,
+            matched: false,
+            position: position.clone(),
+        });
+        let mut record = Record::new("queue-operation", Some("enqueue"));
+        record.position = position.clone();
+        record.queued_input = Some(QueuedInput {
+            enqueue: Some(position),
+            outcome: Outcome::Unresolved,
+            reason: None,
+            delivery: Delivery::Unresolved,
+            outcome_position: None,
+            text: Some(text.into()),
+        });
+        Ok(Some(record))
+    }
+
+    fn observe_remove(&mut self, value: &Value, position: Position) -> Result<Option<Record>> {
+        let Some(content) = value.get("content") else {
+            return Ok(None);
+        };
+        let text = content
+            .as_str()
+            .ok_or_else(|| SeError::invalid("native queue remove", "the native input string"))?;
+        let reason = match value.get("reason") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(reason)) if reason.len() <= 4096 && !reason.contains('\0') => {
+                Some(reason.clone())
+            }
+            _ => {
+                return Err(SeError::invalid(
+                    "native queue reason",
+                    "a bounded native reason string",
+                ));
+            }
+        };
+        let index = self
+            .pending
+            .iter()
+            .position(|p| p.text.as_ref() == text && p.operation == Outcome::Unresolved)
+            .or_else(|| self.pending.iter().rposition(|p| p.text.as_ref() == text));
+        if let Some(index) = index {
+            return Ok(Some(self.resolve(
+                index,
+                Outcome::Removed,
+                reason,
+                &position,
+            )));
+        }
+        // Native logs can start after enqueue, remove transformed
+        // text, or outlive a resolved-operation correlation window.
+        // Retain the operation without inventing an enqueue relationship.
+        let mut record = Record::new("queue-operation", Some("remove"));
+        record.position = position.clone();
+        let delivery = if matches!(
+            reason.as_deref(),
+            Some("absorbed_mid_turn" | "delivered_to_agent")
+        ) {
+            Delivery::NativeReason
+        } else {
+            Delivery::Unresolved
+        };
+        record.queued_input = Some(QueuedInput {
+            enqueue: None,
+            outcome: Outcome::Removed,
+            reason,
+            delivery,
+            outcome_position: Some(position),
+            text: Some(text.into()),
+        });
+        Ok(Some(record))
+    }
+
+    fn observe_user_delivery(
+        &mut self,
+        value: &Value,
+        position: &Position,
+        outcomes: &mut Vec<Record>,
+    ) {
+        let content = value.pointer("/message/content");
+        let text = match content {
+            Some(Value::String(text)) => text.clone(),
+            Some(Value::Array(parts)) => parts
+                .iter()
+                .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .collect::<String>(),
+            _ => String::new(),
+        };
+        // A native prompt may wrap several inputs. Require their complete
+        // bytes at line boundaries; a substring or quote is not delivery.
+        let mut index = 0;
+        while index < self.pending.len() {
+            if !self.pending[index].matched
+                && anchored_input(&text, self.pending[index].text.as_ref())
+            {
+                outcomes.push(self.resolve(index, Outcome::Delivered, None, position));
+            }
+            index += 1;
+        }
     }
     fn resolve(
         &mut self,

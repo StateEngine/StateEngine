@@ -96,10 +96,204 @@ fn check_scope(admission: &se_store::Admission, pin: &crate::TranscriptPin) -> R
     }
     Ok(())
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+struct ProgressRange {
+    offset: u64,
+    previous: Option<(u64, u64)>,
+    evidence: Option<se_store::SourceEvidence>,
+}
+
+fn verify_capture_session<S: Snapshot>(
+    read: &mut S,
+    source: &BoundTranscript,
+    allow_ended: bool,
+) -> Result<se_store::Provider> {
+    let session = scope::require_present(
+        read.session(source.binding.identity.session.clone())
+            .map_err(|error| store_error(&error))?,
+        "capture session",
+        "Restore access to the original active session binding before repeating capture with the same session/provider/turn identities; preserve the saved cursor.",
+    )?;
+    if !matches!(session.current.body, EventBody::SessionActivated { .. })
+        && !(allow_ended && matches!(session.current.body, EventBody::SessionEnded { .. }))
+    {
+        return Err(scope::unreadable(
+            "capture session",
+            "the admitted session is not active",
+        ));
+    }
+    if matches!(
+        session.original.as_ref().map(|event| &event.body),
+        Some(EventBody::SessionPrepared {
+            consent: Consent::Suppressed,
+            ..
+        })
+    ) {
+        return Err(SeError::new(se_types::Detail::CaptureConsentMissing(
+            se_types::details::CaptureConsentMissing {
+                session: source.binding.identity.session.clone(),
+            },
+        )));
+    }
+    let reference = se_core::ops::session_reference::read(read, &session)?;
+    let provider = match session.original.as_ref().map(|event| &event.body) {
+        Some(EventBody::SessionPrepared { provider, .. }) => *provider,
+        _ => {
+            return Err(scope::unreadable(
+                "capture provider",
+                "original session is unavailable",
+            ));
+        }
+    };
+    if !matches!(session.original.as_ref().map(|event| &event.body),
+        Some(EventBody::SessionPrepared {session,agent,consent:Consent::Capture,..})
+        if session==&source.binding.identity.session && agent==&source.binding.identity.agent)
+        || !matches!(reference, Read::Present { value } if value == source.binding.conversation)
+        || !matches!(
+            provider,
+            se_store::Provider::Claude | se_store::Provider::Codex
+        )
+    {
+        return Err(scope::unreadable(
+            "capture session",
+            "provider, conversation or capture consent differs from the trusted binding",
+        ));
+    }
+    Ok(provider)
+}
+
+fn verify_capture_source_record(
+    record: &se_store::ProjectionRecord,
+    source: &BoundTranscript,
+) -> Result<()> {
+    let original = record.original.as_deref().unwrap_or(&record.current);
+    if matches!(
+        &original.body,
+        EventBody::CaptureSource {
+            consent: Consent::Suppressed,
+            ..
+        }
+    ) {
+        return Err(SeError::new(se_types::Detail::CaptureConsentMissing(
+            se_types::details::CaptureConsentMissing {
+                session: source.binding.identity.session.clone(),
+            },
+        )));
+    }
+    if !matches!(&original.body, EventBody::CaptureSource {source:id,session,consent:Consent::Capture,incarnation,..}
+        if id==&source.source && session==&source.binding.identity.session && incarnation.as_slice()==source.pin.identity())
+    {
+        return Err(scope::unreadable(
+            "capture source",
+            "source/session/consent/native identity binding differs",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_capture_progress<S: Snapshot>(
+    read: &mut S,
+    record: &se_store::ProjectionRecord,
+    source: &BoundTranscript,
+) -> Result<ProgressRange> {
+    match &record.current.body {
+        EventBody::CaptureSource { .. } => Ok(ProgressRange {
+            offset: 0,
+            previous: None,
+            evidence: None,
+        }),
+        EventBody::CaptureProgress {
+            source: id,
+            incarnation,
+            old_offset,
+            new_offset,
+            last_turn,
+            replay_evidence,
+            ..
+        } if id == &source.source && incarnation.as_slice() == source.pin.identity() => {
+            let mut evidence = None;
+            let turn = scope::require_present(
+                read.turn(*last_turn).map_err(|error| store_error(&error))?,
+                "last committed capture turn",
+                "Read the last committed turn for this original capture source; preserve its session/provider/turn identities and saved cursor.",
+            )?;
+            if let Some(range) = replay_evidence {
+                let EventBody::SessionTurn {
+                    provider: backend @ (se_store::Provider::Claude | se_store::Provider::Codex),
+                    vendor_ref,
+                    ..
+                } = &turn.body
+                else {
+                    return Err(scope::unreadable(
+                        "capture replay",
+                        "only a bound Claude/Codex item can retain an earlier session's turn",
+                    ));
+                };
+                let original = scope::require_present(
+                    read.native_turn(
+                        source.binding.identity.session.clone(),
+                        *backend,
+                        vendor_ref,
+                    )
+                    .map_err(|error| store_error(&error))?,
+                    "resumed native item",
+                    scope::COMMITTED_READ_RECOVERY,
+                )?;
+                if original.header.event != turn.header.event {
+                    return Err(scope::unreadable(
+                        "capture replay",
+                        "last turn differs from the current native conversation",
+                    ));
+                }
+                evidence = Some(range.clone());
+            }
+            match turn.body {
+                EventBody::SessionTurn {
+                    turn: id,
+                    agent,
+                    session,
+                    evidence: prior,
+                    text: se_store::StoredText::Present(_),
+                    ..
+                } if id == *last_turn
+                    && agent == source.binding.identity.agent
+                    && (session == source.binding.identity.session
+                        || replay_evidence.is_some()) =>
+                {
+                    let prior = evidence.take().unwrap_or(prior);
+                    if prior.path.as_ref() == Some(&source.binding.path)
+                        && prior.incarnation.as_slice() == source.pin.identity()
+                        && prior.offset == *old_offset
+                        && prior.offset.checked_add(prior.length) == Some(*new_offset)
+                        && prior.sha256.is_some()
+                    {
+                        evidence = Some(prior);
+                    } else {
+                        return Err(scope::unreadable(
+                            "committed capture prefix",
+                            "the current source range differs from its saved cursor",
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(scope::unreadable(
+                        "committed capture prefix",
+                        "last turn is erased, unreadable or differs from the exact cursor/source/session binding",
+                    ));
+                }
+            }
+            Ok(ProgressRange {
+                offset: *new_offset,
+                previous: Some((*old_offset, *new_offset)),
+                evidence,
+            })
+        }
+        _ => Err(scope::unreadable(
+            "capture cursor",
+            "no exact current progress observation is available",
+        )),
+    }
+}
+
 fn cursor(
     context: &ExecutionContext,
     admission: &se_store::Admission,
@@ -113,182 +307,21 @@ fn cursor(
             .into_snapshot(read_scope(admission))
             .map_err(|error| store_error(&error))?;
     let result = (|| {
-        let session = scope::require_present(
-            read.session(source.binding.identity.session.clone())
-                .map_err(|error| store_error(&error))?,
-            "capture session",
-            "Restore access to the original active session binding before repeating capture with the same session/provider/turn identities; preserve the saved cursor.",
-        )?;
-        if !matches!(session.current.body, EventBody::SessionActivated { .. })
-            && !(allow_ended && matches!(session.current.body, EventBody::SessionEnded { .. }))
-        {
-            return Err(scope::unreadable(
-                "capture session",
-                "the admitted session is not active",
-            ));
-        }
-        if matches!(
-            session.original.as_ref().map(|event| &event.body),
-            Some(EventBody::SessionPrepared {
-                consent: Consent::Suppressed,
-                ..
-            })
-        ) {
-            return Err(SeError::new(se_types::Detail::CaptureConsentMissing(
-                se_types::details::CaptureConsentMissing {
-                    session: source.binding.identity.session.clone(),
-                },
-            )));
-        }
-        let reference = se_core::ops::session_reference::read(&mut read, &session)?;
-        let provider = match session.original.as_ref().map(|event| &event.body) {
-            Some(EventBody::SessionPrepared { provider, .. }) => *provider,
-            _ => {
-                return Err(scope::unreadable(
-                    "capture provider",
-                    "original session is unavailable",
-                ));
-            }
-        };
-        if !matches!(session.original.as_ref().map(|event| &event.body),
-            Some(EventBody::SessionPrepared {session,agent,consent:Consent::Capture,..})
-            if session==&source.binding.identity.session && agent==&source.binding.identity.agent)
-            || !matches!(reference, Read::Present { value } if value == source.binding.conversation)
-            || !matches!(
-                provider,
-                se_store::Provider::Claude | se_store::Provider::Codex
-            )
-        {
-            return Err(scope::unreadable(
-                "capture session",
-                "provider, conversation or capture consent differs from the trusted binding",
-            ));
-        }
+        let provider = verify_capture_session(&mut read, source, allow_ended)?;
         let record = scope::require_present(
             read.capture_source(source.source)
                 .map_err(|error| store_error(&error))?,
             "capture source",
             "Restore access to the original trusted capture source binding before repeating capture with the same session/provider/turn identities; preserve the saved cursor.",
         )?;
-        let original = record.original.as_deref().unwrap_or(&record.current);
-        if matches!(
-            &original.body,
-            EventBody::CaptureSource {
-                consent: Consent::Suppressed,
-                ..
-            }
-        ) {
-            return Err(SeError::new(se_types::Detail::CaptureConsentMissing(
-                se_types::details::CaptureConsentMissing {
-                    session: source.binding.identity.session.clone(),
-                },
-            )));
-        }
-        if !matches!(&original.body, EventBody::CaptureSource {source:id,session,consent:Consent::Capture,incarnation,..}
-            if id==&source.source && session==&source.binding.identity.session && incarnation.as_slice()==source.pin.identity())
-        {
-            return Err(scope::unreadable(
-                "capture source",
-                "source/session/consent/native identity binding differs",
-            ));
-        }
-        let mut evidence = None;
-        let (offset, previous) = match &record.current.body {
-            EventBody::CaptureSource { .. } => (0, None),
-            EventBody::CaptureProgress {
-                source: id,
-                incarnation,
-                old_offset,
-                new_offset,
-                last_turn,
-                replay_evidence,
-                ..
-            } if id == &source.source && incarnation.as_slice() == source.pin.identity() => {
-                let turn = scope::require_present(
-                    read.turn(*last_turn).map_err(|error| store_error(&error))?,
-                    "last committed capture turn",
-                    "Read the last committed turn for this original capture source; preserve its session/provider/turn identities and saved cursor.",
-                )?;
-                if let Some(range) = replay_evidence {
-                    let EventBody::SessionTurn {
-                        provider: backend @ (se_store::Provider::Claude | se_store::Provider::Codex),
-                        vendor_ref,
-                        ..
-                    } = &turn.body
-                    else {
-                        return Err(scope::unreadable(
-                            "capture replay",
-                            "only a bound Claude/Codex item can retain an earlier session's turn",
-                        ));
-                    };
-                    let original = scope::require_present(
-                        read.native_turn(
-                            source.binding.identity.session.clone(),
-                            *backend,
-                            vendor_ref,
-                        )
-                        .map_err(|error| store_error(&error))?,
-                        "resumed native item",
-                        scope::COMMITTED_READ_RECOVERY,
-                    )?;
-                    if original.header.event != turn.header.event {
-                        return Err(scope::unreadable(
-                            "capture replay",
-                            "last turn differs from the current native conversation",
-                        ));
-                    }
-                    evidence = Some(range.clone());
-                }
-                match turn.body {
-                    EventBody::SessionTurn {
-                        turn: id,
-                        agent,
-                        session,
-                        evidence: prior,
-                        text: se_store::StoredText::Present(_),
-                        ..
-                    } if id == *last_turn
-                        && agent == source.binding.identity.agent
-                        && (session == source.binding.identity.session
-                            || replay_evidence.is_some()) =>
-                    {
-                        let prior = evidence.take().unwrap_or(prior);
-                        if prior.path.as_ref() == Some(&source.binding.path)
-                            && prior.incarnation.as_slice() == source.pin.identity()
-                            && prior.offset == *old_offset
-                            && prior.offset.checked_add(prior.length) == Some(*new_offset)
-                            && prior.sha256.is_some()
-                        {
-                            evidence = Some(prior);
-                        } else {
-                            return Err(scope::unreadable(
-                                "committed capture prefix",
-                                "the current source range differs from its saved cursor",
-                            ));
-                        }
-                    }
-                    _ => {
-                        return Err(scope::unreadable(
-                            "committed capture prefix",
-                            "last turn is erased, unreadable or differs from the exact cursor/source/session binding",
-                        ));
-                    }
-                }
-                (*new_offset, Some((*old_offset, *new_offset)))
-            }
-            _ => {
-                return Err(scope::unreadable(
-                    "capture cursor",
-                    "no exact current progress observation is available",
-                ));
-            }
-        };
+        verify_capture_source_record(&record, source)?;
+        let progress = verify_capture_progress(&mut read, &record, source)?;
         Ok(Cursor {
             provider,
             revision: record.revision,
-            offset,
-            previous,
-            evidence,
+            offset: progress.offset,
+            previous: progress.previous,
+            evidence: progress.evidence,
         })
     })();
     super::super::executor::close_read(result, read.close())
