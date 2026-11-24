@@ -158,37 +158,26 @@ fn rejected_first_binding_leaves_no_owner_and_reopened_retry_keeps_both_receipts
     outside(&f, (1, 1), true)?;
     Ok(())
 }
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-fn two_staged_turns_fit_the_resident_queue_but_split_materialized_groups() -> Check {
-    let f = Fixture::new()?;
-    let (mut direct, lease) = f.direct()?;
-    let session = capture::session()?;
-    let source = capture::record()?;
-    capture::active(&f, &mut direct, &lease, &session, source)?;
-    direct.close()?;
-    drop(lease);
-    let (mut host, port) = open_host(&f)?;
-    host.record_runtime_ownership(pair(&f, &session, 1)?.owner, &*port)?;
-    let mut options = native::options(8)?;
-    options.resident_bytes = NonZeroU32::new(16384).ok_or("resident")?;
-    options.group_bytes = NonZeroU32::new(1048576).ok_or("group")?;
-    let mut owner = host.start_writer(options, port.clone())?;
-    let client = owner.client();
-    let bodies = ["a".repeat(700000), "🦀".repeat(175000)];
-    std::fs::write(f.home.join("transcript.jsonl"), bodies.concat())?;
+fn stage_split_batches(
+    f: &Fixture,
+    session: &se_types::SessionId,
+    source: RecordId,
+    client: &SqliteClient,
+    port: &Arc<Port>,
+    bodies: &[String],
+) -> Result<(Vec<AtomicBatch>, Vec<RecordId>), Box<dyn std::error::Error>> {
     let mut batches = Vec::new();
     let mut turns = Vec::new();
     for (i, body) in bodies.iter().enumerate() {
-        let staged =
-            client.stage_text(&mut Cursor::new(body.as_bytes()), body.len() as u64, &*port)?;
+        let staged = client.stage_text(
+            &mut Cursor::new(body.as_bytes()),
+            body.len() as u64,
+            &**port,
+        )?;
         assert_eq!(staged.byte_length(), 700000);
         let mut batch = capture::capture(
-            &f,
-            &session,
+            f,
+            session,
             source,
             b"first",
             i as u64 * 700000,
@@ -214,6 +203,28 @@ fn two_staged_turns_fit_the_resident_queue_but_split_materialized_groups() -> Ch
         }
         batches.push(batch);
     }
+    Ok((batches, turns))
+}
+
+#[test]
+fn two_staged_turns_fit_the_resident_queue_but_split_materialized_groups() -> Check {
+    let f = Fixture::new()?;
+    let (mut direct, lease) = f.direct()?;
+    let session = capture::session()?;
+    let source = capture::record()?;
+    capture::active(&f, &mut direct, &lease, &session, source)?;
+    direct.close()?;
+    drop(lease);
+    let (mut host, port) = open_host(&f)?;
+    host.record_runtime_ownership(pair(&f, &session, 1)?.owner, &*port)?;
+    let mut options = native::options(8)?;
+    options.resident_bytes = NonZeroU32::new(16384).ok_or("resident")?;
+    options.group_bytes = NonZeroU32::new(1048576).ok_or("group")?;
+    let mut owner = host.start_writer(options, port.clone())?;
+    let client = owner.client();
+    let bodies = ["a".repeat(700000), "🦀".repeat(175000)];
+    std::fs::write(f.home.join("transcript.jsonl"), bodies.concat())?;
+    let (mut batches, turns) = stage_split_batches(&f, &session, source, &client, &port, &bodies)?;
     assert_eq!(
         std::fs::read_dir(f.options.state_directory.join("staging"))?.count(),
         0
