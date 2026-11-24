@@ -158,10 +158,6 @@ fn resume_reuses_six_native_events_and_timestamps_but_appends_new_items() -> Che
 fn claude_two_resumes_keep_nine_native_uuids_once() -> Check {
     resume_twice(Provider::Claude)
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn resume_twice(backend: Provider) -> Check {
     let f = Fixture::new()?;
     let (mut d, lease) = f.direct()?;
@@ -203,18 +199,37 @@ fn resume_twice(backend: Provider) -> Check {
         )?,
         &*lease,
     )?;
-    bind_provider(
+    replay_resumed(
         &f,
         &mut d,
         &lease,
-        &resumed,
-        resumed_src,
-        "native-thread",
+        (&resumed, resumed_src),
         backend,
+        &originals,
     )?;
+    verify_third_run(
+        &f,
+        &mut d,
+        &lease,
+        (&third, third_src),
+        backend,
+        &first,
+        originals,
+    )
+}
+
+fn replay_resumed(
+    f: &Fixture,
+    d: &mut SqliteDirect,
+    lease: &Lease,
+    (resumed, resumed_src): (&SessionId, RecordId),
+    backend: Provider,
+    originals: &[StoredEvent],
+) -> Check {
+    bind_provider(f, d, lease, resumed, resumed_src, "native-thread", backend)?;
     let head = d.info()?.head;
     for change_role in [false, true] {
-        let mut changed = item_provider(&f, &resumed, resumed_src, 0, "turn-0", backend)?;
+        let mut changed = item_provider(f, resumed, resumed_src, 0, "turn-0", backend)?;
         if let EventBody::SessionTurn { role, text, .. } = &mut changed.events[0].body {
             if change_role {
                 *role = Role::User;
@@ -223,7 +238,7 @@ fn resume_twice(backend: Provider) -> Check {
             }
         }
         let error = d
-            .append(changed, &*lease)
+            .append(changed, lease)
             .err()
             .ok_or("conflicting native identity was accepted")?;
         assert_eq!(error.code, StoreErrorCode::NaturalKeyConflict);
@@ -235,27 +250,31 @@ fn resume_twice(backend: Provider) -> Check {
     }
     for n in 0..6 {
         let replay = d.append(
-            item_provider(&f, &resumed, resumed_src, n, &format!("turn-{n}"), backend)?,
-            &*lease,
+            item_provider(f, resumed, resumed_src, n, &format!("turn-{n}"), backend)?,
+            lease,
         )?;
         assert_eq!(replay.primary_event, originals[n as usize].header.event);
     }
-    end(&f, &mut d, &lease, &resumed)?;
-    bind_provider(
-        &f,
-        &mut d,
-        &lease,
-        &third,
-        third_src,
-        "native-thread",
-        backend,
-    )?;
+    end(f, d, lease, resumed)?;
+    Ok(())
+}
+
+fn verify_third_run(
+    f: &Fixture,
+    d: &mut SqliteDirect,
+    lease: &Lease,
+    (third, third_src): (&SessionId, RecordId),
+    backend: Provider,
+    first: &SessionId,
+    originals: Vec<StoredEvent>,
+) -> Check {
+    bind_provider(f, d, lease, third, third_src, "native-thread", backend)?;
     for n in 0..9 {
-        let mut batch = item_provider(&f, &third, third_src, n, &format!("turn-{n}"), backend)?;
+        let mut batch = item_provider(f, third, third_src, n, &format!("turn-{n}"), backend)?;
         for event in &mut batch.events {
             event.header.occurred_at_us = 1_800_000_000_000_000;
         }
-        let receipt = d.append(batch, &*lease)?;
+        let receipt = d.append(batch, lease)?;
         if n < 6 {
             assert_eq!(
                 receipt.primary_event, originals[n as usize].header.event,
@@ -279,8 +298,8 @@ fn resume_twice(backend: Provider) -> Check {
     snap.close()?;
     let head = d.info()?.head;
     let replay = d.append(
-        item_provider(&f, &third, third_src, 8, "turn-8", backend)?,
-        &*lease,
+        item_provider(f, third, third_src, 8, "turn-8", backend)?,
+        lease,
     )?;
     assert_eq!(replay.state, CommitState::NaturalKeyReplay);
     assert_eq!(d.info()?.head, head);
@@ -306,10 +325,6 @@ fn end(f: &Fixture, d: &mut SqliteDirect, lease: &Lease, id: &SessionId) -> Chec
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn conflicting_native_facts_refuse_and_new_conversation_provider_or_agent_appends() -> Check {
     let f = Fixture::new()?;
     let (mut d, lease) = f.direct()?;
@@ -352,23 +367,39 @@ fn conflicting_native_facts_refuse_and_new_conversation_provider_or_agent_append
     ));
     snap.close()?;
     end(&f, &mut d, &lease, &b)?;
+    new_conversation_or_provider_appends(&f, &mut d, &lease, &original)?;
+    other_agent_appends_and_stays_invisible(&f, &mut d, &lease, &original)
+}
+
+fn new_conversation_or_provider_appends(
+    f: &Fixture,
+    d: &mut SqliteDirect,
+    lease: &Lease,
+    original: &CommitReceipt,
+) -> Check {
     let c = session()?;
     let sc = record()?;
-    bind(&f, &mut d, &lease, &c, sc, "thread-two")?;
-    let different = d.append(item(&f, &c, sc, 0, "same-item")?, &*lease)?;
+    bind(f, d, lease, &c, sc, "thread-two")?;
+    let different = d.append(item(f, &c, sc, 0, "same-item")?, lease)?;
     assert_ne!(different.primary_event, original.primary_event);
-    end(&f, &mut d, &lease, &c)?;
+    end(f, d, lease, &c)?;
     let claude = session()?;
     let ss = record()?;
-    active(&f, &mut d, &lease, &claude, ss)?;
-    let other = d.append(
-        capture(&f, &claude, ss, b"first", 0, 1, "same-item")?,
-        &*lease,
-    )?;
+    active(f, d, lease, &claude, ss)?;
+    let other = d.append(capture(f, &claude, ss, b"first", 0, 1, "same-item")?, lease)?;
     assert_ne!(other.primary_event, original.primary_event);
+    Ok(())
+}
+
+fn other_agent_appends_and_stays_invisible(
+    f: &Fixture,
+    d: &mut SqliteDirect,
+    lease: &Lease,
+    original: &CommitReceipt,
+) -> Check {
     let other_session = session()?;
     let other_source = record()?;
-    let mut prepared = prepared(&f, &other_session, &f.b);
+    let mut prepared = prepared(f, &other_session, &f.b);
     if let EventBody::SessionPrepared {
         provider,
         native_ref,
@@ -388,9 +419,9 @@ fn conflicting_native_facts_refuse_and_new_conversation_provider_or_agent_append
             Some(request("other-agent")?),
             vec![prepared, activated(&other_session)?, bound],
         )?,
-        &*lease,
+        lease,
     )?;
-    let mut batch = item(&f, &other_session, other_source, 0, "same-item")?;
+    let mut batch = item(f, &other_session, other_source, 0, "same-item")?;
     batch.admission.actor = Actor::Agent(f.b.clone());
     for event in &mut batch.events {
         event.header.actor = Actor::Agent(f.b.clone());
@@ -398,7 +429,7 @@ fn conflicting_native_facts_refuse_and_new_conversation_provider_or_agent_append
     if let EventBody::SessionTurn { agent, .. } = &mut batch.events[0].body {
         *agent = f.b.clone();
     }
-    let other = d.append(batch, &*lease)?;
+    let other = d.append(batch, lease)?;
     assert_ne!(other.primary_event, original.primary_event);
     let mut snap = d.snapshot(f.self_scope(&f.a))?;
     assert!(

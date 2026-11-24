@@ -98,10 +98,6 @@ fn payload(
 /// Protects: store commit failure semantics — explicitly driven native fixture uses the public HostWriter while its real SQLite syscalls are traced outside the process.
 #[test]
 #[ignore = "explicitly spawned by the native syscall fault consumer"]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn fault_child_fixture() -> Check {
     let root = ready_path()?;
     let mode = std::env::var("SE_SQLITE_FAULT_MODE")?;
@@ -117,6 +113,56 @@ fn fault_child_fixture() -> Check {
     } else {
         "se-store-writer"
     };
+    let tid = traced_thread_id(thread_name)?;
+    // Finish startup maintenance before tracing either thread. Otherwise the
+    // checkpoint case can inject into setup I/O, and the writer cases can
+    // see a different WAL reset position between baseline and fault runs.
+    wait_for_startup_wal_drain(&f)?;
+    std::fs::write(
+        root.join("ready.tmp"),
+        serde_json::to_vec(
+            &json!({"pid":std::process::id(),"tid":tid.to_str().ok_or("non-UTF8 tid")?,"database":f.options.state_directory.join("state.db")}),
+        )?,
+    )?;
+    std::fs::rename(root.join("ready.tmp"), root.join("ready.json"))?;
+    wait_path(&root.join("go"))?;
+    let results = run_fault(&f, &client, &mut owner, &mode)?;
+    let timing_keys: Vec<_> = results
+        .iter()
+        .filter_map(|result| result.get("timing_key").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect();
+    let returned = results.clone();
+    if mode == "checkpoint" {
+        // The receipt precedes idle maintenance. Keep its original fields and
+        // let the external syscall tracer observe the later checkpoint fault.
+        std::fs::write(root.join("returned.tmp"), serde_json::to_vec(&returned)?)?;
+        std::fs::rename(root.join("returned.tmp"), root.join("returned.json"))?;
+        // The outside tracer releases this barrier only after observing the
+        // intended checkpoint write; elapsed time does not prove maintenance.
+        wait_path(&root.join("checkpoint-observed"))?;
+    }
+    let (next, reopen_busy) = reopen_after_fault(&f, &client, &mode)?;
+    let (drain, close) = drain_and_close(owner, &lease)?;
+    let database = rusqlite::Connection::open_with_flags(
+        f.options.state_directory.join("state.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let integrity: String = database.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+    let retained_primary: i64 = database.query_row(
+        "SELECT count(*) FROM events WHERE lower(hex(event_id))=?",
+        [results[0].get("event_hex").and_then(Value::as_str)],
+        |r| r.get(0),
+    )?;
+    let report = json!({"mode":mode,"database":f.options.state_directory.join("state.db"),"results":results,"returned":returned,"retained_primary":retained_primary,"timing_keys":timing_keys,"reopen_busy":reopen_busy,"next":next,"drain":drain,"close":close,"integrity":integrity});
+    std::fs::write(
+        root.join("outcome.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    Ok(())
+}
+
+fn traced_thread_id(thread_name: &str) -> Result<std::ffi::OsString, Box<dyn std::error::Error>> {
     let until = Instant::now() + Duration::from_secs(3);
     let tid = loop {
         let mut found = None;
@@ -139,9 +185,10 @@ fn fault_child_fixture() -> Check {
             return Err(format!("owned {thread_name} thread did not start").into());
         }
     };
-    // Finish startup maintenance before tracing either thread. Otherwise the
-    // checkpoint case can inject into setup I/O, and the writer cases can
-    // see a different WAL reset position between baseline and fault runs.
+    Ok(tid)
+}
+
+fn wait_for_startup_wal_drain(f: &Fixture) -> Check {
     let wal = f.options.state_directory.join("state.db-wal");
     let until = Instant::now() + Duration::from_secs(15);
     while std::fs::metadata(&wal)
@@ -156,22 +203,23 @@ fn fault_child_fixture() -> Check {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    std::fs::write(
-        root.join("ready.tmp"),
-        serde_json::to_vec(
-            &json!({"pid":std::process::id(),"tid":tid.to_str().ok_or("non-UTF8 tid")?,"database":f.options.state_directory.join("state.db")}),
-        )?,
-    )?;
-    std::fs::rename(root.join("ready.tmp"), root.join("ready.json"))?;
-    wait_path(&root.join("go"))?;
+    Ok(())
+}
+
+fn run_fault(
+    f: &Fixture,
+    client: &SqliteClient,
+    owner: &mut SqliteWriter,
+    mode: &str,
+) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
     let mut results = Vec::new();
     if mode == "before" {
         let blocker = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
         blocker.execute_batch("BEGIN IMMEDIATE")?;
         let gate = client.submit(f.working("gate", Expected::Absent, "fault-gate")?)?;
         let flush = owner.flush(Duration::from_secs(10))?;
-        let first = client.submit(payload(&f, "fault-primary", 16)?)?;
-        let second = client.submit(payload(&f, "fault-secondary", 16)?)?;
+        let first = client.submit(payload(f, "fault-primary", 16)?)?;
+        let second = client.submit(payload(f, "fault-secondary", 16)?)?;
         blocker.execute_batch("ROLLBACK")?;
         wait(gate)??;
         wait(flush)??;
@@ -179,26 +227,19 @@ fn fault_child_fixture() -> Check {
         results.push(outcome(wait(second)?));
     } else {
         results.push(outcome(wait(client.submit(payload(
-            &f,
+            f,
             "fault-primary",
             if mode == "checkpoint" { 40 } else { 1 },
         )?)?)?));
     }
-    let timing_keys: Vec<_> = results
-        .iter()
-        .filter_map(|result| result.get("timing_key").and_then(Value::as_str))
-        .map(str::to_owned)
-        .collect();
-    let returned = results.clone();
-    if mode == "checkpoint" {
-        // The receipt precedes idle maintenance. Keep its original fields and
-        // let the external syscall tracer observe the later checkpoint fault.
-        std::fs::write(root.join("returned.tmp"), serde_json::to_vec(&returned)?)?;
-        std::fs::rename(root.join("returned.tmp"), root.join("returned.json"))?;
-        // The outside tracer releases this barrier only after observing the
-        // intended checkpoint write; elapsed time does not prove maintenance.
-        wait_path(&root.join("checkpoint-observed"))?;
-    }
+    Ok(results)
+}
+
+fn reopen_after_fault(
+    f: &Fixture,
+    client: &SqliteClient,
+    mode: &str,
+) -> Result<(Value, usize), Box<dyn std::error::Error>> {
     let reopen_deadline = Instant::now() + Duration::from_secs(3);
     let mut reopen_busy = 0usize;
     let next = loop {
@@ -223,6 +264,13 @@ fn fault_child_fixture() -> Check {
             }
         }
     };
+    Ok((next, reopen_busy))
+}
+
+fn drain_and_close(
+    owner: SqliteWriter,
+    lease: &Lease,
+) -> Result<(Value, Value), Box<dyn std::error::Error>> {
     let drained = wait(owner.drain(Duration::from_secs(10)))?;
     let (drain, close) = match drained {
         Ok(drained) => {
@@ -233,7 +281,7 @@ fn fault_child_fixture() -> Check {
                 .map(|key| format!("{key:?}"))
                 .collect();
             let report = json!({"code":"Drained","indeterminate":pending});
-            let close = match drained.host.close_clean(&*lease, Duration::from_secs(5)) {
+            let close = match drained.host.close_clean(lease, Duration::from_secs(5)) {
                 Ok(_) => json!({"code":"Closed"}),
                 Err(error) => {
                     json!({"code":format!("{:?}",error.code),"cause":error.cause,"detail":format!("{:?}",error.detail)})
@@ -246,22 +294,7 @@ fn fault_child_fixture() -> Check {
             Value::Null,
         ),
     };
-    let database = rusqlite::Connection::open_with_flags(
-        f.options.state_directory.join("state.db"),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?;
-    let integrity: String = database.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
-    let retained_primary: i64 = database.query_row(
-        "SELECT count(*) FROM events WHERE lower(hex(event_id))=?",
-        [results[0].get("event_hex").and_then(Value::as_str)],
-        |r| r.get(0),
-    )?;
-    let report = json!({"mode":mode,"database":f.options.state_directory.join("state.db"),"results":results,"returned":returned,"retained_primary":retained_primary,"timing_keys":timing_keys,"reopen_busy":reopen_busy,"next":next,"drain":drain,"close":close,"integrity":integrity});
-    std::fs::write(
-        root.join("outcome.json"),
-        serde_json::to_vec_pretty(&report)?,
-    )?;
-    Ok(())
+    Ok((drain, close))
 }
 
 fn native_case(case: &str) -> Check {

@@ -1,6 +1,6 @@
 #![cfg(any(target_os = "linux", windows))]
 use se_store::*;
-use se_types::LifecycleId;
+use se_types::{LifecycleId, SessionId};
 #[path = "support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
@@ -177,10 +177,6 @@ fn successor_reconciliation_is_full_before_provider_control_resumes() -> Check {
 
 /// Protects: stale revision, wrong source state, terminal revival and native/principal drift never advance the process head.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn process_transition_cas_identity_and_atomic_rollback() -> Check {
     let f = Fixture::new()?;
     let (host, lease) = host(&f)?;
@@ -216,6 +212,19 @@ fn process_transition_cas_identity_and_atomic_rollback() -> Check {
         );
         assert_eq!(head(&f, i.record.clone())?.revision.value.get(), 1);
     }
+    identity_drift_is_refused(&f, &client, &i, sid, &first)?;
+    failed_batch_rolls_back_and_exit_is_terminal(&f, &client, &i, &first)?;
+    drop(wait_drained(owner.drain(DRAIN_DEADLINE))??);
+    Ok(())
+}
+
+fn identity_drift_is_refused(
+    f: &Fixture,
+    client: &SqliteClient,
+    i: &ProcessIdentityRecord,
+    sid: SessionId,
+    first: &CommitReceipt,
+) -> Check {
     let mut changed = i.clone();
     changed.principal = Actor::Agent(f.b.clone());
     let mut birth = i.clone();
@@ -250,8 +259,17 @@ fn process_transition_cas_identity_and_atomic_rollback() -> Check {
             StoreErrorCode::SourceChanged
         );
     }
+    Ok(())
+}
+
+fn failed_batch_rolls_back_and_exit_is_terminal(
+    f: &Fixture,
+    client: &SqliteClient,
+    i: &ProcessIdentityRecord,
+    first: &CommitReceipt,
+) -> Check {
     let invalid = transition(
-        &i,
+        i,
         99,
         ProcessState::StopRequested,
         ProcessState::StopUnproved,
@@ -266,7 +284,7 @@ fn process_transition_cas_identity_and_atomic_rollback() -> Check {
             ))?),
             vec![
                 transition(
-                    &i,
+                    i,
                     1,
                     ProcessState::Running,
                     ProcessState::StopRequested,
@@ -277,12 +295,12 @@ fn process_transition_cas_identity_and_atomic_rollback() -> Check {
         )?)?)?
         .is_err()
     );
-    assert_eq!(head(&f, i.record.clone())?.revision.value.get(), 1);
+    assert_eq!(head(f, i.record.clone())?.revision.value.get(), 1);
     wait(client.submit(f.batch(
         f.owner_project(),
         Some(request(&format!("fixture-store_process-232-{}", serial()))?),
         vec![transition(
-            &i,
+            i,
             1,
             ProcessState::Running,
             ProcessState::Exited,
@@ -297,7 +315,7 @@ fn process_transition_cas_identity_and_atomic_rollback() -> Check {
                 serial()
             ))?),
             vec![transition(
-                &i,
+                i,
                 2,
                 ProcessState::Exited,
                 ProcessState::Running,
@@ -306,7 +324,6 @@ fn process_transition_cas_identity_and_atomic_rollback() -> Check {
         )?)?)?
         .is_err()
     );
-    drop(wait_drained(owner.drain(DRAIN_DEADLINE))??);
     Ok(())
 }
 
@@ -482,16 +499,22 @@ fn saved_native_identity_survives_loss_and_recovery() -> Check {
 
 /// A console's second C2 may change only argv, once, on the same pre-exec root.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
     let f = Fixture::new()?;
     let (host, lease) = host(&f)?;
     let owner = host.start_writer(options(256)?, lease)?;
     let client = owner.client();
-    let mut i = identity(&f, false)?;
+    let (i, last) = publish_console_root(&f, &client)?;
+    console_handoff_refuses_drift_and_cannot_repeat(&f, &client, &i, last)?;
+    drop(wait_drained(owner.drain(DRAIN_DEADLINE))??);
+    Ok(())
+}
+
+fn publish_console_root(
+    f: &Fixture,
+    client: &SqliteClient,
+) -> Result<(ProcessIdentityRecord, se_types::EventId), Box<dyn std::error::Error>> {
+    let mut i = identity(f, false)?;
     let mut last = wait(client.submit(f.batch(
         f.owner_project(),
         Some(request(&format!("judge-console-0-{}", serial()))?),
@@ -521,6 +544,15 @@ fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
         vec![root],
     )?)?)??
     .primary_event;
+    Ok((i, last))
+}
+
+fn console_handoff_refuses_drift_and_cannot_repeat(
+    f: &Fixture,
+    client: &SqliteClient,
+    i: &ProcessIdentityRecord,
+    mut last: se_types::EventId,
+) -> Check {
     let RecordedIdentity::Present(original) = &i.instance else {
         return Err("missing root".into());
     };
@@ -558,7 +590,7 @@ fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
             )?)?)?
             .is_err()
         );
-        assert_eq!(head(&f, i.record.clone())?.revision.value.get(), 3);
+        assert_eq!(head(f, i.record.clone())?.revision.value.get(), 3);
     }
     let mut event = transition(
         &console,
@@ -577,7 +609,7 @@ fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
     )?)?)??
     .primary_event;
     let mut repeat = transition(
-        &i,
+        i,
         4,
         ProcessState::Starting,
         ProcessState::Starting,
@@ -605,23 +637,29 @@ fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
             last,
         )?],
     )?)?)??;
-    assert_eq!(head(&f, i.record.clone())?.revision.value.get(), 5);
-    drop(wait_drained(owner.drain(DRAIN_DEADLINE))??);
+    assert_eq!(head(f, i.record.clone())?.revision.value.get(), 5);
     Ok(())
 }
 
 /// Exec publication remains Starting until readiness, and cannot replace birth or argv.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn exec_checkpoint_precedes_readiness_without_reopening_identity() -> Check {
     let f = Fixture::new()?;
     let (host, lease) = host(&f)?;
     let owner = host.start_writer(options(256)?, lease)?;
     let client = owner.client();
-    let mut i = identity(&f, false)?;
+    let (mut i, last) = publish_exec_root(&f, &client)?;
+    exec_checkpoint_refuses_drift(&f, &client, &mut i, &last)?;
+    exec_observation_commits_once(&f, &client, i, last)?;
+    drop(wait_drained(owner.drain(DRAIN_DEADLINE))??);
+    Ok(())
+}
+
+fn publish_exec_root(
+    f: &Fixture,
+    client: &SqliteClient,
+) -> Result<(ProcessIdentityRecord, se_types::EventId), Box<dyn std::error::Error>> {
+    let mut i = identity(f, false)?;
     let mut last = wait(client.submit(f.batch(
         f.owner_project(),
         Some(request(&format!("exec-{}", serial()))?),
@@ -658,6 +696,15 @@ fn exec_checkpoint_precedes_readiness_without_reopening_identity() -> Check {
         )?)?)??
         .primary_event;
     }
+    Ok((i, last))
+}
+
+fn exec_checkpoint_refuses_drift(
+    f: &Fixture,
+    client: &SqliteClient,
+    i: &mut ProcessIdentityRecord,
+    last: &se_types::EventId,
+) -> Check {
     let RecordedIdentity::Present(instance) = &i.instance else {
         return Err("root absent".into());
     };
@@ -700,8 +747,17 @@ fn exec_checkpoint_precedes_readiness_without_reopening_identity() -> Check {
             )?)?)?
             .is_err()
         );
-        assert_eq!(head(&f, i.record.clone())?.revision.value.get(), 3);
+        assert_eq!(head(f, i.record.clone())?.revision.value.get(), 3);
     }
+    Ok(())
+}
+
+fn exec_observation_commits_once(
+    f: &Fixture,
+    client: &SqliteClient,
+    i: ProcessIdentityRecord,
+    mut last: se_types::EventId,
+) -> Check {
     let mut event = transition(&i, 3, ProcessState::Starting, ProcessState::Starting, last)?;
     if let EventBody::ProcessTransition { outcome, .. } = &mut event {
         *outcome = "exec-observed".into();
@@ -741,7 +797,6 @@ fn exec_checkpoint_precedes_readiness_without_reopening_identity() -> Check {
             last,
         )?],
     )?)?)??;
-    assert_eq!(head(&f, i.record)?.revision.value.get(), 5);
-    drop(wait_drained(owner.drain(DRAIN_DEADLINE))??);
+    assert_eq!(head(f, i.record)?.revision.value.get(), 5);
     Ok(())
 }

@@ -22,10 +22,6 @@ mod control_fixture;
 use control_fixture::*;
 /// Protects: one root checkpoint and one exec image change preserve every other native identity and exact revision.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
     let f = Fixture::new()?;
     let (host, lease) = host(&f)?;
@@ -40,6 +36,30 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
         ))?),
         vec![registration(&i, ProcessState::Starting)],
     )?)?)??;
+    checkpoint_requires_a_published_root(&f, &client, &i, &first)?;
+    let mut fields = epoch()?.owner.fields().clone();
+    fields.executable = NativePath::from_local(f.home.join("authenticated-helper"))?;
+    i.root_identity = RootIdentityState::Identified;
+    i.instance =
+        RecordedIdentity::Present(se_types::ProcessInstance::from_observation(fields.clone())?);
+    only_one_checkpoint_per_root(&f, &client, &i, &first)?;
+    fields.executable = NativePath::from_local(f.home.join("verified-vendor"))?;
+    let mut premature = i.clone();
+    premature.instance =
+        RecordedIdentity::Present(se_types::ProcessInstance::from_observation(fields.clone())?);
+    exec_refuses_edge_principal_and_session_drift(&f, &client, &i, &premature, &first)?;
+    exec_refuses_native_identity_drift(&f, &client, &i, &fields, &first)?;
+    exec_commits_once_then_pins_the_image(&f, &client, i, fields, first)?;
+    drop(wait_drained(writer.drain(DRAIN_DEADLINE))??);
+    Ok(())
+}
+
+fn checkpoint_requires_a_published_root(
+    f: &Fixture,
+    client: &SqliteClient,
+    i: &ProcessIdentityRecord,
+    first: &CommitReceipt,
+) -> Check {
     assert!(
         wait(client.submit(f.batch(
             f.owner_project(),
@@ -48,7 +68,7 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
                 serial()
             ))?),
             vec![transition(
-                &i,
+                i,
                 1,
                 ProcessState::Starting,
                 ProcessState::Starting,
@@ -89,12 +109,16 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
         .is_err(),
         "NoChildCreated predecessor admitted as checkpoint"
     );
-    assert_eq!(head(&f, no_child.record)?.revision.value.get(), 1);
-    let mut fields = epoch()?.owner.fields().clone();
-    fields.executable = NativePath::from_local(f.home.join("authenticated-helper"))?;
-    i.root_identity = RootIdentityState::Identified;
-    i.instance =
-        RecordedIdentity::Present(se_types::ProcessInstance::from_observation(fields.clone())?);
+    assert_eq!(head(f, no_child.record)?.revision.value.get(), 1);
+    Ok(())
+}
+
+fn only_one_checkpoint_per_root(
+    f: &Fixture,
+    client: &SqliteClient,
+    i: &ProcessIdentityRecord,
+    first: &CommitReceipt,
+) -> Check {
     wait(client.submit(f.batch(
         f.owner_project(),
         Some(request(&format!(
@@ -102,14 +126,14 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
             serial()
         ))?),
         vec![transition(
-            &i,
+            i,
             1,
             ProcessState::Starting,
             ProcessState::Starting,
             first.primary_event.clone(),
         )?],
     )?)?)??;
-    assert_eq!(head(&f, i.record.clone())?.revision.value.get(), 2);
+    assert_eq!(head(f, i.record.clone())?.revision.value.get(), 2);
     assert!(
         wait(client.submit(f.batch(
             f.owner_project(),
@@ -118,7 +142,7 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
                 serial()
             ))?),
             vec![transition(
-                &i,
+                i,
                 2,
                 ProcessState::Starting,
                 ProcessState::Starting,
@@ -128,10 +152,16 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
         .is_err(),
         "second checkpoint admitted"
     );
-    fields.executable = NativePath::from_local(f.home.join("verified-vendor"))?;
-    let mut premature = i.clone();
-    premature.instance =
-        RecordedIdentity::Present(se_types::ProcessInstance::from_observation(fields.clone())?);
+    Ok(())
+}
+
+fn exec_refuses_edge_principal_and_session_drift(
+    f: &Fixture,
+    client: &SqliteClient,
+    i: &ProcessIdentityRecord,
+    premature: &ProcessIdentityRecord,
+    first: &CommitReceipt,
+) -> Check {
     assert_eq!(
         wait(client.submit(f.batch(
             f.owner_project(),
@@ -140,7 +170,7 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
                 serial()
             ))?),
             vec![transition(
-                &premature,
+                premature,
                 2,
                 ProcessState::Starting,
                 ProcessState::StopRequested,
@@ -159,7 +189,7 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
             "fixture-wave2_checkpoint_independent-132-{}",
             serial()
         ))?),
-        vec![capture::prepared(&f, &target_session, &f.a)],
+        vec![capture::prepared(f, &target_session, &f.a)],
     )?)?)??;
     for kind in ["principal", "session"] {
         let mut drift = premature.clone();
@@ -188,8 +218,18 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
             .code,
             StoreErrorCode::SourceChanged
         );
-        assert_eq!(head(&f, i.record.clone())?.revision.value.get(), 2);
+        assert_eq!(head(f, i.record.clone())?.revision.value.get(), 2);
     }
+    Ok(())
+}
+
+fn exec_refuses_native_identity_drift(
+    f: &Fixture,
+    client: &SqliteClient,
+    i: &ProcessIdentityRecord,
+    fields: &se_types::ProcessFields,
+    first: &CommitReceipt,
+) -> Check {
     for field in ["machine", "boot", "pid", "birth", "argv"] {
         let mut changed = fields.clone();
         match field {
@@ -232,11 +272,21 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
             StoreErrorCode::SourceChanged
         );
         assert_eq!(
-            head(&f, i.record.clone())?.revision.value.get(),
+            head(f, i.record.clone())?.revision.value.get(),
             2,
             "refused drift advanced revision"
         );
     }
+    Ok(())
+}
+
+fn exec_commits_once_then_pins_the_image(
+    f: &Fixture,
+    client: &SqliteClient,
+    mut i: ProcessIdentityRecord,
+    mut fields: se_types::ProcessFields,
+    first: CommitReceipt,
+) -> Check {
     i.instance =
         RecordedIdentity::Present(se_types::ProcessInstance::from_observation(fields.clone())?);
     assert!(
@@ -271,7 +321,7 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
             first.primary_event.clone(),
         )?],
     )?)?)??;
-    let current = head(&f, i.record.clone())?;
+    let current = head(f, i.record.clone())?;
     assert_eq!(current.revision.value.get(), 3);
     assert!(
         matches!(current.current.body, EventBody::ProcessTransition { identity, to: ProcessState::Running, .. } if matches!((&identity.instance, &i.instance), (RecordedIdentity::Present(a), RecordedIdentity::Present(b)) if a == b))
@@ -314,7 +364,6 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
             first.primary_event,
         )?],
     )?)?)??;
-    assert_eq!(head(&f, i.record.clone())?.revision.value.get(), 4);
-    drop(wait_drained(writer.drain(DRAIN_DEADLINE))??);
+    assert_eq!(head(f, i.record.clone())?.revision.value.get(), 4);
     Ok(())
 }
