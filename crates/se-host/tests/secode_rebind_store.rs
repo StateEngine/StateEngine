@@ -11,7 +11,7 @@ use se_core::{
 };
 use se_store::*;
 use se_types::{AgentId, LifecycleId, NativePath, Read};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
 use fixture::*;

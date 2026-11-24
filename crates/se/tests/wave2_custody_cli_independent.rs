@@ -5,7 +5,7 @@
 use se_store::*;
 use se_types::{AgentId, LifecycleId, NativePath, SessionId};
 use sha2::{Digest, Sha256};
-use std::{io::Write, path::Path, time::Duration};
+use std::{io::Write, path::Path};
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
@@ -254,11 +254,11 @@ impl Case {
     }
     fn drain(&mut self) -> Check {
         let head = self.retained_head()?;
-        let drained = host::wait(
+        let drained = host::wait_drained(
             self.writer
                 .take()
                 .ok_or("writer already drained")?
-                .drain(Duration::from_secs(2)),
+                .drain(host::DRAIN_DEADLINE),
         )??;
         assert_eq!(drained.report.through, head);
         assert_eq!(drained.report.pending_requests, 0);

@@ -3,7 +3,6 @@
 #![cfg(any(target_os = "linux", windows))]
 use se_store::*;
 use se_types::{AgentId, LifecycleId, Read, SessionId};
-use std::time::Duration;
 #[path = "support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
@@ -426,7 +425,7 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
     ));
     drop(snapshot);
     drop(reader);
-    drop(wait(writer.drain(Duration::from_secs(2)))??);
+    drop(wait_drained(writer.drain(DRAIN_DEADLINE))??);
     Ok(())
 }
 
@@ -491,7 +490,7 @@ fn control_inventory_is_complete_or_refuses() -> Check {
     assert_eq!(control.sessions.len(), 16);
     assert!(control.sessions.iter().all(|entry| matches!(&entry.current.body, EventBody::SessionPrepared { session, .. } if session != &sessions[0])));
     drop(reader);
-    drop(wait(writer.drain(Duration::from_secs(2)))??);
+    drop(wait_drained(writer.drain(DRAIN_DEADLINE))??);
     Ok(())
 }
 
@@ -593,7 +592,7 @@ fn resume_selector_skips_revoked_preparation_that_never_activated() -> Check {
         matches!(&resume.current.body, EventBody::SessionEnded { session, .. } if session == &first)
     );
     drop(reader);
-    drop(wait(writer.drain(Duration::from_secs(2)))??);
+    drop(wait_drained(writer.drain(DRAIN_DEADLINE))??);
     Ok(())
 }
 

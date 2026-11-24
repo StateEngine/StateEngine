@@ -78,7 +78,7 @@ fn concurrent_keyless_receipts_match_their_own_store_measurements() -> Check {
     );
     assert_eq!(timed(&ar)?.durability, CommitDurability::Normal);
     assert_eq!(timed(&br)?.durability, CommitDurability::Normal);
-    drop(wait(owner.drain(Duration::from_secs(2)))??);
+    drop(wait_drained(owner.drain(DRAIN_DEADLINE))??);
     Ok(())
 }
 
@@ -167,7 +167,7 @@ fn group_promotion_and_replay_attempt_timings_keep_distinct_durability() -> Chec
     assert!(retained.write_timings.is_none());
     same_receipt(&original, &retained);
     drop(snap);
-    drop(wait(owner.drain(Duration::from_secs(2)))??);
+    drop(wait_drained(owner.drain(DRAIN_DEADLINE))??);
     Ok(())
 }
 

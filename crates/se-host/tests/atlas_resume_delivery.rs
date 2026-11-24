@@ -16,7 +16,7 @@ mod capture;
 mod native_host;
 use native_host::*;
 use sha2::{Digest, Sha256};
-use std::{io::Write, time::Duration};
+use std::io::Write;
 fn index(f: &Fixture) -> Result<IndexSummary, Box<dyn std::error::Error>> {
     Ok(IndexSummary {
         memory: None,
@@ -286,7 +286,7 @@ fn successful_delivery_cas_is_replayable_and_stale_or_retired_offers_do_not_cons
             .atlas_resume_cursor(&f.a, &index.root, &epoch)?,
         se_types::Read::Unknown { .. }
     ));
-    drop(wait(owner.drain(Duration::from_secs(2)))??);
+    drop(wait_drained(owner.drain(DRAIN_DEADLINE))??);
     Ok(())
 }
 

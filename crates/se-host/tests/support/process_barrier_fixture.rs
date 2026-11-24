@@ -185,7 +185,7 @@ impl Harness {
         present(present(SqliteFactory::open_reader(&self.f.options)?)?.credential(hash)?)
     }
     pub fn finish(self) -> Check {
-        wait(self.writer.drain(Duration::from_secs(2)))??;
+        wait_drained(self.writer.drain(DRAIN_DEADLINE))??;
         Ok(())
     }
 }
