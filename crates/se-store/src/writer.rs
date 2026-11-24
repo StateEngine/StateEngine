@@ -192,11 +192,8 @@ pub(crate) fn start(
     options: WriterOptions,
     lease: Arc<dyn RuntimeLease>,
 ) -> StoreResult<SqliteWriter> {
-    let identity = crate::open::validate_lease(
-        &connection::info(&host.engine.db)?,
-        &*lease,
-        LeaseMode::Host,
-    )?;
+    let info = connection::info(&host.engine.db)?;
+    let identity = crate::open::validate_lease(&info, &*lease, LeaseMode::Host)?;
     if identity.generation != host.engine.identity.generation {
         return Err(fail(
             StoreErrorCode::GenerationChanged,
@@ -210,7 +207,7 @@ pub(crate) fn start(
     {
         return Err(invalid("writer options exceed bounded request/byte limits"));
     }
-    match host.runtime_owner()? {
+    match crate::read_phase::runtime_owner_at(&host.engine.db, &info)? {
         se_types::Read::Present { value: owner }
             if owner.generation.get() == identity.generation && owner.handover.is_none() => {}
         _ => {

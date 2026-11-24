@@ -25,11 +25,27 @@ impl SqliteFactory {
             Ok((reader, phase))
         })
     }
-    fn existing_finish<T>(
+    /// Open and validate one existing store and seed its read-phase pool with
+    /// the validated connection, avoiding a redundant second open during startup.
+    pub fn open_reader_with_pool(
+        o: &StoreOptions,
+        capacity: std::num::NonZeroU32,
+        open_identity: fn(&std::path::Path) -> StoreResult<Box<dyn crate::ReadConnectionIdentity>>,
+    ) -> StoreResult<Read<(SqliteReader, ReadPhasePool)>> {
+        Self::existing_finish(
+            o,
+            crate::read_slots::ReadSlots::new(capacity)?,
+            |reader, db| {
+                connection::info_at(&db, &reader.path)?;
+                let pool = reader.phase_pool_seeded(open_identity, db)?;
+                Ok((reader, pool))
+            },
+        )
+    }
+    fn existing_reader(
         o: &StoreOptions,
         slots: crate::read_slots::ReadSlots,
-        finish: impl FnOnce(SqliteReader, Connection) -> StoreResult<T>,
-    ) -> StoreResult<Read<T>> {
+    ) -> StoreResult<Read<SqliteReader>> {
         let mut reader = SqliteReader::with_slots(o, slots)?;
         let metadata = match std::fs::symlink_metadata(&reader.path) {
             Ok(m) => m,
@@ -96,6 +112,29 @@ impl SqliteFactory {
             ));
         }
         reader.bind_identity()?;
+        Ok(Read::Present { value: reader })
+    }
+    fn existing_finish<T>(
+        o: &StoreOptions,
+        slots: crate::read_slots::ReadSlots,
+        finish: impl FnOnce(SqliteReader, Connection) -> StoreResult<T>,
+    ) -> StoreResult<Read<T>> {
+        let reader = match Self::existing_reader(o, slots)? {
+            Read::Present { value } => value,
+            Read::Absent { checked } => return Ok(Read::Absent { checked }),
+            Read::Unreadable {
+                source,
+                reason,
+                error,
+            } => {
+                return Ok(Read::Unreadable {
+                    source,
+                    reason,
+                    error,
+                });
+            }
+            Read::Unknown { what } => return Ok(Read::Unknown { what }),
+        };
         let db = reader.connect()?;
         finish(reader, db).map(|value| Read::Present { value })
     }
@@ -109,7 +148,11 @@ impl SqliteFactory {
             .inspect_metadata(&path)
             .map_err(|error| context(error, &path, StoreIoStage::Open))?
         {
-            Read::Present { .. } => Self::existing(o),
+            // Callers immediately open the writable connection with
+            // `connect_checked` and read `info_at`, so skip an extra read-only open.
+            Read::Present { .. } => {
+                Self::existing_reader(o, crate::read_slots::ReadSlots::default())
+            }
             Read::Absent { checked } => Ok(Read::Absent { checked }),
             Read::Unreadable {
                 source,

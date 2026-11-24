@@ -151,13 +151,15 @@ impl SqliteFactory {
                 let info = connection::info_at(&db, &reader.path)?;
                 let identity = crate::open::validate_lease(&info, lease, LeaseMode::Host)?;
                 crate::erasure::permit::install(&db)?;
-                let context = BackupContext::bound(
-                    &info,
-                    identity.generation,
-                    reader.path.clone(),
-                    reader.slots.clone(),
-                );
-                crate::migration::upgrade(&db, o, lease, context)?;
+                if info.schema_version < connection::SCHEMA {
+                    let context = BackupContext::bound(
+                        &info,
+                        identity.generation,
+                        reader.path.clone(),
+                        reader.slots.clone(),
+                    );
+                    crate::migration::upgrade(&db, o, lease, context)?;
+                }
                 let reader_path = reader.path.clone();
                 Ok(Read::Present {
                     value: SqliteHost::maintenance(

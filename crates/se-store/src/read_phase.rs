@@ -56,30 +56,46 @@ impl SqliteReader {
     }
 }
 
+pub(crate) fn runtime_owner_at(
+    db: &Connection,
+    info: &StoreInfo,
+) -> StoreResult<Read<RuntimeOwnerHead>> {
+    let row: Option<(String, u64, u64, i64)> = db
+        .query_row(
+            "SELECT owner_epoch,owner_generation,revision,last_seq FROM runtime_owner WHERE singleton=1",
+            [],
+            |r| {
+                Ok((
+                    crate::sql_value::value(r, 0)?,
+                    crate::sql_value::value(r, 1)?,
+                    crate::sql_value::value(r, 2)?,
+                    crate::sql_value::value(r, 3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(sql)?;
+    match row {
+        None => Ok(Read::Absent {
+            checked: "runtime_owner singleton absent".into(),
+        }),
+        Some((epoch, generation, revision, seq)) => Ok(Read::Present {
+            value: RuntimeOwnerHead {
+                epoch: serde_json::from_str(&epoch).map_err(invalid)?,
+                generation: se_types::Generation::new(generation).map_err(invalid)?,
+                revision: crate::codec::revision(revision)?,
+                event: crate::read::load_event(db, seq, info)?.header.event,
+                handover: None,
+            },
+        }),
+    }
+}
+
 impl ReadPhase {
     /// Read the current phase's generation fact; no authority is cached for a
     /// later pin or request.
     pub fn runtime_owner(&self) -> StoreResult<Read<RuntimeOwnerHead>> {
-        let row: Option<(String, u64, u64, i64)> = self.db.query_row(
-            "SELECT owner_epoch,owner_generation,revision,last_seq FROM runtime_owner WHERE singleton=1",
-            [], |r| Ok((crate::sql_value::value(r, 0)?, crate::sql_value::value(r, 1)?, crate::sql_value::value(r, 2)?, crate::sql_value::value(r, 3)?)),
-        ).optional().map_err(sql)?;
-        match row {
-            None => Ok(Read::Absent {
-                checked: "runtime_owner singleton absent".into(),
-            }),
-            Some((epoch, generation, revision, seq)) => Ok(Read::Present {
-                value: RuntimeOwnerHead {
-                    epoch: serde_json::from_str(&epoch).map_err(invalid)?,
-                    generation: se_types::Generation::new(generation).map_err(invalid)?,
-                    revision: crate::codec::revision(revision)?,
-                    event: crate::read::load_event(&self.db, seq, &self.info)?
-                        .header
-                        .event,
-                    handover: None,
-                },
-            }),
-        }
+        runtime_owner_at(&self.db, &self.info)
     }
 
     /// Read a complete protected owner inventory on this same pin. Native

@@ -51,6 +51,24 @@ impl SqliteReader {
             }),
         })))
     }
+    pub(crate) fn phase_pool_seeded(
+        &self,
+        open_identity: OpenIdentity,
+        db: Connection,
+    ) -> StoreResult<ReadPhasePool> {
+        self.validate_identity()?;
+        let identity: Arc<dyn ReadConnectionIdentity> = Arc::from(open_identity(&self.path)?);
+        self.validate_identity()?;
+        identity.validate(&self.path)?;
+        Ok(ReadPhasePool(Arc::new(Pool {
+            reader: self.clone(),
+            state: Mutex::new(State {
+                closed: false,
+                idle: vec![db],
+                identity: Some(identity),
+            }),
+        })))
+    }
 }
 impl ReadPhasePool {
     fn state(&self) -> StoreResult<MutexGuard<'_, State>> {
