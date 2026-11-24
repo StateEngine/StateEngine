@@ -24,7 +24,7 @@ const API: &str = "https://discord.com/api/v10";
 /// used; a fresh Identify follows that token's previous attempt by this long.
 const IDENTIFY_WINDOW: Duration = Duration::from_millis(5_000);
 pub struct Discord {
-    client: reqwest::Client,
+    client: http_client::LazyClient,
     invalid_sessions: Mutex<VecDeque<String>>,
     /// This token's Identify fire instants, keyed by the token's digest so the
     /// map never holds token bytes; a reserved attempt counts even if refused.
@@ -32,6 +32,11 @@ pub struct Discord {
     /// more than MAX_CONNECTIONS slots: a token that holds none evicts the
     /// oldest slot, so a live token's own spacing survives a full map.
     identify_fire: Mutex<HashMap<[u8; 32], Instant>>,
+}
+impl Default for Discord {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 impl Discord {
     fn client_builder() -> reqwest::ClientBuilder {
@@ -45,15 +50,12 @@ impl Discord {
             .connect_timeout(Duration::from_secs(10))
             .user_agent("DiscordBot (https://github.com/StateEngine/StateEngine, 1)")
     }
-    pub fn new() -> ChannelResult<Self> {
-        let client = Self::client_builder()
-            .build()
-            .map_err(|_| Error::ProviderUnreachable)?;
-        Ok(Self {
-            client,
+    pub fn new() -> Self {
+        Self {
+            client: http_client::LazyClient::new(Self::client_builder),
             invalid_sessions: Mutex::default(),
             identify_fire: Mutex::default(),
-        })
+        }
     }
     /// Reserves this token's next Identify slot under one lock and waits for
     /// it, so simultaneous tokens get distinct slots; the first attempt waits
@@ -120,6 +122,7 @@ impl Discord {
         };
         let mut request = self
             .client
+            .get()?
             .request(method, format!("{API}{route}"))
             .header(header::AUTHORIZATION, Self::authorization(token)?)
             .timeout(Duration::from_secs(10));

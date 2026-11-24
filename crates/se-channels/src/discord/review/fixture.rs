@@ -61,7 +61,7 @@ impl Fixture {
             root,
             _process: process,
             adapter: Arc::new(Discord {
-                client,
+                client: crate::http_client::LazyClient::built(client),
                 invalid_sessions: Mutex::default(),
                 identify_fire: Mutex::default(),
             }),

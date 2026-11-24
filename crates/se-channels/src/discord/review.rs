@@ -432,7 +432,7 @@ fn identify_token(index: usize) -> Check<se_types::Secret> {
 /// MAX_CONNECTIONS Identify slots behind.
 #[test]
 fn discord_identify_slots_stay_within_the_connection_cap() -> Check {
-    let discord = Discord::new()?;
+    let discord = Discord::new();
     runtime()?.block_on(async {
         for index in 0..=se_store::channel::MAX_CONNECTIONS {
             discord.pace_identify(&identify_token(index)?).await?;
@@ -450,7 +450,7 @@ fn discord_identify_slots_stay_within_the_connection_cap() -> Check {
 /// still waits out the window instead of firing at once.
 #[test]
 fn discord_full_identify_map_keeps_a_live_tokens_spacing() -> Check {
-    let discord = Discord::new()?;
+    let discord = Discord::new();
     runtime()?.block_on(async {
         for index in 0..se_store::channel::MAX_CONNECTIONS {
             discord.pace_identify(&identify_token(index)?).await?;

@@ -167,6 +167,7 @@ async fn socket(transport: &Discord, gateway: &str) -> ChannelResult<Socket> {
     let key = generate_key();
     let response = transport
         .client
+        .get()?
         .get(gateway_url(gateway)?)
         .header(header::CONNECTION, "Upgrade")
         .header(header::UPGRADE, "websocket")

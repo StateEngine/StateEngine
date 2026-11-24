@@ -10,6 +10,7 @@ mod discord;
 mod error;
 mod execute;
 pub mod host;
+mod http_client;
 mod ingress;
 mod inspect;
 mod outbound;
