@@ -6,6 +6,10 @@ pub const SCHEMA: u32 = 17;
 /// Oldest schema still served: 002 only adds indexes, so the same SQL reads
 /// schema 1 correctly while its host migrates it.
 pub const MIN_SCHEMA: u32 = 1;
+/// WAL length a writer keeps after the log restarts. Writers restart the log
+/// once it reaches this size, so the trim after a restart frees only
+/// the overshoot and the file stays clear of the 64 MiB backup and cutoff limit.
+pub const WAL_KEEP_BYTES: u64 = 48 * 1024 * 1024;
 pub fn connect(path: &Path, writable: bool, timeout: Duration) -> StoreResult<Connection> {
     connect_checked(path, writable, timeout, |_| Ok(()))
 }
@@ -88,7 +92,7 @@ pub fn configure(
             if journal != "wal" {
                 return Err(fail(StoreErrorCode::PragmaRefused, "WAL refused"));
             }
-            c.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA wal_autocheckpoint=0; PRAGMA journal_size_limit=4194304;").map_err(sql)?;
+            c.execute_batch(&format!("PRAGMA synchronous=NORMAL; PRAGMA wal_autocheckpoint=0; PRAGMA journal_size_limit={WAL_KEEP_BYTES};")).map_err(sql)?;
         }
         for (name, arity) in [
             ("se_erase_operation_allowed", 1),
