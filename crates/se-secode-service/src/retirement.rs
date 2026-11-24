@@ -50,32 +50,14 @@ impl<H: HostPort> Coordinator<'_, H> {
         service.journal.registration = Some(bytes);
         service.persist(self.0, deadline).await
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
-    pub(crate) async fn retire_secode_registration(
+    async fn open_retirement_images(
         &self,
-        service: &mut Service,
+        service: &Service,
         deadline: &Deadline,
-    ) -> Result<()> {
-        let profile = service.journal.profile.to_local()?;
-        let check = profile.clone();
-        if self.0.run_blocking(deadline, move || empty(&check)).await? {
-            return Ok(());
-        }
-        let check = profile.clone();
-        let original = self
-            .0
-            .run_blocking(deadline, move || registration(&check))
-            .await?
-            .ok_or_else(|| {
-                error(
-                    "SE Code registration retirement",
-                    "current registration is absent while readiness remains",
-                )
-            })?;
-        service.journal.require_registration(&original)?;
+    ) -> Result<(
+        se_proc::NativeExecutableInvocation,
+        se_harness::secode_process::Images,
+    )> {
         let server = match service.journal.service.as_ref().map(|c| &c.checkpoint) {
             Some(CheckpointKind::Exit { source, .. }) => match &**source {
                 CheckpointSource::Process(record) => record.root.image.clone(),
@@ -99,17 +81,15 @@ impl<H: HostPort> Coordinator<'_, H> {
                 "original server digest is unavailable",
             )
         })?;
-        let image = server.clone();
-        let (server, images) = self
-            .0
+        self.0
             .run_blocking(deadline, move || {
-                let cli = image.with_file_name(if cfg!(windows) {
+                let cli = server.with_file_name(if cfg!(windows) {
                     "secode.exe"
                 } else {
                     "secode"
                 });
                 let mut images = se_harness::secode_process::Images::open(&cli)?;
-                if images.server_sha256() != expected_image || images.server != image {
+                if images.server_sha256() != expected_image || images.server != server {
                     return Err(error(
                         "SE Code retirement image",
                         "selected server differs from the original service image",
@@ -118,27 +98,18 @@ impl<H: HostPort> Coordinator<'_, H> {
                 images.validate()?;
                 Ok((images.server_invocation()?, images))
             })
-            .await?;
-        if service.journal.retirement.is_some() {
-            if service.owner(Auxiliary::Retirement).is_some()
-                || !matches!(service.journal.retirement.as_ref().map(|c|&c.checkpoint),Some(CheckpointKind::Exit {witness,..}) if witness.scope_exit.exit_basis.is_some())
-            {
-                return Err(error(
-                    "SE Code registration retirement",
-                    "original helper scope remains unproved",
-                ));
-            }
-            // The public operation permits an exact-byte retry after a lost
-            // response. An earlier native helper must first be proved closed.
-            service.journal.retirement = None;
-            service.retirement_output = None;
-            service.persist(self.0, deadline).await?;
-        }
+            .await
+    }
+    async fn stage_retirement_inputs(
+        &self,
+        profile: &std::path::Path,
+        original: &[u8],
+        deadline: &Deadline,
+    ) -> Result<(PathBuf, se_types::Secret)> {
         let directory = self.0.home().join("secode-retirements");
-        let bytes = original.clone();
-        let credential_profile = profile.clone();
-        let (expected, credential) = self
-            .0
+        let bytes = original.to_vec();
+        let credential_profile = profile.to_path_buf();
+        self.0
             .run_blocking(deadline, move || {
                 let files = se_proc::NativeStateFiles::create(&directory)
                     .map_err(|e| error("SE Code retirement record", e))?;
@@ -195,33 +166,13 @@ impl<H: HostPort> Coordinator<'_, H> {
                 }
                 Ok((path, se_types::Secret::new(std::mem::take(&mut *raw))?))
             })
-            .await?;
-        let policy = se_proc::LaunchPolicy {
-            containment: se_proc::ContainmentRequirement::BestAvailable,
-            writes: se_proc::WritePolicy::Workspace {
-                roots: vec![profile.clone()],
-                scratch: profile.with_extension("scratch"),
-            },
-            network: se_proc::NetworkPolicy::Offline,
-            hardening: se_proc::OptionalHardening::Off,
-        };
-        self.start_secode_auxiliary(
-            service,
-            Auxiliary::Retirement,
-            server,
-            vec![
-                "retire-service".into(),
-                "--service".into(),
-                profile.as_os_str().to_owned(),
-                "--expected-registration".into(),
-                expected.into_os_string(),
-            ],
-            profile.clone(),
-            policy,
-            Some(credential),
-            deadline,
-        )
-        .await?;
+            .await
+    }
+    async fn wait_retirement_helper(
+        &self,
+        service: &mut Service,
+        deadline: &Deadline,
+    ) -> Result<()> {
         let owner = service
             .retirement
             .clone()
@@ -253,7 +204,7 @@ impl<H: HostPort> Coordinator<'_, H> {
                         "authenticated helper refused or its exit status is unproved; preserve the original registration and diagnostic",
                     ));
                 }
-                break;
+                return Ok(());
             }
             tokio::time::sleep(
                 deadline
@@ -262,45 +213,76 @@ impl<H: HostPort> Coordinator<'_, H> {
             )
             .await;
         }
-        let report = service
-            .retirement_output
-            .as_ref()
-            .ok_or_else(|| error("SE Code retirement response", "original diagnostic absent"))?
-            .response()?;
-        let fields = fields(&original)?;
-        for (field, expected) in [
-            ("service_instance", fields["instance"]),
-            ("service_slot", fields["slot"]),
-            ("environment", fields["environment"]),
-            ("endpoint", fields["endpoint"]),
-        ] {
-            if report[field].as_str() != Some(expected) {
+    }
+    pub(crate) async fn retire_secode_registration(
+        &self,
+        service: &mut Service,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let profile = service.journal.profile.to_local()?;
+        let check = profile.clone();
+        if self.0.run_blocking(deadline, move || empty(&check)).await? {
+            return Ok(());
+        }
+        let check = profile.clone();
+        let original = self
+            .0
+            .run_blocking(deadline, move || registration(&check))
+            .await?
+            .ok_or_else(|| {
+                error(
+                    "SE Code registration retirement",
+                    "current registration is absent while readiness remains",
+                )
+            })?;
+        service.journal.require_registration(&original)?;
+        let (server, images) = self.open_retirement_images(service, deadline).await?;
+        if service.journal.retirement.is_some() {
+            if service.owner(Auxiliary::Retirement).is_some()
+                || !matches!(service.journal.retirement.as_ref().map(|c|&c.checkpoint),Some(CheckpointKind::Exit {witness,..}) if witness.scope_exit.exit_basis.is_some())
+            {
                 return Err(error(
-                    "SE Code retirement response",
-                    "original registration coordinates differ",
+                    "SE Code registration retirement",
+                    "original helper scope remains unproved",
                 ));
             }
+            // The public operation permits an exact-byte retry after a lost
+            // response. An earlier native helper must first be proved closed.
+            service.journal.retirement = None;
+            service.retirement_output = None;
+            service.persist(self.0, deadline).await?;
         }
-        if report["schema"] != "secode.product.service-retirement.v1"
-            || !matches!(
-                (
-                    report["outcome"].as_str(),
-                    report["registration_released"].as_bool()
-                ),
-                (Some("released"), Some(true)) | (Some("slot_already_empty"), Some(false))
-            )
-            || report["generation"]
-                .as_u64()
-                .map(|n| n.to_string())
-                .as_deref()
-                != Some(fields["generation"])
-            || report["pid"].as_u64().map(|n| n.to_string()).as_deref() != Some(fields["pid"])
-        {
-            return Err(error(
-                "SE Code retirement response",
-                "complete original retirement outcome is unavailable",
-            ));
-        }
+        let (expected, credential) = self
+            .stage_retirement_inputs(&profile, &original, deadline)
+            .await?;
+        let policy = se_proc::LaunchPolicy {
+            containment: se_proc::ContainmentRequirement::BestAvailable,
+            writes: se_proc::WritePolicy::Workspace {
+                roots: vec![profile.clone()],
+                scratch: profile.with_extension("scratch"),
+            },
+            network: se_proc::NetworkPolicy::Offline,
+            hardening: se_proc::OptionalHardening::Off,
+        };
+        self.start_secode_auxiliary(
+            service,
+            Auxiliary::Retirement,
+            server,
+            vec![
+                "retire-service".into(),
+                "--service".into(),
+                profile.as_os_str().to_owned(),
+                "--expected-registration".into(),
+                expected.into_os_string(),
+            ],
+            profile.clone(),
+            policy,
+            Some(credential),
+            deadline,
+        )
+        .await?;
+        self.wait_retirement_helper(service, deadline).await?;
+        verify_retirement_report(service, &original)?;
         if !self
             .0
             .run_blocking(deadline, move || empty(&profile))
@@ -319,4 +301,46 @@ impl<H: HostPort> Coordinator<'_, H> {
             .await?;
         Ok(())
     }
+}
+fn verify_retirement_report(service: &Service, original: &[u8]) -> Result<()> {
+    let report = service
+        .retirement_output
+        .as_ref()
+        .ok_or_else(|| error("SE Code retirement response", "original diagnostic absent"))?
+        .response()?;
+    let fields = fields(original)?;
+    for (field, expected) in [
+        ("service_instance", fields["instance"]),
+        ("service_slot", fields["slot"]),
+        ("environment", fields["environment"]),
+        ("endpoint", fields["endpoint"]),
+    ] {
+        if report[field].as_str() != Some(expected) {
+            return Err(error(
+                "SE Code retirement response",
+                "original registration coordinates differ",
+            ));
+        }
+    }
+    if report["schema"] != "secode.product.service-retirement.v1"
+        || !matches!(
+            (
+                report["outcome"].as_str(),
+                report["registration_released"].as_bool()
+            ),
+            (Some("released"), Some(true)) | (Some("slot_already_empty"), Some(false))
+        )
+        || report["generation"]
+            .as_u64()
+            .map(|n| n.to_string())
+            .as_deref()
+            != Some(fields["generation"])
+        || report["pid"].as_u64().map(|n| n.to_string()).as_deref() != Some(fields["pid"])
+    {
+        return Err(error(
+            "SE Code retirement response",
+            "complete original retirement outcome is unavailable",
+        ));
+    }
+    Ok(())
 }
