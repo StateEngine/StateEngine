@@ -19,7 +19,7 @@ impl LaunchCoordinator {
                 let receipt = match cx
                     .read
                     .operation_receipt(cx.admission.actor.clone(), key)
-                    .map_err(|e| se_core::store_error::store_error(&e))?
+                    .map_err(store_error)?
                 {
                     Read::Present { value } => value,
                     Read::Absent { .. } => return Ok(Vec::new()),
@@ -39,9 +39,7 @@ impl LaunchCoordinator {
                 let mut revoked = Vec::new();
                 for event in receipt.events {
                     let fact = se_core::scope::require_present(
-                        cx.read
-                            .event(event)
-                            .map_err(|e| se_core::store_error::store_error(&e))?,
+                        cx.read.event(event).map_err(store_error)?,
                         "committed revocation fact",
                         se_core::scope::COMMITTED_READ_RECOVERY,
                     )?;

@@ -433,6 +433,10 @@ pub(crate) fn prepare_error(e: se_proc::ProcError) -> se_types::SeError {
     error("native scope preparation", e)
 }
 
+fn store_error(error: Box<se_store::StoreError>) -> se_types::SeError {
+    se_core::store_error::store_error(&error)
+}
+
 #[cfg(all(test, target_os = "linux"))]
 #[path = "../../tests/support/script_launcher_independent.rs"]
 mod script_launcher_independent;

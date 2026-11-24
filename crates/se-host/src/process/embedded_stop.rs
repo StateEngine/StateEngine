@@ -145,9 +145,7 @@ impl LaunchCoordinator {
         self.store
             .read(admission.clone(), deadline, move |cx| {
                 se_core::scope::require_present(
-                    cx.read
-                        .session(session)
-                        .map_err(|e| se_core::store_error::store_error(&e))?,
+                    cx.read.session(session).map_err(store_error)?,
                     "embedded stop binding",
                     "Restore the exact original binding before retrying.",
                 )

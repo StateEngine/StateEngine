@@ -1,10 +1,87 @@
 //! Resolve retained lifecycle and saved-session metadata in one finite read.
 use super::*;
+fn project_recovery_info<S: Snapshot>(
+    project_id: se_types::ProjectId,
+    read: &mut S,
+) -> Result<(se_types::HumanId, String)> {
+    let project = se_core::scope::require_present(
+        read.project(project_id).map_err(store_error)?,
+        "recovery project",
+        "Keep the registered project metadata.",
+    )?;
+    let original = project.original.as_deref().unwrap_or(&project.current);
+    let owner = match &original.body {
+        EventBody::ProjectRegistered { owner, .. } => owner.clone(),
+        _ => {
+            return Err(error(
+                "recovery project",
+                "original registration unavailable",
+            ));
+        }
+    };
+    let project_name = match &project.current.body {
+        EventBody::ProjectRegistered { name, .. } | EventBody::ProjectUpdated { name, .. } => {
+            name.clone()
+        }
+        _ => return Err(error("recovery project", "project is no longer active")),
+    };
+    Ok((owner, project_name))
+}
+
+type SessionMeta = (
+    Read<se_types::ProviderSessionId>,
+    bool,
+    se_store::Provider,
+    bool,
+);
+fn session_recovery_info<S: Snapshot>(
+    session: &se_types::SessionId,
+    agent: &se_types::AgentId,
+    read: &mut S,
+) -> Result<(SessionMeta, bool, bool, bool)> {
+    let session_head = se_core::scope::require_present(
+        read.session(session.clone()).map_err(store_error)?,
+        "recovery session",
+        "Keep the original session preparation.",
+    )?;
+    let prepared = session_head
+        .original
+        .as_deref()
+        .unwrap_or(&session_head.current);
+    let meta = match &prepared.body {
+        EventBody::SessionPrepared {
+            session: found,
+            agent: principal,
+            consent,
+            provider,
+            surface,
+            ..
+        } if found == session && principal == agent => (
+            se_core::ops::session_reference::read(read, &session_head)?,
+            *consent == se_store::Consent::Capture,
+            *provider,
+            *surface == Some(se_store::SessionSurface::Window),
+        ),
+        _ => {
+            return Err(error(
+                "recovery session",
+                "original provider preparation differs from retained identity",
+            ));
+        }
+    };
+    let active = matches!(
+        session_head.current.body,
+        EventBody::SessionActivated { .. }
+    );
+    let activated = active || matches!(session_head.current.body, EventBody::SessionEnded { .. });
+    let retired = matches!(
+        session_head.current.body,
+        EventBody::SessionEnded { .. } | EventBody::SessionRevoked { .. }
+    );
+    Ok((meta, active, retired, activated))
+}
+
 impl LaunchCoordinator {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(in crate::process) async fn recovery_metadata(
         &self,
         retained: &OwnerGuardProcess,
@@ -29,32 +106,9 @@ impl LaunchCoordinator {
         let project_id = retained.project.clone();
         self.store
             .read(admission, deadline, move |cx| {
-                let project = se_core::scope::require_present(
-                    cx.read
-                        .project(project_id.clone())
-                        .map_err(|e| se_core::store_error::store_error(&e))?,
-                    "recovery project",
-                    "Keep the registered project metadata.",
-                )?;
-                let original = project.original.as_deref().unwrap_or(&project.current);
-                let owner = match &original.body {
-                    EventBody::ProjectRegistered { owner, .. } => owner.clone(),
-                    _ => {
-                        return Err(error(
-                            "recovery project",
-                            "original registration unavailable",
-                        ));
-                    }
-                };
-                let project_name = match &project.current.body {
-                    EventBody::ProjectRegistered { name, .. }
-                    | EventBody::ProjectUpdated { name, .. } => name.clone(),
-                    _ => return Err(error("recovery project", "project is no longer active")),
-                };
+                let (owner, project_name) = project_recovery_info(project_id.clone(), cx.read)?;
                 let control = se_core::scope::require_present(
-                    cx.read
-                        .control_target(agent.clone())
-                        .map_err(|e| se_core::store_error::store_error(&e))?,
+                    cx.read.control_target(agent.clone()).map_err(store_error)?,
                     "recovery principal",
                     "Keep its exact control metadata.",
                 )?;
@@ -75,48 +129,8 @@ impl LaunchCoordinator {
                         ..
                     } if spec.one_shot
                 );
-                let session_head = se_core::scope::require_present(
-                    cx.read
-                        .session(session.clone())
-                        .map_err(|e| se_core::store_error::store_error(&e))?,
-                    "recovery session",
-                    "Keep the original session preparation.",
-                )?;
-                let prepared = session_head
-                    .original
-                    .as_deref()
-                    .unwrap_or(&session_head.current);
-                let (conversation, capture, provider, attended) = match &prepared.body {
-                    EventBody::SessionPrepared {
-                        session: found,
-                        agent: principal,
-                        consent,
-                        provider,
-                        surface,
-                        ..
-                    } if found == &session && principal == &agent => (
-                        se_core::ops::session_reference::read(cx.read, &session_head)?,
-                        *consent == se_store::Consent::Capture,
-                        *provider,
-                        *surface == Some(se_store::SessionSurface::Window),
-                    ),
-                    _ => {
-                        return Err(error(
-                            "recovery session",
-                            "original provider preparation differs from retained identity",
-                        ));
-                    }
-                };
-                let active = matches!(
-                    session_head.current.body,
-                    EventBody::SessionActivated { .. }
-                );
-                let activated =
-                    active || matches!(session_head.current.body, EventBody::SessionEnded { .. });
-                let retired = matches!(
-                    session_head.current.body,
-                    EventBody::SessionEnded { .. } | EventBody::SessionRevoked { .. }
-                );
+                let ((conversation, capture, provider, attended), active, retired, activated) =
+                    session_recovery_info(&session, &agent, cx.read)?;
                 let model = match control.profile {
                     Read::Present { value } => match value.current.body {
                         EventBody::ProfileSaved { profile, .. } => profile.model,

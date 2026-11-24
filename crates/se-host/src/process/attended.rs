@@ -22,14 +22,10 @@ impl LaunchCoordinator {
         self.store
             .pool
             .run_owned(deadline, move || {
-                let phase = reader
-                    .read_phase()
-                    .map_err(|e| se_core::store_error::store_error(&e))?;
+                let phase = reader.read_phase().map_err(store_error)?;
                 let result = (|| {
                     let owner = se_core::scope::require_present(
-                        phase
-                            .runtime_owner()
-                            .map_err(|e| se_core::store_error::store_error(&e))?,
+                        phase.runtime_owner().map_err(store_error)?,
                         "window setup owner",
                         "Reconnect to the current runtime.",
                     )?;
@@ -37,9 +33,7 @@ impl LaunchCoordinator {
                         return Err(error("window setup owner", "runtime generation changed"));
                     }
                     let credential = se_core::scope::require_present(
-                        phase
-                            .credential(hash)
-                            .map_err(|e| se_core::store_error::store_error(&e))?,
+                        phase.credential(hash).map_err(store_error)?,
                         "window setup credential",
                         "Relaunch this agent from the owner terminal.",
                     )?;

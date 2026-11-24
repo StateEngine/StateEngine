@@ -554,14 +554,12 @@ impl LaunchCoordinator {
                 se_core::scope::require_present(
                     cx.read
                         .control_target(target.clone())
-                        .map_err(|e| se_core::store_error::store_error(&e))?,
+                        .map_err(store_error)?,
                     "process control target",
                     "Restore the current control grant or use the owner terminal.",
                 )?;
                 let head = se_core::scope::require_present(
-                    cx.read
-                        .process(lifecycle.clone())
-                        .map_err(|e| se_core::store_error::store_error(&e))?,
+                    cx.read.process(lifecycle.clone()).map_err(store_error)?,
                     "exact process checkpoint",
                     "Keep its original lifecycle for cleanup.",
                 )?;
