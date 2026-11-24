@@ -77,7 +77,7 @@ impl ScanState {
         if let Some(value) = native {
             for fact in self.tool_tracker.observe(&value)? {
                 queued.push(fact.record(
-                    &source.binding.identity,
+                    source.binding.identity.session_agent(),
                     se_store::Provider::Claude,
                     source.source,
                     line_position.clone(),

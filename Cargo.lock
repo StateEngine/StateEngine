@@ -1748,12 +1748,12 @@ dependencies = [
  "se-repository",
  "se-secode-image",
  "se-store",
+ "se-tool-capture",
  "se-types",
  "secode-stateengine-api",
  "serde",
  "serde_json",
  "sha2",
- "shlex",
  "tokio",
  "tokio-tungstenite",
  "toml",
@@ -2090,6 +2090,18 @@ dependencies = [
  "serde_json",
  "sha2",
  "uuid",
+]
+
+[[package]]
+name = "se-tool-capture"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-core",
+ "se-store",
+ "se-types",
+ "serde_json",
+ "sha2",
+ "shlex",
 ]
 
 [[package]]

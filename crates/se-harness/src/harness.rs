@@ -80,7 +80,7 @@ pub use se_secode_image as secode_image;
 #[cfg(feature = "listener")]
 pub mod secode_process;
 #[cfg(feature = "listener")]
-pub mod tool_capture;
+pub use se_tool_capture as tool_capture;
 
 /// One stock Codex feature/version floor for every launch/probe mode.
 pub const CODEX_MINIMUM_VERSION: (u16, u16, u16) = (0, 152, 0);

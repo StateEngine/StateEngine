@@ -109,7 +109,7 @@ impl LaunchCoordinator {
                         let mut metadata = Vec::new();
                         for fact in &item.facts {
                             let record = fact.record(
-                                &native_identity,
+                                native_identity.session_agent(),
                                 se_store::Provider::Acp,
                                 source,
                                 position.clone(),

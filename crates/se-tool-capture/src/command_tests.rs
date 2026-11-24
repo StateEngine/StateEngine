@@ -18,14 +18,13 @@ fn claude_keeps_native_command_text_through_the_matching_result() -> Check {
     let facts = tracker.observe(&result(false))?;
     assert!(matches!(&facts[0].target, Target::Command(text) if text == command));
     assert!(matches!(facts[0].outcome, Outcome::Succeeded));
-    let identity = crate::SessionIdentity {
-        session: SessionId::from_parts(1, [1; 10])?,
-        agent: se_types::AgentId::from_parts(1, [2; 10])?,
-        project: se_types::ProjectId::from_parts(1, [3; 10])?,
-    };
+    let (session, agent) = (
+        SessionId::from_parts(1, [1; 10])?,
+        se_types::AgentId::from_parts(1, [2; 10])?,
+    );
     let source = <RecordId as se_store::RecordIdentity>::from_parts(1, [4; 10])?;
     let record = facts[0].record(
-        &identity,
+        (&session, &agent),
         Provider::Claude,
         source,
         Position {
@@ -62,14 +61,13 @@ fn codex_native_argv_and_rpc_command_agree_without_inferred_paths() -> Check {
     let rpc = json!({"method":"item/completed","params":{"threadId":"command-thread","turnId":"command-turn",
         "item":{"type":"commandExecution","id":"command-item","command":command,"status":"completed","exitCode":0}}});
     let notified = codex::notification(&rpc, &conversation)?.ok_or("RPC command skipped")?;
-    let identity = crate::SessionIdentity {
-        session: SessionId::from_parts(1, [1; 10])?,
-        agent: se_types::AgentId::from_parts(1, [2; 10])?,
-        project: se_types::ProjectId::from_parts(1, [3; 10])?,
-    };
+    let (session, agent) = (
+        SessionId::from_parts(1, [1; 10])?,
+        se_types::AgentId::from_parts(1, [2; 10])?,
+    );
     let source = <RecordId as se_store::RecordIdentity>::from_parts(1, [4; 10])?;
     let record = fact.record(
-        &identity,
+        (&session, &agent),
         Provider::Codex,
         source,
         Position {
