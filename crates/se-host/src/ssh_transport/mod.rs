@@ -22,6 +22,8 @@ use tokio::{
 mod diagnostics;
 mod sftp;
 mod transfer;
+#[cfg(all(test, windows))]
+mod windows_stdout_eof;
 pub(crate) use diagnostics::Diagnostics;
 use diagnostics::read_errors;
 pub(crate) use transfer::upload;
