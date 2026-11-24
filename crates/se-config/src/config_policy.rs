@@ -39,8 +39,8 @@ pub enum Approval {
 pub struct RuntimeConfig {
     #[serde(default)]
     pub listen_port: Option<u16>,
-    /// Requested finite-work cap. Absence selects two jobs, independently of
-    /// core count; explicit 2..=8 caps remain bounded by native availability.
+    /// Requested finite-work cap. Absence selects the native core count bounded
+    /// to 2..=8; explicit 2..=8 caps remain bounded by native availability.
     /// Unknown or one-core hosts keep one foreground slot
     /// and the original independent maintenance slot.
     #[serde(default)]
@@ -96,12 +96,9 @@ impl RuntimeConfig {
         let native = cores.map_or(1, |cores| {
             cores.get().min(MAX_BLOCKING_JOBS as usize) as u32
         });
-        NonZeroU32::new(
-            self.blocking_jobs
-                .unwrap_or(DEFAULT_BLOCKING_JOBS)
-                .min(native),
-        )
-        .ok_or_else(|| {
+        // Every hosted request takes several finite jobs, so a fixed small
+        // default queues concurrent clients behind each other on larger hosts.
+        NonZeroU32::new(self.blocking_jobs.unwrap_or(native).min(native)).ok_or_else(|| {
             invalid(
                 "runtime.blocking_jobs",
                 "expected a positive bounded work cap",
@@ -523,8 +520,8 @@ mod runtime_budget_tests {
     fn finite_work_cap_respects_native_cores_and_owner_configuration() -> Result<()> {
         for (cores, requested, expected) in [
             (2, None, 2),
-            (4, None, 2),
-            (48, None, 2),
+            (4, None, 4),
+            (48, None, 8),
             (48, Some(4), 4),
             (4, Some(8), 4),
         ] {
