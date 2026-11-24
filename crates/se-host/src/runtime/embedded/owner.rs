@@ -102,10 +102,59 @@ pub(super) fn owner_thread(
     (ready_rx, exited_rx, spawned.ok())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+async fn finish_owner_shutdown(
+    exit: crate::runtime::HostServeExit,
+    generation: api::Generation,
+    exited: oneshot::Sender<Stopped>,
+) {
+    let receipt = match support::deadline(SHUTDOWN_BUDGET) {
+        Ok(deadline) => {
+            let report = exit.finish(&deadline).await;
+            // Pending obligations and close errors stay unresolved;
+            // the writer counts as flushed only when storage drained.
+            let unresolved = (report.pending.len() + report.errors.len()) as u64;
+            let receipt = api::DrainReceipt {
+                generation,
+                pending_notices: 0,
+                unresolved_effects: unresolved,
+                writer_flushed: matches!(&report.storage, core::Read::Present { value } if value.writer_joined && value.pending.is_empty())
+                    && unresolved == 0,
+            };
+            if !receipt.writer_flushed {
+                // A failed embedded drain cannot drop native custody or
+                // free its lease while the application keeps running.
+                // The returned incomplete receipt requires controlled
+                // application restart; this dedicated owner thread parks.
+                let _ = exited.send(Ok(receipt));
+                let _retained = report;
+                loop {
+                    std::thread::park();
+                }
+            }
+            // Drop the successfully closed runtime before publishing
+            // drain completion; the external CLI checks the actual lock.
+            drop(report);
+            receipt
+        }
+        Err(error) => {
+            // Forward the diagnostic through drain's error channel;
+            // a library must not print into its embedding application.
+            let failure = se_core::scope::unreadable(
+                "embedded shutdown budget",
+                &format!(
+                    "Could not create the shutdown budget: {error}. This runtime retains its writer and lease; preserve the data home and use controlled application restart."
+                ),
+            );
+            let _ = exited.send(Err(failure));
+            let _retained = exit;
+            loop {
+                std::thread::park();
+            }
+        }
+    };
+    let _ = exited.send(Ok(receipt));
+}
+
 async fn run_owner(
     inputs: OwnerInputs,
     ready: oneshot::Sender<Started>,
@@ -191,52 +240,7 @@ async fn run_owner(
         served_poison.store(true, std::sync::atomic::Ordering::Release);
         served_changed.notify_waiters();
     }
-    let receipt = match support::deadline(SHUTDOWN_BUDGET) {
-        Ok(deadline) => {
-            let report = exit.finish(&deadline).await;
-            // Pending obligations and close errors stay unresolved;
-            // the writer counts as flushed only when storage drained.
-            let unresolved = (report.pending.len() + report.errors.len()) as u64;
-            let receipt = api::DrainReceipt {
-                generation,
-                pending_notices: 0,
-                unresolved_effects: unresolved,
-                writer_flushed: matches!(&report.storage, core::Read::Present { value } if value.writer_joined && value.pending.is_empty())
-                    && unresolved == 0,
-            };
-            if !receipt.writer_flushed {
-                // A failed embedded drain cannot drop native custody or
-                // free its lease while the application keeps running.
-                // The returned incomplete receipt requires controlled
-                // application restart; this dedicated owner thread parks.
-                let _ = exited.send(Ok(receipt));
-                let _retained = report;
-                loop {
-                    std::thread::park();
-                }
-            }
-            // Drop the successfully closed runtime before publishing
-            // drain completion; the external CLI checks the actual lock.
-            drop(report);
-            receipt
-        }
-        Err(error) => {
-            // Forward the diagnostic through drain's error channel;
-            // a library must not print into its embedding application.
-            let failure = se_core::scope::unreadable(
-                "embedded shutdown budget",
-                &format!(
-                    "Could not create the shutdown budget: {error}. This runtime retains its writer and lease; preserve the data home and use controlled application restart."
-                ),
-            );
-            let _ = exited.send(Err(failure));
-            let _retained = exit;
-            loop {
-                std::thread::park();
-            }
-        }
-    };
-    let _ = exited.send(Ok(receipt));
+    finish_owner_shutdown(exit, generation, exited).await;
 }
 
 async fn take_ownership(

@@ -7,11 +7,100 @@ use se_types::{Read, Result, SeError};
 use secode_stateengine_api as api;
 use std::num::NonZeroU32;
 
+struct PrincipalSummary {
+    name: String,
+    role: String,
+}
+
+fn build_page_request(
+    request: api::ContinuityRequest,
+    limits: &api::Limits,
+) -> Result<se_types::PageRequest> {
+    Ok(se_types::PageRequest {
+        after: request
+            .page
+            .after
+            .map(se_types::Cursor::from_linked)
+            .transpose()?,
+        limit: NonZeroU32::new(request.page.limit.min(limits.page_items.get()).min(1000))
+            .ok_or_else(|| SeError::invalid("continuity limit", "a positive page limit"))?,
+        max_bytes: NonZeroU32::new(
+            request
+                .page
+                .max_bytes
+                .min(limits.payload_bytes.get())
+                .min(2 * 1024 * 1024),
+        )
+        .ok_or_else(|| SeError::invalid("continuity bytes", "a positive byte budget"))?,
+    })
+}
+
+fn read_principal_summary(
+    read: &mut impl Snapshot,
+    agent: &se_types::AgentId,
+) -> Result<PrincipalSummary> {
+    let principal = scope::require_present(
+        read.principal(Actor::Agent(agent.clone()))
+            .map_err(|e| store_error(&e))?,
+        "linked principal",
+        "Restore this agent's registration before binding.",
+    )?;
+    let original = principal.original.as_deref().unwrap_or(&principal.current);
+    let (mut name, role) = match &original.body {
+        EventBody::PrincipalRegistered { name, role, .. } => (name.clone(), role.clone()),
+        _ => {
+            return Err(SeError::invalid(
+                "linked principal",
+                "an original agent registration",
+            ));
+        }
+    };
+    if let EventBody::PrincipalRenamed { name: current, .. } = &principal.current.body {
+        name = current.clone();
+    }
+    Ok(PrincipalSummary { name, role })
+}
+
+fn read_working_state(
+    read: &mut impl Snapshot,
+    agent: &se_types::AgentId,
+) -> Result<Option<String>> {
+    match read
+        .working_state(agent.clone())
+        .map_err(|e| store_error(&e))?
+    {
+        Read::Present { value } => match value.current.body {
+            EventBody::WorkingStateSet {
+                text: StoredText::Present(text),
+                ..
+            } => Ok(Some(text)),
+            _ => Err(scope::unreadable(
+                "linked working state",
+                "the saved note is erased or unreadable",
+            )),
+        },
+        Read::Absent { .. } => Ok(None),
+        Read::Unreadable { source, reason, .. } => Err(scope::unreadable(&source, &reason)),
+        Read::Unknown { what } => Err(scope::unreadable("linked working state", &what)),
+    }
+}
+
+fn encode_bounded_input(text: String, maximum: usize) -> Result<api::BoundedText> {
+    // BoundedText describes this complete prompt, while the separate
+    // source window and omission summary describe the history excerpt.
+    if text.len() <= maximum {
+        Ok(api::BoundedText {
+            utf8_bytes: text.len() as u64,
+            text,
+            complete: true,
+            omitted_bytes: Some(0),
+        })
+    } else {
+        Err(SeError::too_large("linked continuity", maximum, text.len()))
+    }
+}
+
 impl EmbeddedHost {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) async fn context(
         &self,
         session: &api::BoundSession,
@@ -26,29 +115,7 @@ impl EmbeddedHost {
                 "the current generation and no packet acknowledgement before a packet is issued",
             ));
         }
-        let page = se_types::PageRequest {
-            after: request
-                .page
-                .after
-                .map(se_types::Cursor::from_linked)
-                .transpose()?,
-            limit: NonZeroU32::new(
-                request
-                    .page
-                    .limit
-                    .min(self.config.limits.page_items.get())
-                    .min(1000),
-            )
-            .ok_or_else(|| SeError::invalid("continuity limit", "a positive page limit"))?,
-            max_bytes: NonZeroU32::new(
-                request
-                    .page
-                    .max_bytes
-                    .min(self.config.limits.payload_bytes.get())
-                    .min(2 * 1024 * 1024),
-            )
-            .ok_or_else(|| SeError::invalid("continuity bytes", "a positive byte budget"))?,
-        };
+        let page = build_page_request(request, &self.config.limits)?;
         let maximum = page.max_bytes.get() as usize;
         let read_deadline = deadline.clone();
         let scope = binding::session_scope(session)?;
@@ -59,49 +126,8 @@ impl EmbeddedHost {
         store::read(&router, scope, &deadline, move |read| {
             binding::check(read, &checked, revision)?;
             let agent = se_types::AgentId::from_linked(binding.identity.agent.clone())?;
-            let principal = scope::require_present(
-                read.principal(Actor::Agent(agent.clone()))
-                    .map_err(|e| store_error(&e))?,
-                "linked principal",
-                "Restore this agent's registration before binding.",
-            )?;
-            let original = principal.original.as_deref().unwrap_or(&principal.current);
-            let (mut name, role) = match &original.body {
-                EventBody::PrincipalRegistered { name, role, .. } => (name.clone(), role.clone()),
-                _ => {
-                    return Err(SeError::invalid(
-                        "linked principal",
-                        "an original agent registration",
-                    ));
-                }
-            };
-            if let EventBody::PrincipalRenamed { name: current, .. } = &principal.current.body {
-                name = current.clone();
-            }
-            let working = match read
-                .working_state(agent.clone())
-                .map_err(|e| store_error(&e))?
-            {
-                Read::Present { value } => match value.current.body {
-                    EventBody::WorkingStateSet {
-                        text: StoredText::Present(text),
-                        ..
-                    } => Some(text),
-                    _ => {
-                        return Err(scope::unreadable(
-                            "linked working state",
-                            "the saved note is erased or unreadable",
-                        ));
-                    }
-                },
-                Read::Absent { .. } => None,
-                Read::Unreadable { source, reason, .. } => {
-                    return Err(scope::unreadable(&source, &reason));
-                }
-                Read::Unknown { what } => {
-                    return Err(scope::unreadable("linked working state", &what));
-                }
-            };
+            let principal = read_principal_summary(read, &agent)?;
+            let working = read_working_state(read, &agent)?;
             // Queue time consumes the caller's clock. The store also has its
             // own five-second read ceiling, independent of the API timeout.
             let budget = se_store::ReadBudget {
@@ -131,7 +157,7 @@ impl EmbeddedHost {
                 rows.push(serde_json::json!({"event":turn.header.event,"role":role,"text":text}));
             }
             let mut text = serde_json::to_string(&serde_json::json!({
-                "agent":binding.identity.agent.0,"name":name,"role":role,
+                "agent":binding.identity.agent.0,"name":principal.name,"role":principal.role,
                 "working_state":working,"recent_turns":rows,
                 "recent_turns_complete":turns.window().complete(),
                 "recent_turns_omitted":turns.window().omitted()
@@ -145,26 +171,14 @@ impl EmbeddedHost {
                 &mut text,
                 maximum as u32,
             )?;
-            let complete = text.len() <= maximum;
-            // BoundedText describes this complete prompt, while the separate
-            // source window and omission summary describe the history excerpt.
-            let model_input = if text.len() <= maximum {
-                api::BoundedText {
-                    utf8_bytes: text.len() as u64,
-                    text,
-                    complete,
-                    omitted_bytes: if complete { Some(0) } else { None },
-                }
-            } else {
-                return Err(SeError::too_large("linked continuity", maximum, text.len()));
-            };
+            let model_input = encode_bounded_input(text, maximum)?;
             Ok(api::SessionContext {
                 schema: "secode.session-context-v1".into(),
                 identity: binding.identity.clone(),
                 display_identity: api::ContextDisplayIdentity {
                     agent: binding.identity.agent,
-                    display_name: Some(name),
-                    role: Some(role),
+                    display_name: Some(principal.name),
+                    role: Some(principal.role),
                     neutral: false,
                 },
                 generated_at: api::UnixMicros(super::super::start::now_unix_micros()? as u64),
