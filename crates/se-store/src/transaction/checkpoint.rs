@@ -281,22 +281,12 @@ impl Engine {
         self.checkpoints.pending = !complete;
     }
 }
+/// Protects: equal negative frame counts are Unreadable, not the success arm.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    /// Protects: equal negative frame counts classify as Unreadable even
-    /// though they also satisfy the success arm's `log == done` check.
-    #[test]
-    fn equal_negative_frame_counts_are_unreadable() {
-        let Some(failure) = classify_checkpoint(Ok((0, -2, -2)), false) else {
-            panic!("equal negative frame counts classified as success")
-        };
-        assert_eq!(failure.code, StoreErrorCode::Unreadable);
-        // Valid results keep their previous classification after the reorder.
-        assert!(classify_checkpoint(Ok((0, 0, 0)), false).is_none());
-        let Some(busy) = classify_checkpoint(Ok((1, -1, -1)), false) else {
-            panic!("busy uncheckpointable WAL classified as success")
-        };
-        assert_eq!(busy.code, StoreErrorCode::Busy);
-    }
+#[test]
+fn equal_negative_frame_counts_are_unreadable() {
+    let code = |counts| classify_checkpoint(Ok(counts), false).map(|failure| failure.code);
+    assert_eq!(code((0, -2, -2)), Some(StoreErrorCode::Unreadable));
+    assert_eq!(code((0, 0, 0)), None);
+    assert_eq!(code((1, -1, -1)), Some(StoreErrorCode::Busy));
 }
