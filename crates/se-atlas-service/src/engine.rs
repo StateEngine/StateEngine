@@ -607,3 +607,87 @@ impl<'a> Engine<'a> {
 pub(crate) fn feed_cursor(shared: &Shared) -> se_types::Result<Option<se_types::EventId>> {
     shared.with_reader(|reader| records::cursor(reader.connection()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::root::{RootSpec, Shared};
+    use se_atlas_index::store::PathOutcome;
+    use se_types::{ProjectId, code::RootId};
+    use std::path::PathBuf;
+
+    /// A scratch dir one test owns; unique per process and run, gone on drop.
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scratch_dir(label: &str) -> std::io::Result<PathBuf> {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "se-atlas-service-{label}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path)?;
+        #[cfg(unix)]
+        let path = std::fs::canonicalize(&path)?;
+        Ok(path)
+    }
+
+    fn file_count(store: &Store, path: &str) -> rusqlite::Result<i64> {
+        store.connection().query_row(
+            "SELECT count(*) FROM files WHERE path = ?1",
+            [path],
+            |row| row.get(0),
+        )
+    }
+
+    /// A removal reported for a file the ignore rules exclude is a forget,
+    /// even while the file is still on disk: it is never re-indexed.
+    #[test]
+    fn a_removed_ignored_file_is_forgotten_not_indexed() -> Result<(), Box<dyn std::error::Error>> {
+        let scratch = Scratch(scratch_dir("ignored-remove")?);
+        let source = scratch.0.join("source");
+        std::fs::create_dir_all(&source)?;
+        std::fs::write(source.join("scratch.txt"), b"still on disk\n")?;
+
+        let (shared, _writer_mailbox) = Shared::new(RootSpec {
+            project: ProjectId::from_parts(1_700_000_000_000, [1; 10])?,
+            root: RootId::from_parts(1_700_000_000_000, [2; 10])?,
+            source: source.clone(),
+            directory: scratch.0.join("index"),
+        });
+        let mut engine = Engine::open(&shared)?;
+
+        // The state before the rule: the file was indexed, then a rule
+        // excluded it while it stayed on disk.
+        let outcome =
+            engine
+                .store
+                .index_path(&engine.source, &mut engine.resolver, "scratch.txt")?;
+        assert!(matches!(outcome, PathOutcome::Indexed(_)));
+        assert_eq!(file_count(&engine.store, "scratch.txt")?, 1);
+
+        std::fs::write(source.join(".gitignore"), "scratch.txt\n")?;
+        assert!(engine.ignores.ignored(&engine.source, "scratch.txt"));
+
+        engine.commit(&DirtyPath {
+            path: "scratch.txt".to_owned(),
+            change: Change::Removed,
+            serial: 1,
+        });
+
+        assert_eq!(
+            file_count(&engine.store, "scratch.txt")?,
+            0,
+            "an ignored file is forgotten, not re-indexed"
+        );
+        assert!(engine.failed.is_empty());
+        Ok(())
+    }
+}

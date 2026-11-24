@@ -85,6 +85,22 @@ pub(crate) struct Shared {
 const IDLE_READERS: usize = 2;
 
 impl Shared {
+    /// Build the shared state and return its writer channel; [`Root::start`]
+    /// spawns the writer on it.
+    pub(crate) fn new(spec: RootSpec) -> (Arc<Self>, mpsc::Receiver<Msg>) {
+        let (sender, receiver) = mpsc::channel();
+        let shared = Arc::new(Shared {
+            spec,
+            source: OnceLock::new(),
+            dirty: Mutex::new(DirtySet::default()),
+            progress: Mutex::new(Progress::default()),
+            stopping: AtomicBool::new(false),
+            readers: Mutex::new(ReaderPool::default()),
+            sender,
+        });
+        (shared, receiver)
+    }
+
     pub fn db(&self) -> PathBuf {
         self.spec.directory.join("atlas.db")
     }
@@ -186,16 +202,7 @@ pub struct Root {
 impl Root {
     /// Start the writer thread. No disk work happens on the caller's thread.
     pub fn start(spec: RootSpec) -> Result<Arc<Self>> {
-        let (sender, receiver) = mpsc::channel();
-        let shared = Arc::new(Shared {
-            spec,
-            source: OnceLock::new(),
-            dirty: Mutex::new(DirtySet::default()),
-            progress: Mutex::new(Progress::default()),
-            stopping: AtomicBool::new(false),
-            readers: Mutex::new(ReaderPool::default()),
-            sender,
-        });
+        let (shared, receiver) = Shared::new(spec);
         let writer = std::thread::Builder::new()
             .name("atlas-writer".into())
             .spawn({
