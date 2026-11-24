@@ -105,6 +105,7 @@ fn render_human(value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
         | HumanKind::RemoteWatch
         | HumanKind::RemoteSend => render_remote(kind, value, out),
         HumanKind::Resume
+        | HumanKind::Handoff
         | HumanKind::SessionContext
         | HumanKind::Version
         | HumanKind::Help
@@ -164,6 +165,9 @@ fn render_remote(kind: HumanKind, value: &AnyOutput, out: &mut impl Write) -> io
 fn render_meta(kind: HumanKind, value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
     match (kind, value) {
         (HumanKind::Resume, AnyOutput::Resume(value)) => continuity::resume(&value.value, out),
+        (HumanKind::Handoff, AnyOutput::HandoffExport(value)) => {
+            continuity::handoff(&value.value, out)
+        }
         (HumanKind::SessionContext, AnyOutput::SessionContext(value)) => {
             write!(out, "{}", value.value.assembled_model_input)
         }

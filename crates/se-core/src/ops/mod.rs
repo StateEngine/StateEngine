@@ -22,7 +22,9 @@ pub use remote::{
     RemoteSendCall, RemoteSendOutput, RemoteSendPreparation, RemoteWatchCall, RemoteWatchOutput,
 };
 pub mod continuity;
-pub use continuity::{Resume, ResumeOutput, SessionContextOutput, SessionContextRequest};
+pub use continuity::{
+    HandoffExport, HandoffOutput, Resume, ResumeOutput, SessionContextOutput, SessionContextRequest,
+};
 pub mod adoption;
 pub mod agent;
 pub mod agent_launch;
@@ -262,6 +264,7 @@ ops! {
     AgentCreate => AgentCreate, AgentReceipt, ("agent.create",leaf(&["agent","add"]),tool("stateengine_agent_create","Create an agent","Save an agent/profile without launching. Requires your current create grant."),Either,false,Never,Write,Project,HostForWrites,"se.agent-receipt",AgentReceipt,&["E3","J2","J4"]);
     AgentRename => AgentRename, AgentReceipt, ("agent.rename",leaf(&["agent","rename"]),no_mcp("owner controls identity labels"),Owner,false,Never,Write,Project,HostForWrites,"se.agent-receipt",AgentReceipt,&["J2","J3","J4"]);
     Resume => Resume, ResumeOutput, ("continuity.resume",leaf(&["resume"]),tool("stateengine_resume","Restore your context","Restore your context; omitted detail names full reads. Does not acknowledge mail."),Either,false,Never,Read,Project,None,"se.resume",Resume,&["J3","J4"]);
+    HandoffExport => HandoffExport, HandoffOutput, ("handoff.export",leaf(&["handoff","export"]),tool("stateengine_handoff_export","Export context handoff","Export a bounded, model-agnostic context handoff from committed turns, working state and active decisions."),Either,false,Never,Read,Project,None,"se.handoff",Handoff,&["J3","J4"]);
     SessionContext => SessionContextRequest, SessionContextOutput, ("session.context",CliExposure::Leaf{path:&["session","context"],hidden:true,select:Selector::Always},no_mcp("Harness/SE Code context uses the verified bound session; model tools use stateengine_resume."),Session,false,Never,Read,Session,None,"secode.session-context",SessionContext,&["J2","J3"]);
     AgentList => AgentList, AgentPage, ("agent.list",leaf(&["agent","list"]),no_mcp("Owner overview; bound agents use status for their own saved identity."),Owner,false,Never,Read,Project,None,"se.agent-page",AgentPage,&["J2","J3"]);
     AgentLaunch => AgentLaunch, LaunchReply, ("agent.launch",leaf(&["launch"]),tool("stateengine_agent_launch","Launch an agent","Start self or your controlled child fresh with StateEngine context; resume:true reopens the latest conversation, resume:session-ID selects one. Same-key retry for pending; force consents to stop existing jobs."),Either,false,Never,Custody,Project,HostAutoStart,"se.launch",Launch,&["J2","J3"]);

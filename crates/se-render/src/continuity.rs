@@ -1,6 +1,13 @@
-use se_core::ops::continuity::ResumeOutput;
+use se_core::ops::continuity::{HandoffOutput, ResumeOutput};
 use se_types::Read;
 use std::io::{self, Write};
+pub fn handoff(value: &HandoffOutput, out: &mut impl Write) -> io::Result<()> {
+    write!(out, "{}", value.text)?;
+    if !value.text.ends_with('\n') {
+        writeln!(out)?;
+    }
+    Ok(())
+}
 pub fn resume(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
     resume_at(value, None, out)
 }

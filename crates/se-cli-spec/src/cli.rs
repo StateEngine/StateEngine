@@ -489,6 +489,20 @@ fn input_command_ops(name: &str, c: Command) -> Command {
                 value("preview")
                     .help("Owner: inspect this saved agent without binding or acknowledging it"),
             ),
+        "handoff.export" => c
+            .arg(value("from").help(
+                "Agent name or ID to export (required for owner; bound agents default to self)",
+            ))
+            .arg(
+                value("budget")
+                    .default_value("8192")
+                    .help("Maximum UTF-8 bytes in the handoff text (256..16384)"),
+            )
+            .arg(
+                value("since")
+                    .value_parser(clap::builder::StringValueParser::new())
+                    .help("An opaque continuity cursor for incremental export"),
+            ),
         "session.context" => c
             .arg(value("since").help("An opaque cursor from context for this same agent"))
             .arg(

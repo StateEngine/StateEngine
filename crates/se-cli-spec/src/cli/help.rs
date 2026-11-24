@@ -15,6 +15,7 @@ pub(super) fn group(name: &str) -> Option<&'static str> {
         "atlas" => "Find code and inspect references, impact, changes and file outlines",
         "config" => "Read or change user configuration and saved agent settings",
         "hook" => "Receive provider lifecycle events",
+        "handoff" => "Export bounded cross-model context handoffs",
         "session" => "Read the current agent session",
         _ => return None,
     })
@@ -68,6 +69,9 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
         "agent.rename" => "Rename a saved agent's display name",
         "continuity.resume" => {
             "Read the current session's saved context; owners use --preview AGENT"
+        }
+        "handoff.export" => {
+            "Export a bounded, model-agnostic context handoff from committed history"
         }
         "agent.list" => "List the saved agents in this project",
         "agent.launch" => {

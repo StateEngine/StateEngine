@@ -244,7 +244,7 @@ fn decode_registered(
         }
         object.insert("message_id".into(), id);
     }
-    if meta.name == "continuity.resume" {
+    if matches!(meta.name, "continuity.resume" | "handoff.export") {
         super::continuity::validate_resume_since(&arguments)?;
     }
     let input_schema = input_schema(meta.name).ok_or_else(|| internal(meta.name))?;
