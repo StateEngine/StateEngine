@@ -5,11 +5,18 @@ pub(super) struct FileResult {
     pub counts: ImportCounts,
     pub resume: Vec<ImportResume>,
 }
-#[expect(
-    clippy::cognitive_complexity,
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+enum OpenedSource {
+    Ready(Box<source::SourceFile>),
+    Finished(Box<FileResult>),
+}
+
+struct ScanState {
+    counts: ImportCounts,
+    want: Expected,
+    reason: Option<String>,
+    resume: Vec<ImportResume>,
+}
+
 pub(super) async fn file(
     context: &ExecutionContext,
     cx: NodeContext,
@@ -31,55 +38,16 @@ pub(super) async fn file(
     }
     let path = NativePath::from_local(file.path.clone())?;
     let key = source::SourceFile::source_key(&path)?;
-    let readcx = cx.clone();
-    let readkey = key.clone();
-    let family = file.family;
-    let progress = job(context, deadline, move |context| {
-        state::progress(context, &readcx, family, &readkey)
-    })
-    .await?;
-    let checkpoint = progress.checkpoint;
-    let open = checkpoint.clone();
-    let source_path = file.path.clone();
-    let bound = deadline.clone();
-    let ledger = matches!(file.kind, NodeKind::Ledger);
-    let anchor = file.anchor.clone();
-    let opened = job(context, deadline, move |_| {
-        if ledger {
-            chain::validate(&source_path, &bound)?;
-        }
-        let mut source = source::SourceFile::open(source_path, open.as_ref(), &bound)?;
-        if let (Some(anchor), Read::Present { value }) = (&anchor, &mut source) {
-            value.verify_anchor(anchor, &bound)?;
-        }
-        Ok(source)
-    })
-    .await;
-    let mut source = match opened {
-        Ok(Read::Present { value }) => value,
-        Ok(Read::Absent { checked }) => {
-            return Ok(FileResult {
-                receipt: receipt(
-                    &file,
-                    "absent",
-                    &progress.counts,
-                    Some(checked),
-                    progress.deferred,
-                )?,
-                counts: progress.counts,
-                resume: Vec::new(),
-            });
-        }
-        Ok(Read::Unreadable { reason, .. }) => {
-            return failed(context, &cx, &file, &key, reason, deadline).await;
-        }
-        Ok(Read::Unknown { what }) => {
-            return failed(context, &cx, &file, &key, what, deadline).await;
-        }
-        Err(error) => {
-            deadline.remaining()?;
-            return failed(context, &cx, &file, &key, error.to_string(), deadline).await;
-        }
+    let progress = read_progress(context, &cx, file.family, &key, deadline).await?;
+    let want = progress
+        .checkpoint
+        .as_ref()
+        .map(|p| p.expected)
+        .unwrap_or(Expected::Absent);
+    let counts = progress.counts.clone();
+    let source = match open_source(context, &cx, &file, &key, progress, deadline).await? {
+        OpenedSource::Ready(source) => *source,
+        OpenedSource::Finished(result) => return Ok(*result),
     };
     if matches!(file.kind, NodeKind::Profiles) && !matches!(cx.owner_profiles, Read::Present { .. })
     {
@@ -95,18 +63,119 @@ pub(super) async fn file(
             resume: Vec::new(),
         });
     }
-    let mut counts = progress.counts;
-    let mut want = checkpoint.map(|p| p.expected).unwrap_or(Expected::Absent);
-    let mut reason = None;
-    let mut deferred;
-    let mut resume = Vec::new();
+    let mut state = ScanState {
+        counts,
+        want,
+        reason: None,
+        resume: Vec::new(),
+    };
+    if let Some(failure) =
+        scan_forward(context, &cx, &file, &key, source, &mut state, deadline).await?
+    {
+        return Ok(failure);
+    }
+    let progress = read_progress(context, &cx, file.family, &key, deadline).await?;
+    let mut deferred = progress.deferred;
+    if deferred > 0 {
+        let checkpoint = progress.checkpoint.ok_or_else(|| {
+            scope::unreadable("staged source", "its durable checkpoint is absent")
+        })?;
+        replay_deferred(context, &cx, &file, &key, &checkpoint, &mut state, deadline).await?;
+        deferred = read_progress(context, &cx, file.family, &key, deadline)
+            .await?
+            .deferred;
+    }
+    let reason = finalize_reason(&state.counts, deferred, state.reason);
+    Ok(FileResult {
+        receipt: receipt(&file, "present", &state.counts, reason, deferred)?,
+        counts: state.counts,
+        resume: state.resume,
+    })
+}
+
+async fn read_progress(
+    context: &ExecutionContext,
+    cx: &NodeContext,
+    family: ImportFamily,
+    key: &[u8],
+    deadline: &Deadline,
+) -> Result<state::Progress> {
+    let readcx = cx.clone();
+    let readkey = key.to_vec();
+    job(context, deadline, move |context| {
+        state::progress(context, &readcx, family, &readkey)
+    })
+    .await
+}
+
+async fn open_source(
+    context: &ExecutionContext,
+    cx: &NodeContext,
+    file: &plan::File,
+    key: &[u8],
+    progress: state::Progress,
+    deadline: &Deadline,
+) -> Result<OpenedSource> {
+    let open = progress.checkpoint.clone();
+    let source_path = file.path.clone();
+    let bound = deadline.clone();
+    let ledger = matches!(file.kind, NodeKind::Ledger);
+    let anchor = file.anchor.clone();
+    let opened = job(context, deadline, move |_| {
+        if ledger {
+            chain::validate(&source_path, &bound)?;
+        }
+        let mut source = source::SourceFile::open(source_path, open.as_ref(), &bound)?;
+        if let (Some(anchor), Read::Present { value }) = (&anchor, &mut source) {
+            value.verify_anchor(anchor, &bound)?;
+        }
+        Ok(source)
+    })
+    .await;
+    match opened {
+        Ok(Read::Present { value }) => Ok(OpenedSource::Ready(Box::new(value))),
+        Ok(Read::Absent { checked }) => Ok(OpenedSource::Finished(Box::new(FileResult {
+            receipt: receipt(
+                file,
+                "absent",
+                &progress.counts,
+                Some(checked),
+                progress.deferred,
+            )?,
+            counts: progress.counts,
+            resume: Vec::new(),
+        }))),
+        Ok(Read::Unreadable { reason, .. }) => Ok(OpenedSource::Finished(Box::new(
+            failed(context, cx, file, key, reason, deadline).await?,
+        ))),
+        Ok(Read::Unknown { what }) => Ok(OpenedSource::Finished(Box::new(
+            failed(context, cx, file, key, what, deadline).await?,
+        ))),
+        Err(error) => {
+            deadline.remaining()?;
+            Ok(OpenedSource::Finished(Box::new(
+                failed(context, cx, file, key, error.to_string(), deadline).await?,
+            )))
+        }
+    }
+}
+
+async fn scan_forward(
+    context: &ExecutionContext,
+    cx: &NodeContext,
+    file: &plan::File,
+    key: &[u8],
+    mut source: source::SourceFile,
+    state: &mut ScanState,
+    deadline: &Deadline,
+) -> Result<Option<FileResult>> {
     loop {
         if file
             .anchor
             .as_ref()
             .is_some_and(|anchor| source.evidence().length >= anchor.length)
         {
-            break;
+            return Ok(None);
         }
         let bound = deadline.clone();
         let next = job(context, deadline, move |_| {
@@ -119,30 +188,29 @@ pub(super) async fn file(
             Ok(value) => value,
             Err(error) => {
                 deadline.remaining()?;
-                return failed(context, &cx, &file, &key, error.to_string(), deadline).await;
+                return Ok(Some(
+                    failed(context, cx, file, key, error.to_string(), deadline).await?,
+                ));
             }
         };
         source = next.0;
         let Some(row) = next.1 else {
-            break;
+            return Ok(None);
         };
         let mut rowcx = cx.clone();
         rowcx.source = row.evidence.clone();
-        let rowkey = key.clone();
-        let rowcounts = counts.clone();
-        let kind = file.kind;
-        let (planned, row, rowcx, state) = job(context, deadline, move |context| {
-            let state = rows::RowState {
-                kind,
-                family,
-                key: rowkey,
-                counts: rowcounts,
-                want,
-                replay: None,
-            };
-            let plan = rows::plan(context, &rowcx, &row, state.clone())?;
+        let row_state = rows::RowState {
+            kind: file.kind,
+            family: file.family,
+            key: key.to_vec(),
+            counts: state.counts.clone(),
+            want: state.want,
+            replay: None,
+        };
+        let (planned, row, rowcx, row_state) = job(context, deadline, move |context| {
+            let plan = rows::plan(context, &rowcx, &row, row_state.clone())?;
             match plan {
-                rows::RowPlan::Commit(planned) => Ok((planned, row, rowcx, state)),
+                rows::RowPlan::Commit(planned) => Ok((planned, row, rowcx, row_state)),
                 _ => Err(scope::unreadable(
                     "import row",
                     "an advancing row was skipped",
@@ -150,110 +218,96 @@ pub(super) async fn file(
             }
         })
         .await?;
-        let planned = commit::row(context, rowcx, row, state, planned, deadline).await?;
-        counts = planned.counts;
+        let planned = commit::row(context, rowcx, row, row_state, planned, deadline).await?;
+        state.counts = planned.counts;
         if planned.reason.is_some() {
-            reason = planned.reason;
+            state.reason = planned.reason;
         }
-        add_resume(&mut resume, planned.resume);
-        want = increment(want)?;
+        add_resume(&mut state.resume, planned.resume);
+        state.want = increment(state.want)?;
     }
-    let readcx = cx.clone();
-    let readkey = key.clone();
-    let progress = job(context, deadline, move |context| {
-        state::progress(context, &readcx, family, &readkey)
+}
+
+async fn replay_deferred(
+    context: &ExecutionContext,
+    cx: &NodeContext,
+    file: &plan::File,
+    key: &[u8],
+    checkpoint: &ImportCheckpoint,
+    state: &mut ScanState,
+    deadline: &Deadline,
+) -> Result<()> {
+    let path = file.path.clone();
+    let bound = deadline.clone();
+    let opened = job(context, deadline, move |_| {
+        source::SourceFile::open(path, None, &bound)
     })
     .await?;
-    deferred = progress.deferred;
-    if deferred > 0 {
-        let checkpoint = progress.checkpoint.ok_or_else(|| {
-            scope::unreadable("staged source", "its durable checkpoint is absent")
-        })?;
-        let path = file.path.clone();
+    let mut replay = batch::required(opened, "retained source for staged references")?;
+    loop {
         let bound = deadline.clone();
-        let opened = job(context, deadline, move |_| {
-            source::SourceFile::open(path, None, &bound)
+        let next = job(context, deadline, move |_| {
+            let row = replay.next(&bound)?;
+            replay.verify(&bound)?;
+            Ok((replay, row))
         })
         .await?;
-        let mut replay = batch::required(opened, "retained source for staged references")?;
-        loop {
-            let bound = deadline.clone();
-            let next = job(context, deadline, move |_| {
-                let row = replay.next(&bound)?;
-                replay.verify(&bound)?;
-                Ok((replay, row))
-            })
-            .await?;
-            replay = next.0;
-            let Some(row) = next.1 else {
-                break;
-            };
-            if row.next_row > checkpoint.row_offset {
-                break;
-            }
-            let mut rowcx = cx.clone();
-            rowcx.source = row.evidence.clone();
-            let rowkey = key.clone();
-            let rowcounts = counts.clone();
-            let kind = file.kind;
-            let end = checkpoint.clone();
-            let (planned, row, rowcx, state) = job(context, deadline, move |context| {
-                let state = rows::RowState {
-                    kind,
-                    family,
-                    key: rowkey,
-                    counts: rowcounts,
-                    want,
-                    replay: Some(end),
-                };
-                let plan = rows::plan(context, &rowcx, &row, state.clone())?;
-                Ok((plan, row, rowcx, state))
-            })
-            .await?;
-            let planned = match planned {
-                rows::RowPlan::Skipped => continue,
-                rows::RowPlan::Deferred(cause) => {
-                    reason = Some(cause);
-                    continue;
-                }
-                rows::RowPlan::Commit(planned) => planned,
-            };
-            {
-                let planned = commit::row(context, rowcx, row, state, planned, deadline).await?;
-                counts = planned.counts;
-                add_resume(&mut resume, planned.resume);
-                if planned.reason.is_some() {
-                    reason = planned.reason;
-                }
-                want = increment(want)?;
-            }
+        replay = next.0;
+        let Some(row) = next.1 else {
+            return Ok(());
+        };
+        if row.next_row > checkpoint.row_offset {
+            return Ok(());
         }
-        let readcx = cx.clone();
-        let readkey = key.clone();
-        deferred = job(context, deadline, move |context| {
-            state::progress(context, &readcx, family, &readkey)
+        let mut rowcx = cx.clone();
+        rowcx.source = row.evidence.clone();
+        let row_state = rows::RowState {
+            kind: file.kind,
+            family: file.family,
+            key: key.to_vec(),
+            counts: state.counts.clone(),
+            want: state.want,
+            replay: Some(checkpoint.clone()),
+        };
+        let (planned, row, rowcx, row_state) = job(context, deadline, move |context| {
+            let plan = rows::plan(context, &rowcx, &row, row_state.clone())?;
+            Ok((plan, row, rowcx, row_state))
         })
-        .await?
-        .deferred;
+        .await?;
+        let planned = match planned {
+            rows::RowPlan::Skipped => continue,
+            rows::RowPlan::Deferred(cause) => {
+                state.reason = Some(cause);
+                continue;
+            }
+            rows::RowPlan::Commit(planned) => planned,
+        };
+        let planned = commit::row(context, rowcx, row, row_state, planned, deadline).await?;
+        state.counts = planned.counts;
+        add_resume(&mut state.resume, planned.resume);
+        if planned.reason.is_some() {
+            state.reason = planned.reason;
+        }
+        state.want = increment(state.want)?;
     }
+}
+
+fn finalize_reason(counts: &ImportCounts, deferred: u64, reason: Option<String>) -> Option<String> {
     if deferred > 0 {
         let cause = reason.unwrap_or_else(|| "referenced objects are not yet available".into());
-        reason = Some(format!(
+        Some(format!(
             "{deferred} source rows remain deferred: {cause}; their exact original ranges and checkpoint are retained"
-        ));
+        ))
     } else if counts.unreadable > 0 && reason.is_none() {
-        reason = Some(format!(
+        Some(format!(
             "{} source omissions remain; history --kind import.unreadable retains their original ranges",
             counts.unreadable
-        ));
+        ))
     } else if counts.unreadable == 0 {
-        reason = None;
+        None
+    } else {
+        reason
     }
-    Ok(FileResult {
-        receipt: receipt(&file, "present", &counts, reason, deferred)?,
-        counts,
-        resume,
-    })
 }
 
 fn increment(want: Expected) -> Result<Expected> {
@@ -311,13 +365,7 @@ async fn failed(
     reason: String,
     deadline: &Deadline,
 ) -> Result<FileResult> {
-    let cx_read = cx.clone();
-    let key = key.to_vec();
-    let family = file.family;
-    let progress = job(context, deadline, move |context| {
-        state::progress(context, &cx_read, family, &key)
-    })
-    .await?;
+    let progress = read_progress(context, cx, file.family, key, deadline).await?;
     Ok(FileResult {
         receipt: receipt(
             file,

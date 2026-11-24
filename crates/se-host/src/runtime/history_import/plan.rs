@@ -39,10 +39,12 @@ fn named(path: PathBuf, family: ImportFamily, kind: NodeKind) -> File {
         anchor: None,
     }
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+struct Registration {
+    revision: u64,
+    value: serde_json::Value,
+    tombstone: bool,
+}
+
 pub(super) fn inspect(
     path: &Path,
     owner: &HumanId,
@@ -79,8 +81,50 @@ pub(super) fn inspect(
         Read::Unreadable { source, reason, .. } => return Err(io(&source, reason)),
         Read::Unknown { what } => return Err(io("Node project registration source", what)),
     };
-    let mut registrations =
-        std::collections::BTreeMap::<ProjectId, (u64, serde_json::Value, bool)>::new();
+    let registrations = read_registrations(&mut source, owner, selected, deadline)?;
+    source.verify(deadline)?;
+    let source_owner = super::ownership::check(
+        &state,
+        owner,
+        selected,
+        mappings,
+        registrations.values().map(|reg| &reg.value),
+        deadline,
+    )?;
+    let mut projects = Vec::new();
+    for (id, reg) in registrations {
+        if reg
+            .value
+            .get("repo_root")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+        {
+            return Err(io(
+                "Node project registry",
+                "registration lacks its source root",
+            ));
+        }
+        projects.push(Project {
+            id,
+            tombstone: reg.tombstone,
+        });
+    }
+    Ok(Plan {
+        root,
+        registry,
+        source: source.evidence(),
+        projects,
+        source_owner,
+    })
+}
+
+fn read_registrations(
+    source: &mut SourceFile,
+    owner: &HumanId,
+    selected: Option<&HumanId>,
+    deadline: &Deadline,
+) -> Result<std::collections::BTreeMap<ProjectId, Registration>> {
+    let mut registrations = std::collections::BTreeMap::<ProjectId, Registration>::new();
     while let Some(row) = source.next(deadline)? {
         let Some(value) = row.value else {
             // The registry file pass records this final unreadable range. Roots
@@ -94,58 +138,7 @@ pub(super) fn inspect(
                     .unwrap_or("undecodable registry row before later registrations"),
             ));
         };
-        let text = value
-            .get("project_id")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| io("Node project registry", "row has no exact project_id"))?;
-        let id = ProjectId::from_legacy(text)?;
-        let revision = value
-            .get("revision")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| io("Node project registry", "row has no revision"))?;
-        let previous = registrations.get(&id);
-        if revision != previous.map(|p| p.0 + 1).unwrap_or(1) {
-            return Err(io(
-                "Node project registry",
-                "out-of-sequence source registration; no invalid rows are discarded",
-            ));
-        }
-        match value.get("record_type").and_then(serde_json::Value::as_str) {
-            Some("project-registration") => {
-                let source_owner = value
-                    .get("owner_human_id")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| io("Node source owner", "registration lacks owner_human_id"))?;
-                let selected = selected.unwrap_or(owner);
-                if source_owner != selected.as_str() {
-                    return Err(io(
-                        "Node source owner correspondence",
-                        format!(
-                            "source project {id} names owner {source_owner}, importing owner {owner}; pass --source-owner {source_owner} explicitly and preserve a copy containing only that owner's projects"
-                        ),
-                    ));
-                }
-                registrations.insert(id, (revision, value, false));
-            }
-            Some("project-decommission") => {
-                let (_, prior, removed) = previous.ok_or_else(|| {
-                    io("Node project registry", "decommission has no registration")
-                })?;
-                if *removed {
-                    return Err(io(
-                        "Node project registry",
-                        "repeated decommission is not a new registration",
-                    ));
-                }
-                registrations.insert(id, (revision, prior.clone(), true));
-            }
-            _ => {
-                return Err(io(
-                    "Node project registry",
-                    "unsupported registration record type",
-                ));
-            }
-        }
+        apply_registration_row(&mut registrations, value, owner, selected)?;
         if registrations.len() > 512 {
             return Err(io(
                 "Node project registry",
@@ -153,36 +146,82 @@ pub(super) fn inspect(
             ));
         }
     }
-    source.verify(deadline)?;
-    let source_owner = super::ownership::check(
-        &state,
-        owner,
-        selected,
-        mappings,
-        registrations.values().map(|(_, value, _)| value),
-        deadline,
-    )?;
-    let mut projects = Vec::new();
-    for (id, (_, value, tombstone)) in registrations {
-        if value
-            .get("repo_root")
-            .and_then(serde_json::Value::as_str)
-            .is_none()
-        {
+    Ok(registrations)
+}
+
+fn apply_registration_row(
+    registrations: &mut std::collections::BTreeMap<ProjectId, Registration>,
+    value: serde_json::Value,
+    owner: &HumanId,
+    selected: Option<&HumanId>,
+) -> Result<()> {
+    let text = value
+        .get("project_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| io("Node project registry", "row has no exact project_id"))?;
+    let id = ProjectId::from_legacy(text)?;
+    let revision = value
+        .get("revision")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| io("Node project registry", "row has no revision"))?;
+    let previous = registrations.get(&id);
+    if revision != previous.map(|p| p.revision + 1).unwrap_or(1) {
+        return Err(io(
+            "Node project registry",
+            "out-of-sequence source registration; no invalid rows are discarded",
+        ));
+    }
+    match value.get("record_type").and_then(serde_json::Value::as_str) {
+        Some("project-registration") => {
+            let source_owner = value
+                .get("owner_human_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| io("Node source owner", "registration lacks owner_human_id"))?;
+            let selected = selected.unwrap_or(owner);
+            if source_owner != selected.as_str() {
+                return Err(io(
+                    "Node source owner correspondence",
+                    format!(
+                        "source project {id} names owner {source_owner}, importing owner {owner}; pass --source-owner {source_owner} explicitly and preserve a copy containing only that owner's projects"
+                    ),
+                ));
+            }
+            registrations.insert(
+                id,
+                Registration {
+                    revision,
+                    value,
+                    tombstone: false,
+                },
+            );
+        }
+        Some("project-decommission") => {
+            let prior = previous
+                .ok_or_else(|| io("Node project registry", "decommission has no registration"))?;
+            if prior.tombstone {
+                return Err(io(
+                    "Node project registry",
+                    "repeated decommission is not a new registration",
+                ));
+            }
+            let value = prior.value.clone();
+            registrations.insert(
+                id,
+                Registration {
+                    revision,
+                    value,
+                    tombstone: true,
+                },
+            );
+        }
+        _ => {
             return Err(io(
                 "Node project registry",
-                "registration lacks its source root",
+                "unsupported registration record type",
             ));
         }
-        projects.push(Project { id, tombstone });
     }
-    Ok(Plan {
-        root,
-        registry,
-        source: source.evidence(),
-        projects,
-        source_owner,
-    })
+    Ok(())
 }
 /// Enumerate one project's source paths at a time; history bytes are streamed
 /// later through native pins and never accumulated across the source registry.

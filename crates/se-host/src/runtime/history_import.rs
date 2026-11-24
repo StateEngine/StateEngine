@@ -120,10 +120,6 @@ async fn ensure(context: &ExecutionContext, cx: NodeContext, deadline: &Deadline
 }
 /// The owner operation's only entry. `Kernel::plan` already enforced the
 /// owner-only surface; repeat its native/store generation checks on every job.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) async fn execute(
     context: ExecutionContext,
     input: ImportNode,
@@ -169,24 +165,7 @@ pub(super) async fn execute(
     root.human_mappings = human_mappings.clone();
     root.human_names = human_names.clone();
     ensure(&context, root.clone(), deadline).await?;
-    let bindcx = root.clone();
-    let bind_input = input.clone();
-    let binding = job(&context, deadline, move |context| {
-        read::snapshot(context, &bindcx.admission, |read| {
-            se_core::ops::store_import::bind(
-                &kernel,
-                &bind_input,
-                bindcx.import,
-                bindcx.source.clone(),
-                &se_core::commit::Cx {
-                    read,
-                    admission: &bindcx.admission,
-                },
-            )
-        })
-    })
-    .await?;
-    commit::append(&context, binding, deadline).await?;
+    bind_import(&context, root.clone(), input.clone(), kernel, deadline).await?;
     let registry = plan::File {
         path: plan.registry,
         family: ImportFamily::Projects,
@@ -200,23 +179,14 @@ pub(super) async fn execute(
     let mut families = vec![registry.receipt];
     let mut resume = registry.resume;
     if !complete || families[0].state != "present" {
-        let finishcx = root.clone();
-        if let Some(batch) = job(&context, deadline, move |context| {
-            state::finish(context, &finishcx, counts, false)
-        })
-        .await?
-        {
-            commit::append(&context, batch, deadline).await?;
-        }
-        return Ok(ImportReceipt {
-            import_id: se_types::hex_lower(root_id.as_bytes()),
-            source: input.from_node,
-            complete: false,
-            originals_retained: true,
+        finish_run(&context, root, counts, false, deadline).await?;
+        return Ok(build_receipt(
+            root_id,
+            input.from_node,
+            false,
             families,
             resume,
-        }
-        .into());
+        ));
     }
     let source_root = plan.root.clone();
     for project in plan.projects {
@@ -240,14 +210,61 @@ pub(super) async fn execute(
         families.extend(result.families);
         resume.extend(result.resume);
     }
-    let finishcx = root.clone();
-    let batch = job(&context, deadline, move |context| {
-        state::finish(context, &finishcx, counts, complete)
+    finish_run(&context, root, counts, complete, deadline).await?;
+    dedup_resume(&mut resume);
+    Ok(build_receipt(
+        root_id,
+        input.from_node,
+        complete,
+        families,
+        resume,
+    ))
+}
+
+async fn bind_import(
+    context: &ExecutionContext,
+    root: NodeContext,
+    input: ImportNode,
+    kernel: se_core::dispatch::Kernel,
+    deadline: &Deadline,
+) -> Result<()> {
+    let binding = job(context, deadline, move |context| {
+        read::snapshot(context, &root.admission, |read| {
+            se_core::ops::store_import::bind(
+                &kernel,
+                &input,
+                root.import,
+                root.source.clone(),
+                &se_core::commit::Cx {
+                    read,
+                    admission: &root.admission,
+                },
+            )
+        })
     })
     .await?;
-    if let Some(batch) = batch {
-        commit::append(&context, batch, deadline).await?;
+    commit::append(context, binding, deadline).await?;
+    Ok(())
+}
+
+async fn finish_run(
+    context: &ExecutionContext,
+    root: NodeContext,
+    counts: ImportCounts,
+    complete: bool,
+    deadline: &Deadline,
+) -> Result<()> {
+    if let Some(batch) = job(context, deadline, move |context| {
+        state::finish(context, &root, counts, complete)
+    })
+    .await?
+    {
+        commit::append(context, batch, deadline).await?;
     }
+    Ok(())
+}
+
+fn dedup_resume(resume: &mut Vec<ImportResume>) {
     resume.sort_by(|a, b| {
         (
             &a.session,
@@ -271,13 +288,22 @@ pub(super) async fn execute(
             && a.native_reference == b.native_reference
             && a.state == b.state
     });
-    Ok(ImportReceipt {
+}
+
+fn build_receipt(
+    root_id: RecordId,
+    source: String,
+    complete: bool,
+    families: Vec<ImportFamilyReceipt>,
+    resume: Vec<ImportResume>,
+) -> AnyOutput {
+    ImportReceipt {
         import_id: se_types::hex_lower(root_id.as_bytes()),
-        source: input.from_node,
+        source,
         complete,
         originals_retained: true,
         families,
         resume,
     }
-    .into())
+    .into()
 }

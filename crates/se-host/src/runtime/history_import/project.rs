@@ -15,10 +15,6 @@ pub(super) struct Source<'a> {
     pub human_names: &'a human_plan::Names,
     pub registry: &'a SourceEvidence,
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) async fn execute(
     context: &ExecutionContext,
     mut admission: Admission,
@@ -62,38 +58,9 @@ pub(super) async fn execute(
     {
         commit::append(context, batch, deadline).await?;
     }
+    let results = run_project_files(context, &cx, &files, deadline).await?;
     let mut project_counts = ImportCounts::default();
     let mut project_complete = true;
-    let mut results = Vec::new();
-    for source in &files {
-        let mut sourcecx = cx.clone();
-        sourcecx.prerequisites_pending = results
-            .iter()
-            .any(|r: &file::FileResult| r.receipt.deferred > 0);
-        results.push(file::file(context, sourcecx, source.clone(), deadline).await?);
-    }
-    loop {
-        let before = results.iter().map(|r| r.receipt.deferred).sum::<u64>();
-        if before == 0 {
-            break;
-        }
-        for (index, source) in files.iter().enumerate() {
-            if results[index].receipt.deferred == 0 {
-                continue;
-            }
-            let mut sourcecx = cx.clone();
-            sourcecx.prerequisites_pending = files
-                .iter()
-                .zip(results.iter())
-                .any(|(f, r)| matches!(f.kind, NodeKind::Ledger) && r.receipt.deferred > 0);
-            let mut result = file::file(context, sourcecx, source.clone(), deadline).await?;
-            result.resume.append(&mut results[index].resume);
-            results[index] = result;
-        }
-        if results.iter().map(|r| r.receipt.deferred).sum::<u64>() >= before {
-            break;
-        }
-    }
     for result in results {
         project_complete &= matches!(result.receipt.state.as_str(), "present" | "absent")
             && result.receipt.unreadable == 0
@@ -123,19 +90,57 @@ pub(super) async fn execute(
         })
         .await?,
     );
-    let finishcx = cx.clone();
-    let finishcounts = project_counts.clone();
-    let batch = job(context, deadline, move |context| {
-        state::finish(context, &finishcx, finishcounts, project_complete)
-    })
+    finish_run(
+        context,
+        cx,
+        project_counts.clone(),
+        project_complete,
+        deadline,
+    )
     .await?;
-    if let Some(batch) = batch {
-        commit::append(context, batch, deadline).await?;
-    }
     Ok(ProjectResult {
         complete: project_complete,
         counts: project_counts,
         families,
         resume,
     })
+}
+
+async fn run_project_files(
+    context: &ExecutionContext,
+    cx: &NodeContext,
+    files: &[plan::File],
+    deadline: &Deadline,
+) -> Result<Vec<file::FileResult>> {
+    let mut results = Vec::new();
+    for source in files {
+        let mut sourcecx = cx.clone();
+        sourcecx.prerequisites_pending = results
+            .iter()
+            .any(|r: &file::FileResult| r.receipt.deferred > 0);
+        results.push(file::file(context, sourcecx, source.clone(), deadline).await?);
+    }
+    loop {
+        let before = results.iter().map(|r| r.receipt.deferred).sum::<u64>();
+        if before == 0 {
+            break;
+        }
+        for (index, source) in files.iter().enumerate() {
+            if results[index].receipt.deferred == 0 {
+                continue;
+            }
+            let mut sourcecx = cx.clone();
+            sourcecx.prerequisites_pending = files
+                .iter()
+                .zip(results.iter())
+                .any(|(f, r)| matches!(f.kind, NodeKind::Ledger) && r.receipt.deferred > 0);
+            let mut result = file::file(context, sourcecx, source.clone(), deadline).await?;
+            result.resume.append(&mut results[index].resume);
+            results[index] = result;
+        }
+        if results.iter().map(|r| r.receipt.deferred).sum::<u64>() >= before {
+            break;
+        }
+    }
+    Ok(results)
 }
