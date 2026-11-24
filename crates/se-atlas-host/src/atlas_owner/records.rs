@@ -12,7 +12,7 @@ const FEED_WRITE: Duration = Duration::from_secs(1);
 
 /// What one chunk did for a worktree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Fed {
+pub enum Fed {
     /// Every committed record is in the store, certified for this ticket.
     Current,
     /// A chunk was written and more remain.
@@ -22,7 +22,7 @@ pub(super) enum Fed {
     Waiting,
 }
 
-pub(super) fn chunk(host: &dyn AtlasHost, owner: &HumanId, root: &Root) -> Result<Fed> {
+pub fn chunk(host: &dyn AtlasHost, owner: &HumanId, root: &Root) -> Result<Fed> {
     let Some(ticket) = host.records().ticket()? else {
         return Ok(Fed::Waiting);
     };

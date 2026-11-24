@@ -1593,10 +1593,12 @@ dependencies = [
 name = "se-atlas-host"
 version = "0.0.1-alpha.1"
 dependencies = [
+ "rusqlite",
  "se-atlas",
  "se-atlas-service",
  "se-core",
  "se-mcp",
+ "se-proc",
  "se-store",
  "se-types",
  "serde_json",
