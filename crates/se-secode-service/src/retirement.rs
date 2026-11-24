@@ -5,7 +5,7 @@ use se_proc::{CheckpointKind, CheckpointSource, ProcessRuntime, StopObservation}
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 
-pub(super) use crate::harness::secode_process::{
+pub(crate) use se_harness::secode_process::{
     registration_fields as fields, service_registration as registration,
 };
 fn empty(profile: &std::path::Path) -> Result<bool> {
@@ -17,8 +17,8 @@ fn empty(profile: &std::path::Path) -> Result<bool> {
         .is_none();
     Ok(no_registration && no_ready)
 }
-impl LaunchCoordinator {
-    pub(super) async fn remember_secode_registration(
+impl<H: HostPort> Coordinator<'_, H> {
+    pub(crate) async fn remember_secode_registration(
         &self,
         service: &mut Service,
         authenticated: &readiness::Registration,
@@ -26,9 +26,8 @@ impl LaunchCoordinator {
     ) -> Result<()> {
         let profile = service.journal.profile.to_local()?;
         let bytes = self
-            .store
-            .pool
-            .run_owned(deadline, move || registration(&profile))
+            .0
+            .run_blocking(deadline, move || registration(&profile))
             .await?
             .ok_or_else(|| {
                 error(
@@ -49,32 +48,26 @@ impl LaunchCoordinator {
             ));
         }
         service.journal.registration = Some(bytes);
-        service.persist(self, deadline).await
+        service.persist(self.0, deadline).await
     }
     #[expect(
         clippy::too_many_lines,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
-    pub(super) async fn retire_secode_registration(
+    pub(crate) async fn retire_secode_registration(
         &self,
         service: &mut Service,
         deadline: &Deadline,
     ) -> Result<()> {
         let profile = service.journal.profile.to_local()?;
         let check = profile.clone();
-        if self
-            .store
-            .pool
-            .run_owned(deadline, move || empty(&check))
-            .await?
-        {
+        if self.0.run_blocking(deadline, move || empty(&check)).await? {
             return Ok(());
         }
         let check = profile.clone();
         let original = self
-            .store
-            .pool
-            .run_owned(deadline, move || registration(&check))
+            .0
+            .run_blocking(deadline, move || registration(&check))
             .await?
             .ok_or_else(|| {
                 error(
@@ -108,15 +101,14 @@ impl LaunchCoordinator {
         })?;
         let image = server.clone();
         let (server, images) = self
-            .store
-            .pool
-            .run_owned(deadline, move || {
+            .0
+            .run_blocking(deadline, move || {
                 let cli = image.with_file_name(if cfg!(windows) {
                     "secode.exe"
                 } else {
                     "secode"
                 });
-                let mut images = crate::harness::secode_process::Images::open(&cli)?;
+                let mut images = se_harness::secode_process::Images::open(&cli)?;
                 if images.server_sha256() != expected_image || images.server != image {
                     return Err(error(
                         "SE Code retirement image",
@@ -140,15 +132,14 @@ impl LaunchCoordinator {
             // response. An earlier native helper must first be proved closed.
             service.journal.retirement = None;
             service.retirement_output = None;
-            service.persist(self, deadline).await?;
+            service.persist(self.0, deadline).await?;
         }
-        let directory = self.options.home.join("secode-retirements");
+        let directory = self.0.home().join("secode-retirements");
         let bytes = original.clone();
         let credential_profile = profile.clone();
         let (expected, credential) = self
-            .store
-            .pool
-            .run_owned(deadline, move || {
+            .0
+            .run_blocking(deadline, move || {
                 let files = se_proc::NativeStateFiles::create(&directory)
                     .map_err(|e| error("SE Code retirement record", e))?;
                 let hash: [u8; 32] = Sha256::digest(&bytes).into();
@@ -236,12 +227,11 @@ impl LaunchCoordinator {
             .clone()
             .ok_or_else(|| error("SE Code retirement helper", "native reference absent"))?;
         loop {
-            let native = self.native.clone();
+            let native = self.0.native().clone();
             let process = owner.clone();
             let observed = self
-                .store
-                .pool
-                .run_owned(deadline, move || {
+                .0
+                .run_blocking(deadline, move || {
                     native
                         .witness_exit(&process)
                         .map_err(|e| error("SE Code retirement helper", e))
@@ -312,9 +302,8 @@ impl LaunchCoordinator {
             ));
         }
         if !self
-            .store
-            .pool
-            .run_owned(deadline, move || empty(&profile))
+            .0
+            .run_blocking(deadline, move || empty(&profile))
             .await?
         {
             return Err(error(
@@ -322,9 +311,8 @@ impl LaunchCoordinator {
                 "registration or ready custody remains after helper exit",
             ));
         }
-        self.store
-            .pool
-            .run_owned(deadline, move || {
+        self.0
+            .run_blocking(deadline, move || {
                 let mut images = images;
                 images.validate()
             })

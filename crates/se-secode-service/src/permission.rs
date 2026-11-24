@@ -4,13 +4,13 @@ use super::*;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-impl LaunchCoordinator {
-    pub(in crate::process) async fn deny_secode_approvals(
+impl<H: HostPort> Coordinator<'_, H> {
+    pub async fn deny_secode_approvals(
         &self,
-        work: &owned::Work,
+        work: &impl SecodeWork,
         deadline: &Deadline,
     ) -> Result<()> {
-        let Some(managed) = &work.secode else {
+        let Some(managed) = work.secode() else {
             return Ok(());
         };
         let qualified = managed.current()?;

@@ -163,25 +163,10 @@ fn service(f: &Fixture, session: se_types::SessionId, profile: &Path) -> Check<S
         identity: None,
         capability_repair: None,
     };
-    Ok(Service {
-        restart: None,
-        path: Journal::path(&f.options.state_directory, &f.project, &f.a),
+    Ok(Service::new(
         journal,
-        digest: None,
-        pending_save: None,
-        wake: Arc::new(events::Wake::default()),
-        bootstrap: None,
-        process: None,
-        retirement: None,
-        bootstrap_output: None,
-        service_output: None,
-        retirement_output: None,
-        control: None,
-        failure: None,
-        capability_failure: None,
-        live: Default::default(),
-        capability_check_at: None,
-    })
+        Journal::path(&f.options.state_directory, &f.project, &f.a),
+    ))
 }
 
 async fn wait_json(path: &Path, field: &str) -> Check<serde_json::Value> {

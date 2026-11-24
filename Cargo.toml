@@ -21,6 +21,7 @@ members = [
     "crates/se-custody",
     "crates/se-fsevents",
     "crates/se-secode-image",
+    "crates/se-secode-service",
     "crates/se-local-socket",
     "crates/se-channels",
     "crates/se-host",

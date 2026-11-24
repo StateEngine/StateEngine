@@ -1,13 +1,13 @@
 //! The public status reader authenticates health and registration together.
 //! Native service birth and pinned images fence both sides of this read.
 use super::*;
-use crate::harness::secode_process::{Images, ServiceIdentity, probe};
+use se_harness::secode_process::{Images, ServiceIdentity, probe};
 use se_proc::ProcessRuntime;
 use serde_json::Value;
 
-pub(super) struct Registration(Value);
+pub(crate) struct Registration(Value);
 impl Registration {
-    pub(super) fn require_bytes(&self, bytes: &[u8]) -> Result<()> {
+    pub(crate) fn require_bytes(&self, bytes: &[u8]) -> Result<()> {
         let fields = retirement::fields(bytes)?;
         for (field, status) in [
             ("slot", "serviceSlot"),
@@ -48,8 +48,8 @@ impl Registration {
         Ok(())
     }
 }
-impl LaunchCoordinator {
-    pub(super) async fn secode_readiness(
+impl<H: HostPort> Coordinator<'_, H> {
+    pub(crate) async fn secode_readiness(
         &self,
         service: &Service,
         images: Arc<std::sync::Mutex<Images>>,
@@ -61,11 +61,10 @@ impl LaunchCoordinator {
                 "original native owner absent",
             )
         })?;
-        let native = self.native.clone();
+        let native = self.0.native().clone();
         let before = owner.clone();
-        self.store
-            .pool
-            .run_owned(deadline, move || {
+        self.0
+            .run_blocking(deadline, move || {
                 let found = native
                     .observe(&before)
                     .map_err(|e| error("SE Code readiness birth", e))?;
@@ -80,9 +79,8 @@ impl LaunchCoordinator {
             .await?;
         let pinned = images.clone();
         let cli = self
-            .store
-            .pool
-            .run_owned(deadline, move || {
+            .0
+            .run_blocking(deadline, move || {
                 let mut images = pinned
                     .lock()
                     .map_err(|_| error("SE Code readiness images", "poisoned custody"))?;
@@ -122,10 +120,9 @@ impl LaunchCoordinator {
                 "public readiness does not match the retained service birth and endpoint",
             ));
         }
-        let native = self.native.clone();
-        self.store
-            .pool
-            .run_owned(deadline, move || {
+        let native = self.0.native().clone();
+        self.0
+            .run_blocking(deadline, move || {
                 images
                     .lock()
                     .map_err(|_| error("SE Code readiness images", "poisoned custody"))?

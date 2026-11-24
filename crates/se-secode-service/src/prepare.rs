@@ -1,7 +1,7 @@
 //! Private profile bootstrap and authenticated service readiness. Effects stay
 //! under the accepted client reservation and their original journal identities.
 use super::*;
-use crate::harness::secode_process::{
+use se_harness::secode_process::{
     Acceptance, Control, Images, ServiceIdentity, initial_input, vendor_session,
 };
 use se_proc::{CheckpointKind, ProcessRuntime, StopObservation};
@@ -12,8 +12,8 @@ struct SelectedImageInfo {
     server_sha256: se_types::Sha256,
 }
 
-impl LaunchCoordinator {
-    pub(super) async fn secode_server_invocation(
+impl<H: HostPort> Coordinator<'_, H> {
+    pub(crate) async fn secode_server_invocation(
         &self,
         images: &Arc<std::sync::Mutex<Images>>,
         context: &'static str,
@@ -28,10 +28,10 @@ impl LaunchCoordinator {
         })
         .await
     }
-    pub(in crate::process) async fn prepare_secode(
+    pub async fn prepare_secode(
         &self,
-        work: &mut owned::Work,
-        request: &crate::HarnessRequest,
+        work: &mut impl SecodeWork,
+        request: &se_harness::HarnessRequest,
         images: Arc<std::sync::Mutex<Images>>,
         deadline: &Deadline,
     ) -> Result<Prepared> {
@@ -46,7 +46,7 @@ impl LaunchCoordinator {
             self.replace_secode_session(&mut service, work, request, deadline)
                 .await?;
         }
-        service.persist(self, deadline).await?;
+        service.persist(self.0, deadline).await?;
         let profile = service.journal.profile.to_local()?;
         let checked_images = images.clone();
         let image_info = self
@@ -83,10 +83,10 @@ impl LaunchCoordinator {
             .await?;
         // The input lookup is authenticated and carries the service's full
         // incarnation even before the original input has been offered.
-        work.meta.model = Some(
+        work.set_model(Some(
             self.provision_secode(&mut service, request, &registration, deadline)
                 .await?,
-        );
+        ));
         let identity = self
             .confirm_secode_identity(&mut service, &control, &registration, deadline)
             .await?;
@@ -95,20 +95,20 @@ impl LaunchCoordinator {
             service: identity,
             live: service.live.clone(),
             profile: service.journal.profile.clone(),
-            process: native_record::instance(
+            process: self.0.native_instance(
                 &service_record.root,
                 service_record.argv_sha256,
-                &self.options.epoch.owner.fields().boot,
+                &self.0.epoch().owner.fields().boot,
             )?,
             session: service.journal.vendor_session.clone(),
             initial_input: service.journal.initial_input.clone(),
         };
-        work.secode = Some(prepared.clone());
+        *work.secode_mut() = Some(prepared.clone());
         Ok(prepared)
     }
     async fn acquire_secode_slot(
         &self,
-        request: &crate::HarnessRequest,
+        request: &se_harness::HarnessRequest,
         deadline: &Deadline,
     ) -> Result<Arc<tokio::sync::Mutex<Service>>> {
         let key = (
@@ -117,7 +117,7 @@ impl LaunchCoordinator {
         );
         let mut services = tokio::time::timeout_at(
             tokio::time::Instant::from_std(deadline.at()),
-            self.secode_services.0.lock(),
+            self.0.services().0.lock(),
         )
         .await
         .map_err(|_| {
@@ -140,15 +140,15 @@ impl LaunchCoordinator {
                 })
             })
             .count()
-            >= self.options.maximum_sessions as usize
+            >= self.0.maximum_sessions() as usize
         {
             return Err(error(
                 "SE Code service budget",
                 "stop a retained private service before creating another",
             ));
         }
-        let path = Journal::path(&self.options.home, &key.0, &key.1);
-        let profile = Journal::profile(&self.options.home, &key.0, &key.1);
+        let path = Journal::path(self.0.home(), &key.0, &key.1);
+        let profile = Journal::profile(self.0.home(), &key.0, &key.1);
         let read_path = path.clone();
         let custody_deadline = deadline.clone();
         if self
@@ -172,7 +172,7 @@ impl LaunchCoordinator {
     async fn ensure_secode_bootstrap(
         &self,
         service: &mut Service,
-        request: &crate::HarnessRequest,
+        request: &se_harness::HarnessRequest,
         profile: &std::path::Path,
         images: &Arc<std::sync::Mutex<Images>>,
         deadline: &Deadline,
@@ -186,7 +186,7 @@ impl LaunchCoordinator {
                 "--service".into(),
                 profile.as_os_str().to_owned(),
             ];
-            if let Some(seed) = &self.options.configuration.providers.secode.seed_profile {
+            if let Some(seed) = &self.0.configuration().providers.secode.seed_profile {
                 arguments.extend(["--from".into(), seed.into()]);
             }
             self.start_secode_auxiliary(
@@ -263,7 +263,7 @@ impl LaunchCoordinator {
     async fn ensure_secode_service_process(
         &self,
         service: &mut Service,
-        request: &crate::HarnessRequest,
+        request: &se_harness::HarnessRequest,
         profile: &std::path::Path,
         images: &Arc<std::sync::Mutex<Images>>,
         image_info: &SelectedImageInfo,
@@ -271,7 +271,7 @@ impl LaunchCoordinator {
     ) -> Result<se_proc::ProcessRecord> {
         if service.journal.service.is_none() {
             service.register_image(image_info.server_sha256, image_info.resume_supported);
-            service.persist(self, deadline).await?;
+            service.persist(self.0, deadline).await?;
             let arguments = vec![
                 "serve-service".into(),
                 "--service".into(),
@@ -358,7 +358,7 @@ impl LaunchCoordinator {
                     ));
                 }
                 service.journal.endpoint = Some(endpoint);
-                service.persist(self, deadline).await?;
+                service.persist(self.0, deadline).await?;
                 break control;
             }
             native::sleep_poll_interval(deadline).await?;
@@ -391,11 +391,11 @@ impl LaunchCoordinator {
         identity.validate()?;
         registration.require_same(&identity)?;
         record_secode_identity(service, identity.clone())?;
-        service.persist(self, deadline).await?;
+        service.persist(self.0, deadline).await?;
         Ok(identity)
     }
 }
-pub(super) fn record_secode_identity(
+pub(crate) fn record_secode_identity(
     service: &mut Service,
     identity: ServiceIdentity,
 ) -> Result<()> {
@@ -415,7 +415,7 @@ fn root_exited_zero(root: &se_proc::RootWitness) -> bool {
     )
 }
 fn new_secode_service(
-    request: &crate::HarnessRequest,
+    request: &se_harness::HarnessRequest,
     path: PathBuf,
     profile: PathBuf,
 ) -> Result<Service> {
@@ -463,7 +463,7 @@ fn new_secode_service(
         path,
         digest: None,
         pending_save: None,
-        wake: Arc::new(events::Wake::default()),
+        wake: Arc::new(Wake::default()),
         bootstrap: None,
         process: None,
         retirement: None,
@@ -477,7 +477,7 @@ fn new_secode_service(
         capability_check_at: None,
     })
 }
-pub(super) fn ready(profile: &std::path::Path) -> Result<Option<serde_json::Value>> {
+pub fn ready(profile: &std::path::Path) -> Result<Option<serde_json::Value>> {
     let _files = se_proc::NativeProfileFiles::open(profile)
         .map_err(|e| error("SE Code profile custody", e))?;
     // The vendor's public receipt is not a secret file. Its owner-only parent

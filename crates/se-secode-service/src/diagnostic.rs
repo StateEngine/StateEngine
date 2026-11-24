@@ -1,7 +1,6 @@
 //! Auxiliary streams are drained independently of readiness and retain bounded
 //! private diagnostics. A caller leaving never leaves an open, undrained pipe.
 use super::*;
-use crate::{ProviderStream, StreamRead};
 use serde::Serialize;
 use std::{io::Write, num::NonZeroU32, sync::Mutex};
 
@@ -26,9 +25,9 @@ struct Diagnostics {
     stdout: Stream,
     stderr: Stream,
 }
-pub(super) struct Output {
+pub(crate) struct Output {
     io: Arc<dyn ProviderIoPlatform>,
-    transport: crate::ProviderTransport,
+    transport: se_harness::ProviderTransport,
     diagnostics: Mutex<Diagnostics>,
     tasks: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     generation: se_types::Generation,
@@ -37,7 +36,7 @@ pub(super) struct Output {
 impl Output {
     pub fn new(
         io: Arc<dyn ProviderIoPlatform>,
-        transport: crate::ProviderTransport,
+        transport: se_harness::ProviderTransport,
         generation: se_types::Generation,
         path: PathBuf,
     ) -> Arc<Self> {
@@ -59,11 +58,11 @@ impl Output {
             }));
         }
     }
-    fn context(&self, timeout: std::time::Duration) -> crate::CallContext {
-        crate::CallContext {
+    fn context(&self, timeout: std::time::Duration) -> se_harness::CallContext {
+        se_harness::CallContext {
             generation: self.generation,
             timeout,
-            cancellation: Arc::new(crate::CancellationState { _private: () }),
+            cancellation: Arc::new(se_harness::CancellationState { _private: () }),
         }
     }
     pub async fn finish_input(&self, deadline: &Deadline) -> Result<()> {
@@ -215,7 +214,7 @@ impl Output {
         Ok(())
     }
     fn open_file(&self, deadline: &Deadline) -> Result<Option<se_proc::OwnedFile>> {
-        use crate::state_files::{Acquisition, AcquisitionRetry};
+        use crate::port::{Acquisition, AcquisitionRetry};
         let mut retry = AcquisitionRetry::new(deadline.at());
         loop {
             deadline.remaining()?;

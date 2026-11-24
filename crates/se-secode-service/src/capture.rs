@@ -1,10 +1,10 @@
 //! Canonical authenticated messages, not JSONL, feed the existing capture
 //! cursor and immutable native-turn deduplication. No transcript file is made.
 use super::*;
-use crate::harness::secode_process::{CanonicalMessage, CaptureRow};
 use se_core::commit::OpStep;
 use se_core::ops::hook;
 use se_core::store_error::store_error;
+use se_harness::secode_process::{CanonicalMessage, CaptureRow};
 use se_store::{EventBody, Snapshot};
 use se_types::Read;
 use serde_json::Value;
@@ -18,19 +18,19 @@ struct CaptureTarget<'a> {
     recovery_owner: Option<se_types::HumanId>,
 }
 
-impl LaunchCoordinator {
-    pub(in crate::process) async fn capture_secode(
+impl<H: HostPort> Coordinator<'_, H> {
+    pub async fn capture_secode(
         &self,
-        work: &mut owned::Work,
+        work: &mut impl SecodeWork,
         deadline: &Deadline,
     ) -> Result<()> {
-        if !work.meta.capture || !work.activated {
+        if !work.capture_enabled() || !work.activated() {
             return Ok(());
         }
         if self.observe_secode_service_loss(work, deadline).await? {
             return Err(self.secode_loss_error(work));
         }
-        let managed = work.secode.clone().ok_or_else(|| {
+        let managed = work.secode().cloned().ok_or_else(|| {
             error(
                 "SE Code capture",
                 "original authenticated service binding absent",
@@ -41,22 +41,23 @@ impl LaunchCoordinator {
         let qualified = managed.current()?;
         qualified.binding(&managed.session, deadline).await?;
         let source = work
-            .capture_source
+            .capture_source()
             .ok_or_else(|| error("SE Code capture", "original capture source absent"))?;
         let admission = se_store::Admission {
-            scope: se_store::Scope::Project(work.meta.project.id.clone()),
-            actor: se_store::Actor::Agent(work.meta.agent.id.clone()),
-            session: Some(work.meta.session.clone()),
-            generation: self.store.generation.get(),
+            scope: se_store::Scope::Project(work.project_id().clone()),
+            actor: se_store::Actor::Agent(work.agent_id().clone()),
+            session: Some(work.session().clone()),
+            generation: self.0.generation().get(),
         };
         let retired =
-            work.process_retired || work.native_already_reconciled || work.session_retired;
+            work.process_retired() || work.native_already_reconciled() || work.session_retired();
+        let session = work.session().clone();
         let target = CaptureTarget {
             admission: &admission,
             source,
-            session: &work.meta.session,
+            session: &session,
             managed: &managed,
-            recovery_owner: retired.then(|| work.meta.owner.clone()),
+            recovery_owner: retired.then(|| work.owner().clone()),
         };
         let mut cursor = None;
         let mut cursors = std::collections::BTreeSet::new();
@@ -104,13 +105,14 @@ impl LaunchCoordinator {
                     .commit_secode_message(&target, offset, message, deadline)
                     .await?
                 {
-                    work.last_capture = Some(event);
+                    work.set_last_capture(Some(event));
                 }
                 offset = end;
             }
             let Some(next) = next_page_cursor(&page, &mut cursors)? else {
                 qualified.binding(&managed.session, deadline).await?;
-                self.verify_captured_end(admission.clone(), source, offset, deadline)
+                self.0
+                    .verify_captured_end(admission.clone(), source, offset, deadline)
                     .await?;
                 return Ok(());
             };
@@ -138,89 +140,89 @@ impl LaunchCoordinator {
         let expected = target.managed.clone();
         let recovery_owner = target.recovery_owner.clone();
         let source = target.source;
-        super::super::mail::commit::step(
-            &self.store,
-            target.admission.clone(),
-            deadline,
-            move |_, cx| {
-                let source_row = se_core::scope::require_present(
-                    cx.read
-                        .capture_source(source)
-                        .map_err(|e| store_error(&e))?,
-                    "SE Code capture source",
-                    "Preserve the original source and cursor.",
-                )?;
-                let original = source_row
-                    .original
-                    .as_deref()
-                    .unwrap_or(&source_row.current);
-                let (incarnation, saved) = verify_secode_capture_source(
-                    &original.body,
-                    &source_row.current.body,
-                    &session,
-                    &expected,
-                )?;
-                // Prefixes are reread to verify immutable native items.
-                // Hook replay deduplication preserves the original turn.
-                if end <= saved {
-                    let prior = se_core::scope::require_present(
+        self.0
+            .commit_step(
+                target.admission.clone(),
+                deadline,
+                move |_, cx| {
+                    let source_row = se_core::scope::require_present(
                         cx.read
-                            .native_turn(session, se_store::Provider::SeCode, &vendor)
+                            .capture_source(source)
                             .map_err(|e| store_error(&e))?,
-                        "SE Code captured prefix",
-                        "Restore the original immutable native item.",
+                        "SE Code capture source",
+                        "Preserve the original source and cursor.",
                     )?;
-                    verify_secode_captured_prefix(&prior.body, role, text.as_str(), digest)?;
-                    return Ok(OpStep::Complete(None));
-                }
-                if saved != offset {
-                    return Err(error(
-                        "SE Code capture cursor",
-                        "history no longer aligns with the original canonical prefix",
-                    ));
-                }
-                let facts = allocate_capture_facts()?;
-                let input = hook::CaptureRequest {
-                    recovery_owner,
-                    source,
-                    expected: source_row.revision,
-                    conversation,
-                    provider: se_store::Provider::SeCode,
-                    vendor_turn: vendor,
-                    role,
-                    text,
-                    evidence: se_store::SourceEvidence {
-                        path: None,
-                        incarnation,
-                        offset,
-                        length,
-                        sha256: Some(digest),
-                    },
-                    new_offset: end,
-                    metadata: Vec::new(),
-                };
-                match hook::plan(input, facts, cx)? {
-                    OpStep::Complete(_) => Ok(OpStep::Complete(None)),
-                    OpStep::Commit { batch, then } => Ok(OpStep::Commit { batch, then }),
-                    OpStep::Custody(never) => match never {},
-                }
-            },
-            |kernel, cx, then, receipt| {
-                let output = kernel.committed(then, receipt, cx)?;
-                let se_core::ops::AnyOutput::HookClaude(output) = output else {
-                    return Err(error("SE Code capture commit", "unexpected output family"));
-                };
-                match output.value.captured {
-                    Read::Present { value } => Ok(Some(value)),
-                    Read::Absent { .. } => Ok(None),
-                    Read::Unknown { what } => Err(error("SE Code capture readback", what)),
-                    Read::Unreadable { reason, .. } => {
-                        Err(error("SE Code capture readback", reason))
+                    let original = source_row
+                        .original
+                        .as_deref()
+                        .unwrap_or(&source_row.current);
+                    let (incarnation, saved) = verify_secode_capture_source(
+                        &original.body,
+                        &source_row.current.body,
+                        &session,
+                        &expected,
+                    )?;
+                    // Prefixes are reread to verify immutable native items.
+                    // Hook replay deduplication preserves the original turn.
+                    if end <= saved {
+                        let prior = se_core::scope::require_present(
+                            cx.read
+                                .native_turn(session, se_store::Provider::SeCode, &vendor)
+                                .map_err(|e| store_error(&e))?,
+                            "SE Code captured prefix",
+                            "Restore the original immutable native item.",
+                        )?;
+                        verify_secode_captured_prefix(&prior.body, role, text.as_str(), digest)?;
+                        return Ok(OpStep::Complete(None));
                     }
-                }
-            },
-        )
-        .await
+                    if saved != offset {
+                        return Err(error(
+                            "SE Code capture cursor",
+                            "history no longer aligns with the original canonical prefix",
+                        ));
+                    }
+                    let facts = allocate_capture_facts()?;
+                    let input = hook::CaptureRequest {
+                        recovery_owner,
+                        source,
+                        expected: source_row.revision,
+                        conversation,
+                        provider: se_store::Provider::SeCode,
+                        vendor_turn: vendor,
+                        role,
+                        text,
+                        evidence: se_store::SourceEvidence {
+                            path: None,
+                            incarnation,
+                            offset,
+                            length,
+                            sha256: Some(digest),
+                        },
+                        new_offset: end,
+                        metadata: Vec::new(),
+                    };
+                    match hook::plan(input, facts, cx)? {
+                        OpStep::Complete(_) => Ok(OpStep::Complete(None)),
+                        OpStep::Commit { batch, then } => Ok(OpStep::Commit { batch, then }),
+                        OpStep::Custody(never) => match never {},
+                    }
+                },
+                |kernel, cx, then, receipt| {
+                    let output = kernel.committed(then, receipt, cx)?;
+                    let se_core::ops::AnyOutput::HookClaude(output) = output else {
+                        return Err(error("SE Code capture commit", "unexpected output family"));
+                    };
+                    match output.value.captured {
+                        Read::Present { value } => Ok(Some(value)),
+                        Read::Absent { .. } => Ok(None),
+                        Read::Unknown { what } => Err(error("SE Code capture readback", what)),
+                        Read::Unreadable { reason, .. } => {
+                            Err(error("SE Code capture readback", reason))
+                        }
+                    }
+                },
+            )
+            .await
     }
 }
 
@@ -291,8 +293,8 @@ fn verify_secode_captured_prefix(
 
 fn allocate_capture_facts() -> Result<hook::CaptureFacts> {
     use se_store::RecordIdentity;
-    let first = crate::runtime::start::allocate_facts()?;
-    let second = crate::runtime::start::allocate_facts()?;
+    let first = port::allocate_facts()?;
+    let second = port::allocate_facts()?;
     let mut entropy = [0; 10];
     se_proc::fill_entropy(&mut entropy).map_err(|e| error("SE Code capture identity", e))?;
     Ok(hook::CaptureFacts {

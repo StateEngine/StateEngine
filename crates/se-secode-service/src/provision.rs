@@ -1,8 +1,8 @@
 //! Session and capability provisioning are authenticated, original-identity
 //! operations. A disconnected write is reconciled by reading that same object.
 use super::*;
-use crate::harness::secode_process::{Control, sandbox};
 use reqwest::Method;
+use se_harness::secode_process::{Control, sandbox};
 use se_proc::{NetworkPolicy, WritePolicy};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -14,11 +14,11 @@ struct BuiltPolicy {
     protect_git: bool,
 }
 
-impl LaunchCoordinator {
-    pub(super) async fn configure_secode(
+impl<H: HostPort> Coordinator<'_, H> {
+    pub(crate) async fn configure_secode(
         &self,
         service: &mut Service,
-        request: &crate::HarnessRequest,
+        request: &se_harness::HarnessRequest,
         deadline: &Deadline,
     ) -> Result<()> {
         let built = self.build_secode_policy(service, request)?;
@@ -33,7 +33,7 @@ impl LaunchCoordinator {
     fn build_secode_policy(
         &self,
         service: &Service,
-        request: &crate::HarnessRequest,
+        request: &se_harness::HarnessRequest,
     ) -> Result<BuiltPolicy> {
         let secret = |secret: &se_types::Secret| -> Result<String> {
             std::str::from_utf8(secret.expose())
@@ -60,8 +60,8 @@ impl LaunchCoordinator {
             permission["websearch"] = json!("deny");
         }
         let git_write = self
-            .options
-            .configuration
+            .0
+            .configuration()
             .profiles
             .get(&request.profile.named_profile)
             .is_some_and(|profile| profile.git_write);
@@ -71,7 +71,7 @@ impl LaunchCoordinator {
             "sandbox": {"enabled":!matches!(request.policy.writes, se_proc::WritePolicy::NamedUnrestricted { .. }), "network":request.policy.network == se_proc::NetworkPolicy::Allow, "writable_roots":roots},
             "permission":permission,
             "mcp":{"stateengine":{
-                "type":"remote", "url":format!("http://127.0.0.1:{}/mcp", self.options.http_port),
+                "type":"remote", "url":format!("http://127.0.0.1:{}/mcp", self.0.http_port()),
                 "headers":{"Authorization":format!("Bearer {}",secret(&request.mcp_bearer)?),"X-StateEngine-Session-Proof":secret(&request.launch_credential)?},
                 // The bound document reader requires identity coordinates for
                 // both transports; remote MCP does not inherit this map.
@@ -109,7 +109,7 @@ impl LaunchCoordinator {
             ));
         }
         service.journal.policy_sha256 = Some(se_types::Sha256::from_bytes(hash));
-        service.persist(self, deadline).await?;
+        service.persist(self.0, deadline).await?;
         let previous = service
             .journal
             .previous_policy_sha256
@@ -162,15 +162,18 @@ impl LaunchCoordinator {
         })
         .await?;
         service.journal.previous_policy_sha256 = None;
-        service.persist(self, deadline).await
+        service.persist(self.0, deadline).await
     }
     async fn verify_secode_git_sandbox(
         &self,
         service: &Service,
-        request: &crate::HarnessRequest,
+        request: &se_harness::HarnessRequest,
         deadline: &Deadline,
     ) -> Result<()> {
-        let selected = self.secode.images(&request.executable.to_local()?)?;
+        let selected = self
+            .0
+            .secode_harness()
+            .images(&request.executable.to_local()?)?;
         let server = self
             .secode_server_invocation(&selected, "SE Code sandbox policy", deadline)
             .await?;
@@ -201,10 +204,10 @@ impl LaunchCoordinator {
             request.policy.network == NetworkPolicy::Allow,
         )
     }
-    pub(super) async fn provision_secode(
+    pub(crate) async fn provision_secode(
         &self,
         service: &mut Service,
-        request: &crate::HarnessRequest,
+        request: &se_harness::HarnessRequest,
         registration: &readiness::Registration,
         deadline: &Deadline,
     ) -> Result<String> {
@@ -222,7 +225,7 @@ impl LaunchCoordinator {
         let binding = control.binding(&session, deadline).await?;
         registration.require_same(&binding.service)?;
         prepare::record_secode_identity(service, binding.service)?;
-        service.persist(self, deadline).await?;
+        service.persist(self.0, deadline).await?;
         let actual_model = verify_secode_model(&saved, request.profile.model.as_deref())?;
         self.apply_secode_session_policy(service, &control, request, &session, deadline)
             .await?;
@@ -232,7 +235,7 @@ impl LaunchCoordinator {
         &self,
         service: &mut Service,
         control: &Control,
-        request: &crate::HarnessRequest,
+        request: &se_harness::HarnessRequest,
         session: &str,
         deadline: &Deadline,
     ) -> Result<Value> {
@@ -240,7 +243,7 @@ impl LaunchCoordinator {
             && matches!(request.resume, se_types::Read::Absent { .. })
         {
             service.journal.session_create_attempted = true;
-            service.persist(self, deadline).await?;
+            service.persist(self.0, deadline).await?;
             let directory = request.cwd.to_local()?;
             let directory = directory.to_str().ok_or_else(|| {
                 error("SE Code workspace", "the native API requires a UTF-8 path")
@@ -295,7 +298,7 @@ impl LaunchCoordinator {
         &self,
         service: &mut Service,
         control: &Control,
-        request: &crate::HarnessRequest,
+        request: &se_harness::HarnessRequest,
         session: &str,
         deadline: &Deadline,
     ) -> Result<()> {
@@ -360,7 +363,7 @@ impl LaunchCoordinator {
         service.live = Default::default();
         service.capability_failure = None;
         service.capability_check_at = None;
-        service.persist(self, deadline).await
+        service.persist(self.0, deadline).await
     }
 }
 fn verify_secode_model(saved: &Value, requested: Option<&str>) -> Result<String> {

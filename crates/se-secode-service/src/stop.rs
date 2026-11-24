@@ -4,19 +4,19 @@ use super::*;
 use se_proc::ProcessRuntime;
 use serde_json::json;
 
-impl LaunchCoordinator {
-    pub(in crate::process) async fn settle_secode(
+impl<H: HostPort> Coordinator<'_, H> {
+    pub async fn settle_secode(
         &self,
-        work: &mut owned::Work,
+        work: &mut impl SecodeWork,
         witness: &se_proc::StopWitness,
         deadline: &Deadline,
     ) -> Result<()> {
         if self.observe_secode_service_loss(work, deadline).await? {
             return Ok(());
         }
-        let Some(managed) = work.secode.clone() else {
+        let Some(managed) = work.secode().cloned() else {
             if matches!(witness.root, se_proc::RootWitness::NoChildCreated)
-                || (work.session_retired && work.capture_flushed)
+                || (work.session_retired() && work.capture_flushed())
             {
                 return Ok(());
             }
@@ -37,7 +37,7 @@ impl LaunchCoordinator {
             )
             .await?;
         let held = qualified.binding(&managed.session, deadline).await?;
-        if held.status == crate::harness::secode_process::NoticeStatus::Ready {
+        if held.status == se_harness::secode_process::NoticeStatus::Ready {
             return Err(error(
                 "SE Code execution settlement",
                 "native mail is not held",
@@ -60,8 +60,9 @@ impl LaunchCoordinator {
                 ));
             };
             let slot = self
-                .secode_services
-                .get(&work.meta.project.id, &work.meta.agent.id, deadline)
+                .0
+                .services()
+                .get(work.project_id(), work.agent_id(), deadline)
                 .await?
                 .ok_or_else(|| error("SE Code input reconciliation", "private custody absent"))?;
             let service = lock_service(&slot, deadline).await?;
@@ -101,12 +102,10 @@ impl LaunchCoordinator {
         qualified.binding(&managed.session, deadline).await?;
         Ok(())
     }
-    pub(in crate::process) async fn shutdown_secode(
-        &self,
-        deadline: &Deadline,
-    ) -> Result<Vec<String>> {
+    pub async fn shutdown_secode(&self, deadline: &Deadline) -> Result<Vec<String>> {
         if let Some(failure) = self
-            .secode_services
+            .0
+            .services()
             .1
             .lock()
             .map_err(|_| error("SE Code custody inventory", "poisoned inventory state"))?
@@ -119,7 +118,7 @@ impl LaunchCoordinator {
         let slots = self.shutdown_slots(deadline).await?;
         let mut stopping = slots.iter().map(|slot| async {
                 let mut service = lock_service(slot, deadline).await?;
-                if self.find_job(&service.journal.project, &service.journal.agent)?.is_some_and(|job| !job.settled.load(std::sync::atomic::Ordering::Acquire)) {
+                if self.0.is_job_unsettled(&service.journal.project, &service.journal.agent)? {
                     return Err(error("SE Code service shutdown", "original client or capture cleanup remains pending; service retained"));
                 }
                 if service.journal.lost && service.restart.is_none() {
@@ -144,8 +143,8 @@ impl LaunchCoordinator {
                 // its native scope closed before skipping the dead endpoint;
                 // failed HTTP alone never grants registration retirement.
                 if let Some(owner) = service.process.clone() {
-                    let native = self.native.clone();
-                    let observed = self.store.pool.run_owned(deadline, move || {
+                    let native = self.0.native().clone();
+                    let observed = self.0.run_blocking(deadline, move || {
                         native.witness_exit(&owner).map_err(|e| error("SE Code service exit", e))
                     }).await?;
                     if let se_proc::StopObservation::Complete(witness) = observed {
@@ -170,7 +169,7 @@ impl LaunchCoordinator {
                     let graceful = deadline.stage(std::time::Duration::from_secs(5))?;
                     if let Err(original) = self.stop_secode_auxiliary(&mut service, auxiliary, false, &graceful).await {
                         service.journal.stop_failure = Some(format!("Graceful auxiliary shutdown was unconfirmed; native forced fallback requested: {original}"));
-                        service.persist(self, deadline).await?;
+                        service.persist(self.0, deadline).await?;
                         self.stop_secode_auxiliary(&mut service, auxiliary, true, deadline).await.map_err(|force| force.with_cause(original))?;
                     }
                 }
@@ -181,7 +180,7 @@ impl LaunchCoordinator {
                 }
                 self.retire_secode_registration(&mut service, deadline).await?;
                 let profile = service.journal.profile.to_local()?;
-                self.store.pool.run_owned(deadline, move || {
+                self.0.run_blocking(deadline, move || {
                     match std::fs::symlink_metadata(&profile) {
                         Err(cause) if cause.kind()==std::io::ErrorKind::NotFound => return Ok(()),
                         Err(cause) => return Err(error("SE Code service profile retirement",cause)),
@@ -196,7 +195,7 @@ impl LaunchCoordinator {
                 }).await?;
                 service.live.invalidate()?;
                 service.journal.retired=true;
-                service.persist(self,deadline).await
+                service.persist(self.0,deadline).await
         }).collect::<futures_util::stream::FuturesUnordered<_>>();
         use futures_util::StreamExt;
         let mut pending = Vec::new();
@@ -210,7 +209,7 @@ impl LaunchCoordinator {
     async fn shutdown_slots(&self, deadline: &Deadline) -> Result<Vec<ServiceSlot>> {
         let services = tokio::time::timeout_at(
             tokio::time::Instant::from_std(deadline.at()),
-            self.secode_services.0.lock(),
+            self.0.services().0.lock(),
         )
         .await
         .map_err(|_| error("SE Code service shutdown", "a retained preparation is busy"))?;
@@ -255,9 +254,9 @@ impl LaunchCoordinator {
             }
             service.live.invalidate()?;
             if let Some(owner) = service.process.clone() {
-                let native = self.native.clone();
+                let native = self.0.native().clone();
                 let observed_owner = owner.clone();
-                let witness = self.store.pool.run_owned(deadline, move || {
+                let witness = self.0.run_blocking(deadline, move || {
                     let observed = native.witness_exit(&observed_owner).map_err(|cause| error("superseded SE Code scope", cause))?;
                     let se_proc::StopObservation::Complete(witness) = observed else {
                         return Err(error("superseded SE Code scope", "the original native scope is not yet empty; retain its custody and retry shutdown"));
@@ -269,10 +268,9 @@ impl LaunchCoordinator {
                 }).await?;
                 self.drain_secode_auxiliary(service, Auxiliary::Service, deadline)
                     .await?;
-                let native = self.native.clone();
-                self.store
-                    .pool
-                    .run_owned(deadline, move || {
+                let native = self.0.native().clone();
+                self.0
+                    .run_blocking(deadline, move || {
                         native
                             .release(&owner, &witness)
                             .map_err(|cause| error("superseded SE Code scope", cause))
@@ -281,7 +279,7 @@ impl LaunchCoordinator {
                 service.process = None;
             }
             service.journal.retired = true;
-            return service.persist(self, deadline).await;
+            return service.persist(self.0, deadline).await;
         }
         Err(error(
             "SE Code service shutdown",

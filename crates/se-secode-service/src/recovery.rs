@@ -1,33 +1,29 @@
 //! Recover the private service before recovering its clients. Retained endpoint
 //! text grants no authority until native birth and authenticated incarnation join.
 use super::*;
-use crate::harness::secode_process::Control;
+use se_harness::secode_process::Control;
 use se_proc::{CheckpointKind, CheckpointSource, ProcessRuntime, RecoveryOutcome};
 
-impl LaunchCoordinator {
-    pub(in crate::process) async fn recover_secode_services(
-        &self,
-        deadline: &Deadline,
-    ) -> Result<Vec<String>> {
-        let home = self.options.home.clone();
+impl<H: HostPort> Coordinator<'_, H> {
+    pub async fn recover_secode_services(&self, deadline: &Deadline) -> Result<Vec<String>> {
+        let home = self.0.home().to_path_buf();
         let custody_deadline = deadline.clone();
         let inventory = match self
-            .store
-            .pool
-            .run_owned(deadline, move || inventory(&home, &custody_deadline))
+            .0
+            .run_blocking(deadline, move || inventory(&home, &custody_deadline))
             .await
         {
             Ok(inventory) => inventory,
             Err(failure) => {
                 let reason = failure.to_string();
-                *self.secode_services.1.lock().map_err(|_| {
+                *self.0.services().1.lock().map_err(|_| {
                     error("SE Code custody inventory", "poisoned inventory state")
                 })? = Some(reason.clone());
                 return Ok(vec![reason]);
             }
         };
         let mut retained = Vec::new();
-        let mut services = self.secode_services.0.lock().await;
+        let mut services = self.0.services().0.lock().await;
         for (path, journal, digest) in inventory {
             let key = (journal.project.clone(), journal.agent.clone());
             if services.contains_key(&key) {
@@ -41,7 +37,7 @@ impl LaunchCoordinator {
                     path,
                     digest: Some(digest),
                     pending_save: None,
-                    wake: Arc::new(events::Wake::default()),
+                    wake: Arc::new(Wake::default()),
                     bootstrap: None,
                     process: None,
                     retirement: None,
@@ -92,7 +88,7 @@ impl LaunchCoordinator {
     }
     /// Reconcile the exact published checkpoint, including a reservation whose
     /// native preparation refused. Missing handles alone never prove absence.
-    pub(super) async fn recover_secode_auxiliary(
+    pub(crate) async fn recover_secode_auxiliary(
         &self,
         service: &mut Service,
         auxiliary: Auxiliary,
@@ -102,16 +98,15 @@ impl LaunchCoordinator {
         let Some(checkpoint) = checkpoint else {
             return Ok(());
         };
-        let native = self.native.clone();
+        let native = self.0.native().clone();
         let source = match &checkpoint.checkpoint {
             CheckpointKind::Exit { source, .. } => recovery_source(source),
             _ => custody::source(&checkpoint)?,
         };
-        let generation = self.options.epoch.generation;
+        let generation = self.0.epoch().generation;
         let outcome = self
-            .store
-            .pool
-            .run_owned(deadline, move || {
+            .0
+            .run_blocking(deadline, move || {
                 let plan = native
                     .plan_recovery(source)
                     .map_err(|e| error("SE Code native recovery plan", e))?;
@@ -130,7 +125,7 @@ impl LaunchCoordinator {
                     ));
                 }
                 service.checkpoint(auxiliary, CheckpointKind::Process(*record))?;
-                service.persist(self, deadline).await?;
+                service.persist(self.0, deadline).await?;
             }
             RecoveryOutcome::PendingScope {
                 process,
@@ -138,7 +133,7 @@ impl LaunchCoordinator {
             } => {
                 *service.owner_mut(auxiliary) = Some(Arc::new(process));
                 service.checkpoint(auxiliary, CheckpointKind::Scope(*checkpoint))?;
-                service.persist(self, deadline).await?;
+                service.persist(self.0, deadline).await?;
             }
             RecoveryOutcome::Exited(witness) => {
                 // Recovery proves present absence, but cannot recover an
@@ -167,7 +162,7 @@ impl LaunchCoordinator {
                         witness: *witness,
                     },
                 )?;
-                service.persist(self, deadline).await?;
+                service.persist(self.0, deadline).await?;
             }
             RecoveryOutcome::Unproved { error: failure, .. } => {
                 return Err(error("SE Code native recovery unproved", failure));
@@ -193,7 +188,7 @@ impl LaunchCoordinator {
         if service.journal.retired && service.journal.superseded_by_restart {
             return Ok(());
         }
-        self.restore_restart_state(service, deadline).await?;
+        self.0.restore_restart_state(service, deadline).await?;
         for auxiliary in Auxiliary::ALL {
             if auxiliary == Auxiliary::Service && service.restart.is_some() {
                 continue;
@@ -238,9 +233,8 @@ impl LaunchCoordinator {
             }
             let path = profile.clone();
             let ready = self
-                .store
-                .pool
-                .run_owned(deadline, move || prepare::ready(&path))
+                .0
+                .run_blocking(deadline, move || prepare::ready(&path))
                 .await?
                 .ok_or_else(|| {
                     error(
@@ -268,13 +262,12 @@ impl LaunchCoordinator {
                 .ok_or_else(|| error("SE Code service recovery", "readiness endpoint absent"))?
                 .to_owned();
             service.journal.endpoint = Some(endpoint.clone());
-            service.persist(self, deadline).await?;
+            service.persist(self.0, deadline).await?;
             endpoint
         };
         let control = Arc::new(
-            self.store
-                .pool
-                .run_owned(deadline, move || Control::open(&profile, &endpoint))
+            self.0
+                .run_blocking(deadline, move || Control::open(&profile, &endpoint))
                 .await?,
         );
         if service.journal.unprovisioned() {
@@ -318,17 +311,18 @@ impl LaunchCoordinator {
         clippy::too_many_lines,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
-    pub(in crate::process) async fn restore_secode_work(
+    pub async fn restore_secode_work(
         &self,
-        work: &mut owned::Work,
+        work: &mut impl SecodeWork,
         deadline: &Deadline,
     ) -> Result<()> {
         if self.observe_secode_service_loss(work, deadline).await? {
             return Ok(());
         }
         let slot = self
-            .secode_services
-            .get(&work.meta.project.id, &work.meta.agent.id, deadline)
+            .0
+            .services()
+            .get(work.project_id(), work.agent_id(), deadline)
             .await?
             .ok_or_else(|| {
                 error(
@@ -337,13 +331,13 @@ impl LaunchCoordinator {
                 )
             })?;
         let mut service = lock_service(&slot, deadline).await?;
-        self.adopt_restart(&mut service, deadline).await?;
+        self.0.adopt_restart(&mut service, deadline).await?;
         if let Some(failure) = &service.failure {
             return Err(error("SE Code client recovery", failure));
         }
-        if service.journal.session != work.meta.session
-            || (work.activated
-                && !matches!(&work.meta.conversation, se_types::Read::Present {value} if value.as_str()==service.journal.vendor_session))
+        if service.journal.session != *work.session()
+            || (work.activated()
+                && !matches!(&work.conversation(), se_types::Read::Present {value} if value.as_str()==service.journal.vendor_session))
         {
             return Err(error(
                 "SE Code client recovery",
@@ -406,7 +400,7 @@ impl LaunchCoordinator {
                 &service.journal.initial_input,
                 service.journal.initial_sha256,
             )?,
-            None if work.activated => {
+            None if work.activated() => {
                 return Err(error(
                     "SE Code client recovery",
                     "the activated original input is absent; preserve pending/no-replay",
@@ -414,35 +408,35 @@ impl LaunchCoordinator {
             }
             None => (),
         }
-        if !work.activated {
-            work.meta.conversation = se_types::Read::Present {
+        if !work.activated() {
+            work.set_conversation(se_types::Read::Present {
                 value: se_types::ProviderSessionId::new(service.journal.vendor_session.clone())?,
-            };
+            });
         }
-        work.secode = Some(Prepared {
+        *work.secode_mut() = Some(Prepared {
             control,
             service: identity,
             live: service.live.clone(),
             profile: service.journal.profile.clone(),
-            process: native_record::instance(
+            process: self.0.native_instance(
                 &record.root,
                 record.argv_sha256,
-                &self.options.epoch.owner.fields().boot,
+                &self.0.epoch().owner.fields().boot,
             )?,
             session: service.journal.vendor_session.clone(),
             initial_input: service.journal.initial_input.clone(),
         });
-        work.capture_source = Some(se_core::ops::process_commit::session_credential_id(
-            &work.meta.session,
+        work.set_capture_source(Some(se_core::ops::process_commit::session_credential_id(
+            work.session(),
             "capture-source",
-        )?);
-        if let Some(prepared) = work.secode.clone() {
-            work.binding = Some(self.secode.recover(prepared));
+        )?));
+        if let Some(prepared) = work.secode().cloned() {
+            *work.binding_mut() = Some(self.0.secode_harness().recover(prepared));
         }
         Ok(())
     }
 }
-pub(super) fn recovery_source(source: &CheckpointSource) -> se_proc::RecoverySource {
+pub(crate) fn recovery_source(source: &CheckpointSource) -> se_proc::RecoverySource {
     match source {
         CheckpointSource::Reservation(v) => {
             se_proc::RecoverySource::Reservation(Box::new(v.clone()))
@@ -452,7 +446,7 @@ pub(super) fn recovery_source(source: &CheckpointSource) -> se_proc::RecoverySou
         CheckpointSource::Process(v) => se_proc::RecoverySource::Record(Box::new(v.clone())),
     }
 }
-pub(super) fn inventory(
+pub(crate) fn inventory(
     home: &std::path::Path,
     deadline: &Deadline,
 ) -> Result<Vec<(PathBuf, Journal, [u8; 32])>> {
@@ -478,7 +472,7 @@ pub(super) fn inventory(
         }
         let entry = entry.map_err(|e| error("SE Code custody inventory", e))?;
         let path = entry.path();
-        if super::super::files::retain_recovery_artifact(&path)? {
+        if port::retain_recovery_artifact(&path)? {
             // Only the published journal can authorize native recovery.
             continue;
         }

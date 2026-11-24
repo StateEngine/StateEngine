@@ -8,7 +8,7 @@ use se_proc::{
 use se_types::StartIdentity as StoredStart;
 use std::ffi::OsString;
 
-pub(super) async fn sleep_poll_interval(deadline: &Deadline) -> Result<()> {
+pub(crate) async fn sleep_poll_interval(deadline: &Deadline) -> Result<()> {
     tokio::time::sleep(
         deadline
             .remaining()?
@@ -18,36 +18,36 @@ pub(super) async fn sleep_poll_interval(deadline: &Deadline) -> Result<()> {
     Ok(())
 }
 
-impl LaunchCoordinator {
-    pub(super) async fn run_blocking<T: Send + 'static>(
+impl<H: HostPort> Coordinator<'_, H> {
+    pub(crate) async fn run_blocking<T: Send + 'static>(
         &self,
         deadline: &Deadline,
         op: impl FnOnce() -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        self.store.pool.run_owned(deadline, op).await
+        self.0.run_blocking(deadline, op).await
     }
-    pub(super) async fn run_native<T: Send + 'static>(
+    pub(crate) async fn run_native<T: Send + 'static>(
         &self,
         deadline: &Deadline,
         op: impl FnOnce(&NativeProcessRuntime) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        let native = self.native.clone();
+        let native = self.0.native().clone();
         self.run_blocking(deadline, move || op(&native)).await
     }
-    pub(super) async fn observe_secode_birth(
+    pub(crate) async fn observe_secode_birth(
         &self,
         service: &Service,
         deadline: &Deadline,
     ) -> Result<u32> {
         if let Some(restart) = &service.restart {
             let expected = restart.identity.clone();
-            if expected.boot != self.options.epoch.owner.fields().boot {
+            if expected.boot != self.0.epoch().owner.fields().boot {
                 return Err(error(
                     "SE Code restarted service",
                     "the replacement belongs to an earlier system boot",
                 ));
             }
-            let machine = self.owner.machine.clone();
+            let machine = self.0.owner().machine.clone();
             return self
                 .run_blocking(deadline, move || {
                     let pid = se_proc::ProcessId(expected.pid.get());
@@ -130,7 +130,7 @@ impl LaunchCoordinator {
         clippy::too_many_arguments,
         reason = "one native launch with distinct custody and policy coordinates"
     )]
-    pub(super) async fn start_secode_auxiliary(
+    pub async fn start_secode_auxiliary(
         &self,
         service: &mut Service,
         auxiliary: Auxiliary,
@@ -151,7 +151,7 @@ impl LaunchCoordinator {
         let spec = se_proc::LaunchSpec {
             executable_custody: Some(executable),
             lifecycle: reservation.lifecycle.clone(),
-            generation: self.options.epoch.generation,
+            generation: self.0.epoch().generation,
             executable: image_path,
             arguments,
             cwd,
@@ -173,12 +173,12 @@ impl LaunchCoordinator {
             .run_native(deadline, move |native| {
                 native
                     .prepare_launch(reservation, spec)
-                    .map_err(super::super::prepare_error)
+                    .map_err(port::prepare_error)
             })
             .await?;
         *service.owner_mut(auxiliary) = Some(Arc::new(prepared.process));
         service.checkpoint(auxiliary, CheckpointKind::Scope(prepared.checkpoint))?;
-        service.persist(self, deadline).await?;
+        service.persist(self.0, deadline).await?;
         let prepared = self
             .bind_secode_auxiliary_stdio(service, auxiliary, prepared.prepared, input, deadline)
             .await?;
@@ -218,9 +218,9 @@ impl LaunchCoordinator {
         let reservation = se_proc::LaunchReservation {
             format_version: 1,
             lifecycle,
-            host: self.host,
-            owner: self.owner.clone(),
-            generation: self.options.epoch.generation,
+            host: self.0.host_id(),
+            owner: self.0.owner().clone(),
+            generation: self.0.epoch().generation,
             scope_nonce: nonce,
             parent: if cfg!(windows) {
                 se_proc::ReservationParent::Windows
@@ -232,7 +232,7 @@ impl LaunchCoordinator {
             created_at_unix_ns: created_at.as_nanos(),
         };
         service.checkpoint(auxiliary, CheckpointKind::Reservation(reservation.clone()))?;
-        service.persist(self, deadline).await?;
+        service.persist(self.0, deadline).await?;
         Ok(reservation)
     }
     async fn secode_auxiliary_environment(
@@ -241,7 +241,7 @@ impl LaunchCoordinator {
         auxiliary: Auxiliary,
         deadline: &Deadline,
     ) -> Result<Vec<(OsString, OsString)>> {
-        let mut environment = crate::harness::secode_process::provider_environment();
+        let mut environment = se_harness::secode_process::provider_environment();
         let scratch = service
             .journal
             .profile
@@ -289,13 +289,13 @@ impl LaunchCoordinator {
             .owner(auxiliary)
             .clone()
             .ok_or_else(|| error("SE Code auxiliary streams", "native reference absent"))?;
-        let io = self.io.clone();
-        let identity = crate::SessionIdentity {
+        let io = self.0.io().clone();
+        let identity = se_harness::SessionIdentity {
             project: service.journal.project.clone(),
             agent: service.journal.agent.clone(),
             session: service.journal.session.clone(),
         };
-        let runtime = self.store.pool.handle();
+        let runtime = self.0.runtime_handle();
         let streams = self
             .run_blocking(deadline, move || {
                 let _entered = runtime.enter();
@@ -311,10 +311,10 @@ impl LaunchCoordinator {
             })
             .await?;
         let output = diagnostic::Output::new(
-            self.io.clone(),
+            self.0.io().clone(),
             streams.host,
-            self.store.generation,
-            self.options.home.join("secode-diagnostics").join(format!(
+            self.0.generation(),
+            self.0.home().join("secode-diagnostics").join(format!(
                 "{}.json",
                 service.journal.checkpoint_lifecycle(auxiliary)?
             )),
@@ -347,7 +347,7 @@ impl LaunchCoordinator {
             match progress {
                 LaunchProgress::AwaitingExecCommit(root) => {
                     service.checkpoint(auxiliary, CheckpointKind::Root(*root))?;
-                    service.persist(self, deadline).await?;
+                    service.persist(self.0, deadline).await?;
                     ticket = self
                         .run_native(deadline, move |native| {
                             native
@@ -360,21 +360,19 @@ impl LaunchCoordinator {
                 LaunchProgress::Started(success) => {
                     service
                         .checkpoint(auxiliary, CheckpointKind::Process(success.record.clone()))?;
-                    service.persist(self, deadline).await?;
+                    service.persist(self.0, deadline).await?;
                     return Ok(success.record);
                 }
                 LaunchProgress::Failed(failure) => {
                     return Err(error("SE Code auxiliary launch", failure.error));
                 }
-                LaunchProgress::Pending => {
-                    super::super::launch_util::wait(&service.wake, deadline).await?
-                }
+                LaunchProgress::Pending => port::wait_wake(&service.wake, deadline).await?,
             }
         }
     }
     /// Interrupt is a native dispatch, never a closure claim. Force, if needed,
     /// is recorded by the caller separately from graceful cancellation.
-    pub(super) async fn stop_secode_auxiliary(
+    pub(crate) async fn stop_secode_auxiliary(
         &self,
         service: &mut Service,
         auxiliary: Auxiliary,
@@ -398,7 +396,7 @@ impl LaunchCoordinator {
                 .await?;
             return Ok(*witness);
         }
-        let generation = self.options.epoch.generation;
+        let generation = self.0.epoch().generation;
         let at = deadline.at();
         let mut attempt = self
             .run_native(deadline, move |native| {
@@ -440,7 +438,7 @@ impl LaunchCoordinator {
             sleep_poll_interval(deadline).await?;
         }
     }
-    pub(super) async fn retire_secode_auxiliary(
+    pub(crate) async fn retire_secode_auxiliary(
         &self,
         service: &mut Service,
         auxiliary: Auxiliary,
@@ -481,7 +479,7 @@ impl LaunchCoordinator {
                 witness: witness.clone(),
             },
         )?;
-        service.persist(self, deadline).await?;
+        service.persist(self.0, deadline).await?;
         let owner = service
             .owner(auxiliary)
             .clone()
@@ -496,7 +494,7 @@ impl LaunchCoordinator {
         *service.owner_mut(auxiliary) = None;
         Ok(())
     }
-    pub(super) async fn drain_secode_auxiliary(
+    pub(crate) async fn drain_secode_auxiliary(
         &self,
         service: &Service,
         auxiliary: Auxiliary,

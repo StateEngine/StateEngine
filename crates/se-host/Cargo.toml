@@ -10,7 +10,7 @@ publish.workspace = true
 default = ["runtime", "listener", "channels"]
 import = ["se-core/import"]
 runtime = ["se-harness/runtime", "dep:tokio"]
-listener = ["runtime", "se-harness/listener", "se-remote/listener", "se-atlas-host/listener", "dep:reqwest", "tokio/macros", "tokio/net", "tokio/io-util", "tokio/time", "tokio/sync", "tokio/process", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio-tungstenite", "dep:futures-util", "dep:base64", "dep:se-secode-image", "dep:se-provider-image"]
+listener = ["runtime", "se-harness/listener", "se-remote/listener", "se-atlas-host/listener", "dep:reqwest", "tokio/macros", "tokio/net", "tokio/io-util", "tokio/time", "tokio/sync", "tokio/process", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio-tungstenite", "dep:futures-util", "dep:base64", "dep:se-secode-image", "dep:se-provider-image", "dep:se-secode-service"]
 channels = ["listener", "se-harness/channels", "dep:se-channels"]
 secode = ["runtime", "listener", "se-harness/secode", "dep:secode-stateengine-api"]
 remote = ["se-harness/remote", "dep:se-remote-host", "dep:se-ssh-transport", "se-remote/remote", "dep:base64", "listener", "tokio/fs", "dep:chacha20poly1305", "tokio/macros"]
@@ -32,6 +32,7 @@ se-store = { path = "../se-store" }
 se-proc = { path = "../se-proc" }
 se-repository = { path = "../se-repository" }
 se-secode-image = { path = "../se-secode-image", optional = true }
+se-secode-service = { path = "../se-secode-service", optional = true }
 se-atlas-host = { path = "../se-atlas-host" }
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"], optional = true }
 serde_json.workspace = true
