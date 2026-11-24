@@ -160,12 +160,162 @@ fn sent_message_read_is_retained_in_authorized_sender_replay() -> Check {
     );
     Ok(())
 }
+fn plan_remote_send(
+    send: &RemoteSend,
+    g: &GrantRecord,
+    reader: &SqliteReader,
+) -> Result<AtomicBatch, Box<dyn std::error::Error>> {
+    let admission = se_core::remote::authorize(
+        g.clone(),
+        RemoteVerb::Send,
+        std::slice::from_ref(&send.target),
+        now()?,
+    )?;
+    Ok(se_core::remote::plan_send(
+        admission,
+        send.clone(),
+        RemoteAttribution {
+            host: g.host,
+            store: g.store.clone(),
+            principal: g.principal.clone(),
+            grant: g.grant.clone(),
+            device: g.device.clone(),
+            authority_revision: 1,
+            source: None,
+        },
+        se_core::remote::RemoteSendFacts {
+            store: reader.info()?,
+            generation: 1,
+            occurred_at_us: now()?,
+            message: message()?,
+            sent_event: event()?,
+            attribution_event: event()?,
+        },
+    )?)
+}
+
+fn verify_atlas_landing(
+    f: &Fixture,
+    reader: &SqliteReader,
+    first: &CommitReceipt,
+    g: &GrantRecord,
+) -> Check {
+    use se_types::code::*;
+    let scope = f.self_scope(&f.a);
+    let mut snapshot = reader.snapshot(scope.clone())?;
+    let source = present(snapshot.event(first.primary_event.clone())?)?;
+    let EventBody::MessageSent { message, .. } = source.body else {
+        return Err("send primary event is not ordinary mail".into());
+    };
+    let pointer = RecordPointer {
+        key: RecordKey::new(message.as_str())?,
+        kind: RecordKind::Message,
+        source_event: first.primary_event.clone(),
+    };
+    let mut records = se_core::atlas_records::RecordAccess::new(&mut snapshot, &scope.admission);
+    let hit = present(records.hit(
+        &f.project,
+        &AtlasPrincipal::Agent(f.a.clone()),
+        &pointer,
+        None,
+    )?)?;
+    let actor = hit.actor.ok_or("Atlas dropped remote sender attribution")?;
+    assert_eq!(actor.principal, AtlasPrincipal::Remote(g.principal.clone()));
+    assert_eq!(hit.line, "exact same committed body");
+    assert!(
+        records
+            .hit(
+                &f.project,
+                &AtlasPrincipal::Remote(g.principal.clone()),
+                &pointer,
+                None
+            )
+            .is_err()
+    );
+    snapshot.close()?;
+    Ok(())
+}
+
+fn append_addressed_work_mail(
+    f: &Fixture,
+    d: &mut SqliteDirect,
+    l: &Lease,
+    id: &se_types::MessageId,
+) -> Check {
+    d.append(
+        f.batch(
+            f.owner_project(),
+            Some(request("addressed-work-mail")?),
+            vec![EventBody::WorkMessageSent {
+                message: id.clone(),
+                work: se_types::WorkAddressing {
+                    action: se_types::WorkAction::Finding,
+                    addressees: vec![f.a.clone(), f.b.clone()],
+                },
+                kind: "finding".into(),
+                body: InputText::Inline(
+                    "one shared body for the exact addressed recipients".into(),
+                ),
+                refs: vec![],
+                reply_to: None,
+                quiet: false,
+            }],
+        )?,
+        l,
+    )?;
+    Ok(())
+}
+
+fn other_recipient_read_keeps_pending(
+    reader: &SqliteReader,
+    f: &Fixture,
+    d: &mut SqliteDirect,
+    l: &Lease,
+    g: &GrantRecord,
+    after: Option<&StorePosition>,
+    id: &se_types::MessageId,
+) -> Check {
+    d.append(
+        f.batch(
+            f.self_scope(&f.b).admission,
+            None,
+            vec![EventBody::MessageRead {
+                message: id.clone(),
+                recipient: Actor::Agent(f.b.clone()),
+            }],
+        )?,
+        l,
+    )?;
+    let mut phase = reader.read_phase()?;
+    let target = phase.remote_target(
+        &g.grant,
+        rev(1)?,
+        RemoteVerb::List,
+        &g.scope.targets[0],
+        now()?,
+    )?;
+    assert_eq!(
+        target.pending, 1,
+        "another addressed recipient's read must not clear this recipient's pending mail"
+    );
+    let later = phase.remote_changes(
+        &g.grant,
+        rev(1)?,
+        &g.scope.targets[0],
+        ChangeRequest {
+            after,
+            limit: 100,
+            budget: 65536,
+        },
+        now()?,
+    )?;
+    assert!(!later.changes.iter().any(|c|matches!(&c.kind,ChangeKind::Durable(RemoteDurableEvent::Message {message,delivery:RemoteDeliveryState::Read}) if message==id)),"another recipient's private read must not mark this recipient's shared copy read");
+    phase.close()?;
+    Ok(())
+}
+
 /// Bug: an already committed keyed send stops resolving when its target ends normally.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn committed_send_retry_resolves_original_receipt_after_target_session_end() -> Check {
     let f = Fixture::new()?;
     let (mut d, l) = f.direct()?;
@@ -189,75 +339,11 @@ fn committed_send_retry_resolves_original_receipt_after_target_session_end() -> 
         idempotency_key: IdempotencyKey::new("stable-remote-send")?,
     };
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
-    let plan = |send: &RemoteSend| -> Result<AtomicBatch, Box<dyn std::error::Error>> {
-        let admission = se_core::remote::authorize(
-            g.clone(),
-            RemoteVerb::Send,
-            std::slice::from_ref(&send.target),
-            now()?,
-        )?;
-        Ok(se_core::remote::plan_send(
-            admission,
-            send.clone(),
-            RemoteAttribution {
-                host: g.host,
-                store: g.store.clone(),
-                principal: g.principal.clone(),
-                grant: g.grant.clone(),
-                device: g.device.clone(),
-                authority_revision: 1,
-                source: None,
-            },
-            se_core::remote::RemoteSendFacts {
-                store: reader.info()?,
-                generation: 1,
-                occurred_at_us: now()?,
-                message: message()?,
-                sent_event: event()?,
-                attribution_event: event()?,
-            },
-        )?)
-    };
-    let first = d.append(plan(&send)?, &*l)?;
+    let first = d.append(plan_remote_send(&send, &g, &reader)?, &*l)?;
     // A remote message remains visible in the landed Atlas adapter with its
     // real device provenance, without granting that device Atlas authority.
-    {
-        use se_types::code::*;
-        let scope = f.self_scope(&f.a);
-        let mut snapshot = reader.snapshot(scope.clone())?;
-        let source = present(snapshot.event(first.primary_event.clone())?)?;
-        let EventBody::MessageSent { message, .. } = source.body else {
-            return Err("send primary event is not ordinary mail".into());
-        };
-        let pointer = RecordPointer {
-            key: RecordKey::new(message.as_str())?,
-            kind: RecordKind::Message,
-            source_event: first.primary_event.clone(),
-        };
-        let mut records =
-            se_core::atlas_records::RecordAccess::new(&mut snapshot, &scope.admission);
-        let hit = present(records.hit(
-            &f.project,
-            &AtlasPrincipal::Agent(f.a.clone()),
-            &pointer,
-            None,
-        )?)?;
-        let actor = hit.actor.ok_or("Atlas dropped remote sender attribution")?;
-        assert_eq!(actor.principal, AtlasPrincipal::Remote(g.principal.clone()));
-        assert_eq!(hit.line, "exact same committed body");
-        assert!(
-            records
-                .hit(
-                    &f.project,
-                    &AtlasPrincipal::Remote(g.principal.clone()),
-                    &pointer,
-                    None
-                )
-                .is_err()
-        );
-        snapshot.close()?;
-    }
-    let replay = d.append(plan(&send)?, &*l)?;
+    verify_atlas_landing(&f, &reader, &first, &g)?;
+    let replay = d.append(plan_remote_send(&send, &g, &reader)?, &*l)?;
     assert_eq!(replay.state, CommitState::Replayed);
     assert_eq!(replay.primary_event, first.primary_event);
     d.append(
@@ -277,16 +363,18 @@ fn committed_send_retry_resolves_original_receipt_after_target_session_end() -> 
     let mut fresh = send.clone();
     fresh.idempotency_key = IdempotencyKey::new("fresh-send-after-target-end")?;
     assert!(
-        d.append(plan(&fresh)?, &*l).is_err(),
+        d.append(plan_remote_send(&fresh, &g, &reader)?, &*l)
+            .is_err(),
         "new send must still require an active target session"
     );
     let mut conflict = send.clone();
     conflict.body = se_types::Body::new("different body under original key")?;
     assert!(
-        d.append(plan(&conflict)?, &*l).is_err(),
+        d.append(plan_remote_send(&conflict, &g, &reader)?, &*l)
+            .is_err(),
         "same-key changed-body retry must remain a conflict"
     );
-    let retry = d.append(plan(&send)?, &*l);
+    let retry = d.append(plan_remote_send(&send, &g, &reader)?, &*l);
     d.close()?;
     let retry = retry.map_err(|e| {
         format!("committed send became unresolvable after normal target session end: {e}")
@@ -298,10 +386,6 @@ fn committed_send_retry_resolves_original_receipt_after_target_session_end() -> 
 
 /// Bug: recipient-addressed shared work mail updates the ordinary inbox but vanishes from remote replay.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn shared_work_message_addressed_to_granted_agent_is_not_silently_skipped() -> Check {
     let f = Fixture::new()?;
     let (mut d, l) = f.direct()?;
@@ -321,27 +405,7 @@ fn shared_work_message_addressed_to_granted_agent_is_not_silently_skipped() -> C
     )?;
     phase.close()?;
     let id = message()?;
-    d.append(
-        f.batch(
-            f.owner_project(),
-            Some(request("addressed-work-mail")?),
-            vec![EventBody::WorkMessageSent {
-                message: id.clone(),
-                work: se_types::WorkAddressing {
-                    action: se_types::WorkAction::Finding,
-                    addressees: vec![f.a.clone(), f.b.clone()],
-                },
-                kind: "finding".into(),
-                body: InputText::Inline(
-                    "one shared body for the exact addressed recipients".into(),
-                ),
-                refs: vec![],
-                reply_to: None,
-                quiet: false,
-            }],
-        )?,
-        &*l,
-    )?;
+    append_addressed_work_mail(&f, &mut d, &l, &id)?;
     let mut recipient = reader.snapshot(f.self_scope(&f.a))?;
     let inbox = recipient.messages(
         query(Some(Actor::Agent(f.a.clone())), true),
@@ -377,42 +441,7 @@ fn shared_work_message_addressed_to_granted_agent_is_not_silently_skipped() -> C
         page.through != before.through
     );
     phase.close()?;
-    d.append(
-        f.batch(
-            f.self_scope(&f.b).admission,
-            None,
-            vec![EventBody::MessageRead {
-                message: id.clone(),
-                recipient: Actor::Agent(f.b.clone()),
-            }],
-        )?,
-        &*l,
-    )?;
-    let mut phase = reader.read_phase()?;
-    let target = phase.remote_target(
-        &g.grant,
-        rev(1)?,
-        RemoteVerb::List,
-        &g.scope.targets[0],
-        now()?,
-    )?;
-    assert_eq!(
-        target.pending, 1,
-        "another addressed recipient's read must not clear this recipient's pending mail"
-    );
-    let later = phase.remote_changes(
-        &g.grant,
-        rev(1)?,
-        &g.scope.targets[0],
-        ChangeRequest {
-            after: page.through.as_ref(),
-            limit: 100,
-            budget: 65536,
-        },
-        now()?,
-    )?;
-    assert!(!later.changes.iter().any(|c|matches!(&c.kind,ChangeKind::Durable(RemoteDurableEvent::Message {message,delivery:RemoteDeliveryState::Read}) if message==&id)),"another recipient's private read must not mark this recipient's shared copy read");
-    phase.close()?;
+    other_recipient_read_keeps_pending(&reader, &f, &mut d, &l, &g, page.through.as_ref(), &id)?;
     d.close()?;
     assert!(
         found,
