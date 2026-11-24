@@ -19,18 +19,18 @@ fn pinned_capture_keeps_chat_separate_and_refuses_broken_known_records() -> Chec
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-fn capture_case(bad_bookkeeping: bool) -> Check {
-    let initialized = initialize_host_process()?;
-    let f = Fixture::new()?;
-    seed(&f)?;
-    let s = session::session()?;
-    let conversation = ProviderSessionId::new(format!("provider-{}", f.a.as_str()))?;
+struct ChatSeed {
+    path: std::path::PathBuf,
+    bytes: Vec<u8>,
+    source: RecordId,
+}
+
+fn seed_capture_chat_session(
+    f: &Fixture,
+    s: &se_types::SessionId,
+    conversation: &ProviderSessionId,
+) -> Result<(ChatSeed, se_proc::NativeSourcePin), Box<dyn std::error::Error>> {
     let path = f.home.join("transcript.jsonl");
-    let native_path = NativePath::from_local(path.clone())?;
     let records = [
         json!({"type":"session-owner","sessionId":conversation.as_str()}),
         json!({"type":"tools-used","sessionId":conversation.as_str()}),
@@ -50,7 +50,7 @@ fn capture_case(bad_bookkeeping: bool) -> Check {
     std::fs::write(&path, &bytes)?;
     let pin = se_proc::NativeSourcePin::open(&path)?.ok_or("native source absent")?;
     let source = session::record()?;
-    let (mut direct, lease) = direct(&f)?;
+    let (mut direct, lease) = direct(f)?;
     direct.append(
         f.batch(
             f.owner_project(),
@@ -59,24 +59,249 @@ fn capture_case(bad_bookkeeping: bool) -> Check {
                 serial()
             ))?),
             vec![
-                session::prepared(&f, &s, &f.a),
-                session::activated(&s)?,
-                session::source(source, &s, &pin.identity(), Expected::Absent),
+                session::prepared(f, s, &f.a),
+                session::activated(s)?,
+                session::source(source, s, &pin.identity(), Expected::Absent),
             ],
         )?,
         &*lease,
     )?;
     direct.close()?;
     drop(lease);
+    Ok((
+        ChatSeed {
+            path,
+            bytes,
+            source,
+        },
+        pin,
+    ))
+}
+
+fn verify_initial_chat_and_metadata(items: &[StoredEvent], bytes: &[u8]) -> Check {
+    let mut texts = Vec::new();
+    let mut metadata = 0;
+    let mut tools = 0;
+    for event in items {
+        let EventBody::SessionTurn {
+            role,
+            text: StoredText::Present(text),
+            evidence,
+            ..
+        } = &event.body
+        else {
+            return Err("unexpected captured event".into());
+        };
+        match role {
+            Role::User | Role::Assistant => texts.push(text.clone()),
+            Role::System => {
+                let body: serde_json::Value = serde_json::from_str(text)?;
+                require(
+                    body["schema"] == "se.transcript-event/v1",
+                    "metadata schema missing",
+                )?;
+                require(
+                    !text.contains("CACHE_SECRET") && !text.contains("TOOL_SECRET"),
+                    "provider payload leaked into metadata",
+                )?;
+                if body["kind"] == "captured-tool" {
+                    let record = se_core::ops::transcript::Record::decode(text)?;
+                    let tool = record.captured_tool.ok_or("native tool fact missing")?;
+                    require(
+                        matches!(
+                            tool.native,
+                            se_core::ops::transcript::tool::NativeIdentity::Unknown(_)
+                        ),
+                        "missing native identity was fabricated",
+                    )?;
+                    tools += 1;
+                }
+                metadata += 1;
+            }
+            Role::Tool => return Err("tool role was published".into()),
+        }
+        let start = usize::try_from(evidence.offset)?;
+        let end = start + usize::try_from(evidence.length)?;
+        let hash: [u8; 32] = Hasher::digest(&bytes[start..end]).into();
+        require(
+            evidence.sha256 == Some(hash),
+            "raw native evidence digest differs",
+        )?;
+    }
+    require(
+        metadata == 7 && tools == 2,
+        "metadata lost its durable representation",
+    )?;
+    texts.sort();
+    require(
+        texts == vec!["real assistant", "real user λ", "second real user"],
+        format!("wrong public chat: {texts:?}"),
+    )
+}
+
+struct ChatCx<'a> {
+    f: &'a Fixture,
+    capture: &'a CaptureHandle,
+    execution: &'a ExecutionContext,
+    admitted: Admission,
+    conversation: ProviderSessionId,
+    native_path: NativePath,
+}
+
+async fn verify_tail_and_broken_record(
+    cx: &ChatCx<'_>,
+    seeded: &ChatSeed,
+    bad_bookkeeping: bool,
+) -> Check {
+    let (f, capture, execution) = (cx.f, cx.capture, cx.execution);
+    let (admitted, conversation, native_path) = (&cx.admitted, &cx.conversation, &cx.native_path);
+    let (path, source) = (&seeded.path, seeded.source);
+    let mut file = OpenOptions::new().append(true).open(path)?;
+    // The allow-list admits payloads only for api-request-blob and
+    // queue-operation; api-request with payload must refuse below.
+    writeln!(
+        file,
+        "{}",
+        json!({"type":"api-request-blob","message":{"role":"user","content":"REQUEST_CACHE_SECRET"}})
+    )?;
+    file.sync_all()?;
+    writeln!(
+        file,
+        "{}",
+        json!({"type":"assistant","sessionId":conversation.as_str(),"uuid":"after-metadata","message":{"role":"assistant","content":"after metadata"}})
+    )?;
+    file.sync_all()?;
+    let added = capture
+        .catch_up(
+            admitted.clone(),
+            conversation.clone(),
+            native_path.clone(),
+            &bound()?,
+        )
+        .await?;
+    require(
+        added.capture_commits.len() == 1,
+        "permitted cache metadata blocked the real assistant",
+    )?;
+    let mut stable = execution.reader.snapshot(f.self_scope(&f.a))?;
+    let before = present(stable.capture_source(source)?)?;
+    let retained = stable.turns(f.a.clone(), budget(20, 100_000, None)?)?;
+    require(
+        retained.items().len() == 12,
+        "permitted cache and real assistant were not retained exactly",
+    )?;
+    let mut found_assistant = false;
+    for event in retained.items() {
+        let EventBody::SessionTurn {
+            role,
+            text: StoredText::Present(text),
+            ..
+        } = &event.body
+        else {
+            return Err("unreadable captured tail".into());
+        };
+        require(
+            !text.contains("REQUEST_CACHE_SECRET") && !text.contains("MUST_NOT_DISAPPEAR"),
+            "refused or allowed cache payload leaked into captured text",
+        )?;
+        found_assistant |= *role == Role::Assistant && text == "after metadata";
+    }
+    require(
+        found_assistant,
+        "assistant after permitted bookkeeping was lost",
+    )?;
+    stable.close()?;
+    verify_broken_record_refusal(cx, &mut file, source, before, bad_bookkeeping).await
+}
+
+async fn verify_broken_record_refusal(
+    cx: &ChatCx<'_>,
+    file: &mut std::fs::File,
+    source: RecordId,
+    before: ProjectionRecord,
+    bad_bookkeeping: bool,
+) -> Check {
+    let invalid = if bad_bookkeeping {
+        json!({"type":"api-request","sessionId":cx.conversation.as_str(),"message":{"role":"user","content":"MUST_NOT_DISAPPEAR"}})
+    } else {
+        json!({"type":"user","sessionId":cx.conversation.as_str(),"uuid":"broken-known","message":{"role":"user"}})
+    };
+    writeln!(file, "{invalid}")?;
+    file.sync_all()?;
+    let error = cx
+        .capture
+        .catch_up(
+            cx.admitted.clone(),
+            cx.conversation.clone(),
+            cx.native_path.clone(),
+            &bound()?,
+        )
+        .await
+        .err()
+        .ok_or("invalid known record was silently discarded")?;
+    if bad_bookkeeping {
+        require(
+            matches!(
+                error.body.detail(),
+                se_types::Detail::UsageInvalidValue(detail)
+                    if detail.expected == "bookkeeping without message or content fields"
+            ),
+            "wrong refusal for message-bearing bookkeeping",
+        )?;
+    }
+    let mut after = cx.execution.reader.snapshot(cx.f.self_scope(&cx.f.a))?;
+    let current = present(after.capture_source(source)?)?;
+    require(
+        current.revision == before.revision
+            && current.current.header.event == before.current.header.event,
+        "invalid known record advanced the durable cursor",
+    )?;
+    require(
+        after
+            .turns(cx.f.a.clone(), budget(20, 100_000, None)?)?
+            .items()
+            .len()
+            == 12,
+        "invalid known record fabricated a turn",
+    )?;
+    after.close()?;
+    Ok(())
+}
+
+fn capture_case(bad_bookkeeping: bool) -> Check {
+    let initialized = initialize_host_process()?;
+    let f = Fixture::new()?;
+    seed(&f)?;
+    let s = session::session()?;
+    let conversation = ProviderSessionId::new(format!("provider-{}", f.a.as_str()))?;
+    let (seeded, pin) = seed_capture_chat_session(&f, &s, &conversation)?;
+    let native_path = NativePath::from_local(seeded.path.clone())?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(2)
         .build()?;
     rt.block_on(async {
-        let mut host = HostedRuntime::prepare(initialized, start(&f)?, rt.handle().clone(), &bound()?).await?;
+        let mut host =
+            HostedRuntime::prepare(initialized, start(&f)?, rt.handle().clone(), &bound()?).await?;
         configure_private_listener(&mut host)?;
         let capture = host.capture_handle();
-        capture.bind(TranscriptPin { identity: SessionIdentity {project:f.project.clone(),agent:f.a.clone(),session:s.clone()}, conversation:conversation.clone(), path:native_path.clone(),file_identity:Sha256::from_bytes(pin.identity()) }, source, pin, &bound()?).await?;
+        capture
+            .bind(
+                TranscriptPin {
+                    identity: SessionIdentity {
+                        project: f.project.clone(),
+                        agent: f.a.clone(),
+                        session: s.clone(),
+                    },
+                    conversation: conversation.clone(),
+                    path: native_path.clone(),
+                    file_identity: Sha256::from_bytes(pin.identity()),
+                },
+                seeded.source,
+                pin,
+                &bound()?,
+            )
+            .await?;
         let execution = host.execution_context();
         let mut admitted = f.self_scope(&f.a).admission;
         admitted.session = Some(s.clone());
@@ -84,90 +309,44 @@ fn capture_case(bad_bookkeeping: bool) -> Check {
         let listener = host.listen(rt.handle().clone(), &bound()?).await?;
         let consumer = async {
             let result: Check = async {
-                let result = capture.catch_up(admitted.clone(), conversation.clone(), native_path.clone(), &bound()?).await?;
-                require(result.capture_commits.len() == 4, "metadata, tool facts or real chat missing")?;
+                let result = capture
+                    .catch_up(
+                        admitted.clone(),
+                        conversation.clone(),
+                        native_path.clone(),
+                        &bound()?,
+                    )
+                    .await?;
+                require(
+                    result.capture_commits.len() == 4,
+                    "metadata, tool facts or real chat missing",
+                )?;
                 let mut snapshot = execution.reader.snapshot(f.self_scope(&f.a))?;
                 let page = snapshot.turns(f.a.clone(), budget(20, 100_000, None)?)?;
-                let mut texts = Vec::new();
-                let mut metadata = 0;
-                let mut tools = 0;
-                for event in page.items() {
-                    let EventBody::SessionTurn { role, text:StoredText::Present(text), evidence, .. } = &event.body else { return Err("unexpected captured event".into()); };
-                    match role {
-                        Role::User | Role::Assistant => texts.push(text.clone()),
-                        Role::System => {
-                            let body: serde_json::Value = serde_json::from_str(text)?;
-                            require(body["schema"] == "se.transcript-event/v1", "metadata schema missing")?;
-                            require(!text.contains("CACHE_SECRET") && !text.contains("TOOL_SECRET"), "provider payload leaked into metadata")?;
-                            if body["kind"] == "captured-tool" {
-                                let record = se_core::ops::transcript::Record::decode(text)?;
-                                let tool = record.captured_tool.ok_or("native tool fact missing")?;
-                                require(matches!(tool.native, se_core::ops::transcript::tool::NativeIdentity::Unknown(_)), "missing native identity was fabricated")?;
-                                tools += 1;
-                            }
-                            metadata += 1;
-                        }
-                        Role::Tool => return Err("tool role was published".into()),
-                    }
-                    let start = usize::try_from(evidence.offset)?;
-                    let end = start + usize::try_from(evidence.length)?;
-                    let hash: [u8;32] = Hasher::digest(&bytes[start..end]).into();
-                    require(evidence.sha256 == Some(hash), "raw native evidence digest differs")?;
-                }
-                require(metadata == 7 && tools == 2, "metadata lost its durable representation")?;
-                texts.sort();
-                require(texts == vec!["real assistant", "real user λ", "second real user"], format!("wrong public chat: {texts:?}"))?;
-
+                verify_initial_chat_and_metadata(page.items(), &seeded.bytes)?;
                 snapshot.close()?;
-                let mut file = OpenOptions::new().append(true).open(&path)?;
-                // The allow-list admits payloads only for api-request-blob and
-                // queue-operation; api-request with payload must refuse below.
-                writeln!(file, "{}", json!({"type":"api-request-blob","message":{"role":"user","content":"REQUEST_CACHE_SECRET"}}))?;
-                file.sync_all()?;
-                writeln!(file, "{}", json!({"type":"assistant","sessionId":conversation.as_str(),"uuid":"after-metadata","message":{"role":"assistant","content":"after metadata"}}))?;
-                file.sync_all()?;
-                let added = capture.catch_up(admitted.clone(), conversation.clone(), native_path.clone(), &bound()?).await?;
-                require(added.capture_commits.len() == 1, "permitted cache metadata blocked the real assistant")?;
-                let mut stable = execution.reader.snapshot(f.self_scope(&f.a))?;
-                let before = present(stable.capture_source(source)?)?;
-                let retained = stable.turns(f.a.clone(), budget(20,100_000,None)?)?;
-                require(retained.items().len() == 12, "permitted cache and real assistant were not retained exactly")?;
-                let mut found_assistant = false;
-                for event in retained.items() {
-                    let EventBody::SessionTurn { role, text:StoredText::Present(text), .. } = &event.body
-                        else { return Err("unreadable captured tail".into()); };
-                    require(!text.contains("REQUEST_CACHE_SECRET") && !text.contains("MUST_NOT_DISAPPEAR"),
-                        "refused or allowed cache payload leaked into captured text")?;
-                    found_assistant |= *role == Role::Assistant && text == "after metadata";
-                }
-                require(found_assistant, "assistant after permitted bookkeeping was lost")?;
-                stable.close()?;
-                let invalid = if bad_bookkeeping {
-                    json!({"type":"api-request","sessionId":conversation.as_str(),"message":{"role":"user","content":"MUST_NOT_DISAPPEAR"}})
-                } else {
-                    json!({"type":"user","sessionId":conversation.as_str(),"uuid":"broken-known","message":{"role":"user"}})
+                let cx = ChatCx {
+                    f: &f,
+                    capture: &capture,
+                    execution: &execution,
+                    admitted,
+                    conversation,
+                    native_path,
                 };
-                writeln!(file, "{}", invalid)?;
-                file.sync_all()?;
-                let error = capture.catch_up(admitted, conversation, native_path, &bound()?).await
-                    .err().ok_or("invalid known record was silently discarded")?;
-                if bad_bookkeeping {
-                    require(matches!(error.body.detail(), se_types::Detail::UsageInvalidValue(detail)
-                        if detail.expected == "bookkeeping without message or content fields"), "wrong refusal for message-bearing bookkeeping")?;
-                }
-                let mut after = execution.reader.snapshot(f.self_scope(&f.a))?;
-                let current = present(after.capture_source(source)?)?;
-                require(current.revision == before.revision && current.current.header.event == before.current.header.event, "invalid known record advanced the durable cursor")?;
-                require(after.turns(f.a.clone(), budget(20,100_000,None)?)?.items().len() == 12, "invalid known record fabricated a turn")?;
-                after.close()?;
-                Ok(())
-            }.await;
-            stop.request(); result
+                verify_tail_and_broken_record(&cx, &seeded, bad_bookkeeping).await
+            }
+            .await;
+            stop.request();
+            result
         };
         let (exit, result) = join(host.serve(listener), consumer).await;
-        drop(capture); drop(execution);
+        drop(capture);
+        drop(execution);
         let report = exit.finish(&bound()?).await;
-        require(report.transport_closed && report.endpoint_retired, "capture host transport cleanup incomplete")?;
+        require(
+            report.transport_closed && report.endpoint_retired,
+            "capture host transport cleanup incomplete",
+        )?;
         result
     })
 }

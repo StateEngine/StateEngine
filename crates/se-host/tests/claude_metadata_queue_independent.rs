@@ -26,11 +26,83 @@ fn transcript() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     Ok(bytes)
 }
 
+fn seed_metadata_queue_session(
+    f: &Fixture,
+    session: &se_types::SessionId,
+    conversation: &ProviderSessionId,
+    bytes: &[u8],
+) -> Result<(NativePath, RecordId, se_proc::NativeSourcePin), Box<dyn std::error::Error>> {
+    let path = f.home.join("transcript.jsonl");
+    std::fs::write(&path, bytes)?;
+    let native = NativePath::from_local(path.clone())?;
+    let pin = se_proc::NativeSourcePin::open(&path)?.ok_or("source absent")?;
+    let source = session::record()?;
+    let (mut direct, lease) = direct(f)?;
+    let mut prepared = session::prepared(f, session, &f.a);
+    if let EventBody::SessionPrepared { native_ref, .. } = &mut prepared {
+        *native_ref = conversation.as_str().into();
+    }
+    direct.append(
+        f.batch(
+            f.owner_project(),
+            Some(fixture::request("fixture-metadata-queue-setup")?),
+            vec![
+                prepared,
+                session::activated(session)?,
+                session::source(source, session, &pin.identity(), Expected::Absent),
+            ],
+        )?,
+        &*lease,
+    )?;
+    direct.close()?;
+    drop(lease);
+    Ok((native, source, pin))
+}
+
+fn verify_metadata_queue_turns(
+    items: &[StoredEvent],
+) -> Result<([usize; 2], u64), Box<dyn std::error::Error>> {
+    let mut roles = [0, 0];
+    let mut queue_count = 0;
+    for event in items {
+        let EventBody::SessionTurn {
+            role,
+            text: StoredText::Present(text),
+            ..
+        } = &event.body
+        else {
+            return Err("unreadable captured body".into());
+        };
+        match role {
+            Role::User => roles[0] += 1,
+            Role::Assistant => roles[1] += 1,
+            Role::System => {
+                let body: Value = serde_json::from_str(text)?;
+                require(
+                    body.get("queued_input").is_none(),
+                    "bookkeeping invented queued input or an outcome",
+                )?;
+                if body["kind"] == "queue-operation" {
+                    queue_count += body["count"]
+                        .as_u64()
+                        .ok_or("queue aggregate count absent")?;
+                }
+            }
+            Role::Tool => return Err("tool-only native message became chat".into()),
+        }
+    }
+    require(
+        roles == [1, 2],
+        "native text turns were lost behind queue bookkeeping",
+    )?;
+    require(
+        queue_count == 2,
+        "metadata enqueue/dequeue were not counted exactly",
+    )?;
+    Ok((roles, queue_count))
+}
+
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn metadata_queue_records_are_counted_and_later_native_turns_are_readable() -> Check {
     let initialized = initialize_host_process()?;
     let bytes = transcript()?;
@@ -48,42 +120,33 @@ fn metadata_queue_records_are_counted_and_later_native_turns_are_readable() -> C
     let f = Fixture::new()?;
     seed(&f)?;
     let session = session::session()?;
-    let path = f.home.join("transcript.jsonl");
-    std::fs::write(&path, &bytes)?;
-    let native = NativePath::from_local(path.clone())?;
-    let pin = se_proc::NativeSourcePin::open(&path)?.ok_or("source absent")?;
-    let source = session::record()?;
-    let (mut direct, lease) = direct(&f)?;
-    let mut prepared = session::prepared(&f, &session, &f.a);
-    if let EventBody::SessionPrepared { native_ref, .. } = &mut prepared {
-        *native_ref = conversation.as_str().into();
-    }
-    direct.append(
-        f.batch(
-            f.owner_project(),
-            Some(fixture::request("fixture-metadata-queue-setup")?),
-            vec![
-                prepared,
-                session::activated(&session)?,
-                session::source(source, &session, &pin.identity(), Expected::Absent),
-            ],
-        )?,
-        &*lease,
-    )?;
-    direct.close()?;
-    drop(lease);
+    let (native, source, pin) = seed_metadata_queue_session(&f, &session, &conversation, &bytes)?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(2)
         .build()?;
     rt.block_on(async {
-        let mut host = HostedRuntime::prepare(initialized, start(&f)?, rt.handle().clone(), &bound()?).await?;
+        let mut host =
+            HostedRuntime::prepare(initialized, start(&f)?, rt.handle().clone(), &bound()?).await?;
         configure_private_listener(&mut host)?;
         let capture = host.capture_handle();
-        capture.bind(TranscriptPin {
-            identity: SessionIdentity { project:f.project.clone(), agent:f.a.clone(), session:session.clone() },
-            conversation:conversation.clone(), path:native.clone(), file_identity:Sha256::from_bytes(pin.identity()),
-        }, source, pin, &bound()?).await?;
+        capture
+            .bind(
+                TranscriptPin {
+                    identity: SessionIdentity {
+                        project: f.project.clone(),
+                        agent: f.a.clone(),
+                        session: session.clone(),
+                    },
+                    conversation: conversation.clone(),
+                    path: native.clone(),
+                    file_identity: Sha256::from_bytes(pin.identity()),
+                },
+                source,
+                pin,
+                &bound()?,
+            )
+            .await?;
         let execution = host.execution_context();
         let mut scope = f.self_scope(&f.a);
         scope.admission.session = Some(session);
@@ -91,42 +154,37 @@ fn metadata_queue_records_are_counted_and_later_native_turns_are_readable() -> C
         let listener = host.listen(rt.handle().clone(), &bound()?).await?;
         let consumer = async {
             let result: Check = async {
-                capture.catch_up(scope.admission.clone(), conversation.clone(), native.clone(), &bound()?).await?;
+                capture
+                    .catch_up(scope.admission.clone(), conversation.clone(), native.clone(), &bound()?)
+                    .await?;
                 let mut snapshot = execution.reader.snapshot(scope.clone())?;
                 let page = snapshot.turns(f.a.clone(), budget(100, 1_000_000, None)?)?;
-                let mut roles = [0, 0];
-                let mut queue_count = 0;
-                for event in page.items() {
-                    let EventBody::SessionTurn { role, text:StoredText::Present(text), .. } = &event.body
-                        else { return Err("unreadable captured body".into()); };
-                    match role {
-                        Role::User => roles[0] += 1,
-                        Role::Assistant => roles[1] += 1,
-                        Role::System => {
-                            let body: Value = serde_json::from_str(text)?;
-                            require(body.get("queued_input").is_none(), "bookkeeping invented queued input or an outcome")?;
-                            if body["kind"] == "queue-operation" {
-                                queue_count += body["count"].as_u64().ok_or("queue aggregate count absent")?;
-                            }
-                        }
-                        Role::Tool => return Err("tool-only native message became chat".into()),
-                    }
-                }
-                require(roles == [1, 2], "native text turns were lost behind queue bookkeeping")?;
-                require(queue_count == 2, "metadata enqueue/dequeue were not counted exactly")?;
+                let (roles, queue_count) = verify_metadata_queue_turns(page.items())?;
                 let before = present(snapshot.capture_source(source)?)?;
                 snapshot.close()?;
-                capture.catch_up(scope.admission.clone(), conversation, native, &bound()?).await?;
+                capture
+                    .catch_up(scope.admission.clone(), conversation, native, &bound()?)
+                    .await?;
                 let mut replay = execution.reader.snapshot(scope)?;
                 let after = present(replay.capture_source(source)?)?;
                 require(before.revision == after.revision, "unchanged native tail advanced on replay")?;
-                require(replay.turns(f.a.clone(), budget(100, 1_000_000, None)?)?.items().len() == page.items().len(),
-                    "replay duplicated captured turns")?;
+                require(
+                    replay.turns(f.a.clone(), budget(100, 1_000_000, None)?)?.items().len()
+                        == page.items().len(),
+                    "replay duplicated captured turns",
+                )?;
                 replay.close()?;
-                eprintln!("native_records={} bytes={} queue_bookkeeping={} user_turns={} assistant_turns={} replay_duplicates=0",
-                    records.len(), bytes.len(), queue_count, roles[0], roles[1]);
+                eprintln!(
+                    "native_records={} bytes={} queue_bookkeeping={} user_turns={} assistant_turns={} replay_duplicates=0",
+                    records.len(),
+                    bytes.len(),
+                    queue_count,
+                    roles[0],
+                    roles[1]
+                );
                 Ok(())
-            }.await;
+            }
+            .await;
             stop.request();
             result
         };
@@ -134,7 +192,10 @@ fn metadata_queue_records_are_counted_and_later_native_turns_are_readable() -> C
         drop(capture);
         drop(execution);
         let report = exit.finish(&bound()?).await;
-        require(report.transport_closed && report.endpoint_retired, "capture consumer cleanup incomplete")?;
+        require(
+            report.transport_closed && report.endpoint_retired,
+            "capture consumer cleanup incomplete",
+        )?;
         result
     })
 }
