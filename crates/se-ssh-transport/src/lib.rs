@@ -1,6 +1,6 @@
 //! Owned system OpenSSH commands, file transfers and bounded diagnostics.
 //! Pairing, image verification and publication remain with their callers.
-use crate::child_io::Child;
+use se_harness::child_io::Child;
 use se_remote::{
     channel::{unavailable, unavailable_with_next_step},
     ssh::validate_destination,
@@ -24,11 +24,11 @@ mod sftp;
 mod transfer;
 #[cfg(all(test, windows))]
 mod windows_stdout_eof;
-pub(crate) use diagnostics::Diagnostics;
+pub use diagnostics::Diagnostics;
 use diagnostics::read_errors;
-pub(crate) use transfer::upload;
+pub use transfer::upload;
 
-pub(crate) fn client(program: impl AsRef<std::ffi::OsStr>) -> Command {
+pub fn client(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut command = Command::from(se_proc::background_command(program));
     command.kill_on_drop(true);
     // Every caller replaces stdio. A Windows SSH login's inherited descriptor
@@ -45,7 +45,7 @@ const BOOTSTRAP_BOUND: Duration = Duration::from_secs(25);
 /// tail of the client's stderr. The tail keeps a refusal from hiding the
 /// cause (issue 381: "remote platform discovery failed" over a refused key).
 #[derive(Debug)]
-pub(crate) struct SshOutcome {
+pub struct SshOutcome {
     pub success: bool,
     pub stdout: Vec<u8>,
     pub stderr_tail: String,
@@ -63,7 +63,7 @@ struct DeadlineEvidence {
     stderr_closed: bool,
 }
 
-pub(crate) async fn command(destination: &str, command: String) -> Result<SshOutcome> {
+pub async fn command(destination: &str, command: String) -> Result<SshOutcome> {
     run("ssh", destination, command, BOOTSTRAP_BOUND).await
 }
 
@@ -74,11 +74,11 @@ async fn run(
     bound: Duration,
 ) -> Result<SshOutcome> {
     validate_destination(destination)?;
-    let mut child = crate::child_io::spawn(
+    let mut child = se_harness::child_io::spawn(
         client(program)
             .args(["-T", "-o", "BatchMode=yes", destination, &command])
             .stdin(Stdio::null()),
-        crate::child_io::Pipes {
+        se_harness::child_io::Pipes {
             stdin: false,
             stdout: true,
             stderr: true,
@@ -259,7 +259,7 @@ fn pipe_state(closed: bool) -> &'static str {
 }
 
 /// A failed command retains custody until this specific native child is joined.
-pub(crate) async fn close(child: &mut Child) -> Result<()> {
+pub async fn close(child: &mut Child) -> Result<()> {
     if child
         .try_wait()
         .map_err(|_| unavailable("owned SSH process custody is unreadable"))?

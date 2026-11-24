@@ -7,7 +7,7 @@ use std::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-pub(crate) async fn upload(
+pub async fn upload(
     destination: &str,
     path: &std::path::Path,
     upload: &str,
@@ -16,12 +16,12 @@ pub(crate) async fn upload(
 ) -> Result<()> {
     let batch = super::sftp::upload_batch(path, upload)?;
     let (sftp, ssh) = super::sftp::clients()?;
-    let mut child = crate::child_io::spawn(
+    let mut child = se_harness::child_io::spawn(
         super::client(sftp)
             .args(["-b", "-", "-o", "BatchMode=yes", "-S"])
             .arg(ssh)
             .arg(destination),
-        crate::child_io::Pipes {
+        se_harness::child_io::Pipes {
             stdin: true,
             stdout: true,
             stderr: true,
