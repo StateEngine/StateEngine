@@ -44,11 +44,16 @@ impl LaunchCoordinator {
         } else {
             self.qualify_delegate(&plan, deadline).await?;
             let commit_plan = plan.clone();
-            self.store
-                .commit(admission.clone(), deadline, None, move |kernel, cx| {
-                    create_ephemeral_batch(kernel, &commit_plan, cx)
-                })
-                .await?;
+            {
+                let _create_guard =
+                    crate::runtime::pool::within(deadline, self.delegate_create_lock.lock())
+                        .await?;
+                self.store
+                    .commit(admission.clone(), deadline, None, move |kernel, cx| {
+                        create_ephemeral_batch(kernel, &commit_plan, cx)
+                    })
+                    .await?;
+            }
             let wait = Duration::from_secs(u64::from(plan.ephemeral.ttl_seconds))
                 .saturating_add(Duration::from_millis(100));
             self.arm_ephemeral_ttl(wait);

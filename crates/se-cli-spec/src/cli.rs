@@ -334,6 +334,7 @@ fn input_command_agent(name: &str, c: Command) -> Command {
             .arg(value("reasoning-effort").help("Per-agent reasoning effort"))
             .arg(value("context-window").help("Per-agent positive token count")),
         "delegate.start" => c
+            .subcommand_negates_reqs(true)
             .arg(value("task").required(true).help("Initial task prompt for the temporary agent"))
             .arg(value("role").help("Short role label for the temporary name tmp-<role>-<4hex>"))
             .arg(value("provider").value_parser(["claude", "codex", "secode", "acp"]).help("Provider for the temporary agent: claude, codex, secode or acp"))

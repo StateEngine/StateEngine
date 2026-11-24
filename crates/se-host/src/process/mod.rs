@@ -128,6 +128,7 @@ pub struct LaunchCoordinator {
     stopping: std::sync::atomic::AtomicBool,
     orphans: std::sync::Mutex<std::collections::BTreeSet<se_types::LifecycleId>>,
     ephemeral_ttl: Arc<ephemeral::TtlTimer>,
+    delegate_create_lock: tokio::sync::Mutex<()>,
 }
 struct ProviderHarnesses {
     claude: Arc<ClaudeHarness>,
@@ -253,6 +254,7 @@ impl LaunchCoordinator {
             stopping: std::sync::atomic::AtomicBool::new(false),
             orphans: std::sync::Mutex::default(),
             ephemeral_ttl: Arc::new(ephemeral::TtlTimer::new()),
+            delegate_create_lock: tokio::sync::Mutex::new(()),
         }))
     }
 
