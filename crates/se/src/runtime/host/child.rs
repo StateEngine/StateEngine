@@ -82,19 +82,21 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
             .ok_or_else(|| invalid("a nonzero host generation"))?,
     )?;
     serve(
-        home,
-        configuration,
-        persisted,
-        generation,
-        auto_start,
-        #[cfg(unix)]
-        se_proc::native_ipc::UnixSocketPaths {
-            runtime_directory: (!runtime_directory.is_empty())
-                .then(|| PathBuf::from(runtime_directory)),
-            temporary_directory: (!temporary_directory.is_empty())
-                .then(|| PathBuf::from(temporary_directory)),
+        ServeRequest {
+            home,
+            configuration,
+            machine: persisted,
+            generation,
+            auto_start,
+            #[cfg(unix)]
+            socket_paths: se_proc::native_ipc::UnixSocketPaths {
+                runtime_directory: (!runtime_directory.is_empty())
+                    .then(|| PathBuf::from(runtime_directory)),
+                temporary_directory: (!temporary_directory.is_empty())
+                    .then(|| PathBuf::from(temporary_directory)),
+            },
+            instance: Some(instance),
         },
-        Some(instance),
         guard,
         &mut |_| Ok(()),
     )
@@ -112,34 +114,47 @@ pub(crate) fn foreground(
     })?;
     let generation = HostGeneration::new((u64::from_le_bytes(bytes) & i64::MAX as u64).max(1))?;
     serve(
-        home,
-        configuration,
-        machine,
-        generation,
-        false,
-        #[cfg(unix)]
-        crate::config::unix_socket_paths()?,
-        None,
+        ServeRequest {
+            home,
+            configuration,
+            machine,
+            generation,
+            auto_start: false,
+            #[cfg(unix)]
+            socket_paths: crate::config::unix_socket_paths()?,
+            instance: None,
+        },
         &mut None,
         ready,
     )
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "One shared host entry retains the authenticated detached frame or the authorized foreground callback."
-)]
-fn serve(
+struct ServeRequest {
     home: PathBuf,
     configuration: PathBuf,
     machine: se_types::MachineId,
     generation: HostGeneration,
     auto_start: bool,
-    #[cfg(unix)] socket_paths: se_proc::native_ipc::UnixSocketPaths,
+    #[cfg(unix)]
+    socket_paths: se_proc::native_ipc::UnixSocketPaths,
     instance: Option<se_proc::HostInstanceId>,
+}
+
+fn serve(
+    request: ServeRequest,
     guard: &mut Option<se_proc::RuntimeBootstrap>,
     ready: &mut (dyn FnMut(&se_host::HostedListener) -> Result<()> + Send),
 ) -> Result<u8> {
+    let ServeRequest {
+        home,
+        configuration,
+        machine,
+        generation,
+        auto_start,
+        #[cfg(unix)]
+        socket_paths,
+        instance,
+    } = request;
     let mut phases = super::startup_log::StartupLog::success_phases(&home);
     note(&mut phases, "Host process preparation started");
     #[cfg(windows)]
