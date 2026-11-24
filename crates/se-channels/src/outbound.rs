@@ -79,10 +79,13 @@ impl Channels {
         let attempt = output.attempt + 1;
         let result = match (chunks, token) {
             (Ok(chunks), Some(token)) => {
-                self.send_parts(
-                    &state, &output, attempt, &token, &chunks, &buttons, deadline,
-                )
-                .await?
+                let payload = SendPayload {
+                    token: &token,
+                    chunks: &chunks,
+                    buttons: &buttons,
+                };
+                self.send_parts(&state, &output, attempt, &payload, deadline)
+                    .await?
             }
             (Err(reason), _) => Err(reason),
             _ => Err(ChannelError::InvalidInput),
@@ -91,25 +94,23 @@ impl Channels {
         self.finish_output(&state, &output, attempt, outcome, deadline)
             .await
     }
-    #[allow(clippy::too_many_arguments)]
     async fn send_parts(
         &self,
         state: &Connection,
         output: &Outbound,
         attempt: u64,
-        token: &se_types::Secret,
-        chunks: &[String],
-        buttons: &[ActionButton],
+        payload: &SendPayload<'_>,
         deadline: &Deadline,
     ) -> Result<ChannelResult<ExternalId>> {
         let Pairing::Paired { phone } = &state.pairing else {
             return Ok(Err(ChannelError::BindingRevoked));
         };
-        if output.provider_messages.len() > chunks.len() {
+        if output.provider_messages.len() > payload.chunks.len() {
             return Ok(Err(ChannelError::InvalidInput));
         }
         let mut last = output.provider_messages.last().cloned();
-        for (part, text) in chunks
+        for (part, text) in payload
+            .chunks
             .iter()
             .enumerate()
             .skip(output.provider_messages.len())
@@ -118,14 +119,14 @@ impl Channels {
             if current.revision != state.revision {
                 return Ok(Err(ChannelError::BindingRevoked));
             }
-            let buttons = if part + 1 == chunks.len() {
-                buttons
+            let buttons = if part + 1 == payload.chunks.len() {
+                payload.buttons
             } else {
                 &[]
             };
             let id = match self
                 .transport(state.connector)?
-                .send(token, &phone.private_chat, text, buttons)
+                .send(payload.token, &phone.private_chat, text, buttons)
                 .await
             {
                 Ok(id) => id,
@@ -349,6 +350,12 @@ impl Channels {
             }
         }
     }
+}
+
+struct SendPayload<'a> {
+    token: &'a se_types::Secret,
+    chunks: &'a [String],
+    buttons: &'a [ActionButton],
 }
 
 fn chunks(text: &str, limit: usize) -> ChannelResult<Vec<String>> {

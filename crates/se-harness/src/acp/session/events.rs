@@ -69,7 +69,7 @@ impl Session {
                     if let (Some(tool), Some(active)) = (tool, state.active.as_mut()) {
                         active.permission_tool(tool)?;
                     }
-                    let (response, reason) = if state.cancelling {
+                    let (response, reason) = if state.cancelling != Cancellation::None {
                         (
                             json!({"outcome":{"outcome":"cancelled"}}),
                             Some("Cancellation owns this prompt; this tool call was refused."),
@@ -235,7 +235,7 @@ fn update_history(state: &mut State, update: &Value) -> Result<()> {
 }
 
 fn response_initialize(state: &mut State, result: Value) -> Result<()> {
-    if !state.initializing {
+    if state.handshake != Handshake::Initializing {
         return Err(failure(
             "ACP initialization",
             "The original handshake is not active; stop this agent and retry launch with a fresh connection.",
@@ -254,8 +254,7 @@ fn response_initialize(state: &mut State, result: Value) -> Result<()> {
         .get("agentCapabilities")
         .cloned()
         .unwrap_or_else(|| json!({}));
-    state.initialized = true;
-    state.initializing = false;
+    state.handshake = Handshake::Initialized;
 
     Ok(())
 }
@@ -347,8 +346,8 @@ fn response_prompt(state: &mut State, id: u64, result: Value) -> Result<()> {
     let completed = turn.seal(id, &result)?;
     state.active = None;
     state.phase_started = Some(std::time::Instant::now());
-    if state.cancel_written {
-        state.cancelling = false;
+    if state.cancelling == Cancellation::Written {
+        state.cancelling = Cancellation::None;
     }
     // A terminal prompt does not prove our permission reply finished.
     // Keep uncertain responses until their owned writer confirms them;

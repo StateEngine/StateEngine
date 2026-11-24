@@ -46,15 +46,24 @@ pub struct Observation {
     pub failure: Option<ErrorBody>,
     pub processed: u64,
 }
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+enum Handshake {
+    #[default]
+    Idle,
+    Initializing,
+    Initialized,
+}
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+enum Cancellation {
+    #[default]
+    None,
+    Requested,
+    Written,
+}
 #[derive(Default)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 struct State {
     permission_refusal: Option<PermissionRefusal>,
-    initializing: bool,
-    initialized: bool,
+    handshake: Handshake,
     required_mode: Option<String>,
     current_mode: Option<String>,
     capabilities: Value,
@@ -69,8 +78,7 @@ struct State {
     used_keys: BTreeSet<String>,
     permissions: BTreeMap<u64, Permission>,
     next_permission: u64,
-    cancelling: bool,
-    cancel_written: bool,
+    cancelling: Cancellation,
     phase_started: Option<std::time::Instant>,
     processed: u64,
     failure: Option<ErrorBody>,
@@ -136,7 +144,7 @@ impl Session {
             permission_refusal: state.permission_refusal.clone(),
             conversation: state.conversation.clone(),
             active_input: state.active.as_ref().map(|v| v.input_key.clone()),
-            cancelling: state.cancelling,
+            cancelling: state.cancelling != Cancellation::None,
             phase_started: state.phase_started,
             current_mode: state.current_mode.clone(),
             permissions: state.permissions.values().map(|v| v.view.clone()).collect(),
@@ -154,13 +162,13 @@ impl Session {
         {
             let mut state = self.lock()?;
             ready(&state)?;
-            if state.initializing || state.initialized {
+            if state.handshake != Handshake::Idle {
                 return Err(failure(
                     "ACP initialization",
                     "original handshake already owned; do not replay",
                 ));
             }
-            state.initializing = true;
+            state.handshake = Handshake::Initializing;
         }
         let handshake = self
             .connection
@@ -201,7 +209,10 @@ impl Session {
         let (method, params) = {
             let mut state = self.lock()?;
             ready(&state)?;
-            if !state.initialized || state.opening || state.conversation.is_some() {
+            if state.handshake != Handshake::Initialized
+                || state.opening
+                || state.conversation.is_some()
+            {
                 return Err(failure(
                     "ACP session",
                     "initialize one unused connection before opening",
@@ -320,7 +331,7 @@ impl Session {
             let mut state = self.lock()?;
             ready(&state)?;
             if state.active.is_some()
-                || state.cancelling
+                || state.cancelling != Cancellation::None
                 || state.completed.len() >= 4
                 || !state.permissions.is_empty()
             {
@@ -348,8 +359,7 @@ impl Session {
             state.active = Some(turn);
             state.phase_started = Some(std::time::Instant::now());
             state.permission_refusal = None;
-            state.cancelling = false;
-            state.cancel_written = false;
+            state.cancelling = Cancellation::None;
             (id, prior_phase)
         };
         self.signal();
@@ -407,14 +417,13 @@ impl Session {
             if state.active.is_none() {
                 return Ok(());
             }
-            if state.cancelling {
+            if state.cancelling != Cancellation::None {
                 return Err(failure(
                     "ACP cancellation",
                     "original cancellation remains owned; observe its outcome without replay",
                 ));
             }
-            state.cancelling = true;
-            state.cancel_written = false;
+            state.cancelling = Cancellation::Requested;
             (
                 state
                     .conversation
@@ -447,9 +456,9 @@ impl Session {
             )
             .await?;
         let mut state = self.lock()?;
-        state.cancel_written = true;
+        state.cancelling = Cancellation::Written;
         if state.active.is_none() {
-            state.cancelling = false;
+            state.cancelling = Cancellation::None;
         }
         drop(state);
         self.signal();
