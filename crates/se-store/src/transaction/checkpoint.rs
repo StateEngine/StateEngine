@@ -118,13 +118,13 @@ fn classify_checkpoint(
     hard: bool,
 ) -> Option<Box<StoreError>> {
     match result {
-        Ok((0, log, done)) if log == done && (!hard || log == 0) => None,
         Ok((_, log, done)) if (log != -1 || done != -1) && (log < 0 || done < 0 || done > log) => {
             Some(fail(
                 StoreErrorCode::Unreadable,
                 "WAL checkpoint returned invalid frame counts",
             ))
         }
+        Ok((0, log, done)) if log == done && (!hard || log == 0) => None,
         Ok(_) => Some(fail(
             StoreErrorCode::Busy,
             "committed checkpoint has pending frames",
@@ -279,5 +279,24 @@ impl Engine {
     }
     pub(crate) fn checkpoint_finished(&mut self, complete: bool) {
         self.checkpoints.pending = !complete;
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// Protects: equal negative frame counts classify as Unreadable even
+    /// though they also satisfy the success arm's `log == done` check.
+    #[test]
+    fn equal_negative_frame_counts_are_unreadable() {
+        let Some(failure) = classify_checkpoint(Ok((0, -2, -2)), false) else {
+            panic!("equal negative frame counts classified as success")
+        };
+        assert_eq!(failure.code, StoreErrorCode::Unreadable);
+        // Valid results keep their previous classification after the reorder.
+        assert!(classify_checkpoint(Ok((0, 0, 0)), false).is_none());
+        let Some(busy) = classify_checkpoint(Ok((1, -1, -1)), false) else {
+            panic!("busy uncheckpointable WAL classified as success")
+        };
+        assert_eq!(busy.code, StoreErrorCode::Busy);
     }
 }
