@@ -11,6 +11,8 @@ pub(super) fn select<S: Snapshot>(
     if let Some(name) = requested {
         return super::select::inventory_at(snapshot, Some(RemovedProjectQuery::Name(name.into())));
     }
+    let cwd = se_proc::canonicalize_path(cwd)
+        .map_err(|e| se_core::scope::unreadable("current directory", &e.to_string()))?;
     for (depth, ancestor) in cwd.ancestors().enumerate() {
         if depth == 64 {
             return Err(se_core::scope::unreadable(

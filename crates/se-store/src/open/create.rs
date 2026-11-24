@@ -105,7 +105,7 @@ fn build_staged(
     }
     reader.bind_identity()?;
     let db = connection::connect_checked(&reader.path, true, o.busy_timeout, |db| {
-        reader.validate_connection(db)
+        reader.validate_connection(db, true)
     })?;
     reader.validate_identity()?;
     if identity.mode == LeaseMode::Host {
