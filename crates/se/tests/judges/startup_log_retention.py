@@ -3,6 +3,7 @@ import ctypes
 import json
 import os
 from pathlib import Path
+import random
 import re
 import shutil
 import socket
@@ -45,7 +46,9 @@ def call(home, *args):
 
 
 def occupied_port():
-    for port in range(24000, 30000):
+    start = random.randrange(10000)
+    for step in range(10000):
+        port = 20000 + (start + step) % 10000
         listener = socket.socket()
         try:
             listener.bind(("127.0.0.1", port))

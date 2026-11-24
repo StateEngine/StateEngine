@@ -9,6 +9,25 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Remove the static `listen_port` written by `se init` so parallel test hosts
+/// bind OS-selected ephemeral loopback ports (port 0) instead of colliding in
+/// `20000..=29999`. Callers that test explicit `runtime.listen_port` behavior
+/// must not call this.
+#[allow(
+    dead_code,
+    reason = "Explicit-port tests include runtime_host without stripping runtime.listen_port."
+)]
+pub fn use_ephemeral_listen_port(home: &Path) -> Check {
+    let path = home.join("config.toml");
+    let text = std::fs::read_to_string(&path)?;
+    let mut table: toml::Table = toml::from_str(&text)?;
+    if let Some(runtime) = table.get_mut("runtime").and_then(toml::Value::as_table_mut) {
+        runtime.remove("listen_port");
+    }
+    std::fs::write(&path, toml::to_string_pretty(&table)?)?;
+    Ok(())
+}
+
 /// Holds the exact observed native instance; PID reuse never proves its exit.
 pub struct RunningHost {
     #[cfg(windows)]

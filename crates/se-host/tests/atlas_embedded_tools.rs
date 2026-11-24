@@ -184,15 +184,10 @@ fn check(image: Option<std::path::PathBuf>) -> Check {
         br#"{"schema":"stateengine-machine/v1","machine_id":"atlas-native-catalogue"}"#,
     )?;
     protected(&f, "credential", &[29; 32])?;
-    // ConfigFile defaults are product defaults; the test does not opt into
-    // launching a provider, capture services or a substitute query controller.
-    let mut config = se_config::config_policy::ConfigFile::default();
-    let listener = (20000..30000)
-        .find_map(|port| std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).ok())
-        .ok_or("no available configured listener port")?;
-    let listener_port = listener.local_addr()?.port();
-    config.runtime.listen_port = Some(listener_port);
-    drop(listener);
+    // ConfigFile defaults are product defaults; leaving runtime.listen_port unset
+    // lets the embedded host bind an OS-selected ephemeral loopback port without
+    // colliding with parallel tests in 20000..=29999.
+    let config = se_config::config_policy::ConfigFile::default();
     fs::write(
         f.options.state_directory.join("config.toml"),
         toml::to_string(&config)?,
@@ -340,6 +335,11 @@ fn check(image: Option<std::path::PathBuf>) -> Check {
             let status =
                 tokio::task::spawn_blocking(move || hosted_status(&home, project)).await??;
             let discovery = if let Some(image) = image {
+                let listener_port = se_host::client::endpoint::decode_endpoint(&fs::read(
+                    f.options.state_directory.join("endpoint.json"),
+                )?)?
+                .listener_port
+                .ok_or("embedded listener port absent in endpoint.json")?;
                 let http = transport::rpc(listener_port, "atlas-http-discovery", "tools/list", serde_json::json!({})).await?;
                 let home = f.options.state_directory.clone();
                 let session_handle = discovery_session.to_string();
