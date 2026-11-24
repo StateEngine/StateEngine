@@ -161,7 +161,8 @@ fn capability(source: &Handle, rights: u32, code: ProcErrorCode, api: &str) -> P
     {
         return Err(last(code, api));
     }
-    Handle::new(copy, api)
+    // SAFETY: the successful duplication above transferred a new owned reference to `copy`.
+    unsafe { Handle::new(copy, api) }
 }
 fn command_line(executable: &OsStr, arguments: &[std::ffi::OsString]) -> ProcResult<Vec<u16>> {
     let mut line = quoted(executable);
@@ -228,22 +229,21 @@ fn prepare_stdio_handles(mode: LaunchMode, stdio: StandardIo) -> ProcResult<Vec<
             let mut security: SECURITY_ATTRIBUTES = unsafe { zeroed() };
             security.nLength = size_of_val(&security) as u32;
             security.bInheritHandle = 1;
-            Handle::new(
-                // SAFETY: constant terminated null-device name and live attributes;
-                // only this explicit stream duplicate is inheritable.
-                unsafe {
-                    CreateFileW(
-                        wide(OsStr::new("NUL")).as_ptr(),
-                        GENERIC_READ | GENERIC_WRITE,
-                        FILE_SHARE_READ | FILE_SHARE_WRITE,
-                        &security,
-                        OPEN_EXISTING,
-                        FILE_ATTRIBUTE_NORMAL,
-                        ptr::null_mut(),
-                    )
-                },
-                "open child null stream",
-            )?
+            // SAFETY: constant terminated null-device name and live attributes;
+            // only this explicit stream duplicate is inheritable.
+            let raw = unsafe {
+                CreateFileW(
+                    wide(OsStr::new("NUL")).as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    &security,
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    ptr::null_mut(),
+                )
+            };
+            // SAFETY: the successful open above transferred unique ownership to `raw`.
+            unsafe { Handle::new(raw, "open child null stream") }?
         };
         inherited.push(handle);
     }

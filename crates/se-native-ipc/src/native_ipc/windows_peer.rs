@@ -50,12 +50,14 @@ pub(super) fn shared_mapped_image(expected: &ProcessInstance) -> Option<File> {
     // SAFETY: read-only native process query and lifetime witness rights.
     let process =
         unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, 0, fields.pid.get()) };
-    let process = owned(process, "pin expected IPC image process").ok()?;
+    // SAFETY: the OpenProcess result is a newly opened handle or null, which `owned` rejects.
+    let process = unsafe { owned(process, "pin expected IPC image process") }.ok()?;
     let raw = process.as_raw_handle();
     // SAFETY: `raw` is a retained query-capable process handle pinned above.
-    if unsafe { crate::windows_process::process_start(raw) }.ok()? != creation_filetime.get()
-        || security::process_sid(raw).ok()? != security::current_sid().ok()?
-    {
+    let start = unsafe { crate::windows_process::process_start(raw) }.ok()?;
+    // SAFETY: `raw` is a retained query-capable process handle pinned above.
+    let sid = unsafe { security::process_sid(raw) }.ok()?;
+    if start != creation_filetime.get() || sid != security::current_sid().ok()? {
         return None;
     }
     let file = OpenOptions::new()
@@ -128,8 +130,10 @@ fn process_identity(pid: u32) -> IpcNativeResult<(OwnedHandle, String, NonZeroU6
         }
         return Err(cause);
     }
-    let process = owned(raw, "pin IPC peer process")?;
-    let sid = security::process_sid(process.as_raw_handle())
+    // SAFETY: the successful OpenProcess above transferred unique ownership to `raw`.
+    let process = unsafe { owned(raw, "pin IPC peer process") }?;
+    // SAFETY: `process` retains a valid query-capable process handle for this call.
+    let sid = unsafe { security::process_sid(process.as_raw_handle()) }
         .map_err(|cause| process_error(&process, cause))?;
     if sid != security::current_sid()? {
         return Err(refuse(

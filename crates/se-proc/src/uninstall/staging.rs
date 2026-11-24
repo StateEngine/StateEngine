@@ -25,7 +25,8 @@ pub(super) fn elevated() -> Result<bool> {
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) } == 0 {
         return Err(native::last("read uninstall elevation"));
     }
-    let token = native::handle(raw, "own uninstall elevation token")?;
+    // SAFETY: the successful OpenProcessToken above transferred sole ownership of `raw`.
+    let token = unsafe { native::handle(raw, "own uninstall elevation token") }?;
     let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
     let mut length = 0;
     // SAFETY: retained token and exact initialized TOKEN_ELEVATION output.
@@ -50,23 +51,20 @@ pub(super) fn elevated() -> Result<bool> {
     Ok(elevation.TokenIsElevated != 0)
 }
 pub(super) fn open_directory(path: &Path, delete: bool, share_delete: bool) -> Result<File> {
-    let file = File::from(native::handle(
-        // SAFETY: terminated no-follow directory path and explicit read/delete access.
-        unsafe {
-            CreateFileW(
-                native::wide(path)?.as_ptr(),
-                GENERIC_READ | READ_CONTROL | if delete { DELETE } else { 0 },
-                FILE_SHARE_READ
-                    | FILE_SHARE_WRITE
-                    | if share_delete { FILE_SHARE_DELETE } else { 0 },
-                ptr::null(),
-                OPEN_EXISTING,
-                FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
-                ptr::null_mut(),
-            )
-        },
-        "pin elevated uninstall directory",
-    )?);
+    // SAFETY: terminated no-follow directory path and explicit read/delete access.
+    let raw = unsafe {
+        CreateFileW(
+            native::wide(path)?.as_ptr(),
+            GENERIC_READ | READ_CONTROL | if delete { DELETE } else { 0 },
+            FILE_SHARE_READ | FILE_SHARE_WRITE | if share_delete { FILE_SHARE_DELETE } else { 0 },
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+            ptr::null_mut(),
+        )
+    };
+    // SAFETY: the successful open above transferred unique ownership to `raw`.
+    let file = File::from(unsafe { native::handle(raw, "pin elevated uninstall directory") }?);
     directory_id(&file)?;
     Ok(file)
 }

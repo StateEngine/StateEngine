@@ -37,21 +37,20 @@ fn pair(port: &NativeStdio, index: usize) -> ProcResult<File> {
     };
     // SAFETY: private CSPRNG first-instance byte pipe; the descriptor and name
     // backing remain live for creation. The returned handle is immediately owned.
-    let server = Handle::new(
-        unsafe {
-            CreateNamedPipeW(
-                name.as_ptr(),
-                access | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                1,
-                4096,
-                4096,
-                0,
-                &attributes,
-            )
-        },
-        "create provider byte pipe",
-    )?;
+    let raw = unsafe {
+        CreateNamedPipeW(
+            name.as_ptr(),
+            access | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            1,
+            4096,
+            4096,
+            0,
+            &attributes,
+        )
+    };
+    // SAFETY: the successful pipe creation above transferred unique ownership to `raw`.
+    let server = unsafe { Handle::new(raw, "create provider byte pipe") }?;
     let queue = port.queue()?;
     // SAFETY: server and the one host IOCP are retained; no skip-success mode is set.
     if unsafe { CreateIoCompletionPort(server.0, queue.handle.0, queue.key, 0) }.is_null() {
@@ -69,20 +68,19 @@ fn pair(port: &NativeStdio, index: usize) -> ProcResult<File> {
     };
     // SAFETY: matching synchronous client endpoint, noninheritable until the
     // launch backend duplicates exactly the supplied standard-stream handles.
-    let client = Handle::new(
-        unsafe {
-            CreateFileW(
-                name.as_ptr(),
-                desired,
-                0,
-                ptr::null(),
-                OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
-                ptr::null_mut(),
-            )
-        },
-        "open provider child endpoint",
-    )?;
+    let raw = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            desired,
+            0,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+            ptr::null_mut(),
+        )
+    };
+    // SAFETY: the successful open above transferred unique ownership to `raw`.
+    let client = unsafe { Handle::new(raw, "open provider child endpoint") }?;
     let id = state.next_id()?;
     let mut operation = Operation::new(Kind::Connect(index), Vec::new(), None);
     let address = operation.address();

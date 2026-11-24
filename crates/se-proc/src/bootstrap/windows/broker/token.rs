@@ -96,7 +96,8 @@ pub(in crate::bootstrap::windows) fn context(process: HANDLE) -> ProcResult<Cont
     if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut raw) } == 0 {
         return Err(last("open detached broker token"));
     }
-    let token = handle(raw, "own detached broker token")?;
+    // SAFETY: the successful OpenProcessToken above transferred sole ownership of `raw`.
+    let token = unsafe { handle(raw, "own detached broker token") }?;
     token_context(token.as_raw_handle())
 }
 fn token_context(token: HANDLE) -> ProcResult<Context> {

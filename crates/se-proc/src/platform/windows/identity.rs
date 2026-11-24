@@ -36,9 +36,12 @@ impl Handle {
         }
         Ok(())
     }
-    pub fn new(handle: HANDLE, api: &str) -> ProcResult<Self> {
+    /// # Safety
+    /// `handle` must be null, `INVALID_HANDLE_VALUE`, or a newly created/opened handle
+    /// whose sole ownership is transferred to this call.
+    pub unsafe fn new(handle: HANDLE, api: &str) -> ProcResult<Self> {
         use std::os::windows::io::IntoRawHandle;
-        // SAFETY: callers pass only newly created/opened Win32 handles (or null/INVALID_HANDLE_VALUE).
+        // SAFETY: this function's safety contract guarantees `handle`'s precondition.
         unsafe { crate::windows_native::handle(handle, "own process custody handle") }
             .map(|handle| Self(handle.into_raw_handle()))
             .map_err(|e| native(ProcErrorCode::LaunchFailed, api, e.source))

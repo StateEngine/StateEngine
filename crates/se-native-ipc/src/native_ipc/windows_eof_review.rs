@@ -25,12 +25,10 @@ fn pair() -> IpcNativeResult<(NativePipeStream, OwnedHandle)> {
 }
 
 fn event() -> io::Result<OwnedHandle> {
-    owned(
-        // SAFETY: anonymous noninheritable event; ownership transfers immediately.
-        unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) },
-        "create EOF control event",
-    )
-    .map_err(|error| error.source)
+    // SAFETY: anonymous noninheritable event; ownership transfers immediately.
+    let raw = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
+    // SAFETY: the successful event creation above transferred unique ownership to `raw`.
+    unsafe { owned(raw, "create EOF control event") }.map_err(|error| error.source)
 }
 
 fn require_pending(result: i32) -> Check {

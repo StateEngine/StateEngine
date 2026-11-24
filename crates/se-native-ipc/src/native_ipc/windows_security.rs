@@ -9,16 +9,23 @@ use windows_sys::Win32::{
     System::Threading::*,
 };
 
-fn sid_text(sid: PSID) -> IpcNativeResult<String> {
-    // SAFETY: callers retain the token/descriptor owning `sid` for the duration of this call.
+/// # Safety
+/// `sid` must point to a valid Windows SID whose backing buffer remains alive for this call.
+unsafe fn sid_text(sid: PSID) -> IpcNativeResult<String> {
+    // SAFETY: this function's safety contract guarantees `sid`'s precondition.
     unsafe { crate::windows_process::sid_text(sid) }.map_err(|e| error(e.operation, e.source))
 }
 pub(super) fn current_sid() -> IpcNativeResult<String> {
     // SAFETY: GetCurrentProcess returns the documented borrowed pseudo handle, not an owned allocation.
-    process_sid(unsafe { GetCurrentProcess() })
+    let process = unsafe { GetCurrentProcess() };
+    // SAFETY: the current-process pseudo handle is the documented query-capable handle.
+    unsafe { process_sid(process) }
 }
-pub(super) fn process_sid(process: HANDLE) -> IpcNativeResult<String> {
-    // SAFETY: callers pass a retained query-capable process handle or current-process pseudo handle.
+/// # Safety
+/// `process` must be a valid query-capable process handle (or the current-process pseudo
+/// handle), retained by the caller for this call.
+pub(super) unsafe fn process_sid(process: HANDLE) -> IpcNativeResult<String> {
+    // SAFETY: this function's safety contract guarantees `process`'s precondition.
     unsafe { crate::windows_process::process_sid(process) }
         .map_err(|e| error(e.operation, e.source))
 }
@@ -56,10 +63,13 @@ pub(super) fn verify(handle: HANDLE) -> IpcNativeResult<()> {
     let control = descriptor
         .control()
         .map_err(|e| error("read IPC DACL control", e))?;
-    if descriptor.owner.is_null()
-        || sid_text(descriptor.owner)? != current
-        || control & SE_DACL_PROTECTED == 0
-    {
+    let owner_matches = if descriptor.owner.is_null() {
+        false
+    } else {
+        // SAFETY: the queried descriptor owns this SID buffer for the duration of the call.
+        unsafe { sid_text(descriptor.owner) }? == current
+    };
+    if !owner_matches || control & SE_DACL_PROTECTED == 0 {
         return Err(refuse(
             IpcNativeErrorCode::UnsafeEndpoint,
             "protected current-user IPC DACL required",
@@ -90,7 +100,10 @@ pub(super) fn verify(handle: HANDLE) -> IpcNativeResult<()> {
                     "unexpected IPC protection ACE",
                 )
             })?;
-        if sid_text((&raw const ace.SidStart).cast_mut().cast())? != current {
+        // SAFETY: the queried descriptor owns this ACE SID buffer for the duration of the call.
+        let entry_matches =
+            unsafe { sid_text((&raw const ace.SidStart).cast_mut().cast()) }? == current;
+        if !entry_matches {
             return Err(refuse(
                 IpcNativeErrorCode::UnsafeEndpoint,
                 "IPC DACL grants another user access",
@@ -106,5 +119,6 @@ pub(super) fn named_owner(name: &[u16]) -> IpcNativeResult<String> {
     // SAFETY: the pipe-name adapter passes its NUL-terminated UTF-16 buffer.
     let descriptor = unsafe { crate::windows_process::acl::SecurityDescriptor::named_owner(name) }
         .map_err(|e| error("read existing pipe owner SID", e))?;
-    sid_text(descriptor.owner)
+    // SAFETY: the queried descriptor owns this SID buffer for the duration of the call.
+    unsafe { sid_text(descriptor.owner) }
 }

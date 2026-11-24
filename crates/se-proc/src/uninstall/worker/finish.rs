@@ -37,21 +37,20 @@ pub(super) fn send(
     if unsafe { WaitNamedPipeW(wide.as_ptr(), 5000) } == 0 {
         return Err(native::last("wait for uninstall completion reader"));
     }
-    let file = native::handle(
-        // SAFETY: validated local pipe name; identification prevents impersonation.
-        unsafe {
-            CreateFileW(
-                wide.as_ptr(),
-                GENERIC_WRITE,
-                0,
-                ptr::null(),
-                OPEN_EXISTING,
-                SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
-                ptr::null_mut(),
-            )
-        },
-        "connect uninstall completion reader",
-    )?;
+    // SAFETY: validated local pipe name; identification prevents impersonation.
+    let raw = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_WRITE,
+            0,
+            ptr::null(),
+            OPEN_EXISTING,
+            SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+            ptr::null_mut(),
+        )
+    };
+    // SAFETY: the successful open above transferred unique ownership to `raw`.
+    let file = unsafe { native::handle(raw, "connect uninstall completion reader") }?;
     let find = |kind: &str| {
         objects
             .iter()

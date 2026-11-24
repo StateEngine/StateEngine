@@ -367,20 +367,19 @@ pub(in crate::bootstrap) fn receive() -> ProcResult<(Frame, File, File, File, In
     let stderr = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
     let diagnostics = inherited(stderr)?;
     // SAFETY: constant native null-device spelling and explicit noninheritance.
-    let null = File::from(handle(
-        unsafe {
-            CreateFileW(
-                [b'N' as u16, b'U' as u16, b'L' as u16, 0].as_ptr(),
-                GENERIC_READ | GENERIC_WRITE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                ptr::null(),
-                OPEN_EXISTING,
-                0,
-                ptr::null_mut(),
-            )
-        },
-        "open detached runtime standard streams",
-    )?);
+    let raw_null = unsafe {
+        CreateFileW(
+            [b'N' as u16, b'U' as u16, b'L' as u16, 0].as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            ptr::null(),
+            OPEN_EXISTING,
+            0,
+            ptr::null_mut(),
+        )
+    };
+    // SAFETY: the successful device open above transferred unique ownership to `raw_null`.
+    let null = File::from(unsafe { handle(raw_null, "open detached runtime standard streams") }?);
     for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
         let stream = duplicate(null.as_raw_handle(), false)?;
         // SAFETY: transfer one noninheritable null-device reference to the

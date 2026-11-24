@@ -14,8 +14,11 @@ use windows_sys::Win32::System::Pipes::*;
 pub(super) fn last(operation: &'static str) -> UninstallNativeError {
     error(operation, io::Error::last_os_error())
 }
-pub(super) fn handle(raw: HANDLE, operation: &'static str) -> Result<OwnedHandle> {
-    // SAFETY: callers pass only newly created/opened Win32 handles (or null/INVALID_HANDLE_VALUE).
+/// # Safety
+/// `raw` must be null, `INVALID_HANDLE_VALUE`, or a newly created/opened handle
+/// whose sole ownership is transferred to this call.
+pub(super) unsafe fn handle(raw: HANDLE, operation: &'static str) -> Result<OwnedHandle> {
+    // SAFETY: this function's safety contract guarantees `raw`'s precondition.
     unsafe { crate::windows_native::handle(raw, operation) }
         .map_err(|e| error(e.operation, e.source))
 }
@@ -115,7 +118,8 @@ pub(super) fn duplicate(raw: HANDLE, access: u32, inherit: bool) -> Result<Owned
     {
         return Err(last("duplicate uninstall custody handle"));
     }
-    handle(out, "duplicate uninstall custody handle")
+    // SAFETY: the successful duplication above transferred a new owned reference to `out`.
+    unsafe { handle(out, "duplicate uninstall custody handle") }
 }
 pub(super) fn duplicate_same(raw: HANDLE, inherit: bool) -> Result<OwnedHandle> {
     let mut out = ptr::null_mut();
@@ -134,7 +138,8 @@ pub(super) fn duplicate_same(raw: HANDLE, inherit: bool) -> Result<OwnedHandle> 
     {
         return Err(last("duplicate uninstall handle with exact access"));
     }
-    handle(out, "duplicate uninstall handle with exact access")
+    // SAFETY: the successful duplication above transferred a new owned reference to `out`.
+    unsafe { handle(out, "duplicate uninstall handle with exact access") }
 }
 pub(super) fn pipe() -> Result<(File, File)> {
     let mut read = ptr::null_mut();
@@ -143,10 +148,11 @@ pub(super) fn pipe() -> Result<(File, File)> {
     if unsafe { CreatePipe(&mut read, &mut write, ptr::null(), 4096) } == 0 {
         return Err(last("create private uninstall channel"));
     }
-    Ok((
-        File::from(handle(read, "create uninstall channel reader")?),
-        File::from(handle(write, "create uninstall channel writer")?),
-    ))
+    // SAFETY: the successful CreatePipe above transferred a new owned reader reference to `read`.
+    let reader = File::from(unsafe { handle(read, "create uninstall channel reader") }?);
+    // SAFETY: the successful CreatePipe above transferred a new owned writer reference to `write`.
+    let writer = File::from(unsafe { handle(write, "create uninstall channel writer") }?);
+    Ok((reader, writer))
 }
 pub(super) fn poll_frame(file: &mut File) -> Result<Option<[u8; 33]>> {
     let mut available = 0;
@@ -189,18 +195,17 @@ pub(super) fn exited(process: &OwnedHandle) -> Result<bool> {
 pub(super) fn unlink(file: &File, posix: bool) -> Result<()> {
     // ReOpenFile creates an independent native file object for POSIX unlink.
     // Its close removes the name even while inherited read pins remain open.
-    let reopened = handle(
-        // SAFETY: retained original file handle selects the exact object; no path can substitute a different target.
-        unsafe {
-            ReOpenFile(
-                file.as_raw_handle(),
-                DELETE | FILE_READ_ATTRIBUTES,
-                FILE_SHARE_READ | FILE_SHARE_DELETE,
-                FILE_FLAG_OPEN_REPARSE_POINT,
-            )
-        },
-        "reopen exact uninstall object for deletion",
-    )?;
+    // SAFETY: retained original file handle selects the exact object; no path can substitute a different target.
+    let raw = unsafe {
+        ReOpenFile(
+            file.as_raw_handle(),
+            DELETE | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_DELETE,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+        )
+    };
+    // SAFETY: the successful reopen above transferred unique ownership to `raw`.
+    let reopened = unsafe { handle(raw, "reopen exact uninstall object for deletion") }?;
     let info = FILE_DISPOSITION_INFO_EX {
         Flags: FILE_DISPOSITION_FLAG_DELETE
             | if posix {
@@ -244,7 +249,8 @@ pub(super) fn absent_name(path: &Path) -> Result<()> {
         }
         return Err(error("read back removed uninstall name", cause));
     }
-    let _found = handle(raw, "read back removed uninstall name")?;
+    // SAFETY: the successful ReOpenFile above transferred unique ownership to `raw`.
+    let _found = unsafe { handle(raw, "read back removed uninstall name") }?;
     Err(refuse(
         "read back removed uninstall name",
         "name remains or was replaced; replacement preserved",

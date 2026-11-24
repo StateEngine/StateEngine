@@ -16,8 +16,11 @@ use windows_sys::Win32::{
     Storage::FileSystem::*,
     System::{IO::*, Pipes::*, Threading::*},
 };
-pub(super) fn owned(raw: HANDLE, operation: &'static str) -> IpcNativeResult<OwnedHandle> {
-    // SAFETY: callers pass only newly created/opened handles from Win32 APIs (or null/INVALID_HANDLE_VALUE).
+/// # Safety
+/// `raw` must be null, `INVALID_HANDLE_VALUE`, or a newly created/opened handle
+/// whose sole ownership is transferred to this call.
+pub(super) unsafe fn owned(raw: HANDLE, operation: &'static str) -> IpcNativeResult<OwnedHandle> {
+    // SAFETY: this function's safety contract guarantees `raw`'s precondition.
     unsafe { crate::windows_process::handle(raw, operation) }
         .map_err(|e| error(e.operation, e.source))
 }
@@ -91,7 +94,8 @@ fn create(name: &OsStr) -> IpcNativeResult<OwnedHandle> {
         }
         return Err(error("create first owner-only IPC pipe", creation_error));
     }
-    let handle = owned(raw, "create owner-only IPC pipe")?;
+    // SAFETY: the successful CreateNamedPipeW above transferred unique ownership to `raw`.
+    let handle = unsafe { owned(raw, "create owner-only IPC pipe") }?;
     security::verify(handle.as_raw_handle())?;
     Ok(handle)
 }
@@ -121,7 +125,8 @@ impl NativePipeStream {
                 )
             };
             if raw != INVALID_HANDLE_VALUE {
-                let handle = owned(raw, "open IPC pipe")?;
+                // SAFETY: the successful CreateFileW above transferred unique ownership to `raw`.
+                let handle = unsafe { owned(raw, "open IPC pipe") }?;
                 security::verify(handle.as_raw_handle())?;
                 let stream = Self { handle, bound };
                 return Ok(stream);
@@ -166,12 +171,10 @@ impl NativePipeStream {
             return Ok(0);
         }
         self.bound.remaining()?;
-        let event = owned(
-            // SAFETY: null descriptor/name select a new noninherited unnamed event, uniquely owned by owned().
-            unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) },
-            "create IPC I/O event",
-        )
-        .map_err(|e| e.source)?;
+        // SAFETY: null descriptor/name select a new noninherited unnamed event.
+        let raw = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
+        // SAFETY: the successful event creation above transferred unique ownership to `raw`.
+        let event = unsafe { owned(raw, "create IPC I/O event") }.map_err(|e| e.source)?;
         // SAFETY: zero is the documented initial OVERLAPPED state; the event
         // and stack record stay alive until this exact operation is drained.
         let mut operation: OVERLAPPED = unsafe { zeroed() };
@@ -321,20 +324,19 @@ impl NativePipeReservation {
         let path = wide(name)?;
         // SAFETY: the private first instance is held above, the native string
         // lives through CreateFile, and identification precedes connection.
-        let client = owned(
-            unsafe {
-                CreateFileW(
-                    path.as_ptr(),
-                    GENERIC_READ | GENERIC_WRITE | READ_CONTROL,
-                    0,
-                    ptr::null(),
-                    OPEN_EXISTING,
-                    FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
-                    ptr::null_mut(),
-                )
-            },
-            "occupy protected IPC reservation",
-        )?;
+        let raw = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE | READ_CONTROL,
+                0,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                ptr::null_mut(),
+            )
+        };
+        // SAFETY: the successful open above transferred unique ownership to `raw`.
+        let client = unsafe { owned(raw, "occupy protected IPC reservation") }?;
         security::verify(client.as_raw_handle())?;
         let mut pid = 0;
         // SAFETY: retained pipe handle and initialized writable PID output; this call grants no authority.
@@ -382,7 +384,8 @@ impl NativePipeReservation {
         if raw == INVALID_HANDLE_VALUE {
             return Err(last("connect private child stream"));
         }
-        let client = owned(raw, "own private child stream")?;
+        // SAFETY: the successful CreateFileW above transferred unique ownership to `raw`.
+        let client = unsafe { owned(raw, "own private child stream") }?;
         self.verify_reactor_instance(client.as_handle())?;
         Ok(client.into())
     }
@@ -503,7 +506,8 @@ mod tests {
         if client_raw == INVALID_HANDLE_VALUE {
             return Err("test client must connect while the server instance is live".into());
         }
-        let client = owned(client_raw, "open test client pipe")?;
+        // SAFETY: the successful CreateFileW above transferred unique ownership to `client_raw`.
+        let client = unsafe { owned(client_raw, "open test client pipe") }?;
         security::verify(client.as_raw_handle())?;
         let bound = IpcIoBound {
             deadline: Instant::now() + Duration::from_secs(10),

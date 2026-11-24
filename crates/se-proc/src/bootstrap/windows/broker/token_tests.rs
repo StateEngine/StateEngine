@@ -9,7 +9,8 @@ fn primary() -> ProcResult<OwnedHandle> {
     {
         return Err(last("open native token regression fixture"));
     }
-    handle(raw, "own native token regression fixture")
+    // SAFETY: the successful OpenProcessToken above transferred sole ownership of `raw`.
+    unsafe { handle(raw, "own native token regression fixture") }
 }
 fn filtered(
     token: HANDLE,
@@ -34,7 +35,8 @@ fn filtered(
     {
         return Err(last("create native token regression copy"));
     }
-    handle(raw, "own filtered native token regression copy")
+    // SAFETY: the successful CreateRestrictedToken above transferred sole ownership of `raw`.
+    unsafe { handle(raw, "own filtered native token regression copy") }
 }
 #[test]
 fn deleted_privileges_cannot_match_an_ordinary_broker() -> ProcResult<()> {
