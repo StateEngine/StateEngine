@@ -150,9 +150,11 @@ def run(args):
                         'task': 'Independent conversation selection check',
                         'resume': selection, 'idempotency_key': str(uuid.uuid4())})
                     assert refused.get('isError'), refused
-                    body = json.dumps(refused).lower()
-                    assert 'principal' in body or 'private' in body or 'capture' in body, refused
-                    assert 'owner' in body and 'se launch' in body and '--resume' in body, refused
+                    structured = refused['structuredContent']
+                    assert structured.get('code') == 'capability-invalid', refused
+                    next_step = structured.get('detail', {}).get('next_step', '')
+                    assert 'Omit resume' in next_step, refused
+                    assert 'owner' in next_step.lower() and 'launch' in next_step and '--resume' in next_step, refused
                     assert (f.repo / 'launch-observed.jsonl').read_bytes() == observed
                     check('mcp: ' + label + ' resume preserves the child capture boundary and names owner recovery')
                 # The instructed Owner recovery must actually reopen this child's

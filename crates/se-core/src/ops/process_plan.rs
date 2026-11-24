@@ -7,7 +7,10 @@ use super::{
 use crate::{commit::Cx, dispatch::Kernel, scope, store_error::store_error};
 use se_config::config_policy::{ConfigFile, EffectiveSandbox, Provider};
 use se_store::{Actor, EventBody, PermissionProfile, Snapshot};
-use se_types::{AgentId, Named, ProviderSessionId, Read, Result, SeError};
+use se_types::{
+    AgentId, Detail, Named, ProviderSessionId, Read, Result, ResumeSelection, SeError,
+    details::{CapabilityInvalid, LaunchFailed},
+};
 
 fn imported_reference(reference: Read<ProviderSessionId>) -> Result<Read<ProviderSessionId>> {
     if matches!(reference, Read::Absent { .. }) {
@@ -187,15 +190,15 @@ fn project_facts<R: Snapshot>(
         "launch project",
         "Initialize and select this project before launch.",
     )?;
-    let owner = match &project.original.as_deref().unwrap_or(&project.current).body {
-        EventBody::ProjectRegistered { owner, .. } => owner.clone(),
-        _ => {
-            return Err(scope::unreadable(
-                "launch project owner",
-                "original owner registration is unavailable",
-            ));
-        }
+    let EventBody::ProjectRegistered { owner, .. } =
+        &project.original.as_deref().unwrap_or(&project.current).body
+    else {
+        return Err(scope::unreadable(
+            "launch project owner",
+            "original owner registration is unavailable",
+        ));
     };
+    let owner = owner.clone();
     let (project_name, roots) = match project.current.body {
         EventBody::ProjectRegistered { name, roots, .. }
         | EventBody::ProjectUpdated { name, roots, .. } => (name, roots),
@@ -215,11 +218,11 @@ fn launch_seed<R: Snapshot>(
     input: &AgentLaunch,
     agent: &AgentId,
 ) -> Result<(se_types::EventId, bool)> {
-    let replay = cx
+    let replay = match cx
         .read
         .operation_receipt(cx.admission.actor.clone(), input.idempotency_key.clone())
-        .map_err(|e| store_error(&e))?;
-    let replay = match replay {
+        .map_err(|e| store_error(&e))?
+    {
         Read::Absent { .. } => None,
         read => Some(scope::require_present(
             read,
@@ -249,6 +252,32 @@ fn launch_seed<R: Snapshot>(
     };
     Ok((seed, replayed))
 }
+fn private_resume_refusal(
+    input: &AgentLaunch,
+    identity: &LaunchIdentity,
+    provider: se_store::Provider,
+) -> SeError {
+    let detach = input.detach
+        || matches!(
+            provider,
+            se_store::Provider::SeCode | se_store::Provider::Acp
+        );
+    let mut command =
+        super::AgentCommand::launch(&identity.agent, None, Some(&identity.project), false)
+            .with_detach(detach);
+    if let Some(ResumeSelection::Session(session)) = &input.resume {
+        command = command.with_resume_session(session);
+    }
+    SeError::new(Detail::CapabilityInvalid(CapabilityInvalid {
+        subject: format!("saved conversation for {}", identity.name),
+        reason: "a create grant does not authorize resuming another agent's saved conversation"
+            .into(),
+        next_step: format!(
+            "Omit resume to launch a fresh conversation for this child, or ask the project Owner to resume its saved conversation from their own terminal with the same StateEngine home: `{}`.",
+            command.command
+        ),
+    }))
+}
 fn select_conversation<R: Snapshot>(
     cx: &mut Cx<'_, R>,
     input: &AgentLaunch,
@@ -257,7 +286,25 @@ fn select_conversation<R: Snapshot>(
     identity: &LaunchIdentity,
     replayed: bool,
 ) -> Result<Read<ProviderSessionId>> {
-    if !replayed && let Some(se_types::ResumeSelection::Session(session)) = &input.resume {
+    if replayed {
+        return Ok(Read::Unknown {
+            what: "a launch retry reuses its original outcome; no new conversation was selected"
+                .into(),
+        });
+    }
+    if input.fresh() {
+        return Ok(Read::Absent {
+            checked:
+                "launch starts a fresh provider conversation unless resume is explicitly requested"
+                    .into(),
+        });
+    }
+    // Creator control authorizes launching a direct child fresh, never
+    // resuming another principal's saved conversation or reading its capture.
+    if matches!(&cx.admission.actor, Actor::Agent(caller) if caller != &identity.agent) {
+        return Err(private_resume_refusal(input, identity, profile.provider));
+    }
+    if let Some(ResumeSelection::Session(session)) = &input.resume {
         let selected = cx
             .read
             .control_session(identity.agent.clone(), session.clone())
@@ -270,27 +317,15 @@ fn select_conversation<R: Snapshot>(
             )?,
         };
     }
-    let selection = (|| -> Result<Read<ProviderSessionId>> {
-        let conversation = if replayed {
-            // The host reuses the retained outcome or refuses an unavailable retry.
-            // Selecting a new conversation here also reads a child's private capture
-            // source for Codex, which its creator is not entitled to inspect.
-            Read::Unknown {
-                what:
-                    "a launch retry reuses its original outcome; no new conversation was selected"
-                        .into(),
-            }
-        } else if input.fresh() {
-            Read::Absent {
-                checked: "launch starts a fresh provider conversation unless resume is explicitly requested".into(),
-            }
-        } else {
-            resumed_conversation(cx, control, profile, &identity.agent)?
-        };
-        Ok(conversation)
-    })();
-    match selection {
+    match resumed_conversation(cx, control, profile, &identity.agent) {
         Ok(conversation) => Ok(conversation),
+        Err(failure) if matches!(failure.body.detail(), Detail::CapabilityInvalid(_)) => Err(
+            if matches!(cx.admission.actor, Actor::Agent(_)) {
+                private_resume_refusal(input, identity, profile.provider)
+            } else {
+                failure
+            },
+        ),
         Err(failure) if input.override_live => Ok(Read::Absent {
             checked: format!(
                 "Forced relaunch preserves the previous history and starts a fresh conversation because the saved binding could not be resumed: {failure}"
@@ -303,35 +338,11 @@ fn select_conversation<R: Snapshot>(
                 ),
             })
         }
-        Err(failure) => {
-            let next_step = if matches!(
-                failure.body.detail(),
-                se_types::Detail::CapabilityInvalid(_)
-            ) {
-                let mut command = super::AgentCommand::launch(
-                    &identity.agent,
-                    None,
-                    Some(&identity.project),
-                    false,
-                );
-                if let Some(se_types::ResumeSelection::Session(session)) = &input.resume {
-                    command = command.with_resume_session(session);
-                }
-                format!(
-                    "The saved capture source is private to its principal. Ask the project Owner to use se launch from their own terminal with the same StateEngine home: `{}`.",
-                    command.command
-                )
-            } else {
-                "Repair the saved binding before resuming, or omit --resume to preserve the old history and start a fresh conversation.".into()
-            };
-            Err(SeError::new(se_types::Detail::LaunchFailed(
-                se_types::details::LaunchFailed {
-                    subject: identity.name.clone(),
-                    reason: failure.to_string(),
-                    next_step,
-                },
-            )))
-        }
+        Err(failure) => Err(SeError::new(Detail::LaunchFailed(LaunchFailed {
+            subject: identity.name.clone(),
+            reason: failure.to_string(),
+            next_step: "Repair the saved binding before resuming, or omit --resume to preserve the old history and start a fresh conversation.".into(),
+        }))),
     }
 }
 fn resumed_conversation<R: Snapshot>(
@@ -416,8 +427,8 @@ fn conversation_age(
     conversation: &Read<ProviderSessionId>,
 ) -> Result<Read<super::agent_launch::SavedConversationAge>> {
     Ok(match &conversation {
-        Read::Present { .. } => match &control.resume_session {
-            Read::Present { value } => {
+        Read::Present { .. } => match control.resume_session.clone().into_present() {
+            Ok(value) => {
                 let original = value.original.as_deref().unwrap_or(&value.current);
                 let started = super::receipt::event_time(original);
                 let now = kernel.facts()?.occurred_at_us;
@@ -444,19 +455,7 @@ fn conversation_age(
                     },
                 }
             }
-            Read::Absent { checked } => Read::Absent {
-                checked: checked.clone(),
-            },
-            Read::Unknown { what } => Read::Unknown { what: what.clone() },
-            Read::Unreadable {
-                source,
-                reason,
-                error,
-            } => Read::Unreadable {
-                source: source.clone(),
-                reason: reason.clone(),
-                error: error.clone(),
-            },
+            Err(other) => other,
         },
         Read::Absent { .. } => Read::Absent {
             checked: "This launch starts a new conversation".into(),

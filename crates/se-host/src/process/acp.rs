@@ -19,7 +19,12 @@ impl LaunchCoordinator {
         // Refuse known capture/budget failures before stopping an incumbent.
         // Launch reads again after final capture; a live tail is never frozen here.
         if let Err(failure) = self.canonical_replay(plan, admission, deadline).await {
-            if !plan.input.override_live {
+            if !plan.input.override_live
+                || matches!(
+                    failure.body.detail(),
+                    se_types::Detail::CapabilityInvalid(_)
+                )
+            {
                 return Err(failure);
             }
             plan.start_new_conversation(format!("Forced relaunch preserved the previous history and starts a new conversation because complete protocol replay was unavailable: {failure}"));
