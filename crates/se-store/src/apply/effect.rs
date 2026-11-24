@@ -45,10 +45,7 @@ pub(super) fn revision(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
             Some((current, ..)) => current
                 .checked_add(1)
                 .ok_or_else(|| invalid("effect revision exhausted")),
-            None => Err(fail(
-                StoreErrorCode::ReferenceMissing,
-                "offered effect was never requested",
-            )),
+            None => Err(reference_missing("offered effect was never requested")),
         },
         EventBody::EffectSettled {
             effect,
@@ -142,12 +139,7 @@ fn principal_kind(c: &Connection, p: &[u8], a: &[u8]) -> StoreResult<String> {
     )
     .optional()
     .map_err(sql)?
-    .ok_or_else(|| {
-        fail(
-            StoreErrorCode::ReferenceMissing,
-            "effect principal is not registered in this project",
-        )
-    })
+    .ok_or_else(|| reference_missing("effect principal is not registered in this project"))
 }
 /// Only the project owner or the effect's own agent may request, offer or
 /// settle it; another agent can never add debt to, or cancel, someone's work.
@@ -167,8 +159,7 @@ fn authorize(
     if own {
         Ok(())
     } else {
-        Err(fail(
-            StoreErrorCode::ScopeMismatch,
+        Err(scope_mismatch(
             "only the project owner or the effect's own agent may record this effect",
         ))
     }
@@ -193,8 +184,7 @@ fn after_request(
     if later {
         Ok(())
     } else {
-        Err(fail(
-            StoreErrorCode::InvalidTransition,
+        Err(invalid_transition(
             "effect evidence must be committed after the effect was requested",
         ))
     }
@@ -249,17 +239,10 @@ pub(super) fn apply(
             evidence,
         } => {
             let id = effect_key(&effect);
-            let (_, state, owner) = head(c, &p, &id)?.ok_or_else(|| {
-                fail(
-                    StoreErrorCode::ReferenceMissing,
-                    "offered effect was never requested",
-                )
-            })?;
+            let (_, state, owner) = head(c, &p, &id)?
+                .ok_or_else(|| reference_missing("offered effect was never requested"))?;
             if !matches!(state.as_str(), "pending" | "offered") {
-                return Err(fail(
-                    StoreErrorCode::InvalidTransition,
-                    "only a pending effect can be offered",
-                ));
+                return Err(invalid_transition("only a pending effect can be offered"));
             }
             authorize(c, h, &p, &scope, owner.as_deref())?;
             let offered_to = actor_key(c, &principal, &scope, false)?;
@@ -268,8 +251,7 @@ pub(super) fn apply(
                 None => principal == h.actor,
             };
             if !matches {
-                return Err(fail(
-                    StoreErrorCode::ScopeMismatch,
+                return Err(scope_mismatch(
                     "offer principal differs from the requested principal",
                 ));
             }
@@ -316,17 +298,10 @@ fn settle(
         return Err(invalid("effect apply dispatch"));
     };
     let id = effect_key(&effect);
-    let (_, state, owner) = head(c, p, &id)?.ok_or_else(|| {
-        fail(
-            StoreErrorCode::ReferenceMissing,
-            "settled effect was never requested",
-        )
-    })?;
+    let (_, state, owner) =
+        head(c, p, &id)?.ok_or_else(|| reference_missing("settled effect was never requested"))?;
     if !matches!(state.as_str(), "pending" | "offered") {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
-            "a terminal effect cannot settle again",
-        ));
+        return Err(invalid_transition("a terminal effect cannot settle again"));
     }
     authorize(c, h, p, scope, owner.as_deref())?;
     let reason_ok = failure
@@ -379,8 +354,7 @@ fn integration(
         return Err(invalid("effect apply dispatch"));
     };
     if !super::project::is_owner(c, h, p)? {
-        return Err(fail(
-            StoreErrorCode::ScopeMismatch,
+        return Err(scope_mismatch(
             "only the project owner records owned integrations",
         ));
     }
@@ -408,10 +382,7 @@ fn integration(
         )
         .map_err(sql)?;
     if changed != 1 {
-        return Err(fail(
-            StoreErrorCode::RevisionConflict,
-            "integration head changed",
-        ));
+        return Err(revision_conflict("integration head changed"));
     }
     Ok(())
 }
@@ -445,10 +416,7 @@ fn update(c: &Connection, p: &[u8], id: &[u8], rev: u64, seq: i64, state: &str) 
         )
         .map_err(sql)?;
     if changed != 1 {
-        return Err(fail(
-            StoreErrorCode::RevisionConflict,
-            "effect head changed",
-        ));
+        return Err(revision_conflict("effect head changed"));
     }
     Ok(())
 }

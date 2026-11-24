@@ -103,16 +103,10 @@ pub(super) fn apply(
     let p = project_id(c, &h.scope, false)?;
     let scope = scope_key(c, &h.scope, false)?;
     if key(c, "project", project.as_str(), &[0], false)? != p {
-        return Err(fail(
-            StoreErrorCode::ScopeMismatch,
-            "removed project differs from event scope",
-        ));
+        return Err(scope_mismatch("removed project differs from event scope"));
     }
     if !is_owner(c, h, &p)? {
-        return Err(fail(
-            StoreErrorCode::ScopeMismatch,
-            "only the project's owner removes it",
-        ));
+        return Err(scope_mismatch("only the project's owner removes it"));
     }
     super::assignment::require_closed(c, &p)?;
     if witnesses.is_empty() || witnesses.len() > 64 || preserved.len() > 64 {
@@ -129,7 +123,7 @@ pub(super) fn apply(
     for (query, remedy) in LIVE {
         let live: bool = c.query_row(query, [&p], |r| r.get(0)).map_err(sql)?;
         if live {
-            return Err(fail(StoreErrorCode::InvalidTransition, remedy));
+            return Err(invalid_transition(remedy));
         }
     }
     let changed = c
@@ -139,8 +133,7 @@ pub(super) fn apply(
         )
         .map_err(sql)?;
     if changed != 1 {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
+        return Err(invalid_transition(
             "only an active project at the expected revision can be removed",
         ));
     }
@@ -179,15 +172,13 @@ pub(super) fn move_root(
         ));
     }
     if h.scope != Scope::Project(project.clone()) || h.door != Door::Cli {
-        return Err(fail(
-            StoreErrorCode::ScopeMismatch,
+        return Err(scope_mismatch(
             "project moves require the owner CLI admitted in the project's scope",
         ));
     }
     let p = key(c, "project", project.as_str(), &[0], false)?;
     if !is_owner(c, h, &p)? {
-        return Err(fail(
-            StoreErrorCode::ScopeMismatch,
+        return Err(scope_mismatch(
             "only the current project owner moves a root",
         ));
     }
@@ -195,7 +186,7 @@ pub(super) fn move_root(
         if c.query_row(query, [&p], |r| r.get::<_, bool>(0))
             .map_err(sql)?
         {
-            return Err(fail(StoreErrorCode::InvalidTransition, remedy));
+            return Err(invalid_transition(remedy));
         }
     }
     if from.is_empty() || from.len() > 64 {
@@ -224,8 +215,7 @@ pub(super) fn move_root(
         )
         .map_err(sql)?;
     if changed != 1 {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
+        return Err(invalid_transition(
             "project move requires the current active registration",
         ));
     }
@@ -253,15 +243,13 @@ pub(super) fn update(
         return Err(invalid("project update dispatch"));
     };
     if h.scope != Scope::Registry || h.door != Door::Import {
-        return Err(fail(
-            StoreErrorCode::ScopeMismatch,
+        return Err(scope_mismatch(
             "historical project revisions require the owner import in registry scope",
         ));
     }
     let p = key(c, "project", project.as_str(), &[0], false)?;
     if !is_owner(c, h, &p)? {
-        return Err(fail(
-            StoreErrorCode::ScopeMismatch,
+        return Err(scope_mismatch(
             "only the current project owner adopts a historical root revision",
         ));
     }
@@ -269,7 +257,7 @@ pub(super) fn update(
         if c.query_row(query, [&p], |r| r.get::<_, bool>(0))
             .map_err(sql)?
         {
-            return Err(fail(StoreErrorCode::InvalidTransition, remedy));
+            return Err(invalid_transition(remedy));
         }
     }
     if roots.is_empty() || roots.len() > 64 {
@@ -277,8 +265,7 @@ pub(super) fn update(
     }
     let changed=c.execute("UPDATE projects SET revision=?,last_seq=? WHERE project_id=? AND revision=? AND state='active'",crate::sql_value::sql_params![rev,seq,p,rev-1]).map_err(sql)?;
     if changed != 1 {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
+        return Err(invalid_transition(
             "historical root revision requires the current active registration",
         ));
     }

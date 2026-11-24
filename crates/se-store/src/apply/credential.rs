@@ -100,15 +100,13 @@ pub(super) fn apply(
             let session = key(c, "session", session.as_str(), &scope, false)?;
             let head = codec::session::head(c, &p, &session)?;
             if head.state != "active" {
-                return Err(fail(
-                    StoreErrorCode::InvalidTransition,
+                return Err(invalid_transition(
                     "credential activation requires same-transaction active session binding",
                 ));
             }
             let changed=c.execute("UPDATE credentials SET revision=?,last_seq=?,activated_seq=?,state='active' WHERE credential_id=? AND project_id=? AND session_id=? AND revision=? AND state='prepared' AND activation_deadline_us>=? AND expires_at_us>?",crate::sql_value::sql_params![rev,seq,seq,credential.as_bytes().as_slice(),p,session,rev-1,recorded,recorded]).map_err(sql)?;
             if changed != 1 {
-                return Err(fail(
-                    StoreErrorCode::InvalidTransition,
+                return Err(invalid_transition(
                     "credential expired, terminal or bound to another session",
                 ));
             }
@@ -119,10 +117,7 @@ pub(super) fn apply(
         } => {
             let changed=c.execute("UPDATE credentials SET revision=?,last_seq=?,state='revoked' WHERE credential_id=? AND project_id=? AND revision=? AND state IN ('prepared','active')",crate::sql_value::sql_params![rev,seq,credential.as_bytes().as_slice(),p,rev-1]).map_err(sql)?;
             if changed != 1 {
-                return Err(fail(
-                    StoreErrorCode::InvalidTransition,
-                    "credential already terminal",
-                ));
+                return Err(invalid_transition("credential already terminal"));
             }
             payload(
                 c,
@@ -169,8 +164,7 @@ fn rotate(
     let session = key(c, "session", change.session.as_str(), scope, false)?;
     let head = codec::session::head(c, project, &session)?;
     if head.state != "active" {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
+        return Err(invalid_transition(
             "rotated credential requires an active session",
         ));
     }
@@ -180,8 +174,7 @@ fn rotate(
             change.credential.as_bytes().as_slice(), project, session, rev-1],
     ).map_err(sql)?;
     if changed != 1 {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
+        return Err(invalid_transition(
             "credential is not the active original session grant",
         ));
     }
@@ -263,10 +256,7 @@ fn issue(
     let session = key(c, "session", value.session.as_str(), scope, false)?;
     let head = codec::session::head(c, p, &session)?;
     if !matches!(head.state.as_str(), "prepared" | "active") {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
-            "credential session is terminal",
-        ));
+        return Err(invalid_transition("credential session is terminal"));
     }
     c.execute("INSERT INTO credentials(credential_id,project_id,session_id,purpose,secret_sha256,expires_at_us,revision,last_seq,activation_deadline_us,state) VALUES(?,?,?,?,?,?,?,?,?,'prepared')",
         crate::sql_value::sql_params![value.credential.as_bytes().as_slice(),p,session,value.purpose,value.secret_sha256,value.expires_at_us,rev,seq,value.activation_deadline_us]).map_err(sql)?;

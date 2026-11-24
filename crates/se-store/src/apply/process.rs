@@ -91,8 +91,7 @@ fn shape(identity: &ProcessIdentityRecord, state: ProcessState) -> StoreResult<(
             ProcessState::StopRequested | ProcessState::StopUnproved | ProcessState::Exited
         ) && identity.root_identity == RootIdentityState::Unknown)
     {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
+        return Err(invalid_transition(
             "process state/root identity facts disagree",
         ));
     }
@@ -109,10 +108,217 @@ fn shape(identity: &ProcessIdentityRecord, state: ProcessState) -> StoreResult<(
     }
     Ok(())
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+#[derive(Default)]
+struct ContainmentCols {
+    kind: &'static str,
+    cause: Option<&'static str>,
+    unknown: Option<String>,
+    observed: Option<i64>,
+    probe: Option<Vec<u8>>,
+}
+fn verify_actor_and_session(
+    c: &Connection,
+    h: &EventHeader,
+    keys: (&[u8], &[u8]),
+    identity: &ProcessIdentityRecord,
+    authority: &ApplyAuthority<'_>,
+) -> StoreResult<(Vec<u8>, Option<Vec<u8>>)> {
+    let (p, scope) = keys;
+    let principal = actor_key(c, &identity.principal, scope, false)?;
+    let owner: Vec<u8> = c
+        .query_row(
+            "SELECT owner_id FROM principals WHERE project_id=? AND principal_id=?",
+            rusqlite::params![p, principal],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql)?
+        .ok_or_else(|| reference_missing("process principal is not registered in its project"))?;
+    let permitted = match (&h.actor, &identity.principal) {
+        (Actor::Remote(_), Actor::Agent(_)) => authority.remote_launch.is_some(),
+        (Actor::Remote(_) | Actor::Guest, _) | (_, Actor::Remote(_) | Actor::Guest) => false,
+        (Actor::Human(human), _) => key(c, "human", human.as_str(), &[0], false)? == owner,
+        (Actor::Agent(_), _) if h.actor == identity.principal => h.session == identity.session,
+        (Actor::Agent(creator), Actor::Agent(_)) => {
+            crate::creator::require(c, p, scope, creator, &principal)?;
+            true
+        }
+        (Actor::Agent(_), Actor::Human(_)) => false,
+    };
+    if !permitted {
+        return Err(scope_mismatch(
+            "process fact actor differs from its admitted principal/owner",
+        ));
+    }
+    let target = identity
+        .session
+        .as_ref()
+        .map(|s| key(c, "session", s.as_str(), scope, false))
+        .transpose()?;
+    if let Some(target) = &target {
+        let valid:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=? AND session_id=? AND agent_id=?)",rusqlite::params![p,target,principal],|r|r.get(0)).map_err(sql)?;
+        if !valid {
+            return Err(scope_mismatch(
+                "process session belongs to another principal or is absent",
+            ));
+        }
+    }
+    Ok((principal, target))
+}
+fn verify_transition(
+    c: &Connection,
+    h: &EventHeader,
+    keys: (&[u8], &[u8], u64),
+    states: (ProcessState, ProcessState),
+    lease: &LeaseIdentity,
+    identity: &ProcessIdentityRecord,
+    outcome: Option<&str>,
+) -> StoreResult<()> {
+    let ((p, id, rev), (from, to)) = (keys, states);
+    let (old_seq, old_state, released):(i64,String,bool)=c.query_row("SELECT last_seq,state,ownership_released FROM processes WHERE project_id=? AND process_id=?",rusqlite::params![p,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(sql)?;
+    if released || state(&old_state)? != from {
+        return Err(invalid_transition(
+            "process source state or retained ownership differs",
+        ));
+    }
+    let old = codec::process::identity(c, old_seq, p, id, rev - 1, &old_state, false)?;
+    if from == ProcessState::StopUnproved && to == ProcessState::StopUnproved {
+        release::apply(c, h, p, &old, identity, rev, lease)?;
+    }
+    let console = console::argv(c, old_seq, (from, to), &old, identity, outcome)?;
+    let exec = from == ProcessState::Starting
+        && to == ProcessState::Starting
+        && outcome == Some("exec-observed")
+        && matches!(
+            codec::facts(c, old_seq)?
+                .get("outcome")
+                .and_then(serde_json::Value::as_str),
+            Some("root-prepared" | "console-prepared")
+        )
+        && matches!((&old.instance, &identity.instance), (RecordedIdentity::Present(a), RecordedIdentity::Present(b)) if exec_image(from, to, a, b));
+    if from == ProcessState::Starting
+        && to == ProcessState::Starting
+        && !(old.root_identity == RootIdentityState::Unpublished
+            && matches!(old.instance, RecordedIdentity::Absent { .. })
+            && identity.root_identity == RootIdentityState::Identified)
+        && !console
+        && !exec
+    {
+        return Err(invalid_transition(
+            "Starting to Starting requires root publication, one console argv handoff, or the exact witnessed exec checkpoint",
+        ));
+    }
+    if old.principal != identity.principal
+        || old.session != identity.session
+        || matches!((&old.instance, &identity.instance), (RecordedIdentity::Present(a), RecordedIdentity::Present(b)) if a != b && !exec_image(from, to, a, b) && !console)
+        || matches!(
+            (&old.instance, &identity.instance),
+            (
+                RecordedIdentity::Present(_),
+                RecordedIdentity::Absent { .. } | RecordedIdentity::Unreadable { .. }
+            )
+        )
+    {
+        return Err(source_changed(
+            "process principal/session/native birth identity cannot be replaced",
+        ));
+    }
+    Ok(())
+}
+fn encode_containment(
+    c: &Connection,
+    p: &[u8],
+    scope: &[u8],
+    fact: &ContainmentFact,
+) -> StoreResult<ContainmentCols> {
+    match fact {
+        ContainmentFact::NotLaunched => Ok(ContainmentCols {
+            kind: "not-launched",
+            ..Default::default()
+        }),
+        ContainmentFact::Unknown { reason } => Ok(ContainmentCols {
+            kind: "unknown",
+            unknown: Some(reason.clone()),
+            ..Default::default()
+        }),
+        ContainmentFact::Contained {
+            kind,
+            observed_at_us,
+        } => Ok(ContainmentCols {
+            kind: match kind {
+                ContainmentKind::Cgroup => "cgroup",
+                ContainmentKind::Job => "job",
+                ContainmentKind::ProcessGroup => "process-group",
+            },
+            observed: Some(*observed_at_us),
+            ..Default::default()
+        }),
+        ContainmentFact::Uncontained {
+            cause,
+            observed_at_us,
+            probe,
+        } => {
+            let cause = match cause {
+                ContainmentCause::NoUserManager => "no-user-manager",
+                ContainmentCause::NoDelegation => "no-delegation",
+                ContainmentCause::CgroupV2Absent => "cgroup-v2-absent",
+                ContainmentCause::CgroupUnreadable => "cgroup-unreadable",
+                ContainmentCause::ScopeCreateFailed => "scope-create-failed",
+            };
+            if let Some(probe) = probe {
+                session::reference(c, p, scope, probe)?;
+            }
+            Ok(ContainmentCols {
+                kind: "uncontained",
+                cause: Some(cause),
+                unknown: None,
+                observed: Some(*observed_at_us),
+                probe: probe
+                    .as_ref()
+                    .map(|e| key(c, "event", e.as_str(), scope, false))
+                    .transpose()?,
+            })
+        }
+    }
+}
+#[derive(Default)]
+struct IdentityCols {
+    state: &'static str,
+    cause: Option<String>,
+    machine: Option<i64>,
+    boot: Option<i64>,
+    pid: Option<u32>,
+    birth: Option<Vec<u8>>,
+    executable: Option<i64>,
+    argv: Option<Vec<u8>>,
+}
+fn encode_identity(c: &Connection, instance: &RecordedIdentity) -> StoreResult<IdentityCols> {
+    match instance {
+        RecordedIdentity::Present(instance) => {
+            let f = instance.fields();
+            Ok(IdentityCols {
+                state: "present",
+                cause: None,
+                machine: Some(symbol(c, f.machine.as_str().as_bytes())?),
+                boot: Some(symbol(c, f.boot.as_str().as_bytes())?),
+                pid: Some(f.pid.get()),
+                birth: Some(codec::encode(&f.started)?.into_bytes()),
+                executable: Some(symbol(c, codec::encode(&f.executable)?.as_bytes())?),
+                argv: Some(f.argv_sha256.as_bytes().to_vec()),
+            })
+        }
+        RecordedIdentity::Absent { reason } => Ok(IdentityCols {
+            state: "absent",
+            cause: Some(reason.clone()),
+            ..Default::default()
+        }),
+        RecordedIdentity::Unreadable { cause } => Ok(IdentityCols {
+            state: "unreadable",
+            cause: Some(cause.clone()),
+            ..Default::default()
+        }),
+    }
+}
 pub(super) fn apply(
     c: &Connection,
     h: &EventHeader,
@@ -123,8 +329,7 @@ pub(super) fn apply(
 ) -> StoreResult<()> {
     let lease = authority.lease;
     if lease.mode != LeaseMode::Host {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
+        return Err(invalid_transition(
             "native process facts require the owning host writer",
         ));
     }
@@ -136,8 +341,7 @@ pub(super) fn apply(
                 initial,
                 ProcessState::Reserved | ProcessState::Starting | ProcessState::Running
             ) {
-                return Err(fail(
-                    StoreErrorCode::InvalidTransition,
+                return Err(invalid_transition(
                     "wave-1 registration requires a reservation, prepared scope or witnessed running process",
                 ));
             }
@@ -159,8 +363,7 @@ pub(super) fn apply(
                 || outcome.len() > 16384
                 || codec::encode(&containment)? != codec::encode(&identity.containment)?
             {
-                return Err(fail(
-                    StoreErrorCode::InvalidTransition,
+                return Err(invalid_transition(
                     "process transition identity/state/outcome/containment disagrees",
                 ));
             }
@@ -181,205 +384,37 @@ pub(super) fn apply(
     };
     shape(&identity, to)?;
     let id = key(c, "lifecycle", identity.record.as_str(), &scope, true)?;
-    let principal = actor_key(c, &identity.principal, &scope, false)?;
-    let owner: Option<Vec<u8>> = c
-        .query_row(
-            "SELECT owner_id FROM principals WHERE project_id=? AND principal_id=?",
-            rusqlite::params![p, principal],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(sql)?;
-    let owner = owner.ok_or_else(|| {
-        fail(
-            StoreErrorCode::ReferenceMissing,
-            "process principal is not registered in its project",
-        )
-    })?;
-    let permitted = match (&h.actor, &identity.principal) {
-        (Actor::Remote(_), Actor::Agent(_)) => authority.remote_launch.is_some(),
-        (Actor::Remote(_) | Actor::Guest, _) | (_, Actor::Remote(_) | Actor::Guest) => false,
-        (Actor::Human(human), _) => key(c, "human", human.as_str(), &[0], false)? == owner,
-        (Actor::Agent(_), _) if h.actor == identity.principal => h.session == identity.session,
-        (Actor::Agent(creator), Actor::Agent(_)) => {
-            crate::creator::require(c, &p, &scope, creator, &principal)?;
-            true
-        }
-        (Actor::Agent(_), Actor::Human(_)) => false,
-    };
-    if !permitted {
-        return Err(fail(
-            StoreErrorCode::ScopeMismatch,
-            "process fact actor differs from its admitted principal/owner",
-        ));
-    }
-    let target = identity
-        .session
-        .as_ref()
-        .map(|s| key(c, "session", s.as_str(), &scope, false))
-        .transpose()?;
-    if let Some(target) = &target {
-        let valid: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=? AND session_id=? AND agent_id=?)",rusqlite::params![p,target,principal],|r|r.get(0)).map_err(sql)?;
-        if !valid {
-            return Err(fail(
-                StoreErrorCode::ScopeMismatch,
-                "process session belongs to another principal or is absent",
-            ));
-        }
-    }
+    let (principal, target) = verify_actor_and_session(c, h, (&p, &scope), &identity, authority)?;
     if let Some(from) = from {
-        let (old_seq, old_state, released): (i64,String,bool) = c.query_row("SELECT last_seq,state,ownership_released FROM processes WHERE project_id=? AND process_id=?",rusqlite::params![p,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(sql)?;
-        if released || state(&old_state)? != from {
-            return Err(fail(
-                StoreErrorCode::InvalidTransition,
-                "process source state or retained ownership differs",
-            ));
-        }
-        let old = codec::process::identity(c, old_seq, &p, &id, rev - 1, &old_state, false)?;
-        if from == ProcessState::StopUnproved && to == ProcessState::StopUnproved {
-            release::apply(c, h, &p, &old, &identity, rev, lease)?;
-        }
-        let console = console::argv(c, old_seq, (from, to), &old, &identity, outcome.as_deref())?;
-        let exec = from == ProcessState::Starting
-            && to == ProcessState::Starting
-            && outcome.as_deref() == Some("exec-observed")
-            && matches!(
-                codec::facts(c, old_seq)?
-                    .get("outcome")
-                    .and_then(serde_json::Value::as_str),
-                Some("root-prepared" | "console-prepared")
-            )
-            && matches!((&old.instance, &identity.instance), (RecordedIdentity::Present(a), RecordedIdentity::Present(b)) if exec_image(from, to, a, b));
-        if from == ProcessState::Starting
-            && to == ProcessState::Starting
-            && !(old.root_identity == RootIdentityState::Unpublished
-                && matches!(old.instance, RecordedIdentity::Absent { .. })
-                && identity.root_identity == RootIdentityState::Identified)
-            && !console
-            && !exec
-        {
-            return Err(fail(
-                StoreErrorCode::InvalidTransition,
-                "Starting to Starting requires root publication, one console argv handoff, or the exact witnessed exec checkpoint",
-            ));
-        }
-        if old.principal != identity.principal
-            || old.session != identity.session
-            || matches!((&old.instance,&identity.instance),(RecordedIdentity::Present(a),RecordedIdentity::Present(b)) if a != b && !exec_image(from, to, a, b) && !console)
-            || matches!(
-                (&old.instance, &identity.instance),
-                (
-                    RecordedIdentity::Present(_),
-                    RecordedIdentity::Absent { .. } | RecordedIdentity::Unreadable { .. }
-                )
-            )
-        {
-            return Err(fail(
-                StoreErrorCode::SourceChanged,
-                "process principal/session/native birth identity cannot be replaced",
-            ));
-        }
+        verify_transition(
+            c,
+            h,
+            (&p, &id, rev),
+            (from, to),
+            lease,
+            &identity,
+            outcome.as_deref(),
+        )?;
     }
-    let (identity_state, cause, machine, boot, pid, birth, executable, argv) =
-        match &identity.instance {
-            RecordedIdentity::Present(instance) => {
-                let f = instance.fields();
-                (
-                    "present",
-                    None,
-                    Some(symbol(c, f.machine.as_str().as_bytes())?),
-                    Some(symbol(c, f.boot.as_str().as_bytes())?),
-                    Some(f.pid.get()),
-                    Some(codec::encode(&f.started)?.into_bytes()),
-                    Some(symbol(c, codec::encode(&f.executable)?.as_bytes())?),
-                    Some(f.argv_sha256.as_bytes().to_vec()),
-                )
-            }
-            RecordedIdentity::Absent { reason } => (
-                "absent",
-                Some(reason.clone()),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            ),
-            RecordedIdentity::Unreadable { cause } => (
-                "unreadable",
-                Some(cause.clone()),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            ),
-        };
+    let cols = encode_identity(c, &identity.instance)?;
     let root = match identity.root_identity {
         RootIdentityState::NoChildCreated => "no-child-created",
         RootIdentityState::Unpublished => "unpublished",
         RootIdentityState::Identified => "identified",
         RootIdentityState::Unknown => "unknown",
     };
-    let (containment, containment_cause, unknown, observed, probe) = match &identity.containment {
-        ContainmentFact::NotLaunched => ("not-launched", None, None, None, None),
-        ContainmentFact::Unknown { reason } => ("unknown", None, Some(reason.clone()), None, None),
-        ContainmentFact::Contained {
-            kind,
-            observed_at_us,
-        } => (
-            match kind {
-                ContainmentKind::Cgroup => "cgroup",
-                ContainmentKind::Job => "job",
-                ContainmentKind::ProcessGroup => "process-group",
-            },
-            None,
-            None,
-            Some(*observed_at_us),
-            None,
-        ),
-        ContainmentFact::Uncontained {
-            cause,
-            observed_at_us,
-            probe,
-        } => {
-            let cause = match cause {
-                ContainmentCause::NoUserManager => "no-user-manager",
-                ContainmentCause::NoDelegation => "no-delegation",
-                ContainmentCause::CgroupV2Absent => "cgroup-v2-absent",
-                ContainmentCause::CgroupUnreadable => "cgroup-unreadable",
-                ContainmentCause::ScopeCreateFailed => "scope-create-failed",
-            };
-            if let Some(probe) = probe {
-                session::reference(c, &p, &scope, probe)?;
-            }
-            (
-                "uncontained",
-                Some(cause),
-                None,
-                Some(*observed_at_us),
-                probe
-                    .as_ref()
-                    .map(|e| key(c, "event", e.as_str(), &scope, false))
-                    .transpose()?,
-            )
-        }
-    };
+    let contain = encode_containment(c, &p, &scope, &identity.containment)?;
     let observation = observation
         .as_ref()
         .map(|e| key(c, "event", e.as_str(), &scope, false))
         .transpose()?;
-    c.execute("INSERT INTO process_data(event_seq,process_id,principal_id,target_session_id,root_identity,identity_state,identity_cause,machine_id,boot_identity,pid,birth_identity,executable,argv_sha256,custody_version,custody,containment,containment_cause,containment_unknown_reason,containment_observed_at_us,containment_probe,state,expected_revision,observation_event) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![seq,id,principal,target,root,identity_state,cause,machine,boot,pid,birth,executable,argv,identity.custody.format_version,identity.custody.record,containment,containment_cause,unknown,observed,probe,name(to),expected_revision,observation]).map_err(sql)?;
+    c.execute("INSERT INTO process_data(event_seq,process_id,principal_id,target_session_id,root_identity,identity_state,identity_cause,machine_id,boot_identity,pid,birth_identity,executable,argv_sha256,custody_version,custody,containment,containment_cause,containment_unknown_reason,containment_observed_at_us,containment_probe,state,expected_revision,observation_event) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![seq,id,principal,target,root,cols.state,cols.cause,cols.machine,cols.boot,cols.pid,cols.birth,cols.executable,cols.argv,identity.custody.format_version,identity.custody.record,contain.kind,contain.cause,contain.unknown,contain.observed,contain.probe,name(to),expected_revision,observation]).map_err(sql)?;
     if let Some(from) = from {
         codec::aux(c, seq, serde_json::json!({"from":from,"outcome":outcome}))?;
         let released = from == ProcessState::StopUnproved && to == ProcessState::StopUnproved;
         let changed = c.execute("UPDATE processes SET revision=?,last_seq=?,state=?,ownership_released=? WHERE project_id=? AND process_id=? AND revision=? AND state=? AND ownership_released=0",crate::sql_value::sql_params![rev,seq,name(to),released,p,id,rev-1,name(from)]).map_err(sql)?;
         if changed != 1 {
-            return Err(fail(
-                StoreErrorCode::RevisionConflict,
-                "process head changed",
-            ));
+            return Err(revision_conflict("process head changed"));
         }
     } else {
         c.execute("INSERT INTO processes(project_id,process_id,first_seq,revision,last_seq,state) VALUES(?,?,?,?,?,?)",crate::sql_value::sql_params![p,id,seq,rev,seq,name(to)]).map_err(sql)?;

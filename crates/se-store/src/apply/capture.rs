@@ -136,8 +136,7 @@ pub(crate) fn validate_batch(c: &Connection, batch: &AtomicBatch) -> StoreResult
                 _ => None,
             })
             .ok_or_else(|| {
-                fail(
-                    StoreErrorCode::ReferenceMissing,
+                reference_missing(
                     "capture progress requires its last turn in the same atomic batch",
                 )
             })?;
@@ -145,15 +144,13 @@ pub(crate) fn validate_batch(c: &Connection, batch: &AtomicBatch) -> StoreResult
             || &selected.1.incarnation != *incarnation
             || selected.1.offset.checked_add(selected.1.length) != Some(*new)
         {
-            return Err(fail(
-                StoreErrorCode::SourceChanged,
+            return Err(source_changed(
                 "capture progress does not end at its last turn evidence",
             ));
         }
         let (bound, _) = source_binding(c, batch, source)?;
         if bound != *selected.0 {
-            return Err(fail(
-                StoreErrorCode::ScopeMismatch,
+            return Err(scope_mismatch(
                 "capture progress last turn belongs to another session",
             ));
         }
@@ -179,8 +176,7 @@ pub(crate) fn validate_batch(c: &Connection, batch: &AtomicBatch) -> StoreResult
                 }
             }
             if matches != 1 {
-                return Err(fail(
-                    StoreErrorCode::InvalidTransition,
+                return Err(invalid_transition(
                     "each captured turn needs exactly one matching same-batch progress event",
                 ));
             }
@@ -216,13 +212,10 @@ fn source_binding(
         .optional()
         .map_err(sql)?
         .ok_or_else(|| {
-            fail(
-                StoreErrorCode::ReferenceMissing,
-                format!(
-                    "capture source {} is absent",
-                    uuid::Uuid::from_bytes(*source.as_bytes())
-                ),
-            )
+            reference_missing(format!(
+                "capture source {} is absent",
+                uuid::Uuid::from_bytes(*source.as_bytes())
+            ))
         })?;
     Ok((
         wire(c, "session", &session, &scope)?
@@ -251,8 +244,7 @@ fn bound_session(
             // never authorizes turns, progress, or source replacement.
             crate::creator::require(c, p, scope, actor, &head.agent)?;
         } else {
-            return Err(fail(
-                StoreErrorCode::ScopeMismatch,
+            return Err(scope_mismatch(
                 "capture actor differs from the bound session agent",
             ));
         }
@@ -260,86 +252,182 @@ fn bound_session(
     if !matches!(head.state.as_str(), "active" | "prepared")
         && !(h.door == Door::Import && head.state == "ended")
     {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
-            "capture session is terminal",
-        ));
+        return Err(invalid_transition("capture session is terminal"));
     }
     Ok((id, head))
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+fn record_project_facts(
+    c: &Connection,
+    h: &EventHeader,
+    seq: i64,
+    mut facts: Value,
+    label: &str,
+) -> StoreResult<()> {
+    facts
+        .as_object_mut()
+        .ok_or_else(|| invalid(label))?
+        .insert("project".into(), serde_json::json!(project(&h.scope)?));
+    codec::aux(c, seq, facts)
+}
+fn apply_session_turn(
+    c: &Connection,
+    h: &EventHeader,
+    keys: (&[u8], &[u8], i64),
+    body: EventBody<InputText>,
+) -> StoreResult<()> {
+    let (p, scope, seq) = keys;
+    let EventBody::SessionTurn {
+        turn,
+        agent,
+        session,
+        provider: backend,
+        vendor_ref,
+        role: turn_role,
+        text,
+        evidence,
+    } = body
+    else {
+        return Err(invalid("session turn dispatch"));
+    };
+    let (session, head) = bound_session(c, p, scope, &session, h, false)?;
+    let a = key(c, "agent", agent.as_str(), scope, false)?;
+    if !(head.state == "active" || h.door == Door::Import && head.state == "ended")
+        || head.consent != "capture"
+        || head.agent != a
+        || head.provider != provider(backend)
+    {
+        return Err(invalid_transition(
+            "turn requires its active consented provider/agent binding",
+        ));
+    }
+    if (evidence.path.is_none() && !matches!(backend, Provider::SeCode | Provider::Acp))
+        || vendor_ref.is_empty()
+        || vendor_ref.len() > 4096
+        || evidence.incarnation.is_empty()
+        || evidence.incarnation.len() > 4096
+        || evidence.length == 0
+    {
+        return Err(invalid("turn native reference/evidence bounds"));
+    }
+    let sources:u64=c.query_row("SELECT count(*) FROM capture_sources WHERE project_id=? AND session_id=? AND source_incarnation=?
+            AND consent='capture' AND byte_offset<=?",crate::sql_value::sql_params![p,session,evidence.incarnation,evidence.offset],|r|crate::sql_value::value(r,0)).map_err(sql)?;
+    if sources != 1 {
+        return Err(source_changed(
+            "turn source incarnation/cursor is absent or ambiguous",
+        ));
+    }
+    let text = codec::text(text.as_materialized()?, 1024 * 1024)?;
+    let payload = payload(c, seq, "body", &text)?;
+    let path = symbol(c, codec::encode(&evidence.path)?.as_bytes())?;
+    c.execute("INSERT INTO turn_data(event_seq,turn_id,project_id,agent_id,session_id,provider,vendor_ref,role,text_payload,source_path,source_offset,source_length,source_sha256)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![seq,turn.as_bytes().as_slice(),p,a,session,provider(backend),vendor_ref,role(turn_role),payload,path,evidence.offset,evidence.length,evidence.sha256.map(|s|s.to_vec())]).map_err(sql)?;
+    codec::aux(
+        c,
+        seq,
+        serde_json::json!({"source_incarnation":evidence.incarnation}),
+    )?;
+    let changed=c.execute("UPDATE resume_heads SET last_turn_seq=?,last_seq=? WHERE project_id=? AND principal_id=?",rusqlite::params![seq,seq,p,a]).map_err(sql)?;
+    if changed != 1 {
+        return Err(fail(
+            StoreErrorCode::ProjectionInconsistent,
+            "turn agent resume head absent",
+        ));
+    }
+    Ok(())
+}
+fn apply_capture_source(
+    c: &Connection,
+    h: &EventHeader,
+    keys: (&[u8], &[u8], i64, u64),
+    fields: (RecordId, &SessionId, Consent, &str, &[u8]),
+    facts: Value,
+) -> StoreResult<()> {
+    let ((p, scope, seq, rev), (source, session, capture, native_ref, incarnation)) =
+        (keys, fields);
+    let (session, head) = bound_session(c, p, scope, session, h, rev == 1)?;
+    if head.consent != consent(capture)
+        || native_ref.is_empty()
+        || native_ref.len() > 32768
+        || incarnation.is_empty()
+        || incarnation.len() > 4096
+    {
+        return Err(invalid(
+            "source consent/native reference/incarnation bounds",
+        ));
+    }
+    if rev == 1 {
+        c.execute("INSERT INTO capture_sources(project_id,source_id,session_id,revision,last_seq,source_incarnation,byte_offset,consent,suppressed_count)
+            VALUES(?,?,?,?,?,?,0,?,0)",crate::sql_value::sql_params![p,source.as_bytes().as_slice(),session,rev,seq,incarnation,consent(capture)]).map_err(sql)?;
+    } else {
+        let changed=c.execute("UPDATE capture_sources SET revision=?,last_seq=?,source_incarnation=?,byte_offset=0,consent=?,suppressed_count=0
+            WHERE project_id=? AND source_id=? AND session_id=? AND revision=? AND source_incarnation<>?",crate::sql_value::sql_params![rev,seq,incarnation,consent(capture),p,source.as_bytes().as_slice(),session,rev-1,incarnation]).map_err(sql)?;
+        if changed != 1 {
+            return Err(source_changed(
+                "source rotation requires its same session and a new incarnation",
+            ));
+        }
+    }
+    record_project_facts(c, h, seq, facts, "capture source metadata")
+}
+fn apply_capture_verified(
+    c: &Connection,
+    h: &EventHeader,
+    keys: (&[u8], &[u8], i64),
+    source: RecordId,
+    session: &SessionId,
+    offset: u64,
+    facts: Value,
+) -> StoreResult<()> {
+    let (p, scope, seq) = keys;
+    let (id, _) = bound_session(c, p, scope, session, h, false)?;
+    let valid: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM capture_sources WHERE project_id=? AND source_id=? AND session_id=? AND byte_offset=? AND consent='capture')", crate::sql_value::sql_params![p,source.as_bytes().as_slice(),id,offset], |r| r.get(0)).map_err(sql)?;
+    if !valid {
+        return Err(source_changed(
+            "final capture verification differs from the committed session/source cursor",
+        ));
+    }
+    // A failure can arrive at the same byte offset after EOF planning.
+    // Compare its identity inside this writer transaction, not only in
+    // the planning snapshot. Legacy unbound acknowledgements may verify
+    // a healthy cursor, but cannot clear a retained failure.
+    let (cursor, failure): (Vec<u8>, Option<Vec<u8>>) = c
+        .query_row(
+            "SELECT e.event_id,(SELECT f.event_id FROM events f INDEXED BY events_session_seq
+         WHERE f.project_id=c.project_id AND f.session_id=c.session_id
+         AND f.seq>c.last_seq AND f.kind='capture.failed' ORDER BY f.seq DESC LIMIT 1)
+         FROM capture_sources c JOIN events e ON e.seq=c.last_seq
+         WHERE c.project_id=? AND c.source_id=?",
+            crate::sql_value::sql_params![p, source.as_bytes().as_slice()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(sql)?;
+    let unchanged = match &h.cause {
+        Some(observed) => {
+            key(c, "event", observed.as_str(), scope, false)?
+                == *failure.as_ref().unwrap_or(&cursor)
+        }
+        None => failure.is_none(),
+    };
+    if !unchanged {
+        return Err(source_changed(
+            "capture failure changed after the EOF observation; retry its current binding",
+        ));
+    }
+    codec::aux(c, seq, facts)
+}
 pub(super) fn apply(
     c: &Connection,
     h: &EventHeader,
     body: EventBody<InputText>,
     seq: i64,
     rev: u64,
-    mut facts: Value,
+    facts: Value,
 ) -> StoreResult<()> {
     use EventBody::*;
     let p = project_id(c, &h.scope, true)?;
     let scope = scope_key(c, &h.scope, true)?;
     match body {
-        SessionTurn {
-            turn,
-            agent,
-            session,
-            provider: backend,
-            vendor_ref,
-            role: turn_role,
-            text,
-            evidence,
-        } => {
-            let (session, head) = bound_session(c, &p, &scope, &session, h, false)?;
-            let a = key(c, "agent", agent.as_str(), &scope, false)?;
-            if !(head.state == "active" || h.door == Door::Import && head.state == "ended")
-                || head.consent != "capture"
-                || head.agent != a
-                || head.provider != provider(backend)
-            {
-                return Err(fail(
-                    StoreErrorCode::InvalidTransition,
-                    "turn requires its active consented provider/agent binding",
-                ));
-            }
-            if (evidence.path.is_none() && !matches!(backend, Provider::SeCode | Provider::Acp))
-                || vendor_ref.is_empty()
-                || vendor_ref.len() > 4096
-                || evidence.incarnation.is_empty()
-                || evidence.incarnation.len() > 4096
-                || evidence.length == 0
-            {
-                return Err(invalid("turn native reference/evidence bounds"));
-            }
-            let sources:u64=c.query_row("SELECT count(*) FROM capture_sources WHERE project_id=? AND session_id=? AND source_incarnation=?
-                    AND consent='capture' AND byte_offset<=?",crate::sql_value::sql_params![p,session,evidence.incarnation,evidence.offset],|r|crate::sql_value::value(r,0)).map_err(sql)?;
-            if sources != 1 {
-                return Err(fail(
-                    StoreErrorCode::SourceChanged,
-                    "turn source incarnation/cursor is absent or ambiguous",
-                ));
-            }
-            let text = codec::text(text.as_materialized()?, 1024 * 1024)?;
-            let payload = payload(c, seq, "body", &text)?;
-            let path = symbol(c, codec::encode(&evidence.path)?.as_bytes())?;
-            c.execute("INSERT INTO turn_data(event_seq,turn_id,project_id,agent_id,session_id,provider,vendor_ref,role,text_payload,source_path,source_offset,source_length,source_sha256)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![seq,turn.as_bytes().as_slice(),p,a,session,provider(backend),vendor_ref,role(turn_role),payload,path,evidence.offset,evidence.length,evidence.sha256.map(|s|s.to_vec())]).map_err(sql)?;
-            codec::aux(
-                c,
-                seq,
-                serde_json::json!({"source_incarnation":evidence.incarnation}),
-            )?;
-            let changed=c.execute("UPDATE resume_heads SET last_turn_seq=?,last_seq=? WHERE project_id=? AND principal_id=?",rusqlite::params![seq,seq,p,a]).map_err(sql)?;
-            if changed != 1 {
-                return Err(fail(
-                    StoreErrorCode::ProjectionInconsistent,
-                    "turn agent resume head absent",
-                ));
-            }
-        }
+        SessionTurn { .. } => apply_session_turn(c, h, (&p, &scope, seq), body)?,
         CaptureSource {
             source,
             session,
@@ -347,37 +435,13 @@ pub(super) fn apply(
             native_ref,
             incarnation,
             ..
-        } => {
-            let (session, head) = bound_session(c, &p, &scope, &session, h, rev == 1)?;
-            if head.consent != consent(capture)
-                || native_ref.is_empty()
-                || native_ref.len() > 32768
-                || incarnation.is_empty()
-                || incarnation.len() > 4096
-            {
-                return Err(invalid(
-                    "source consent/native reference/incarnation bounds",
-                ));
-            }
-            if rev == 1 {
-                c.execute("INSERT INTO capture_sources(project_id,source_id,session_id,revision,last_seq,source_incarnation,byte_offset,consent,suppressed_count)
-                    VALUES(?,?,?,?,?,?,0,?,0)",crate::sql_value::sql_params![p,source.as_bytes().as_slice(),session,rev,seq,incarnation,consent(capture)]).map_err(sql)?;
-            } else {
-                let changed=c.execute("UPDATE capture_sources SET revision=?,last_seq=?,source_incarnation=?,byte_offset=0,consent=?,suppressed_count=0
-                    WHERE project_id=? AND source_id=? AND session_id=? AND revision=? AND source_incarnation<>?",crate::sql_value::sql_params![rev,seq,incarnation,consent(capture),p,source.as_bytes().as_slice(),session,rev-1,incarnation]).map_err(sql)?;
-                if changed != 1 {
-                    return Err(fail(
-                        StoreErrorCode::SourceChanged,
-                        "source rotation requires its same session and a new incarnation",
-                    ));
-                }
-            }
-            facts
-                .as_object_mut()
-                .ok_or_else(|| invalid("capture source metadata"))?
-                .insert("project".into(), serde_json::json!(project(&h.scope)?));
-            codec::aux(c, seq, facts)?;
-        }
+        } => apply_capture_source(
+            c,
+            h,
+            (&p, &scope, seq, rev),
+            (source, &session, capture, &native_ref, &incarnation),
+            facts,
+        )?,
         CaptureProgress {
             source,
             incarnation,
@@ -388,58 +452,17 @@ pub(super) fn apply(
             let changed=c.execute("UPDATE capture_sources SET revision=?,last_seq=?,byte_offset=? WHERE project_id=? AND source_id=?
                     AND revision=? AND source_incarnation=? AND byte_offset=? AND consent='capture'",crate::sql_value::sql_params![rev,seq,new_offset,p,source.as_bytes().as_slice(),rev-1,incarnation,old_offset]).map_err(sql)?;
             if changed != 1 {
-                return Err(fail(
-                    StoreErrorCode::SourceChanged,
+                return Err(source_changed(
                     "capture progress source incarnation/offset changed",
                 ));
             }
-            facts
-                .as_object_mut()
-                .ok_or_else(|| invalid("capture progress metadata"))?
-                .insert("project".into(), serde_json::json!(project(&h.scope)?));
-            codec::aux(c, seq, facts)?;
+            record_project_facts(c, h, seq, facts, "capture progress metadata")?;
         }
         CaptureVerified {
             source,
             session,
             offset,
-        } => {
-            let (id, _) = bound_session(c, &p, &scope, &session, h, false)?;
-            let valid: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM capture_sources WHERE project_id=? AND source_id=? AND session_id=? AND byte_offset=? AND consent='capture')", crate::sql_value::sql_params![p,source.as_bytes().as_slice(),id,offset], |r| r.get(0)).map_err(sql)?;
-            if !valid {
-                return Err(fail(
-                    StoreErrorCode::SourceChanged,
-                    "final capture verification differs from the committed session/source cursor",
-                ));
-            }
-            // A failure can arrive at the same byte offset after EOF planning.
-            // Compare its identity inside this writer transaction, not only in
-            // the planning snapshot. Legacy unbound acknowledgements may verify
-            // a healthy cursor, but cannot clear a retained failure.
-            let (cursor, failure): (Vec<u8>, Option<Vec<u8>>) = c.query_row(
-                "SELECT e.event_id,(SELECT f.event_id FROM events f INDEXED BY events_session_seq
-                 WHERE f.project_id=c.project_id AND f.session_id=c.session_id
-                 AND f.seq>c.last_seq AND f.kind='capture.failed' ORDER BY f.seq DESC LIMIT 1)
-                 FROM capture_sources c JOIN events e ON e.seq=c.last_seq
-                 WHERE c.project_id=? AND c.source_id=?",
-                crate::sql_value::sql_params![p, source.as_bytes().as_slice()],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            ).map_err(sql)?;
-            let unchanged = match &h.cause {
-                Some(observed) => {
-                    let observed = key(c, "event", observed.as_str(), &scope, false)?;
-                    observed == *failure.as_ref().unwrap_or(&cursor)
-                }
-                None => failure.is_none(),
-            };
-            if !unchanged {
-                return Err(fail(
-                    StoreErrorCode::SourceChanged,
-                    "capture failure changed after the EOF observation; retry its current binding",
-                ));
-            }
-            codec::aux(c, seq, facts)?;
-        }
+        } => apply_capture_verified(c, h, (&p, &scope, seq), source, &session, offset, facts)?,
         CaptureFailed {
             source,
             session,
@@ -448,8 +471,8 @@ pub(super) fn apply(
             cause,
             ..
         } => {
-            bound_session(c, &p, &scope, &session, h, false)?;
-            let valid:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM capture_sources WHERE project_id=? AND source_id=? AND session_id=?)",rusqlite::params![p,source.as_bytes().as_slice(),key(c,"session",session.as_str(),&scope,false)?],|r|r.get(0)).map_err(sql)?;
+            let (session_id, _) = bound_session(c, &p, &scope, &session, h, false)?;
+            let valid:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM capture_sources WHERE project_id=? AND source_id=? AND session_id=?)",rusqlite::params![p,source.as_bytes().as_slice(),session_id],|r|r.get(0)).map_err(sql)?;
             if !valid
                 || from_offset > to_offset
                 || to_offset > i64::MAX as u64
@@ -468,18 +491,15 @@ pub(super) fn apply(
             reason,
             ..
         } => {
-            bound_session(c, &p, &scope, &session, h, false)?;
+            let (session_id, _) = bound_session(c, &p, &scope, &session, h, false)?;
             if to_offset < from_offset || to_offset > i64::MAX as u64 || reason.len() > 16384 {
                 return Err(invalid("capture suppression range/reason bounds"));
             }
             let changed=c.execute("UPDATE capture_sources SET revision=?,last_seq=?,byte_offset=?,suppressed_count=suppressed_count+?
                     WHERE project_id=? AND source_id=? AND session_id=? AND revision=? AND byte_offset=? AND
-                    consent='suppressed'",crate::sql_value::sql_params![rev,seq,to_offset,count,p,source.as_bytes().as_slice(),key(c,"session",session.as_str(),&scope,false)?,rev-1,from_offset]).map_err(sql)?;
+                    consent='suppressed'",crate::sql_value::sql_params![rev,seq,to_offset,count,p,source.as_bytes().as_slice(),session_id,rev-1,from_offset]).map_err(sql)?;
             if changed != 1 {
-                return Err(fail(
-                    StoreErrorCode::SourceChanged,
-                    "suppressed capture source/offset changed",
-                ));
+                return Err(source_changed("suppressed capture source/offset changed"));
             }
             codec::aux(c, seq, facts)?;
         }

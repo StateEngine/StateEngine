@@ -21,10 +21,7 @@ pub(crate) fn expected(
         Expected::Revision(r) => old == Some(r.value.get()),
     };
     if !matches {
-        let mut e = fail(
-            StoreErrorCode::RevisionConflict,
-            format!("{table} expected entity revision differs"),
-        );
+        let mut e = revision_conflict(format!("{table} expected entity revision differs"));
         e.detail = StoreDetail::Conflict {
             expected: want,
             observed: old.map(codec::revision).transpose()?,
@@ -250,10 +247,7 @@ fn work_revision(c: &Connection, e: &NewEvent, s: &[u8]) -> StoreResult<u64> {
                 .optional()
                 .map_err(sql)?
                 .ok_or_else(|| {
-                    fail(
-                        StoreErrorCode::ReferenceMissing,
-                        format!("message {} is absent", message.as_str()),
-                    )
+                    reference_missing(format!("message {} is absent", message.as_str()))
                 })?;
             rev.checked_add(1)
                 .filter(|v| *v <= i64::MAX as u64)

@@ -45,8 +45,7 @@ pub(super) fn validate_offer(
         || observation.observed_at_us < original.header.occurred_at_us
         || observation.observed_at_us > h.occurred_at_us
     {
-        return Err(fail(
-            StoreErrorCode::ScopeMismatch,
+        return Err(scope_mismatch(
             "mail offer observation differs from the original notice target or time window",
         ));
     }
@@ -67,8 +66,7 @@ pub(super) fn validate(
         ));
     }
     if principal.as_ref() != Some(&Actor::Agent(notice.target_agent.clone())) {
-        return Err(fail(
-            StoreErrorCode::ScopeMismatch,
+        return Err(scope_mismatch(
             "mail reservation principal differs from recipient",
         ));
     }
@@ -78,8 +76,7 @@ pub(super) fn validate(
     let session = key(c, "session", notice.session.as_str(), &s, false)?;
     let live:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=? AND agent_id=? AND session_id=? AND state='active')",crate::sql_value::sql_params![p,agent,session],|r|r.get(0)).map_err(sql)?;
     if !live {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
+        return Err(invalid_transition(
             "mail target session is not active for this recipient",
         ));
     }
@@ -116,8 +113,7 @@ pub(super) fn validate(
             crate::sql_value::sql_params![p, agent, message, notice.through.sequence], |r| r.get(0),
         ).map_err(sql)?;
         if !eligible {
-            return Err(fail(
-                StoreErrorCode::RevisionConflict,
+            return Err(revision_conflict(
                 "notice contains a message that is no longer unread for this recipient at its checked boundary",
             ));
         }
@@ -164,8 +160,7 @@ fn validate_unconsumed(
             let message = key(c, "message", id.as_str(), s, false)?;
             let unconsumed: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM message_deliveries WHERE project_id=? AND recipient_id=? AND message_id=? AND delivered_seq IS NULL AND read_seq IS NULL AND dismissed_seq IS NULL AND superseded_by IS NULL)", crate::sql_value::sql_params![p,agent,message], |r| r.get(0)).map_err(sql)?;
             if unconsumed {
-                return Err(fail(
-                    StoreErrorCode::RevisionConflict,
+                return Err(revision_conflict(
                     "reconcile the unconsumed notice before another reservation",
                 ));
             }

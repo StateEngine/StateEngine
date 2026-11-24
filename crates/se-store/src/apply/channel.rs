@@ -17,10 +17,7 @@ pub(crate) fn load(
         )
         .optional()
         .map_err(sql)?;
-    serde_json::from_str(
-        &json.ok_or_else(|| fail(StoreErrorCode::ReferenceMissing, "channel absent"))?,
-    )
-    .map_err(invalid)
+    serde_json::from_str(&json.ok_or_else(|| reference_missing("channel absent"))?).map_err(invalid)
 }
 pub(crate) fn revision(c: &Connection, change: &Change) -> StoreResult<u64> {
     if matches!(change, Change::Connected { .. }) {
@@ -37,10 +34,7 @@ pub(crate) fn revision(c: &Connection, change: &Change) -> StoreResult<u64> {
     };
     if let Some(expected) = expected {
         if expected != state.revision {
-            return Err(fail(
-                StoreErrorCode::InvalidTransition,
-                "channel revision conflict",
-            ));
+            return Err(invalid_transition("channel revision conflict"));
         }
         return state
             .revision
@@ -60,8 +54,7 @@ pub(crate) fn apply(
     channel_delay_us: i64,
 ) -> StoreResult<()> {
     if h.door != Door::Host || h.session.is_some() || !matches!(h.actor, Actor::Human(_)) {
-        return Err(fail(
-            StoreErrorCode::ScopeMismatch,
+        return Err(scope_mismatch(
             "channel changes require native Owner host admission",
         ));
     }
@@ -81,10 +74,7 @@ pub(crate) fn apply(
     if h.actor != Actor::Human(state.owner.clone())
         || h.scope != Scope::Project(state.target.project.clone())
     {
-        return Err(fail(
-            StoreErrorCode::ScopeMismatch,
-            "channel outside exact Owner/project scope",
-        ));
+        return Err(scope_mismatch("channel outside exact Owner/project scope"));
     }
     if matches!(
         &change,
@@ -184,10 +174,7 @@ fn admit(c: &Connection, h: &EventHeader, state: &ChannelConnection, now: i64) -
     let agent = key(c, "agent", state.target.agent.as_str(), &s, false)?;
     let actual: Option<u64> = c.query_row("SELECT revision FROM principals WHERE project_id=? AND principal_id=? AND principal_kind='agent'", crate::sql_value::sql_params![p, agent], |r| crate::sql_value::value(r, 0)).optional().map_err(sql)?;
     if actual != Some(state.target.selection_revision) {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
-            "agent selection revision changed",
-        ));
+        return Err(invalid_transition("agent selection revision changed"));
     }
     if let Pairing::Challenge { expires_at_us, .. } = state.pairing
         && expires_at_us <= now

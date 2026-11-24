@@ -54,10 +54,201 @@ impl AtlasResumeMutation {
         }
     }
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+fn apply_epoch(
+    db: &Connection,
+    project: se_types::ProjectId,
+    root: &AtlasRootId,
+    expected: Option<IndexEpochId>,
+    next: Option<IndexEpochId>,
+) -> StoreResult<AtlasResumeWrite> {
+    let p = connection::project_id(db, &Scope::Project(project), false)?;
+    active_project(db, &p)?;
+    let old: Option<(String, bool)> = db
+        .query_row(
+            "SELECT epoch,active FROM atlas_resume_roots WHERE project_id=?1 AND root=?2",
+            params![p, root.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    if old
+        .as_ref()
+        .filter(|(_, active)| *active)
+        .map(|(epoch, _)| epoch.as_str())
+        != expected.as_ref().map(IndexEpochId::as_str)
+    {
+        return Err(fail(
+            StoreErrorCode::RevisionConflict,
+            "Atlas epoch changed before lifecycle update",
+        ));
+    }
+    if let Some(next) = next {
+        if old
+            .as_ref()
+            .is_some_and(|(epoch, active)| *active && epoch == next.as_str())
+        {
+            return Ok(AtlasResumeWrite::EpochSet);
+        }
+        db.execute(
+            "DELETE FROM atlas_resume_cursors WHERE project_id=?1 AND root=?2",
+            params![p, root.as_str()],
+        )
+        .map_err(sql)?;
+        db.execute("INSERT INTO atlas_resume_roots VALUES(?1,?2,?3,1) ON CONFLICT(project_id,root) DO UPDATE SET epoch=excluded.epoch,active=1", params![p, root.as_str(), next.as_str()]).map_err(sql)?;
+    } else {
+        db.execute(
+            "DELETE FROM atlas_resume_roots WHERE project_id=?1 AND root=?2",
+            params![p, root.as_str()],
+        )
+        .map_err(sql)?;
+    }
+    Ok(AtlasResumeWrite::EpochSet)
+}
+fn verify_delivered(
+    db: &Connection,
+    generation: u64,
+    admission: &Admission,
+    root: &AtlasRootId,
+    epoch: &IndexEpochId,
+    viewer: &se_types::AgentId,
+    advance: &ResumeAdvance,
+) -> StoreResult<(Vec<u8>, Vec<u8>)> {
+    if admission.generation != generation
+        || admission.actor != Actor::Agent(viewer.clone())
+        || admission.session.is_none()
+    {
+        return Err(fail(
+            StoreErrorCode::ScopeMismatch,
+            "Atlas delivered cursor requires the verified active viewer/session",
+        ));
+    }
+    let p = connection::project_id(db, &admission.scope, false)?;
+    active_project(db, &p)?;
+    let scope = scope_key(db, &admission.scope, false)?;
+    let a = key(db, "agent", viewer.as_str(), &scope, false)?;
+    let session = admission
+        .session
+        .as_ref()
+        .ok_or_else(|| invalid("missing Atlas viewer session"))?;
+    let session = key(db, "session", session.as_str(), &scope, false)?;
+    let active:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=?1 AND session_id=?2 AND agent_id=?3 AND state='active')",params![p,session,a],|r|r.get(0)).map_err(sql)?;
+    if !active {
+        return Err(fail(
+            StoreErrorCode::InvalidTransition,
+            "Atlas viewer session is no longer active",
+        ));
+    }
+    let current: Option<String> = db
+        .query_row(
+            "SELECT epoch FROM atlas_resume_roots WHERE project_id=?1 AND root=?2 AND active=1",
+            params![p, root.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    if current.as_deref() != Some(epoch.as_str()) {
+        return Err(fail(
+            StoreErrorCode::RevisionConflict,
+            "Atlas epoch retired; discard the old offer",
+        ));
+    }
+    let Scope::Project(project) = &admission.scope else {
+        return Err(fail(
+            StoreErrorCode::ScopeMismatch,
+            "Atlas cursor requires one project",
+        ));
+    };
+    let position =
+        se_types::code::CodeCursorPosition::decode(&advance.next_cursor).map_err(invalid)?;
+    if position
+        .resume_fence(
+            project,
+            root,
+            epoch,
+            &se_types::code::AtlasPrincipal::Agent(viewer.clone()),
+        )
+        .map_err(invalid)?
+        != advance.fence.0
+    {
+        return Err(invalid("Atlas next cursor fence differs from the offer"));
+    }
+    Ok((p, a))
+}
+fn apply_delivered(
+    db: &Connection,
+    generation: u64,
+    mutation: AtlasResumeMutation,
+) -> StoreResult<AtlasResumeWrite> {
+    let AtlasResumeMutation::Delivered {
+        admission,
+        root,
+        epoch,
+        viewer,
+        delivery,
+        section_sha256,
+        advance,
+    } = mutation
+    else {
+        return Err(invalid("Atlas delivered dispatch"));
+    };
+    let (p, a) = verify_delivered(db, generation, &admission, &root, &epoch, &viewer, &advance)?;
+    let fingerprint: [u8; 32] = Sha256::digest(
+        serde_json::to_vec(&(&advance, section_sha256, &epoch, &viewer)).map_err(invalid)?,
+    )
+    .into();
+    let prior:Option<(Vec<u8>,u64)>=db.query_row("SELECT fingerprint,revision FROM atlas_resume_deliveries WHERE project_id=?1 AND root=?2 AND agent_id=?3 AND offer=?4",params![p,root.as_str(),a,advance.offer.0.as_slice()],|r|Ok((r.get(0)?,crate::sql_value::value(r,1)?))).optional().map_err(sql)?;
+    if let Some((digest, revision)) = prior {
+        if digest != fingerprint {
+            return Err(fail(
+                StoreErrorCode::NaturalKeyConflict,
+                "Atlas offer replay differs from its delivered section",
+            ));
+        }
+        return Ok(AtlasResumeWrite::Cursor(
+            ResumeCursorCommit::AlreadyApplied { revision },
+        ));
+    }
+    let old:Option<(String,u64,u64)>=db.query_row("SELECT cursor,revision,fence FROM atlas_resume_cursors WHERE project_id=?1 AND root=?2 AND agent_id=?3",params![p,root.as_str(),a],|r|Ok((r.get(0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?))).optional().map_err(sql)?;
+    let actual_revision = old.as_ref().map_or(0, |v| v.1);
+    if actual_revision != advance.expected_revision
+        || old.as_ref().map(|v| v.0.as_str())
+            != advance
+                .expected_cursor
+                .as_ref()
+                .map(se_types::code::AtlasText::as_str)
+    {
+        return Ok(AtlasResumeWrite::Cursor(ResumeCursorCommit::Stale {
+            actual_revision,
+        }));
+    }
+    if old.as_ref().is_some_and(|v| advance.fence.0 < v.2) {
+        return Err(fail(
+            StoreErrorCode::InvalidTransition,
+            "Atlas cursor cannot move backward",
+        ));
+    }
+    let revision = actual_revision
+        .checked_add(1)
+        .ok_or_else(|| invalid("Atlas cursor revision exhausted"))?;
+    db.execute("INSERT INTO atlas_resume_cursors VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(project_id,root,agent_id) DO UPDATE SET cursor=excluded.cursor,revision=excluded.revision,fence=excluded.fence",crate::sql_value::sql_params![p,root.as_str(),a,se_types::code::AtlasText::as_str(&advance.next_cursor),revision,advance.fence.0]).map_err(sql)?;
+    db.execute(
+        "INSERT INTO atlas_resume_deliveries VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        crate::sql_value::sql_params![
+            p,
+            root.as_str(),
+            a,
+            advance.offer.0.as_slice(),
+            delivery.as_str(),
+            fingerprint,
+            revision
+        ],
+    )
+    .map_err(sql)?;
+    db.execute("DELETE FROM atlas_resume_deliveries WHERE project_id=?1 AND root=?2 AND agent_id=?3 AND revision<=?4",crate::sql_value::sql_params![p,root.as_str(),a,revision.saturating_sub(64)]).map_err(sql)?;
+    Ok(AtlasResumeWrite::Cursor(ResumeCursorCommit::Applied {
+        revision,
+    }))
+}
 pub(crate) fn apply(
     db: &Connection,
     mutation: AtlasResumeMutation,
@@ -88,167 +279,8 @@ pub(crate) fn apply(
             root,
             expected,
             next,
-        } => {
-            let p = connection::project_id(db, &Scope::Project(project), false)?;
-            active_project(db, &p)?;
-            let old: Option<(String, bool)> = db
-                .query_row(
-                    "SELECT epoch,active FROM atlas_resume_roots WHERE project_id=?1 AND root=?2",
-                    params![p, root.as_str()],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()
-                .map_err(sql)?;
-            if old
-                .as_ref()
-                .filter(|(_, active)| *active)
-                .map(|(epoch, _)| epoch.as_str())
-                != expected.as_ref().map(IndexEpochId::as_str)
-            {
-                return Err(fail(
-                    StoreErrorCode::RevisionConflict,
-                    "Atlas epoch changed before lifecycle update",
-                ));
-            }
-            if let Some(next) = next {
-                if old
-                    .as_ref()
-                    .is_some_and(|(epoch, active)| *active && epoch == next.as_str())
-                {
-                    return Ok(AtlasResumeWrite::EpochSet);
-                }
-                db.execute(
-                    "DELETE FROM atlas_resume_cursors WHERE project_id=?1 AND root=?2",
-                    params![p, root.as_str()],
-                )
-                .map_err(sql)?;
-                db.execute("INSERT INTO atlas_resume_roots VALUES(?1,?2,?3,1) ON CONFLICT(project_id,root) DO UPDATE SET epoch=excluded.epoch,active=1",params![p,root.as_str(),next.as_str()]).map_err(sql)?;
-            } else {
-                db.execute(
-                    "DELETE FROM atlas_resume_roots WHERE project_id=?1 AND root=?2",
-                    params![p, root.as_str()],
-                )
-                .map_err(sql)?;
-            }
-            AtlasResumeWrite::EpochSet
-        }
-        AtlasResumeMutation::Delivered {
-            admission,
-            root,
-            epoch,
-            viewer,
-            delivery,
-            section_sha256,
-            advance,
-        } => {
-            if admission.generation != generation
-                || admission.actor != Actor::Agent(viewer.clone())
-                || admission.session.is_none()
-            {
-                return Err(fail(
-                    StoreErrorCode::ScopeMismatch,
-                    "Atlas delivered cursor requires the verified active viewer/session",
-                ));
-            }
-            let p = connection::project_id(db, &admission.scope, false)?;
-            active_project(db, &p)?;
-            let scope = scope_key(db, &admission.scope, false)?;
-            let a = key(db, "agent", viewer.as_str(), &scope, false)?;
-            let session = admission
-                .session
-                .as_ref()
-                .ok_or_else(|| invalid("missing Atlas viewer session"))?;
-            let session = key(db, "session", session.as_str(), &scope, false)?;
-            let active:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=?1 AND session_id=?2 AND agent_id=?3 AND state='active')",params![p,session,a],|r|r.get(0)).map_err(sql)?;
-            if !active {
-                return Err(fail(
-                    StoreErrorCode::InvalidTransition,
-                    "Atlas viewer session is no longer active",
-                ));
-            }
-            let current:Option<String>=db.query_row("SELECT epoch FROM atlas_resume_roots WHERE project_id=?1 AND root=?2 AND active=1",params![p,root.as_str()],|r|r.get(0)).optional().map_err(sql)?;
-            if current.as_deref() != Some(epoch.as_str()) {
-                return Err(fail(
-                    StoreErrorCode::RevisionConflict,
-                    "Atlas epoch retired; discard the old offer",
-                ));
-            }
-            let Scope::Project(project) = &admission.scope else {
-                return Err(fail(
-                    StoreErrorCode::ScopeMismatch,
-                    "Atlas cursor requires one project",
-                ));
-            };
-            let position = se_types::code::CodeCursorPosition::decode(&advance.next_cursor)
-                .map_err(invalid)?;
-            if position
-                .resume_fence(
-                    project,
-                    &root,
-                    &epoch,
-                    &se_types::code::AtlasPrincipal::Agent(viewer.clone()),
-                )
-                .map_err(invalid)?
-                != advance.fence.0
-            {
-                return Err(invalid("Atlas next cursor fence differs from the offer"));
-            }
-            let fingerprint: [u8; 32] = Sha256::digest(
-                serde_json::to_vec(&(&advance, section_sha256, &epoch, &viewer))
-                    .map_err(invalid)?,
-            )
-            .into();
-            let prior:Option<(Vec<u8>,u64)>=db.query_row("SELECT fingerprint,revision FROM atlas_resume_deliveries WHERE project_id=?1 AND root=?2 AND agent_id=?3 AND offer=?4",params![p,root.as_str(),a,advance.offer.0.as_slice()],|r|Ok((r.get(0)?,crate::sql_value::value(r,1)?))).optional().map_err(sql)?;
-            if let Some((digest, revision)) = prior {
-                if digest != fingerprint {
-                    return Err(fail(
-                        StoreErrorCode::NaturalKeyConflict,
-                        "Atlas offer replay differs from its delivered section",
-                    ));
-                }
-                return Ok(AtlasResumeWrite::Cursor(
-                    ResumeCursorCommit::AlreadyApplied { revision },
-                ));
-            }
-            let old:Option<(String,u64,u64)>=db.query_row("SELECT cursor,revision,fence FROM atlas_resume_cursors WHERE project_id=?1 AND root=?2 AND agent_id=?3",params![p,root.as_str(),a],|r|Ok((r.get(0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?))).optional().map_err(sql)?;
-            let actual_revision = old.as_ref().map_or(0, |v| v.1);
-            if actual_revision != advance.expected_revision
-                || old.as_ref().map(|v| v.0.as_str())
-                    != advance
-                        .expected_cursor
-                        .as_ref()
-                        .map(se_types::code::AtlasText::as_str)
-            {
-                return Ok(AtlasResumeWrite::Cursor(ResumeCursorCommit::Stale {
-                    actual_revision,
-                }));
-            }
-            if old.as_ref().is_some_and(|v| advance.fence.0 < v.2) {
-                return Err(fail(
-                    StoreErrorCode::InvalidTransition,
-                    "Atlas cursor cannot move backward",
-                ));
-            }
-            let revision = actual_revision
-                .checked_add(1)
-                .ok_or_else(|| invalid("Atlas cursor revision exhausted"))?;
-            db.execute("INSERT INTO atlas_resume_cursors VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(project_id,root,agent_id) DO UPDATE SET cursor=excluded.cursor,revision=excluded.revision,fence=excluded.fence",crate::sql_value::sql_params![p,root.as_str(),a,se_types::code::AtlasText::as_str(&advance.next_cursor),revision,advance.fence.0]).map_err(sql)?;
-            db.execute(
-                "INSERT INTO atlas_resume_deliveries VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                crate::sql_value::sql_params![
-                    p,
-                    root.as_str(),
-                    a,
-                    advance.offer.0.as_slice(),
-                    delivery.as_str(),
-                    fingerprint,
-                    revision
-                ],
-            )
-            .map_err(sql)?;
-            db.execute("DELETE FROM atlas_resume_deliveries WHERE project_id=?1 AND root=?2 AND agent_id=?3 AND revision<=?4",crate::sql_value::sql_params![p,root.as_str(),a,revision.saturating_sub(64)]).map_err(sql)?;
-            AtlasResumeWrite::Cursor(ResumeCursorCommit::Applied { revision })
-        }
+        } => apply_epoch(db, project, &root, expected, next)?,
+        AtlasResumeMutation::Delivered { .. } => apply_delivered(db, generation, mutation)?,
     };
     transaction.commit().map_err(|e| {
         let mut error = sql(e);

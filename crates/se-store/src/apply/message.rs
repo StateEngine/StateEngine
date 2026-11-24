@@ -54,12 +54,8 @@ pub(super) fn supersede_from_header(
         )
         .optional()
         .map_err(sql)?;
-    let old = old.ok_or_else(|| {
-        fail(
-            StoreErrorCode::ReferenceMissing,
-            "supersession target event has no recorded message",
-        )
-    })?;
+    let old =
+        old.ok_or_else(|| reference_missing("supersession target event has no recorded message"))?;
     let new = key(c, "message", new_message.as_str(), &scope, false)?;
     let keys = SupersedeKeys {
         project: &p,
@@ -90,12 +86,8 @@ fn supersede_rows(
         )
         .optional()
         .map_err(sql)?;
-    let (sender, recipient, unread) = row.ok_or_else(|| {
-        fail(
-            StoreErrorCode::ReferenceMissing,
-            "replaced source message is absent",
-        )
-    })?;
+    let (sender, recipient, unread) =
+        row.ok_or_else(|| reference_missing("replaced source message is absent"))?;
     let actor = key(
         c,
         h.actor.kind(),
@@ -115,8 +107,7 @@ fn supersede_rows(
         )
         .map_err(sql)?;
     if sender != actor || !valid {
-        return Err(fail(
-            StoreErrorCode::ScopeMismatch,
+        return Err(scope_mismatch(
             "replacement must preserve the exact recorded sender and recipient",
         ));
     }
@@ -127,8 +118,7 @@ fn supersede_rows(
         )
         .map_err(sql)?;
     if changed != 1 {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
+        return Err(invalid_transition(
             "source message already has a replacement",
         ));
     }

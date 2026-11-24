@@ -21,6 +21,21 @@ use crate::{codec, connection::*, error::*, identity::*, *};
 use rusqlite::{Connection, OptionalExtension};
 use se_types::ProjectId;
 use serde_json::Value;
+fn invalid_transition(msg: impl Into<String>) -> Box<StoreError> {
+    fail(StoreErrorCode::InvalidTransition, msg)
+}
+fn scope_mismatch(msg: impl Into<String>) -> Box<StoreError> {
+    fail(StoreErrorCode::ScopeMismatch, msg)
+}
+fn source_changed(msg: impl Into<String>) -> Box<StoreError> {
+    fail(StoreErrorCode::SourceChanged, msg)
+}
+fn reference_missing(msg: impl Into<String>) -> Box<StoreError> {
+    fail(StoreErrorCode::ReferenceMissing, msg)
+}
+fn revision_conflict(msg: impl Into<String>) -> Box<StoreError> {
+    fail(StoreErrorCode::RevisionConflict, msg)
+}
 /// Keep the writer lease and this transaction's closed launch validation together.
 pub(crate) struct ApplyAuthority<'a> {
     pub lease: &'a LeaseIdentity,
