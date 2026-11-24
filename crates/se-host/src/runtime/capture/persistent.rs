@@ -126,12 +126,11 @@ pub(super) fn publish(lease: &HostLease, source: &BoundTranscript) -> Result<()>
         .create_staging(&directory)
         .map_err(|error| store_error(&error))?;
     let mut file = staging.file;
-    file.write_all(&bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|error| {
-            se_core::scope::unreadable("publish transcript binding", &error.to_string())
-                .with_cause(error)
-        })?;
+    // Publication flushes the staged data before moving its name.
+    file.write_all(&bytes).map_err(|error| {
+        se_core::scope::unreadable("publish transcript binding", &error.to_string())
+            .with_cause(error)
+    })?;
     drop(file);
     match lease.files().publish_no_replace(&staging.path, &path) {
         Ok(()) => (),

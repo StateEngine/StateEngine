@@ -75,11 +75,8 @@ fn publish(path: &Path, value: &impl serde::Serialize) -> Result<()> {
         .ok_or_else(|| failure("missing launch directory"))?;
     let files = se_proc::NativeStateFiles::open(parent).map_err(native)?;
     let mut staged = files.create_staging(parent).map_err(native)?;
-    staged
-        .file
-        .write_all(&bytes)
-        .and_then(|()| staged.file.sync_all())
-        .map_err(native)?;
+    // Publication flushes the staged data before moving its name.
+    staged.file.write_all(&bytes).map_err(native)?;
     drop(staged.file);
     files.publish_no_replace(&staged.path, path).map_err(native)
 }

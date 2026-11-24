@@ -130,7 +130,7 @@ pub(crate) fn authorize(
     }
     let mut staged = files.create_staging(home).map_err(native)?;
     staged.file.write_all(&expected).map_err(io)?;
-    staged.file.sync_all().map_err(io)?;
+    // Publication flushes the staged data before moving its name.
     drop(staged.file);
     match files.publish_no_replace(&staged.path, &path) {
         Ok(()) => Ok(()),

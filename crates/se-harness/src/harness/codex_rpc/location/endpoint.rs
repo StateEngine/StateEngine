@@ -102,10 +102,10 @@ fn publish(path: &Path, endpoint: &Endpoint) -> Result<()> {
         .ok_or_else(|| failure("missing journal parent"))?;
     let files = se_proc::NativeStateFiles::open(parent).map_err(native_error)?;
     let mut staged = files.create_staging(parent).map_err(native_error)?;
+    // Publication flushes the staged data before moving its name.
     staged
         .file
         .write_all(&bytes)
-        .and_then(|()| staged.file.sync_all())
         .map_err(|e| failure(&e.to_string()))?;
     drop(staged.file);
     files

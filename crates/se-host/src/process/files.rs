@@ -185,10 +185,10 @@ pub(super) fn publish(
     let mut staging = files
         .create_staging(&directory)
         .map_err(|e| error("launch custody staging", e))?;
+    // Publication flushes the staged data before moving its name.
     staging
         .file
         .write_all(&manifest.1)
-        .and_then(|()| staging.file.sync_all())
         .map_err(|e| error("launch custody durability", e))?;
     drop(staging.file);
     files
@@ -216,10 +216,10 @@ pub(super) fn publish(
         let mut staged = files
             .create_staging(&directory)
             .map_err(|e| error("launch configuration staging", e))?;
+        // Publication flushes the staged data before moving its name.
         staged
             .file
             .write_all(item.contents.expose())
-            .and_then(|()| staged.file.sync_all())
             .map_err(|e| error("durable launch configuration", e))?;
         drop(staged.file);
         files

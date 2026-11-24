@@ -160,10 +160,10 @@ impl LaunchCoordinator {
                     let mut staging = files
                         .create_staging(&directory)
                         .map_err(|e| error("SE Code retirement record", e))?;
+                    // Publication flushes the staged data before moving its name.
                     staging
                         .file
                         .write_all(&bytes)
-                        .and_then(|()| staging.file.sync_all())
                         .map_err(|e| error("SE Code retirement record", e))?;
                     drop(staging.file);
                     files
