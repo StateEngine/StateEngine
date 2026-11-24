@@ -228,9 +228,11 @@ fn run_case(reply_case: bool, delayed_read: Option<bool>) -> Check {
         let initialized = initialize_host_process()?;
         // The delayed cases shorten the store's real sixty-second threshold
         // on the host writer; the store-level judge still pins the
-        // production value.
+        // production value. The read-before-delay case uses a wider window
+        // so slow runners cannot fire the unread status before msg_read commits.
         let host_start = match delayed_read {
-            Some(_) => start_channel_delay(&f, 3_000_000)?,
+            Some(true) => start_channel_delay(&f, 10_000_000)?,
+            Some(false) => start_channel_delay(&f, 3_000_000)?,
             None => start(&f)?,
         };
         let mut host = HostedRuntime::prepare(initialized, host_start, rt.handle().clone(), &bound()?).await?;
@@ -280,16 +282,16 @@ fn run_case(reply_case: bool, delayed_read: Option<bool>) -> Check {
                 assert_eq!(saved.receipts.len(), 1, "foreign identity or destination entered inbox");
                 assert!(saved.receipts[0].read.is_none() && saved.receipts[0].replies.is_empty());
                 assert!(matches!(saved.receipts[0].notice, NoticeFact::Pending { .. }), "save invented a provider wake");
+                let original = saved.receipts[0].message.clone();
+                if delayed_read == Some(true) {
+                    let read = rpc(port, "independent-channel-reader", "tools/call", json!({
+                        "name":"stateengine_msg_read", "arguments":{"message_id":original}})).await?;
+                    assert_ne!(read["result"]["isError"], true, "{read}");
+                }
                 provider.push(6, 42, 42, "Approved phone work")?;
                 tokio::time::sleep(Duration::from_millis(1200)).await;
                 assert_eq!(inspect(&channels, &id).await?.receipts.len(), 1, "provider replay duplicated mail");
-                let original = saved.receipts[0].message.clone();
                 if let Some(read_first) = delayed_read {
-                    if read_first {
-                        let read = rpc(port, "independent-channel-reader", "tools/call", json!({
-                            "name":"stateengine_msg_read", "arguments":{"message_id":original}})).await?;
-                        assert_ne!(read["result"]["isError"], true, "{read}");
-                    }
                     let before_delay = inspect(&channels, &id).await?;
                     let before_receipt = before_delay.receipts.iter()
                         .find(|receipt| receipt.message == original).ok_or("missing original receipt")?;
