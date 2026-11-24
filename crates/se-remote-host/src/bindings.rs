@@ -44,6 +44,45 @@ impl ProtectedBindings {
             .join("remote-keys")
             .join(format!("{grant}.credential"))
     }
+    /// Store a new machine credential, or prove an existing one is this session's.
+    /// Unreadable or conflicting material is preserved, never replaced.
+    pub fn keep_credential(
+        &self,
+        binding: &SavedBinding,
+        secret: &LinkSecret,
+    ) -> Result<ProtectedCredential> {
+        self.check_machine(binding)?;
+        let path = self.key_path(&binding.paired.grant);
+        let parent = path
+            .parent()
+            .ok_or_else(|| se_types::SeError::invalid("machine credential", "protected parent"))?;
+        let store_error = |e: Box<se_store::StoreError>| se_core::store_error::store_error(&e);
+        self.files.prepare_directory(parent).map_err(store_error)?;
+        match self.files.readback(&path).map_err(store_error)? {
+            Read::Absent { .. } => self
+                .files
+                .replace_owned(&path, None, secret.expose())
+                .map_err(store_error)?,
+            read => {
+                let file = scope::require_present(
+                    read,
+                    "machine credential",
+                    "Restore the original protected credential; unreadable material is never replaced.",
+                )?;
+                let mut old = zeroize::Zeroizing::new(Vec::new());
+                file.take(33).read_to_end(&mut old).map_err(|_| {
+                    se_types::SeError::invalid("machine credential", "readable original credential")
+                })?;
+                if old.as_slice() != secret.expose() {
+                    return Err(se_types::SeError::invalid(
+                        "machine credential",
+                        "the original session; preserve conflicting credential material",
+                    ));
+                }
+            }
+        }
+        ProtectedCredential::open(self.files.clone(), path)
+    }
     fn path(&self, alias: &str) -> Result<PathBuf> {
         alias_name(alias)?;
         Ok(self
