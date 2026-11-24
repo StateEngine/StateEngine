@@ -16,7 +16,7 @@ use windows_sys::Win32::{Foundation::*, Storage::FileSystem::*, System::IO::IO_S
 pub(super) type Facts = BY_HANDLE_FILE_INFORMATION;
 
 pub(super) fn open_root(path: &Path) -> io::Result<File> {
-    let name = crate::state_files::windows::wide(path)
+    let name = se_state_files::state_files::windows::wide(path)
         .map_err(|_| invalid("normalized absolute source root required"))?;
     // SAFETY: validated terminated path; read-only directory custody and full
     // sharing, without following the registered root's reparse point.
@@ -119,7 +119,7 @@ fn owned(raw: HANDLE) -> io::Result<File> {
     Ok(unsafe { File::from_raw_handle(raw) })
 }
 fn verify_handle(file: &File, directory: bool) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
-    let info = crate::windows_native::file_information(file)?;
+    let info = se_native_path::windows::file::file_information(file)?;
     // SAFETY: immutable native handle query, no retained external pointers.
     if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK
         || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
