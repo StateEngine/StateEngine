@@ -12,6 +12,8 @@ const RESTART_WAIT: Duration = Duration::from_millis(10);
 /// retries. The pacing is by growth, not progress, so a pinned reader or a
 /// backup costs one attempt per step instead of one per commit.
 const STEP_FRAMES: i64 = 1024;
+/// Only the background task holds the gate while the writer waits for it.
+const GATE_HELD: &str = "another checkpoint exceeded this connection's busy timeout";
 
 #[derive(Default)]
 pub(crate) struct Schedule {
@@ -38,10 +40,7 @@ impl Gate {
         while *active {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                return Err(fail(
-                    StoreErrorCode::Busy,
-                    "another checkpoint exceeded this connection's busy timeout",
-                ));
+                return Err(fail(StoreErrorCode::Busy, GATE_HELD));
             }
             active = condition
                 .wait_timeout(active, left)
@@ -171,18 +170,13 @@ impl Engine {
         let (elapsed, failure) = self.run_checkpoint(&wal);
         // Propagate genuine storage failures (e.g., DiskFull, Corrupt,
         // Unreadable) honestly instead of collapsing them into Busy.
-        if let Some(error) = failure
-            && error.code != StoreErrorCode::Busy
-        {
-            return Err(error);
+        if let Some(error) = failure.as_ref().filter(|e| e.code != StoreErrorCode::Busy) {
+            return Err(error.clone());
         }
-        // A pinned reader or backup cannot turn a failed pressure checkpoint
-        // into permission to keep appending. The preceding commit stays known.
+        // Whatever held the WAL cannot turn a failed pressure checkpoint into
+        // permission to keep appending. The preceding commit stays known.
         if self.wal()?.bytes >= MAX_WAL_BYTES {
-            return Err(fail(
-                StoreErrorCode::Busy,
-                "WAL reached its 64 MiB maintenance cutoff; release pinned readers or let the aborted backup close, then retry the original operation",
-            ));
+            return Err(cutoff_refusal(failure.as_deref()));
         }
         Ok(elapsed)
     }
@@ -280,6 +274,28 @@ impl Engine {
     pub(crate) fn checkpoint_finished(&mut self, complete: bool) {
         self.checkpoints.pending = !complete;
     }
+}
+/// Names what held the WAL: a backup suppressed the checkpoint, the background
+/// task kept the gate, or a reader pinned frames past the copy.
+fn cutoff_refusal(failure: Option<&StoreError>) -> Box<StoreError> {
+    let holder = match failure.map(|error| error.cause.as_str()) {
+        None => "let the running or aborted backup close",
+        Some(GATE_HELD) => "let background store maintenance finish its checkpoint",
+        Some(_) => "release pinned readers",
+    };
+    let cause = format!("WAL reached its 64 MiB maintenance cutoff; {holder}, then retry");
+    fail(StoreErrorCode::Busy, cause)
+}
+/// Protects: our own maintenance holding the gate is never blamed on readers.
+#[cfg(test)]
+#[test]
+fn cutoff_refusal_names_own_maintenance() -> StoreResult<()> {
+    let gate = Gate::default();
+    let _held = gate.acquire(Duration::ZERO)?;
+    let held = gate.acquire(Duration::from_millis(1)).err();
+    let cause = cutoff_refusal(held.as_deref()).cause;
+    assert!(cause.contains("background store maintenance"), "{cause}");
+    Ok(())
 }
 /// Protects: equal negative frame counts are Unreadable, not the success arm.
 #[cfg(test)]
