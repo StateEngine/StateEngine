@@ -64,10 +64,6 @@ struct Silent;
 impl ExitSink for Silent {
     fn notify(&self, _notice: ExitNotice) {}
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn recover(
     runtime: &NativeProcessRuntime,
     supplied: RecoveryPlan,
@@ -97,30 +93,11 @@ pub(super) fn recover(
             },
         )));
     }
-    let reservation = match &checked.source {
-        RecoverySource::Reservation(r) => (**r).clone(),
-        RecoverySource::Prepared(c) => c.reservation.clone(),
-        RecoverySource::RootPrepared(c) => c.scope.reservation.clone(),
-        RecoverySource::Record(record) => LaunchReservation {
-            format_version: 1,
-            lifecycle: record.lifecycle.clone(),
-            host: record.host,
-            owner: record.owner.clone(),
-            generation: record.generation,
-            scope_nonce: [0; 16],
-            parent: match &record.scope {
-                ScopeIdentity::WindowsJob { .. } => ReservationParent::Windows,
-                ScopeIdentity::LinuxTracked { .. } => ReservationParent::LinuxTracked,
-                ScopeIdentity::MacOsTracked { .. } => ReservationParent::MacOs,
-                _ => {
-                    return Ok(unproved(
-                        checked.source,
-                        "scope is outside the implemented tracked recovery path",
-                    ));
-                }
-            },
-            created_at_unix_ns: record.observed_at_unix_ns,
-        },
+    let Some(reservation) = source_reservation(&checked.source) else {
+        return Ok(unproved(
+            checked.source,
+            "scope is outside the implemented tracked recovery path",
+        ));
     };
     if reservation.owner.machine != runtime.inner.config.machine {
         return Err(input("recovery", "record belongs to another machine"));
@@ -173,100 +150,7 @@ pub(super) fn recover(
         }
     };
     if let Some(slot) = existing {
-        let from = slot
-            .lock()
-            .map_err(|_| input("recovery", "slot requires quarantine cleanup"))?
-            .generation;
-        let key = runtime
-            .inner
-            .reference(&slot, reservation.lifecycle.clone(), from);
-        return runtime.inner.apply(&key, true, |s| {
-            if s.reservation.lifecycle != reservation.lifecycle
-                || s.reservation.host != reservation.host
-                || s.reservation.owner != reservation.owner
-            {
-                return Err(input(
-                    "recovery",
-                    "source differs from retained native owner",
-                ));
-            }
-            if generation != from
-                && generation.get()
-                    != from
-                        .get()
-                        .checked_add(1)
-                        .ok_or_else(|| input("generation", "exhausted"))?
-            {
-                return Err(input(
-                    "recovery generation",
-                    "same or immediate successor required",
-                ));
-            }
-            if let (Some(record), RecoverySource::Record(expected)) = (&s.record, &checked.source)
-                && (record.root != expected.root || record.scope != expected.scope)
-            {
-                return Err(changed(&record.root, Some(&expected.root)));
-            }
-            s.generation = generation;
-            s.hub.generation(generation);
-            if let Some(record) = &mut s.record {
-                record.generation = generation;
-                return Ok(RecoveryOutcome::Recovered {
-                    process: OwnedProcess {
-                        key: runtime.inner.reference(
-                            &slot,
-                            reservation.lifecycle.clone(),
-                            generation,
-                        ),
-                    },
-                    record: Box::new(s.record()?),
-                });
-            }
-            if let Some(checkpoint) = &s.checkpoint {
-                return Ok(RecoveryOutcome::PendingScope {
-                    process: OwnedProcess {
-                        key: runtime.inner.reference(
-                            &slot,
-                            reservation.lifecycle.clone(),
-                            generation,
-                        ),
-                    },
-                    checkpoint: Box::new(checkpoint.clone()),
-                });
-            }
-            if !s.launched && s.native.is_none() {
-                let (empty, guarantee) = crate::platform::uncreated_scope(&s.reservation)?;
-                return Ok(RecoveryOutcome::PendingScope {
-                    process: OwnedProcess {
-                        key: runtime.inner.reference(
-                            &slot,
-                            reservation.lifecycle.clone(),
-                            generation,
-                        ),
-                    },
-                    checkpoint: Box::new(ScopeCheckpoint {
-                        reservation: s.reservation.clone(),
-                        parent: match empty.scope {
-                            ScopeIdentity::LinuxPrepared { .. } => ReservationParent::LinuxTracked,
-                            ScopeIdentity::WindowsJob { .. } => ReservationParent::Windows,
-                            ScopeIdentity::MacOsPrepared { .. } => ReservationParent::MacOs,
-                            _ => {
-                                return Err(input(
-                                    "failed preparation",
-                                    "unrecognized vendor-free scope",
-                                ));
-                            }
-                        },
-                        scope: empty.scope,
-                        guarantee,
-                    }),
-                });
-            }
-            Ok(unproved(
-                checked.source.clone(),
-                "reservation retained without a reconciled native scope",
-            ))
-        });
+        return resume_retained(runtime, &slot, &reservation, &checked, generation);
     }
     #[cfg(windows)]
     {
@@ -283,6 +167,125 @@ pub(super) fn recover(
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     cold_unix_tracked(runtime, checked, reservation, generation)
+}
+/// The reservation a protected source was launched under. A record's scope
+/// outside the implemented tracked recovery paths has none.
+fn source_reservation(source: &RecoverySource) -> Option<LaunchReservation> {
+    Some(match source {
+        RecoverySource::Reservation(r) => (**r).clone(),
+        RecoverySource::Prepared(c) => c.reservation.clone(),
+        RecoverySource::RootPrepared(c) => c.scope.reservation.clone(),
+        RecoverySource::Record(record) => LaunchReservation {
+            format_version: 1,
+            lifecycle: record.lifecycle.clone(),
+            host: record.host,
+            owner: record.owner.clone(),
+            generation: record.generation,
+            scope_nonce: [0; 16],
+            parent: match &record.scope {
+                ScopeIdentity::WindowsJob { .. } => ReservationParent::Windows,
+                ScopeIdentity::LinuxTracked { .. } => ReservationParent::LinuxTracked,
+                ScopeIdentity::MacOsTracked { .. } => ReservationParent::MacOs,
+                _ => return None,
+            },
+            created_at_unix_ns: record.observed_at_unix_ns,
+        },
+    })
+}
+/// Hand a slot this runtime still holds to the same or the immediate successor
+/// generation, after proving the source matches the retained native owner.
+fn resume_retained(
+    runtime: &NativeProcessRuntime,
+    slot: &Arc<Mutex<Slot>>,
+    reservation: &LaunchReservation,
+    checked: &RecoveryPlan,
+    generation: GenerationId,
+) -> ProcResult<RecoveryOutcome> {
+    let from = slot
+        .lock()
+        .map_err(|_| input("recovery", "slot requires quarantine cleanup"))?
+        .generation;
+    let key = runtime
+        .inner
+        .reference(slot, reservation.lifecycle.clone(), from);
+    runtime.inner.apply(&key, true, |s| {
+        if s.reservation.lifecycle != reservation.lifecycle
+            || s.reservation.host != reservation.host
+            || s.reservation.owner != reservation.owner
+        {
+            return Err(input(
+                "recovery",
+                "source differs from retained native owner",
+            ));
+        }
+        if generation != from
+            && generation.get()
+                != from
+                    .get()
+                    .checked_add(1)
+                    .ok_or_else(|| input("generation", "exhausted"))?
+        {
+            return Err(input(
+                "recovery generation",
+                "same or immediate successor required",
+            ));
+        }
+        if let (Some(record), RecoverySource::Record(expected)) = (&s.record, &checked.source)
+            && (record.root != expected.root || record.scope != expected.scope)
+        {
+            return Err(changed(&record.root, Some(&expected.root)));
+        }
+        s.generation = generation;
+        s.hub.generation(generation);
+        let process = || OwnedProcess {
+            key: runtime
+                .inner
+                .reference(slot, reservation.lifecycle.clone(), generation),
+        };
+        if let Some(record) = &mut s.record {
+            record.generation = generation;
+            return Ok(RecoveryOutcome::Recovered {
+                process: process(),
+                record: Box::new(s.record()?),
+            });
+        }
+        if let Some(checkpoint) = &s.checkpoint {
+            return Ok(RecoveryOutcome::PendingScope {
+                process: process(),
+                checkpoint: Box::new(checkpoint.clone()),
+            });
+        }
+        if !s.launched && s.native.is_none() {
+            return Ok(RecoveryOutcome::PendingScope {
+                process: process(),
+                checkpoint: Box::new(uncreated_checkpoint(s)?),
+            });
+        }
+        Ok(unproved(
+            checked.source.clone(),
+            "reservation retained without a reconciled native scope",
+        ))
+    })
+}
+/// Failed preparation left no vendor: describe its exact vendor-free scope.
+fn uncreated_checkpoint(s: &Slot) -> ProcResult<ScopeCheckpoint> {
+    let (empty, guarantee) = crate::platform::uncreated_scope(&s.reservation)?;
+    Ok(ScopeCheckpoint {
+        reservation: s.reservation.clone(),
+        parent: match empty.scope {
+            ScopeIdentity::LinuxPrepared { .. } => ReservationParent::LinuxTracked,
+            ScopeIdentity::WindowsJob { .. } => ReservationParent::Windows,
+            ScopeIdentity::MacOsPrepared { .. } => ReservationParent::MacOs,
+            _ => {
+                return Err(input(
+                    "failed preparation",
+                    "unrecognized vendor-free scope",
+                ));
+            }
+        },
+        scope: empty.scope,
+        guarantee,
+    })
 }
 #[cfg(windows)]
 fn cold_windows_persistent(

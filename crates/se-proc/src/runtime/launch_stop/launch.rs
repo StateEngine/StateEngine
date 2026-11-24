@@ -2,10 +2,6 @@
 use super::*;
 
 impl NativeProcessRuntime {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) fn native_prepare_launch(
         &self,
         reservation: LaunchReservation,
@@ -46,59 +42,11 @@ impl NativeProcessRuntime {
             stop_consumed: 0,
             stop_attempt: 0,
         }));
-        {
-            let mut slots = self.inner.slots.lock().map_err(|_| {
-                error(
-                    ProcErrorCode::LockPoisoned,
-                    ProcErrorDetail::Internal {
-                        location: "reserve native slot".into(),
-                        report_id: [0; 16],
-                    },
-                )
-            })?;
-            if slots.contains_key(&lifecycle) {
-                return Err(error(
-                    ProcErrorCode::DuplicateLifecycle,
-                    ProcErrorDetail::State {
-                        lifecycle,
-                        from: LifecycleState::Reserved,
-                        operation: "reserve duplicate lifecycle".into(),
-                    },
-                ));
-            }
-            if slots.len() >= self.inner.config.limits.max_lifecycles as usize {
-                return Err(capacity(
-                    "native lifecycle entries",
-                    self.inner.config.limits.max_lifecycles as u64,
-                ));
-            }
-            slots.insert(lifecycle.clone(), SlotEntry::Owned(slot.clone()));
-            self.inner.bump();
-        }
+        self.register_slot(&lifecycle, &slot)?;
         let key = self.inner.reference(&slot, lifecycle.clone(), generation);
-        let result = self.inner.apply(&key, false, |s| {
-            let spec = s
-                .spec
-                .as_ref()
-                .ok_or_else(|| input("launch", "missing prepared spec"))?;
-            let native = self.inner.driver.prepare(
-                &s.reservation,
-                spec,
-                self.inner.config.limits,
-                &s.hub,
-            )?;
-            s.native = Some(native);
-            let native = s.native()?;
-            let checkpoint = ScopeCheckpoint {
-                reservation: reservation.clone(),
-                parent: native.parent(),
-                scope: native.scope.clone(),
-                guarantee: native.guarantee,
-            };
-            s.checkpoint = Some(checkpoint.clone());
-            s.set_phase(LifecycleState::Starting)?;
-            Ok(checkpoint)
-        });
+        let result = self
+            .inner
+            .apply(&key, false, |s| self.prepare_native(s, &reservation));
         match result {
             Ok(checkpoint) => Ok(PreparedScope {
                 argv_sha256: digest,
@@ -225,10 +173,6 @@ impl NativeProcessRuntime {
             }
         }
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) fn native_poll_launch(&self, ticket: &LaunchTicket) -> ProcResult<LaunchProgress> {
         let result = self.inner.apply(&ticket.key, false, |s| {
             if let Some(error) = &s.failure {
@@ -267,55 +211,9 @@ impl NativeProcessRuntime {
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 Progress::Pending => Ok(LaunchProgress::Pending),
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
-                Progress::Root(pre_exec) => {
-                    let checkpoint = ScopeCheckpoint {
-                        reservation: s.reservation.clone(),
-                        parent: s.native()?.parent(),
-                        scope: s.native()?.scope.clone(),
-                        guarantee: s.native()?.guarantee,
-                    };
-                    let intended_executable = s.native()?.intended_executable();
-                    let root = RootCheckpoint {
-                        scope: checkpoint,
-                        pre_exec,
-                        macos_boot_session: self.inner.macos_boot_session.clone(),
-                        intended_executable,
-                    };
-                    s.root_checkpoint = Some(root.clone());
-                    Ok(LaunchProgress::AwaitingExecCommit(Box::new(root)))
-                }
+                Progress::Root(pre_exec) => self.root_checkpoint(s, pre_exec),
                 Progress::Executed(root, observation) => {
-                    let native = s.native()?;
-                    let (scope, guarantee, entry) =
-                        (native.scope.clone(), native.guarantee, native.entry);
-                    let record = ProcessRecord {
-                        format_version: 1,
-                        lifecycle: s.reservation.lifecycle.clone(),
-                        host: self.inner.config.instance,
-                        owner: self.inner.owner.clone(),
-                        generation: s.generation,
-                        root,
-                        macos_boot_session: self.inner.macos_boot_session.clone(),
-                        scope,
-                        tracked_obligations: None,
-                        guarantee,
-                        entry,
-                        state: LifecycleState::Running,
-                        ownership_release: None,
-                        exit_status: None,
-                        observed_at_unix_ns: now()?,
-                        argv_sha256: s.argv_sha256,
-                    };
-                    s.record = Some(record);
-                    s.set_phase(LifecycleState::Running)?;
-                    let record = s.record()?;
-                    Ok(LaunchProgress::Started(Box::new(LaunchSuccess {
-                        process: OwnedProcess {
-                            key: ticket.key.clone(),
-                        },
-                        record,
-                        exec_observed: *observation,
-                    })))
+                    self.executed(s, ticket, root, *observation)
                 }
             }
         });
@@ -366,5 +264,124 @@ impl NativeProcessRuntime {
             ));
         }
         self.request_stop(prepared)
+    }
+    /// Admit one new lifecycle slot, refusing duplicates and the configured limit.
+    fn register_slot(&self, lifecycle: &LifecycleId, slot: &Arc<Mutex<Slot>>) -> ProcResult<()> {
+        let mut slots = self.inner.slots.lock().map_err(|_| {
+            error(
+                ProcErrorCode::LockPoisoned,
+                ProcErrorDetail::Internal {
+                    location: "reserve native slot".into(),
+                    report_id: [0; 16],
+                },
+            )
+        })?;
+        if slots.contains_key(lifecycle) {
+            return Err(error(
+                ProcErrorCode::DuplicateLifecycle,
+                ProcErrorDetail::State {
+                    lifecycle: lifecycle.clone(),
+                    from: LifecycleState::Reserved,
+                    operation: "reserve duplicate lifecycle".into(),
+                },
+            ));
+        }
+        if slots.len() >= self.inner.config.limits.max_lifecycles as usize {
+            return Err(capacity(
+                "native lifecycle entries",
+                self.inner.config.limits.max_lifecycles as u64,
+            ));
+        }
+        slots.insert(lifecycle.clone(), SlotEntry::Owned(slot.clone()));
+        self.inner.bump();
+        Ok(())
+    }
+    /// Allocate the native scope for a reserved slot and record its checkpoint.
+    fn prepare_native(
+        &self,
+        s: &mut Slot,
+        reservation: &LaunchReservation,
+    ) -> ProcResult<ScopeCheckpoint> {
+        let spec = s
+            .spec
+            .as_ref()
+            .ok_or_else(|| input("launch", "missing prepared spec"))?;
+        let native =
+            self.inner
+                .driver
+                .prepare(&s.reservation, spec, self.inner.config.limits, &s.hub)?;
+        s.native = Some(native);
+        let native = s.native()?;
+        let checkpoint = ScopeCheckpoint {
+            reservation: reservation.clone(),
+            parent: native.parent(),
+            scope: native.scope.clone(),
+            guarantee: native.guarantee,
+        };
+        s.checkpoint = Some(checkpoint.clone());
+        s.set_phase(LifecycleState::Starting)?;
+        Ok(checkpoint)
+    }
+    /// The root exists before exec: retain its checkpoint for exec authorization.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn root_checkpoint(
+        &self,
+        s: &mut Slot,
+        pre_exec: ProcessIdentity,
+    ) -> ProcResult<LaunchProgress> {
+        let checkpoint = ScopeCheckpoint {
+            reservation: s.reservation.clone(),
+            parent: s.native()?.parent(),
+            scope: s.native()?.scope.clone(),
+            guarantee: s.native()?.guarantee,
+        };
+        let intended_executable = s.native()?.intended_executable();
+        let root = RootCheckpoint {
+            scope: checkpoint,
+            pre_exec,
+            macos_boot_session: self.inner.macos_boot_session.clone(),
+            intended_executable,
+        };
+        s.root_checkpoint = Some(root.clone());
+        Ok(LaunchProgress::AwaitingExecCommit(Box::new(root)))
+    }
+    /// Exec was observed: publish the running record and report the start.
+    fn executed(
+        &self,
+        s: &mut Slot,
+        ticket: &LaunchTicket,
+        root: ProcessIdentity,
+        observation: ProcessObservation,
+    ) -> ProcResult<LaunchProgress> {
+        let native = s.native()?;
+        let (scope, guarantee, entry) = (native.scope.clone(), native.guarantee, native.entry);
+        let record = ProcessRecord {
+            format_version: 1,
+            lifecycle: s.reservation.lifecycle.clone(),
+            host: self.inner.config.instance,
+            owner: self.inner.owner.clone(),
+            generation: s.generation,
+            root,
+            macos_boot_session: self.inner.macos_boot_session.clone(),
+            scope,
+            tracked_obligations: None,
+            guarantee,
+            entry,
+            state: LifecycleState::Running,
+            ownership_release: None,
+            exit_status: None,
+            observed_at_unix_ns: now()?,
+            argv_sha256: s.argv_sha256,
+        };
+        s.record = Some(record);
+        s.set_phase(LifecycleState::Running)?;
+        let record = s.record()?;
+        Ok(LaunchProgress::Started(Box::new(LaunchSuccess {
+            process: OwnedProcess {
+                key: ticket.key.clone(),
+            },
+            record,
+            exec_observed: observation,
+        })))
     }
 }

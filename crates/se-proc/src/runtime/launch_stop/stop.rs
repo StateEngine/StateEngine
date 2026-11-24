@@ -297,24 +297,9 @@ fn pending_exit_image(cause: &ProcError) -> bool {
     let darwin = false;
     windows || darwin
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn witness_inner(s: &mut Slot) -> ProcResult<StopObservation> {
     if s.native.is_none() && !s.launched {
-        // Failed preparation cannot have created a vendor. Query the exact
-        // vendor-free reservation outside the failed writer before retiring it.
-        let (scope_exit, guarantee) = crate::platform::uncreated_scope(&s.reservation)?;
-        s.set_phase(LifecycleState::Exited)?;
-        return Ok(StopObservation::Complete(Box::new(StopWitness {
-            lifecycle: s.reservation.lifecycle.clone(),
-            root: RootWitness::NoChildCreated,
-            scope: scope_exit.scope.clone(),
-            scope_exit,
-            guarantee,
-            observed_at_unix_ns: now()?,
-        })));
+        return uncreated_witness(s);
     }
     let mut root = match s.native()?.root() {
         Ok(root) => root,
@@ -326,22 +311,7 @@ fn witness_inner(s: &mut Slot) -> ProcResult<StopObservation> {
                     .as_ref()
                     .is_some_and(|native| native.code == Some(2)) =>
         {
-            return Ok(StopObservation::Pending {
-                root: None,
-                scope: Box::new(ScopeObservation {
-                    scope: s.native()?.scope.clone(),
-                    remaining: RemainingScope {
-                        population: Population::Unknown,
-                        known_live: Vec::new(),
-                        extent: EnumerationExtent::Partial {
-                            reason: format!("native root exit remains unreadable: {cause:?}"),
-                            omitted: None,
-                        },
-                        observed_at_unix_ns: now()?,
-                    },
-                    exit_basis: None,
-                }),
-            });
+            return unreadable_root_exit(s, &cause);
         }
         Err(cause) => return Err(cause),
     };
@@ -358,7 +328,60 @@ fn witness_inner(s: &mut Slot) -> ProcResult<StopObservation> {
     {
         record.exit_status = Some(status.clone());
     }
-    let root_witness = match &root {
+    let root_witness = root_witness(s, &root)?;
+    if root_ready
+        && scope.remaining.population == Population::Empty
+        && scope.exit_basis.is_some()
+        && let Some(root) = root_witness
+    {
+        return finished_witness(s, root, &scope);
+    }
+    if matches!(s.phase, LifecycleState::StopRequested) {
+        s.set_phase(LifecycleState::StopUnproved)?;
+    }
+    Ok(StopObservation::Pending {
+        root: root.map(Box::new),
+        scope: Box::new(scope),
+    })
+}
+/// Failed preparation cannot have created a vendor. Query the exact
+/// vendor-free reservation outside the failed writer before retiring it.
+fn uncreated_witness(s: &mut Slot) -> ProcResult<StopObservation> {
+    let (scope_exit, guarantee) = crate::platform::uncreated_scope(&s.reservation)?;
+    s.set_phase(LifecycleState::Exited)?;
+    Ok(StopObservation::Complete(Box::new(StopWitness {
+        lifecycle: s.reservation.lifecycle.clone(),
+        root: RootWitness::NoChildCreated,
+        scope: scope_exit.scope.clone(),
+        scope_exit,
+        guarantee,
+        observed_at_unix_ns: now()?,
+    })))
+}
+/// The root's exit is not yet readable: report an unknown, partial scope.
+fn unreadable_root_exit(s: &mut Slot, cause: &ProcError) -> ProcResult<StopObservation> {
+    Ok(StopObservation::Pending {
+        root: None,
+        scope: Box::new(ScopeObservation {
+            scope: s.native()?.scope.clone(),
+            remaining: RemainingScope {
+                population: Population::Unknown,
+                known_live: Vec::new(),
+                extent: EnumerationExtent::Partial {
+                    reason: format!("native root exit remains unreadable: {cause:?}"),
+                    omitted: None,
+                },
+                observed_at_unix_ns: now()?,
+            },
+            exit_basis: None,
+        }),
+    })
+}
+fn root_witness(
+    s: &mut Slot,
+    root: &Option<ProcessObservation>,
+) -> ProcResult<Option<RootWitness>> {
+    Ok(match root {
         Some(ProcessObservation::Exited {
             expected,
             evidence,
@@ -375,37 +398,31 @@ fn witness_inner(s: &mut Slot) -> ProcResult<StopObservation> {
             .native()?
             .unpublished_exit()?
             .map(|(pid, status)| RootWitness::PinnedUnpublished { pid, status }),
-    };
-    if root_ready
-        && scope.remaining.population == Population::Empty
-        && scope.exit_basis.is_some()
-        && let Some(root) = root_witness
-    {
-        let witness = Box::new(StopWitness {
-            lifecycle: s.reservation.lifecycle.clone(),
-            root,
-            scope: scope.scope.clone(),
-            scope_exit: scope.clone(),
-            observed_at_unix_ns: now()?,
-            guarantee: s.native()?.guarantee,
-        });
-        let bounded = !matches!(scope.remaining.extent, EnumerationExtent::Complete);
-        s.set_phase(if bounded {
-            LifecycleState::StopUnproved
-        } else {
-            LifecycleState::Exited
-        })?;
-        return Ok(if bounded {
-            StopObservation::Bounded(witness)
-        } else {
-            StopObservation::Complete(witness)
-        });
-    }
-    if matches!(s.phase, LifecycleState::StopRequested) {
-        s.set_phase(LifecycleState::StopUnproved)?;
-    }
-    Ok(StopObservation::Pending {
-        root: root.map(Box::new),
-        scope: Box::new(scope),
+    })
+}
+/// Root and scope are both proved gone; an incomplete enumeration stays bounded.
+fn finished_witness(
+    s: &mut Slot,
+    root: RootWitness,
+    scope: &ScopeObservation,
+) -> ProcResult<StopObservation> {
+    let witness = Box::new(StopWitness {
+        lifecycle: s.reservation.lifecycle.clone(),
+        root,
+        scope: scope.scope.clone(),
+        scope_exit: scope.clone(),
+        observed_at_unix_ns: now()?,
+        guarantee: s.native()?.guarantee,
+    });
+    let bounded = !matches!(scope.remaining.extent, EnumerationExtent::Complete);
+    s.set_phase(if bounded {
+        LifecycleState::StopUnproved
+    } else {
+        LifecycleState::Exited
+    })?;
+    Ok(if bounded {
+        StopObservation::Bounded(witness)
+    } else {
+        StopObservation::Complete(witness)
     })
 }
