@@ -32,15 +32,11 @@ fn present<T>(read: api::Read<T>) -> Check<T> {
         _ => Err("expected an actual present public result".into()),
     }
 }
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-fn restart_replay_cannot_rebind_old_handles_or_change_its_original_identity() -> Check {
-    let root = std::path::PathBuf::from(std::env::var_os("JUDGE_H14_ROOT").ok_or("root missing")?);
-    let image = std::path::PathBuf::from(std::env::var_os("JUDGE_H14_SE").ok_or("image missing")?);
-    std::fs::create_dir(&root)?;
+fn init_h14_fixture(
+    root: &Path,
+    image: std::path::PathBuf,
+) -> Check<(std::path::PathBuf, api::HostConfig)> {
+    std::fs::create_dir(root)?;
     for leaf in ["repo", "owner"] {
         std::fs::create_dir(root.join(leaf))?;
     }
@@ -65,7 +61,7 @@ fn restart_replay_cannot_rebind_old_handles_or_change_its_original_identity() ->
         ])
         .env_clear()
         .env("PATH", std::env::var_os("PATH").ok_or("PATH missing")?);
-    provider_home::isolate(&mut command, &root);
+    provider_home::isolate(&mut command, root);
     let init = command.output()?;
     std::fs::write(root.join("init.stdout"), &init.stdout)?;
     std::fs::write(root.join("init.stderr"), &init.stderr)?;
@@ -83,6 +79,56 @@ fn restart_replay_cannot_rebind_old_handles_or_change_its_original_identity() ->
             notice_ids: std::num::NonZeroU32::MIN.saturating_add(99),
         },
     };
+    Ok((home, config))
+}
+
+async fn verify_route_fault_isolation(
+    host: &dyn api::Host,
+    home: &Path,
+    opts1: &api::CallOptions,
+    page: &api::PageRequest,
+) -> Check {
+    lock(home, true)?;
+    let projects = present(
+        host.list_projects(&api::OwnerAuthority, page.clone(), opts1.clone())
+            .await
+            .map_err(|error| format!("{error:?}"))?,
+    )?;
+    let project = projects.items.first().ok_or("project absent")?.id.clone();
+    for _ in 0..3 {
+        let mut fault = opts1.clone();
+        fault.cancellation = Arc::new(FailedRoute);
+        let error = host
+            .list_projects(&api::OwnerAuthority, page.clone(), fault)
+            .await
+            .err()
+            .ok_or("fault accepted")?;
+        assert_eq!(error.kind, api::ApiFailure::EnginePanicked);
+    }
+    assert!(
+        host.list_projects(&api::OwnerAuthority, page.clone(), opts1.clone())
+            .await
+            .err()
+            .ok_or("exhausted route accepted")?
+            .message
+            .contains("three restarts")
+    );
+    let agents = present(
+        host.list_agents(&api::OwnerAuthority, project, page.clone(), opts1.clone())
+            .await
+            .map_err(|error| format!("{error:?}"))?,
+    )?;
+    assert_eq!(agents.items.len(), 1, "unrelated public route was lost");
+    assert_eq!(host.health(), api::GenerationHealth::Ready);
+    println!("ok - exhausted read route preserves unrelated real-store reads and owner lease");
+    Ok(())
+}
+
+#[test]
+fn restart_replay_cannot_rebind_old_handles_or_change_its_original_identity() -> Check {
+    let root = std::path::PathBuf::from(std::env::var_os("JUDGE_H14_ROOT").ok_or("root missing")?);
+    let image = std::path::PathBuf::from(std::env::var_os("JUDGE_H14_SE").ok_or("image missing")?);
+    let (home, config) = init_h14_fixture(&root, image)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -93,20 +139,8 @@ fn restart_replay_cannot_rebind_old_handles_or_change_its_original_identity() ->
         let g1 = opened.negotiated.generation;
         let opts1 = call_options(g1, Duration::from_secs(30));
         opened.host.activate(api::HostIntegration::Secode { epoch: build_epoch(g1.0, &home)?, services: Arc::new(SilentServices) }, opts1.clone()).await.map_err(|error| format!("{error:?}"))?;
-        lock(&home, true)?;
         let page = api::PageRequest { after: None, limit: 10, max_bytes: 8192 };
-        let projects = present(opened.host.list_projects(&api::OwnerAuthority, page.clone(), opts1.clone()).await.map_err(|error| format!("{error:?}"))?)?;
-        let project = projects.items.first().ok_or("project absent")?.id.clone();
-        for _ in 0..3 {
-            let mut fault = opts1.clone(); fault.cancellation = Arc::new(FailedRoute);
-            let error = opened.host.list_projects(&api::OwnerAuthority, page.clone(), fault).await.err().ok_or("fault accepted")?;
-            assert_eq!(error.kind, api::ApiFailure::EnginePanicked);
-        }
-        assert!(opened.host.list_projects(&api::OwnerAuthority, page.clone(), opts1.clone()).await.err().ok_or("exhausted route accepted")?.message.contains("three restarts"));
-        let agents = present(opened.host.list_agents(&api::OwnerAuthority, project, page.clone(), opts1.clone()).await.map_err(|error| format!("{error:?}"))?)?;
-        assert_eq!(agents.items.len(), 1, "unrelated public route was lost");
-        assert_eq!(opened.host.health(), api::GenerationHealth::Ready);
-        println!("ok - exhausted read route preserves unrelated real-store reads and owner lease");
+        verify_route_fault_isolation(&*opened.host, &home, &opts1, &page).await?;
 
         opened.host.poison(api::FaultReport { incident: "original-incident".into() }, opts1.clone()).await.map_err(|error| format!("{error:?}"))?;
         let reason1 = api::RestartReason::Poisoned { incident: "original-incident".into() };

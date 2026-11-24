@@ -20,6 +20,76 @@ fn services_refused() -> api::ApiError {
         retry: api::ApiRetry::AfterRefresh,
     }
 }
+fn scan_cap_page(epoch: &api::HostEpoch, page: api::PageRequest) -> api::Page<api::ActiveSession> {
+    let index = page
+        .after
+        .as_ref()
+        .map_or(0, |v| v.0.parse::<u32>().unwrap_or(0));
+    api::Page {
+        items: vec![],
+        next: Some(api::Cursor((index + 1).to_string())),
+        window: api::Window {
+            source: api::Source::Host {
+                epoch: epoch.clone(),
+            },
+            start_cursor: page.after,
+            end_cursor: Some(api::Cursor((index + 1).to_string())),
+            returned: 0,
+            limit: page.limit,
+            bytes: 0,
+            max_bytes: page.max_bytes,
+            omitted_before: api::Omission::None,
+            omitted_after: api::Omission::Unknown {
+                reason: api::OmissionReason::Limit,
+            },
+            unreadable: 0,
+            stop_reason: api::StopReason::ItemLimit,
+            complete: false,
+        },
+    }
+}
+
+fn build_active_session_items(
+    epoch: &api::HostEpoch,
+    project: &api::ProjectId,
+    next: bool,
+) -> Vec<api::ActiveSession> {
+    let specs = if next {
+        vec![
+            ("zulu", project.clone()),
+            ("foreign", api::ProjectId("other-project".into())),
+        ]
+    } else {
+        vec![("aardvark", project.clone())]
+    };
+    specs
+        .into_iter()
+        .map(|(agent, project)| api::ActiveSession {
+            target: api::HostSessionTarget {
+                epoch: epoch.clone(),
+                session: api::HostSessionId(agent.into()),
+                binding: api::SessionIdentity {
+                    project,
+                    agent: api::AgentId(
+                        match agent {
+                            "aardvark" => "agt-0000-0000-0000",
+                            "zulu" => "agt-zzzz-zzzz-zzzz",
+                            _ => "agt-ffff-ffff-ffff",
+                        }
+                        .into(),
+                    ),
+                    session: api::SessionId(format!(
+                        "ses_018bcfe5-6800-7000-8000-{:012x}",
+                        agent.as_bytes()[0]
+                    )),
+                },
+                binding_fingerprint: api::Sha256([3; 32]),
+            },
+            activity: api::SessionActivity::Idle,
+        })
+        .collect()
+}
+
 impl api::HostServices for Services {
     fn hold<'a>(
         &'a self,
@@ -44,10 +114,6 @@ impl api::HostServices for Services {
     ) -> api::HostFuture<'a, api::Read<Option<api::ActiveSession>>> {
         Box::pin(async { Err(services_refused()) })
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     fn active_sessions<'a>(
         &'a self,
         epoch: &'a api::HostEpoch,
@@ -59,70 +125,15 @@ impl api::HostServices for Services {
                 return Err(services_refused());
             }
             if self.scan_cap.load(std::sync::atomic::Ordering::Relaxed) {
-                let index = page
-                    .after
-                    .as_ref()
-                    .map_or(0, |v| v.0.parse::<u32>().unwrap_or(0));
                 return Ok(api::Read::Present {
-                    value: api::Page {
-                        items: vec![],
-                        next: Some(api::Cursor((index + 1).to_string())),
-                        window: api::Window {
-                            source: api::Source::Host {
-                                epoch: epoch.clone(),
-                            },
-                            start_cursor: page.after,
-                            end_cursor: Some(api::Cursor((index + 1).to_string())),
-                            returned: 0,
-                            limit: page.limit,
-                            bytes: 0,
-                            max_bytes: page.max_bytes,
-                            omitted_before: api::Omission::None,
-                            omitted_after: api::Omission::Unknown {
-                                reason: api::OmissionReason::Limit,
-                            },
-                            unreadable: 0,
-                            stop_reason: api::StopReason::ItemLimit,
-                            complete: false,
-                        },
-                    },
+                    value: scan_cap_page(epoch, page),
                 });
             }
             let next = page.after.is_none();
-            let specs = if next {
-                vec![
-                    ("zulu", self.project.clone()),
-                    ("foreign", api::ProjectId("other-project".into())),
-                ]
-            } else {
-                vec![("aardvark", self.project.clone())]
-            };
-            let items = specs
-                .into_iter()
-                .map(|(agent, project)| api::ActiveSession {
-                    target: api::HostSessionTarget {
-                        epoch: epoch.clone(),
-                        session: api::HostSessionId(agent.into()),
-                        binding: api::SessionIdentity {
-                            project,
-                            agent: api::AgentId(
-                                match agent {
-                                    "aardvark" => "agt-0000-0000-0000",
-                                    "zulu" => "agt-zzzz-zzzz-zzzz",
-                                    _ => "agt-ffff-ffff-ffff",
-                                }
-                                .into(),
-                            ),
-                            session: api::SessionId(format!(
-                                "ses_018bcfe5-6800-7000-8000-{:012x}",
-                                agent.as_bytes()[0]
-                            )),
-                        },
-                        binding_fingerprint: api::Sha256([3; 32]),
-                    },
-                    activity: api::SessionActivity::Idle,
-                })
-                .collect::<Vec<_>>();
+            let items = build_active_session_items(epoch, &self.project, next);
+            let source_incomplete = self
+                .source_incomplete
+                .load(std::sync::atomic::Ordering::Relaxed);
             Ok(api::Read::Present {
                 value: api::Page {
                     window: api::Window {
@@ -136,11 +147,7 @@ impl api::HostServices for Services {
                         bytes: 4096,
                         max_bytes: page.max_bytes,
                         omitted_before: api::Omission::None,
-                        omitted_after: if next
-                            && self
-                                .source_incomplete
-                                .load(std::sync::atomic::Ordering::Relaxed)
-                        {
+                        omitted_after: if next && source_incomplete {
                             api::Omission::Unknown {
                                 reason: api::OmissionReason::SourceIncomplete,
                             }

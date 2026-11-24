@@ -28,12 +28,156 @@ impl McpBackend for Backend {
     }
 }
 
+fn assert_delta_packet(
+    packet: &Value,
+    baseline_cursor: &str,
+    agent_id: &str,
+    wanted: &str,
+    long_answer: bool,
+) -> Check {
+    assert_recovery_argv(packet)?;
+    assert_eq!(packet["principal"]["agent"]["id"], agent_id);
+    assert_eq!(packet["since"], baseline_cursor);
+    assert!(
+        packet["working_state"]["value"]["text"]
+            .as_str()
+            .ok_or("state")?
+            .starts_with("private A state")
+    );
+    assert_eq!(
+        packet["unread"]["items"][0]["body"]["text"],
+        "unread A packet marker"
+    );
+    let turns = packet["recent_turns"].as_array().ok_or("turns")?;
+    if long_answer {
+        assert!(
+            turns.iter().any(|turn| turn["complete"] == false),
+            "large answer claimed complete"
+        );
+        assert!(
+            packet["omissions"]
+                .as_array()
+                .ok_or("omissions")?
+                .iter()
+                .any(|item| item["section"] == "recent_turn_content")
+        );
+    }
+    for omitted in packet["omissions"].as_array().ok_or("omissions")? {
+        if omitted["section"] == "recovery_commands" {
+            assert!(
+                omitted["command"]
+                    .as_str()
+                    .ok_or("command")?
+                    .contains(baseline_cursor),
+                "expanded recovery lost since cursor"
+            );
+        }
+    }
+    assert!(
+        turns.iter().any(|t| t["role"] == "assistant"
+            && t["preview"].as_str().is_some_and(|s| s.contains(wanted))),
+        "lost new capture: {packet}"
+    );
+    assert!(
+        !turns.iter().any(|t| t["preview"]
+            .as_str()
+            .is_some_and(|s| s.contains("packet-turn"))),
+        "since leaked old turns"
+    );
+    let omitted: u64 = packet["omissions"]
+        .as_array()
+        .ok_or("omissions")?
+        .iter()
+        .filter(|v| v["section"] == "recent_turns")
+        .map(|v| v["count"].as_u64().unwrap_or(0))
+        .sum();
+    assert_eq!(turns.len() as u64 + omitted, 2);
+    Ok(())
+}
+
+fn run_delta_case(short_state: bool, trailing_user: bool, long_answer: bool) -> Check {
+    let mut h = Harness::new()?;
+    if short_state {
+        h.direct.append(
+            h.f.working(
+                "private A state: phase two complete; verify my work.",
+                revision(1)?,
+                "delta-short-state",
+            )?,
+            &*h.lease,
+        )?;
+    }
+    let baseline = h.resume(
+        h.scope(&h.f.a, Some(h.a.clone())),
+        resume_request(32768, None),
+    )??;
+    for (offset, expected, marker) in [(60, 7, "delta-first"), (70, 8, "delta-latest-🦊\"\\")] {
+        let mut batch = capture::capture(&h.f, &h.a, h.source, b"first", offset, expected, marker)?;
+        for event in &mut batch.events {
+            if let EventBody::SessionTurn { role, text, .. } = &mut event.body {
+                if trailing_user && offset == 70 {
+                    *role = Role::User;
+                }
+                if long_answer && offset == 70 {
+                    *text = InputText::Inline("captured delta-latest 🦊\"\\".repeat(100));
+                }
+            }
+        }
+        h.direct.append(batch, &*h.lease)?;
+    }
+    let before = h.head()?;
+    let mut input = resume_request(4096, None);
+    input.since = Some(baseline.cursor.clone());
+    let wanted = if trailing_user {
+        "delta-first"
+    } else {
+        "delta-latest"
+    };
+    let cli = h.resume(h.scope(&h.f.a, Some(h.a.clone())), input.clone())??;
+    assert!(cli.recent_turns.iter().any(|t| t.preview.contains(wanted)));
+    let mut backend = Backend(h);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let request = serde_json::to_vec(&json!({
+        "jsonrpc":"2.0", "id":"delta-\"-🦊", "method":"tools/call",
+        "params":{"name":"stateengine_resume","arguments":input}
+    }))?;
+    let McpReply::Json(response) = runtime.block_on(se_host::mcp::dispatch(
+        &request,
+        Some(Arc::new(Secret::new(vec![1; 32])?)),
+        &mut backend,
+    )) else {
+        return Err("missing MCP response".into());
+    };
+    assert_ne!(
+        response["result"]["isError"], true,
+        "short_state={short_state}, trailing_user={trailing_user}, long_answer={long_answer}; {response}; CLI={cli:?}"
+    );
+    let bytes = serde_json::to_vec(&response)?.len() + 1;
+    assert!(bytes <= 4096, "MCP exceeded its complete wire budget");
+    let packet: Value = serde_json::from_str(
+        response["result"]["content"][0]["text"]
+            .as_str()
+            .ok_or("text")?,
+    )?;
+    assert_eq!(packet["budget"]["used_bytes"], bytes);
+    assert_delta_packet(
+        &packet,
+        baseline.cursor.as_str(),
+        backend.0.f.a.as_str(),
+        wanted,
+        long_answer,
+    )?;
+    assert_eq!(
+        backend.0.head()?,
+        before,
+        "resume wrote or acknowledged mail"
+    );
+    backend.0.finish()
+}
+
 #[test]
-#[expect(
-    clippy::cognitive_complexity,
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn mcp_since_keeps_new_capture_before_older_context() -> Check {
     for (short_state, trailing_user, long_answer) in [
         (false, false, false),
@@ -41,137 +185,7 @@ fn mcp_since_keeps_new_capture_before_older_context() -> Check {
         (true, true, false),
         (true, false, true),
     ] {
-        let mut h = Harness::new()?;
-        if short_state {
-            h.direct.append(
-                h.f.working(
-                    "private A state: phase two complete; verify my work.",
-                    revision(1)?,
-                    "delta-short-state",
-                )?,
-                &*h.lease,
-            )?;
-        }
-        let baseline = h.resume(
-            h.scope(&h.f.a, Some(h.a.clone())),
-            resume_request(32768, None),
-        )??;
-        for (offset, expected, marker) in [(60, 7, "delta-first"), (70, 8, "delta-latest-🦊\"\\")]
-        {
-            let mut batch =
-                capture::capture(&h.f, &h.a, h.source, b"first", offset, expected, marker)?;
-            for event in &mut batch.events {
-                if let EventBody::SessionTurn { role, text, .. } = &mut event.body {
-                    if trailing_user && offset == 70 {
-                        *role = Role::User;
-                    }
-                    if long_answer && offset == 70 {
-                        *text = InputText::Inline("captured delta-latest 🦊\"\\".repeat(100));
-                    }
-                }
-            }
-            h.direct.append(batch, &*h.lease)?;
-        }
-        let before = h.head()?;
-        let mut input = resume_request(4096, None);
-        input.since = Some(baseline.cursor.clone());
-        let wanted = if trailing_user {
-            "delta-first"
-        } else {
-            "delta-latest"
-        };
-        let cli = h.resume(h.scope(&h.f.a, Some(h.a.clone())), input.clone())??;
-        assert!(cli.recent_turns.iter().any(|t| t.preview.contains(wanted)));
-        let mut backend = Backend(h);
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let request = serde_json::to_vec(&json!({
-            "jsonrpc":"2.0", "id":"delta-\"-🦊", "method":"tools/call",
-            "params":{"name":"stateengine_resume","arguments":input}
-        }))?;
-        let McpReply::Json(response) = runtime.block_on(se_host::mcp::dispatch(
-            &request,
-            Some(Arc::new(Secret::new(vec![1; 32])?)),
-            &mut backend,
-        )) else {
-            return Err("missing MCP response".into());
-        };
-        assert_ne!(
-            response["result"]["isError"], true,
-            "short_state={short_state}, trailing_user={trailing_user}, long_answer={long_answer}; {response}; CLI={cli:?}"
-        );
-        let bytes = serde_json::to_vec(&response)?.len() + 1;
-        assert!(bytes <= 4096, "MCP exceeded its complete wire budget");
-        let packet: Value = serde_json::from_str(
-            response["result"]["content"][0]["text"]
-                .as_str()
-                .ok_or("text")?,
-        )?;
-        assert_eq!(packet["budget"]["used_bytes"], bytes);
-        assert_recovery_argv(&packet)?;
-        assert_eq!(packet["principal"]["agent"]["id"], backend.0.f.a.as_str());
-        assert_eq!(packet["since"], baseline.cursor.as_str());
-        assert!(
-            packet["working_state"]["value"]["text"]
-                .as_str()
-                .ok_or("state")?
-                .starts_with("private A state")
-        );
-        assert_eq!(
-            packet["unread"]["items"][0]["body"]["text"],
-            "unread A packet marker"
-        );
-        let turns = packet["recent_turns"].as_array().ok_or("turns")?;
-        if long_answer {
-            assert!(
-                turns.iter().any(|turn| turn["complete"] == false),
-                "large answer claimed complete"
-            );
-            assert!(
-                packet["omissions"]
-                    .as_array()
-                    .ok_or("omissions")?
-                    .iter()
-                    .any(|item| item["section"] == "recent_turn_content")
-            );
-        }
-        for omitted in packet["omissions"].as_array().ok_or("omissions")? {
-            if omitted["section"] == "recovery_commands" {
-                assert!(
-                    omitted["command"]
-                        .as_str()
-                        .ok_or("command")?
-                        .contains(baseline.cursor.as_str()),
-                    "expanded recovery lost since cursor"
-                );
-            }
-        }
-        assert!(
-            turns.iter().any(|t| t["role"] == "assistant"
-                && t["preview"].as_str().is_some_and(|s| s.contains(wanted))),
-            "lost new capture: {packet}"
-        );
-        assert!(
-            !turns.iter().any(|t| t["preview"]
-                .as_str()
-                .is_some_and(|s| s.contains("packet-turn"))),
-            "since leaked old turns"
-        );
-        let omitted: u64 = packet["omissions"]
-            .as_array()
-            .ok_or("omissions")?
-            .iter()
-            .filter(|v| v["section"] == "recent_turns")
-            .map(|v| v["count"].as_u64().unwrap_or(0))
-            .sum();
-        assert_eq!(turns.len() as u64 + omitted, 2);
-        assert_eq!(
-            backend.0.head()?,
-            before,
-            "resume wrote or acknowledged mail"
-        );
-        backend.0.finish()?;
+        run_delta_case(short_state, trailing_user, long_answer)?;
     }
     Ok(())
 }

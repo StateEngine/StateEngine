@@ -26,40 +26,23 @@ fn file_digest(path: &Path) -> Result<String, String> {
     Ok(se_types::hex_lower(&Sha256::digest(bytes)))
 }
 
-/// Protects W3: an unpredictable judge nonce crosses link/bind, a native task,
-/// real write/read tool effects and both durable public history events. Missing
-/// inputs or any driver/product failure fails, retaining the isolated fixture.
-#[test]
-#[expect(
-    clippy::cognitive_complexity,
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-fn native_secode_task_captures_the_judge_nonce_through_public_surfaces() -> Result<(), String> {
-    let driver = required_file("SE_W3_NATIVE_DRIVER")?;
-    let server = required_file("SE_W3_SECODE_SERVER")?;
-    let product = std::env::var("SE_W3_PRODUCT_COMMIT").map_err(|e| e.to_string())?;
-    if product.len() != 40 || !product.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err("SE_W3_PRODUCT_COMMIT must be the exact candidate commit".into());
-    }
-    let mut judge = Judge::new("native")?;
-    judge.retain = true;
-    let secret = se_proc::random_secret().map_err(|e| format!("judge nonce: {e:?}"))?;
-    let nonce = se_types::hex_lower(&secret.expose()[..16]);
+fn run_native_driver(
+    driver: &Path,
+    server: &Path,
+    judge: &Judge,
+    output: &Path,
+    nonce: &str,
+) -> Result<(), String> {
     let repo = judge.root.join("repo");
-    let output = judge.root.join("native-witness");
-    let server_hash = file_digest(&server)?;
-    let helper_hash = file_digest(&judge.helper)?;
-    std::fs::write(judge.root.join("judge-nonce.txt"), &nonce).map_err(|e| e.to_string())?;
     let python = std::env::var_os("SE_W3_PYTHON").unwrap_or_else(|| "python3".into());
     let result = owner_command(python, &judge.home)
-        .arg(&driver)
+        .arg(driver)
         .args(["--secode-server"])
-        .arg(&server)
+        .arg(server)
         .args(["--se"])
         .arg(&judge.helper)
         .args(["--root"])
-        .arg(&output)
+        .arg(output)
         .args(["--state-home"])
         .arg(&judge.home)
         .args(["--repo"])
@@ -70,7 +53,7 @@ fn native_secode_task_captures_the_judge_nonce_through_public_surfaces() -> Resu
             "--agent",
             &judge.agent,
             "--nonce",
-            &nonce,
+            nonce,
         ])
         .current_dir(&repo)
         .output()
@@ -85,43 +68,10 @@ fn native_secode_task_captures_the_judge_nonce_through_public_surfaces() -> Resu
             String::from_utf8_lossy(&result.stderr)
         ));
     }
-    let witness = read_json(&output.join("witness.json"))?;
-    assert_eq!(witness["outcome"], "captured");
-    assert_eq!(witness["nonce"], nonce);
-    assert_eq!(witness["branch_tip"], product);
-    assert_eq!(witness["project"], judge.project);
-    assert_eq!(witness["agent"], judge.agent);
-    assert_eq!(witness["state_home"], judge.home.to_string_lossy().as_ref());
-    let inputs = read_json(&output.join("inputs.json"))?;
-    assert_eq!(inputs["server_sha256"], server_hash);
-    assert_eq!(inputs["se_sha256"], helper_hash);
-    assert_eq!(file_digest(&server)?, server_hash);
-    assert_eq!(file_digest(&judge.helper)?, helper_hash);
-    let conversation = field(&witness, "conversation")?;
-    assert!(
-        conversation.starts_with("ses_"),
-        "native conversation absent"
-    );
-    let task = field(&witness, "task_text")?;
-    assert!(task.contains(&nonce) && task.contains('π') && task.contains("café"));
-    let effect = witness
-        .get("file_effect")
-        .ok_or("missing native file effect")?;
-    let effect_path = PathBuf::from(field(effect, "path")?);
-    assert_eq!(effect_path.parent(), Some(repo.as_path()));
-    assert!(
-        effect_path
-            .file_name()
-            .and_then(|v| v.to_str())
-            .is_some_and(|v| v.contains(&nonce))
-    );
-    let expected_file = format!("W3 native task {nonce}: π and café\n");
-    assert_eq!(
-        std::fs::read_to_string(&effect_path).map_err(|e| e.to_string())?,
-        expected_file
-    );
-    assert_eq!(effect["text"], expected_file);
+    Ok(())
+}
 
+fn verify_native_history(output: &Path, task: &str) -> Result<String, String> {
     // Read the retained native HTTP response, then independently read the
     // durable events through fresh CLI processes, rather than trusting the
     // driver's expected_text or cached public CLI stdout.
@@ -164,6 +114,16 @@ fn native_secode_task_captures_the_judge_nonce_through_public_surfaces() -> Resu
         .collect::<Result<_, _>>()?;
     assert_eq!(names, ["write", "read"]);
     assert!(tools.iter().all(|v| v["state"]["status"] == "completed"));
+    Ok(assistant)
+}
+
+fn verify_public_captures(
+    judge: &Judge,
+    witness: &serde_json::Value,
+    conversation: &str,
+    task: &str,
+    assistant: &str,
+) -> Result<(), String> {
     let records = witness["public_history"]
         .as_array()
         .ok_or("public history coordinates absent")?;
@@ -174,11 +134,11 @@ fn native_secode_task_captures_the_judge_nonce_through_public_surfaces() -> Resu
         assert!(seen.insert(role), "duplicate native captured role");
         let text = match role {
             "user" => task,
-            "assistant" => &assistant,
+            "assistant" => assistant,
             _ => return Err("unexpected native capture role".into()),
         };
         assert_public_turn(
-            &judge,
+            judge,
             field(record, "event_id")?,
             conversation,
             role,
@@ -190,6 +150,68 @@ fn native_secode_task_captures_the_judge_nonce_through_public_surfaces() -> Resu
         seen,
         std::collections::BTreeSet::from(["assistant", "user"])
     );
+    Ok(())
+}
+
+/// Protects W3: an unpredictable judge nonce crosses link/bind, a native task,
+/// real write/read tool effects and both durable public history events. Missing
+/// inputs or any driver/product failure fails, retaining the isolated fixture.
+#[test]
+fn native_secode_task_captures_the_judge_nonce_through_public_surfaces() -> Result<(), String> {
+    let driver = required_file("SE_W3_NATIVE_DRIVER")?;
+    let server = required_file("SE_W3_SECODE_SERVER")?;
+    let product = std::env::var("SE_W3_PRODUCT_COMMIT").map_err(|e| e.to_string())?;
+    if product.len() != 40 || !product.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("SE_W3_PRODUCT_COMMIT must be the exact candidate commit".into());
+    }
+    let mut judge = Judge::new("native")?;
+    judge.retain = true;
+    let secret = se_proc::random_secret().map_err(|e| format!("judge nonce: {e:?}"))?;
+    let nonce = se_types::hex_lower(&secret.expose()[..16]);
+    let repo = judge.root.join("repo");
+    let output = judge.root.join("native-witness");
+    let server_hash = file_digest(&server)?;
+    let helper_hash = file_digest(&judge.helper)?;
+    std::fs::write(judge.root.join("judge-nonce.txt"), &nonce).map_err(|e| e.to_string())?;
+    run_native_driver(&driver, &server, &judge, &output, &nonce)?;
+    let witness = read_json(&output.join("witness.json"))?;
+    assert_eq!(witness["outcome"], "captured");
+    assert_eq!(witness["nonce"], nonce);
+    assert_eq!(witness["branch_tip"], product);
+    assert_eq!(witness["project"], judge.project);
+    assert_eq!(witness["agent"], judge.agent);
+    assert_eq!(witness["state_home"], judge.home.to_string_lossy().as_ref());
+    let inputs = read_json(&output.join("inputs.json"))?;
+    assert_eq!(inputs["server_sha256"], server_hash);
+    assert_eq!(inputs["se_sha256"], helper_hash);
+    assert_eq!(file_digest(&server)?, server_hash);
+    assert_eq!(file_digest(&judge.helper)?, helper_hash);
+    let conversation = field(&witness, "conversation")?;
+    assert!(
+        conversation.starts_with("ses_"),
+        "native conversation absent"
+    );
+    let task = field(&witness, "task_text")?;
+    assert!(task.contains(&nonce) && task.contains('π') && task.contains("café"));
+    let effect = witness
+        .get("file_effect")
+        .ok_or("missing native file effect")?;
+    let effect_path = PathBuf::from(field(effect, "path")?);
+    assert_eq!(effect_path.parent(), Some(repo.as_path()));
+    assert!(
+        effect_path
+            .file_name()
+            .and_then(|v| v.to_str())
+            .is_some_and(|v| v.contains(&nonce))
+    );
+    let expected_file = format!("W3 native task {nonce}: π and café\n");
+    assert_eq!(
+        std::fs::read_to_string(&effect_path).map_err(|e| e.to_string())?,
+        expected_file
+    );
+    assert_eq!(effect["text"], expected_file);
+    let assistant = verify_native_history(&output, task)?;
+    verify_public_captures(&judge, &witness, conversation, task, &assistant)?;
     let exited = read_json(&output.join("exit.json"))?;
     assert_eq!(exited["exit"], 0);
     assert_eq!(exited["ready_retired"], true);
