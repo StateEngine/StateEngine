@@ -41,12 +41,12 @@ pub(super) struct ParsedIndex {
 }
 
 impl ParsedIndex {
-    pub(super) fn path<'a>(&'a self, raw: &'a [u8], entry: &IndexEntry) -> &'a str {
+    pub(super) fn path<'a>(&'a self, raw: &'a [u8], entry: &IndexEntry) -> Option<&'a str> {
         let bytes = match entry.path_range {
-            PathRange::Raw(start, end) => &raw[start..end],
-            PathRange::Arena(start, end) => &self.v4_arena[start..end],
+            PathRange::Raw(start, end) => raw.get(start..end)?,
+            PathRange::Arena(start, end) => self.v4_arena.get(start..end)?,
         };
-        std::str::from_utf8(bytes).unwrap_or("")
+        std::str::from_utf8(bytes).ok()
     }
 }
 
@@ -60,6 +60,9 @@ pub(super) fn parse_index(bytes: &[u8]) -> Option<ParsedIndex> {
     }
     let count = read_u32(bytes, 8)? as usize;
     let body_end = bytes.len().checked_sub(20)?;
+    if sha1_digest(&bytes[..body_end]) != bytes[body_end..] {
+        return None;
+    }
     let mut pos = 12usize;
     let mut entries = Vec::with_capacity(count.min(65_536));
     let mut v4_arena = Vec::new();
@@ -264,4 +267,78 @@ fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
     Some(u16::from_be_bytes(
         bytes.get(offset..offset + 2)?.try_into().ok()?,
     ))
+}
+
+fn sha1_digest(data: &[u8]) -> [u8; 20] {
+    let mut h: [u32; 5] = [
+        0x6745_2301,
+        0xefcd_ab89,
+        0x98ba_dcfe,
+        0x1032_5476,
+        0xc3d2_e1f0,
+    ];
+    let mut chunks = data.chunks_exact(64);
+    for block in &mut chunks {
+        if let Ok(block) = <&[u8; 64]>::try_from(block) {
+            sha1_compress(&mut h, block);
+        }
+    }
+    let rem = chunks.remainder();
+    let mut tail = [0u8; 128];
+    tail[..rem.len()].copy_from_slice(rem);
+    tail[rem.len()] = 0x80;
+    let total_len = if rem.len() < 56 { 64 } else { 128 };
+    let bit_len = (data.len() as u64).wrapping_mul(8);
+    tail[total_len - 8..total_len].copy_from_slice(&bit_len.to_be_bytes());
+    let first: &[u8; 64] = tail[..64].try_into().unwrap_or(&[0u8; 64]);
+    sha1_compress(&mut h, first);
+    if total_len == 128 {
+        let second: &[u8; 64] = tail[64..128].try_into().unwrap_or(&[0u8; 64]);
+        sha1_compress(&mut h, second);
+    }
+    let mut out = [0u8; 20];
+    for (i, word) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
+    }
+    out
+}
+
+fn sha1_compress(h: &mut [u32; 5], block: &[u8; 64]) {
+    let mut w = [0u32; 80];
+    for (i, word) in w.iter_mut().take(16).enumerate() {
+        *word = u32::from_be_bytes([
+            block[i * 4],
+            block[i * 4 + 1],
+            block[i * 4 + 2],
+            block[i * 4 + 3],
+        ]);
+    }
+    for i in 16..80 {
+        w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+    }
+    let [mut a, mut b, mut c, mut d, mut e] = *h;
+    for (i, &wi) in w.iter().enumerate() {
+        let (f, k) = match i {
+            0..=19 => ((b & c) | ((!b) & d), 0x5a82_7999u32),
+            20..=39 => (b ^ c ^ d, 0x6ed9_eba1u32),
+            40..=59 => ((b & c) | (b & d) | (c & d), 0x8f1b_bcdcu32),
+            _ => (b ^ c ^ d, 0xca62_c1d6u32),
+        };
+        let temp = a
+            .rotate_left(5)
+            .wrapping_add(f)
+            .wrapping_add(e)
+            .wrapping_add(k)
+            .wrapping_add(wi);
+        e = d;
+        d = c;
+        c = b.rotate_left(30);
+        b = a;
+        a = temp;
+    }
+    h[0] = h[0].wrapping_add(a);
+    h[1] = h[1].wrapping_add(b);
+    h[2] = h[2].wrapping_add(c);
+    h[3] = h[3].wrapping_add(d);
+    h[4] = h[4].wrapping_add(e);
 }

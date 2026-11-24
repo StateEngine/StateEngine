@@ -71,7 +71,9 @@ pub(super) fn try_scan(
         HeadCheck::Dirty => return Ok(Some(true)),
         HeadCheck::Fallback => return Ok(None),
     }
-    let dir_index = build_dir_index(&parsed, &index_bytes);
+    let Some(dir_index) = build_dir_index(&parsed, &index_bytes) else {
+        return Ok(None);
+    };
     walk_workdir(
         repository,
         workdir,
@@ -136,11 +138,11 @@ fn check_head_vs_index(repository: &Repository, head_oid: &str, parsed: &ParsedI
     }
 }
 
-fn build_dir_index<'a>(parsed: &'a ParsedIndex, index_bytes: &'a [u8]) -> DirIndex<'a> {
+fn build_dir_index<'a>(parsed: &'a ParsedIndex, index_bytes: &'a [u8]) -> Option<DirIndex<'a>> {
     let mut files: HashMap<&'a str, Vec<(&'a str, usize)>> = HashMap::new();
     let mut tracked_dirs: HashSet<&'a str> = HashSet::new();
     for (idx, entry) in parsed.entries.iter().enumerate() {
-        let path = parsed.path(index_bytes, entry);
+        let path = parsed.path(index_bytes, entry)?;
         let (dir, name) = match path.rfind('/') {
             Some(slash) => (&path[..slash], &path[slash + 1..]),
             None => ("", path),
@@ -161,10 +163,10 @@ fn build_dir_index<'a>(parsed: &'a ParsedIndex, index_bytes: &'a [u8]) -> DirInd
             list.sort_unstable_by(|a, b| a.0.cmp(b.0));
         }
     }
-    DirIndex {
+    Some(DirIndex {
         files,
         tracked_dirs,
-    }
+    })
 }
 
 struct WalkContext<'a> {
@@ -235,7 +237,9 @@ fn any_tracked_dir_missing(workdir: &Path, tracked_dirs: &HashSet<&str>) -> Opti
 
 fn any_expected_file_missing(cx: &WalkContext<'_>, expected: &[(&str, usize)]) -> Step {
     for &(_, idx) in expected {
-        let path = cx.parsed.path(cx.index_bytes, &cx.parsed.entries[idx]);
+        let Some(path) = cx.parsed.path(cx.index_bytes, &cx.parsed.entries[idx]) else {
+            return Step::Fallback;
+        };
         if let Err(error) = fs::symlink_metadata(cx.workdir.join(path))
             && error.kind() == io::ErrorKind::NotFound
         {
@@ -329,10 +333,22 @@ fn scan_entry(
         return check_tracked_file(cx, dent, expected[pos].1);
     }
     if cx.config.ignorecase()
-        && expected
+        && let Some(&(_, idx)) = expected
             .iter()
-            .any(|item| item.0.eq_ignore_ascii_case(name))
+            .find(|item| item.0.eq_ignore_ascii_case(name))
     {
+        let Some(path) = cx.parsed.path(cx.index_bytes, &cx.parsed.entries[idx]) else {
+            return Ok(Step::Fallback);
+        };
+        // On a case-sensitive filesystem with core.ignorecase=true, a case-only
+        // rename leaves the tracked path missing (dirty in `git status`),
+        // whereas libgit2 folds it to clean. On case-insensitive filesystems,
+        // symlink_metadata resolves the tracked name and we fall back as usual.
+        if let Err(error) = fs::symlink_metadata(cx.workdir.join(path))
+            && error.kind() == io::ErrorKind::NotFound
+        {
+            return Ok(Step::Dirty);
+        }
         return Ok(Step::Fallback);
     }
     if cx.config.untracked {
@@ -367,7 +383,9 @@ fn check_tracked_file(
     if cx.stat_checks > MAX_STAT_CHECKS {
         return Ok(Step::Fallback);
     }
-    let path = cx.parsed.path(cx.index_bytes, entry);
+    let Some(path) = cx.parsed.path(cx.index_bytes, entry) else {
+        return Ok(Step::Fallback);
+    };
     let Ok(status) = cx.repository.status_file(Path::new(path)) else {
         return Ok(Step::Fallback);
     };
