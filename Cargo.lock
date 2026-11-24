@@ -1796,6 +1796,7 @@ dependencies = [
  "se-remote-host",
  "se-repository",
  "se-secode-image",
+ "se-ssh-transport",
  "se-store",
  "se-types",
  "secode-stateengine-api",
@@ -1953,6 +1954,17 @@ dependencies = [
  "se-types",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "se-ssh-transport"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-harness",
+ "se-proc",
+ "se-remote",
+ "se-types",
+ "tokio",
 ]
 
 [[package]]

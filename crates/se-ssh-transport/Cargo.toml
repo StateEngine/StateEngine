@@ -1,0 +1,17 @@
+[package]
+name = "se-ssh-transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+se-types = { path = "../se-types" }
+se-proc = { path = "../se-proc" }
+se-remote = { path = "../se-remote", features = ["remote"] }
+se-harness = { path = "../se-harness", features = ["listener"] }
+tokio = { workspace = true, features = ["macros", "process", "io-util", "time", "sync"] }
+
+[lints]
+workspace = true

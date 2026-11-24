@@ -50,7 +50,7 @@ fn fixture_executable(root: &Path) -> PathBuf {
     let source = root.join("ssh_stdout_eof.rs");
     std::fs::write(
         &source,
-        include_str!("../../tests/support/ssh_stdout_eof_native.rs"),
+        include_str!("../../se-host/tests/support/ssh_stdout_eof_native.rs"),
     )
     .unwrap();
     let image = root.join("ssh_stdout_eof.exe");

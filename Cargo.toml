@@ -26,6 +26,7 @@ members = [
     "crates/se-remote-cli",
     "crates/se-remote",
     "crates/se-remote-host",
+    "crates/se-ssh-transport",
     "crates/se-atlas",
     "crates/se-atlas-index",
     "crates/se-atlas-search",

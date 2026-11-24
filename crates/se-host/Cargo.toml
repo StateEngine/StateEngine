@@ -13,13 +13,14 @@ runtime = ["se-harness/runtime", "dep:tokio"]
 listener = ["runtime", "se-harness/listener", "se-remote/listener", "se-atlas-host/listener", "dep:reqwest", "tokio/macros", "tokio/net", "tokio/io-util", "tokio/time", "tokio/sync", "tokio/process", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio-tungstenite", "dep:futures-util", "dep:base64", "dep:se-secode-image"]
 channels = ["listener", "se-harness/channels", "dep:se-channels"]
 secode = ["runtime", "listener", "se-harness/secode", "dep:secode-stateengine-api"]
-remote = ["se-harness/remote", "dep:se-remote-host", "se-remote/remote", "dep:base64", "listener", "tokio/fs", "dep:chacha20poly1305", "tokio/macros"]
+remote = ["se-harness/remote", "dep:se-remote-host", "dep:se-ssh-transport", "se-remote/remote", "dep:base64", "listener", "tokio/fs", "dep:chacha20poly1305", "tokio/macros"]
 
 [dependencies]
 se-config = { path = "../se-config" }
 se-channels = { path = "../se-channels", optional = true }
 se-harness = { path = "../se-harness" }
 se-remote-host = { path = "../se-remote-host", optional = true }
+se-ssh-transport = { path = "../se-ssh-transport", optional = true }
 secode-stateengine-api = { version = "=2.0.0", optional = true }
 se-types = { path = "../se-types" }
 se-remote = { path = "../se-remote" }

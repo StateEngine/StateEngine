@@ -70,13 +70,13 @@ struct Observation {
     ended: bool,
 }
 
-pub(crate) struct Diagnostics {
+pub struct Diagnostics {
     observation: watch::Receiver<Observation>,
     task: Option<JoinHandle<std::io::Result<()>>>,
 }
 
 impl Diagnostics {
-    pub(crate) fn start(mut stderr: impl tokio::io::AsyncRead + Unpin + Send + 'static) -> Self {
+    pub fn start(mut stderr: impl tokio::io::AsyncRead + Unpin + Send + 'static) -> Self {
         let (sender, observation) = watch::channel(Observation::default());
         let task = tokio::spawn(async move {
             // Preserve only a short overlap for a refusal split across reads.
@@ -113,7 +113,7 @@ impl Diagnostics {
         }
     }
 
-    pub(crate) async fn forwarding_refusal(&mut self, port: u16) -> Option<SeError> {
+    pub async fn forwarding_refusal(&mut self, port: u16) -> Option<SeError> {
         // SSH writes the refusal before closing the forwarded socket. Allow its
         // reader to catch up only on a failed transport, never on the happy path.
         let wait = async {
@@ -146,7 +146,7 @@ impl Diagnostics {
         )))
     }
 
-    pub(crate) async fn close(&mut self) -> Result<()> {
+    pub async fn close(&mut self) -> Result<()> {
         if let Some(task) = &mut self.task {
             // Keep the handle in self while awaiting: cancellation must leave
             // Drop able to abort the reader rather than detach it.
