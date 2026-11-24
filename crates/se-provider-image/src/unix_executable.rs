@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(super) fn packaged_codex(launcher: &Path) -> io::Result<Option<(PathBuf, PathBuf)>> {
+pub(crate) fn packaged_codex(launcher: &Path) -> io::Result<Option<(PathBuf, PathBuf)>> {
     let entry = fs::canonicalize(launcher)?;
     if entry.file_name().is_none_or(|name| name != "codex.js") {
         return Ok(None);

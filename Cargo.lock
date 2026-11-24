@@ -1792,6 +1792,7 @@ dependencies = [
  "se-harness",
  "se-mcp",
  "se-proc",
+ "se-provider-image",
  "se-remote",
  "se-remote-host",
  "se-repository",
@@ -1865,6 +1866,15 @@ dependencies = [
  "sha2",
  "windows-sys 0.61.2",
  "zeroize",
+]
+
+[[package]]
+name = "se-provider-image"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-proc",
+ "se-types",
+ "serde_json",
 ]
 
 [[package]]
