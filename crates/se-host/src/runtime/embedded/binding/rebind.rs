@@ -3,11 +3,86 @@
 use super::*;
 use crate::client::lease::Deadline;
 
+fn verify_stored_binding(
+    read: &mut se_store::SqliteSnapshot,
+    identity: api::SessionIdentity,
+    revision: api::Revision,
+    conversation: &api::ProviderSessionId,
+    generation: api::Generation,
+) -> Result<api::Receipt<api::SessionIdentity>> {
+    let record = scope::require_present(
+        read.session(se_types::SessionId::from_linked(identity.session.clone())?)
+            .map_err(|e| store_error(&e))?,
+        "restart binding",
+        "Restore the original session; never bind a replacement as recovery.",
+    )?;
+    if !matches!(
+        record.current.body,
+        EventBody::SessionActivated {
+            process: None,
+            containment: se_store::ContainmentFact::NotLaunched,
+            ..
+        }
+    ) {
+        return Err(denied("restart binding is revoked, ended or process-bound"));
+    }
+    if record.revision.value != revision.0 {
+        return Err(denied(
+            "stale binding revision: refresh the exact adoption before rebind",
+        ));
+    }
+    let original = record.original.as_deref().unwrap_or(&record.current);
+    match &original.body {
+        EventBody::SessionPrepared {
+            agent,
+            provider: se_store::Provider::SeCode,
+            native_ref,
+            generation: previous,
+            ..
+        } if agent.to_linked() == identity.agent
+            && *native_ref == conversation.0
+            && *previous <= generation.0 => {}
+        _ => {
+            return Err(denied(
+                "foreign restart binding: original agent, conversation or generation differs",
+            ));
+        }
+    }
+    let committed = scope::require_present(
+        read.event_receipt(original.header.event.clone())
+            .map_err(|e| store_error(&e))?,
+        "original binding receipt",
+        scope::COMMITTED_READ_RECOVERY,
+    )?;
+    let key = committed
+        .request_key
+        .clone()
+        .ok_or_else(|| denied("original binding has no keyed receipt"))?
+        .to_linked();
+    store::receipt(read, committed, key, identity)
+}
+
+fn check_native_adoption(
+    observed: api::Read<api::BindingObservation>,
+    target: &api::HostSessionTarget,
+) -> Result<()> {
+    match observed {
+        api::Read::Present { value } if value.target == *target => match value.status {
+            api::TargetStatus::Eligible | api::TargetStatus::Held => Ok(()),
+            api::TargetStatus::Revoked => Err(denied(
+                "native binding is revoked; restart cannot restore it",
+            )),
+        },
+        api::Read::Present { .. } => Err(denied("foreign native adoption observation")),
+        api::Read::Absent { .. } => Err(denied(
+            "native binding is absent; verified reattachment is required",
+        )),
+        api::Read::Unreadable { source, reason, .. } => Err(scope::unreadable(&source, &reason)),
+        api::Read::Unknown { what } => Err(scope::unreadable("native restart adoption", &what)),
+    }
+}
+
 impl EmbeddedHost {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) async fn rebind(
         &self,
         router: &HostedRouter,
@@ -32,13 +107,7 @@ impl EmbeddedHost {
         // Validate the caller's key even though this is a read-only reissuance.
         // Its receipt names the original durable bind, never a synthetic commit.
         se_types::IdempotencyKey::from_linked(request.idempotency_key.clone())?;
-        for (name, text, cap) in [
-            ("provider", &request.model.provider, 256),
-            ("model", &request.model.model, 256),
-            ("conversation", &request.conversation.0, 512),
-        ] {
-            se_core::ops::inputs::bounded(name, text, cap, false)?;
-        }
+        validate_bind_fields(&request.model, &request.conversation)?;
         let scope = owner_scope(
             router,
             se_types::ProjectId::from_linked(request.project.clone())?,
@@ -47,30 +116,9 @@ impl EmbeddedHost {
         let conversation = request.conversation.clone();
         let generation = options.generation;
         let receipt = store::read(router, scope, deadline, move |read| {
-            let record = scope::require_present(
-                read.session(se_types::SessionId::from_linked(identity.session.clone())?)
-                    .map_err(|e| store_error(&e))?,
-                "restart binding", "Restore the original session; never bind a replacement as recovery.",
-            )?;
-            if !matches!(record.current.body, EventBody::SessionActivated { process: None, containment: se_store::ContainmentFact::NotLaunched, .. }) {
-                return Err(denied("restart binding is revoked, ended or process-bound"));
-            }
-            if record.revision.value != revision.0 {
-                return Err(denied("stale binding revision: refresh the exact adoption before rebind"));
-            }
-            let original = record.original.as_deref().unwrap_or(&record.current);
-            match &original.body {
-                EventBody::SessionPrepared { agent, provider: se_store::Provider::SeCode, native_ref, generation: previous, .. }
-                    if agent.to_linked() == identity.agent && *native_ref == conversation.0 && *previous <= generation.0 => (),
-                _ => return Err(denied("foreign restart binding: original agent, conversation or generation differs")),
-            }
-            let committed = scope::require_present(
-                read.event_receipt(original.header.event.clone()).map_err(|e| store_error(&e))?,
-                "original binding receipt", scope::COMMITTED_READ_RECOVERY,
-            )?;
-            let key = committed.request_key.clone().ok_or_else(|| denied("original binding has no keyed receipt"))?.to_linked();
-            store::receipt(read, committed, key, identity)
-        }).await?;
+            verify_stored_binding(read, identity, revision, &conversation, generation)
+        })
+        .await?;
         let (epoch, services) = self.services().map_err(native_error)?;
         if target.epoch != epoch {
             return Err(denied(
@@ -85,28 +133,7 @@ impl EmbeddedHost {
             )
             .await
             .map_err(native_error)?;
-        match observed {
-            api::Read::Present { value } if value.target == *target => match value.status {
-                api::TargetStatus::Eligible | api::TargetStatus::Held => (),
-                api::TargetStatus::Revoked => {
-                    return Err(denied(
-                        "native binding is revoked; restart cannot restore it",
-                    ));
-                }
-            },
-            api::Read::Present { .. } => return Err(denied("foreign native adoption observation")),
-            api::Read::Absent { .. } => {
-                return Err(denied(
-                    "native binding is absent; verified reattachment is required",
-                ));
-            }
-            api::Read::Unreadable { source, reason, .. } => {
-                return Err(scope::unreadable(&source, &reason));
-            }
-            api::Read::Unknown { what } => {
-                return Err(scope::unreadable("native restart adoption", &what));
-            }
-        }
+        check_native_adoption(observed, target)?;
         let remaining = api::CallOptions {
             timeout: deadline.remaining()?,
             ..options.clone()

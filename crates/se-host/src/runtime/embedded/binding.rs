@@ -220,11 +220,128 @@ pub(super) fn check(
     }
 }
 
+pub(super) fn validate_bind_fields(
+    model: &api::ModelIdentity,
+    conversation: &api::ProviderSessionId,
+) -> Result<()> {
+    for (name, text, cap) in [
+        ("provider", &model.provider, 256),
+        ("model", &model.model, 256),
+        ("conversation", &conversation.0, 512),
+    ] {
+        se_core::ops::inputs::bounded(name, text, cap, false)?;
+    }
+    Ok(())
+}
+
+struct CommittedBind {
+    identity: api::SessionIdentity,
+    receipt: api::Receipt<api::SessionIdentity>,
+}
+
+fn build_bind_batch(
+    read: &mut impl Snapshot,
+    admission: Admission,
+    identity: se_store::RequestIdentity,
+    draft: api::BindingRequest,
+    replay: bool,
+) -> Result<se_store::AtomicBatch> {
+    let facts = super::super::start::allocate_facts()?;
+    let bytes = facts
+        .event
+        .canonical_bytes()?
+        .ok_or_else(|| SeError::invalid("session allocation", "a fresh UUIDv7"))?;
+    let session = se_types::SessionId::from_bytes(bytes)?;
+    let agent = se_types::AgentId::from_linked(draft.agent)?;
+    let previous = if replay {
+        None
+    } else {
+        recovery::previous(read, &admission, agent.clone())?
+    };
+    let incumbent = previous
+        .as_ref()
+        .map(|(_, session, revision)| (session.clone(), *revision));
+
+    let prepared = store::event(
+        read,
+        &admission,
+        facts.event.clone(),
+        facts.occurred_at_us,
+        EventBody::SessionPrepared {
+            session: session.clone(),
+            agent,
+            provider: se_store::Provider::SeCode,
+            surface: Some(se_store::SessionSurface::SeCode),
+            native_ref: draft.conversation.0,
+            consent: if draft.capture_consent {
+                se_store::Consent::Capture
+            } else {
+                se_store::Consent::Suppressed
+            },
+            generation: admission.generation,
+            expected: Expected::Absent,
+        },
+    );
+    let activated = store::event(
+        read,
+        &admission,
+        facts.profile_event,
+        facts.occurred_at_us,
+        EventBody::SessionActivated {
+            session,
+            expected: Expected::Revision(se_store::Revision {
+                value: std::num::NonZeroU64::MIN,
+            }),
+            incumbent,
+            process: None,
+            containment: se_store::ContainmentFact::NotLaunched,
+            witnesses: Vec::new(),
+        },
+    );
+    let mut events = vec![prepared];
+    if let Some((revoked, _, _)) = previous {
+        events.push(revoked);
+    }
+    events.push(activated);
+    Ok(se_store::AtomicBatch {
+        expected_incarnation: read.info().incarnation,
+        admission,
+        request: Some(identity),
+        events,
+        import_checkpoint: None,
+    })
+}
+
+fn read_bind_receipt(
+    read: &mut impl Snapshot,
+    receipt: se_store::CommitReceipt,
+    request_key: api::IdempotencyKey,
+) -> Result<CommittedBind> {
+    let event = scope::require_present(
+        read.event(receipt.primary_event.clone())
+            .map_err(|e| store_error(&e))?,
+        "linked bind receipt",
+        scope::COMMITTED_READ_RECOVERY,
+    )?;
+    let EventBody::SessionPrepared { session, agent, .. } = event.body else {
+        return Err(SeError::invalid(
+            "linked bind receipt",
+            "the committed session preparation",
+        ));
+    };
+    let se_store::Scope::Project(project) = event.header.scope else {
+        return Err(SeError::invalid("linked bind receipt", "a project"));
+    };
+    let identity = api::SessionIdentity {
+        project: project.to_linked(),
+        agent: agent.to_linked(),
+        session: session.to_linked(),
+    };
+    let receipt = store::receipt(read, receipt, request_key, identity.clone())?;
+    Ok(CommittedBind { identity, receipt })
+}
+
 impl EmbeddedHost {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) async fn bind(
         &self,
         authority: &api::BindingAuthority,
@@ -254,13 +371,7 @@ impl EmbeddedHost {
             })
             .await?;
         request.capture_consent &= enabled;
-        for (name, text, cap) in [
-            ("provider", &request.model.provider, 256),
-            ("model", &request.model.model, 256),
-            ("conversation", &request.conversation.0, 512),
-        ] {
-            se_core::ops::inputs::bounded(name, text, cap, false)?;
-        }
+        validate_bind_fields(&request.model, &request.conversation)?;
         let scope = owner_scope(
             &router,
             se_types::ProjectId::from_linked(request.project.clone())?,
@@ -298,99 +409,13 @@ impl EmbeddedHost {
             self.bindings.has_capacity()?;
         }
         let batch = store::read(&router, scope.clone(), &deadline, move |read| {
-            let facts = super::super::start::allocate_facts()?;
-            let bytes = facts
-                .event
-                .canonical_bytes()?
-                .ok_or_else(|| SeError::invalid("session allocation", "a fresh UUIDv7"))?;
-            let session = se_types::SessionId::from_bytes(bytes)?;
-            let agent = se_types::AgentId::from_linked(draft.agent)?;
-            let previous = if replay {
-                None
-            } else {
-                recovery::previous(read, &admission, agent.clone())?
-            };
-            let incumbent = previous
-                .as_ref()
-                .map(|(_, session, revision)| (session.clone(), *revision));
-
-            let prepared = store::event(
-                read,
-                &admission,
-                facts.event.clone(),
-                facts.occurred_at_us,
-                EventBody::SessionPrepared {
-                    session: session.clone(),
-                    agent,
-                    provider: se_store::Provider::SeCode,
-                    surface: Some(se_store::SessionSurface::SeCode),
-                    native_ref: draft.conversation.0,
-                    consent: if draft.capture_consent {
-                        se_store::Consent::Capture
-                    } else {
-                        se_store::Consent::Suppressed
-                    },
-                    generation: admission.generation,
-                    expected: Expected::Absent,
-                },
-            );
-            let activated = store::event(
-                read,
-                &admission,
-                facts.profile_event,
-                facts.occurred_at_us,
-                EventBody::SessionActivated {
-                    session,
-                    expected: Expected::Revision(se_store::Revision {
-                        value: std::num::NonZeroU64::MIN,
-                    }),
-                    incumbent,
-                    process: None,
-                    containment: se_store::ContainmentFact::NotLaunched,
-                    witnesses: Vec::new(),
-                },
-            );
-            let mut events = vec![prepared];
-            if let Some((revoked, _, _)) = previous {
-                events.push(revoked);
-            }
-            events.push(activated);
-            Ok(se_store::AtomicBatch {
-                expected_incarnation: read.info().incarnation,
-                admission,
-                request: Some(identity),
-                events,
-                import_checkpoint: None,
-            })
+            build_bind_batch(read, admission, identity, draft, replay)
         })
         .await?;
         let receipt = store::write(&router, batch, "session.bind", &deadline).await?;
         let committed = store::known("session.bind", &receipt);
-        let identity = store::read(&router, scope, &deadline, move |read| {
-            let event = scope::require_present(
-                read.event(receipt.primary_event.clone())
-                    .map_err(|e| store_error(&e))?,
-                "linked bind receipt",
-                scope::COMMITTED_READ_RECOVERY,
-            )?;
-            let EventBody::SessionPrepared { session, agent, .. } = event.body else {
-                return Err(SeError::invalid(
-                    "linked bind receipt",
-                    "the committed session preparation",
-                ));
-            };
-            let se_store::Scope::Project(project) = event.header.scope else {
-                return Err(SeError::invalid("linked bind receipt", "a project"));
-            };
-            let identity = api::SessionIdentity {
-                project: project.to_linked(),
-                agent: agent.to_linked(),
-                session: session.to_linked(),
-            };
-            Ok((
-                identity.clone(),
-                store::receipt(read, receipt, request_key, identity)?,
-            ))
+        let bound = store::read(&router, scope, &deadline, move |read| {
+            read_bind_receipt(read, receipt, request_key)
         })
         .await
         .map_err(|e| committed.response_error(e))?;
@@ -398,7 +423,7 @@ impl EmbeddedHost {
             .bindings
             .issue(
                 Binding {
-                    identity: identity.0.clone(),
+                    identity: bound.identity.clone(),
                     model: request.model,
                     conversation: request.conversation,
                     fenced: false,
@@ -407,11 +432,11 @@ impl EmbeddedHost {
             )
             .map_err(|e| committed.response_error(e))?;
         Ok(api::IssuedSession {
-            identity: identity.0,
+            identity: bound.identity,
             generation: options.generation,
             binding_revision: session.binding_revision,
             session,
-            receipt: identity.1,
+            receipt: bound.receipt,
         })
     }
 }

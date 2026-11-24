@@ -77,10 +77,86 @@ impl EmbeddedFactory {
         retained.generations.push(Arc::clone(&generation));
         Ok(generation)
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
+    fn admit_restart(
+        &self,
+        reason: &api::RestartReason,
+        key: &api::IdempotencyKey,
+        generation: api::Generation,
+    ) -> api::Result<AdmittedRestart> {
+        let mut retained = self
+            .retained
+            .lock()
+            .map_err(|_| unavailable("factory generation registry"))?;
+        if let Some(old) = retained.restarts.iter().find(|old| old.key == *key) {
+            if old.from != generation || old.reason != *reason {
+                return Err(refused(
+                    "restart key conflict",
+                    "the original generation and reason for this key",
+                ));
+            }
+            if let Some(opened) = &old.opened {
+                return Ok(AdmittedRestart::AlreadyOpened(copy_opened(opened)));
+            }
+        }
+        let replayed = retained.restarts.iter().any(|old| old.key == *key);
+        if retained
+            .restarts
+            .iter()
+            .any(|old| old.from == generation && old.key != *key)
+        {
+            return Err(refused(
+                "restart source key",
+                "retry the original restart key; this source already has an admitted restart",
+            ));
+        }
+        if retained.restarts.len() >= 32 {
+            return Err(refused(
+                "restart key capacity",
+                "controlled application restart; retained keys are never evicted into duplicate restarts",
+            ));
+        }
+        let mut selected = retained
+            .generations
+            .iter()
+            .filter(|g| g.negotiated.generation == generation);
+        let source = selected.next().cloned().ok_or_else(|| {
+            refused(
+                "restart generation",
+                "an exact generation retained by this factory",
+            )
+        })?;
+        if selected.next().is_some() {
+            return Err(refused(
+                "restart generation",
+                "one unambiguous state home per generation in this factory",
+            ));
+        }
+        if source
+            .quarantined
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(refused(
+                "quarantined restart source",
+                "controlled application restart; exact unjoined ownership remains retained",
+            ));
+        }
+        if !source.activated.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(refused(
+                "restart source",
+                "close the unopened preparation, then open again; no owner generation was committed",
+            ));
+        }
+        if !replayed {
+            verify_restart_reason(&source, reason, generation)?;
+            retained.restarts.push(Restart {
+                from: generation,
+                key: key.clone(),
+                reason: reason.clone(),
+                opened: None,
+            });
+        }
+        Ok(AdmittedRestart::Proceed(source))
+    }
     pub(super) async fn restart_generation(
         &self,
         reason: api::RestartReason,
@@ -98,103 +174,9 @@ impl EmbeddedFactory {
                 "1..128 UTF-8 bytes retained for this exact source generation",
             ));
         }
-        let source = {
-            let mut retained = self
-                .retained
-                .lock()
-                .map_err(|_| unavailable("factory generation registry"))?;
-            if let Some(old) = retained.restarts.iter().find(|old| old.key == key) {
-                if old.from != options.generation || old.reason != reason {
-                    return Err(refused(
-                        "restart key conflict",
-                        "the original generation and reason for this key",
-                    ));
-                }
-                if let Some(opened) = &old.opened {
-                    return Ok(copy_opened(opened));
-                }
-            }
-            let replayed = retained.restarts.iter().any(|old| old.key == key);
-            if retained
-                .restarts
-                .iter()
-                .any(|old| old.from == options.generation && old.key != key)
-            {
-                return Err(refused(
-                    "restart source key",
-                    "retry the original restart key; this source already has an admitted restart",
-                ));
-            }
-            if retained.restarts.len() >= 32 {
-                return Err(refused(
-                    "restart key capacity",
-                    "controlled application restart; retained keys are never evicted into duplicate restarts",
-                ));
-            }
-            let mut selected = retained
-                .generations
-                .iter()
-                .filter(|g| g.negotiated.generation == options.generation);
-            let source = selected.next().cloned().ok_or_else(|| {
-                refused(
-                    "restart generation",
-                    "an exact generation retained by this factory",
-                )
-            })?;
-            if selected.next().is_some() {
-                return Err(refused(
-                    "restart generation",
-                    "one unambiguous state home per generation in this factory",
-                ));
-            }
-            if source
-                .quarantined
-                .load(std::sync::atomic::Ordering::Acquire)
-            {
-                return Err(refused(
-                    "quarantined restart source",
-                    "controlled application restart; exact unjoined ownership remains retained",
-                ));
-            }
-            if !source.activated.load(std::sync::atomic::Ordering::Acquire) {
-                return Err(refused(
-                    "restart source",
-                    "close the unopened preparation, then open again; no owner generation was committed",
-                ));
-            }
-            if !replayed {
-                match &reason {
-                    api::RestartReason::Drained { receipt }
-                        if receipt.generation == options.generation
-                            && matches!(
-                                source.health(),
-                                api::GenerationHealth::Drained | api::GenerationHealth::Closed
-                            ) => {}
-                    api::RestartReason::Poisoned { incident }
-                        if !incident.is_empty()
-                            && incident.len() <= 1024
-                            && source
-                                .incident
-                                .lock()
-                                .map_err(|_| unavailable("poison incident registry"))?
-                                .as_ref()
-                                == Some(incident)
-                            && source.health() == api::GenerationHealth::Poisoned => {}
-                    _ => {
-                        return Err(refused(
-                            "restart source",
-                            "this generation's actual drain receipt or recorded poison incident",
-                        ));
-                    }
-                }
-                retained.restarts.push(Restart {
-                    from: options.generation,
-                    key: key.clone(),
-                    reason: reason.clone(),
-                    opened: None,
-                });
-            }
-            source
+        let source = match self.admit_restart(&reason, &key, options.generation)? {
+            AdmittedRestart::AlreadyOpened(opened) => return Ok(opened),
+            AdmittedRestart::Proceed(source) => source,
         };
         let mut remaining = options.clone();
         remaining.timeout = deadline.remaining().map_err(|e| api_error(&e))?;
@@ -235,6 +217,50 @@ impl EmbeddedFactory {
             .ok_or_else(|| unavailable("retained restart intent"))?;
         admitted.opened = Some(copy_opened(&opened));
         Ok(opened)
+    }
+}
+
+enum AdmittedRestart {
+    AlreadyOpened(api::Read<api::OpenedHost>),
+    Proceed(Arc<Generation>),
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "The linked API defines the public ApiError representation; retain its typed error channel."
+)]
+fn verify_restart_reason(
+    source: &Generation,
+    reason: &api::RestartReason,
+    generation: api::Generation,
+) -> api::Result<()> {
+    match reason {
+        api::RestartReason::Drained { receipt }
+            if receipt.generation == generation
+                && matches!(
+                    source.health(),
+                    api::GenerationHealth::Drained | api::GenerationHealth::Closed
+                ) =>
+        {
+            Ok(())
+        }
+        api::RestartReason::Poisoned { incident }
+            if !incident.is_empty()
+                && incident.len() <= 1024
+                && source
+                    .incident
+                    .lock()
+                    .map_err(|_| unavailable("poison incident registry"))?
+                    .as_ref()
+                    == Some(incident)
+                && source.health() == api::GenerationHealth::Poisoned =>
+        {
+            Ok(())
+        }
+        _ => Err(refused(
+            "restart source",
+            "this generation's actual drain receipt or recorded poison incident",
+        )),
     }
 }
 
