@@ -12,11 +12,22 @@ use crate::client::lease::Deadline;
 #[cfg(all(test, feature = "listener", any(target_os = "linux", windows)))]
 use se_secode_service::{Auxiliary, custody::Journal};
 use se_secode_service::{
-    Coordinator, HostPort, PortFuture, SecodeWork, Service, ServiceSlot, lock_service,
+    Coordinator, HostPort, PendingRestart, PortFuture, SecodeWork, Service, ServiceSlot,
+    lock_service,
 };
 pub(in crate::process) use se_secode_service::{Prepared, RestartControl, Services, custody, mail};
 use se_types::Result;
 use std::path::{Path, PathBuf};
+
+#[cfg(all(test, feature = "listener", any(target_os = "linux", windows)))]
+pub(super) struct AuxiliaryLaunch {
+    pub auxiliary: Auxiliary,
+    pub executable: se_proc::NativeExecutableInvocation,
+    pub arguments: Vec<std::ffi::OsString>,
+    pub cwd: PathBuf,
+    pub policy: se_proc::LaunchPolicy,
+    pub input: Option<se_types::Secret>,
+}
 
 impl HostPort for LaunchCoordinator {
     fn services(&self) -> &Services {
@@ -482,24 +493,22 @@ impl LaunchCoordinator {
             .await
     }
     #[cfg(all(test, feature = "listener", any(target_os = "linux", windows)))]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards to native auxiliary launch with distinct custody and policy coordinates"
-    )]
     pub(in crate::process) async fn start_secode_auxiliary(
         &self,
         service: &mut Service,
-        auxiliary: Auxiliary,
-        executable: se_proc::NativeExecutableInvocation,
-        arguments: Vec<std::ffi::OsString>,
-        cwd: PathBuf,
-        policy: se_proc::LaunchPolicy,
-        input: Option<se_types::Secret>,
+        launch: AuxiliaryLaunch,
         deadline: &Deadline,
     ) -> Result<se_proc::ProcessRecord> {
         Coordinator(self)
             .start_secode_auxiliary(
-                service, auxiliary, executable, arguments, cwd, policy, input, deadline,
+                service,
+                launch.auxiliary,
+                launch.executable,
+                launch.arguments,
+                launch.cwd,
+                launch.policy,
+                launch.input,
+                deadline,
             )
             .await
     }

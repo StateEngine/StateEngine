@@ -264,17 +264,19 @@ async fn register_fixture(
     coordinator
         .start_secode_auxiliary(
             &mut service,
-            Auxiliary::Service,
-            invocation,
-            vec![
-                "--exact".into(),
-                "process::secode::registered_rebind_test::fixture_child".into(),
-                "--ignored".into(),
-                "--nocapture".into(),
-            ],
-            f.home.clone(),
-            policy,
-            None,
+            AuxiliaryLaunch {
+                auxiliary: Auxiliary::Service,
+                executable: invocation,
+                arguments: vec![
+                    "--exact".into(),
+                    "process::secode::registered_rebind_test::fixture_child".into(),
+                    "--ignored".into(),
+                    "--nocapture".into(),
+                ],
+                cwd: f.home.clone(),
+                policy,
+                input: None,
+            },
             deadline,
         )
         .await?;

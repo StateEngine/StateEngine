@@ -57,6 +57,13 @@ struct PendingSave {
     expected: Option<[u8; 32]>,
 }
 
+pub struct PendingRestart {
+    pub key: String,
+    pub control: Arc<se_harness::secode_process::Control>,
+    pub identity: se_store::CredentialRestart,
+    pub session_hash: [u8; 32],
+}
+
 pub struct RestartControl {
     pub(crate) control: Arc<se_harness::secode_process::Control>,
     pub(crate) reply_sent: bool,
@@ -186,46 +193,50 @@ impl Service {
         self.journal.retired = false;
     }
 
-    /// Record a newly accepted restart challenge, invalidating the prior live
-    /// binding and persisting the superseded restart key before arming the
-    /// replacement control.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "restart registration pairs control, identity, session hash, and key atomically"
-    )]
-    pub async fn register_restart<H: HostPort>(
+    async fn begin_restart_journal<H: HostPort>(
         &mut self,
         host: &H,
-        restart_key: String,
-        control: Arc<se_harness::secode_process::Control>,
-        identity: se_store::CredentialRestart,
-        session_hash: [u8; 32],
+        restart_key: &str,
         deadline: &Deadline,
     ) -> Result<()> {
-        let same_restart = self
-            .restart
-            .as_ref()
-            .is_some_and(|old| old.restart_key == restart_key);
-        if !same_restart {
-            self.live.invalidate()?;
-        }
-        if self.journal.restart_key.as_deref() != Some(&restart_key) {
-            self.journal.restart_key = Some(restart_key.clone());
+        if self.journal.restart_key.as_deref() != Some(restart_key) {
+            self.journal.restart_key = Some(restart_key.to_owned());
             self.journal.restart_effect = None;
             self.journal.restart_settled = false;
             self.journal.restart_reply_sent = false;
             self.journal.superseded_by_restart = true;
             self.persist(host, deadline).await?;
         }
+        Ok(())
+    }
+
+    /// Record a newly accepted restart challenge, invalidating the prior live
+    /// binding and persisting the superseded restart key before arming the
+    /// replacement control.
+    pub async fn register_restart<H: HostPort>(
+        &mut self,
+        host: &H,
+        pending: PendingRestart,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let same_restart = self
+            .restart
+            .as_ref()
+            .is_some_and(|old| old.restart_key == pending.key);
+        if !same_restart {
+            self.live.invalidate()?;
+        }
+        self.begin_restart_journal(host, &pending.key, deadline)
+            .await?;
         if !same_restart {
             self.restart = Some(RestartControl {
-                control,
+                control: pending.control,
                 reply_sent: false,
                 mail_notified: false,
-                identity,
+                identity: pending.identity,
                 adopted: false,
-                session_hash,
-                restart_key,
+                session_hash: pending.session_hash,
+                restart_key: pending.key,
             });
             self.capability_check_at = None;
         }
@@ -234,36 +245,23 @@ impl Service {
 
     /// Reconstruct pending restart challenge state from committed credential
     /// heads after a host restart.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "restart restoration pairs control, identity, session hash, and key atomically"
-    )]
     pub async fn restore_restart<H: HostPort>(
         &mut self,
         host: &H,
-        restart_key: String,
-        control: Arc<se_harness::secode_process::Control>,
-        identity: se_store::CredentialRestart,
-        session_hash: [u8; 32],
+        pending: PendingRestart,
         deadline: &Deadline,
     ) -> Result<()> {
-        if self.journal.restart_key.as_deref() != Some(restart_key.as_str()) {
-            self.journal.restart_key = Some(restart_key.clone());
-            self.journal.restart_effect = None;
-            self.journal.restart_settled = false;
-            self.journal.restart_reply_sent = false;
-            self.journal.superseded_by_restart = true;
-            self.persist(host, deadline).await?;
-        }
+        self.begin_restart_journal(host, &pending.key, deadline)
+            .await?;
         self.live.invalidate()?;
         self.restart = Some(RestartControl {
-            control,
+            control: pending.control,
             reply_sent: self.journal.restart_reply_sent,
             mail_notified: false,
-            identity,
+            identity: pending.identity,
             adopted: false,
-            session_hash,
-            restart_key,
+            session_hash: pending.session_hash,
+            restart_key: pending.key,
         });
         self.capability_check_at = None;
         Ok(())

@@ -4,7 +4,7 @@
  "default_crate_lines": 40000,
  "default_directory_lines": 10000,
  "crates": {
-  "se-host": 61070,
+  "se-host": 61090,
   "se-channels": 6750,
   "se-proc": 24483,
   "se-native-ipc": 4600,

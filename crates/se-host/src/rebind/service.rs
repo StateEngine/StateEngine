@@ -247,10 +247,12 @@ impl LaunchCoordinator {
         service
             .register_restart(
                 self,
-                restart_key.clone(),
-                control,
-                restart,
-                session_hash,
+                PendingRestart {
+                    key: restart_key.clone(),
+                    control,
+                    identity: restart,
+                    session_hash,
+                },
                 deadline,
             )
             .await?;
@@ -586,7 +588,16 @@ impl LaunchCoordinator {
             })
             .await?;
         service
-            .restore_restart(self, restart_key, control, restart, session_hash, deadline)
+            .restore_restart(
+                self,
+                PendingRestart {
+                    key: restart_key,
+                    control,
+                    identity: restart,
+                    session_hash,
+                },
+                deadline,
+            )
             .await
     }
 }
