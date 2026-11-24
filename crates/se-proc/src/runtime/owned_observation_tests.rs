@@ -6,6 +6,7 @@ use crate::windows_policy_fixture::{Check, ChildPlan, Home, child_args};
 use std::{
     cell::RefCell,
     fs::{self, File},
+    path::Path,
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
@@ -71,85 +72,19 @@ struct Fixture {
     released: bool,
 }
 impl Fixture {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     fn new() -> Check<Self> {
-        let home = Home::new()?;
-        let machine = MachineId::new("owned-observation-fixture")?;
-        let nonce: [u8; 16] = random_secret()?.expose()[..16].try_into()?;
-        let instance = HostInstanceId(nonce);
-        let generation = GenerationId::new(1)?;
-        let lifecycle = LifecycleId::from_parts(1_700_000_000_000, nonce[..10].try_into()?)?;
         let executable = std::env::current_exe()?;
-        let runtime = NativeProcessRuntime::open(HostConfig {
-            machine: machine.clone(),
+        let (home, machine, instance, generation, lifecycle, nonce) = identities()?;
+        let runtime = open_runtime(&machine, instance, &executable)?;
+        let prepared = prepare_child(
+            &runtime,
+            &home,
+            &executable,
+            lifecycle,
+            generation,
             instance,
-            helper_executable: executable.clone(),
-            linux_delegation: LinuxDelegation::CurrentScope,
-            limits: ResourceLimits {
-                max_lifecycles: 1,
-                max_diagnostic_members: 4,
-                max_observation_bytes: 65536,
-                max_stdio_buffer_bytes: 4096,
-            },
-        })
-        .map_err(cause)?;
-        let owner = runtime.inner.owner.clone();
-        let plan = ChildPlan {
-            report: home.0.join("ready"),
-            excluded: 0,
-            allowed: None,
-            input: None,
-            claim: None,
-        };
-        let mut arguments = child_args(&plan)?;
-        arguments[1] = "runtime::owned_observation_tests::held_child".into();
-        fs::write(home.0.join("stdin"), b"")?;
-        let prepared = runtime
-            .prepare_launch(
-                LaunchReservation {
-                    format_version: 1,
-                    lifecycle: lifecycle.clone(),
-                    host: instance,
-                    owner,
-                    generation,
-                    scope_nonce: nonce,
-                    parent: ReservationParent::Windows,
-                    created_at_unix_ns: 1,
-                },
-                LaunchSpec {
-                    executable_custody: None,
-                    lifecycle,
-                    generation,
-                    executable,
-                    arguments,
-                    cwd: home.0.to_path_buf(),
-                    environment: Environment {
-                        entries: Vec::new(),
-                    },
-                    stdio: StandardIo {
-                        stdin: Some(File::open(home.0.join("stdin"))?),
-                        stdout: Some(File::create(home.0.join("stdout"))?),
-                        stderr: Some(File::create(home.0.join("stderr"))?),
-                    },
-                    mode: LaunchMode::Headless,
-                    window: None,
-                    policy: LaunchPolicy {
-                        containment: ContainmentRequirement::KernelScope,
-                        writes: WritePolicy::Workspace {
-                            roots: vec![home.0.to_path_buf()],
-                            scratch: home.0.to_path_buf(),
-                        },
-                        network: NetworkPolicy::Allow,
-                        hardening: OptionalHardening::Off,
-                    },
-                    deadline: Instant::now() + Duration::from_secs(10),
-                    notifications: Arc::new(Notices),
-                },
-            )
-            .map_err(cause)?;
+            nonce,
+        )?;
         let mut fixture = Self {
             runtime,
             process: prepared.process,
@@ -158,29 +93,9 @@ impl Fixture {
             home,
             released: false,
         };
-        let ticket = match fixture.runtime.begin_launch(prepared.prepared) {
-            LaunchStart::Pending { ticket, .. } => ticket,
-            LaunchStart::Failed(failure) => return Err(cause(failure.error).into()),
-        };
         let deadline = Instant::now() + Duration::from_secs(10);
-        let record = loop {
-            match fixture.runtime.poll_launch(&ticket).map_err(cause)? {
-                LaunchProgress::Started(success) => break success.record,
-                LaunchProgress::Pending if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(2))
-                }
-                LaunchProgress::Failed(failure) => return Err(cause(failure.error).into()),
-                _ => return Err("owned fixture did not publish a native process record".into()),
-            }
-        };
-        fixture.record = Some(record);
-        while !fixture.home.0.join("ready").exists() {
-            if Instant::now() >= deadline {
-                fixture.finish()?;
-                return Err("owned fixture barrier not reached".into());
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        fixture.record = Some(wait_for_record(&fixture, prepared.prepared, deadline)?);
+        wait_for_ready(&mut fixture, deadline)?;
         Ok(fixture)
     }
     fn record(&self) -> Check<&ProcessRecord> {
@@ -228,6 +143,136 @@ impl Fixture {
             }
         }
     }
+}
+fn identities() -> Check<(
+    Home,
+    MachineId,
+    HostInstanceId,
+    GenerationId,
+    LifecycleId,
+    [u8; 16],
+)> {
+    let home = Home::new()?;
+    let machine = MachineId::new("owned-observation-fixture")?;
+    let nonce: [u8; 16] = random_secret()?.expose()[..16].try_into()?;
+    let instance = HostInstanceId(nonce);
+    let generation = GenerationId::new(1)?;
+    let lifecycle = LifecycleId::from_parts(1_700_000_000_000, nonce[..10].try_into()?)?;
+    Ok((home, machine, instance, generation, lifecycle, nonce))
+}
+fn open_runtime(
+    machine: &MachineId,
+    instance: HostInstanceId,
+    executable: &Path,
+) -> Check<NativeProcessRuntime> {
+    Ok(NativeProcessRuntime::open(HostConfig {
+        machine: machine.clone(),
+        instance,
+        helper_executable: executable.to_path_buf(),
+        linux_delegation: LinuxDelegation::CurrentScope,
+        limits: ResourceLimits {
+            max_lifecycles: 1,
+            max_diagnostic_members: 4,
+            max_observation_bytes: 65536,
+            max_stdio_buffer_bytes: 4096,
+        },
+    })
+    .map_err(cause)?)
+}
+fn prepare_child(
+    runtime: &NativeProcessRuntime,
+    home: &Home,
+    executable: &Path,
+    lifecycle: LifecycleId,
+    generation: GenerationId,
+    instance: HostInstanceId,
+    nonce: [u8; 16],
+) -> Check<PreparedScope> {
+    let owner = runtime.inner.owner.clone();
+    let plan = ChildPlan {
+        report: home.0.join("ready"),
+        excluded: 0,
+        allowed: None,
+        input: None,
+        claim: None,
+    };
+    let mut arguments = child_args(&plan)?;
+    arguments[1] = "runtime::owned_observation_tests::held_child".into();
+    fs::write(home.0.join("stdin"), b"")?;
+    let prepared = runtime
+        .prepare_launch(
+            LaunchReservation {
+                format_version: 1,
+                lifecycle: lifecycle.clone(),
+                host: instance,
+                owner,
+                generation,
+                scope_nonce: nonce,
+                parent: ReservationParent::Windows,
+                created_at_unix_ns: 1,
+            },
+            LaunchSpec {
+                executable_custody: None,
+                lifecycle,
+                generation,
+                executable: executable.to_path_buf(),
+                arguments,
+                cwd: home.0.to_path_buf(),
+                environment: Environment {
+                    entries: Vec::new(),
+                },
+                stdio: StandardIo {
+                    stdin: Some(File::open(home.0.join("stdin"))?),
+                    stdout: Some(File::create(home.0.join("stdout"))?),
+                    stderr: Some(File::create(home.0.join("stderr"))?),
+                },
+                mode: LaunchMode::Headless,
+                window: None,
+                policy: LaunchPolicy {
+                    containment: ContainmentRequirement::KernelScope,
+                    writes: WritePolicy::Workspace {
+                        roots: vec![home.0.to_path_buf()],
+                        scratch: home.0.to_path_buf(),
+                    },
+                    network: NetworkPolicy::Allow,
+                    hardening: OptionalHardening::Off,
+                },
+                deadline: Instant::now() + Duration::from_secs(10),
+                notifications: Arc::new(Notices),
+            },
+        )
+        .map_err(cause)?;
+    Ok(prepared)
+}
+fn wait_for_record(
+    fixture: &Fixture,
+    prepared: PreparedLaunch,
+    deadline: Instant,
+) -> Check<ProcessRecord> {
+    let ticket = match fixture.runtime.begin_launch(prepared) {
+        LaunchStart::Pending { ticket, .. } => ticket,
+        LaunchStart::Failed(failure) => return Err(cause(failure.error).into()),
+    };
+    loop {
+        match fixture.runtime.poll_launch(&ticket).map_err(cause)? {
+            LaunchProgress::Started(success) => return Ok(success.record),
+            LaunchProgress::Pending if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(2))
+            }
+            LaunchProgress::Failed(failure) => return Err(cause(failure.error).into()),
+            _ => return Err("owned fixture did not publish a native process record".into()),
+        }
+    }
+}
+fn wait_for_ready(fixture: &mut Fixture, deadline: Instant) -> Check {
+    while !fixture.home.0.join("ready").exists() {
+        if Instant::now() >= deadline {
+            fixture.finish()?;
+            return Err("owned fixture barrier not reached".into());
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    Ok(())
 }
 impl Drop for Fixture {
     fn drop(&mut self) {

@@ -17,13 +17,28 @@ struct Proof {
 /// authenticated planning and post-commit continuation. Every write must return
 /// its receipt and independently read back; neither refusal nor a confirmed
 /// commit with an unavailable response counts as successful behavior.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn check() -> Check {
     let initialized = se_host::initialize_host_process()?;
     let f = Fixture::new()?;
+    let agents = register_principals(&f)?;
+    let HostedSetup {
+        engine,
+        runtime,
+        listener,
+        endpoint,
+        owner_key,
+    } = start_host(&f, initialized)?;
+    let proofs = engine.block_on(run_clients(
+        &f, runtime, listener, endpoint, owner_key, agents,
+    ))?;
+    verify_readback(&f, &proofs)?;
+    println!(
+        "PASS eight_clients: eight actual slots, 480 authenticated writes and continuations, 16 exact replays, outside event/state readback and retired lease"
+    );
+    Ok(())
+}
+
+fn register_principals(f: &Fixture) -> Result<Vec<AgentId>, Box<dyn std::error::Error>> {
     let (mut direct, lease) = f.direct()?;
     direct.append(
         f.batch(
@@ -68,105 +83,157 @@ pub fn check() -> Check {
             lease.as_ref(),
         )?;
     }
-    drop(direct);
-    drop(lease);
+    Ok(agents)
+}
+
+struct HostedSetup {
+    engine: tokio::runtime::Runtime,
+    runtime: se_host::HostedRuntime,
+    listener: se_host::HostedListener,
+    endpoint: se_host::EndpointRecord,
+    owner_key: Secret,
+}
+
+fn start_host(
+    f: &Fixture,
+    initialized: se_host::HostProcessInitialization,
+) -> Result<HostedSetup, Box<dyn std::error::Error>> {
     let machine = route::identity::ensure_machine_identity(&f.options.state_directory)?;
     let credential = secret()?;
-    publish(&f, "credential", credential.expose())?;
+    publish(f, "credential", credential.expose())?;
     let engine = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(CLIENTS)
         .build()?;
-    let proofs = engine.block_on(async {
-        let mut start = start_options(&f, epoch(machine)?)?;
-        start.limits.blocking_jobs = positive(CLIENTS as u32)?;
-        start.limits.active_connections = positive(32)?;
-        start.limits.preauth_connections = positive(16)?;
-        let mut runtime =
-            se_host::HostedRuntime::prepare(initialized, start, engine.handle().clone(), &bound()?)
-                .await?;
-        assert_eq!(
-            runtime
-                .blocking_pool()
-                .foreground_admission()
-                .available_permits(),
-            CLIENTS,
-            "this consumer must exercise eight actual finite slots"
-        );
-        runtime.configure(se_config::config_policy::ConfigFile::default())?;
-        let listener = runtime.listen(engine.handle().clone(), &bound()?).await?;
-        let endpoint = listener.endpoint().clone();
-        let owner_key = copy_secret(&credential)?;
-        let project = f.project.clone();
-        let coordinator = std::thread::spawn(move || {
-            let barrier = Arc::new(Barrier::new(CLIENTS));
-            let mut clients = Vec::new();
-            for (index, agent) in agents.into_iter().enumerate() {
-                let endpoint = endpoint.clone();
-                let project = project.clone();
-                let barrier = barrier.clone();
-                let key_bytes = owner_key.expose().to_vec();
-                clients.push(std::thread::spawn(move || {
-                    let mut proofs = Vec::new();
-                    let mut failures = Vec::new();
-                    for working in [false, true] {
-                        for round in 0..ROUNDS {
-                            barrier.wait();
-                            match write(
-                                &endpoint, &key_bytes, &project, &agent, index, round, working,
-                            ) {
-                                Ok(proof) => proofs.push(proof),
-                                Err(error) => failures.push(format!(
-                                    "client={index} round={round} working={working}: {error}"
-                                )),
-                            }
+    let owner_key = copy_secret(&credential)?;
+    let (runtime, listener, endpoint) = engine.block_on(prepare_host(
+        f,
+        initialized,
+        machine,
+        engine.handle().clone(),
+    ))?;
+    Ok(HostedSetup {
+        engine,
+        runtime,
+        listener,
+        endpoint,
+        owner_key,
+    })
+}
+
+async fn prepare_host(
+    f: &Fixture,
+    initialized: se_host::HostProcessInitialization,
+    machine: MachineId,
+    handle: tokio::runtime::Handle,
+) -> Result<
+    (
+        se_host::HostedRuntime,
+        se_host::HostedListener,
+        se_host::EndpointRecord,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let mut start = start_options(f, epoch(machine)?)?;
+    start.limits.blocking_jobs = positive(CLIENTS as u32)?;
+    start.limits.active_connections = positive(32)?;
+    start.limits.preauth_connections = positive(16)?;
+    let mut runtime =
+        se_host::HostedRuntime::prepare(initialized, start, handle.clone(), &bound()?).await?;
+    assert_eq!(
+        runtime
+            .blocking_pool()
+            .foreground_admission()
+            .available_permits(),
+        CLIENTS,
+        "this consumer must exercise eight actual finite slots"
+    );
+    runtime.configure(se_config::config_policy::ConfigFile::default())?;
+    let listener = runtime.listen(handle, &bound()?).await?;
+    let endpoint = listener.endpoint().clone();
+    Ok((runtime, listener, endpoint))
+}
+
+async fn run_clients(
+    f: &Fixture,
+    runtime: se_host::HostedRuntime,
+    listener: se_host::HostedListener,
+    endpoint: se_host::EndpointRecord,
+    owner_key: Secret,
+    agents: Vec<AgentId>,
+) -> Result<Vec<Proof>, Box<dyn std::error::Error>> {
+    let project = f.project.clone();
+    let coordinator = std::thread::spawn(move || {
+        let barrier = Arc::new(Barrier::new(CLIENTS));
+        let mut clients = Vec::new();
+        for (index, agent) in agents.into_iter().enumerate() {
+            let endpoint = endpoint.clone();
+            let project = project.clone();
+            let barrier = barrier.clone();
+            let key_bytes = owner_key.expose().to_vec();
+            clients.push(std::thread::spawn(move || {
+                let mut proofs = Vec::new();
+                let mut failures = Vec::new();
+                for working in [false, true] {
+                    for round in 0..ROUNDS {
+                        barrier.wait();
+                        match write(
+                            &endpoint, &key_bytes, &project, &agent, index, round, working,
+                        ) {
+                            Ok(proof) => proofs.push(proof),
+                            Err(error) => failures.push(format!(
+                                "client={index} round={round} working={working}: {error}"
+                            )),
                         }
                     }
-                    (proofs, failures)
-                }));
-            }
-            let mut proofs = Vec::new();
-            let mut failures = Vec::new();
-            for client in clients {
-                match client.join() {
-                    Ok((mut rows, mut errors)) => {
-                        proofs.append(&mut rows);
-                        failures.append(&mut errors);
-                    }
-                    Err(_) => failures.push("eight-client worker panicked".into()),
                 }
+                (proofs, failures)
+            }));
+        }
+        let mut proofs = Vec::new();
+        let mut failures = Vec::new();
+        for client in clients {
+            match client.join() {
+                Ok((mut rows, mut errors)) => {
+                    proofs.append(&mut rows);
+                    failures.append(&mut errors);
+                }
+                Err(_) => failures.push("eight-client worker panicked".into()),
             }
-            // Always retire the host before reporting a failed write, so a red
-            // judge does not abandon the native listener or its writer.
-            let stopped = stop_native(&endpoint, &owner_key, "eight-clients-stop")
-                .map_err(|error| error.to_string());
-            (proofs, failures, stopped)
-        });
-        let exit = tokio::time::timeout(Duration::from_secs(120), runtime.serve(listener))
-            .await
-            .map_err(|_| "eight-client supervisor failed to receive stop")?;
-        let outcome = exit.finish(&bound()?).await;
-        let (proofs, failures, stopped) = coordinator
-            .join()
-            .map_err(|_| "eight-client coordinator panicked")?;
-        stopped?;
-        assert!(outcome.transport_closed && outcome.endpoint_retired);
-        assert!(
-            outcome.errors.is_empty(),
-            "shutdown errors: {:?}",
-            outcome.errors
-        );
-        assert!(
-            failures.is_empty(),
-            "eight-client write failures: {failures:#?}"
-        );
-        assert_eq!(proofs.len(), CLIENTS * ROUNDS as usize * 2);
-        Ok::<_, Box<dyn std::error::Error>>(proofs)
-    })?;
+        }
+        // Always retire the host before reporting a failed write, so a red
+        // judge does not abandon the native listener or its writer.
+        let stopped = stop_native(&endpoint, &owner_key, "eight-clients-stop")
+            .map_err(|error| error.to_string());
+        (proofs, failures, stopped)
+    });
+    let exit = tokio::time::timeout(Duration::from_secs(120), runtime.serve(listener))
+        .await
+        .map_err(|_| "eight-client supervisor failed to receive stop")?;
+    let outcome = exit.finish(&bound()?).await;
+    let (proofs, failures, stopped) = coordinator
+        .join()
+        .map_err(|_| "eight-client coordinator panicked")?;
+    stopped?;
+    assert!(outcome.transport_closed && outcome.endpoint_retired);
+    assert!(
+        outcome.errors.is_empty(),
+        "shutdown errors: {:?}",
+        outcome.errors
+    );
+    assert!(
+        failures.is_empty(),
+        "eight-client write failures: {failures:#?}"
+    );
+    assert_eq!(proofs.len(), CLIENTS * ROUNDS as usize * 2);
+    Ok(proofs)
+}
+
+fn verify_readback(f: &Fixture, proofs: &[Proof]) -> Check {
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
     let mut snapshot = reader.snapshot(f.scoped(Visibility::Owner))?;
     let mut events = std::collections::BTreeSet::new();
-    for proof in &proofs {
+    for proof in proofs {
         assert!(
             events.insert(proof.event.clone()),
             "replay created a second effect"
@@ -209,9 +276,6 @@ pub fn check() -> Check {
         LeaseMode::Host,
         Some(f.store.clone()),
     )?);
-    println!(
-        "PASS eight_clients: eight actual slots, 480 authenticated writes and continuations, 16 exact replays, outside event/state readback and retired lease"
-    );
     Ok(())
 }
 
