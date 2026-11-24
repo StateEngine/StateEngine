@@ -1,13 +1,15 @@
 use super::identity::*;
 use crate::support::*;
-use crate::*;
+use crate::{windows_native::attributes::Attributes, *};
 use std::{
     ffi::OsStr,
     mem::{size_of, zeroed},
     os::windows::{ffi::OsStrExt, io::AsRawHandle},
     ptr,
 };
-use windows_sys::Win32::{Foundation::*, Storage::FileSystem::*, System::Threading::*};
+use windows_sys::Win32::{
+    Foundation::*, Security::SECURITY_ATTRIBUTES, Storage::FileSystem::*, System::Threading::*,
+};
 
 fn quoted(arg: &OsStr) -> Vec<u16> {
     let mut out = vec![b'"' as u16];
@@ -17,14 +19,12 @@ fn quoted(arg: &OsStr) -> Vec<u16> {
             slashes += 1;
             continue;
         }
-        out.extend(std::iter::repeat_n(
-            b'\\' as u16,
-            if unit == b'"' as u16 {
-                slashes * 2 + 1
-            } else {
-                slashes
-            },
-        ));
+        let count = if unit == b'"' as u16 {
+            slashes * 2 + 1
+        } else {
+            slashes
+        };
+        out.extend(std::iter::repeat_n(b'\\' as u16, count));
         slashes = 0;
         out.push(unit);
     }
@@ -163,13 +163,9 @@ fn capability(source: &Handle, rights: u32, code: ProcErrorCode, api: &str) -> P
     }
     Handle::new(copy, api)
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
-    let mut line = quoted(spec.executable.as_os_str());
-    for arg in &spec.arguments {
+fn command_line(executable: &OsStr, arguments: &[std::ffi::OsString]) -> ProcResult<Vec<u16>> {
+    let mut line = quoted(executable);
+    for arg in arguments {
         line.push(b' ' as u16);
         line.extend(quoted(arg));
     }
@@ -177,10 +173,13 @@ fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
     if line.len() > 32767 {
         return Err(capacity("Windows command line UTF-16 units", 32767));
     }
-    let mut environment = spec.environment.entries;
-    environment.sort_by_key(|(key, _)| key.to_string_lossy().to_uppercase());
+    Ok(line)
+}
+fn environment_block(environment: Environment) -> Vec<u16> {
+    let mut entries = environment.entries;
+    entries.sort_by_key(|(key, _)| key.to_string_lossy().to_uppercase());
     let mut env = Vec::new();
-    for (key, value) in environment {
+    for (key, value) in entries {
         env.extend(key.encode_wide());
         env.push(b'=' as u16);
         env.extend(value.encode_wide());
@@ -190,65 +189,79 @@ fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
         env.push(0);
     }
     env.push(0);
-    // SAFETY: native startup POD starts zeroed; size and used fields are set below.
-    let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
-    startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
-    let streams = [spec.stdio.stdin, spec.stdio.stdout, spec.stdio.stderr];
-    let redirected = streams.iter().any(Option::is_some);
-    if spec.mode == LaunchMode::Window && redirected {
+    env
+}
+fn prepare_stdio_handles(mode: LaunchMode, stdio: StandardIo) -> ProcResult<Vec<Handle>> {
+    let streams = [stdio.stdin, stdio.stdout, stdio.stderr];
+    if mode == LaunchMode::Window && streams.iter().any(Option::is_some) {
         return Err(unsupported(
             "partial/new-console redirection requires the terminal adapter; launch a window without redirections or use headless streams",
         ));
     }
-    let mut inherited = Vec::new();
-    if spec.mode.is_headless() {
-        for stream in streams {
-            let handle = if let Some(file) = stream {
-                // Borrowed File owns this handle; duplicate without transferring it.
-                let mut duplicate = ptr::null_mut();
-                // SAFETY: the File and process pseudo handles outlive duplication;
-                // output ownership transfers immediately into inherited's RAII handle.
-                if unsafe {
-                    DuplicateHandle(
-                        GetCurrentProcess(),
-                        file.as_raw_handle(),
-                        GetCurrentProcess(),
-                        &mut duplicate,
-                        0,
-                        1,
-                        DUPLICATE_SAME_ACCESS,
+    if !mode.is_headless() {
+        return Ok(Vec::new());
+    }
+    let mut inherited = Vec::with_capacity(3);
+    for stream in streams {
+        let handle = if let Some(file) = stream {
+            // Borrowed File owns this handle; duplicate without transferring it.
+            let mut duplicate = ptr::null_mut();
+            // SAFETY: the File and process pseudo handles outlive duplication;
+            // output ownership transfers immediately into inherited's RAII handle.
+            if unsafe {
+                DuplicateHandle(
+                    GetCurrentProcess(),
+                    file.as_raw_handle(),
+                    GetCurrentProcess(),
+                    &mut duplicate,
+                    0,
+                    1,
+                    DUPLICATE_SAME_ACCESS,
+                )
+            } == 0
+            {
+                return Err(last(ProcErrorCode::LaunchFailed, "duplicate child stdio"));
+            }
+            Handle(duplicate)
+        } else {
+            // SAFETY: native security POD starts zeroed, with its size/inheritance filled next.
+            let mut security: SECURITY_ATTRIBUTES = unsafe { zeroed() };
+            security.nLength = size_of_val(&security) as u32;
+            security.bInheritHandle = 1;
+            Handle::new(
+                // SAFETY: constant terminated null-device name and live attributes;
+                // only this explicit stream duplicate is inheritable.
+                unsafe {
+                    CreateFileW(
+                        wide(OsStr::new("NUL")).as_ptr(),
+                        GENERIC_READ | GENERIC_WRITE,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        &security,
+                        OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL,
+                        ptr::null_mut(),
                     )
-                } == 0
-                {
-                    return Err(last(ProcErrorCode::LaunchFailed, "duplicate child stdio"));
-                }
-                Handle(duplicate)
-            } else {
-                // SAFETY: native security POD starts zeroed, with its size/inheritance filled next.
-                let mut security: windows_sys::Win32::Security::SECURITY_ATTRIBUTES =
-                    unsafe { zeroed() };
-                security.nLength = size_of_val(&security) as u32;
-                security.bInheritHandle = 1;
-                // SAFETY: static null device name, explicit inheritance only for this duplicated stream.
-                Handle::new(
-                    // SAFETY: constant terminated null-device name and live attributes;
-                    // only this explicit stream duplicate is inheritable.
-                    unsafe {
-                        CreateFileW(
-                            wide(OsStr::new("NUL")).as_ptr(),
-                            GENERIC_READ | GENERIC_WRITE,
-                            FILE_SHARE_READ | FILE_SHARE_WRITE,
-                            &security,
-                            OPEN_EXISTING,
-                            FILE_ATTRIBUTE_NORMAL,
-                            ptr::null_mut(),
-                        )
-                    },
-                    "open child null stream",
-                )?
-            };
-            inherited.push(handle);
-        }
+                },
+                "open child null stream",
+            )?
+        };
+        inherited.push(handle);
+    }
+    Ok(inherited)
+}
+fn set_attr<'a>(attrs: &mut Attributes<'a>, key: u32, value: &'a [HANDLE]) -> ProcResult<()> {
+    attrs
+        .set(key as usize, value, "UpdateProcThreadAttribute")
+        .map_err(|e| native(ProcErrorCode::LaunchFailed, e.operation, e.source))
+}
+fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
+    let line = command_line(spec.executable.as_os_str(), &spec.arguments)?;
+    let env = environment_block(spec.environment);
+    // SAFETY: native startup POD starts zeroed; size and used fields are set below.
+    let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
+    startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+    let mut inherited = prepare_stdio_handles(spec.mode, spec.stdio)?;
+    if spec.mode.is_headless() {
         startup.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
         startup.StartupInfo.hStdInput = inherited[0].0;
         startup.StartupInfo.hStdOutput = inherited[1].0;
@@ -257,38 +270,25 @@ fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
     inherited.extend(spec.capabilities);
     let jobs = [job.0];
     let handles: Vec<_> = inherited.iter().map(|h| h.0).collect();
-    let mut attributes = crate::windows_native::attributes::Attributes::new(
+    let mut attributes = Attributes::new(
         if inherited.is_empty() { 1 } else { 2 },
         "size process attributes",
         "initialize process attributes",
     )
     .map_err(|e| native(ProcErrorCode::LaunchFailed, e.operation, e.source))?;
-    attributes
-        .set(
-            PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
-            &jobs,
-            "UpdateProcThreadAttribute",
-        )
-        .map_err(|e| native(ProcErrorCode::LaunchFailed, e.operation, e.source))?;
+    set_attr(&mut attributes, PROC_THREAD_ATTRIBUTE_JOB_LIST, &jobs)?;
     if !handles.is_empty() {
-        attributes
-            .set(
-                PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
-                &handles,
-                "UpdateProcThreadAttribute",
-            )
-            .map_err(|e| native(ProcErrorCode::LaunchFailed, e.operation, e.source))?;
+        set_attr(&mut attributes, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &handles)?;
     }
     startup.lpAttributeList = attributes.pointer();
     // SAFETY: native process output is POD; ownership is taken only on success.
     let mut info: PROCESS_INFORMATION = unsafe { zeroed() };
-    let flags = CREATE_UNICODE_ENVIRONMENT
-        | EXTENDED_STARTUPINFO_PRESENT
-        | if spec.mode.is_headless() {
-            CREATE_NO_WINDOW
-        } else {
-            CREATE_NEW_CONSOLE
-        };
+    let mode_flag = if spec.mode.is_headless() {
+        CREATE_NO_WINDOW
+    } else {
+        CREATE_NEW_CONSOLE
+    };
+    let flags = CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | mode_flag;
     let application = wide(spec.executable.as_os_str());
     let cwd = wide(spec.cwd.as_os_str());
     let create = |flags, info: &mut PROCESS_INFORMATION| {
@@ -297,7 +297,7 @@ fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
         // SAFETY: application/cwd/environment/argv and aligned attribute backing
         // storage live for the call. JOB_LIST is atomic creation membership. Only
         // the closed explicit stream/capability handle list is inherited.
-        let created = unsafe {
+        if unsafe {
             CreateProcessW(
                 application.as_ptr(),
                 command_line.as_mut_ptr(),
@@ -310,8 +310,8 @@ fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
                 &startup.StartupInfo,
                 info,
             )
-        };
-        if created == 0 {
+        } == 0
+        {
             Err(std::io::Error::last_os_error())
         } else {
             Ok(())
