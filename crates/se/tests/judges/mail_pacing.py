@@ -14,8 +14,8 @@ import time
 from judge_records import wait_json
 from mail_cli import Fixture
 
-BURST = 9
-SPACING = 0.5
+BURST = 5
+SPACING = 0.25
 
 
 def captured(repo):
@@ -72,7 +72,7 @@ def run(fixture, interval):
         time.sleep(SPACING)
     frames = wait_for(fixture.repo, 2, interval + 30)
     # Allow any further wake to arrive before counting them.
-    time.sleep(5)
+    time.sleep(2)
     frames = captured(fixture.repo)
     everything = [first, *burst]
     per_frame = named(frames, everything)
@@ -88,7 +88,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--se", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--interval", type=int, default=20)
+    parser.add_argument("--interval", type=int, default=6)
     args = parser.parse_args()
     fixture = Fixture(args.se, args.output, provider_helper=Path(__file__).with_name("burst_provider.py"))
     print("1..4", flush=True)

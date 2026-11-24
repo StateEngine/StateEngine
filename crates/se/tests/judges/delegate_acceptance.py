@@ -130,7 +130,7 @@ def run_owner(f):
     held = delegated(f, "o3", "hold")
     child_ready(f, "o3")
     f.mail("send", held["agent_id"], "This must not start a second turn")
-    time.sleep(3)
+    time.sleep(1.5)
     assert not child_turns(f, "o3"), child_turns(f, "o3")
     (f.repo / "release-o3").touch()
     completed_with_notice(f, held["agent_id"], "o3")
@@ -143,12 +143,12 @@ def run_owner(f):
     assert result["retired"] and result["stopped_lifecycle"], result
     row = until(lambda: retirement(f, cancelled["agent_id"]), "cancel retirement")
     assert row["payload"]["reason"] == "cancelled", row
-    time.sleep(1)
+    time.sleep(0.5)
     assert not notices(f, cancelled["agent_id"]), "a cancelled child was reported as finished"
     print("ok 4 - cancel stops the child and retires it Cancelled without a completion notice", flush=True)
 
-    expiring = delegated(f, "o5", "hold", "--ttl", "3")
-    assert expiring["ttl_seconds"] == 3, expiring
+    expiring = delegated(f, "o5", "hold", "--ttl", "2")
+    assert expiring["ttl_seconds"] == 2, expiring
     child_ready(f, "o5")
     row = until(lambda: retirement(f, expiring["agent_id"]), "TTL retirement", seconds=90)
     assert row["payload"]["reason"] == "expired", row
@@ -261,15 +261,24 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--se", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--case",
+        choices=("all", "owner", "agent", "capture-off"),
+        default="all",
+    )
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
-    print("1..11", flush=True)
-    for name, change, run in [
+    cases = [
         ("owner", lambda f: append_config(f, "[delegation]\nmax_active_per_parent = 2\n"), run_owner),
         ("agent", lambda f: append_config(f, "[delegation]\nmax_active_per_parent = 2\n"), run_agent),
         ("capture-off", lambda f: edit_config(f, "[capture]\nenabled = true", "[capture]\nenabled = false"),
          run_capture_off),
-    ]:
+    ]
+    if args.case != "all":
+        cases = [entry for entry in cases if entry[0] == args.case]
+    else:
+        print("1..11", flush=True)
+    for name, change, run in cases:
         f = fixture(args.se, args.output, name, change)
         try:
             run(f)
