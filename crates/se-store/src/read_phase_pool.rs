@@ -93,7 +93,10 @@ impl ReadPhasePool {
                 db
             }
         };
-        let mut phase = reader.read_phase_on(slot, db)?;
+        // A moved or deleted database reports custody first, as a cold checkout does.
+        let mut phase = reader
+            .read_phase_on(slot, db)
+            .map_err(|error| identity.validate(&reader.path).err().unwrap_or(error))?;
         // Every checkout proves custody after SQLite established its snapshot.
         identity.validate(&reader.path)?;
         phase.recycle = Some(Recycle { pool: self.clone() });
@@ -133,8 +136,7 @@ impl ReadPhasePool {
     }
 }
 impl Recycle {
-    /// A retained connection is revalidated after its next snapshot, before
-    /// any of its reads are used, so returning it needs no native check.
+    /// The next checkout revalidates a retained connection after its snapshot.
     pub(crate) fn release(self, db: Connection) -> StoreResult<()> {
         let mut state = self.pool.state()?;
         if !state.closed && state.idle.len() < self.pool.0.reader.slots.capacity() {
