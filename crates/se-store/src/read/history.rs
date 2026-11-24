@@ -10,21 +10,114 @@ pub(super) struct HistoryStream {
     pub params: Vec<Value>,
     exact_session: Option<SessionId>,
 }
+struct HistoryWindow {
+    scope: Vec<u8>,
+    binding: String,
+    high: u64,
+    after: u64,
+    upper_op: &'static str,
+    upper: u64,
+}
+
 impl SqliteSnapshot {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) fn history_stream(
         &self,
         query: &HistoryQuery,
         budget: &ReadBudget,
         search: Option<&str>,
     ) -> StoreResult<HistoryStream> {
-        let s = scope_key(&self.db, &self.scope.admission.scope, false)?;
+        let win = self.history_window(query, budget, search)?;
+        let p = match &self.scope.admission.scope {
+            Scope::Registry => None,
+            _ => Some(self.project_bytes()?),
+        };
+        let exact_session = query.session.as_ref().filter(|_| {
+            !query.kinds.is_empty() && query.kinds.iter().all(|k| *k == EventKind::SessionTurn)
+        });
+        let mut sql = if exact_session.is_some() {
+            format!(
+                "SELECT e.entity_revision,e.seq,e.seq FROM turn_data t INDEXED BY turn_data_session_seq JOIN events e ON e.seq=t.event_seq WHERE t.project_id IS ? AND t.event_seq>? AND t.event_seq{}?",
+                win.upper_op
+            )
+        } else {
+            format!(
+                "SELECT e.entity_revision,e.seq,e.seq FROM events e WHERE e.project_id IS ? AND e.seq>? AND e.seq{}? AND e.kind NOT IN ('runtime.owner','runtime.handover')",
+                win.upper_op
+            )
+        };
+        let mut params = vec![
+            p.map(Value::Blob).unwrap_or(Value::Null),
+            Value::Integer(win.after as i64),
+            Value::Integer(win.upper as i64),
+        ];
+        if let Some(agent) = &query.agent {
+            self.append_history_agent_filter(agent, &win, &mut sql, &mut params)?;
+        }
+        if let Some(session) = &query.session {
+            let k = key(&self.db, "session", session.as_str(), &win.scope, false)?;
+            sql.push_str(if exact_session.is_some() {
+                " AND t.session_id=?"
+            } else {
+                " AND e.session_id=?"
+            });
+            params.push(Value::Blob(k));
+        }
+        if let Visibility::SelfOnly(agent) = &self.scope.visibility {
+            let a = self.agent_bytes(agent)?;
+            let mail = if self.info.schema_version >= 3 {
+                "message_deliveries"
+            } else {
+                "messages"
+            };
+            let upper_op = win.upper_op;
+            sql.push_str(&format!(" AND (e.actor_id=?
+                OR EXISTS(SELECT 1 FROM {mail} d WHERE d.sent_seq=e.seq AND d.project_id=? AND d.recipient_id=? AND d.sent_seq>? AND d.sent_seq{upper_op}?)
+                OR EXISTS(SELECT 1 FROM turn_data d WHERE d.event_seq=e.seq AND d.project_id=? AND d.agent_id=? AND d.event_seq>? AND d.event_seq{upper_op}?)
+                OR EXISTS(SELECT 1 FROM process_data d WHERE d.event_seq=e.seq AND d.principal_id=?))"));
+            let project = self.project_bytes()?;
+            params.extend([
+                Value::Blob(a.clone()),
+                Value::Blob(project.clone()),
+                Value::Blob(a.clone()),
+                Value::Integer(win.after as i64),
+                Value::Integer(win.upper as i64),
+                Value::Blob(project),
+                Value::Blob(a.clone()),
+                Value::Integer(win.after as i64),
+                Value::Integer(win.upper as i64),
+                Value::Blob(a),
+            ]);
+        }
+        append_history_kind_filters(query, exact_session.is_some(), &mut sql, &mut params);
+        sql.push_str(if exact_session.is_some() {
+            " ORDER BY t.event_seq"
+        } else {
+            " ORDER BY e.seq"
+        });
+        if query.direction == HistoryDirection::NewestFirst {
+            sql.push_str(" DESC");
+        }
+        sql.push_str(" LIMIT ?");
+        Ok(HistoryStream {
+            binding: win.binding,
+            high: win.high,
+            after: win.after,
+            sql,
+            params,
+            exact_session: exact_session.cloned(),
+        })
+    }
+
+    fn history_window(
+        &self,
+        query: &HistoryQuery,
+        budget: &ReadBudget,
+        search: Option<&str>,
+    ) -> StoreResult<HistoryWindow> {
+        let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let mut binding = format!(
             "history:{}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}",
-            codec::encode(&s)?,
+            codec::encode(&scope)?,
             self.scope.admission.actor,
             query.agent,
             query.session,
@@ -35,7 +128,7 @@ impl SqliteSnapshot {
         if let Some(text) = search {
             binding.push_str(&format!(":search:{}", codec::encode(&text)?));
         }
-        let (h, cursor_last) = self.window(budget, &binding, false)?;
+        let (high, cursor_last) = self.window(budget, &binding, false)?;
         // A newest-first cursor carries the page frontier (its oldest
         // returned event); `since` stays the shared exclusive floor.
         let frontier = (query.direction == HistoryDirection::NewestFirst
@@ -51,7 +144,7 @@ impl SqliteSnapshot {
             }
             after = after.max(position.sequence());
         }
-        if after > h {
+        if after > high {
             return Err(fail(
                 StoreErrorCode::CursorInvalid,
                 "history start is beyond snapshot",
@@ -65,148 +158,60 @@ impl SqliteSnapshot {
                 .map(StorePosition::sequence)
                 .unwrap_or(0);
         }
-        let p = match &self.scope.admission.scope {
-            Scope::Registry => None,
-            _ => Some(self.project_bytes()?),
-        };
-        let exact_session = query.session.as_ref().filter(|_| {
-            !query.kinds.is_empty() && query.kinds.iter().all(|k| *k == EventKind::SessionTurn)
-        });
         // Newest-first resumes strictly below the cursor frontier; every other
         // read includes the snapshot high.
         let (upper_op, upper) = match frontier {
             Some(frontier) => ("<", frontier),
-            None => ("<=", h),
+            None => ("<=", high),
         };
-        let mut sql = if exact_session.is_some() {
-            format!(
-                "SELECT e.entity_revision,e.seq,e.seq FROM turn_data t INDEXED BY turn_data_session_seq JOIN events e ON e.seq=t.event_seq WHERE t.project_id IS ? AND t.event_seq>? AND t.event_seq{upper_op}?"
-            )
-        } else {
-            format!(
-                "SELECT e.entity_revision,e.seq,e.seq FROM events e WHERE e.project_id IS ? AND e.seq>? AND e.seq{upper_op}?"
-            )
-        };
-        if exact_session.is_none() {
-            sql.push_str(" AND e.kind NOT IN ('runtime.owner','runtime.handover')");
-        }
-        let mut params = vec![
-            p.map(rusqlite::types::Value::Blob)
-                .unwrap_or(rusqlite::types::Value::Null),
-            rusqlite::types::Value::Integer(after as i64),
-            rusqlite::types::Value::Integer(upper as i64),
-        ];
-        if let Some(agent) = &query.agent {
-            let a = self.agent_bytes(agent)?;
-            let project = self.project_bytes()?;
-            let (mail, recipient_index) = if self.info.schema_version >= 3 {
-                ("message_deliveries", "mail_recipient_seq")
-            } else {
-                ("messages", "messages_recipient_seq")
-            };
-            // Seek the agent's indexed streams before applying the caller's
-            // visibility below. A correlated OR would visit every project event
-            // to find even an empty agent history. UNION also deduplicates mail
-            // the agent sent to itself and shared-work deliveries.
-            sql.push_str(&format!(" AND e.seq IN (
-                SELECT seq FROM events INDEXED BY events_actor_seq WHERE project_id=? AND actor_id=? AND seq>? AND seq{upper_op}?
-                UNION SELECT sent_seq FROM {mail} INDEXED BY {recipient_index} WHERE project_id=? AND recipient_id=? AND sent_seq>? AND sent_seq{upper_op}?
-                UNION SELECT event_seq FROM turn_data INDEXED BY turn_data_agent_seq WHERE project_id=? AND agent_id=? AND event_seq>? AND event_seq{upper_op}?
-                UNION SELECT event_seq FROM process_data WHERE principal_id=? AND event_seq>? AND event_seq{upper_op}?)"));
-            for _ in 0..3 {
-                params.extend([
-                    Value::Blob(project.clone()),
-                    Value::Blob(a.clone()),
-                    Value::Integer(after as i64),
-                    Value::Integer(upper as i64),
-                ]);
-            }
-            params.extend([
-                Value::Blob(a),
-                Value::Integer(after as i64),
-                Value::Integer(upper as i64),
-            ]);
-        }
-        if let Some(session) = &query.session {
-            let k = key(&self.db, "session", session.as_str(), &s, false)?;
-            sql.push_str(if exact_session.is_some() {
-                " AND t.session_id=?"
-            } else {
-                " AND e.session_id=?"
-            });
-            params.push(rusqlite::types::Value::Blob(k));
-        }
-        if let Visibility::SelfOnly(agent) = &self.scope.visibility {
-            let a = self.agent_bytes(agent)?;
-            let mail = if self.info.schema_version >= 3 {
-                "message_deliveries"
-            } else {
-                "messages"
-            };
-            sql.push_str(&format!(" AND (e.actor_id=?
-                OR EXISTS(SELECT 1 FROM {mail} d WHERE d.sent_seq=e.seq AND d.project_id=? AND d.recipient_id=? AND d.sent_seq>? AND d.sent_seq{upper_op}?)
-                OR EXISTS(SELECT 1 FROM turn_data d WHERE d.event_seq=e.seq AND d.project_id=? AND d.agent_id=? AND d.event_seq>? AND d.event_seq{upper_op}?)
-                OR EXISTS(SELECT 1 FROM process_data d WHERE d.event_seq=e.seq AND d.principal_id=?))"));
-            params.extend([
-                rusqlite::types::Value::Blob(a.clone()),
-                rusqlite::types::Value::Blob(self.project_bytes()?),
-                rusqlite::types::Value::Blob(a.clone()),
-                rusqlite::types::Value::Integer(after as i64),
-                rusqlite::types::Value::Integer(upper as i64),
-                rusqlite::types::Value::Blob(self.project_bytes()?),
-                rusqlite::types::Value::Blob(a.clone()),
-                rusqlite::types::Value::Integer(after as i64),
-                rusqlite::types::Value::Integer(upper as i64),
-                rusqlite::types::Value::Blob(a),
-            ]);
-        }
-        match query.transcript {
-            TranscriptFilter::All => {},
-            TranscriptFilter::Chat => sql.push_str(" AND NOT EXISTS(SELECT 1 FROM turn_data t WHERE t.event_seq=e.seq AND t.role='system' AND t.vendor_ref LIKE 'se.notice.v1/%')"),
-            TranscriptFilter::Metadata => sql.push_str(" AND (e.kind<>'session.turn' OR EXISTS(SELECT 1 FROM turn_data t WHERE t.event_seq=e.seq AND t.role='system' AND t.vendor_ref LIKE 'se.notice.v1/%'))"),
-        }
-        if !query.kinds.is_empty() && exact_session.is_none() {
-            sql.push_str(" AND e.kind IN (");
-            sql.push_str(&vec!["?"; query.kinds.len()].join(","));
-            sql.push(')');
-            for k in &query.kinds {
-                params.push(rusqlite::types::Value::Text(query::kind_name(*k).into()));
-            }
-        }
-        if exact_session.is_some() && !query.families.is_empty() {
-            if !query.families.contains(&HistoryFamily::Turns) {
-                sql.push_str(" AND 0");
-            }
-        } else if !query.families.is_empty() {
-            let mut prefixes = Vec::new();
-            for f in &query.families {
-                prefixes.extend(family_prefixes(*f))
-            }
-            sql.push_str(" AND (");
-            sql.push_str(&vec!["e.kind LIKE ?"; prefixes.len()].join(" OR "));
-            sql.push(')');
-            for prefix in prefixes {
-                params.push(rusqlite::types::Value::Text(format!("{prefix}%")));
-            }
-        }
-
-        sql.push_str(if exact_session.is_some() {
-            " ORDER BY t.event_seq"
-        } else {
-            " ORDER BY e.seq"
-        });
-        if query.direction == HistoryDirection::NewestFirst {
-            sql.push_str(" DESC");
-        }
-        sql.push_str(" LIMIT ?");
-        Ok(HistoryStream {
+        Ok(HistoryWindow {
+            scope,
             binding,
-            high: h,
+            high,
             after,
-            sql,
-            params,
-            exact_session: exact_session.cloned(),
+            upper_op,
+            upper,
         })
+    }
+
+    fn append_history_agent_filter(
+        &self,
+        agent: &AgentId,
+        win: &HistoryWindow,
+        sql: &mut String,
+        params: &mut Vec<Value>,
+    ) -> StoreResult<()> {
+        let a = self.agent_bytes(agent)?;
+        let project = self.project_bytes()?;
+        let (mail, recipient_index) = if self.info.schema_version >= 3 {
+            ("message_deliveries", "mail_recipient_seq")
+        } else {
+            ("messages", "messages_recipient_seq")
+        };
+        let upper_op = win.upper_op;
+        // Seek the agent's indexed streams before applying the caller's
+        // visibility below. A correlated OR would visit every project event
+        // to find even an empty agent history. UNION also deduplicates mail
+        // the agent sent to itself and shared-work deliveries.
+        sql.push_str(&format!(" AND e.seq IN (
+            SELECT seq FROM events INDEXED BY events_actor_seq WHERE project_id=? AND actor_id=? AND seq>? AND seq{upper_op}?
+            UNION SELECT sent_seq FROM {mail} INDEXED BY {recipient_index} WHERE project_id=? AND recipient_id=? AND sent_seq>? AND sent_seq{upper_op}?
+            UNION SELECT event_seq FROM turn_data INDEXED BY turn_data_agent_seq WHERE project_id=? AND agent_id=? AND event_seq>? AND event_seq{upper_op}?
+            UNION SELECT event_seq FROM process_data WHERE principal_id=? AND event_seq>? AND event_seq{upper_op}?)"));
+        for _ in 0..3 {
+            params.extend([
+                Value::Blob(project.clone()),
+                Value::Blob(a.clone()),
+                Value::Integer(win.after as i64),
+                Value::Integer(win.upper as i64),
+            ]);
+        }
+        params.extend([
+            Value::Blob(a),
+            Value::Integer(win.after as i64),
+            Value::Integer(win.upper as i64),
+        ]);
+        Ok(())
     }
     pub(super) fn history_event(
         &self,
@@ -237,49 +242,61 @@ impl SqliteSnapshot {
         let mut params = stream.params.clone();
         params.push(Value::Integer(i64::from(budget.page.limit.get()) + 1));
         let rows = self.query_seqs_before(&stream.sql, params, deadline)?;
-        let mut items = Vec::new();
-        let mut bytes = 0;
-        let mut last = stream.after;
-        let mut stop = StopReason::Exhausted;
-        for (_, seq, _) in rows {
-            query::check_deadline(deadline)?;
-            if items.len() == budget.page.limit.get() as usize {
-                stop = StopReason::ItemLimit;
-                break;
-            }
-            let event = self.history_event(seq, &stream)?;
-            let cost = query::event_size(&event)?;
-            if bytes + cost > u64::from(budget.page.max_bytes.get()) {
-                if items.is_empty() {
-                    return Err(query::budget_failure(
-                        &budget,
-                        cost,
-                        "first event exceeds history bytes",
-                    ));
-                }
-                stop = StopReason::ByteLimit;
-                break;
-            }
-            bytes += cost;
-            last = seq as u64;
-            items.push(event);
-        }
-        query::check_deadline(deadline)?;
-        self.page(
-            items,
-            &budget,
-            &stream.binding,
-            page::PageFacts {
+        self.collect_page(
+            rows,
+            page::PageCollect {
+                budget: &budget,
+                binding: &stream.binding,
                 h: stream.high,
                 after: stream.after,
-                last,
-                bytes,
-                stop,
-                remaining: None,
+                deadline,
+                oversize_cause: "first event exceeds history bytes",
+            },
+            |(_, seq, _)| {
+                let event = self.history_event(seq, &stream)?;
+                let cost = query::event_size(&event)?;
+                Ok((event, cost, seq as u64))
             },
         )
     }
 }
+fn append_history_kind_filters(
+    query: &HistoryQuery,
+    exact_session: bool,
+    sql: &mut String,
+    params: &mut Vec<Value>,
+) {
+    match query.transcript {
+        TranscriptFilter::All => {}
+        TranscriptFilter::Chat => sql.push_str(" AND NOT EXISTS(SELECT 1 FROM turn_data t WHERE t.event_seq=e.seq AND t.role='system' AND t.vendor_ref LIKE 'se.notice.v1/%')"),
+        TranscriptFilter::Metadata => sql.push_str(" AND (e.kind<>'session.turn' OR EXISTS(SELECT 1 FROM turn_data t WHERE t.event_seq=e.seq AND t.role='system' AND t.vendor_ref LIKE 'se.notice.v1/%'))"),
+    }
+    if !query.kinds.is_empty() && !exact_session {
+        sql.push_str(" AND e.kind IN (");
+        sql.push_str(&vec!["?"; query.kinds.len()].join(","));
+        sql.push(')');
+        for k in &query.kinds {
+            params.push(Value::Text(query::kind_name(*k).into()));
+        }
+    }
+    if exact_session && !query.families.is_empty() {
+        if !query.families.contains(&HistoryFamily::Turns) {
+            sql.push_str(" AND 0");
+        }
+    } else if !query.families.is_empty() {
+        let mut prefixes = Vec::new();
+        for f in &query.families {
+            prefixes.extend(family_prefixes(*f));
+        }
+        sql.push_str(" AND (");
+        sql.push_str(&vec!["e.kind LIKE ?"; prefixes.len()].join(" OR "));
+        sql.push(')');
+        for prefix in prefixes {
+            params.push(Value::Text(format!("{prefix}%")));
+        }
+    }
+}
+
 fn family_prefixes(f: HistoryFamily) -> Vec<&'static str> {
     match f {
         HistoryFamily::Identity => vec!["project.", "principal.", "profile.", "grant.", "alias."],
@@ -303,20 +320,8 @@ fn family_prefixes(f: HistoryFamily) -> Vec<&'static str> {
 }
 
 pub(super) fn normalize(query: &mut HistoryQuery) {
-    let mut kinds = Vec::new();
-    for kind in query.kinds.drain(..) {
-        if !kinds.contains(&kind) {
-            kinds.push(kind);
-        }
-    }
-    kinds.sort_by_key(|kind| query::kind_name(*kind));
-    query.kinds = kinds;
-    let mut families = Vec::new();
-    for family in query.families.drain(..) {
-        if !families.contains(&family) {
-            families.push(family);
-        }
-    }
-    families.sort_by_key(|family| format!("{family:?}"));
-    query.families = families;
+    query.kinds.sort_by_key(|kind| query::kind_name(*kind));
+    query.kinds.dedup();
+    query.families.sort_by_key(|family| format!("{family:?}"));
+    query.families.dedup();
 }

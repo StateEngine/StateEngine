@@ -101,47 +101,31 @@ impl SqliteSnapshot {
             i64::from(budget.page.limit.get()) + 1,
         ));
         let rows = self.query_seqs_before(&sql, params, deadline)?;
-        let mut items = Vec::new();
-        let mut bytes = 0;
-        let mut last = after;
-        let mut stop = StopReason::Exhausted;
-        for (revision, seq, _) in rows {
-            query::check_deadline(deadline)?;
-            if items.len() == budget.page.limit.get() as usize {
-                stop = StopReason::ItemLimit;
-                break;
-            }
-            let event = self.record(seq)?;
-            let cost = query::event_size(&event)?;
-            if bytes + cost > u64::from(budget.page.max_bytes.get()) {
-                if items.is_empty() {
-                    return Err(query::budget_failure(
-                        &budget,
-                        cost,
-                        "first import checkpoint exceeds bytes",
+        let (items, bytes, last, stop) = page::collect_page_rows(
+            rows,
+            &budget,
+            after,
+            deadline,
+            "first import checkpoint exceeds bytes",
+            |(revision, seq, _)| {
+                let event = self.record(seq)?;
+                let cost = query::event_size(&event)?;
+                let EventBody::ImportProgress { mut checkpoint, .. } = event.body else {
+                    return Err(fail(
+                        StoreErrorCode::ProjectionInconsistent,
+                        "import checkpoint head has another kind",
+                    ));
+                };
+                if checkpoint.import != id {
+                    return Err(fail(
+                        StoreErrorCode::ProjectionInconsistent,
+                        "import checkpoint head has another run",
                     ));
                 }
-                stop = StopReason::ByteLimit;
-                break;
-            }
-            let EventBody::ImportProgress { mut checkpoint, .. } = event.body else {
-                return Err(fail(
-                    StoreErrorCode::ProjectionInconsistent,
-                    "import checkpoint head has another kind",
-                ));
-            };
-            if checkpoint.import != id {
-                return Err(fail(
-                    StoreErrorCode::ProjectionInconsistent,
-                    "import checkpoint head has another run",
-                ));
-            }
-            checkpoint.expected = Expected::Revision(codec::revision(revision)?);
-            items.push(checkpoint);
-            bytes += cost;
-            last = seq as u64;
-        }
-        query::check_deadline(deadline)?;
+                checkpoint.expected = Expected::Revision(codec::revision(revision)?);
+                Ok((checkpoint, cost, seq as u64))
+            },
+        )?;
         self.page(
             items,
             &budget,
