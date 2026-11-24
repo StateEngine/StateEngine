@@ -106,7 +106,7 @@ impl LaunchCoordinator {
         if work.meta.capture {
             self.capture_progress(work, deadline).await?;
         }
-        let identity = super::super::capture::session_identity(work);
+        let identity = work.session_identity();
         let conversation = se_core::scope::require_present(
             work.meta.conversation.clone(),
             "provider recovery conversation",

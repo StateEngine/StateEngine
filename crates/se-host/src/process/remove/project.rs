@@ -122,12 +122,6 @@ impl LaunchCoordinator {
                     if let Some(event) = &stop.event_id {
                         witnesses.push(event.clone());
                     }
-                    let witness = RemovalWitness {
-                        state: stop.witness.state,
-                        method: stop.witness.method,
-                        observed_at: stop.witness.observed_at,
-                        detail: stop.witness.detail,
-                    };
                     if let (Some(session), Some(process)) =
                         (&stop.target.session_id, &stop.target.process)
                     {
@@ -141,7 +135,12 @@ impl LaunchCoordinator {
                         row.processes_stopped.push(RemovedProcess {
                             lifecycle_id: lifecycle,
                             process: process.clone(),
-                            witness: witness.clone(),
+                            witness: RemovalWitness {
+                                state: stop.witness.state.clone(),
+                                method: stop.witness.method.clone(),
+                                observed_at: stop.witness.observed_at.clone(),
+                                detail: stop.witness.detail.clone(),
+                            },
                         });
                     }
                     if let Some(session) = &stop.target.session_id {
@@ -161,7 +160,12 @@ impl LaunchCoordinator {
                                     "stopped agent has no recorded prior process state",
                                 )
                             })?,
-                        witness,
+                        witness: RemovalWitness {
+                            state: stop.witness.state,
+                            method: stop.witness.method,
+                            observed_at: stop.witness.observed_at,
+                            detail: stop.witness.detail,
+                        },
                         process: stop.target.process,
                     });
                 }
@@ -212,8 +216,20 @@ impl LaunchCoordinator {
                     ));
                 }
             };
-            if state == IntegrationState::Removed || input.keep_integrations {
-                if input.keep_integrations && state == IntegrationState::Installed {
+            if state == IntegrationState::Removed {
+                row.integrations.push(RemovedIntegration {
+                    path,
+                    entry,
+                    action: "absent".into(),
+                    witness: unobserved(
+                        "not-applicable",
+                        "This integration already has a removed record.",
+                    ),
+                });
+                continue;
+            }
+            if input.keep_integrations {
+                if state == IntegrationState::Installed {
                     let key = input.idempotency_key.clone();
                     let head = integration.clone();
                     let receipt = self
@@ -224,19 +240,14 @@ impl LaunchCoordinator {
                         .await?;
                     witnesses.push(receipt.primary_event);
                 }
-                let (action, note) = if state == IntegrationState::Removed {
-                    ("absent", "This integration already has a removed record.")
-                } else {
-                    (
-                        "kept-by-flag",
-                        "The owner explicitly requested preserving this integration.",
-                    )
-                };
                 row.integrations.push(RemovedIntegration {
                     path,
                     entry,
-                    action: action.into(),
-                    witness: unobserved("not-applicable", note),
+                    action: "kept-by-flag".into(),
+                    witness: unobserved(
+                        "not-applicable",
+                        "The owner explicitly requested preserving this integration.",
+                    ),
                 });
                 continue;
             }
@@ -259,7 +270,9 @@ impl LaunchCoordinator {
                 .store
                 .read(admission.clone(), deadline, move |cx| {
                     se_core::scope::require_present(
-                        cx.read.effect(effect).map_err(store_error)?,
+                        cx.read
+                            .effect(effect)
+                            .map_err(|e| se_core::store_error::store_error(&e))?,
                         "integration intention",
                         "Retain the original removal key.",
                     )
@@ -339,7 +352,9 @@ impl LaunchCoordinator {
             .store
             .read(admission.clone(), deadline, move |cx| {
                 se_core::scope::require_present(
-                    cx.read.project(id).map_err(store_error)?,
+                    cx.read
+                        .project(id)
+                        .map_err(|e| se_core::store_error::store_error(&e))?,
                     "removal registration",
                     "Keep the original removal key.",
                 )
@@ -371,7 +386,9 @@ impl LaunchCoordinator {
             .store
             .read(admission, deadline, move |cx| {
                 let event = se_core::scope::require_present(
-                    cx.read.event(event).map_err(store_error)?,
+                    cx.read
+                        .event(event)
+                        .map_err(|e| se_core::store_error::store_error(&e))?,
                     "removal receipt",
                     se_core::scope::COMMITTED_READ_RECOVERY,
                 )?;

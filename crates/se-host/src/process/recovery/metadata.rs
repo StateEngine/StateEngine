@@ -28,17 +28,26 @@ fn project_recovery_info<S: Snapshot>(
     Ok((owner, project_name))
 }
 
-type SessionMeta = (
-    Read<se_types::ProviderSessionId>,
-    bool,
-    se_store::Provider,
-    bool,
-);
+enum SessionLifecycleState {
+    Prepared,
+    Active,
+    Ended,
+    Revoked,
+}
+
+struct SessionRecovery {
+    conversation: Read<se_types::ProviderSessionId>,
+    capture: bool,
+    provider: se_store::Provider,
+    attended: bool,
+    state: SessionLifecycleState,
+}
+
 fn session_recovery_info<S: Snapshot>(
     session: &se_types::SessionId,
     agent: &se_types::AgentId,
     read: &mut S,
-) -> Result<(SessionMeta, bool, bool, bool)> {
+) -> Result<SessionRecovery> {
     let session_head = se_core::scope::require_present(
         read.session(session.clone()).map_err(store_error)?,
         "recovery session",
@@ -48,7 +57,7 @@ fn session_recovery_info<S: Snapshot>(
         .original
         .as_deref()
         .unwrap_or(&session_head.current);
-    let meta = match &prepared.body {
+    let (conversation, capture, provider, attended) = match &prepared.body {
         EventBody::SessionPrepared {
             session: found,
             agent: principal,
@@ -69,16 +78,19 @@ fn session_recovery_info<S: Snapshot>(
             ));
         }
     };
-    let active = matches!(
-        session_head.current.body,
-        EventBody::SessionActivated { .. }
-    );
-    let activated = active || matches!(session_head.current.body, EventBody::SessionEnded { .. });
-    let retired = matches!(
-        session_head.current.body,
-        EventBody::SessionEnded { .. } | EventBody::SessionRevoked { .. }
-    );
-    Ok((meta, active, retired, activated))
+    let state = match session_head.current.body {
+        EventBody::SessionActivated { .. } => SessionLifecycleState::Active,
+        EventBody::SessionEnded { .. } => SessionLifecycleState::Ended,
+        EventBody::SessionRevoked { .. } => SessionLifecycleState::Revoked,
+        _ => SessionLifecycleState::Prepared,
+    };
+    Ok(SessionRecovery {
+        conversation,
+        capture,
+        provider,
+        attended,
+        state,
+    })
 }
 
 impl LaunchCoordinator {
@@ -129,8 +141,7 @@ impl LaunchCoordinator {
                         ..
                     } if spec.one_shot
                 );
-                let ((conversation, capture, provider, attended), active, retired, activated) =
-                    session_recovery_info(&session, &agent, cx.read)?;
+                let session_info = session_recovery_info(&session, &agent, cx.read)?;
                 let model = match control.profile {
                     Read::Present { value } => match value.current.body {
                         EventBody::ProfileSaved { profile, .. } => profile.model,
@@ -141,6 +152,12 @@ impl LaunchCoordinator {
                 // Recovery phase keys are bound to the original session rather
                 // than inventing the disconnected caller's request identity.
                 let request = format!("recovered-{session}").parse()?;
+                let (active, retired, activated) = match session_info.state {
+                    SessionLifecycleState::Active => (true, false, true),
+                    SessionLifecycleState::Ended => (false, true, true),
+                    SessionLifecycleState::Revoked => (false, true, false),
+                    SessionLifecycleState::Prepared => (false, false, false),
+                };
                 Ok((
                     LifecycleMetadata {
                         project: se_types::Named {
@@ -152,11 +169,11 @@ impl LaunchCoordinator {
                         session,
                         lifecycle,
                         request,
-                        conversation,
+                        conversation: session_info.conversation,
                         model,
-                        capture,
-                        provider,
-                        attended,
+                        capture: session_info.capture,
+                        provider: session_info.provider,
+                        attended: session_info.attended,
                         ephemeral_one_shot,
                     },
                     active,

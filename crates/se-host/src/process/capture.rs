@@ -4,13 +4,6 @@ use super::{owned::Work, *};
 use crate::client::lease::Deadline;
 use se_types::{Read, Result};
 mod recovery;
-pub(super) fn session_identity(work: &Work) -> crate::SessionIdentity {
-    crate::SessionIdentity {
-        project: work.meta.project.id.clone(),
-        agent: work.meta.agent.id.clone(),
-        session: work.meta.session.clone(),
-    }
-}
 impl LaunchCoordinator {
     pub(super) fn session_admission(&self, work: &Work) -> se_store::Admission {
         se_store::Admission {
@@ -85,7 +78,7 @@ impl LaunchCoordinator {
         work.transcript = None;
         self.capture
             .retire(
-                session_identity(work),
+                work.session_identity(),
                 work.capture_flushed || !work.activated || !work.meta.capture,
                 deadline,
             )
@@ -150,7 +143,7 @@ impl LaunchCoordinator {
         if let Some(transcript) = work.transcript.clone() {
             return Ok(transcript);
         }
-        let identity = session_identity(work);
+        let identity = work.session_identity();
         let restored = if work.native_already_reconciled || work.session_retired {
             capture.recover_binding(identity, deadline).await?
         } else {
@@ -257,6 +250,9 @@ impl LaunchCoordinator {
         if work.meta.provider == se_store::Provider::Codex {
             self.acknowledge_codex_capture(work, deadline).await?;
         }
+        // An accepted final write can outlive its hook and precede the failure
+        // diagnostic. Replaying that write leaves the cursor unchanged, so
+        // acknowledge only a fresh pinned EOF observation of that failure.
         if !work.session_retired
             && !work.native_already_reconciled
             && let Some(observed) = capture
