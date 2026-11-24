@@ -1,5 +1,7 @@
 //! The real foreground CLI owns its lifetime and closes after output failure.
 #![cfg(any(target_os = "linux", windows))]
+#[path = "../../test-support/home_reaper.rs"]
+mod home_reaper;
 #[path = "../../test-support/provider_home.rs"]
 mod provider_home;
 use std::{
@@ -18,6 +20,8 @@ struct Fixture {
     image: PathBuf,
     child: Option<Child>,
     retain: bool,
+    // The foreground host does not die with a killed test; this stops it then.
+    reaper: Option<home_reaper::HomeReaper>,
 }
 impl Fixture {
     fn new() -> Check<Self> {
@@ -37,6 +41,7 @@ impl Fixture {
             image,
             child: None,
             retain: false,
+            reaper: None,
         };
         let repo = f.root_path()?.join("repo");
         fs::create_dir(&repo)?;
@@ -80,6 +85,9 @@ impl Fixture {
         Ok(self.command().args(args).output_executable()?)
     }
     fn spawn(&mut self) -> Check {
+        let mut down = self.command();
+        down.arg("down");
+        self.reaper = Some(home_reaper::HomeReaper::arm(&down, &self.home, false)?);
         let diagnostic = fs::File::create(self.root_path()?.join("foreground.stderr"))?;
         self.child = Some(
             self.command()

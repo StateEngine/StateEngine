@@ -16,6 +16,10 @@ pub struct RunningHost {
     endpoint: se_host::EndpointRecord,
     key: Secret,
     identity: se_proc::ProcessIdentity,
+    // Declared last: it disarms only after Drop has stopped the host. Windows
+    // fixtures own a foreground host, which carries its own reaper.
+    #[cfg(not(windows))]
+    _reaper: Option<crate::home_reaper::HomeReaper>,
 }
 struct StartupCleanup<'a> {
     image: &'a Path,
@@ -48,6 +52,14 @@ impl Drop for StartupCleanup<'_> {
 }
 impl RunningHost {
     pub fn start(image: &Path, home: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        // A killed test process runs neither guard below; the reaper stops the
+        // detached host then. It outlives the startup cleanup on failure.
+        #[cfg(not(windows))]
+        let reaper = crate::home_reaper::HomeReaper::arm(
+            command(image, home, true).arg("down"),
+            home,
+            false,
+        )?;
         let mut cleanup = StartupCleanup {
             image,
             home,
@@ -55,6 +67,15 @@ impl RunningHost {
         };
         let result = Self::start_observed(image, home);
         cleanup.armed = result.is_err();
+        // On failure the reaper must outlive `cleanup`, so it is only moved on success.
+        #[cfg(not(windows))]
+        let result = match result {
+            Ok(mut host) => {
+                host._reaper = Some(reaper);
+                Ok(host)
+            }
+            Err(error) => Err(error),
+        };
         result
     }
     fn start_observed(image: &Path, home: &Path) -> Result<Self, Box<dyn std::error::Error>> {
@@ -88,6 +109,8 @@ impl RunningHost {
             endpoint,
             key: Secret::new(std::fs::read(home.join("credential"))?)?,
             identity: observed.identity,
+            #[cfg(not(windows))]
+            _reaper: None,
         })
     }
     pub fn live(&self) -> Result<bool, Box<dyn std::error::Error>> {

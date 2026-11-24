@@ -2,13 +2,15 @@
 #![cfg(target_os = "linux")]
 #[path = "../../test-support/directory.rs"]
 mod directory;
+#[path = "../../test-support/home_reaper.rs"]
+mod home_reaper;
 #[path = "../../test-support/provider_home.rs"]
 mod provider_home;
 use std::{error::Error, os::unix::fs::PermissionsExt, path::Path, process::Command};
 
 type Check = Result<(), Box<dyn Error>>;
 
-fn run(root: &Path, repo: &Path, args: &[&str]) -> Result<serde_json::Value, Box<dyn Error>> {
+fn se(root: &Path, repo: &Path, args: &[&str]) -> Result<Command, Box<dyn Error>> {
     let path = std::env::var_os("PATH").ok_or("PATH unavailable")?;
     let mut command = Command::new(env!("CARGO_BIN_EXE_se"));
     command.env_clear().env("PATH", path);
@@ -20,14 +22,18 @@ fn run(root: &Path, repo: &Path, args: &[&str]) -> Result<serde_json::Value, Box
         &owner.join(".codex"),
         &owner.join(".claude"),
     );
-    let output = command
+    command
         .env("XDG_RUNTIME_DIR", root.join("runtime"))
         .current_dir(repo)
         .arg("--home")
         .arg(root.join("state"))
         .arg("--json")
-        .args(args)
-        .output()?;
+        .args(args);
+    Ok(command)
+}
+
+fn run(root: &Path, repo: &Path, args: &[&str]) -> Result<serde_json::Value, Box<dyn Error>> {
+    let output = se(root, repo, args)?.output()?;
     if !output.status.success() {
         return Err(format!(
             "command {args:?} failed: {}",
@@ -53,6 +59,9 @@ fn captain_designation_survives_restart_and_can_be_cleared() -> Check {
     if !git.success() {
         return Err("fixture repository initialization failed".into());
     }
+    // The explicit `down` below covers returns; this covers a killed test.
+    let reaper =
+        home_reaper::HomeReaper::arm(&se(&root, &repo, &["down"])?, &root.join("state"), true)?;
     let result = (|| -> Check {
         let repo_text = repo.to_str().ok_or("fixture path is not UTF-8")?;
         run(
@@ -103,6 +112,7 @@ fn captain_designation_survives_restart_and_can_be_cleared() -> Check {
         Ok(())
     })();
     let cleanup = run(&root, &repo, &["down"]);
+    drop(reaper);
     let result = match (result, cleanup) {
         (Ok(()), Ok(_)) => Ok(()),
         (Err(error), Ok(_)) => Err(error),

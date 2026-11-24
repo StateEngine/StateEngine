@@ -1,5 +1,7 @@
 //! Protects: an identity-free guest cannot inherit owner authority, and an
 //! invalid explicit capability cannot fall back to that guest.
+#[path = "../../test-support/home_reaper.rs"]
+mod home_reaper;
 #[path = "../../test-support/provider_home.rs"]
 mod provider_home;
 use std::{

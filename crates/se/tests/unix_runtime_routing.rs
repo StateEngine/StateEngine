@@ -1,5 +1,7 @@
 //! The busy-home comparison must use the same explicit XDG selector as bind.
 #![cfg(target_os = "linux")]
+#[path = "../../test-support/home_reaper.rs"]
+mod home_reaper;
 #[path = "../../test-support/provider_home.rs"]
 mod provider_home;
 use sha2::{Digest, Sha256};

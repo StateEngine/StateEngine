@@ -1,5 +1,7 @@
 //! A failed test observation must not orphan the real detached runtime it started.
 #![cfg(target_os = "linux")]
+#[path = "../../test-support/home_reaper.rs"]
+mod home_reaper;
 #[path = "../../test-support/provider_home.rs"]
 mod provider_home;
 use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};

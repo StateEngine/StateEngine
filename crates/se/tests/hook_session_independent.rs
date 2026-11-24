@@ -1,6 +1,10 @@
 //! Public CLI boundary: typed store setup is not a provider launch witness.
 //! Managed-host startup and exact process readback require Linux or Windows.
 #![cfg(any(target_os = "linux", windows))]
+#[path = "../../test-support/home_reaper.rs"]
+mod home_reaper;
+#[path = "../../test-support/host_guard.rs"]
+mod host_guard;
 #[path = "../../test-support/provider_home.rs"]
 mod provider_home;
 use se_store::*;
@@ -118,6 +122,10 @@ fn check_case(case: &str) -> Check {
         .as_str()
         .ok_or("agent id")?
         .parse()?;
+    // Later hook commands can auto-start a runtime again; stop it on any exit.
+    let mut down = command(&image, &f, &root);
+    down.arg("down");
+    let _host_guard = host_guard::HostGuard::arm(down, &f.options.state_directory, false)?;
     #[cfg(windows)]
     let host_child = foreground_host::ForegroundHost::start(
         command(&image, &f, &root),
