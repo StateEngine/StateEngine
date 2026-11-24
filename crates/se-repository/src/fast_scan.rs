@@ -9,7 +9,7 @@ use git2::{DiffOptions, Oid, Repository, Status};
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, DirEntry, File, Metadata},
-    io::Read,
+    io::{self, Read},
     path::Path,
 };
 
@@ -179,6 +179,12 @@ struct WalkContext<'a> {
     stat_checks: usize,
 }
 
+enum Step {
+    Continue,
+    Dirty,
+    Fallback,
+}
+
 fn walk_workdir(
     repository: &Repository,
     workdir: &Path,
@@ -201,34 +207,56 @@ fn walk_workdir(
     };
     let mut stack = vec![String::new()];
     while let Some(rel_dir) = stack.pop() {
-        if let Some(outcome) = scan_directory(&mut cx, &rel_dir, &mut stack)? {
-            return Ok(outcome);
+        match scan_directory(&mut cx, &rel_dir, &mut stack)? {
+            Step::Continue => {}
+            Step::Dirty => return Ok(Some(true)),
+            Step::Fallback => return Ok(None),
         }
     }
     if cx.visited_files != parsed.entries.len() {
-        return Ok(if config.ignorecase() {
-            None
-        } else {
-            Some(true)
-        });
+        if !config.ignorecase() {
+            return Ok(Some(true));
+        }
+        return Ok(any_tracked_dir_missing(workdir, &dir_index.tracked_dirs));
     }
     Ok(Some(false))
 }
 
-/// Returns `Ok(None)` to keep walking, `Ok(Some(Some(true)))` when dirty is
-/// proven, or `Ok(Some(None))` to bail out to `libgit2`.
+fn any_tracked_dir_missing(workdir: &Path, tracked_dirs: &HashSet<&str>) -> Option<bool> {
+    for dir in tracked_dirs {
+        if let Err(error) = fs::symlink_metadata(workdir.join(dir))
+            && error.kind() == io::ErrorKind::NotFound
+        {
+            return Some(true);
+        }
+    }
+    None
+}
+
+fn any_expected_file_missing(cx: &WalkContext<'_>, expected: &[(&str, usize)]) -> Step {
+    for &(_, idx) in expected {
+        let path = cx.parsed.path(cx.index_bytes, &cx.parsed.entries[idx]);
+        if let Err(error) = fs::symlink_metadata(cx.workdir.join(path))
+            && error.kind() == io::ErrorKind::NotFound
+        {
+            return Step::Dirty;
+        }
+    }
+    Step::Fallback
+}
+
 fn scan_directory(
     cx: &mut WalkContext<'_>,
     rel_dir: &str,
     stack: &mut Vec<String>,
-) -> Result<Option<Option<bool>>, String> {
+) -> Result<Step, String> {
     let abs_dir = if rel_dir.is_empty() {
         cx.workdir.to_path_buf()
     } else {
         cx.workdir.join(rel_dir)
     };
     let Ok(entries_iter) = fs::read_dir(&abs_dir) else {
-        return Ok(Some(None));
+        return Ok(Step::Fallback);
     };
     let expected = cx
         .dir_index
@@ -240,21 +268,21 @@ fn scan_directory(
 
     for dent in entries_iter {
         let Ok(dent) = dent else {
-            return Ok(Some(None));
+            return Ok(Step::Fallback);
         };
-        if let Some(outcome) = scan_entry(cx, rel_dir, &dent, expected, stack, &mut matched_in_dir)?
-        {
-            return Ok(Some(outcome));
+        match scan_entry(cx, rel_dir, &dent, expected, stack, &mut matched_in_dir)? {
+            Step::Continue => {}
+            other => return Ok(other),
         }
     }
     if matched_in_dir != expected.len() {
-        return Ok(Some(if cx.config.ignorecase() {
-            None
+        return Ok(if cx.config.ignorecase() {
+            any_expected_file_missing(cx, expected)
         } else {
-            Some(true)
-        }));
+            Step::Dirty
+        });
     }
-    Ok(None)
+    Ok(Step::Continue)
 }
 
 fn scan_entry(
@@ -264,20 +292,25 @@ fn scan_entry(
     expected: &[(&str, usize)],
     stack: &mut Vec<String>,
     matched_in_dir: &mut usize,
-) -> Result<Option<Option<bool>>, String> {
+) -> Result<Step, String> {
     let name_os = dent.file_name();
     let Some(name) = name_os.to_str() else {
-        return Ok(Some(None));
+        return Ok(Step::Fallback);
     };
+    // On macOS, HFS+/APFS may return NFD-decomposed Unicode names that differ
+    // byte-for-byte from NFC index entries when core.precomposeunicode applies.
+    if cfg!(target_os = "macos") && !name.is_ascii() {
+        return Ok(Step::Fallback);
+    }
     if rel_dir.is_empty() && is_git_dir_name(name, cx.config.ignorecase()) {
-        return Ok(None);
+        return Ok(Step::Continue);
     }
     let Ok(ft) = dent.file_type() else {
-        return Ok(Some(None));
+        return Ok(Step::Fallback);
     };
     if ft.is_dir() {
         if expected.binary_search_by_key(&name, |item| item.0).is_ok() {
-            return Ok(Some(None));
+            return Ok(Step::Fallback);
         }
         let child_rel = join_rel(rel_dir, name);
         if cx.dir_index.tracked_dirs.contains(child_rel.as_str()) {
@@ -285,13 +318,13 @@ fn scan_entry(
         } else if cx.config.untracked {
             return Ok(check_untracked_dir(cx, &child_rel));
         }
-        return Ok(None);
+        return Ok(Step::Continue);
     }
     if let Ok(pos) = expected.binary_search_by_key(&name, |item| item.0) {
         *matched_in_dir += 1;
         cx.visited_files += 1;
         if !ft.is_file() {
-            return Ok(Some(None));
+            return Ok(Step::Fallback);
         }
         return check_tracked_file(cx, dent, expected[pos].1);
     }
@@ -300,63 +333,63 @@ fn scan_entry(
             .iter()
             .any(|item| item.0.eq_ignore_ascii_case(name))
     {
-        return Ok(Some(None));
+        return Ok(Step::Fallback);
     }
     if cx.config.untracked {
         let child_rel = join_rel(rel_dir, name);
         return Ok(
             match cx.repository.status_should_ignore(Path::new(&child_rel)) {
-                Ok(true) => None,
-                Ok(false) => Some(Some(true)),
-                Err(_) => Some(None),
+                Ok(true) => Step::Continue,
+                Ok(false) => Step::Dirty,
+                Err(_) => Step::Fallback,
             },
         );
     }
-    Ok(None)
+    Ok(Step::Continue)
 }
 
 fn check_tracked_file(
     cx: &mut WalkContext<'_>,
     dent: &DirEntry,
     entry_idx: usize,
-) -> Result<Option<Option<bool>>, String> {
+) -> Result<Step, String> {
     let Ok(md) = dent.metadata() else {
-        return Ok(Some(None));
+        return Ok(Step::Fallback);
     };
     if is_reparse_or_dir(&md) {
-        return Ok(Some(None));
+        return Ok(Step::Fallback);
     }
     let entry = &cx.parsed.entries[entry_idx];
     if stat_matches(&md, entry, cx.index_mtime, cx.config) {
-        return Ok(None);
+        return Ok(Step::Continue);
     }
     cx.stat_checks += 1;
     if cx.stat_checks > MAX_STAT_CHECKS {
-        return Ok(Some(None));
+        return Ok(Step::Fallback);
     }
     let path = cx.parsed.path(cx.index_bytes, entry);
     let Ok(status) = cx.repository.status_file(Path::new(path)) else {
-        return Ok(Some(None));
+        return Ok(Step::Fallback);
     };
     if status.contains(Status::WT_UNREADABLE) {
         return Err("working-tree status contains an unreadable path".into());
     }
     if status != Status::CURRENT && status != Status::IGNORED {
-        return Ok(Some(Some(true)));
+        return Ok(Step::Dirty);
     }
-    Ok(None)
+    Ok(Step::Continue)
 }
 
-fn check_untracked_dir(cx: &WalkContext<'_>, child_rel: &str) -> Option<Option<bool>> {
+fn check_untracked_dir(cx: &WalkContext<'_>, child_rel: &str) -> Step {
     match cx.repository.status_should_ignore(Path::new(child_rel)) {
-        Ok(true) => None,
+        Ok(true) => Step::Continue,
         Ok(false) => match untracked_dir_has_dirty(cx.repository, cx.workdir, child_rel, cx.config)
         {
-            Some(true) => Some(Some(true)),
-            Some(false) => None,
-            None => Some(None),
+            Some(true) => Step::Dirty,
+            Some(false) => Step::Continue,
+            None => Step::Fallback,
         },
-        Err(_) => Some(None),
+        Err(_) => Step::Fallback,
     }
 }
 
@@ -579,7 +612,11 @@ mod tests {
             }
             Ok(String::from_utf8(out.stdout)?)
         }
-        fn scan(&self, untracked: bool) -> Result<Option<bool>, Box<dyn Error>> {
+        fn scan_with_policy(
+            &self,
+            untracked: bool,
+            case_policy: CasePolicy,
+        ) -> Result<Option<bool>, Box<dyn Error>> {
             let repo = Repository::open_ext(
                 &self.0,
                 RepositoryOpenFlags::empty(),
@@ -595,13 +632,17 @@ mod tests {
                 #[cfg(unix)]
                 filemode: true,
                 trustctime: true,
-                case_policy: if cfg!(any(windows, target_os = "macos")) {
-                    CasePolicy::Insensitive
-                } else {
-                    CasePolicy::Sensitive
-                },
+                case_policy,
             };
             Ok(try_scan(&repo, &head, &config)?)
+        }
+        fn scan(&self, untracked: bool) -> Result<Option<bool>, Box<dyn Error>> {
+            let case_policy = if cfg!(any(windows, target_os = "macos")) {
+                CasePolicy::Insensitive
+            } else {
+                CasePolicy::Sensitive
+            };
+            self.scan_with_policy(untracked, case_policy)
         }
     }
 
@@ -636,6 +677,10 @@ mod tests {
 
         fs::remove_file(repo.0.join("src/lib.rs"))?;
         assert_eq!(repo.scan(true)?, Some(true));
+        assert_eq!(
+            repo.scan_with_policy(true, CasePolicy::Insensitive)?,
+            Some(true)
+        );
         Ok(())
     }
 }
