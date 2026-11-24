@@ -190,15 +190,15 @@ fn project_facts<R: Snapshot>(
         "launch project",
         "Initialize and select this project before launch.",
     )?;
-    let owner = match &project.original.as_deref().unwrap_or(&project.current).body {
-        EventBody::ProjectRegistered { owner, .. } => owner.clone(),
-        _ => {
-            return Err(scope::unreadable(
-                "launch project owner",
-                "original owner registration is unavailable",
-            ));
-        }
+    let EventBody::ProjectRegistered { owner, .. } =
+        &project.original.as_deref().unwrap_or(&project.current).body
+    else {
+        return Err(scope::unreadable(
+            "launch project owner",
+            "original owner registration is unavailable",
+        ));
     };
+    let owner = owner.clone();
     let (project_name, roots) = match project.current.body {
         EventBody::ProjectRegistered { name, roots, .. }
         | EventBody::ProjectUpdated { name, roots, .. } => (name, roots),
@@ -218,11 +218,11 @@ fn launch_seed<R: Snapshot>(
     input: &AgentLaunch,
     agent: &AgentId,
 ) -> Result<(se_types::EventId, bool)> {
-    let replay = cx
+    let replay = match cx
         .read
         .operation_receipt(cx.admission.actor.clone(), input.idempotency_key.clone())
-        .map_err(|e| store_error(&e))?;
-    let replay = match replay {
+        .map_err(|e| store_error(&e))?
+    {
         Read::Absent { .. } => None,
         read => Some(scope::require_present(
             read,
@@ -252,10 +252,19 @@ fn launch_seed<R: Snapshot>(
     };
     Ok((seed, replayed))
 }
-fn private_resume_refusal(input: &AgentLaunch, identity: &LaunchIdentity) -> SeError {
+fn private_resume_refusal(
+    input: &AgentLaunch,
+    identity: &LaunchIdentity,
+    provider: se_store::Provider,
+) -> SeError {
+    let detach = input.detach
+        || matches!(
+            provider,
+            se_store::Provider::SeCode | se_store::Provider::Acp
+        );
     let mut command =
         super::AgentCommand::launch(&identity.agent, None, Some(&identity.project), false)
-            .with_detach(input.detach);
+            .with_detach(detach);
     if let Some(ResumeSelection::Session(session)) = &input.resume {
         command = command.with_resume_session(session);
     }
@@ -278,7 +287,6 @@ fn select_conversation<R: Snapshot>(
     replayed: bool,
 ) -> Result<Read<ProviderSessionId>> {
     if replayed {
-        // The host reuses the retained outcome or refuses an unavailable retry.
         return Ok(Read::Unknown {
             what: "a launch retry reuses its original outcome; no new conversation was selected"
                 .into(),
@@ -294,7 +302,7 @@ fn select_conversation<R: Snapshot>(
     // Creator control authorizes launching a direct child fresh, never
     // resuming another principal's saved conversation or reading its capture.
     if matches!(&cx.admission.actor, Actor::Agent(caller) if caller != &identity.agent) {
-        return Err(private_resume_refusal(input, identity));
+        return Err(private_resume_refusal(input, identity, profile.provider));
     }
     if let Some(ResumeSelection::Session(session)) = &input.resume {
         let selected = cx
@@ -311,9 +319,13 @@ fn select_conversation<R: Snapshot>(
     }
     match resumed_conversation(cx, control, profile, &identity.agent) {
         Ok(conversation) => Ok(conversation),
-        Err(failure) if matches!(failure.body.detail(), Detail::CapabilityInvalid(_)) => {
-            Err(private_resume_refusal(input, identity))
-        }
+        Err(failure) if matches!(failure.body.detail(), Detail::CapabilityInvalid(_)) => Err(
+            if matches!(cx.admission.actor, Actor::Agent(_)) {
+                private_resume_refusal(input, identity, profile.provider)
+            } else {
+                failure
+            },
+        ),
         Err(failure) if input.override_live => Ok(Read::Absent {
             checked: format!(
                 "Forced relaunch preserves the previous history and starts a fresh conversation because the saved binding could not be resumed: {failure}"
@@ -415,8 +427,8 @@ fn conversation_age(
     conversation: &Read<ProviderSessionId>,
 ) -> Result<Read<super::agent_launch::SavedConversationAge>> {
     Ok(match &conversation {
-        Read::Present { .. } => match &control.resume_session {
-            Read::Present { value } => {
+        Read::Present { .. } => match control.resume_session.clone().into_present() {
+            Ok(value) => {
                 let original = value.original.as_deref().unwrap_or(&value.current);
                 let started = super::receipt::event_time(original);
                 let now = kernel.facts()?.occurred_at_us;
@@ -443,19 +455,7 @@ fn conversation_age(
                     },
                 }
             }
-            Read::Absent { checked } => Read::Absent {
-                checked: checked.clone(),
-            },
-            Read::Unknown { what } => Read::Unknown { what: what.clone() },
-            Read::Unreadable {
-                source,
-                reason,
-                error,
-            } => Read::Unreadable {
-                source: source.clone(),
-                reason: reason.clone(),
-                error: error.clone(),
-            },
+            Err(other) => other,
         },
         Read::Absent { .. } => Read::Absent {
             checked: "This launch starts a new conversation".into(),

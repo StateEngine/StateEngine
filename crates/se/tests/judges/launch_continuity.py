@@ -186,7 +186,9 @@ def run(options):
                         'target_agent_id': target, 'task': 'Independent continuity check.',
                         'detach': True, 'resume': True, 'idempotency_key': str(uuid.uuid4())})
                     assert refused.get('isError') is True, refused
-                    assert 'ScopeMismatch' in json.dumps(refused), refused
+                    structured = refused['structuredContent']
+                    assert structured.get('code') == 'capability-invalid', refused
+                    assert 'Omit resume' in structured.get('detail', {}).get('next_step', ''), refused
                     assert (fixture.repo / 'launch-observed.jsonl').read_bytes() == observations
                     result['checks'].append('mcp: creator cannot resume another principal capture or start a provider on refusal')
                 fresh, row, fresh_plain = launch(target, fresh=True, plain=door == 'cli', door=door)

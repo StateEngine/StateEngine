@@ -13,13 +13,13 @@ impl LaunchCoordinator {
         admission: &Admission,
         deadline: &Deadline,
     ) -> Result<()> {
+        let Read::Present { value } = &plan.conversation else {
+            return Ok(());
+        };
         if plan.input.fresh() {
             return Ok(());
         }
-        let conversation = match &plan.conversation {
-            Read::Present { value } => value.as_str().to_owned(),
-            Read::Absent { .. } | Read::Unknown { .. } | Read::Unreadable { .. } => return Ok(()),
-        };
+        let conversation = value.as_str().to_owned();
         let selected = plan.clone();
         let source = self
             .store
@@ -33,12 +33,9 @@ impl LaunchCoordinator {
                 };
                 let mut detail = detail.clone();
                 let command = AgentCommand::launch_in_home(&plan.agent.id, &self.options.home, &plan.project.id, false)
-                    .map(|command| {
-                        let command = command.with_detach(plan.input.detach);
-                        match &plan.input.resume {
-                            Some(se_types::ResumeSelection::Session(session)) => command.with_resume_session(session),
-                            _ => command,
-                        }
+                    .map(|c| match &plan.input.resume {
+                        Some(se_types::ResumeSelection::Session(s)) => c.with_detach(plan.input.detach).with_resume_session(s),
+                        _ => c.with_detach(plan.input.detach),
                     });
                 detail.next_step = match command {
                     Some(command) => format!("The saved capture source is private to its principal. Omit resume to launch a fresh conversation, or ask the project Owner to use se launch from their own terminal. {}: {}", AgentCommand::instruction("Run"), command.command),
@@ -47,10 +44,9 @@ impl LaunchCoordinator {
                 failure.body = se_types::ErrorBody::new(se_types::Detail::CapabilityInvalid(detail));
                 failure
             })?;
-        let Some(source) = source else {
+        let Some(path) = source.map(|s| s.to_local()).transpose()? else {
             return Ok(());
         };
-        let path = source.to_local()?;
         let selected = plan.clone();
         let home = self.options.home.clone();
         self.store.pool.run_owned(deadline, move || {
@@ -66,9 +62,9 @@ impl LaunchCoordinator {
                     reason,
                 },
             ));
-            let command = AgentCommand::launch_in_home(&selected.agent.id, &home, &selected.project.id, true)
-                .map(|command| command.with_detach(selected.input.detach));
-            let (text, command) = match command {
+            let (text, command) = match AgentCommand::launch_in_home(&selected.agent.id, &home, &selected.project.id, true)
+                .map(|command| command.with_detach(selected.input.detach))
+            {
                 Some(command) => (
                     format!("Restore the original transcript to resume it, or start a new conversation explicitly. Captured history is retained. {}: {}", AgentCommand::instruction("Run"), command.command),
                     Some(se_types::Cmd::Se { argv: se_types::Argv::from_op(&command)? }),
