@@ -120,10 +120,63 @@ struct Scope {
     _executor: tokio::runtime::Runtime,
 }
 impl Scope {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
+    fn build_launch_spec(
+        home: &Home,
+        invocation: ProviderInvocation,
+        lifecycle: LifecycleId,
+        generation: GenerationId,
+        until: Instant,
+    ) -> Check<LaunchSpec> {
+        Ok(LaunchSpec {
+            executable_custody: None,
+            lifecycle,
+            generation,
+            executable: invocation.executable.to_local()?,
+            arguments: invocation.arguments,
+            cwd: home.0.clone(),
+            environment: invocation.environment,
+            stdio: StandardIo {
+                stdin: None,
+                stdout: None,
+                stderr: None,
+            },
+            mode: LaunchMode::Headless,
+            window: None,
+            policy: LaunchPolicy {
+                containment: ContainmentRequirement::TrackedTree,
+                writes: WritePolicy::Workspace {
+                    roots: vec![home.0.clone()],
+                    scratch: home.0.clone(),
+                },
+                network: NetworkPolicy::Allow,
+                hardening: OptionalHardening::Off,
+            },
+            deadline: until,
+            notifications: Arc::new(Notices),
+        })
+    }
+    fn await_launch(&mut self, prepared: PreparedLaunch, until: Instant) -> Check {
+        let ticket = match self.runtime.begin_launch(prepared) {
+            LaunchStart::Pending { ticket, .. } => ticket,
+            LaunchStart::Failed(f) => return Err(format!("begin: {:?}", f.error).into()),
+        };
+        loop {
+            match self.runtime.poll_launch(&ticket).map_err(native)? {
+                LaunchProgress::Started(started) => {
+                    self.record = Some(started.record);
+                    return Ok(());
+                }
+                LaunchProgress::AwaitingExecCommit(_) => {
+                    self.runtime.authorize_exec(&ticket).map_err(native)?
+                }
+                LaunchProgress::Failed(f) => return Err(format!("poll: {:?}", f.error).into()),
+                LaunchProgress::Pending => {
+                    assert!(Instant::now() < until, "native launch deadline");
+                    std::thread::park_timeout(Duration::from_millis(5));
+                }
+            }
+        }
+    }
     fn launch(home: &Home, invocation: ProviderInvocation) -> Check<Self> {
         let executor = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -154,11 +207,12 @@ impl Scope {
         })
         .map_err(native)?;
         let until = Instant::now() + Duration::from_secs(12);
+        let spec = Self::build_launch_spec(home, invocation, lifecycle.clone(), generation, until)?;
         let prepared = runtime
             .prepare_launch(
                 LaunchReservation {
                     format_version: 1,
-                    lifecycle: lifecycle.clone(),
+                    lifecycle,
                     host,
                     owner: current_process_identity(machine).map_err(native)?,
                     generation,
@@ -166,33 +220,7 @@ impl Scope {
                     parent: ReservationParent::LinuxTracked,
                     created_at_unix_ns: 1,
                 },
-                LaunchSpec {
-                    executable_custody: None,
-                    lifecycle,
-                    generation,
-                    executable: invocation.executable.to_local()?,
-                    arguments: invocation.arguments,
-                    cwd: home.0.clone(),
-                    environment: invocation.environment,
-                    stdio: StandardIo {
-                        stdin: None,
-                        stdout: None,
-                        stderr: None,
-                    },
-                    mode: LaunchMode::Headless,
-                    window: None,
-                    policy: LaunchPolicy {
-                        containment: ContainmentRequirement::TrackedTree,
-                        writes: WritePolicy::Workspace {
-                            roots: vec![home.0.clone()],
-                            scratch: home.0.clone(),
-                        },
-                        network: NetworkPolicy::Allow,
-                        hardening: OptionalHardening::Off,
-                    },
-                    deadline: until,
-                    notifications: Arc::new(Notices),
-                },
+                spec,
             )
             .map_err(native)?;
         runtime
@@ -213,26 +241,8 @@ impl Scope {
             released: false,
             _executor: executor,
         };
-        let ticket = match owned.runtime.begin_launch(prepared.prepared) {
-            LaunchStart::Pending { ticket, .. } => ticket,
-            LaunchStart::Failed(f) => return Err(format!("begin: {:?}", f.error).into()),
-        };
-        loop {
-            match owned.runtime.poll_launch(&ticket).map_err(native)? {
-                LaunchProgress::Started(started) => {
-                    owned.record = Some(started.record);
-                    return Ok(owned);
-                }
-                LaunchProgress::AwaitingExecCommit(_) => {
-                    owned.runtime.authorize_exec(&ticket).map_err(native)?
-                }
-                LaunchProgress::Failed(f) => return Err(format!("poll: {:?}", f.error).into()),
-                LaunchProgress::Pending => {
-                    assert!(Instant::now() < until, "native launch deadline");
-                    std::thread::park_timeout(Duration::from_millis(5));
-                }
-            }
-        }
+        owned.await_launch(prepared.prepared, until)?;
+        Ok(owned)
     }
     fn wait_ready(&self) -> Check<ProcessId> {
         let until = Instant::now() + Duration::from_secs(5);

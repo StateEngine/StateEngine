@@ -60,24 +60,18 @@ fn cli(image: &Path, root: &Path, args: &[&str]) -> Check<String> {
     }
     Ok(String::from_utf8(out.stdout)?)
 }
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check {
-    let image = PathBuf::from(
-        std::env::var_os("SE_SELECTOR_SE").ok_or("SE_SELECTOR_SE must name the candidate CLI")?,
-    );
-    let root = std::env::temp_dir().join(format!("sel-{}", std::process::id()));
-    fs::create_dir(&root)?;
-    let _root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
-    let home = root.join("state");
+struct SelectorFlags {
+    unavailable: Arc<AtomicBool>,
+    source_incomplete: Arc<AtomicBool>,
+    scan_cap: Arc<AtomicBool>,
+}
+
+fn init_selector_state(image: &Path, root: &Path, home: &Path) -> Check<(PathBuf, api::ProjectId)> {
     let repo = root.join("repo");
     fs::create_dir(&repo)?;
     let initialized = cli(
-        &image,
-        &root,
+        image,
+        root,
         &[
             "init",
             "--home",
@@ -106,8 +100,8 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
             .into(),
     );
     cli(
-        &image,
-        &root,
+        image,
+        root,
         &[
             "--home",
             home.to_str().ok_or("home encoding")?,
@@ -120,6 +114,285 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
             "Second selector agent",
         ],
     )?;
+    Ok((repo, selected))
+}
+
+async fn verify_project_and_agent_pages(
+    host: &dyn api::Host,
+    project: &api::ProjectId,
+    repo: &Path,
+    options: &api::CallOptions,
+) -> Check {
+    let projects = present(result(
+        host.list_projects(&api::OwnerAuthority, page(100), options.clone())
+            .await,
+    )?)?;
+    assert!(projects.window.complete);
+    assert_eq!(projects.items.len(), 1);
+    assert_eq!(projects.items[0].id, *project);
+    assert_eq!(projects.items[0].root, repo);
+    let agents = present(result(
+        host.list_agents(
+            &api::OwnerAuthority,
+            project.clone(),
+            page(100),
+            options.clone(),
+        )
+        .await,
+    )?)?;
+    assert!(agents.window.complete);
+    assert_eq!(agents.items.len(), 2);
+    assert_eq!(agents.items[0].name, "Selector agent");
+    assert_eq!(agents.items[0].project, *project);
+    assert_eq!(agents.items[0].revision.0.get(), 1);
+    let one = present(result(
+        host.list_agents(
+            &api::OwnerAuthority,
+            project.clone(),
+            page(1),
+            options.clone(),
+        )
+        .await,
+    )?)?;
+    let tight = present(result(
+        host.list_agents(
+            &api::OwnerAuthority,
+            project.clone(),
+            api::PageRequest {
+                max_bytes: one.window.bytes as u32,
+                ..page(100)
+            },
+            options.clone(),
+        )
+        .await,
+    )?)?;
+    assert_eq!(tight.items.len(), 1);
+    assert_eq!(tight.window.stop_reason, api::StopReason::ByteLimit);
+    assert!(tight.window.bytes <= u64::from(tight.window.max_bytes));
+    let tail = present(result(
+        host.list_agents(
+            &api::OwnerAuthority,
+            project.clone(),
+            api::PageRequest {
+                after: tight.next,
+                ..page(100)
+            },
+            options.clone(),
+        )
+        .await,
+    )?)?;
+    assert_eq!(tail.items.len(), 1);
+    assert_eq!(tail.items[0].name, "Second selector agent");
+    assert!(tail.window.complete);
+    let tiny = host
+        .list_agents(
+            &api::OwnerAuthority,
+            project.clone(),
+            api::PageRequest {
+                max_bytes: 1,
+                ..page(100)
+            },
+            options.clone(),
+        )
+        .await
+        .err()
+        .ok_or("first row exceeded budget silently")?;
+    assert_eq!(tiny.kind, api::ApiFailure::Incomplete);
+    assert_eq!(tiny.code, "selector-row-too-large");
+    verify_invalid_and_unknown_pages(host, options).await
+}
+
+async fn verify_invalid_and_unknown_pages(
+    host: &dyn api::Host,
+    options: &api::CallOptions,
+) -> Check {
+    for request in [
+        page(0),
+        page(101),
+        api::PageRequest {
+            max_bytes: 0,
+            ..page(1)
+        },
+        api::PageRequest {
+            max_bytes: 65537,
+            ..page(1)
+        },
+        api::PageRequest {
+            after: Some(api::Cursor("x".repeat(257))),
+            ..page(1)
+        },
+    ] {
+        let error = host
+            .list_projects(&api::OwnerAuthority, request, options.clone())
+            .await
+            .err()
+            .ok_or("invalid page accepted")?;
+        assert_eq!(error.kind, api::ApiFailure::Usage);
+        assert_eq!(error.code, "selector-invalid-page");
+    }
+    let unknown = result(
+        host.list_agents(
+            &api::OwnerAuthority,
+            api::ProjectId("prj_018bcfe5-6800-7000-8000-000000000099".into()),
+            page(10),
+            options.clone(),
+        )
+        .await,
+    )?;
+    assert!(matches!(unknown, api::Read::Unknown { .. }));
+    Ok(())
+}
+
+async fn verify_active_session_pages(
+    host: &dyn api::Host,
+    project: &api::ProjectId,
+    options: &api::CallOptions,
+    flags: &SelectorFlags,
+) -> Check {
+    let first = present(result(
+        host.project_active_sessions(
+            &api::OwnerAuthority,
+            project.clone(),
+            page(1),
+            options.clone(),
+        )
+        .await,
+    )?)?;
+    assert_eq!(first.items[0].target.session.0, "aardvark");
+    assert!(!first.window.complete);
+    let next = first.next.ok_or("session continuation absent")?;
+    let second = present(result(
+        host.project_active_sessions(
+            &api::OwnerAuthority,
+            project.clone(),
+            api::PageRequest {
+                after: Some(next.clone()),
+                ..page(1)
+            },
+            options.clone(),
+        )
+        .await,
+    )?)?;
+    assert_eq!(second.items[0].target.session.0, "zulu");
+    assert!(second.window.complete);
+    assert!(
+        second
+            .items
+            .iter()
+            .all(|r| r.target.binding.project == *project)
+    );
+    // Independent counterexample (7d2291d): an earlier native
+    // SourceIncomplete omission must survive a later exhausted page.
+    flags.source_incomplete.store(true, Ordering::Relaxed);
+    let partial_first = present(result(
+        host.project_active_sessions(
+            &api::OwnerAuthority,
+            project.clone(),
+            page(1),
+            options.clone(),
+        )
+        .await,
+    )?)?;
+    let partial_last = present(result(
+        host.project_active_sessions(
+            &api::OwnerAuthority,
+            project.clone(),
+            api::PageRequest {
+                after: partial_first.next,
+                ..page(1)
+            },
+            options.clone(),
+        )
+        .await,
+    )?)?;
+    assert_eq!(partial_last.items[0].target.session.0, "zulu");
+    assert!(
+        !partial_last.window.complete,
+        "source-incomplete omission vanished after the final native page"
+    );
+    assert!(matches!(
+        partial_last.window.omitted_after,
+        api::Omission::Unknown {
+            reason: api::OmissionReason::SourceIncomplete
+        }
+    ));
+    flags.source_incomplete.store(false, Ordering::Relaxed);
+    verify_active_session_caps_and_stale(host, project, options, flags, next).await
+}
+
+async fn verify_active_session_caps_and_stale(
+    host: &dyn api::Host,
+    project: &api::ProjectId,
+    options: &api::CallOptions,
+    flags: &SelectorFlags,
+    next: api::Cursor,
+) -> Check {
+    flags.scan_cap.store(true, Ordering::Relaxed);
+    let capped = present(result(
+        host.project_active_sessions(
+            &api::OwnerAuthority,
+            project.clone(),
+            page(100),
+            options.clone(),
+        )
+        .await,
+    )?)?;
+    assert!(capped.items.is_empty());
+    assert!(!capped.window.complete);
+    assert_eq!(capped.window.stop_reason, api::StopReason::ByteLimit);
+    assert!(matches!(
+        capped.window.omitted_after,
+        api::Omission::Unknown {
+            reason: api::OmissionReason::Budget
+        }
+    ));
+    flags.scan_cap.store(false, Ordering::Relaxed);
+    flags.unavailable.store(true, Ordering::Relaxed);
+    let stale = host
+        .project_active_sessions(
+            &api::OwnerAuthority,
+            project.clone(),
+            api::PageRequest {
+                after: Some(next),
+                ..page(1)
+            },
+            options.clone(),
+        )
+        .await
+        .err()
+        .ok_or("changed host snapshot did not stale cursor")?;
+    assert_eq!(stale.kind, api::ApiFailure::Conflict);
+    assert_eq!(stale.retry, api::ApiRetry::AfterRefresh);
+    let partial = present(result(
+        host.project_active_sessions(
+            &api::OwnerAuthority,
+            project.clone(),
+            page(100),
+            options.clone(),
+        )
+        .await,
+    )?)?;
+    assert!(partial.items.is_empty());
+    assert!(!partial.window.complete);
+    assert!(matches!(
+        partial.window.omitted_after,
+        api::Omission::Unknown {
+            reason: api::OmissionReason::SourceIncomplete
+        }
+    ));
+    Ok(())
+}
+
+#[test]
+fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check {
+    let image = PathBuf::from(
+        std::env::var_os("SE_SELECTOR_SE").ok_or("SE_SELECTOR_SE must name the candidate CLI")?,
+    );
+    let root = std::env::temp_dir().join(format!("sel-{}", std::process::id()));
+    fs::create_dir(&root)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
+    let home = root.join("state");
+    let (repo, selected) = init_selector_state(&image, &root, &home)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(4)
@@ -153,10 +426,11 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
         )?)?;
         let options = call_options(opened.negotiated.generation, Duration::from_secs(30));
         let epoch = build_epoch(opened.negotiated.generation.0, &home)?;
-        let project = selected.clone();
-        let unavailable = Arc::new(AtomicBool::new(false));
-        let source_incomplete = Arc::new(AtomicBool::new(false));
-        let scan_cap = Arc::new(AtomicBool::new(false));
+        let flags = SelectorFlags {
+            unavailable: Arc::new(AtomicBool::new(false)),
+            source_incomplete: Arc::new(AtomicBool::new(false)),
+            scan_cap: Arc::new(AtomicBool::new(false)),
+        };
         result(
             opened
                 .host
@@ -164,270 +438,18 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
                     api::HostIntegration::Secode {
                         epoch,
                         services: Arc::new(services::Services {
-                            project: project.clone(),
-                            unavailable: unavailable.clone(),
-                            source_incomplete: source_incomplete.clone(),
-                            scan_cap: scan_cap.clone(),
+                            project: selected.clone(),
+                            unavailable: flags.unavailable.clone(),
+                            source_incomplete: flags.source_incomplete.clone(),
+                            scan_cap: flags.scan_cap.clone(),
                         }),
                     },
                     options.clone(),
                 )
                 .await,
         )?;
-        let projects = present(result(
-            opened
-                .host
-                .list_projects(&api::OwnerAuthority, page(100), options.clone())
-                .await,
-        )?)?;
-        assert!(projects.window.complete);
-        assert_eq!(projects.items.len(), 1);
-        assert_eq!(projects.items[0].id, project);
-        assert_eq!(projects.items[0].root, repo);
-        let agents = present(result(
-            opened
-                .host
-                .list_agents(
-                    &api::OwnerAuthority,
-                    project.clone(),
-                    page(100),
-                    options.clone(),
-                )
-                .await,
-        )?)?;
-        assert!(agents.window.complete);
-        assert_eq!(agents.items.len(), 2);
-        assert_eq!(agents.items[0].name, "Selector agent");
-        assert_eq!(agents.items[0].project, project);
-        assert_eq!(agents.items[0].revision.0.get(), 1);
-        let one = present(result(
-            opened
-                .host
-                .list_agents(
-                    &api::OwnerAuthority,
-                    project.clone(),
-                    page(1),
-                    options.clone(),
-                )
-                .await,
-        )?)?;
-        let tight = present(result(
-            opened
-                .host
-                .list_agents(
-                    &api::OwnerAuthority,
-                    project.clone(),
-                    api::PageRequest {
-                        max_bytes: one.window.bytes as u32,
-                        ..page(100)
-                    },
-                    options.clone(),
-                )
-                .await,
-        )?)?;
-        assert_eq!(tight.items.len(), 1);
-        assert_eq!(tight.window.stop_reason, api::StopReason::ByteLimit);
-        assert!(tight.window.bytes <= u64::from(tight.window.max_bytes));
-        let tail = present(result(
-            opened
-                .host
-                .list_agents(
-                    &api::OwnerAuthority,
-                    project.clone(),
-                    api::PageRequest {
-                        after: tight.next,
-                        ..page(100)
-                    },
-                    options.clone(),
-                )
-                .await,
-        )?)?;
-        assert_eq!(tail.items.len(), 1);
-        assert_eq!(tail.items[0].name, "Second selector agent");
-        assert!(tail.window.complete);
-        let tiny = opened
-            .host
-            .list_agents(
-                &api::OwnerAuthority,
-                project.clone(),
-                api::PageRequest {
-                    max_bytes: 1,
-                    ..page(100)
-                },
-                options.clone(),
-            )
-            .await
-            .err()
-            .ok_or("first row exceeded budget silently")?;
-        assert_eq!(tiny.kind, api::ApiFailure::Incomplete);
-        assert_eq!(tiny.code, "selector-row-too-large");
-
-        for request in [
-            page(0),
-            page(101),
-            api::PageRequest {
-                max_bytes: 0,
-                ..page(1)
-            },
-            api::PageRequest {
-                max_bytes: 65537,
-                ..page(1)
-            },
-            api::PageRequest {
-                after: Some(api::Cursor("x".repeat(257))),
-                ..page(1)
-            },
-        ] {
-            let error = opened
-                .host
-                .list_projects(&api::OwnerAuthority, request, options.clone())
-                .await
-                .err()
-                .ok_or("invalid page accepted")?;
-            assert_eq!(error.kind, api::ApiFailure::Usage);
-            assert_eq!(error.code, "selector-invalid-page");
-        }
-        let unknown = result(
-            opened
-                .host
-                .list_agents(
-                    &api::OwnerAuthority,
-                    api::ProjectId("prj_018bcfe5-6800-7000-8000-000000000099".into()),
-                    page(10),
-                    options.clone(),
-                )
-                .await,
-        )?;
-        assert!(matches!(unknown, api::Read::Unknown { .. }));
-        let first = present(result(
-            opened
-                .host
-                .project_active_sessions(
-                    &api::OwnerAuthority,
-                    project.clone(),
-                    page(1),
-                    options.clone(),
-                )
-                .await,
-        )?)?;
-        assert_eq!(first.items[0].target.session.0, "aardvark");
-        assert!(!first.window.complete);
-        let next = first.next.ok_or("session continuation absent")?;
-        let second = present(result(
-            opened
-                .host
-                .project_active_sessions(
-                    &api::OwnerAuthority,
-                    project.clone(),
-                    api::PageRequest {
-                        after: Some(next.clone()),
-                        ..page(1)
-                    },
-                    options.clone(),
-                )
-                .await,
-        )?)?;
-        assert_eq!(second.items[0].target.session.0, "zulu");
-        assert!(second.window.complete);
-        assert!(
-            second
-                .items
-                .iter()
-                .all(|r| r.target.binding.project == project)
-        );
-        // Independent counterexample (7d2291d): an earlier native
-        // SourceIncomplete omission must survive a later exhausted page.
-        source_incomplete.store(true, Ordering::Relaxed);
-        let partial_first = present(result(
-            opened
-                .host
-                .project_active_sessions(
-                    &api::OwnerAuthority,
-                    project.clone(),
-                    page(1),
-                    options.clone(),
-                )
-                .await,
-        )?)?;
-        let partial_last = present(result(
-            opened
-                .host
-                .project_active_sessions(
-                    &api::OwnerAuthority,
-                    project.clone(),
-                    api::PageRequest {
-                        after: partial_first.next,
-                        ..page(1)
-                    },
-                    options.clone(),
-                )
-                .await,
-        )?)?;
-        assert_eq!(partial_last.items[0].target.session.0, "zulu");
-        assert!(
-            !partial_last.window.complete,
-            "source-incomplete omission vanished after the final native page"
-        );
-        assert!(matches!(
-            partial_last.window.omitted_after,
-            api::Omission::Unknown {
-                reason: api::OmissionReason::SourceIncomplete
-            }
-        ));
-        source_incomplete.store(false, Ordering::Relaxed);
-        scan_cap.store(true, Ordering::Relaxed);
-        let capped = present(result(
-            opened
-                .host
-                .project_active_sessions(
-                    &api::OwnerAuthority,
-                    project.clone(),
-                    page(100),
-                    options.clone(),
-                )
-                .await,
-        )?)?;
-        assert!(capped.items.is_empty());
-        assert!(!capped.window.complete);
-        assert_eq!(capped.window.stop_reason, api::StopReason::ByteLimit);
-        assert!(matches!(
-            capped.window.omitted_after,
-            api::Omission::Unknown {
-                reason: api::OmissionReason::Budget
-            }
-        ));
-        scan_cap.store(false, Ordering::Relaxed);
-        unavailable.store(true, Ordering::Relaxed);
-        let stale = opened
-            .host
-            .project_active_sessions(
-                &api::OwnerAuthority,
-                project.clone(),
-                api::PageRequest {
-                    after: Some(next),
-                    ..page(1)
-                },
-                options.clone(),
-            )
-            .await
-            .err()
-            .ok_or("changed host snapshot did not stale cursor")?;
-        assert_eq!(stale.kind, api::ApiFailure::Conflict);
-        assert_eq!(stale.retry, api::ApiRetry::AfterRefresh);
-        let partial = present(result(
-            opened
-                .host
-                .project_active_sessions(&api::OwnerAuthority, project, page(100), options.clone())
-                .await,
-        )?)?;
-        assert!(partial.items.is_empty());
-        assert!(!partial.window.complete);
-        assert!(matches!(
-            partial.window.omitted_after,
-            api::Omission::Unknown {
-                reason: api::OmissionReason::SourceIncomplete
-            }
-        ));
+        verify_project_and_agent_pages(&*opened.host, &selected, &repo, &options).await?;
+        verify_active_session_pages(&*opened.host, &selected, &options, &flags).await?;
         let drained = result(opened.host.drain(options.clone()).await)?;
         assert!(drained.writer_flushed);
         result(opened.host.close(drained, options).await)?;
