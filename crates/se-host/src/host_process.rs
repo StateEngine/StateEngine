@@ -77,6 +77,7 @@ pub fn same_start(
     })
 }
 
+#[cfg(feature = "listener")]
 pub(crate) fn proc_start(start: &se_types::StartIdentity) -> se_proc::StartIdentity {
     match start {
         se_types::StartIdentity::Linux { start_ticks } => se_proc::StartIdentity::Linux {

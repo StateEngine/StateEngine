@@ -57,6 +57,7 @@ pub mod mcp {
 }
 pub(crate) use se_harness::model;
 
+#[cfg(feature = "listener")]
 pub(crate) fn read_budget(
     after: Option<se_types::Cursor>,
     limit: u32,
@@ -75,6 +76,7 @@ pub(crate) fn read_budget(
 
 /// Resolve a `Read<T>` into `Option<T>`, converting `Unreadable`/`Unknown` into
 /// `scope::unreadable` without ever collapsing failures into `None`.
+#[cfg(feature = "listener")]
 pub(crate) fn read_optional<T>(
     read: se_types::Read<T>,
     subject: &str,
