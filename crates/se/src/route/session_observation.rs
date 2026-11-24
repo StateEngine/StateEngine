@@ -141,6 +141,7 @@ pub(super) fn merge_runtime_observation(
                     source: "ACP runtime observation".into(), reason: error.to_string(), error: Some(Box::new(error.body.clone())),
                 },
             });
+            row.background = se_core::ops::agent_state::host_background(row, &observed);
             return Ok(());
         }
         if !matches!(&row.secode_binding, Some(Read::Present { .. })) {

@@ -152,26 +152,48 @@ fn derive(row: &AgentRow, now_us: i64) -> Result<AgentStateView> {
     let waiting_on = row.state.as_ref().and_then(|s| s.waiting_on.clone());
     let review = row.state.as_ref().and_then(|s| s.review.clone());
     let local = background(row, now_us);
-    let activity = match &row.provider_activity {
-        Some(Read::Present { value }) => Some(value),
-        _ => None,
+    let (activity, phase, activity_unreadable) = match (&row.provider_activity, &row.acp_runtime) {
+        (Some(Read::Present { value }), _) => (
+            Some(value.activity.as_str()),
+            value
+                .phase_started_at
+                .as_ref()
+                .zip(value.phase_seconds)
+                .map(|(at, seconds)| (at.clone(), seconds)),
+            false,
+        ),
+        (Some(Read::Unreadable { .. }), _) => (None, None, true),
+        (_, Some(Read::Present { value })) => (
+            Some(value.activity.as_str()),
+            value
+                .phase_started_at
+                .as_ref()
+                .zip(value.phase_seconds)
+                .map(|(at, seconds)| (at.clone(), seconds)),
+            false,
+        ),
+        (_, Some(Read::Unreadable { .. })) => (None, None, true),
+        _ => (None, None, false),
     };
-    let phase = activity.and_then(|a| Some((a.phase_started_at.clone()?, a.phase_seconds?)));
     let (state, elapsed) = match row.session.state.as_str() {
         "stopped" | "never-launched" => ("stopped", None),
         "starting" => ("starting", None),
         "stopping" => ("stopping", None),
-        "running" => match activity.map(|a| a.activity.as_str()) {
-            Some("awaiting-provider" | "waiting" | "retrying-authentication") => ("working", phase),
+        "running" => match activity {
+            Some(
+                "awaiting-provider"
+                | "waiting"
+                | "retrying-authentication"
+                | "working"
+                | "cancelling",
+            ) => ("working", phase),
             Some("interrupted" | "failed" | "authentication-required") => ("attention", phase),
             _ if waiting_on.is_some() => ("blocked", None),
             // Local work still running outranks waiting on a reviewer.
             Some("turn-completed" | "idle") if local.is_some() => ("background", local),
             _ if review.is_some() => ("review", None),
             // An unreadable observation is not an absent one.
-            _ if matches!(row.provider_activity, Some(Read::Unreadable { .. })) => {
-                ("turn-unreadable", None)
-            }
+            _ if activity_unreadable => ("turn-unreadable", None),
             Some("turn-completed" | "idle") => ("idle", phase),
             // Alive, but no host observed its turns: not claimed idle.
             _ => ("running", None),
