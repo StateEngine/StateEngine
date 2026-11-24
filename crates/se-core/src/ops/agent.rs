@@ -95,12 +95,7 @@ pub fn create<R: Snapshot>(
             agent,
             profile: Profile {
                 provider_settings: *input.provider_settings,
-                provider: match provider {
-                    Provider::Claude => se_store::Provider::Claude,
-                    Provider::Codex => se_store::Provider::Codex,
-                    Provider::SeCode => se_store::Provider::SeCode,
-                    Provider::Acp => se_store::Provider::Acp,
-                },
+                provider: provider.into(),
                 model,
                 permission,
                 harness,
@@ -208,12 +203,7 @@ pub fn committed<R: Snapshot>(
             "atomic original profile event is absent",
         )
     })?;
-    let provider = match profile.provider {
-        se_store::Provider::Claude => Provider::Claude,
-        se_store::Provider::Codex => Provider::Codex,
-        se_store::Provider::SeCode => Provider::SeCode,
-        se_store::Provider::Acp => Provider::Acp,
-    };
+    let provider = Provider::from(profile.provider);
     Ok(super::AgentReceipt {
         commit,
         action: super::AgentAction::Create,
@@ -395,12 +385,7 @@ pub fn rename_committed<R: Snapshot>(
             "saved profile differs from the renamed agent",
         ));
     }
-    let provider = match profile.provider {
-        se_store::Provider::Claude => Provider::Claude,
-        se_store::Provider::Codex => Provider::Codex,
-        se_store::Provider::SeCode => Provider::SeCode,
-        se_store::Provider::Acp => Provider::Acp,
-    };
+    let provider = Provider::from(profile.provider);
     let outcome = match receipt.state {
         se_store::CommitState::Committed if name != then.previous_name => {
             super::AgentOutcome::Renamed

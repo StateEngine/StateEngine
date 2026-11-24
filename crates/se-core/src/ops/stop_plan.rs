@@ -154,12 +154,7 @@ pub fn control<R: Snapshot>(
         "Restore the target's saved provider profile.",
     )?;
     let provider = match profile.current.body {
-        EventBody::ProfileSaved { profile, .. } => match profile.provider {
-            se_store::Provider::Claude => se_types::Provider::Claude,
-            se_store::Provider::Codex => se_types::Provider::Codex,
-            se_store::Provider::SeCode => se_types::Provider::SeCode,
-            se_store::Provider::Acp => se_types::Provider::Acp,
-        },
+        EventBody::ProfileSaved { profile, .. } => profile.provider.into(),
         _ => return Err(scope::unreadable("stop profile", "wrong profile metadata")),
     };
     Ok(ControlAgent {

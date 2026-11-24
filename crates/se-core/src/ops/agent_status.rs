@@ -2,7 +2,11 @@
 use super::{AgentRow, AgentShow, AgentStatusOutput};
 use crate::{commit::Cx, scope, store_error::store_error};
 use se_store::{Actor, EventBody, ProjectionRecord, Snapshot};
-use se_types::{AgentId, Read, Result};
+use se_types::{
+    AgentId,
+    OmissionReason::{Budget, Limit},
+    Read, Result, StopReason,
+};
 
 /// Saved agents in a finite principal page; never starts or resumes a process.
 pub fn page<R: Snapshot>(
@@ -13,26 +17,22 @@ pub fn page<R: Snapshot>(
 }
 
 /// Agents in a finite principal page; hides retired ephemeral agents unless `include_temp` is set.
+/// Rows past the byte budget end the page early with a store-minted `next` cursor.
 pub fn page_with_temp<R: Snapshot>(
     budget: se_store::ReadBudget,
     include_temp: bool,
     cx: &mut Cx<'_, R>,
 ) -> Result<se_types::Page<AgentRow>> {
-    let principals = if include_temp {
-        cx.read.principals(budget)
-    } else {
-        cx.read.active_principals(budget)
-    }
-    .map_err(|e| store_error(&e))?;
+    let principals = principals(budget.clone(), include_temp, cx)?;
     let mut fields = principals.window().fields().cloned().ok_or_else(|| {
         scope::unreadable(
             "agent status page",
             "store window accounting is unavailable",
         )
     })?;
-    let next = principals.next().cloned();
-    let mut rows = Vec::new();
-    for record in principals.into_items() {
+    let mut next = principals.next().cloned();
+    let (mut rows, mut ends) = (Vec::new(), Vec::new());
+    for (index, record) in principals.into_items().into_iter().enumerate() {
         let agent = match &record.current.body {
             EventBody::PrincipalRegistered {
                 principal: Actor::Agent(agent),
@@ -58,30 +58,86 @@ pub fn page_with_temp<R: Snapshot>(
                 cx,
             )?
         };
-        let row = scope::require_present(
+        rows.push(scope::require_present(
             saved.agent,
             "saved agent page row",
             "Read the saved agent by its exact ID in this project, then refresh the agent list.",
-        )?;
-        rows.push(row);
+        )?);
+        ends.push(index + 1);
     }
-    fields.returned = rows.len() as u64;
-    fields.bytes = serde_json::to_vec(&rows)
-        .map_err(|e| scope::unreadable("agent status page encoding", &e.to_string()))?
-        .len() as u64;
-    if fields.bytes > u64::from(fields.max_bytes.get()) {
-        return Err(scope::unreadable(
-            "agent status page",
-            "expanded saved rows exceed the finite response byte budget",
-        ));
+    let (fit, bytes) = fitting(&rows, fields.max_bytes)?;
+    if fit < rows.len() {
+        let Some(&consumed) = fit.checked_sub(1).and_then(|last| ends.get(last)) else {
+            return Err(scope::unreadable(
+                "agent status page",
+                "one expanded saved row exceeds the finite response byte budget",
+            ));
+        };
+        (fields, next) = prefix(budget, include_temp, consumed, cx)?;
+        rows.truncate(fit);
     }
+    (fields.returned, fields.bytes) = (rows.len() as u64, bytes);
     // Principal omissions cannot be relabelled as an exact count of agents.
     if next.is_some() {
-        fields.omitted_after = se_types::Omission::Unknown {
-            reason: se_types::OmissionReason::Limit,
-        };
+        let by_bytes = fields.stop_reason == StopReason::ByteLimit;
+        let reason = if by_bytes { Budget } else { Limit };
+        fields.omitted_after = se_types::Omission::Unknown { reason };
     }
     se_types::Page::new(rows, se_types::Window::new(fields)?, next)
+}
+
+/// How many leading rows fit the byte budget as one JSON array, and its size.
+fn fitting(rows: &[AgentRow], max: std::num::NonZeroU32) -> Result<(usize, u64)> {
+    let (mut fit, mut bytes) = (0, 1);
+    for row in rows {
+        // Each row brings its separator or the closing bracket.
+        let size = serde_json::to_vec(row)
+            .map_err(|e| scope::unreadable("agent status page encoding", &e.to_string()))?
+            .len() as u64
+            + 1;
+        if bytes + size > u64::from(max.get()) {
+            break;
+        }
+        (fit, bytes) = (fit + 1, bytes + size);
+    }
+    Ok((fit, bytes.max(2)))
+}
+
+/// Re-read the first `consumed` principals from the same read pin, so the
+/// store mints the cursor that resumes after the last row that fit.
+fn prefix<R: Snapshot>(
+    mut budget: se_store::ReadBudget,
+    include_temp: bool,
+    consumed: usize,
+    cx: &mut Cx<'_, R>,
+) -> Result<(se_types::WindowFields, Option<se_types::Cursor>)> {
+    let requested = budget.page.limit;
+    budget.page.limit = std::num::NonZeroU32::new(consumed as u32).unwrap_or(requested);
+    let page = principals(budget, include_temp, cx)?;
+    match (page.window().fields().cloned(), page.next().cloned()) {
+        (Some(mut fields), Some(next)) if page.items().len() == consumed => {
+            fields.limit = requested;
+            fields.stop_reason = StopReason::ByteLimit;
+            Ok((fields, Some(next)))
+        }
+        _ => Err(scope::unreadable(
+            "agent status page",
+            "the shortened principal page changed within one read pin",
+        )),
+    }
+}
+
+fn principals<R: Snapshot>(
+    budget: se_store::ReadBudget,
+    include_temp: bool,
+    cx: &mut Cx<'_, R>,
+) -> Result<se_types::Page<ProjectionRecord>> {
+    if include_temp {
+        cx.read.principals(budget)
+    } else {
+        cx.read.active_principals(budget)
+    }
+    .map_err(|e| store_error(&e))
 }
 
 pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentStatusOutput> {
@@ -127,7 +183,13 @@ fn from_principal<R: Snapshot>(
         .read
         .principal_retired(agent.clone())
         .map_err(|error| store_error(&error))?;
-    let profile = saved_profile_record(&agent, controlled_profile, cx)?;
+    let profile = match controlled_profile {
+        Some(profile) => profile,
+        None => cx
+            .read
+            .profile(agent.clone())
+            .map_err(|e| store_error(&e))?,
+    };
     let saved = match profile.into_present() {
         Ok(value) => value,
         Err(Read::Absent { checked }) => {
@@ -140,7 +202,7 @@ fn from_principal<R: Snapshot>(
         Err(agent) => return Ok(AgentStatusOutput { agent }),
     };
     let profile = profile_saved(saved)?;
-    let provider = provider_view(profile.provider);
+    let provider = se_types::Provider::from(profile.provider);
     let (session, conversation, mut resume) = super::agent_session::read(&agent, cx)?;
     let never_launched = session.state == "never-launched" && session.session_id.is_none();
     let (secode_binding, secode_runtime) = if provider == se_types::Provider::SeCode {
@@ -243,20 +305,6 @@ fn principal_name_role(principal: &ProjectionRecord) -> Result<(String, Option<S
     }
 }
 
-fn saved_profile_record<R: Snapshot>(
-    agent: &AgentId,
-    controlled_profile: Option<Read<ProjectionRecord>>,
-    cx: &mut Cx<'_, R>,
-) -> Result<Read<ProjectionRecord>> {
-    match controlled_profile {
-        Some(profile) => Ok(profile),
-        None => cx
-            .read
-            .profile(agent.clone())
-            .map_err(|error| store_error(&error)),
-    }
-}
-
 fn profile_saved(saved: ProjectionRecord) -> Result<se_store::Profile> {
     let EventBody::ProfileSaved { profile, .. } = saved.current.body else {
         return Err(scope::unreadable(
@@ -265,15 +313,6 @@ fn profile_saved(saved: ProjectionRecord) -> Result<se_store::Profile> {
         ));
     };
     Ok(profile)
-}
-
-fn provider_view(provider: se_store::Provider) -> se_types::Provider {
-    match provider {
-        se_store::Provider::Claude => se_types::Provider::Claude,
-        se_store::Provider::Codex => se_types::Provider::Codex,
-        se_store::Provider::SeCode => se_types::Provider::SeCode,
-        se_store::Provider::Acp => se_types::Provider::Acp,
-    }
 }
 
 type SecodeViews = (
