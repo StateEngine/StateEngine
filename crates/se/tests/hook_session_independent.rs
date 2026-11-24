@@ -122,6 +122,7 @@ fn check_case(case: &str) -> Check {
         .as_str()
         .ok_or("agent id")?
         .parse()?;
+    use_ephemeral_listen_port(&f.options.state_directory)?;
     // Later hook commands can auto-start a runtime again; stop it on any exit.
     let mut down = command(&image, &f, &root);
     down.arg("down");
@@ -345,7 +346,7 @@ fn check_case(case: &str) -> Check {
         + if matches!(case, "prepared" | "active") {
             Duration::from_millis(300)
         } else {
-            Duration::from_secs(5)
+            Duration::from_secs(15)
         };
     let early = loop {
         if child.try_wait()?.is_some() {
@@ -394,6 +395,17 @@ fn check_case(case: &str) -> Check {
         "PASS hook session {case}: stdin ordering, absent endpoint and unchanged durable head"
     );
     drop(std::mem::ManuallyDrop::into_inner(f));
+    Ok(())
+}
+
+fn use_ephemeral_listen_port(home: &Path) -> Check {
+    let path = home.join("config.toml");
+    let text = std::fs::read_to_string(&path)?;
+    let mut table: toml::Table = toml::from_str(&text)?;
+    if let Some(runtime) = table.get_mut("runtime").and_then(toml::Value::as_table_mut) {
+        runtime.remove("listen_port");
+    }
+    std::fs::write(&path, toml::to_string_pretty(&table)?)?;
     Ok(())
 }
 

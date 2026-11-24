@@ -17,7 +17,7 @@ def observe(pid):
         argv = [v.decode(errors="replace") for v in (proc / "cmdline").read_bytes().split(b"\0") if v]
         stat = (proc / "stat").read_text().rsplit(") ", 1)[1].split()
         return {"pid": pid, "birth": stat[19], "state": stat[0], "argv": argv}
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
 
 
