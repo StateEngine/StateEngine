@@ -1,5 +1,8 @@
 //! Protects: remote broker reuse cannot bypass current native binding/key protection or revoked source credentials.
-#![cfg(all(feature = "remote", target_os = "linux"))]
+#![cfg(all(
+    feature = "remote",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 use se_host::remote::*;
 use se_host::remote::{
     auth::VerifiedLocalOwner,
@@ -99,6 +102,7 @@ impl RemoteClient for Reader {
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
 fn actual_mcp_source_broker_refuses_loosened_key_and_revoked_credential() -> Check {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;
@@ -205,10 +209,15 @@ fn actual_mcp_source_broker_refuses_loosened_key_and_revoked_credential() -> Che
     let params=json!({"name":"stateengine_remote_list","arguments":{"host":"box","request":{"targets":[],"cursor":null,"limit":20,"budget":32768}}});
     for _ in 0..2 {let reply=rpc(port,"source-independent","tools/call",params.clone()).await?;require(reply.pointer("/result/structuredContent/schema").and_then(serde_json::Value::as_str)==Some(RemoteListResult::SCHEMA),format!("native remote list failed: {reply}"))?;}
     require(connector.connects.load(Ordering::Relaxed)==1,"source broker did not reuse its matching connection")?;
-    std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o644))?;
-    let loose=rpc(port,"source-independent","tools/call",params.clone()).await?;
-    std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600))?;
-    require(loose.get("error").is_some()||loose.pointer("/result/isError")==Some(&json!(true)),format!("loose key accepted: {loose}"))?;
+    #[cfg(unix)]
+    {
+        std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o644))?;
+        let loose=rpc(port,"source-independent","tools/call",params.clone()).await?;
+        std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600))?;
+        require(loose.get("error").is_some()||loose.pointer("/result/isError")==Some(&json!(true)),format!("loose key accepted: {loose}"))?;
+    }
+    #[cfg(not(unix))]
+    let _ = &path;
     let mut revoked=f.batch(f.owner_project(),Some(fixture::request("revoke-source")?),vec![EventBody::CredentialRevoked {credential,expected:revision(2)?,reason:InputText::Inline("independent public consumer revoke".into())}])?;
     revoked.admission.generation=runtime_generation;
     execution.writer.submit(revoked)?.await?;

@@ -1,5 +1,8 @@
 //! Bug: one paired machine claiming many source agents must not lock another machine's agents out of the destination.
-#![cfg(all(feature = "remote", target_os = "linux"))]
+#![cfg(all(
+    feature = "remote",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 use se_host::remote::auth::Security;
 use se_host::remote::*;
 use se_host::*;
