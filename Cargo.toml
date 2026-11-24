@@ -11,6 +11,7 @@ members = [
     "crates/se-store-sql",
     "crates/se-config",
     "crates/se-core",
+    "crates/se-atlas-records",
     "crates/se-cli-spec",
     "crates/se-proc",
     "crates/se-native-ipc",

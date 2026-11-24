@@ -20,13 +20,15 @@ pub fn next_with_paths<R: Snapshot>(
     admission: &Admission,
     after: Option<se_types::EventId>,
     resolve: &mut dyn FnMut(
-        &crate::ops::transcript::tool::ObservedPath,
+        &se_core::ops::transcript::tool::ObservedPath,
     ) -> Result<Option<RelativePath>>,
 ) -> Result<Option<RecordFeed>> {
     next_scoped(read, admission, after, Some(resolve))
 }
 type PathResolver<'a> = Option<
-    &'a mut dyn FnMut(&crate::ops::transcript::tool::ObservedPath) -> Result<Option<RelativePath>>,
+    &'a mut dyn FnMut(
+        &se_core::ops::transcript::tool::ObservedPath,
+    ) -> Result<Option<RelativePath>>,
 >;
 fn next_scoped<R: Snapshot>(
     read: &mut R,

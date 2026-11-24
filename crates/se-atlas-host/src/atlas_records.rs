@@ -1,6 +1,6 @@
 //! Check Atlas record hits against core's authoritative snapshot.
 use se_atlas::errors::AtlasResult;
-use se_core::atlas_records::RecordAccess;
+use se_atlas_records::RecordAccess;
 use se_store::{Admission, Snapshot};
 use se_types::{ProjectId, Read, SeError, code::*};
 use std::cell::RefCell;

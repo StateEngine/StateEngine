@@ -1,7 +1,7 @@
 //! Only committed, bound native successful path tools become edit activity.
 //! Prose, shell text, intents and opaque revisions never establish authorship.
 use super::*;
-use crate::ops::transcript::{Record, tool::*};
+use se_core::ops::transcript::{Record, tool::*};
 use sha2::Digest;
 pub(super) struct Successful(Observation);
 impl Successful {

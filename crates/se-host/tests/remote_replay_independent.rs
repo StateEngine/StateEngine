@@ -212,7 +212,7 @@ fn verify_atlas_landing(
         kind: RecordKind::Message,
         source_event: first.primary_event.clone(),
     };
-    let mut records = se_core::atlas_records::RecordAccess::new(&mut snapshot, &scope.admission);
+    let mut records = se_atlas_records::RecordAccess::new(&mut snapshot, &scope.admission);
     let hit = present(records.hit(
         &f.project,
         &AtlasPrincipal::Agent(f.a.clone()),

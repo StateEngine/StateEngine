@@ -72,7 +72,6 @@
   "crates/se-store/src/import": 7,
   "crates/se/src/route/init": 6,
   "crates/se-atlas/src/render": 6,
-  "crates/se-core/src/atlas_records": 6,
   "crates/se-core/src/ops/process_commit": 6,
   "crates/se-harness/src/harness/acp": 6,
   "crates/se-harness/src/harness/secode": 6,

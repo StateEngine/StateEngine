@@ -117,6 +117,7 @@ path = "tests/lifecycle_read_custody_independent.rs"
 required-features = ["channels"]
 
 [dev-dependencies]
+se-atlas-records = { path = "../se-atlas-records" }
 se-channels = { path = "../se-channels", features = ["test-fixture"] }
 rusqlite = { version = "0.41", features = ["hooks"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "io-util"] }

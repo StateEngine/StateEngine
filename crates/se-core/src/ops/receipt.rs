@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 /// Imported user history reports its original time. Commit receipts continue
 /// to report the separately retained native recording time.
-pub(crate) fn event_time(event: &StoredEvent) -> i64 {
+pub fn event_time(event: &StoredEvent) -> i64 {
     if event.header.door == se_store::Door::Import {
         event.header.occurred_at_us
     } else {

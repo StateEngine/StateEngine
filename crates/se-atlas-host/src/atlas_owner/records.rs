@@ -37,7 +37,7 @@ pub fn chunk(host: &dyn AtlasHost, owner: &HumanId, root: &Root) -> Result<Fed> 
         .map_err(|e| store_error(&e))?;
     let result = (|| {
         let after = root.feed_cursor()?;
-        let feed = se_core::atlas_records::feed::next_with_paths(
+        let feed = se_atlas_records::feed::next_with_paths(
             &mut snapshot,
             &admitted,
             after,
