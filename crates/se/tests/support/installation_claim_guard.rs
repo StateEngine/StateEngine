@@ -10,6 +10,7 @@ use std::{
     fs::{File, OpenOptions, TryLockError},
     io,
     path::{Path, PathBuf},
+    process::Output,
     time::{Duration, Instant},
 };
 
@@ -81,5 +82,46 @@ pub fn acquire() -> Result<Guard, Box<dyn std::error::Error>> {
                 .into());
             }
         }
+    }
+}
+
+/// The product's pre-write refusal when another process holds the account claim.
+///
+/// The guard serializes only test processes that take it; a real installer, an
+/// older checkout or a harness script can still hold the claim. This refusal
+/// changed nothing and the product marks it retryable. Every other refusal,
+/// including other conflicts, stays the caller's verdict.
+#[allow(
+    dead_code,
+    reason = "shared guard; only suites that read CLI refusals call this"
+)]
+pub fn contended(output: &Output) -> bool {
+    output.status.code() == Some(1)
+        && serde_json::from_slice::<serde_json::Value>(&output.stdout).is_ok_and(|row| {
+            row["code"] == "state-conflict"
+                && row["detail"]["subject"]
+                    .as_str()
+                    .is_some_and(|subject| subject.starts_with("installation lock "))
+                && row["detail"]["reason"]
+                    == "Native installation custody is contended by another operation"
+        })
+}
+
+/// Rerun `call` while an outside holder keeps the account claim, for at most
+/// thirty seconds; the last output is returned unchanged either way.
+#[allow(
+    dead_code,
+    reason = "shared guard; only suites that read CLI refusals call this"
+)]
+pub fn retry_contended(
+    mut call: impl FnMut() -> io::Result<Output>,
+) -> Result<Output, Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let output = call()?;
+        if !contended(&output) || Instant::now() >= deadline {
+            return Ok(output);
+        }
+        std::thread::sleep(POLL);
     }
 }

@@ -136,14 +136,15 @@ impl Fixture {
             &self.owner.join(".codex"),
             &self.config,
         );
-        let output = command
+        command
             .env("XDG_CONFIG_HOME", self.owner.join("config"))
             .env("SE_CONFIG", &self.state_config)
             .args(["--json", "--home"])
             .arg(&self.home)
             .args(args)
-            .current_dir(&self.repo)
-            .output()?;
+            .current_dir(&self.repo);
+        // The guard cannot exclude a claim holder that never takes it.
+        let output = installation_claim_guard::retry_contended(|| command.output())?;
         assert!(
             output.status.success(),
             "{args:?}: {} {}",

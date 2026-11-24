@@ -81,15 +81,7 @@ pub fn uninstall(image: &Path, f: &Fixture) -> Result<Output, Box<dyn std::error
         // The native claim is account-wide even with a private HOME. Only its
         // pre-write contention refusal permits another attempt; all custody
         // and filesystem refusals remain the test's original result.
-        let busy = output.status.code() == Some(1)
-            && json(&output).is_ok_and(|row| {
-                row["code"] == "state-conflict"
-                    && row["detail"]["subject"]
-                        .as_str()
-                        .is_some_and(|subject| subject.starts_with("installation lock "))
-                    && row["detail"]["reason"]
-                        == "Native installation custody is contended by another operation"
-            });
+        let busy = crate::installation_claim_guard::contended(&output);
         if !busy || Instant::now() >= until {
             break output;
         }
