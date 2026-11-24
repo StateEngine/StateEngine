@@ -112,6 +112,19 @@ def save(path, value):
     temporary.replace(path)
 
 
+def canonical_image(path):
+    if not isinstance(path, str) or not path:
+        return None
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        return None
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError:
+        return None
+    return os.path.normcase(str(resolved))
+
+
 def raw_census():
     if sys.platform == 'linux':
         rows = []
@@ -120,9 +133,13 @@ def raw_census():
                 continue
             try:
                 fields = (path / 'stat').read_text().rsplit(') ', 1)[1].split()
+                try:
+                    exe = os.readlink(path / 'exe')
+                except (FileNotFoundError, ProcessLookupError, PermissionError, OSError):
+                    exe = None
                 rows.append(dict(pid=int(path.name), parent=int(fields[1]), birth=fields[19],
                                  state=fields[0], command=(path / 'cmdline').read_bytes()
-                                 .replace(b'\0', b' ').decode(errors='replace')))
+                                 .replace(b'\0', b' ').decode(errors='replace'), exe=exe))
             except (FileNotFoundError, ProcessLookupError):
                 continue
             except PermissionError:
@@ -150,7 +167,8 @@ def raw_census():
         and isinstance(row.get('state'), str) and bool(row['state'])
         and row.get('owner_state') in ('not-required', 'foreign', 'current-user', 'unreadable', 'exited')
         and (row.get('birth') is None or isinstance(row['birth'], str))
-        and (row.get('command') is None or isinstance(row['command'], str)) for row in values)
+        and (row.get('command') is None or isinstance(row['command'], str))
+        and (row.get('exe') is None or isinstance(row['exe'], str)) for row in values)
         and len({row['pid'] for row in values}) == len(values), 'Native process inventory is incomplete')
     return values
 
@@ -179,6 +197,7 @@ class Observer:
         self.known = set()
         self.baseline = frozenset()
         self.baseline_evidence = None
+        self.last_observation = None
         if sys.platform == 'win32':
             rows = raw_census() if baseline_rows is None else baseline_rows
             require(rows and all(type(row.get('pid')) is int and row['pid'] >= 0
@@ -191,12 +210,76 @@ class Observer:
                                           for row in rows])
             save(output / 'process-baseline.json', self.baseline_evidence)
 
-    def observe(self, pid=None):
+    def _record_observation(self, facts):
+        self.last_observation = facts
+        return facts
+
+    def _verify_pid(self, rows, pid, expected_exe=None):
+        expected = None if expected_exe is None else str(expected_exe)
+        row = next((item for item in rows if item['pid'] == pid), None)
+        if row is None or row['state'].startswith(('Z', 'X', 'x')):
+            facts = self._record_observation(dict(
+                state='absent', pid=pid, expected_exe=expected,
+                observed_state=None if row is None else row.get('state'),
+            ))
+            raise RuntimeError('Observed process is absent: ' + json.dumps(facts, sort_keys=True))
+        birth = row.get('birth')
+        exe = row.get('exe')
+        command = row.get('command')
+        if not birth:
+            facts = self._record_observation(dict(
+                state='unreadable', reason='creation identity is unreadable',
+                pid=pid, birth=birth, exe=exe, expected_exe=expected,
+                owner_state=row.get('owner_state'),
+            ))
+            raise RuntimeError('Observed process identity is unreadable: ' + json.dumps(facts, sort_keys=True))
+        previous = [known_birth for known_pid, known_birth in self.known if known_pid == pid]
+        if previous and birth not in previous:
+            facts = self._record_observation(dict(
+                state='mismatched', reason='creation identity changed',
+                pid=pid, birth=birth, previous_births=sorted(previous),
+                exe=exe, expected_exe=expected,
+            ))
+            raise RuntimeError('Observed process identity changed: ' + json.dumps(facts, sort_keys=True))
+        if expected_exe is not None and sys.platform in ('win32', 'linux'):
+            if not exe:
+                facts = self._record_observation(dict(
+                    state='unreadable', reason='native executable path is unreadable',
+                    pid=pid, birth=birth, exe=exe, expected_exe=expected,
+                    owner_state=row.get('owner_state'),
+                ))
+                raise RuntimeError('Observed process image is unreadable: ' + json.dumps(facts, sort_keys=True))
+            observed_image = canonical_image(exe)
+            expected_image = canonical_image(expected)
+            if observed_image is None or expected_image is None:
+                facts = self._record_observation(dict(
+                    state='unreadable', reason='native executable path could not be resolved',
+                    pid=pid, birth=birth, exe=exe, expected_exe=expected,
+                    owner_state=row.get('owner_state'),
+                ))
+                raise RuntimeError('Observed process image is unreadable: ' + json.dumps(facts, sort_keys=True))
+            if observed_image != expected_image:
+                facts = self._record_observation(dict(
+                    state='mismatched', reason='native executable path differs from installed image',
+                    pid=pid, birth=birth, exe=exe, expected_exe=expected,
+                ))
+                raise RuntimeError('Observed process image differs: ' + json.dumps(facts, sort_keys=True))
+        elif expected_exe is None and not command:
+            facts = self._record_observation(dict(
+                state='unreadable', reason='command identity is unreadable',
+                pid=pid, birth=birth, exe=exe, expected_exe=expected,
+                owner_state=row.get('owner_state'),
+            ))
+            raise RuntimeError('Owned process identity is unreadable: ' + json.dumps(facts, sort_keys=True))
+        self.known.add((pid, birth))
+        self._record_observation(dict(
+            state='matched', pid=pid, birth=birth, exe=exe, expected_exe=expected,
+        ))
+
+    def observe(self, pid=None, *, expected_exe=None):
         rows = census(self.baseline)
         if pid is not None:
-            row = next((row for row in rows if row['pid'] == pid), None)
-            require(row and row['birth'] and row['command'], 'Owned process identity is unreadable')
-            self.known.add((pid, row['birth']))
+            self._verify_pid(rows, pid, expected_exe=expected_exe)
         while True:
             parents = {row['pid']: row['birth'] for row in rows
                        if (row['pid'], row['birth']) in self.known}

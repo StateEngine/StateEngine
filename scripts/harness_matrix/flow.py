@@ -246,7 +246,7 @@ class Smoke:
                                                for name in ('project', 'agent_id', 'human_id'))
         self.call(['up'], 'up', project=False)
         status = self.call(['status'], 'status')
-        self.commands.observer.observe(status['runtime']['process']['pid'])
+        self.commands.observer.observe(status['runtime']['process']['pid'], expected_exe=self.binary)
 
     def exercise(self):
         secret, work, mail, recall = [str(uuid.uuid4()) for _ in range(4)]

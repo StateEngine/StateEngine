@@ -50,6 +50,17 @@ class Journeys(Smoke):
         if self.foreground:
             self.foreground.start(phase)
 
+    def observe_host(self, label):
+        if self.foreground is not None:
+            return
+        status = self.call(['status'], label)
+        runtime = status.get('runtime') or {}
+        process = runtime.get('process') or {}
+        pid = process.get('pid')
+        require(isinstance(pid, int) and pid > 0,
+                'Runtime status did not publish a host PID: ' + json.dumps(runtime, sort_keys=True))
+        self.commands.observer.observe(pid, expected_exe=self.binary)
+
     def observe_runtime_exit(self):
         if self.foreground:
             self.foreground.observe_exit()
@@ -195,6 +206,7 @@ class Journeys(Smoke):
         self.secret, work = str(uuid.uuid4()), str(uuid.uuid4())
         task = f'Remember {self.secret}. Write {work} plus newline to work.txt. Reply {work}.'
         launched = self.launch(['launch', self.agent, '--detach', '--task', task], 'real-work')
+        self.observe_host('host-identity-j2')
         require(launched['permission_profile'] == self.settings['permission_profile'],
                 'Actual native permission profile differs')
         self.initial = dict(conversation=launched['conversation_id'], session=launched['session_id'])
@@ -224,6 +236,7 @@ class Journeys(Smoke):
         require(self.secret not in prompt, 'Recall prompt disclosed its expected answer')
         self.start_runtime('J3')
         self.launch(['--task', prompt], 'public-reopen', reopen=shown['resume']['argv'])
+        self.observe_host('host-identity-j3')
         value = self.file_turn(reply, 'recalled.txt', (self.secret + '\n').encode(), self.initial)
         self.remember(value, 'recalled.txt')
         require(value['capture']['session'] != self.initial['session'], 'Reopen retained the old runtime session')
