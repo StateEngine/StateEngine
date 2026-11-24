@@ -32,8 +32,7 @@ impl EndpointPublication {
         let mut file = staged.file;
         file.write_all(bytes.as_bytes())
             .map_err(|e| io_error("write staged endpoint", e))?;
-        file.sync_all()
-            .map_err(|e| io_error("sync staged endpoint", e))?;
+        // Publication flushes the staged data before moving its name.
         drop(file);
         lease
             .files()

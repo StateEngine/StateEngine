@@ -128,6 +128,9 @@ pub(super) fn store(
         .map_err(|e| error("publish executable cache deadline", e))?;
     let target = root.join(name);
     match prior {
+        // A warm start of the same image measures the same entry; the
+        // protected readback already holds these exact bytes.
+        Some(prior) if prior == bytes => {}
         Some(prior) => {
             let file = OwnedFile::open(&target)
                 .map_err(|e| error("pin prior executable cache", std::io::Error::other(e)))?
@@ -149,10 +152,10 @@ pub(super) fn store(
             let mut staged = files
                 .create_staging(root)
                 .map_err(|e| error("stage executable cache", std::io::Error::other(e)))?;
+            // Publication flushes the staged data before moving its name.
             staged
                 .file
                 .write_all(&bytes)
-                .and_then(|()| staged.file.sync_all())
                 .map_err(|e| error("write executable cache staging", e))?;
             drop(staged.file);
             files
