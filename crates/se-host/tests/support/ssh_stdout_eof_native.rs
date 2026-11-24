@@ -5,11 +5,13 @@
 //! children, so its own handles are the only write ends; closing them is what
 //! an independent reader must witness as EOF, not a call assumed to be one.
 //! Census mode opens one pid from a separate process and reports whether that
-//! exact child is present.
+//! exact child is still running: a terminated child is gone once it stops,
+//! even while its process object outlives termination on a loaded machine.
 use std::io::Write;
 
 unsafe extern "system" {
     fn CloseHandle(handle: isize) -> i32;
+    fn GetExitCodeProcess(hprocess: isize, lpxitcode: *mut u32) -> i32;
     fn GetStdHandle(nstdhandle: i32) -> isize;
     fn OpenProcess(dwdesiredaccess: u32, binherithandle: i32, dwprocessid: u32) -> isize;
     fn GetLastError() -> u32;
@@ -20,6 +22,8 @@ const STD_ERROR_HANDLE: i32 = -12;
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
 const PROCESS_SYNCHRONIZE: u32 = 0x0010;
 const ERROR_INVALID_PARAMETER: u32 = 87;
+/// A live process reports this exit code until it terminates.
+const STILL_ACTIVE: u32 = 0x103;
 
 fn main() -> std::process::ExitCode {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
@@ -100,9 +104,22 @@ fn census(args: &[std::ffi::OsString]) -> std::process::ExitCode {
     if handle == 0 {
         return std::process::ExitCode::from(2);
     }
-    // SAFETY: a live process handle returned by the OpenProcess above.
+    let mut exit_code = 0u32;
+    // SAFETY: a live process handle from the OpenProcess above; the query is
+    // read-only and the exit-code buffer is owned by this call.
+    let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
     unsafe { CloseHandle(handle) };
-    std::process::ExitCode::from(1)
+    if queried == 0 {
+        return std::process::ExitCode::from(2);
+    }
+    if exit_code == STILL_ACTIVE {
+        // The exact child is still running.
+        std::process::ExitCode::from(1)
+    } else {
+        // Terminated: once the child stops, cleanup is done, even while its
+        // process object lingers for teardown on a loaded machine.
+        std::process::ExitCode::from(0)
+    }
 }
 
 fn arg_after(args: &[std::ffi::OsString], flag: &str) -> Option<String> {

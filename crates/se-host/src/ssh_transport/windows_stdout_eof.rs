@@ -189,8 +189,9 @@ fn deadline_detail(error: SeError) -> (String, String) {
     }
 }
 
-/// Outside census: a separate process must witness the exact child absent.
-/// A bounded retry absorbs termination delay; a live pid is a real failure.
+/// Outside census: a separate process must witness the exact child stopped.
+/// A terminated child is gone even while its process object lingers; a
+/// still-running pid past the bound is a real failure.
 fn assert_absent(exe: &Path, pid: u32) {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
