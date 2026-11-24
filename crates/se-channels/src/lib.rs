@@ -31,7 +31,7 @@ mod test_directory;
 pub use control::{Connected, Disconnected, PairingTicket};
 pub use coverage::{ReceiveCoverage, ReceiveGap, ReceiveGapReason};
 pub use credentials::NativeChannelCredentials;
-pub use descriptor::{ActionButton, ConnectorDescriptor, SetupField};
+pub use descriptor::{ActionButton, ConnectorCapabilities, ConnectorDescriptor, SetupField};
 pub use discord::Discord;
 #[cfg(all(target_os = "linux", feature = "test-fixture"))]
 pub use discord::test_fixture as discord_test_fixture;

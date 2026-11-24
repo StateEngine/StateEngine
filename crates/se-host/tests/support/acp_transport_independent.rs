@@ -410,7 +410,7 @@ async fn stderr_preserves_count_prefix_and_failure_completeness() -> Check {
         ready(|| {
             f.connection
                 .diagnostics()
-                .is_ok_and(|d| d.stderr_bytes == 70000 && (failed || d.stderr_complete))
+                .is_ok_and(|d| d.stderr_bytes == 70000 && (failed || d.stderr_status.complete))
         })
         .await?;
         if failed {
@@ -418,8 +418,8 @@ async fn stderr_preserves_count_prefix_and_failure_completeness() -> Check {
         }
         let diagnostics = f.connection.diagnostics()?;
         assert_eq!(diagnostics.stderr_prefix.len(), 65536);
-        assert!(diagnostics.stderr_truncated);
-        assert_eq!(diagnostics.stderr_complete, !failed);
+        assert!(diagnostics.stderr_status.truncated);
+        assert_eq!(diagnostics.stderr_status.complete, !failed);
         f.stop().await?;
     }
     Ok(())

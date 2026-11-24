@@ -39,11 +39,12 @@ pub enum Message {
         outcome: Result<Value>,
     },
 }
+#[derive(Clone, Copy, Default)]
+pub struct StderrStatus {
+    pub complete: bool,
+    pub truncated: bool,
+}
 #[derive(Clone, Default)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub struct Diagnostics {
     pub stdout_terminal: bool,
     pub stdout_complete: bool,
@@ -51,8 +52,7 @@ pub struct Diagnostics {
     /// Private diagnostics can contain provider secrets; never render these bytes publicly.
     pub stderr_prefix: Vec<u8>,
     pub stderr_bytes: u64,
-    pub stderr_complete: bool,
-    pub stderr_truncated: bool,
+    pub stderr_status: StderrStatus,
     pub failure: Option<ErrorBody>,
 }
 struct Pending {
@@ -415,9 +415,9 @@ impl Connection {
                 diagnostics
                     .stderr_prefix
                     .extend_from_slice(&bytes[..bytes.len().min(remaining)]);
-                diagnostics.stderr_truncated |= bytes.len() > remaining;
+                diagnostics.stderr_status.truncated |= bytes.len() > remaining;
                 if let Some(terminal) = terminal {
-                    diagnostics.stderr_complete = terminal.is_none();
+                    diagnostics.stderr_status.complete = terminal.is_none();
                     drop(diagnostics);
                     return terminal.map_or(Ok(()), |body| Err(SeError::from(body)));
                 }

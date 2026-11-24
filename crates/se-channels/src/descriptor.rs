@@ -2,19 +2,20 @@
 use super::*;
 use serde::Serialize;
 
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct ConnectorCapabilities {
+    pub edits: bool,
+    pub threads: bool,
+    pub media: bool,
+}
 #[derive(Clone, Debug, Serialize)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub struct ConnectorDescriptor {
     pub connector: Connector,
     pub name: &'static str,
     pub max_text_utf16: usize,
-    pub edits: bool,
+    #[serde(flatten)]
+    pub capabilities: ConnectorCapabilities,
     pub buttons: bool,
-    pub threads: bool,
-    pub media: bool,
     pub identity_proof: &'static str,
     pub acknowledgement: &'static str,
     pub reconnect: &'static str,
