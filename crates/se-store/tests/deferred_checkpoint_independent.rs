@@ -227,6 +227,8 @@ fn observe_pressure(f: &Fixture, writer: &mut SqliteWriter, deadline: Instant) -
         assert_eq!(refused.code, StoreErrorCode::Busy);
         assert!(refused.cause.contains("64 MiB"));
         assert!(refused.cause.contains("release pinned readers"));
+        // Only the reader held the WAL; the refusal must not also blame a backup.
+        assert!(!refused.cause.contains("backup"), "{}", refused.cause);
         assert_eq!(wal(&outside)?.2, before, "refused append grew live WAL");
         assert_eq!(
             outside.query_row("SELECT max(seq) FROM events", [], |r| r.get::<_, i64>(0))?,
