@@ -57,6 +57,7 @@ pub mod setup;
 pub(crate) mod startup_retry;
 #[path = "route/status.rs"]
 mod status;
+mod status_dispatch;
 #[path = "route/uninstall.rs"]
 pub mod uninstall;
 
