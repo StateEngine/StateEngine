@@ -162,13 +162,6 @@ fn is_injected_missing_path(error: &se_types::SeError, state: &std::path::Path) 
 #[cfg(target_os = "linux")]
 /// Protects: G6 — emptying the SQL cache cannot rebind the host to a replaced database.
 #[test]
-#[cfg_attr(
-    target_os = "linux",
-    expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )
-)]
 fn real_http_refuses_a_replaced_inode_even_after_its_first_refusal_empties_idle() -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;
@@ -185,100 +178,33 @@ fn real_http_refuses_a_replaced_inode_even_after_its_first_refusal_empties_idle(
         let port = host.http_port().ok_or("HTTP port absent")?;
         let stop = host.local_stop();
         let consumer = async {
-            let result: Check = async {
-                require(
-                    working(port)
-                        .await?
-                        .to_string()
-                        .contains("pool-private-marker"),
-                    "warm call never observed the real project",
-                )?;
-                let path = f.options.state_directory.join("state.db");
-                let original = f.options.state_directory.join("retained-original.db");
-                fs::rename(&path, &original)?;
-                // Observe the actual missing-path window before publishing the
-                // replacement; no scheduler timing is needed to exercise it.
-                let absent = working(port).await;
-                let copied = fs::copy(&original, &path);
-                let checked: Check = async {
-                    copied?;
-                    let output = absent?;
-                    require(
-                        output["result"]["isError"] == true
-                            && !output.to_string().contains("pool-private-marker"),
-                        format!("missing database was admitted: {output}"),
-                    )?;
-                    for _ in 0..3 {
-                        let output = working(port).await?;
-                        require(
-                            output["result"]["isError"] == true
-                                && !output.to_string().contains("pool-private-marker"),
-                            format!("replacement was admitted: {output}"),
-                        )?;
-                    }
-                    Ok(())
-                }
-                .await;
-                if path.try_exists()? {
-                    fs::remove_file(&path)?;
-                }
-                fs::rename(&original, &path)?;
-                checked?;
-                require(
-                    working(port)
-                        .await?
-                        .to_string()
-                        .contains("pool-private-marker"),
-                    "restored original identity did not recover",
-                )
-            }
-            .await;
+            let result = replacement_is_refused(port, &f.options.state_directory).await;
             stop.request();
             result
         };
         let (exit, result) = join(host.serve(listener), consumer).await;
         // The channel worker may observe either the deliberate pathname gap or
         // the replacement inode. Retain either exact refusal, not unrelated errors.
-        let expected_missing = format!(
-            "database metadata name disappeared at {}: SourceChanged",
-            f.options.state_directory.join("state.db").display(),
-        );
-        let expected_reason = format!(
-            "database metadata identity changed at {}: SourceChanged",
-            f.options.state_directory.join("state.db").display(),
-        );
-        // The retained reader can refuse the same replacement through its own
-        // open path, carrying the opened file identity in its context.
-        let expected_identity = format!(
-            "database file identity changed; path=\"state.db\", opened_path=\"{state_db}\", stage=Open, sqlite_extended_code=unavailable, native_os_code=unavailable",
-            state_db = f.options.state_directory.join("state.db").display(),
-        );
-        let expected = match &exit.failure {
-            None => Ok(Vec::new()),
-            Some(error)
-                if is_injected_missing_path(error, &f.options.state_directory)
-                    || matches!(error.body.detail(), se_types::Detail::SourceUnreadable(detail)
-                    if detail.subject == "store SourceChanged"
-                        && (detail.reason == expected_reason
-                            || detail.reason == expected_missing
-                            || detail.reason == expected_identity)) =>
-            {
-                eprintln!("retained injected database pathname refusal observed");
-                Ok(vec![error.to_string()])
-            }
-            Some(error) => Err(format!("unexpected host failure: {error}")),
-        };
+        let expected = expected_refusal(exit.failure.as_ref(), &f.options.state_directory);
         let report = exit.finish(&bound()?).await;
         let expected = expected?;
         require(
             report.transport_closed
                 && report.endpoint_retired
                 && report.pending == expected
-                && report.errors.iter().map(ToString::to_string).collect::<Vec<_>>() == expected
+                && report
+                    .errors
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    == expected
                 && matches!(&report.storage, Read::Present { value }
                     if value.writer_joined && value.pending.is_empty()
                         && matches!(&value.backup, Read::Present { .. })),
-            format!("replacement fixture cleanup incomplete: {:?}", report.pending),
+            format!(
+                "replacement fixture cleanup incomplete: {:?}",
+                report.pending
+            ),
         )?;
         drop(report);
         // Reacquire the native lease after the returned runtime is dropped.
@@ -290,6 +216,96 @@ fn real_http_refuses_a_replaced_inode_even_after_its_first_refusal_empties_idle(
         lease.try_lock()?;
         result
     })
+}
+
+/// Replace the open database pathname with a copy: the missing path and the
+/// copy are both refused without leaking project data, and the restored
+/// original recovers.
+#[cfg(target_os = "linux")]
+async fn replacement_is_refused(port: u16, state: &std::path::Path) -> Check {
+    require(
+        working(port)
+            .await?
+            .to_string()
+            .contains("pool-private-marker"),
+        "warm call never observed the real project",
+    )?;
+    let path = state.join("state.db");
+    let original = state.join("retained-original.db");
+    fs::rename(&path, &original)?;
+    // Observe the actual missing-path window before publishing the
+    // replacement; no scheduler timing is needed to exercise it.
+    let absent = working(port).await;
+    let copied = fs::copy(&original, &path);
+    let checked: Check = async {
+        copied?;
+        let output = absent?;
+        require(
+            output["result"]["isError"] == true
+                && !output.to_string().contains("pool-private-marker"),
+            format!("missing database was admitted: {output}"),
+        )?;
+        for _ in 0..3 {
+            let output = working(port).await?;
+            require(
+                output["result"]["isError"] == true
+                    && !output.to_string().contains("pool-private-marker"),
+                format!("replacement was admitted: {output}"),
+            )?;
+        }
+        Ok(())
+    }
+    .await;
+    if path.try_exists()? {
+        fs::remove_file(&path)?;
+    }
+    fs::rename(&original, &path)?;
+    checked?;
+    require(
+        working(port)
+            .await?
+            .to_string()
+            .contains("pool-private-marker"),
+        "restored original identity did not recover",
+    )
+}
+
+/// The exact refusal the host may retain for the deliberate pathname gap or
+/// the replacement inode; any other host failure is unexpected.
+#[cfg(target_os = "linux")]
+fn expected_refusal(
+    failure: Option<&se_types::SeError>,
+    state: &std::path::Path,
+) -> Result<Vec<String>, String> {
+    let expected_missing = format!(
+        "database metadata name disappeared at {}: SourceChanged",
+        state.join("state.db").display(),
+    );
+    let expected_reason = format!(
+        "database metadata identity changed at {}: SourceChanged",
+        state.join("state.db").display(),
+    );
+    // The retained reader can refuse the same replacement through its own
+    // open path, carrying the opened file identity in its context.
+    let expected_identity = format!(
+        "database file identity changed; path=\"state.db\", opened_path=\"{state_db}\", stage=Open, sqlite_extended_code=unavailable, native_os_code=unavailable",
+        state_db = state.join("state.db").display(),
+    );
+    match failure {
+        None => Ok(Vec::new()),
+        Some(error)
+            if is_injected_missing_path(error, state)
+                || matches!(error.body.detail(), se_types::Detail::SourceUnreadable(detail)
+                if detail.subject == "store SourceChanged"
+                    && (detail.reason == expected_reason
+                        || detail.reason == expected_missing
+                        || detail.reason == expected_identity)) =>
+        {
+            eprintln!("retained injected database pathname refusal observed");
+            Ok(vec![error.to_string()])
+        }
+        Some(error) => Err(format!("unexpected host failure: {error}")),
+    }
 }
 
 /// Protects: G6 — host drain joins active pooled reads before storage closure.

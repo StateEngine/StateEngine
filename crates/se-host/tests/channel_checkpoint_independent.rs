@@ -117,10 +117,6 @@ impl OpaqueTransport {
         self.lock()?.failed_before_delivery = true;
         Ok(())
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     fn before_ack(&self, input: &Incoming) -> Check {
         // Never inspect the host's reader or a fixture writer: ACK must see the
         // commit through a separately opened public SQLite control connection.
@@ -159,36 +155,17 @@ impl OpaqueTransport {
             "replay duplicated or lost the saved receipt",
         )?;
         let row = &saved.items[0];
-        let event = present(snapshot.event(row.event.clone())?)?;
-        let EventBody::ChannelRecorded {
-            change:
-                Change::UpdateHandled {
-                    connection,
-                    update,
-                    cursor,
-                    disposition:
-                        Disposition::Saved {
-                            receipt,
-                            message,
-                            subject,
-                            private_chat,
-                        },
-                    ..
-                },
-        } = event.body
-        else {
-            return Err("saved receipt has no committed Saved disposition".into());
-        };
-        require(
-            connection == id
-                && update == input.update
-                && cursor.as_ref().map(ReceiveCursor::as_str) == Some(SAVE_CURSOR)
-                && receipt == row.receipt
-                && message == row.message
-                && subject.as_str() == "42"
-                && private_chat.as_str() == "42",
-            "Saved disposition does not identify the exact original input",
-        )?;
+        saved_disposition(&mut snapshot, &id, input, row)?;
+        self.saved_mail(&mut snapshot, &id, row)?;
+        self.original_retained(input, row)
+    }
+    /// Exactly one Owner mail with the original body, unread and unanswered.
+    fn saved_mail<S: Snapshot>(
+        &self,
+        snapshot: &mut S,
+        id: &channel::ChannelId,
+        row: &SavedUpdate,
+    ) -> Check {
         require(
             snapshot.message_count(query(None, false))? == 1,
             "replay duplicated or lost ordinary mail",
@@ -198,7 +175,7 @@ impl OpaqueTransport {
             mail.sender == self.scope.admission.actor,
             "saved mail is not from the approved Owner",
         )?;
-        let state = present(snapshot.channel_connection(&id)?)?;
+        let state = present(snapshot.channel_connection(id)?)?;
         require(
             mail.recipient == Actor::Agent(state.target.agent)
                 && matches!(mail.body, StoredText::Present(ref body) if body == BODY)
@@ -209,11 +186,15 @@ impl OpaqueTransport {
             mail.read.is_none() && mail.reply_to.is_none(),
             "receiver fabricated a mail read or reply",
         )?;
-        let replies = snapshot.channel_replies(&id, &row.message)?;
+        let replies = snapshot.channel_replies(id, &row.message)?;
         require(
             replies.items.is_empty() && replies.omitted == 0,
             "receiver fabricated linked reply output",
         )?;
+        Ok(())
+    }
+    /// A replayed Saved ACK keeps the first ACK's receipt, mail and event.
+    fn original_retained(&self, input: &Incoming, row: &SavedUpdate) -> Check {
         let mut observed = self.lock()?;
         if let Some(original) = &observed.original {
             require(
@@ -453,10 +434,6 @@ async fn inspect(
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn receiver_reconnect_commits_opaque_replay_checkpoint_before_ack_without_duplicate_mail() -> Check
 {
     let f = Fixture::new()?;
@@ -505,97 +482,7 @@ fn receiver_reconnect_commits_opaque_replay_checkpoint_before_ack_without_duplic
             .1;
         let stop = host.local_stop();
         let client = async {
-            let work = async {
-                provider.enqueue(Step::Deliver {
-                    input: incoming(PAIR_UPDATE, PAIR_CURSOR, format!("/start {challenge}"))?,
-                    fail_ack: false,
-                })?;
-                provider.wait_for(|o| o.acks.len() == 1).await?;
-                let awaiting = inspect(&channels, &id).await?;
-                let state = awaiting.connections.first().ok_or("pairing state absent")?;
-                require(
-                    matches!(state.pairing, PairingPresentation::AwaitingApproval { .. }),
-                    "public channel did not expose pairing approval",
-                )?;
-                channels
-                    .confirm_pairing(
-                        ConfirmPairing {
-                            connection: id.clone(),
-                            expected_pairing_revision: state.revision,
-                            key: IdempotencyKey::new("opaque-checkpoint-pair")?,
-                        },
-                        &bound()?,
-                    )
-                    .await?;
-                provider.enqueue(Step::FailBeforeDelivery(incoming(
-                    MAIL_UPDATE,
-                    SAVE_CURSOR,
-                    BODY.into(),
-                )?))?;
-                provider.wait_for(|o| o.acks.len() == 3).await?;
-                {
-                    let observed = provider.lock()?;
-                    require(
-                        observed.failed_before_delivery,
-                        "pre-delivery failure not witnessed",
-                    )?;
-                    require(
-                        observed.starts.len() == 3,
-                        "both receiver reconnects not witnessed",
-                    )?;
-                    require(
-                        observed
-                            .acks
-                            .iter()
-                            .map(|(cursor, failed)| (cursor.as_str(), *failed))
-                            .collect::<Vec<_>>()
-                            == vec![
-                                (PAIR_CURSOR, false),
-                                (SAVE_CURSOR, true),
-                                (REPLAY_CURSOR, false),
-                            ],
-                        "wrong ACK order or ACK failure boundary",
-                    )?;
-                }
-                let page = inspect(&channels, &id).await?;
-                require(
-                    page.receipts.len() == 1,
-                    "public channel duplicated or lost Saved receipt",
-                )?;
-                let receipt = &page.receipts[0];
-                {
-                    let observed = provider.lock()?;
-                    let original = observed
-                        .original
-                        .as_ref()
-                        .ok_or("original receipt absent")?;
-                    require(
-                        receipt.id == original.receipt
-                            && receipt.message == original.message
-                            && receipt.saved.event == original.event,
-                        "public receipt changed across replay",
-                    )?;
-                }
-                require(
-                    receipt.read.is_none()
-                        && receipt.replies.is_empty()
-                        && receipt.replies_omitted == 0,
-                    "Save only fabricated a public read or linked reply",
-                )?;
-                require(
-                    matches!(receipt.notice, NoticeFact::Pending { .. }),
-                    "unlaunched agent was reported to have received the mail",
-                )?;
-                require(
-                    provider.delegate.replies()?.is_empty(),
-                    "provider received a fabricated linked reply",
-                )?;
-                // A final fresh reader witnesses the NEW replay checkpoint, not
-                // just the original Saved event's intentionally unchanged cursor.
-                provider.before_ack(&incoming(MAIL_UPDATE, REPLAY_CURSOR, BODY.into())?)?;
-                Ok::<_, Box<dyn std::error::Error>>(())
-            }
-            .await;
+            let work = pair_then_replay(&provider, &channels, &id, challenge).await;
             stop.request();
             work
         };
@@ -607,4 +494,140 @@ fn receiver_reconnect_commits_opaque_replay_checkpoint_before_ack_without_duplic
         )?;
         result
     })
+}
+
+/// Pair, fail once before delivery and once after the committed save, then
+/// witness the public receipt and the replay checkpoint through fresh readers.
+async fn pair_then_replay(
+    provider: &OpaqueTransport,
+    channels: &Channels,
+    id: &ChannelId,
+    challenge: &str,
+) -> Check {
+    provider.enqueue(Step::Deliver {
+        input: incoming(PAIR_UPDATE, PAIR_CURSOR, format!("/start {challenge}"))?,
+        fail_ack: false,
+    })?;
+    provider.wait_for(|o| o.acks.len() == 1).await?;
+    let awaiting = inspect(channels, id).await?;
+    let state = awaiting.connections.first().ok_or("pairing state absent")?;
+    require(
+        matches!(state.pairing, PairingPresentation::AwaitingApproval { .. }),
+        "public channel did not expose pairing approval",
+    )?;
+    channels
+        .confirm_pairing(
+            ConfirmPairing {
+                connection: id.clone(),
+                expected_pairing_revision: state.revision,
+                key: IdempotencyKey::new("opaque-checkpoint-pair")?,
+            },
+            &bound()?,
+        )
+        .await?;
+    provider.enqueue(Step::FailBeforeDelivery(incoming(
+        MAIL_UPDATE,
+        SAVE_CURSOR,
+        BODY.into(),
+    )?))?;
+    provider.wait_for(|o| o.acks.len() == 3).await?;
+    {
+        let observed = provider.lock()?;
+        require(
+            observed.failed_before_delivery,
+            "pre-delivery failure not witnessed",
+        )?;
+        require(
+            observed.starts.len() == 3,
+            "both receiver reconnects not witnessed",
+        )?;
+        require(
+            observed
+                .acks
+                .iter()
+                .map(|(cursor, failed)| (cursor.as_str(), *failed))
+                .collect::<Vec<_>>()
+                == vec![
+                    (PAIR_CURSOR, false),
+                    (SAVE_CURSOR, true),
+                    (REPLAY_CURSOR, false),
+                ],
+            "wrong ACK order or ACK failure boundary",
+        )?;
+    }
+    let page = inspect(channels, id).await?;
+    require(
+        page.receipts.len() == 1,
+        "public channel duplicated or lost Saved receipt",
+    )?;
+    let receipt = &page.receipts[0];
+    {
+        let observed = provider.lock()?;
+        let original = observed
+            .original
+            .as_ref()
+            .ok_or("original receipt absent")?;
+        require(
+            receipt.id == original.receipt
+                && receipt.message == original.message
+                && receipt.saved.event == original.event,
+            "public receipt changed across replay",
+        )?;
+    }
+    require(
+        receipt.read.is_none() && receipt.replies.is_empty() && receipt.replies_omitted == 0,
+        "Save only fabricated a public read or linked reply",
+    )?;
+    require(
+        matches!(receipt.notice, NoticeFact::Pending { .. }),
+        "unlaunched agent was reported to have received the mail",
+    )?;
+    require(
+        provider.delegate.replies()?.is_empty(),
+        "provider received a fabricated linked reply",
+    )?;
+    // A final fresh reader witnesses the NEW replay checkpoint, not
+    // just the original Saved event's intentionally unchanged cursor.
+    provider.before_ack(&incoming(MAIL_UPDATE, REPLAY_CURSOR, BODY.into())?)?;
+    Ok(())
+}
+
+/// The saved receipt's event is the committed Saved disposition of this exact input.
+fn saved_disposition<S: Snapshot>(
+    snapshot: &mut S,
+    id: &channel::ChannelId,
+    input: &Incoming,
+    row: &SavedUpdate,
+) -> Check {
+    let event = present(snapshot.event(row.event.clone())?)?;
+    let EventBody::ChannelRecorded {
+        change:
+            Change::UpdateHandled {
+                connection,
+                update,
+                cursor,
+                disposition:
+                    Disposition::Saved {
+                        receipt,
+                        message,
+                        subject,
+                        private_chat,
+                    },
+                ..
+            },
+    } = event.body
+    else {
+        return Err("saved receipt has no committed Saved disposition".into());
+    };
+    require(
+        &connection == id
+            && update == input.update
+            && cursor.as_ref().map(ReceiveCursor::as_str) == Some(SAVE_CURSOR)
+            && receipt == row.receipt
+            && message == row.message
+            && subject.as_str() == "42"
+            && private_chat.as_str() == "42",
+        "Saved disposition does not identify the exact original input",
+    )?;
+    Ok(())
 }
