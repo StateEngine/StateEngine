@@ -7,17 +7,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(in crate::process) struct PackageLaunch {
+pub struct PackageLaunch {
     root: PathBuf,
     marker: &'static str,
     search: Option<PathBuf>,
 }
 impl PackageLaunch {
-    pub(in crate::process) fn observe(
-        root: PathBuf,
-        image: &Path,
-        launcher: &Path,
-    ) -> io::Result<Self> {
+    pub fn observe(root: PathBuf, image: &Path, launcher: &Path) -> io::Result<Self> {
         let root = fs::canonicalize(root)?;
         let marker = manager(&root, launcher);
         // Ownership uses canonical spelling; the launcher exports a plain
@@ -38,10 +34,7 @@ impl PackageLaunch {
             search,
         })
     }
-    pub(in crate::process) fn apply(
-        self,
-        environment: &mut se_proc::Environment,
-    ) -> io::Result<()> {
+    pub fn apply(self, environment: &mut se_proc::Environment) -> io::Result<()> {
         environment.entries.retain(|(key, _)| {
             !matches!(
                 key.to_string_lossy().to_ascii_uppercase().as_str(),

@@ -49,11 +49,11 @@ fn native_image(path: &Path) -> io::Result<bool> {
     Ok(native)
 }
 
-pub(super) fn resolve(path: &Path, provider: Option<Provider>) -> io::Result<Option<PathBuf>> {
+pub(crate) fn resolve(path: &Path, provider: Option<Provider>) -> io::Result<Option<PathBuf>> {
     resolve_package(path, provider).map(|value| value.map(|(image, _)| image))
 }
 
-pub(super) fn resolve_package(
+pub(crate) fn resolve_package(
     path: &Path,
     provider: Option<Provider>,
 ) -> io::Result<Option<(PathBuf, Option<PathBuf>)>> {

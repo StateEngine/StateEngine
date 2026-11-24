@@ -2,7 +2,7 @@
 #![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[path = "../../test-support/directory.rs"]
 mod directory;
-#[path = "../src/process/windows_executable.rs"]
+#[path = "../src/windows_executable.rs"]
 mod windows_executable;
 
 use se_types::Provider;

@@ -4,7 +4,7 @@
  "default_crate_lines": 40000,
  "default_directory_lines": 10000,
  "crates": {
-  "se-host": 66712,
+  "se-host": 66152,
   "se-channels": 6750,
   "se-proc": 26913,
   "se-native-ipc": 4600,
@@ -22,6 +22,7 @@
   "se-remote-cli": 2013,
   "se-remote": 3100,
   "se-ssh-transport": 1116,
+  "se-provider-image": 560,
   "se-repository": 2200,
   "se-store-contract": 2845,
   "se-store-codec": 1150,

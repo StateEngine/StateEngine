@@ -4,34 +4,7 @@ use crate::{CallContext, CancellationState, client::lease::Deadline};
 use se_core::ops::agent_launch::LaunchPlan;
 use se_types::{Result, Secret};
 
-#[path = "codex_package.rs"]
-mod codex_package;
-
-pub(super) struct ProviderExecutable {
-    pub(super) executable: PathBuf,
-    pub(super) package: Option<codex_package::PackageLaunch>,
-}
-impl ProviderExecutable {
-    fn direct(executable: PathBuf) -> Self {
-        Self {
-            executable,
-            package: None,
-        }
-    }
-    fn packaged(
-        executable: PathBuf,
-        root: Option<PathBuf>,
-        launcher: &std::path::Path,
-    ) -> std::io::Result<Self> {
-        let package = root
-            .map(|root| codex_package::PackageLaunch::observe(root, &executable, launcher))
-            .transpose()?;
-        Ok(Self {
-            executable,
-            package,
-        })
-    }
-}
+pub(super) use se_provider_image::ProviderExecutable;
 pub(super) fn resolve_provider_launch(
     configuration: &se_config::config_policy::ConfigFile,
     provider: se_types::Provider,
@@ -47,34 +20,7 @@ pub(super) fn resolve_provider_launch(
         provider,
         selected_file,
         harness,
-        |path| {
-            #[cfg(windows)]
-            {
-                windows_executable::resolve_package(path, Some(provider))?
-                    .map(|(image, root)| ProviderExecutable::packaged(image, root, path))
-                    .transpose()
-            }
-            #[cfg(unix)]
-            {
-                match std::fs::metadata(path) {
-                    Ok(metadata) if metadata.is_file() => {
-                        match unix_executable::packaged_codex(path)? {
-                            Some((image, root)) => {
-                                se_proc::file_access::require_executable_access(&image)?;
-                                ProviderExecutable::packaged(image, Some(root), path).map(Some)
-                            }
-                            None => {
-                                se_proc::file_access::require_executable_access(path)?;
-                                Ok(Some(ProviderExecutable::direct(path.to_path_buf())))
-                            }
-                        }
-                    }
-                    Ok(_) => Ok(None),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                    Err(error) => Err(error),
-                }
-            }
-        },
+        |path| se_provider_image::package_launch(path, provider),
     )
 }
 
@@ -258,7 +204,10 @@ pub(super) fn route_temporary_files(
 
 #[cfg(target_os = "linux")]
 pub(super) fn resolve_command(command: &str) -> Result<PathBuf> {
-    let found = find_command(command, |path| native_executable(path, None))?.ok_or_else(|| {
+    let found = find_command(command, |path| {
+        se_provider_image::native_executable(path, None)
+    })?
+    .ok_or_else(|| {
         se_core::scope::unreadable(
             "provider executable",
             "configured command was not found in absolute PATH entries",
@@ -274,7 +223,7 @@ pub(super) fn resolve_provider_command(
     harness: Option<&str>,
 ) -> Result<PathBuf> {
     provider_command_with(command, provider, configuration_file, harness, |path| {
-        native_executable(path, Some(provider))
+        se_provider_image::native_executable(path, Some(provider))
     })
 }
 
@@ -377,43 +326,6 @@ fn find_command<T>(
     match unreadable {
         Some(cause) => Err(error("provider executable", cause)),
         None => Ok(None),
-    }
-}
-// Resolve packaged providers before their probe and native ownership setup.
-#[cfg(unix)]
-#[path = "unix_executable.rs"]
-mod unix_executable;
-// Windows script shims are never treated as executable process images.
-#[cfg(windows)]
-#[path = "windows_executable.rs"]
-mod windows_executable;
-
-fn native_executable(
-    path: &std::path::Path,
-    provider: Option<se_types::Provider>,
-) -> std::io::Result<Option<PathBuf>> {
-    #[cfg(windows)]
-    {
-        windows_executable::resolve(path, provider)
-    }
-    #[cfg(not(windows))]
-    {
-        match std::fs::metadata(path) {
-            Ok(metadata) if metadata.is_file() => {
-                #[cfg(unix)]
-                if provider == Some(se_types::Provider::Codex)
-                    && let Some((image, _)) = unix_executable::packaged_codex(path)?
-                {
-                    se_proc::file_access::require_executable_access(&image)?;
-                    return Ok(Some(image));
-                }
-                se_proc::file_access::require_executable_access(path)?;
-                Ok(Some(path.to_path_buf()))
-            }
-            Ok(_) => Ok(None),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
     }
 }
 pub(super) fn view(
