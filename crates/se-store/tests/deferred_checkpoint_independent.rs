@@ -226,6 +226,7 @@ fn observe_pressure(f: &Fixture, writer: &mut SqliteWriter, deadline: Instant) -
         .ok_or("pressure admitted another group")?;
         assert_eq!(refused.code, StoreErrorCode::Busy);
         assert!(refused.cause.contains("64 MiB"));
+        assert!(refused.cause.contains("release pinned readers"));
         assert_eq!(wal(&outside)?.2, before, "refused append grew live WAL");
         assert_eq!(
             outside.query_row("SELECT max(seq) FROM events", [], |r| r.get::<_, i64>(0))?,
