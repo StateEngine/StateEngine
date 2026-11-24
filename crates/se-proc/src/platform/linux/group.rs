@@ -112,7 +112,7 @@ impl Scope {
             .machine
             .clone();
         let anchored = self.reclaim_departed(group)?;
-        let mut live = self.scan_proc_group(&root_machine, group, anchored)?;
+        let mut live = self.scan_and_admit_group(&root_machine, group, anchored)?;
         self.recheck_tracked(group, &mut live)?;
         let population = if live.is_empty() {
             Population::Empty
@@ -156,10 +156,10 @@ impl Scope {
         self.tracked = retained;
         Ok(anchored)
     }
-    /// Enumerate PID names, then query this exact process group without
-    /// opening every process on the machine. No executable-name filter;
+    /// Enumerate PID names, query this exact process group, and admit live
+    /// members into `self.tracked` when anchored. No executable-name filter;
     /// enumeration/membership errors remain errors, never population zero.
-    fn scan_proc_group(
+    fn scan_and_admit_group(
         &mut self,
         root_machine: &MachineId,
         group: ProcessId,

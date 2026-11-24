@@ -33,7 +33,7 @@ pub(super) struct Child {
     pub window_payload: Option<Vec<u8>>,
     pub eof: bool,
 }
-fn launch_err(api: &str) -> ProcError {
+pub(super) fn launch_err(api: &str) -> ProcError {
     native(ProcErrorCode::LaunchFailed, api, io::Error::last_os_error())
 }
 fn cstr_ptrs(values: &[CString]) -> Vec<*const libc::c_char> {
@@ -120,7 +120,7 @@ struct ChildPlan<'a> {
     terminal_arguments: Option<&'a [*const libc::c_char]>,
 }
 /// Async-signal-safe failure reporting in the fork child; never returns.
-unsafe fn die_in_child(error_fd: i32, number: i32) -> ! {
+pub(super) unsafe fn die_in_child(error_fd: i32, number: i32) -> ! {
     // SAFETY: fork child writes a 5-byte error packet to its pipe and _exits.
     unsafe {
         let packet = [

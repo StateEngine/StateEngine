@@ -1,5 +1,6 @@
 //! An xterm viewer for the provider's own controlling PTY. Both processes
 //! remain in the reserved group; no terminal broker creates an escaped child.
+use super::spawn::{die_in_child, launch_err};
 use crate::{support::*, *};
 use std::{
     ffi::CString,
@@ -17,9 +18,6 @@ pub(super) struct Terminal {
     deadline_ns: i128,
     saved: libc::termios,
     retain_viewer: bool,
-}
-fn launch_err(api: &str) -> ProcError {
-    native(ProcErrorCode::LaunchFailed, api, io::Error::last_os_error())
 }
 fn descriptor(value: i32, api: &str) -> ProcResult<File> {
     if value < 0 {
@@ -190,16 +188,7 @@ impl Terminal {
                 arguments.as_ptr(),
                 environment.as_ptr(),
             );
-            let number = *libc::__errno_location();
-            let packet = [
-                b'E',
-                number as u8,
-                (number >> 8) as u8,
-                (number >> 16) as u8,
-                (number >> 24) as u8,
-            ];
-            libc::write(error_fd, packet.as_ptr().cast(), packet.len());
-            libc::_exit(127);
+            die_in_child(error_fd, *libc::__errno_location());
         }
     }
     /// Consume xterm's hex WINDOWID handshake from stdin before `deadline_ns`.
@@ -352,11 +341,7 @@ pub(super) fn retain_viewer(
         )
     } != 1
     {
-        return Err(native(
-            ProcErrorCode::LaunchFailed,
-            "authorize terminal viewer",
-            io::Error::last_os_error(),
-        ));
+        return Err(launch_err("authorize terminal viewer"));
     }
     child.viewer = Some(viewer.identity);
     if !child.deferred {
