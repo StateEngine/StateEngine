@@ -1,11 +1,7 @@
 //! Current-owner defaults repair profile-less historical registrations only.
 use super::*;
 
-pub(super) async fn ensure(
-    context: &ExecutionContext,
-    cx: &NodeContext,
-    deadline: &Deadline,
-) -> Result<()> {
+pub(super) async fn ensure(context: &Context, cx: &NodeContext, deadline: &Deadline) -> Result<()> {
     let mut after = None;
     for _ in 0..64 {
         let readcx = cx.clone();

@@ -1,6 +1,6 @@
 //! Finite owner reads and typed source row planning.
 use super::node::NodeContext;
-use super::{super::ExecutionContext, batch, read};
+use super::{Context, batch, read};
 use se_core::{scope, store_error::store_error};
 use se_store::*;
 use se_types::{NativePath, Read, Result};
@@ -10,28 +10,14 @@ pub(super) struct Progress {
     pub deferred: u64,
 }
 pub(super) fn context(
-    context: &ExecutionContext,
+    context: &Context,
     admission: Admission,
     id: RecordId,
     source: SourceEvidence,
     now: i64,
 ) -> Result<NodeContext> {
     let store = read::snapshot(context, &admission, |r| Ok(r.info()))?;
-    let owner_profiles = match context.custody.get() {
-        Some(custody) => match custody.import_profiles() {
-            Ok(value) => Read::Present { value },
-            Err(error) => Read::Unreadable {
-                source: "active owner profile configuration".into(),
-                reason: error.to_string(),
-                error: Some(Box::new(error.into_body())),
-            },
-        },
-        None => Read::Unknown {
-            what:
-                "active owner profile configuration is not available through a native coordinator"
-                    .into(),
-        },
-    };
+    let owner_profiles = context.owner_profiles();
     Ok(NodeContext {
         admission,
         store,
@@ -45,7 +31,7 @@ pub(super) fn context(
     })
 }
 pub(super) fn start(
-    context: &ExecutionContext,
+    context: &Context,
     cx: &NodeContext,
     source: NativePath,
 ) -> Result<Option<AtomicBatch>> {
@@ -68,7 +54,7 @@ pub(super) fn start(
     })
 }
 pub(super) fn progress(
-    context: &ExecutionContext,
+    context: &Context,
     cx: &NodeContext,
     family: ImportFamily,
     key: &[u8],
@@ -102,7 +88,7 @@ pub(super) fn progress(
     })
 }
 pub(super) fn finish(
-    context: &ExecutionContext,
+    context: &Context,
     cx: &NodeContext,
     counts: ImportCounts,
     complete: bool,
@@ -126,10 +112,7 @@ pub(super) fn finish(
         .map(Some)
     })
 }
-pub(super) fn owner_project(
-    context: &ExecutionContext,
-    cx: &NodeContext,
-) -> Result<Option<AtomicBatch>> {
+pub(super) fn owner_project(context: &Context, cx: &NodeContext) -> Result<Option<AtomicBatch>> {
     let present = read::snapshot(context, &cx.admission, |r| {
         Ok(crate::read_optional(
             r.principal(cx.admission.actor.clone())
@@ -184,10 +167,7 @@ pub(super) fn owner_project(
     Ok(Some(batch::atomic(cx, vec![event], None)))
 }
 
-pub(super) fn tombstone(
-    context: &ExecutionContext,
-    cx: &NodeContext,
-) -> Result<Option<AtomicBatch>> {
+pub(super) fn tombstone(context: &Context, cx: &NodeContext) -> Result<Option<AtomicBatch>> {
     read::snapshot(context, &cx.admission, |r| {
         let Scope::Project(project) = &cx.admission.scope else {
             return Err(scope::unreadable(
@@ -215,7 +195,7 @@ pub(super) fn tombstone(
 }
 
 pub(super) fn resume(
-    context: &ExecutionContext,
+    context: &Context,
     cx: &NodeContext,
 ) -> Result<Vec<se_core::ops::store_import::ImportResume>> {
     read::snapshot(context, &cx.admission, |r| {

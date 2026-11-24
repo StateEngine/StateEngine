@@ -18,7 +18,7 @@ struct ScanState {
 }
 
 pub(super) async fn file(
-    context: &ExecutionContext,
+    context: &Context,
     cx: NodeContext,
     file: plan::File,
     deadline: &Deadline,
@@ -94,7 +94,7 @@ pub(super) async fn file(
 }
 
 async fn read_progress(
-    context: &ExecutionContext,
+    context: &Context,
     cx: &NodeContext,
     family: ImportFamily,
     key: &[u8],
@@ -109,7 +109,7 @@ async fn read_progress(
 }
 
 async fn open_source(
-    context: &ExecutionContext,
+    context: &Context,
     cx: &NodeContext,
     file: &plan::File,
     key: &[u8],
@@ -161,7 +161,7 @@ async fn open_source(
 }
 
 async fn scan_forward(
-    context: &ExecutionContext,
+    context: &Context,
     cx: &NodeContext,
     file: &plan::File,
     key: &[u8],
@@ -229,7 +229,7 @@ async fn scan_forward(
 }
 
 async fn replay_deferred(
-    context: &ExecutionContext,
+    context: &Context,
     cx: &NodeContext,
     file: &plan::File,
     key: &[u8],
@@ -358,7 +358,7 @@ fn add_resume(into: &mut Vec<ImportResume>, facts: Vec<node::ResumeFact>) {
 }
 
 async fn failed(
-    context: &ExecutionContext,
+    context: &Context,
     cx: &NodeContext,
     file: &plan::File,
     key: &[u8],

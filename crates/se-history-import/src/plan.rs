@@ -2,8 +2,8 @@
 //! process records and provider account directories are never traversed.
 use super::node::NodeKind;
 use super::source::SourceFile;
-use crate::client::lease::Deadline;
 use se_core::scope;
+use se_harness::Deadline;
 use se_store::ImportFamily;
 use se_types::{HumanId, ProjectId, Read, Result};
 use std::path::{Path, PathBuf};

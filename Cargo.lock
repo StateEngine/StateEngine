@@ -1772,6 +1772,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "se-history-import"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-core",
+ "se-harness",
+ "se-proc",
+ "se-store",
+ "se-types",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
+
+[[package]]
 name = "se-host"
 version = "0.0.1-alpha.1"
 dependencies = [
@@ -1791,6 +1805,7 @@ dependencies = [
  "se-config",
  "se-core",
  "se-harness",
+ "se-history-import",
  "se-mcp",
  "se-proc",
  "se-provider-image",
@@ -2719,6 +2734,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ddd74a9687298c6858e9b88ec8935ec45d22e8fd5e6394fa1bd4e99a87789c76"
 dependencies = [
  "getrandom 0.4.3",
+ "js-sys",
+ "wasm-bindgen",
 ]
 
 [[package]]

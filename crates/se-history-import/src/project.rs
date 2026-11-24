@@ -16,7 +16,7 @@ pub(super) struct Source<'a> {
     pub registry: &'a SourceEvidence,
 }
 pub(super) async fn execute(
-    context: &ExecutionContext,
+    context: &Context,
     mut admission: Admission,
     source: Source<'_>,
     project: plan::Project,
@@ -107,7 +107,7 @@ pub(super) async fn execute(
 }
 
 async fn run_project_files(
-    context: &ExecutionContext,
+    context: &Context,
     cx: &NodeContext,
     files: &[plan::File],
     deadline: &Deadline,

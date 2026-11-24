@@ -32,6 +32,7 @@ members = [
     "crates/se-remote-host",
     "crates/se-ssh-transport",
     "crates/se-provider-image",
+    "crates/se-history-import",
     "crates/se-atlas",
     "crates/se-atlas-index",
     "crates/se-atlas-search",

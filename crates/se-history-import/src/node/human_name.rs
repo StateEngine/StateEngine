@@ -1,6 +1,6 @@
 //! Deterministic source names never depend on import order or roster suffixes.
 use super::*;
-pub(in crate::runtime::history_import) fn suffix(recorded: &str, human: &HumanId) -> String {
+pub(crate) fn suffix(recorded: &str, human: &HumanId) -> String {
     let digest = se_types::hex_lower(&Sha256::digest(human.as_str().as_bytes()));
     let stable = human
         .as_str()

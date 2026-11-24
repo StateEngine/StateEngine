@@ -1,7 +1,7 @@
 //! Read the old ledger's integrity facts without creating a Rust hash chain.
 use super::source::SourceFile;
-use crate::client::lease::Deadline;
 use se_core::scope;
+use se_harness::Deadline;
 use se_types::Result;
 use std::path::Path;
 fn refused(reason: &str) -> se_types::SeError {

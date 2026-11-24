@@ -1,6 +1,6 @@
 //! A known rolled-back row refusal becomes a durable omission at its range.
 use super::*;
-pub(in crate::runtime::history_import) fn plan(
+pub(crate) fn plan(
     cx: &NodeContext,
     row: &super::super::source::Row,
     state: RowState,

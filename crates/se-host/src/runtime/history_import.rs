@@ -1,305 +1,152 @@
-//! Explicit owner history migration over native read pins and the existing
-//! bounded writer. A read transaction never survives native IO or an await.
-mod batch;
-mod chain;
-mod commit;
-mod default_profiles;
-mod file;
-mod human_plan;
-mod node;
-mod ownership;
-mod plan;
-mod project;
-mod read;
-mod rows;
-mod source;
-mod state;
-use self::node::{NodeContext, NodeKind};
-use super::ExecutionContext;
+//! Host side of owner history import: foreground jobs, generation-checked read
+//! pins, the ordinary writer with its abandoned-waiter observer, and the
+//! active owner profiles. The import logic lives in `se-history-import`.
+use super::{BlockingClass, ExecutionContext, executor, failure::WriteIdentity, pool::within};
 use crate::client::lease::Deadline;
-use se_core::{
-    ops::{
-        AnyOutput, ImportNode, ImportReceipt,
-        store_import::{ImportFamilyReceipt, ImportResume},
-    },
-    scope,
-    store_error::store_error,
-};
-use se_store::*;
-use se_types::{NativePath, Read, Result};
-use std::{
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use se_core::{admission::read_scope, ops::AnyOutput, store_error::store_error};
+use se_history_import::{BlockingWork, HistoryPort, PortFuture, ReadPin};
+use se_store::{Admission, AtomicBatch, CommitReceipt, Profile, ReadStore, Snapshot, WriterClient};
+use se_types::{Read, Result};
 
-async fn job<T: Send + 'static>(
-    context: &ExecutionContext,
-    deadline: &Deadline,
-    work: impl FnOnce(&ExecutionContext) -> Result<T> + Send + 'static,
-) -> Result<T> {
-    context.run_foreground(deadline, work).await
-}
-fn now() -> Result<i64> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| scope::unreadable("import observation clock", &e.to_string()))?
-        .as_micros()
-        .try_into()
-        .map_err(|_| scope::unreadable("import observation clock", "timestamp overflow"))
-}
-fn id(source: &NativePath, scope: &Scope, source_owner: &se_types::HumanId) -> Result<RecordId> {
-    let key = serde_json::to_string(&(2u32, source, scope, source_owner))
-        .map_err(|e| scope::unreadable("import run identity", &e.to_string()))?;
-    node::record_id("run", &key).map_err(|e| store_error(&e))
-}
-fn family(value: ImportFamily) -> Result<String> {
-    let value = serde_json::to_value(value)
-        .map_err(|e| scope::unreadable("import family", &e.to_string()))?;
-    value
-        .as_str()
-        .map(str::to_owned)
-        .ok_or_else(|| scope::unreadable("import family", "closed family tag is absent"))
-}
-fn receipt(
-    file: &plan::File,
-    state: &str,
-    counts: &ImportCounts,
-    reason: Option<String>,
-    deferred: u64,
-) -> Result<ImportFamilyReceipt> {
-    Ok(ImportFamilyReceipt {
-        family: family(file.family)?,
-        source: file.path.display().to_string(),
-        state: state.into(),
-        read: counts.read,
-        imported: counts.imported,
-        duplicate: counts.duplicate,
-        unreadable: counts.unreadable,
-        dropped_by_policy: counts.dropped_by_policy,
-        deferred,
-        reason,
-        notes: counts.notes.clone(),
-    })
-}
-fn total(into: &mut ImportCounts, other: &ImportCounts) -> Result<()> {
-    let add = |a: u64, b: u64| {
-        a.checked_add(b)
-            .ok_or_else(|| scope::unreadable("import total", "counter overflow"))
-    };
-    for (note, count) in &other.notes {
-        let entry = into.notes.entry(note.clone()).or_default();
-        *entry = add(*entry, *count)?;
+impl HistoryPort for ExecutionContext {
+    fn run_blocking<'a>(
+        &'a self,
+        deadline: &'a Deadline,
+        work: BlockingWork,
+    ) -> PortFuture<'a, ()> {
+        Box::pin(self.blocking.run(BlockingClass::Foreground, deadline, work))
     }
-    into.deferred = add(into.deferred, other.deferred)?;
-    into.read = add(into.read, other.read)?;
-    into.imported = add(into.imported, other.imported)?;
-    into.duplicate = add(into.duplicate, other.duplicate)?;
-    into.unreadable = add(into.unreadable, other.unreadable)?;
-    into.dropped_by_policy = add(into.dropped_by_policy, other.dropped_by_policy)?;
-    Ok(())
-}
-async fn ensure(context: &ExecutionContext, cx: NodeContext, deadline: &Deadline) -> Result<()> {
-    let source = cx.source.path.clone().ok_or_else(|| {
-        scope::unreadable(
-            "Node import source",
-            "a retained native file path is required",
-        )
-    })?;
-    let batch = job(context, deadline, move |context| {
-        state::start(context, &cx, source)
-    })
-    .await?;
-    if let Some(batch) = batch {
-        commit::append(context, batch, deadline).await?;
+    fn snapshot(&self, admission: &Admission, read: ReadPin<'_>) -> Result<()> {
+        executor::check_generation(&self.reader, self.generation)?;
+        let mut snapshot = self
+            .reader
+            .snapshot(read_scope(admission))
+            .map_err(|e| store_error(&e))?;
+        let result = read(&mut snapshot);
+        executor::close_read(result, snapshot.close())
     }
-    Ok(())
+    fn append<'a>(
+        &'a self,
+        batch: AtomicBatch,
+        deadline: &'a Deadline,
+    ) -> PortFuture<'a, CommitReceipt> {
+        Box::pin(append(self, batch, deadline))
+    }
+    fn owner_profiles(&self) -> Read<Vec<Profile>> {
+        match self.custody.get() {
+            Some(custody) => match custody.import_profiles() {
+                Ok(value) => Read::Present { value },
+                Err(error) => Read::Unreadable {
+                    source: "active owner profile configuration".into(),
+                    reason: error.to_string(),
+                    error: Some(Box::new(error.into_body())),
+                },
+            },
+            None => Read::Unknown {
+                what:
+                    "active owner profile configuration is not available through a native coordinator"
+                        .into(),
+            },
+        }
+    }
 }
+
 /// The owner operation's only entry. `Kernel::plan` already enforced the
-/// owner-only surface; repeat its native/store generation checks on every job.
+/// owner-only surface; the import repeats generation checks on every job.
 pub(super) async fn execute(
     context: ExecutionContext,
-    input: ImportNode,
-    mut admission: Admission,
+    input: se_core::ops::ImportNode,
+    admission: Admission,
     kernel: se_core::dispatch::Kernel,
     deadline: &Deadline,
 ) -> Result<AnyOutput> {
-    let owner = match (&admission.actor, admission.session.is_none()) {
-        (Actor::Human(owner), true) => owner.clone(),
-        _ => {
-            return Err(scope::unreadable(
-                "history import",
-                "owner admission is required",
-            ));
-        }
-    };
-    admission.scope = Scope::Registry;
-    let from = PathBuf::from(&input.from_node);
-    let bound = deadline.clone();
-    let selected = input.source_owner.clone();
-    let human_mappings = std::sync::Arc::new(input.mappings()?);
-    let plan_mappings = human_mappings.clone();
-    let plan = job(&context, deadline, move |_| {
-        plan::inspect(&from, &owner, selected.as_ref(), &plan_mappings, &bound)
-    })
-    .await?;
-    let own = admission.clone();
-    let mappings = human_mappings.clone();
-    let bound = deadline.clone();
-    let (plan, human_names) = job(&context, deadline, move |context| {
-        let names = human_plan::inspect(context, &own, &plan, &mappings, &bound)?;
-        Ok((plan, names))
-    })
-    .await?;
-    let root_path = NativePath::from_local(plan.root.clone())?;
-    let root_id = id(&root_path, &Scope::Registry, &plan.source_owner)?;
-    let source = plan.source.clone();
-    let root_admission = admission.clone();
-    let mut root = job(&context, deadline, move |context| {
-        state::context(context, root_admission, root_id, source, now()?)
-    })
-    .await?;
-    root.human_mappings = human_mappings.clone();
-    root.human_names = human_names.clone();
-    ensure(&context, root.clone(), deadline).await?;
-    bind_import(&context, root.clone(), input.clone(), kernel, deadline).await?;
-    let registry = plan::File {
-        path: plan.registry,
-        family: ImportFamily::Projects,
-        kind: NodeKind::Projects,
-        observation: None,
-        anchor: Some(plan.source.clone()),
-    };
-    let registry = file::file(&context, root.clone(), registry, deadline).await?;
-    let mut complete = registry.receipt.unreadable == 0 && registry.receipt.deferred == 0;
-    let mut counts = registry.counts;
-    let mut families = vec![registry.receipt];
-    let mut resume = registry.resume;
-    if !complete || families[0].state != "present" {
-        finish_run(&context, root, counts, false, deadline).await?;
-        return Ok(build_receipt(
-            root_id,
-            input.from_node,
-            false,
-            families,
-            resume,
-        ));
-    }
-    let source_root = plan.root.clone();
-    for project in plan.projects {
-        let result = project::execute(
-            &context,
-            admission.clone(),
-            project::Source {
-                root_path: &root_path,
-                source_root: &source_root,
-                source_owner: &plan.source_owner,
-                human_mappings: &human_mappings,
-                human_names: &human_names,
-                registry: &plan.source,
-            },
-            project,
-            deadline,
-        )
-        .await?;
-        complete &= result.complete;
-        total(&mut counts, &result.counts)?;
-        families.extend(result.families);
-        resume.extend(result.resume);
-    }
-    finish_run(&context, root, counts, complete, deadline).await?;
-    dedup_resume(&mut resume);
-    Ok(build_receipt(
-        root_id,
-        input.from_node,
-        complete,
-        families,
-        resume,
-    ))
+    let context: se_history_import::Context = std::sync::Arc::new(context);
+    se_history_import::execute(context, input, admission, kernel, deadline).await
 }
 
-async fn bind_import(
+/// Import uses the ordinary writer and its existing abandoned-waiter observer.
+async fn append(
     context: &ExecutionContext,
-    root: NodeContext,
-    input: ImportNode,
-    kernel: se_core::dispatch::Kernel,
+    batch: AtomicBatch,
     deadline: &Deadline,
-) -> Result<()> {
-    let binding = job(context, deadline, move |context| {
-        read::snapshot(context, &root.admission, |read| {
-            se_core::ops::store_import::bind(
-                &kernel,
-                &input,
-                root.import,
-                root.source.clone(),
-                &se_core::commit::Cx {
-                    read,
-                    admission: &root.admission,
-                },
-            )
+) -> Result<CommitReceipt> {
+    let identity = WriteIdentity {
+        operation: "store.import_node",
+        natural_key: None,
+        key: batch.request.as_ref().map(|r| r.key.clone()),
+        natural_events: batch
+            .events
+            .iter()
+            .map(|e| e.header.event.clone())
+            .collect(),
+    };
+    let original = identity.clone();
+    let pending = context.pending_writes.clone();
+    let writer = context.writer.clone();
+    let bound = deadline.clone();
+    let runtime = context.blocking.handle();
+    let record_feed = context.atlas.records.clone();
+    let completion = context
+        .blocking
+        .run_owned(deadline, move || {
+            bound.remaining()?;
+            let record_write = record_feed.before_scoped_write(&batch.admission.scope)?;
+            pending.register(&identity)?;
+            match writer.submit(batch) {
+                Ok(waiter) => Ok(runtime.spawn(async move {
+                    let receipt = waiter.await;
+                    if receipt
+                        .as_ref()
+                        .is_err_and(|e| e.code == se_store::StoreErrorCode::CommitOutcomeUnknown)
+                    {
+                        record_write.uncertain();
+                    } else {
+                        drop(record_write);
+                    }
+                    let settled = match &receipt {
+                        Ok(_) => pending.resolve(&identity),
+                        Err(error)
+                            if error.code == se_store::StoreErrorCode::CommitOutcomeUnknown =>
+                        {
+                            Ok(())
+                        }
+                        Err(_) => pending.failed_attempt(&identity),
+                    };
+                    (receipt, settled)
+                })),
+                Err(error) => {
+                    pending.failed_attempt(&identity)?;
+                    Err(identity.store_error(&error))
+                }
+            }
         })
-    })
-    .await?;
-    commit::append(context, binding, deadline).await?;
-    Ok(())
-}
-
-async fn finish_run(
-    context: &ExecutionContext,
-    root: NodeContext,
-    counts: ImportCounts,
-    complete: bool,
-    deadline: &Deadline,
-) -> Result<()> {
-    if let Some(batch) = job(context, deadline, move |context| {
-        state::finish(context, &root, counts, complete)
-    })
-    .await?
-    {
-        commit::append(context, batch, deadline).await?;
-    }
-    Ok(())
-}
-
-fn dedup_resume(resume: &mut Vec<ImportResume>) {
-    resume.sort_by(|a, b| {
-        (
-            &a.session,
-            &a.agent,
-            &a.provider,
-            &a.native_reference,
-            &a.state,
-        )
-            .cmp(&(
-                &b.session,
-                &b.agent,
-                &b.provider,
-                &b.native_reference,
-                &b.state,
+        .await?;
+    let (receipt, settled) = within(deadline, completion)
+        .await
+        .map_err(|e| original.wait_error(e))?
+        .map_err(|e| {
+            original.wait_error(se_core::scope::unreadable(
+                "import completion observer",
+                &e.to_string(),
             ))
-    });
-    resume.dedup_by(|a, b| {
-        a.session == b.session
-            && a.agent == b.agent
-            && a.provider == b.provider
-            && a.native_reference == b.native_reference
-            && a.state == b.state
-    });
-}
-
-fn build_receipt(
-    root_id: RecordId,
-    source: String,
-    complete: bool,
-    families: Vec<ImportFamilyReceipt>,
-    resume: Vec<ImportResume>,
-) -> AnyOutput {
-    ImportReceipt {
-        import_id: se_types::hex_lower(root_id.as_bytes()),
-        source,
-        complete,
-        originals_retained: true,
-        families,
-        resume,
+        })?;
+    match receipt {
+        Ok(receipt) => {
+            let committed = super::CommittedWrite {
+                operation: "store.import_node".into(),
+                key: original.key,
+                natural_events: original.natural_events,
+                committed_events: receipt.events.clone(),
+            };
+            settled.map_err(|error| committed.response_error(error))?;
+            Ok(receipt)
+        }
+        Err(error) => {
+            let error = original.store_error(&error);
+            Err(match settled {
+                Ok(()) => error,
+                Err(failure) => error.with_cause(failure),
+            })
+        }
     }
-    .into()
 }

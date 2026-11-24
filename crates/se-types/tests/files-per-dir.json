@@ -2,7 +2,7 @@
  "comment": "File counts per src/ directory at depth one and two (same aggregation as the line budgets). Budget = files at ratchet establishment plus the larger of 5 percent or 3 files, so a folder may only grow slowly or be split. A new directory falls back to the default; stale entries are refused.",
  "default_directory_files": 12,
  "directories": {
-  "crates/se-host/src/runtime": 116,
+  "crates/se-host/src/runtime": 92,
   "crates/se-core/src/ops": 100,
   "crates/se-host/src/process": 70,
   "crates/se-host/src/remote": 35,
@@ -14,7 +14,6 @@
   "crates/se-store/src/read": 31,
   "crates/se-proc/src/platform": 29,
   "crates/se-host/src/runtime/embedded": 27,
-  "crates/se-host/src/runtime/history_import": 27,
   "crates/se-state-files/src/state_files/effects": 27,
   "crates/se-store/src/apply": 21,
   "crates/se/src/runtime": 20,

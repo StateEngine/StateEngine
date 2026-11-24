@@ -1,7 +1,7 @@
 //! Explicit correspondence is admission, never inferred from display names.
 use super::source::SourceFile;
-use crate::client::lease::Deadline;
 use se_core::scope;
+use se_harness::Deadline;
 use se_types::{HumanId, Read, Result};
 use serde_json::Value;
 use std::{collections::BTreeSet, path::Path};
