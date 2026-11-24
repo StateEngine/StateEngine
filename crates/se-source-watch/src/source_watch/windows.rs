@@ -341,7 +341,7 @@ fn watch_error(action: &str, error: io::Error) -> io::Error {
 }
 
 fn open_async(path: &std::path::Path) -> io::Result<File> {
-    let name = crate::state_files::windows::wide(path)
+    let name = se_state_files::state_files::windows::wide(path)
         .map_err(|_| invalid("normalized absolute watched directory required"))?;
     // SAFETY: the terminated path is opened without following its final reparse point.
     // The caller verifies the resulting identity against the retained directory pin.

@@ -47,7 +47,7 @@
   "crates/se-host/src/remote/service": 9,
   "crates/se-atlas-host/src/atlas_owner": 9,
   "crates/se-proc/src/platform/linux": 9,
-  "crates/se-proc/src/source_root": 9,
+  "crates/se-source-watch/src/source_root": 9,
   "crates/se-proc/src/windows_native": 9,
   "crates/se-types/src/code": 9,
   "crates/se-types/src/remote": 9,

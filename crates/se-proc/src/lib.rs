@@ -60,20 +60,19 @@ mod process_descendants;
 #[cfg(target_os = "linux")]
 pub use process_descendants::read_process_descendants;
 pub mod file_access;
-mod source_root;
 #[cfg(target_os = "linux")]
-pub use source_root::NativeWatchWake;
+pub use se_source_watch::NativeWatchWake;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-pub use source_root::{
+pub use se_source_watch::{
     NativeSourceWatch, NativeWatchAction, NativeWatchDirectory, NativeWatchEvent,
     NativeWatchEvents, NativeWatchRegistration,
 };
 mod executable;
-pub(crate) use se_state_files::state_files;
-pub use source_root::{
+pub use se_source_watch::{
     NativeFileRevision, NativeRootDirectory, NativeRootFile, NativeSourceEntry, NativeSourceKind,
     NativeSourceRoot, NativeSourceScan, observe_file_revision,
 };
+pub(crate) use se_state_files::state_files;
 pub use state_files::{
     NativeProfileFiles, NativeStateFiles, PermissionKind, PermissionProtection,
     PermissionRepairPin, PermissionRepairWitness, PermissionSnapshot, ProtectedStateStaging,

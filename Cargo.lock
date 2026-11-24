@@ -1870,9 +1870,9 @@ dependencies = [
  "libc",
  "rusqlite",
  "se-custody",
- "se-fsevents",
  "se-native-ipc",
  "se-native-path",
+ "se-source-watch",
  "se-state-files",
  "se-types",
  "serde",
@@ -1969,6 +1969,17 @@ dependencies = [
  "se-types",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "se-source-watch"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "libc",
+ "se-fsevents",
+ "se-native-path",
+ "se-state-files",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
