@@ -342,9 +342,9 @@ impl Kernel {
             AnyOp::AgentStop(input) => plan_agent_stop(input, cx),
             AnyOp::AgentWake(input) => plan_agent_wake(input, cx),
             AnyOp::DelegateStart(i) => {
-                crate::delegate::step_start(self, i, self.configuration.as_ref(), cx)
+                crate::ops::delegate::step_start(self, i, self.configuration.as_ref(), cx)
             }
-            AnyOp::DelegateCancel(i) => crate::delegate::step_cancel(i, cx),
+            AnyOp::DelegateCancel(i) => crate::ops::delegate::step_cancel(i, cx),
             AnyOp::ProjectRemove(input) => plan_project_remove(input, cx),
             AnyOp::AgentShow(input) => plan_agent_show(input, cx),
             AnyOp::AssignmentWrite(input) => crate::ops::assignment::write(self, input, cx),

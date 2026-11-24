@@ -11,17 +11,29 @@ use std::{num::NonZeroU32, sync::atomic::Ordering, time::Duration};
 pub(super) const SWEEP_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 const PAGE_SIZE: u32 = 100;
 
-/// Single deadline-driven timer slot for ephemeral TTL sweeps. When `None`,
-/// no background task is running (zero idle wakeups or open read connections).
+/// Single deadline-driven timer slot for ephemeral TTL sweeps. When `running`
+/// is false, no background task is active (zero idle wakeups or open read
+/// connections). A monotonic `generation` counter prevents disarming when a
+/// new TTL child registers concurrently during an active sweep.
+struct TtlTimerState {
+    next_deadline: Option<tokio::time::Instant>,
+    generation: u64,
+    running: bool,
+}
+
 pub(super) struct TtlTimer {
-    next_deadline: std::sync::Mutex<Option<tokio::time::Instant>>,
+    state: std::sync::Mutex<TtlTimerState>,
     wake: tokio::sync::Notify,
 }
 
 impl TtlTimer {
     pub(super) fn new() -> Self {
         Self {
-            next_deadline: std::sync::Mutex::new(None),
+            state: std::sync::Mutex::new(TtlTimerState {
+                next_deadline: None,
+                generation: 0,
+                running: false,
+            }),
             wake: tokio::sync::Notify::new(),
         }
     }
@@ -30,108 +42,36 @@ impl TtlTimer {
 impl LaunchCoordinator {
     /// Arm or shorten the host's single deadline-driven TTL sweeper.
     /// Spawns a background task only when none is currently active; if a timer
-    /// is already sleeping for a later deadline, wakes it so it shortens its
-    /// sleep immediately.
+    /// is already sleeping or sweeping, bumps `generation`, records the
+    /// earliest deadline, and notifies the waiter.
     pub(super) fn arm_ephemeral_ttl(self: &Arc<Self>, delay: Duration) {
         if self.stopping.load(Ordering::Acquire) {
             return;
         }
         let target = tokio::time::Instant::now() + delay;
         let should_spawn = {
-            let Ok(mut slot) = self.ephemeral_ttl.next_deadline.lock() else {
+            let Ok(mut state) = self.ephemeral_ttl.state.lock() else {
                 return;
             };
-            match *slot {
-                None => {
-                    *slot = Some(target);
-                    true
-                }
-                Some(existing) if target < existing => {
-                    *slot = Some(target);
-                    drop(slot);
-                    self.ephemeral_ttl.wake.notify_one();
-                    false
-                }
-                Some(_) => false,
+            state.generation = state.generation.wrapping_add(1);
+            state.next_deadline = Some(match state.next_deadline {
+                Some(existing) => existing.min(target),
+                None => target,
+            });
+            if !state.running {
+                state.running = true;
+                true
+            } else {
+                drop(state);
+                self.ephemeral_ttl.wake.notify_one();
+                false
             }
         };
         if !should_spawn {
             return;
         }
         let coordinator = Arc::downgrade(self);
-        tokio::spawn(async move {
-            let mut last_warning: Option<String> = None;
-            loop {
-                let Some(current) = coordinator.upgrade() else {
-                    return;
-                };
-                if current.stopping.load(Ordering::Acquire) {
-                    if let Ok(mut slot) = current.ephemeral_ttl.next_deadline.lock() {
-                        *slot = None;
-                    }
-                    return;
-                }
-                let target = {
-                    let Ok(slot) = current.ephemeral_ttl.next_deadline.lock() else {
-                        return;
-                    };
-                    *slot
-                };
-                let Some(target) = target else {
-                    return;
-                };
-                let woken_early = tokio::select! {
-                    () = tokio::time::sleep_until(target) => false,
-                    () = current.ephemeral_ttl.wake.notified() => true,
-                };
-                if woken_early {
-                    continue;
-                }
-                if current.stopping.load(Ordering::Acquire) {
-                    if let Ok(mut slot) = current.ephemeral_ttl.next_deadline.lock() {
-                        *slot = None;
-                    }
-                    return;
-                }
-                let swept = async {
-                    let deadline = Deadline::idle()?.stage(Duration::from_secs(30))?;
-                    current.sweep_ephemeral_expired(&deadline).await
-                }
-                .await;
-                let now = tokio::time::Instant::now();
-                let Ok(mut slot) = current.ephemeral_ttl.next_deadline.lock() else {
-                    return;
-                };
-                match swept {
-                    Ok(Some(next_delay)) => {
-                        last_warning = None;
-                        let candidate = now + next_delay;
-                        *slot = Some(match *slot {
-                            Some(existing) if existing != target => existing.min(candidate),
-                            _ => candidate,
-                        });
-                    }
-                    Ok(None) => {
-                        if *slot == Some(target) {
-                            *slot = None;
-                            return;
-                        }
-                    }
-                    Err(failure) => {
-                        let msg = failure.body.to_string();
-                        if last_warning.as_deref() != Some(msg.as_str()) {
-                            eprintln!("Ephemeral TTL sweep incomplete: {msg}");
-                            last_warning = Some(msg);
-                        }
-                        let retry = now + SWEEP_RETRY_INTERVAL;
-                        *slot = Some(match *slot {
-                            Some(existing) if existing != target => existing.min(retry),
-                            _ => retry,
-                        });
-                    }
-                }
-            }
-        });
+        tokio::spawn(run_ephemeral_ttl_loop(coordinator));
     }
 
     /// When a non-owner agent's session ends (outside host shutdown), stop its
@@ -172,7 +112,13 @@ impl LaunchCoordinator {
                 continue;
             }
             if let Err(failure) = self
-                .stop_ephemeral_jobs(project, &child.agent, Some(parent_lifecycle), &bound)
+                .stop_ephemeral_jobs(
+                    project,
+                    &child.agent,
+                    Some(parent_lifecycle),
+                    owned::OneShotExit::ParentEnded,
+                    &bound,
+                )
                 .await
             {
                 eprintln!(
@@ -261,7 +207,13 @@ impl LaunchCoordinator {
             }
             deadline.remaining()?;
             if let Err(failure) = self
-                .stop_ephemeral_jobs(project, &child.agent, None, deadline)
+                .stop_ephemeral_jobs(
+                    project,
+                    &child.agent,
+                    None,
+                    owned::OneShotExit::Expired,
+                    deadline,
+                )
                 .await
             {
                 first_failure.get_or_insert(failure);
@@ -425,6 +377,32 @@ impl LaunchCoordinator {
                 let EventBody::SessionEnded { reason, .. } = &session_head.current.body else {
                     return Ok(None);
                 };
+                let outcome = match reason {
+                    se_store::StoredText::Present(text) => text.clone(),
+                    _ => "session ended".to_owned(),
+                };
+                if outcome == process_commit::ENDED_BY_REBOOT
+                    || outcome == "launch preparation failed"
+                    || outcome == se_core::ops::agent_launch::ATTENDED_RECONNECT_FAILED
+                {
+                    return Ok(None);
+                }
+                let prepared = session_head
+                    .original
+                    .as_deref()
+                    .unwrap_or(&session_head.current);
+                let capture_enabled = matches!(
+                    prepared.body,
+                    EventBody::SessionPrepared {
+                        consent: se_store::Consent::Capture,
+                        ..
+                    }
+                );
+                let (activated, capture) =
+                    inspect_session_completion(cx.read, &target_session, capture_enabled)?;
+                if !activated {
+                    return Ok(None);
+                }
                 let name = match &control.principal.current.body {
                     EventBody::PrincipalRegistered { name, .. }
                     | EventBody::PrincipalRenamed { name, .. } => name.clone(),
@@ -433,17 +411,12 @@ impl LaunchCoordinator {
                 let (provider, model) = match control.profile {
                     Read::Present { value } => match value.current.body {
                         EventBody::ProfileSaved { profile, .. } => {
-                            (profile.provider, profile.model)
+                            (Some(profile.provider), profile.model)
                         }
-                        _ => (se_store::Provider::Claude, None),
+                        _ => (None, None),
                     },
-                    _ => (se_store::Provider::Claude, None),
+                    _ => (None, None),
                 };
-                let outcome = match reason {
-                    se_store::StoredText::Present(text) => text.clone(),
-                    _ => "session ended".to_owned(),
-                };
-                let capture_verified = !outcome.contains("capture incomplete");
                 Ok(Some(super::delegate::OneShotCompletion {
                     project: project_id,
                     agent: se_types::Named {
@@ -455,7 +428,7 @@ impl LaunchCoordinator {
                     provider,
                     model,
                     outcome,
-                    capture_verified,
+                    capture,
                 }))
             })
             .await?;
@@ -515,6 +488,7 @@ impl LaunchCoordinator {
         project: &ProjectId,
         agent: &AgentId,
         exclude_lifecycle: Option<&LifecycleId>,
+        exit_kind: owned::OneShotExit,
         deadline: &Deadline,
     ) -> Result<bool> {
         let matching: Vec<_> = self
@@ -535,6 +509,7 @@ impl LaunchCoordinator {
         for job in matching {
             let mut work = crate::runtime::pool::within(deadline, job.state.lock()).await?;
             if !work.released && !work.session_retired {
+                work.one_shot_exit = exit_kind;
                 work.admission = work.cleanup_admission.clone();
                 if !work.active {
                     self.cleanup_failed(&mut work, deadline).await?;
@@ -583,4 +558,142 @@ impl LaunchCoordinator {
             .await?;
         Ok(())
     }
+}
+
+async fn run_ephemeral_ttl_loop(coordinator: std::sync::Weak<LaunchCoordinator>) {
+    let mut last_warning: Option<String> = None;
+    loop {
+        let Some(current) = coordinator.upgrade() else {
+            return;
+        };
+        if current.stopping.load(Ordering::Acquire) {
+            if let Ok(mut state) = current.ephemeral_ttl.state.lock() {
+                state.next_deadline = None;
+                state.running = false;
+            }
+            return;
+        }
+        let (target, gen_before) = {
+            let Ok(mut state) = current.ephemeral_ttl.state.lock() else {
+                return;
+            };
+            match state.next_deadline {
+                Some(t) => (t, state.generation),
+                None => {
+                    state.running = false;
+                    return;
+                }
+            }
+        };
+        let woken_early = tokio::select! {
+            () = tokio::time::sleep_until(target) => false,
+            () = current.ephemeral_ttl.wake.notified() => true,
+        };
+        if woken_early {
+            continue;
+        }
+        if current.stopping.load(Ordering::Acquire) {
+            if let Ok(mut state) = current.ephemeral_ttl.state.lock() {
+                state.next_deadline = None;
+                state.running = false;
+            }
+            return;
+        }
+        let swept = async {
+            let deadline = Deadline::idle()?.stage(Duration::from_secs(30))?;
+            current.sweep_ephemeral_expired(&deadline).await
+        }
+        .await;
+        let now = tokio::time::Instant::now();
+        let Ok(mut state) = current.ephemeral_ttl.state.lock() else {
+            return;
+        };
+        let dirty = state.generation != gen_before;
+        match swept {
+            Ok(Some(next_delay)) => {
+                last_warning = None;
+                let candidate = now + next_delay;
+                state.next_deadline = Some(if dirty {
+                    state.next_deadline.map_or(candidate, |d| d.min(candidate))
+                } else {
+                    candidate
+                });
+            }
+            Ok(None) => {
+                if !dirty {
+                    state.next_deadline = None;
+                    state.running = false;
+                    return;
+                }
+            }
+            Err(failure) => {
+                let msg = failure.body.to_string();
+                if last_warning.as_deref() != Some(msg.as_str()) {
+                    eprintln!("Ephemeral TTL sweep incomplete: {msg}");
+                    last_warning = Some(msg);
+                }
+                let retry = now + SWEEP_RETRY_INTERVAL;
+                state.next_deadline = Some(if dirty {
+                    state.next_deadline.map_or(retry, |d| d.min(retry))
+                } else {
+                    retry
+                });
+            }
+        }
+    }
+}
+
+fn inspect_session_completion<R: Snapshot>(
+    read: &mut R,
+    session: &SessionId,
+    capture_enabled: bool,
+) -> Result<(bool, se_core::ops::delegate::CaptureOutcome)> {
+    use se_core::ops::delegate::CaptureOutcome;
+    let budget = se_store::ReadBudget {
+        page: PageRequest {
+            after: None,
+            limit: NonZeroU32::new(64)
+                .ok_or_else(|| se_types::SeError::invalid("limit", "positive"))?,
+            max_bytes: NonZeroU32::new(256 * 1024)
+                .ok_or_else(|| se_types::SeError::invalid("bytes", "positive"))?,
+        },
+        deadline: Duration::from_secs(2),
+    };
+    let page = read
+        .history(
+            se_store::HistoryQuery {
+                agent: None,
+                kinds: vec![
+                    se_store::EventKind::SessionActivated,
+                    se_store::EventKind::CaptureVerified,
+                    se_store::EventKind::CaptureFailed,
+                ],
+                families: Vec::new(),
+                session: Some(session.clone()),
+                transcript: se_store::TranscriptFilter::All,
+                since: None,
+                direction: se_store::HistoryDirection::OldestFirst,
+            },
+            budget,
+        )
+        .map_err(|e| store_error(&e))?;
+    let mut activated = false;
+    let mut capture = if capture_enabled {
+        CaptureOutcome::Incomplete
+    } else {
+        CaptureOutcome::Disabled
+    };
+    for event in page.into_items() {
+        match event.body {
+            EventBody::SessionActivated { .. } => activated = true,
+            EventBody::CaptureVerified { .. } if capture_enabled => {
+                capture = CaptureOutcome::Verified;
+            }
+            EventBody::CaptureFailed { .. } if capture_enabled => {
+                capture = CaptureOutcome::Incomplete;
+            }
+            _ => {}
+        }
+    }
+    Ok((activated, capture))
 }

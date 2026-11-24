@@ -54,9 +54,7 @@ pub(crate) fn retired_agent_refusal(op: &str) -> SeError {
         se_types::details::StateConflict {
             subject: op.into(),
             reason: "this temporary agent is retired".into(),
-            next_step:
-                "This temporary agent is retired; start a new helper with se delegate --handoff ..."
-                    .into(),
+            next_step: "This temporary agent is retired; export its history with se handoff export --from <agent> or start a new helper with se delegate --task <task> --handoff-from <agent>.".into(),
         },
     ))
 }
@@ -64,19 +62,24 @@ pub(crate) fn retired_agent_refusal(op: &str) -> SeError {
 fn refuse_retired_or_expired(
     kernel: &Kernel,
     control: &se_store::ControlTarget,
+    replayed: bool,
     op: &str,
 ) -> Result<Option<se_store::EphemeralSpec>> {
-    if control.retired {
-        return Err(retired_agent_refusal(op));
-    }
     let registration = control
         .principal
         .original
         .as_deref()
         .unwrap_or(&control.principal.current);
-    let EventBody::PrincipalRegistered { ephemeral, .. } = &registration.body else {
-        return Ok(None);
+    let ephemeral = match &registration.body {
+        EventBody::PrincipalRegistered { ephemeral, .. } => *ephemeral,
+        _ => None,
     };
+    if replayed {
+        return Ok(ephemeral);
+    }
+    if control.retired {
+        return Err(retired_agent_refusal(op));
+    }
     if let Some(spec) = ephemeral {
         let ttl_us = i64::from(spec.ttl_seconds).saturating_mul(1_000_000);
         if kernel
@@ -88,18 +91,17 @@ fn refuse_retired_or_expired(
             return Err(retired_agent_refusal(op));
         }
     }
-    Ok(*ephemeral)
+    Ok(ephemeral)
 }
 
 fn recheck_delegated_launch(
     actor: &Actor,
-    target: &AgentId,
     ephemeral: Option<se_store::EphemeralSpec>,
     provider: Provider,
     profile: &se_store::Profile,
     configuration: &ConfigFile,
 ) -> Result<()> {
-    if matches!(actor, Actor::Agent(caller) if caller != target || ephemeral.is_some()) {
+    if ephemeral.is_some() && matches!(actor, Actor::Agent(_)) {
         if !profile.provider_settings.is_empty() {
             return Err(SeError::invalid(
                 "provider_settings",
@@ -132,7 +134,8 @@ pub fn launch<R: Snapshot>(
         "launch target",
         "Choose a saved agent in this project that you own or are currently allowed to control.",
     )?;
-    let ephemeral = refuse_retired_or_expired(kernel, &control, "agent.launch")?;
+    let (seed, replayed) = launch_seed(kernel, cx, &input, &agent)?;
+    let ephemeral = refuse_retired_or_expired(kernel, &control, replayed, "agent.launch")?;
     let name = match &control.principal.current.body {
         EventBody::PrincipalRegistered { name, .. } | EventBody::PrincipalRenamed { name, .. } => {
             name.clone()
@@ -152,7 +155,6 @@ pub fn launch<R: Snapshot>(
     let (mut profile, provider) = saved_profile(&mut input, &control, saved)?;
     recheck_delegated_launch(
         &cx.admission.actor,
-        &agent,
         ephemeral,
         provider,
         &profile,
@@ -174,7 +176,6 @@ pub fn launch<R: Snapshot>(
         profile.model = Some(model.clone());
     }
     let (id, owner, project_name, cwd) = project_facts(cx)?;
-    let (seed, replayed) = launch_seed(kernel, cx, &input, &agent)?;
     let identity = LaunchIdentity {
         project: id.clone(),
         agent: agent.clone(),

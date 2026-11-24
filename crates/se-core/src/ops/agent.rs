@@ -64,11 +64,6 @@ pub fn create<R: Snapshot>(
     input.provider_settings.validate(provider)?;
     let defaults = configuration.provider(provider);
     let named_profile = input.profile.as_deref().unwrap_or(&defaults.profile);
-    if matches!(cx.admission.actor, Actor::Agent(_)) {
-        configuration
-            .delegation
-            .require_allowed(provider, named_profile)?;
-    }
     let permission = match configuration
         .resolve_profile(named_profile, provider, false)?
         .sandbox

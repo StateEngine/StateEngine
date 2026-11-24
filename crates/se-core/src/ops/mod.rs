@@ -30,7 +30,7 @@ pub mod agent;
 pub mod agent_launch;
 pub mod agent_stop;
 pub mod agent_wake;
-pub use crate::delegate;
+pub mod delegate;
 pub mod process_commit;
 pub mod process_plan;
 pub mod project_remove;

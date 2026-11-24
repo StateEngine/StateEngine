@@ -36,11 +36,24 @@ impl LifecycleMetadata {
         }
     }
 }
+/// Why a one-shot temporary agent's session is ending. Only `Natural` triggers
+/// the atomic completion notice + `AgentRetired { Completed }` batch.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum OneShotExit {
+    #[default]
+    Natural,
+    Cancelled,
+    Expired,
+    ParentEnded,
+    FailedPreparation,
+}
+
 #[expect(
     clippy::struct_excessive_bools,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
 pub(super) struct Work {
+    pub one_shot_exit: OneShotExit,
     pub startup_timing: Option<crate::startup_timing::Timing>,
     pub takeover: Option<se_core::ops::agent_launch::TakeoverReport>,
     pub plan: Option<Arc<LaunchPlan>>,
@@ -107,6 +120,7 @@ impl Work {
         cleanup_admission.actor = se_store::Actor::Human(meta.owner.clone());
         cleanup_admission.session = None;
         Self {
+            one_shot_exit: OneShotExit::Natural,
             takeover: None,
             startup_timing: None,
             cleanup_admission,

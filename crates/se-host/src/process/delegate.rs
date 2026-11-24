@@ -22,13 +22,29 @@ pub(super) struct OneShotCompletion {
     pub agent: Named<se_types::AgentId>,
     pub owner: se_types::HumanId,
     pub child_session: se_types::SessionId,
-    pub provider: se_store::Provider,
+    pub provider: Option<se_store::Provider>,
     pub model: Option<String>,
     pub outcome: String,
-    pub capture_verified: bool,
+    pub capture: se_core::ops::delegate::CaptureOutcome,
 }
 
 impl LaunchCoordinator {
+    fn parent_delegate_lock(
+        &self,
+        project: &se_types::ProjectId,
+        creator: &se_store::Actor,
+    ) -> Result<Arc<tokio::sync::Mutex<()>>> {
+        let key = (project.clone(), format!("{creator:?}"));
+        let mut map = self
+            .delegate_locks
+            .lock()
+            .map_err(|_| error("delegate lock table", "lock table is poisoned"))?;
+        Ok(map
+            .entry(key)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone())
+    }
+
     /// Qualify provider/harness BEFORE creating the ephemeral principal so a
     /// failed qualification never leaves an orphan agent behind (`I12`).
     pub(super) async fn delegate_start(
@@ -37,10 +53,13 @@ impl LaunchCoordinator {
         admission: Admission,
         deadline: &Deadline,
     ) -> Result<DelegateStartOutput> {
+        let newly_created = plan.existing_agent.is_none();
         let (agent_id, name) = if let Some(existing) = &plan.existing_agent {
             existing.clone()
         } else {
             self.qualify_delegate(&plan, deadline).await?;
+            let parent_lock = self.parent_delegate_lock(&plan.project.id, &plan.creator)?;
+            let _guard = crate::runtime::pool::within(deadline, parent_lock.lock()).await?;
             let commit_plan = plan.clone();
             self.store
                 .commit(admission.clone(), deadline, None, move |kernel, cx| {
@@ -73,8 +92,21 @@ impl LaunchCoordinator {
                 let kernel = se_core::dispatch::Kernel::new(facts)?;
                 process_plan::launch(&kernel, launch_input, &configuration, cx)
             })
-            .await?;
-        let reply = self.launch(launch_plan, admission, deadline).await?;
+            .await;
+        let reply = match launch_plan {
+            Ok(lp) => self.launch(lp, admission.clone(), deadline).await,
+            Err(err) => Err(err),
+        };
+        let reply = match reply {
+            Ok(reply) => reply,
+            Err(launch_err) => {
+                if newly_created {
+                    self.retire_failed_delegate(&plan.project.id, &agent_id, &admission, deadline)
+                        .await;
+                }
+                return Err(launch_err);
+            }
+        };
         let session_id = match reply {
             LaunchReply::Running(launched) => launched.session_id,
             LaunchReply::Pending(pending) => pending.session_id,
@@ -129,6 +161,37 @@ impl LaunchCoordinator {
         Ok(())
     }
 
+    /// Clean up a freshly created ephemeral agent if `self.launch` fails before
+    /// activation, so failed launches never leave counted orphans until TTL.
+    async fn retire_failed_delegate(
+        &self,
+        project: &se_types::ProjectId,
+        agent: &se_types::AgentId,
+        admission: &Admission,
+        deadline: &Deadline,
+    ) {
+        let Ok(bound) = deadline.stage(Duration::from_secs(5)) else {
+            return;
+        };
+        let _ = self
+            .stop_ephemeral_jobs(project, agent, None, owned::OneShotExit::Cancelled, &bound)
+            .await;
+        if self
+            .has_unresolved_live_work(project, agent, &bound)
+            .await
+            .unwrap_or(true)
+        {
+            return;
+        }
+        let target = agent.clone();
+        let _ = self
+            .store
+            .commit(admission.clone(), &bound, None, move |kernel, cx| {
+                process_commit::retire_agent(kernel, target, RetirementReason::Cancelled, None, cx)
+            })
+            .await;
+    }
+
     /// Stop any active lifecycle for a temporary agent and terminally retire it
     /// with `RetirementReason::Cancelled`.
     pub(super) async fn delegate_cancel(
@@ -138,7 +201,13 @@ impl LaunchCoordinator {
         deadline: &Deadline,
     ) -> Result<DelegateCancelOutput> {
         let stopped_lifecycle = self
-            .stop_ephemeral_jobs(&plan.project, &plan.agent.id, None, deadline)
+            .stop_ephemeral_jobs(
+                &plan.project,
+                &plan.agent.id,
+                None,
+                owned::OneShotExit::Cancelled,
+                deadline,
+            )
             .await?;
         if !plan.already_retired {
             if self
@@ -165,8 +234,9 @@ impl LaunchCoordinator {
                 .await?;
             if !retired {
                 let agent = plan.agent.id.clone();
-                self.store
-                    .commit(admission, deadline, None, move |kernel, cx| {
+                if let Err(commit_err) = self
+                    .store
+                    .commit(admission.clone(), deadline, None, move |kernel, cx| {
                         process_commit::retire_agent(
                             kernel,
                             agent,
@@ -175,7 +245,22 @@ impl LaunchCoordinator {
                             cx,
                         )
                     })
-                    .await?;
+                    .await
+                {
+                    let recheck = plan.agent.id.clone();
+                    let now_retired = self
+                        .store
+                        .read(admission, deadline, move |cx| {
+                            cx.read
+                                .principal_retired(recheck)
+                                .map_err(|e| store_error(&e))
+                        })
+                        .await
+                        .unwrap_or(false);
+                    if !now_retired {
+                        return Err(commit_err);
+                    }
+                }
             }
         }
         Ok(DelegateCancelOutput {
@@ -244,7 +329,7 @@ impl LaunchCoordinator {
         &self,
         work: &owned::Work,
         outcome: String,
-        capture_verified: bool,
+        capture: se_core::ops::delegate::CaptureOutcome,
         deadline: &Deadline,
     ) {
         let Ok(remaining) = deadline.remaining() else {
@@ -264,10 +349,10 @@ impl LaunchCoordinator {
                     agent: work.meta.agent.clone(),
                     owner: work.meta.owner.clone(),
                     child_session: work.meta.session.clone(),
-                    provider: work.meta.provider,
+                    provider: Some(work.meta.provider),
                     model: work.meta.model.clone(),
                     outcome,
-                    capture_verified,
+                    capture,
                 },
                 &bound,
             )
@@ -293,7 +378,7 @@ impl LaunchCoordinator {
             provider,
             model,
             outcome,
-            capture_verified,
+            capture,
         } = info;
         let admission = self.owner_project_admission(&project);
         let lookup_agent = agent.id.clone();
@@ -338,7 +423,7 @@ impl LaunchCoordinator {
                         provider,
                         model,
                         outcome,
-                        capture_verified,
+                        capture,
                     },
                     cx,
                 )?;

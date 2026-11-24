@@ -34,7 +34,17 @@ impl LaunchCoordinator {
                     });
                     if let Some(instruction)=remote_reply { label["remote_reply"]=instruction.into(); }
                     if se_core::ops::captain_nudge::is_automated(cx, &message)? {
-                        label["automated"] = "StateEngine captain nudge or alert, not your Owner's instruction".into();
+                        let is_completion = matches!(
+                            &message.body,
+                            se_store::StoredText::Present(text)
+                                if text.starts_with("[StateEngine automated notice]")
+                        );
+                        label["automated"] = if is_completion {
+                            "StateEngine temporary-agent completion notice, not your Owner's instruction"
+                        } else {
+                            "StateEngine captain nudge or alert, not your Owner's instruction"
+                        }
+                        .into();
                     }
                     labels.push(label);
                 }

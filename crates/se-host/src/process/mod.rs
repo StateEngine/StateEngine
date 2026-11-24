@@ -100,6 +100,9 @@ pub struct ProcessConfiguration {
     pub restore_deadline_ms: u64,
     pub stop_grace_ms: Option<u32>,
 }
+type DelegateLockMap =
+    std::collections::BTreeMap<(se_types::ProjectId, String), Arc<tokio::sync::Mutex<()>>>;
+
 pub struct LaunchCoordinator {
     #[cfg(any(windows, target_os = "macos"))]
     repository_watches: std::sync::Mutex<Vec<se_repository::RepositoryWatch>>,
@@ -128,6 +131,7 @@ pub struct LaunchCoordinator {
     stopping: std::sync::atomic::AtomicBool,
     orphans: std::sync::Mutex<std::collections::BTreeSet<se_types::LifecycleId>>,
     ephemeral_ttl: Arc<ephemeral::TtlTimer>,
+    delegate_locks: std::sync::Mutex<DelegateLockMap>,
 }
 struct ProviderHarnesses {
     claude: Arc<ClaudeHarness>,
@@ -253,6 +257,7 @@ impl LaunchCoordinator {
             stopping: std::sync::atomic::AtomicBool::new(false),
             orphans: std::sync::Mutex::default(),
             ephemeral_ttl: Arc::new(ephemeral::TtlTimer::new()),
+            delegate_locks: std::sync::Mutex::default(),
         }))
     }
 

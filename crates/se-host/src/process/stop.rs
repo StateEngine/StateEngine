@@ -209,6 +209,7 @@ impl LaunchCoordinator {
         } else {
             "launch preparation failed"
         };
+        work.one_shot_exit = owned::OneShotExit::FailedPreparation;
         self.retire_session(work, reason, deadline).await
     }
     async fn recover_failed_preparation(
@@ -538,9 +539,19 @@ impl LaunchCoordinator {
         work.session_retired = true;
         self.proofs.remove(&work.meta.session)?;
         if work.meta.ephemeral_one_shot {
-            let capture_verified = work.meta.capture && work.capture_failure.is_none();
-            self.finalize_one_shot_completion(work, outcome, capture_verified, deadline)
-                .await;
+            if work.one_shot_exit == owned::OneShotExit::Natural
+                && !self.stopping.load(std::sync::atomic::Ordering::Acquire)
+            {
+                let capture = if !work.meta.capture {
+                    se_core::ops::delegate::CaptureOutcome::Disabled
+                } else if work.capture_failure.is_some() || work.secode_service_lost {
+                    se_core::ops::delegate::CaptureOutcome::Incomplete
+                } else {
+                    se_core::ops::delegate::CaptureOutcome::Verified
+                };
+                self.finalize_one_shot_completion(work, outcome, capture, deadline)
+                    .await;
+            }
         } else {
             Box::pin(self.cascade_parent_ended(
                 &work.meta.project.id,
