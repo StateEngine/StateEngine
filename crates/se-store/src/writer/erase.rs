@@ -84,11 +84,7 @@ pub(super) fn execute(
         host.engine.poisoned = true;
     }
     shared.completed(0)?;
-    shared
-        .admission
-        .lock()
-        .map_err(|_| fail(StoreErrorCode::WriterClosed, "writer admission poisoned"))?
-        .recovering = host.engine.poisoned;
+    shared.set_recovering(host.engine.poisoned)?;
     reply.send(result);
     Ok(())
 }

@@ -13,6 +13,7 @@ use std::{
     thread::JoinHandle,
     time::{Duration, Instant},
 };
+mod append;
 mod atlas;
 mod erase;
 use crate::checkpoint_task;
@@ -119,6 +120,13 @@ impl Shared {
             .requests
             .checked_sub(1)
             .ok_or_else(|| invalid("writer request accounting underflow"))?;
+        Ok(())
+    }
+    fn set_recovering(&self, recovering: bool) -> StoreResult<()> {
+        self.admission
+            .lock()
+            .map_err(|_| fail(StoreErrorCode::WriterClosed, "writer admission poisoned"))?
+            .recovering = recovering;
         Ok(())
     }
 }
@@ -424,10 +432,6 @@ fn receive(receiver: &Receiver<Command>) -> StoreResult<Command> {
         )
     })
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn run(
     mut host: SqliteHost,
     options: WriterOptions,
@@ -458,100 +462,9 @@ fn run(
             Command::Atlas(request) => atlas::execute(&mut host, &*lease, &shared, request)?,
             Command::Erase(request) => erase::execute(&mut host, &*lease, &shared, *request)?,
             Command::Append(first) => {
-                let mut group = vec![first];
-                let mut bytes = group[0].materialized;
-                while group.len() < options.maximum_requests.get() as usize {
-                    match receiver.try_recv() {
-                        Ok(Command::Append(r))
-                            if bytes + r.materialized <= options.group_bytes.get() as usize =>
-                        {
-                            bytes += r.materialized;
-                            group.push(r)
-                        }
-                        Ok(other) => {
-                            deferred = Some(other);
-                            break;
-                        }
-                        Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-                    }
-                }
-                let start = Instant::now();
-                let count = group.len();
-                let mut replies = Vec::new();
-                let mut batches = Vec::new();
-                for r in group {
-                    replies.push((
-                        r.reply,
-                        r.queued,
-                        r.bytes,
-                        r.batch.request.as_ref().map(|r| r.key.clone()),
-                    ));
-                    batches.push(r.batch)
-                }
-                let result = host
-                    .engine
-                    .reopen(&host.reader.path, host.reader.timeout, &*lease)
-                    .and_then(|_| connection::info(&host.engine.db))
-                    .and_then(|i| crate::open::validate_lease(&i, &*lease, LeaseMode::Host))
-                    .and_then(|_| host.engine.group(batches, false));
-                shared
-                    .admission
-                    .lock()
-                    .map_err(|_| fail(StoreErrorCode::WriterClosed, "writer admission poisoned"))?
-                    .recovering = host.engine.poisoned;
-                match result {
-                    Ok((results, phases)) => {
-                        if results.len() != replies.len() {
-                            return Err(fail(
-                                StoreErrorCode::CommitOutcomeUnknown,
-                                "writer group lost a result",
-                            ));
-                        }
-                        for ((reply, queued, bytes, key), mut result) in
-                            replies.into_iter().zip(results)
-                        {
-                            shared.completed(bytes)?;
-                            if let (Ok(receipt), Some(commit_sync)) = (&mut result, phases.sync) {
-                                let timings = WriteTimings {
-                                    request_key: key,
-                                    queue: start.saturating_duration_since(queued),
-                                    transaction: phases.transaction,
-                                    commit_sync,
-                                    checkpoint: phases.checkpoint,
-                                    group_requests: count,
-                                    durability: if phases.full {
-                                        CommitDurability::Full
-                                    } else {
-                                        CommitDurability::Normal
-                                    },
-                                };
-                                receipt.write_timings = Some(timings);
-                            }
-                            reply.send(result);
-                        }
-                    }
-                    Err(e) => {
-                        let mut e = e;
-                        stamp_busy_wait(&mut e, host.reader.timeout);
-                        for (reply, _, bytes, _) in replies {
-                            shared.completed(bytes)?;
-                            reply.send(Err(e.clone()));
-                        }
-                    }
-                }
-                if host.engine.poisoned {
-                    let reopened = host
-                        .engine
-                        .reopen(&host.reader.path, host.reader.timeout, &*lease)
-                        .is_ok();
-                    shared
-                        .admission
-                        .lock()
-                        .map_err(|_| {
-                            fail(StoreErrorCode::WriterClosed, "writer admission poisoned")
-                        })?
-                        .recovering = !reopened;
-                }
+                let (group, next) = append::collect(first, &receiver, &options);
+                deferred = next;
+                append::execute(&mut host, &*lease, &shared, group)?;
             }
             Command::Recover => {
                 shared
@@ -563,11 +476,7 @@ fn run(
                     .engine
                     .reopen(&host.reader.path, host.reader.timeout, &*lease)
                     .is_ok();
-                shared
-                    .admission
-                    .lock()
-                    .map_err(|_| fail(StoreErrorCode::WriterClosed, "writer admission poisoned"))?
-                    .recovering = !reopened;
+                shared.set_recovering(!reopened)?;
             }
             Command::Flush(deadline, reply) => {
                 // No join here on purpose: Pending may be spurious while the
