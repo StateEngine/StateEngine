@@ -90,9 +90,9 @@ fn census(args: &[std::ffi::OsString]) -> std::process::ExitCode {
             pid,
         )
     };
-    if handle == -1 {
+    if handle == 0 {
         // SAFETY: GetLastError reads this thread's immediately preceding
-        // OpenProcess failure, with no intervening native call.
+        // OpenProcess failure (NULL), with no intervening native call.
         let code = unsafe { GetLastError() };
         return if code == ERROR_INVALID_PARAMETER {
             // The exact child is absent.
@@ -100,9 +100,6 @@ fn census(args: &[std::ffi::OsString]) -> std::process::ExitCode {
         } else {
             std::process::ExitCode::from(2)
         };
-    }
-    if handle == 0 {
-        return std::process::ExitCode::from(2);
     }
     let mut exit_code = 0u32;
     // SAFETY: a live process handle from the OpenProcess above; the query is
