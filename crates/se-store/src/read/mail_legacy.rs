@@ -1,31 +1,24 @@
 //! Read-only schema 1/2 mail selection until the native host performs migration.
 use super::*;
 use rusqlite::types::Value;
-pub(super) fn sql(
-    p: &[u8],
-    to: Option<&[u8]>,
-    from: Option<&[u8]>,
-    query: &MessageQuery,
-    h: u64,
-    after: u64,
-    projection: &str,
-) -> (String, Vec<Value>) {
-    let unread = query.unread_only && to.is_some();
-    let index = if to.is_some() {
+pub(super) fn sql(w: message::MailWindow<'_>, projection: &str) -> (String, Vec<Value>) {
+    let unread = w.query.unread_only && w.to.is_some();
+    let index = if w.to.is_some() {
         "messages_recipient_seq"
-    } else if from.is_some() {
+    } else if w.from.is_some() {
         "messages_sender_seq"
-    } else if query.kind.is_some() {
+    } else if w.query.kind.is_some() {
         "messages_kind_seq"
     } else {
         "messages_project_seq"
     };
     // A newest-first cursor carries the page frontier (its oldest returned
     // delivery); the next page resumes strictly below it from the floor.
-    let (lower, upper_op, upper) = if query.direction == MailDirection::NewestFirst && after > 0 {
-        (0, "<", after)
+    let (lower, upper_op, upper) = if w.query.direction == MailDirection::NewestFirst && w.after > 0
+    {
+        (0, "<", w.after)
     } else {
-        (after, "<=", h)
+        (w.after, "<=", w.high)
     };
     let mut statement = if unread {
         format!(
@@ -37,11 +30,11 @@ pub(super) fn sql(
         )
     };
     let mut args = vec![
-        Value::Blob(p.into()),
+        Value::Blob(w.project.into()),
         Value::Integer(lower as i64),
         Value::Integer(upper as i64),
     ];
-    if let Some(to) = to {
+    if let Some(to) = w.to {
         statement.push_str(if unread {
             " AND m.recipient_id=?"
         } else {
@@ -49,18 +42,18 @@ pub(super) fn sql(
         });
         args.push(Value::Blob(to.into()));
     }
-    if let Some(from) = from {
+    if let Some(from) = w.from {
         statement.push_str(" AND d.sender_id=?");
         args.push(Value::Blob(from.into()));
     }
-    if let Some(kind) = &query.kind {
+    if let Some(kind) = &w.query.kind {
         statement.push_str(" AND d.message_kind=?");
         args.push(Value::Text(kind.clone()));
     }
-    if query.unread_only && !unread {
+    if w.query.unread_only && !unread {
         statement.push_str(" AND m.read_seq IS NULL AND m.dismissed_seq IS NULL");
     }
-    if query.unread_only {
+    if w.query.unread_only {
         statement.push_str(" AND d.superseded_by IS NULL");
     }
     (statement, args)

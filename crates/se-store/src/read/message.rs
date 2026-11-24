@@ -9,6 +9,17 @@ struct MailActors<'a> {
     from: Option<&'a [u8]>,
     own: Option<&'a [u8]>,
 }
+/// One finite mail selection: project key, optional actors, query and the
+/// `(after, high]` window, shared by page, count and legacy-schema SQL.
+#[derive(Clone, Copy)]
+pub(super) struct MailWindow<'a> {
+    pub project: &'a [u8],
+    pub to: Option<&'a [u8]>,
+    pub from: Option<&'a [u8]>,
+    pub query: &'a MessageQuery,
+    pub high: u64,
+    pub after: u64,
+}
 
 impl SqliteSnapshot {
     /// Schema 3 adds delivery heads; it still needs the retained direct-mail
@@ -144,7 +155,15 @@ impl SqliteSnapshot {
             .map_err(|error| self.read_sql(error))?;
         let result: StoreResult<Vec<DeliveryRow>> = (|| {
             let stream = |to, from| {
-                self.mail_stream(actors.project, to, from, query, h, after, budget, pending)
+                let window = MailWindow {
+                    project: actors.project,
+                    to,
+                    from,
+                    query,
+                    high: h,
+                    after,
+                };
+                self.mail_stream(window, budget, pending)
             };
             let mut rows = if let Some(own) = actors
                 .own
@@ -220,28 +239,14 @@ impl SqliteSnapshot {
         }
         Ok(Some(remaining))
     }
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "One indexed mail stream binds scope, both optional actors, query and finite window/budget together."
-    )]
     fn mail_stream(
         &self,
-        p: &[u8],
-        to: Option<&[u8]>,
-        from: Option<&[u8]>,
-        query: &MessageQuery,
-        h: u64,
-        after: u64,
+        window: MailWindow<'_>,
         budget: &ReadBudget,
         pending: bool,
     ) -> StoreResult<Vec<DeliveryRow>> {
         let (mut statement, mut args) = mail_sql(
-            p,
-            to,
-            from,
-            query,
-            h,
-            after,
+            window,
             // The single MIN aggregate pins SQLite's accompanying bare columns
             // to one matching delivery, including an unfiltered unread view.
             "d.sent_seq,d.revision,d.delivered_seq,d.read_seq,d.dismissed_seq,MIN(d.recipient_id)",
@@ -259,7 +264,7 @@ impl SqliteSnapshot {
                 " AND m.delivered_seq IS NULL"
             });
         }
-        if query.direction == MailDirection::NewestFirst {
+        if window.query.direction == MailDirection::NewestFirst {
             statement.push_str(" GROUP BY d.sent_seq ORDER BY d.sent_seq DESC LIMIT ?");
         } else {
             statement.push_str(" GROUP BY d.sent_seq ORDER BY d.sent_seq LIMIT ?");
@@ -328,43 +333,33 @@ fn trim_and_cost_message(message: &mut MessageRecord, full_body: bool) -> StoreR
     Ok((body.len() + metadata.len() + notifications) as u64 + 1024)
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Keep the finite mail query and its supported schema together without passing snapshot authority."
-)]
-pub(super) fn mail_sql(
-    p: &[u8],
-    to: Option<&[u8]>,
-    from: Option<&[u8]>,
-    query: &MessageQuery,
-    h: u64,
-    after: u64,
-    projection: &str,
-    schema: u32,
-) -> (String, Vec<Value>) {
+/// Keeps the finite mail query and its supported schema together without
+/// passing snapshot authority.
+pub(super) fn mail_sql(w: MailWindow<'_>, projection: &str, schema: u32) -> (String, Vec<Value>) {
     if schema < 3 {
         let projection = projection
             .replace("d.delivered_seq", "m.delivered_seq")
             .replace("d.read_seq", "m.read_seq")
             .replace("d.dismissed_seq", "m.dismissed_seq");
-        return mail_legacy::sql(p, to, from, query, h, after, &projection);
+        return mail_legacy::sql(w, &projection);
     }
-    let unread = query.unread_only && to.is_some();
-    let index = if to.is_some() {
+    let unread = w.query.unread_only && w.to.is_some();
+    let index = if w.to.is_some() {
         "mail_recipient_seq"
-    } else if from.is_some() {
+    } else if w.from.is_some() {
         "mail_sender_seq"
-    } else if query.kind.is_some() {
+    } else if w.query.kind.is_some() {
         "mail_kind_seq"
     } else {
         "mail_project_seq"
     };
     // A newest-first cursor carries the page frontier (its oldest returned
     // delivery); the next page resumes strictly below it from the floor.
-    let (lower, upper_op, upper) = if query.direction == MailDirection::NewestFirst && after > 0 {
-        (0, "<", after)
+    let (lower, upper_op, upper) = if w.query.direction == MailDirection::NewestFirst && w.after > 0
+    {
+        (0, "<", w.after)
     } else {
-        (after, "<=", h)
+        (w.after, "<=", w.high)
     };
     let mut statement = if unread {
         format!(
@@ -376,26 +371,26 @@ pub(super) fn mail_sql(
         )
     };
     let mut args = vec![
-        Value::Blob(p.into()),
+        Value::Blob(w.project.into()),
         Value::Integer(lower as i64),
         Value::Integer(upper as i64),
     ];
-    if let Some(to) = to {
+    if let Some(to) = w.to {
         statement.push_str(" AND d.recipient_id=?");
         args.push(Value::Blob(to.into()));
     }
-    if let Some(from) = from {
+    if let Some(from) = w.from {
         statement.push_str(" AND d.sender_id=?");
         args.push(Value::Blob(from.into()));
     }
-    if let Some(kind) = &query.kind {
+    if let Some(kind) = &w.query.kind {
         statement.push_str(" AND d.message_kind=?");
         args.push(Value::Text(kind.clone()));
     }
-    if query.unread_only && !unread {
+    if w.query.unread_only && !unread {
         statement.push_str(" AND d.read_seq IS NULL AND d.dismissed_seq IS NULL");
     }
-    if query.unread_only {
+    if w.query.unread_only {
         statement.push_str(" AND d.superseded_by IS NULL");
     }
     (statement, args)

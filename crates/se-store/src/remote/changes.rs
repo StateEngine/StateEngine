@@ -74,13 +74,7 @@ impl ReadPhase {
         target: &RemoteTarget,
         request: ChangeRequest<'_>,
     ) -> StoreResult<ChangePage> {
-        let ChangeRequest {
-            after,
-            limit,
-            budget,
-        } = request;
-        replay_bounds(after, limit, budget, &self.info)?;
-        let after_seq = after.map(StorePosition::sequence).unwrap_or(0);
+        replay_bounds(request.after, request.limit, request.budget, &self.info)?;
         let p = crate::identity::key(&self.db, "project", target.project.as_str(), &[0], false)?;
         let mut namespace = vec![1];
         namespace.extend_from_slice(&p);
@@ -89,10 +83,8 @@ impl ReadPhase {
         self.db
             .progress_handler(1000, Some(move || Instant::now() >= deadline))
             .map_err(sql)?;
-        let result = replay_page(
-            &self.db, &self.info, &p, &a, after, after_seq, limit, budget, deadline,
-        )
-        .map_err(replay_interrupt);
+        let result =
+            replay_page(&self.db, &self.info, &p, &a, request, deadline).map_err(replay_interrupt);
         let reset = self
             .db
             .progress_handler(0, None::<fn() -> bool>)
@@ -134,18 +126,20 @@ fn replay_bounds(
     }
     Ok(())
 }
-#[allow(clippy::too_many_arguments)]
 fn replay_page(
     db: &Connection,
     info: &StoreInfo,
     p: &Vec<u8>,
     a: &Vec<u8>,
-    after: Option<&StorePosition>,
-    after_seq: u64,
-    limit: u16,
-    budget: u32,
+    request: ChangeRequest<'_>,
     deadline: Instant,
 ) -> StoreResult<ChangePage> {
+    let ChangeRequest {
+        after,
+        limit,
+        budget,
+    } = request;
+    let after_seq = after.map(StorePosition::sequence).unwrap_or(0);
     // Each branch has a target/position index; no full-floor post-filtering.
     // Shared work marks expose only this exact recipient, never another addressee.
     let mut q=db.prepare("WITH selected(seq) AS (
