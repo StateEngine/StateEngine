@@ -86,6 +86,12 @@ pub struct AgentRow {
     pub secode_binding: Option<Read<super::SecodeBindingView>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secode_runtime: Option<Read<super::SecodeRuntimeView>>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ephemeral: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retired: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
 }
 /// Which Codex login serves an agent. Identifiers only; never a credential.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

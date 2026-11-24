@@ -26,6 +26,7 @@ pub fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
         | ProjectMoved { .. } => project_lifecycle(body)?,
         PrincipalRegistered { .. }
         | PrincipalRenamed { .. }
+        | AgentRetired { .. }
         | ProfileSaved { .. }
         | GrantRecorded { .. }
         | ProcessRegistered { .. }
@@ -179,11 +180,15 @@ fn principal_process<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value
             created_by,
             name,
             role,
+            ephemeral,
             expected,
-        } => (
-            "principal.registered",
-            json!({"principal":principal,"kind":kind,"owner":owner,"created_by":created_by,"name":name,"role":role,"expected":expected}),
-        ),
+        } => {
+            let mut facts = json!({"principal":principal,"kind":kind,"owner":owner,"created_by":created_by,"name":name,"role":role,"expected":expected});
+            if let Some(ephemeral) = ephemeral {
+                facts["ephemeral"] = json!(ephemeral);
+            }
+            ("principal.registered", facts)
+        }
         PrincipalRenamed {
             principal,
             name,
@@ -191,6 +196,14 @@ fn principal_process<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value
         } => (
             "principal.renamed",
             json!({"principal":principal,"name":name,"expected":expected}),
+        ),
+        AgentRetired {
+            agent,
+            reason,
+            final_session,
+        } => (
+            "agent.retired",
+            json!({"agent":agent,"reason":reason,"final_session":final_session}),
         ),
         ProfileSaved {
             agent,

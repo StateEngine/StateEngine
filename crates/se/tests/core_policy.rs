@@ -39,6 +39,7 @@ fn setup() -> Outcome<(Fixture, SqliteDirect, Arc<Lease>)> {
                 created_by: None,
                 name: "Owner".into(),
                 role: "owner".into(),
+                ephemeral: None,
                 expected: Expected::Absent,
             }],
         )?,

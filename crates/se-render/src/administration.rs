@@ -167,27 +167,30 @@ pub(super) fn agents(
     out: &mut impl std::io::Write,
 ) -> std::io::Result<()> {
     writeln!(out, "Agents in {}", value.project.name)?;
-    for agent in value.page.items() {
+    let items = value.page.items();
+    let ordered = super::read::order_with_children(items);
+    for (indent, agent) in ordered {
+        let badge = super::read::agent_badge(agent);
         writeln!(
             out,
-            "{} ({}) — {}; saved profile {}",
+            "{indent}{} ({}){badge} — {}; saved profile {}",
             agent.name,
             agent.id,
             super::labels::harness(agent.provider, agent.harness.as_deref()),
             agent.profile
         )?;
-        writeln!(out, "  Session: {}", agent.session.state)?;
+        writeln!(out, "{indent}  Session: {}", agent.session.state)?;
         if let Some(activity) = &agent.provider_activity {
-            super::read::provider::activity(activity, "  ", out)?;
+            super::read::provider::activity(activity, &format!("{indent}  "), out)?;
         }
         if let Some(runtime) = &agent.secode_runtime {
-            super::read::secode::runtime(runtime, "  ", out)?;
+            super::read::secode::runtime(runtime, &format!("{indent}  "), out)?;
         }
         if let Some(session) = &agent.session.session_id {
-            writeln!(out, "  Session ID: {session}")?;
+            writeln!(out, "{indent}  Session ID: {session}")?;
         }
         if let Some(reason) = &agent.resume.reason {
-            writeln!(out, "  Resume: {reason}")?;
+            writeln!(out, "{indent}  Resume: {reason}")?;
         }
     }
     if value.page.items().is_empty() {

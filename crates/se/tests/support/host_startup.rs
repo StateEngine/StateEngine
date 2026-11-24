@@ -159,6 +159,7 @@ pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
                 created_by: None,
                 name: "Owner".into(),
                 role: "owner".into(),
+                ephemeral: None,
                 expected: Expected::Absent,
             }],
         )?,

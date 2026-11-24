@@ -341,7 +341,11 @@ fn clock_step_cannot_hide_rows_on_a_pre_migration_home() -> Check {
     let db = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
     db.execute_batch(
         "DROP INDEX messages_pair_time;
+         DROP INDEX principals_retired;
          ALTER TABLE messages DROP COLUMN recorded_at_us;
+         ALTER TABLE principals DROP COLUMN retired_seq;
+         ALTER TABLE principals DROP COLUMN ephemeral_one_shot;
+         ALTER TABLE principals DROP COLUMN ephemeral_ttl_seconds;
          PRAGMA user_version=14",
     )?;
     drop(db);

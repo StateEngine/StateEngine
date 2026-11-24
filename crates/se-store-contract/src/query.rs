@@ -199,6 +199,18 @@ pub struct ControlTarget {
     /// launch plan needs them to find a resumed provider transcript, which
     /// stays under the slug of the root where it was written.
     pub moved_from_roots: Vec<se_types::NativePath>,
+    /// True once `AgentRetired` has recorded `principals.retired_seq`.
+    pub retired: bool,
+}
+/// Active (unretired) ephemeral agent projection row for host cascade and TTL sweeps.
+#[derive(Clone, Debug)]
+pub struct EphemeralAgentRecord {
+    pub agent: AgentId,
+    pub created_by: Option<Actor>,
+    pub one_shot: bool,
+    pub ttl_seconds: Option<u32>,
+    pub registered_at_us: i64,
+    pub latest_session: Option<SessionId>,
 }
 /// Exact retained registration selector; active project lists remain separate.
 #[derive(Clone, Debug)]

@@ -13,6 +13,9 @@ pub struct AgentList {
     pub limit: u16,
     #[serde(default)]
     pub cursor: Option<Cursor>,
+    /// Include retired temporary agents in the roster page.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_temp: bool,
 }
 fn default_limit() -> u16 {
     20
@@ -49,6 +52,6 @@ pub fn agents<R: se_store::Snapshot>(input: AgentList, cx: &mut Cx<'_, R>) -> Re
     Ok(AgentPage {
         project,
         consistency: "live-keyset".into(),
-        page: super::agent_status::page(budget, cx)?,
+        page: super::agent_status::page_with_temp(budget, input.include_temp, cx)?,
     })
 }

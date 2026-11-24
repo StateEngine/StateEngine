@@ -7,6 +7,7 @@ use redact::Redactor;
 use se_core::{
     ops::{
         AnyOp, AnyOutput, DiagnosticBundle, DiagnosticBundleOutput, DoctorInspect, ProjectStatus,
+        StatusScope,
     },
     scope,
 };
@@ -97,7 +98,7 @@ fn collected(value: &Value) -> bool {
 fn status(cx: &Bootstrap) -> Result<AnyOutput> {
     // Reuse normal status configuration handling, separately from doctor's recovery mode.
     let op = AnyOp::ProjectStatus(ProjectStatus {
-        all: true,
+        scope: StatusScope::All,
         ..Default::default()
     });
     let mut status = Bootstrap::resolve(Some(cx.home.clone()), None, true, true, &op)?;

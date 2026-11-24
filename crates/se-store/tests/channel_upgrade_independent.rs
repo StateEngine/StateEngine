@@ -308,6 +308,7 @@ fn produce_schema_eight() -> Check {
                 created_by: None,
                 name: "Fixture owner".into(),
                 role: "owner".into(),
+                ephemeral: None,
                 expected: Expected::Absent,
             }],
         )?,

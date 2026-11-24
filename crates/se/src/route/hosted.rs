@@ -138,13 +138,10 @@ impl StatusRequest {
             Read::Absent { .. } => {
                 return Err(SeError::new(se_types::Detail::RuntimeNotRunning(
                     se_types::details::RuntimeNotRunning {
-                        op: AnyOp::ProjectStatus(se_core::ops::ProjectStatus {
-                            all: false,
-                            ..Default::default()
-                        })
-                        .meta()
-                        .name
-                        .into(),
+                        op: AnyOp::ProjectStatus(se_core::ops::ProjectStatus::default())
+                            .meta()
+                            .name
+                            .into(),
                         reason:
                             "no live authenticated host endpoint is published in this data home"
                                 .into(),
@@ -188,7 +185,6 @@ impl StatusRequest {
             &self.endpoint,
             self.credential,
             AnyOp::ProjectStatus(se_core::ops::ProjectStatus {
-                all: false,
                 watch_only: cfg!(any(windows, target_os = "macos")),
                 ..Default::default()
             }),

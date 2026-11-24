@@ -11,6 +11,7 @@ mod cold_stop;
 mod control;
 mod dispatch;
 mod embedded_stop;
+mod ephemeral;
 mod events;
 mod files;
 mod git_workspace;
@@ -160,6 +161,16 @@ impl LaunchCoordinator {
             report
                 .unproved
                 .push(format!("Codex shared server custody: {}", failure.body));
+        }
+        match coordinator.sweep_ephemeral_expired(deadline).await {
+            Ok(Some(next_delay)) => coordinator.spawn_ephemeral_ttl_timer(next_delay),
+            Ok(None) => {}
+            Err(failure) => {
+                report
+                    .unproved
+                    .push(format!("Ephemeral TTL sweep: {}", failure.body));
+                coordinator.spawn_ephemeral_ttl_timer(ephemeral::SWEEP_RETRY_INTERVAL);
+            }
         }
         coordinator.watch_codex_server();
         Ok((coordinator, report))

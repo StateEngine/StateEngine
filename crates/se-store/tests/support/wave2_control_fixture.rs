@@ -71,6 +71,7 @@ pub(super) fn helper(f: &Fixture, id: &AgentId, by: Option<&AgentId>) -> EventBo
         created_by: by.cloned().map(Actor::Agent),
         name: id.as_str().into(),
         role: "helper".into(),
+        ephemeral: None,
         expected: Expected::Absent,
     }
 }

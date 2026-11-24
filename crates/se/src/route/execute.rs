@@ -325,6 +325,119 @@ fn finish_status_observation(
         .flatten())
 }
 
+struct StatusDispatch<'a> {
+    cx: &'a Bootstrap,
+    files: &'a Files,
+    reader: &'a se_store::SqliteReader,
+    caller: &'a super::admit::Caller,
+    selections: &'a se_core::ops::CliSelections,
+    op: &'a AnyOp,
+    observation_deadline: std::time::Instant,
+}
+
+fn dispatch_status(
+    req: StatusDispatch<'_>,
+    mut snapshot: se_store::SqliteSnapshot,
+    owner: Option<Read<se_store::RuntimeOwnerHead>>,
+) -> Result<AnyOutput> {
+    let StatusDispatch {
+        cx,
+        files,
+        reader,
+        caller,
+        selections,
+        op,
+        observation_deadline,
+    } = req;
+    // Ask the daemon concurrently with this process's own build. The local
+    // build stays authoritative, so status is still honest when the daemon
+    // is absent or stale; only the wall time changes, from the sum of the
+    // two to the longer of them.
+    let ask_daemon = uses_host_observation(cx, files, &mut snapshot, caller);
+    // The request owns everything it needs, so it runs on an unscoped thread
+    // and this frame never waits for it unless the answer is used below. A
+    // local error, a removed project or `--all` therefore returns at once
+    // instead of joining a daemon that is slow, paused or gone; the thread
+    // prints nothing and holds no lock this path needs.
+    let pending = ask_daemon.then(|| {
+        daemon_observation_start(super::hosted::StatusRequest::prepare(
+            cx, files, caller, selections,
+        ))
+    });
+    #[cfg(any(windows, target_os = "macos"))]
+    let defer_git = pending.is_some() && matches!(op, AnyOp::ProjectStatus(input) if !input.fresh);
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let defer_git = false;
+    let include_temp = matches!(op, AnyOp::ProjectStatus(input) if input.include_temp);
+    let result = super::status::observe_snapshot_watched(
+        cx,
+        &mut snapshot,
+        owner,
+        files,
+        &caller.admission,
+        super::status::ObserveOptions {
+            watched: None,
+            defer_git,
+            include_temp,
+        },
+    );
+    #[cfg(any(windows, target_os = "macos"))]
+    let early = early_status(&pending, op, defer_git && result.is_ok());
+    let result = result.and_then(|mut output| {
+        #[cfg(any(windows, target_os = "macos"))]
+        complete_deferred_status(cx, files, &mut output, &early, defer_git);
+        #[cfg(not(any(windows, target_os = "macos")))]
+        let _ = &mut output;
+        super::session_observation::prepare(
+            output,
+            &mut snapshot,
+            &caller.admission,
+            observation_deadline,
+        )
+    });
+    let prepared = finish_read(result, snapshot.close().map_err(|e| store_error(&e)))?;
+    let mut output = super::session_observation::finish(prepared, &cx.home)?;
+    // None means nothing was asked, so there is nothing to merge and no
+    // invented error: a read that never needs the host behaves exactly as it
+    // did before this overlap existed.
+    #[cfg(any(windows, target_os = "macos"))]
+    let observed = finish_status_observation(pending, early, cx, &output)?;
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let observed = pending
+        .map(|pending| pending.finish(daemon_answer_is_used(cx, &output)))
+        .transpose()?
+        .flatten();
+    super::status::host_peers(&mut output, observed.as_ref(), &caller.admission);
+    let mut service_observation = None;
+    if let Some(observed) = observed
+        && let AnyOutput::ProjectStatus(status) = &mut output
+    {
+        // The direct native/store witness stays authoritative for status.
+        // The host's Atlas metadata and retained session faults come from the
+        // request that was already in flight during the build; the host is
+        // never bootstrapped here.
+        super::status::merge_resources(&mut status.value.runtime, &observed);
+        status.value.atlas = match &observed {
+            Ok(AnyOutput::ProjectStatus(live)) => {
+                merge_status_pending(&mut status.value.pending, &live.value.pending, op);
+                live.value.atlas.clone()
+            }
+            Ok(_) => se_core::ops::status::atlas_view(Err(scope::unreadable(
+                "Atlas status",
+                "the host returned a different operation family",
+            ))),
+            Err(error) => {
+                se_core::ops::status::atlas_view(Err(se_types::SeError::from(error.body.clone())))
+            }
+        };
+        service_observation = Some(observed);
+    }
+    if let Some(live) = service_observation {
+        output = super::session_observation::merge_runtime_observation(output, live)?;
+    }
+    super::status::finish(cx, reader, output, &caller.admission)
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
@@ -419,93 +532,19 @@ fn dispatch_with_cold_recovery(
         selections.project = Some(project.clone());
     }
     if matches!(op, AnyOp::ProjectStatus(_)) {
-        // Ask the daemon concurrently with this process's own build. The local
-        // build stays authoritative, so status is still honest when the daemon
-        // is absent or stale; only the wall time changes, from the sum of the
-        // two to the longer of them.
-        let ask_daemon = uses_host_observation(cx, &files, &mut snapshot, &caller);
-        // The request owns everything it needs, so it runs on an unscoped thread
-        // and this frame never waits for it unless the answer is used below. A
-        // local error, a removed project or `--all` therefore returns at once
-        // instead of joining a daemon that is slow, paused or gone; the thread
-        // prints nothing and holds no lock this path needs.
-        let pending = ask_daemon.then(|| {
-            daemon_observation_start(super::hosted::StatusRequest::prepare(
+        return dispatch_status(
+            StatusDispatch {
                 cx,
-                &files,
-                &caller,
-                &selections,
-            ))
-        });
-        #[cfg(any(windows, target_os = "macos"))]
-        let defer_git =
-            pending.is_some() && matches!(&op, AnyOp::ProjectStatus(input) if !input.fresh);
-        #[cfg(not(any(windows, target_os = "macos")))]
-        let defer_git = false;
-        let result = super::status::observe_snapshot_watched(
-            cx,
-            &mut snapshot,
-            owner,
-            &files,
-            &caller.admission,
-            None,
-            defer_git,
-        );
-        #[cfg(any(windows, target_os = "macos"))]
-        let early = early_status(&pending, &op, defer_git && result.is_ok());
-        let result = result.and_then(|mut output| {
-            #[cfg(any(windows, target_os = "macos"))]
-            complete_deferred_status(cx, &files, &mut output, &early, defer_git);
-            #[cfg(not(any(windows, target_os = "macos")))]
-            let _ = &mut output;
-            super::session_observation::prepare(
-                output,
-                &mut snapshot,
-                &caller.admission,
+                files: &files,
+                reader: &reader,
+                caller: &caller,
+                selections: &selections,
+                op: &op,
                 observation_deadline,
-            )
-        });
-        let prepared = finish_read(result, snapshot.close().map_err(|e| store_error(&e)))?;
-        let mut output = super::session_observation::finish(prepared, &cx.home)?;
-        // None means nothing was asked, so there is nothing to merge and no
-        // invented error: a read that never needs the host behaves exactly as it
-        // did before this overlap existed.
-        #[cfg(any(windows, target_os = "macos"))]
-        let observed = finish_status_observation(pending, early, cx, &output)?;
-        #[cfg(not(any(windows, target_os = "macos")))]
-        let observed = pending
-            .map(|pending| pending.finish(daemon_answer_is_used(cx, &output)))
-            .transpose()?
-            .flatten();
-        super::status::host_peers(&mut output, observed.as_ref(), &caller.admission);
-        let mut service_observation = None;
-        if let Some(observed) = observed
-            && let AnyOutput::ProjectStatus(status) = &mut output
-        {
-            // The direct native/store witness stays authoritative for status.
-            // The host's Atlas metadata and retained session faults come from the
-            // request that was already in flight during the build; the host is
-            // never bootstrapped here.
-            super::status::merge_resources(&mut status.value.runtime, &observed);
-            status.value.atlas = match &observed {
-                Ok(AnyOutput::ProjectStatus(live)) => {
-                    merge_status_pending(&mut status.value.pending, &live.value.pending, &op);
-                    live.value.atlas.clone()
-                }
-                Ok(_) => se_core::ops::status::atlas_view(Err(scope::unreadable(
-                    "Atlas status",
-                    "the host returned a different operation family",
-                ))),
-                Err(error) => se_core::ops::status::atlas_view(Err(se_types::SeError::from(
-                    error.body.clone(),
-                ))),
-            };
-            service_observation = Some(observed);
-        }
-        if let Some(live) = service_observation {
-            output = super::session_observation::merge_runtime_observation(output, live)?;
-        }
-        return super::status::finish(cx, &reader, output, &caller.admission);
+            },
+            snapshot,
+            owner,
+        );
     }
     if matches!(op, AnyOp::DoctorInspect(_) | AnyOp::DoctorRepair(_)) {
         snapshot.close().map_err(|e| store_error(&e))?;

@@ -295,7 +295,7 @@ fn recorded(x: Ctx<'_>, body: EventBody<InputText>, lease: &LeaseIdentity) -> St
             ..
         } => change_captain(x, &target, captain)?,
         b @ ProjectRegistered { .. } => register_project(x, b)?,
-        b @ PrincipalRegistered { .. } => register_principal(x, b)?,
+        b @ PrincipalRegistered { .. } => principal::register(&x, b)?,
         PrincipalRenamed {
             principal, name, ..
         } => {
@@ -303,36 +303,26 @@ fn recorded(x: Ctx<'_>, body: EventBody<InputText>, lease: &LeaseIdentity) -> St
             let a = x.actor(&principal)?;
             c.execute("UPDATE principals SET display_name=?,revision=?,last_seq=? WHERE project_id=? AND principal_id=?",crate::sql_value::sql_params![name,revision,seq,x.project()?,a]).map_err(sql)?;
         }
-        ProfileSaved { agent, profile, .. } => {
-            profile
-                .provider_settings
-                .validate(profile.provider.into())
-                .map_err(|_| invalid("invalid saved provider settings"))?;
-            if matches!(profile.permission, PermissionProfile::NamedFullBypass)
-                && profile.named_profile.is_empty()
-            {
-                return Err(invalid("bypass needs an explicit named profile"));
-            }
-            let a = key(c, "agent", agent.as_str(), s, true)?;
-            c.execute("INSERT INTO profiles(project_id,agent_id,revision,last_seq) VALUES(?,?,?,?) ON CONFLICT(project_id,agent_id)
-                    DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq WHERE profiles.revision=excluded.revision-1",crate::sql_value::sql_params![x.project()?,a,revision,seq]).map_err(sql)?;
-        }
+        AgentRetired {
+            agent,
+            final_session,
+            ..
+        } => principal::retire(
+            c,
+            header,
+            s,
+            x.project()?,
+            &agent,
+            final_session.as_ref(),
+            seq,
+        )?,
+        ProfileSaved { agent, profile, .. } => save_profile(&x, &agent, &profile)?,
         GrantRecorded {
             principal,
             key: grant,
             active,
             ..
-        } => {
-            if !matches!(header.actor, Actor::Human(_)) {
-                return Err(fail(
-                    StoreErrorCode::CreatorControlRefused,
-                    "only owner may change grants",
-                ));
-            }
-            c.execute("INSERT INTO grants(scope_key,principal_id,grant_key,revision,last_seq,active) VALUES(?,?,?,?,?,?)
-                    ON CONFLICT(scope_key,principal_id,grant_key) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq,active=excluded.active
-                    WHERE grants.revision=excluded.revision-1",crate::sql_value::sql_params![s,x.actor(&principal)?,codec::encode(&grant)?,revision,seq,active]).map_err(sql)?;
-        }
+        } => record_grant(&x, &principal, &grant, active)?,
         b @ RuntimeOwnerEstablished { .. } => runtime_owner(x, b, lease)?,
         DecisionProposed { .. }
         | DecisionRatified { .. }
@@ -371,6 +361,41 @@ fn recorded(x: Ctx<'_>, body: EventBody<InputText>, lease: &LeaseIdentity) -> St
         ErasureCompleted { erasure, .. } => crate::erasure::apply::completed(c, seq, &erasure)?,
         _ => return later("projection"),
     }
+    Ok(())
+}
+fn save_profile(x: &Ctx<'_>, agent: &se_types::AgentId, profile: &Profile) -> StoreResult<()> {
+    profile
+        .provider_settings
+        .validate(profile.provider.into())
+        .map_err(|_| invalid("invalid saved provider settings"))?;
+    if matches!(profile.permission, PermissionProfile::NamedFullBypass)
+        && profile.named_profile.is_empty()
+    {
+        return Err(invalid("bypass needs an explicit named profile"));
+    }
+    let a = key(x.c, "agent", agent.as_str(), x.s, true)?;
+    x.c.execute(
+        "INSERT INTO profiles(project_id,agent_id,revision,last_seq) VALUES(?,?,?,?) ON CONFLICT(project_id,agent_id)
+                DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq WHERE profiles.revision=excluded.revision-1",
+        crate::sql_value::sql_params![x.project()?, a, x.revision, x.seq],
+    )
+    .map_err(sql)?;
+    Ok(())
+}
+fn record_grant(x: &Ctx<'_>, principal: &Actor, grant: &GrantKey, active: bool) -> StoreResult<()> {
+    if !matches!(x.header.actor, Actor::Human(_)) {
+        return Err(fail(
+            StoreErrorCode::CreatorControlRefused,
+            "only owner may change grants",
+        ));
+    }
+    x.c.execute(
+        "INSERT INTO grants(scope_key,principal_id,grant_key,revision,last_seq,active) VALUES(?,?,?,?,?,?)
+                ON CONFLICT(scope_key,principal_id,grant_key) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq,active=excluded.active
+                WHERE grants.revision=excluded.revision-1",
+        crate::sql_value::sql_params![x.s, x.actor(principal)?, codec::encode(grant)?, x.revision, x.seq, active],
+    )
+    .map_err(sql)?;
     Ok(())
 }
 fn change_captain(x: Ctx<'_>, target: &ProjectId, captain: Option<Actor>) -> StoreResult<()> {
@@ -460,75 +485,6 @@ fn register_project(x: Ctx<'_>, body: EventBody<InputText>) -> StoreResult<()> {
     }
     Ok(())
 }
-fn register_principal(x: Ctx<'_>, body: EventBody<InputText>) -> StoreResult<()> {
-    let (c, header, seq, revision) = (x.c, x.header, x.seq, x.revision);
-    let EventBody::PrincipalRegistered {
-        principal,
-        kind,
-        owner,
-        created_by,
-        name,
-        ..
-    } = body
-    else {
-        return later("projection");
-    };
-    if name.is_empty() || name.len() > 64 {
-        return Err(invalid("principal name bounds"));
-    }
-    if matches!(principal, Actor::Agent(_))
-        && (!name.as_bytes()[0].is_ascii_alphanumeric()
-            || !name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b" ._-".contains(&b)))
-    {
-        return Err(invalid("agent name grammar"));
-    }
-    if matches!(kind, PrincipalKind::Agent) != matches!(principal, Actor::Agent(_)) {
-        return Err(invalid("principal kind differs from ID"));
-    }
-    principal::name_available(c, &header.scope, &principal, &name)?;
-    let a = x.actor(&principal)?;
-    if matches!(principal, Actor::Agent(_)) {
-        let collision: bool = c
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM owners WHERE human_id=?)",
-                [&a],
-                |r| crate::sql_value::value(r, 0),
-            )
-            .map_err(sql)?;
-        if collision {
-            return Err(fail(
-                StoreErrorCode::EventIdConflict,
-                "agent identity bytes collide with an existing human; allocate a fresh agent ID",
-            ));
-        }
-    }
-    let own = key(c, "human", owner.as_str(), &[0], true)?;
-    if x.pk.is_none() {
-        if principal != Actor::Human(owner) || header.actor != principal || created_by.is_some() {
-            return Err(invalid(
-                "registry owner bootstrap requires self owner, no invented creator",
-            ));
-        }
-        c.execute("INSERT INTO owners(human_id,display_name,first_seq,revision,last_seq) VALUES(?,?,?,?,?)",crate::sql_value::sql_params![a,name,seq,revision,seq]).map_err(sql)?;
-    } else {
-        if header.door != Door::Import
-            && header.actor != Actor::Human(owner.clone())
-            && created_by.as_ref() != Some(&header.actor)
-        {
-            return Err(fail(
-                StoreErrorCode::CreatorControlRefused,
-                "creator differs from admitted actor",
-            ));
-        }
-        let creator = created_by.as_ref().map(|a| x.actor(a)).transpose()?;
-        c.execute("INSERT INTO principals(project_id,principal_id,principal_kind,owner_id,created_by,display_name,first_seq,revision,last_seq)
-                    VALUES(?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![x.project()?,a,if matches!(kind,PrincipalKind::Agent){"agent"}else{"human"},own,creator,name,seq,revision,seq]).map_err(sql)?;
-        c.execute("INSERT INTO resume_heads(project_id,principal_id,unread_count,pending_effect_count,last_seq) VALUES(?,?,0,0,?)",crate::sql_value::sql_params![x.project()?,a,seq]).map_err(sql)?;
-    }
-    Ok(())
-}
 const MESSAGE_KINDS: [&str; 8] = [
     "note", "task", "question", "answer", "blocker", "done", "handoff", "finding",
 ];
@@ -572,6 +528,9 @@ fn send_message(x: Ctx<'_>, body: EventBody<InputText>) -> StoreResult<()> {
             StoreErrorCode::ReferenceMissing,
             "message recipient is not registered in this project",
         ));
+    }
+    if exists {
+        principal::refuse_retired(c, x.project()?, &recipient)?;
     }
     let body = payload(
         c,

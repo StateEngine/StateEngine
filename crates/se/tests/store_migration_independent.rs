@@ -19,7 +19,7 @@ fn schema_one(f: &Fixture, obstruct: bool) -> Result<u32, Box<dyn std::error::Er
         &[]
     };
     historical_schema::remove_later_objects(&db, &historical, retained)?;
-    db.execute_batch("ALTER TABLE message_data DROP COLUMN quiet; ALTER TABLE messages DROP COLUMN recorded_at_us; PRAGMA user_version=1")?;
+    db.execute_batch("ALTER TABLE message_data DROP COLUMN quiet; ALTER TABLE messages DROP COLUMN recorded_at_us; ALTER TABLE principals DROP COLUMN retired_seq; ALTER TABLE principals DROP COLUMN ephemeral_one_shot; ALTER TABLE principals DROP COLUMN ephemeral_ttl_seconds; PRAGMA user_version=1")?;
     Ok(current_schema)
 }
 fn schema_four(f: &Fixture) -> Result<u32, Box<dyn std::error::Error>> {
@@ -43,7 +43,7 @@ fn schema_four(f: &Fixture) -> Result<u32, Box<dyn std::error::Error>> {
     let db = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
     let historical = historical_schema::through(4)?;
     historical_schema::remove_later_objects(&db, &historical, &[])?;
-    db.execute_batch("ALTER TABLE messages DROP COLUMN recorded_at_us; PRAGMA user_version=4")?;
+    db.execute_batch("ALTER TABLE messages DROP COLUMN recorded_at_us; ALTER TABLE principals DROP COLUMN retired_seq; ALTER TABLE principals DROP COLUMN ephemeral_one_shot; ALTER TABLE principals DROP COLUMN ephemeral_ttl_seconds; PRAGMA user_version=4")?;
     Ok(current_schema)
 }
 fn backup_is_original(f: &Fixture, expected_schema: u32, expected_head: u64) -> Check {
@@ -245,7 +245,7 @@ fn channel_schema_upgrade_preserves_schema_five_mail_and_original_backup() -> Ch
     let db = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
     let historical = historical_schema::through(5)?;
     historical_schema::remove_later_objects(&db, &historical, &[])?;
-    db.execute_batch("ALTER TABLE messages DROP COLUMN recorded_at_us; PRAGMA user_version=5")?;
+    db.execute_batch("ALTER TABLE messages DROP COLUMN recorded_at_us; ALTER TABLE principals DROP COLUMN retired_seq; ALTER TABLE principals DROP COLUMN ephemeral_one_shot; ALTER TABLE principals DROP COLUMN ephemeral_ttl_seconds; PRAGMA user_version=5")?;
     db.execute("INSERT INTO atlas_resume_roots(project_id,root,epoch,active) SELECT project_id,'original-root','original-epoch',1 FROM projects LIMIT 1", [])?;
     let head: i64 = db.query_row("SELECT MAX(seq) FROM events", [], |row| row.get(0))?;
     drop(db);

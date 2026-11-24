@@ -227,6 +227,36 @@ pub fn end_binding<R: Snapshot>(
     )
 }
 
+/// Terminally retire an ephemeral agent under host/owner or creator custody.
+pub fn retire_agent<R: Snapshot>(
+    kernel: &Kernel,
+    agent: se_types::AgentId,
+    reason: se_store::RetirementReason,
+    final_session: Option<se_types::SessionId>,
+    cx: &Cx<'_, R>,
+) -> Result<AtomicBatch> {
+    let key_tag = match reason {
+        se_store::RetirementReason::Completed => "retire-completed",
+        se_store::RetirementReason::Cancelled => "retire-cancelled",
+        se_store::RetirementReason::ParentEnded => "retire-parent-ended",
+        se_store::RetirementReason::Expired => "retire-expired",
+    };
+    let key = phase_key(&agent.as_str().parse()?, key_tag)?;
+    let intent = serde_json::json!({"agent":agent,"reason":reason,"final_session":final_session});
+    batch(
+        kernel,
+        "agent.retire",
+        key,
+        intent,
+        vec![EventBody::AgentRetired {
+            agent,
+            reason,
+            final_session,
+        }],
+        cx,
+    )
+}
+
 /// One observed native transition under its original control request.
 /// Lifecycle and prior revision identify the CAS barrier, including a new stop
 /// attempt after StopUnproved under the same original control request.

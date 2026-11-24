@@ -164,6 +164,7 @@ pub(super) fn kind_name(k: EventKind) -> &'static str {
         EventKind::ProjectRemoved => "project.removed",
         EventKind::PrincipalRegistered => "principal.registered",
         EventKind::PrincipalRenamed => "principal.renamed",
+        EventKind::AgentRetired => "agent.retired",
         EventKind::AliasImported => "alias.imported",
         EventKind::ProfileSaved => "profile.saved",
         EventKind::GrantRecorded => "grant.recorded",

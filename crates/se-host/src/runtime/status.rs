@@ -8,7 +8,7 @@ pub(crate) fn prepare<S: Snapshot>(
     home: &std::path::Path,
     cx: &mut Cx<'_, S>,
 ) -> Result<AnyOutput> {
-    if input.all {
+    if input.is_all() {
         return Err(error("host status", "use the owner CLI for status --all"));
     }
     let generated = receipt::timestamp(super::start::now_unix_micros()?)?;
@@ -90,6 +90,32 @@ fn project<S: Snapshot>(output: &mut StatusOutput, cx: &mut Cx<'_, S>) -> Result
             direction: MailDirection::OldestFirst,
         })
         .map_err(|e| store_error(&e))?;
+    apply_actor_view(output, project, name, unread, cx)?;
+    output.agents = Some(
+        se_core::ops::listing::agents(
+            AgentList {
+                limit: 100,
+                cursor: None,
+                include_temp: output
+                    .repository_request
+                    .as_ref()
+                    .is_some_and(|request| request.include_temp),
+            },
+            cx,
+        )?
+        .page,
+    );
+    output.next = agent_next();
+    Ok(())
+}
+
+fn apply_actor_view<S: Snapshot>(
+    output: &mut StatusOutput,
+    project: &se_types::ProjectId,
+    name: &str,
+    unread: u64,
+    cx: &mut Cx<'_, S>,
+) -> Result<()> {
     match &cx.admission.actor {
         Actor::Remote(_) | Actor::Guest => {
             return Err(se_types::SeError::invalid(
@@ -104,7 +130,7 @@ fn project<S: Snapshot>(output: &mut StatusOutput, cx: &mut Cx<'_, S>) -> Result
                 output.principal = Some(PrincipalView {
                     project: Named {
                         id: project.clone(),
-                        name: name.clone(),
+                        name: name.to_owned(),
                     },
                     agent: receipt::named_agent(cx.read, agent)?,
                     session_id: session.clone(),
@@ -112,17 +138,6 @@ fn project<S: Snapshot>(output: &mut StatusOutput, cx: &mut Cx<'_, S>) -> Result
             }
         }
     }
-    output.agents = Some(
-        se_core::ops::listing::agents(
-            AgentList {
-                limit: 100,
-                cursor: None,
-            },
-            cx,
-        )?
-        .page,
-    );
-    output.next = agent_next();
     Ok(())
 }
 

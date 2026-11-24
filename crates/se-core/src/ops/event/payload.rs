@@ -31,8 +31,15 @@ pub(super) fn public<R: Snapshot>(
         MessageDelivered{message,recipient,evidence}=>("message.delivered",json!({"message_id":message,"recipient":receipt::actor_ref(read,recipient)?,"evidence":evidence})),
         MessageSuperseded{message,replacement,..}=>("message.superseded",json!({"message_id":message,"replacement":replacement})),
         WorkingStateSet { agent, text: body, .. } => ("working_state.set", json!({"agent":receipt::named_agent(read,agent)?,"body":text(body)?,"revision":event.revision.value})),
-        PrincipalRegistered { principal, name, role, .. } => ("principal.registered", json!({"principal":receipt::actor_ref(read,principal)?,"name":name,"role":role})),
+        PrincipalRegistered { principal, name, role, ephemeral, .. } => {
+            let mut body = json!({"principal":receipt::actor_ref(read,principal)?,"name":name,"role":role});
+            if let Some(ephemeral) = ephemeral {
+                body["ephemeral"] = json!(ephemeral);
+            }
+            ("principal.registered", body)
+        }
         PrincipalRenamed { principal, name, .. } => ("principal.renamed", json!({"principal":receipt::actor_ref(read,principal)?,"name":name})),
+        AgentRetired { agent, reason, final_session } => ("agent.retired", json!({"agent":receipt::named_agent(read,agent)?,"reason":reason,"final_session":final_session})),
         ProfileSaved { agent, profile, .. } => ("profile.saved", json!({"agent":receipt::named_agent(read,agent)?,"profile":profile})),
         GrantRecorded { principal, key, active, .. } => ("grant.recorded", json!({"principal":receipt::actor_ref(read,principal)?,"key":key,"active":active})),
         DecisionProposed { decision, key, statement, rationale, prior, .. } => ("decision.proposed", json!({"decision_id":decision,"key":key,"statement":text(statement)?,"rationale":rationale.as_ref().map(text).transpose()?,"prior":prior})),

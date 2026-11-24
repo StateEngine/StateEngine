@@ -204,6 +204,7 @@ fn other_body(
         "project.registered" => project_registered(v)?,
         "principal.registered" => principal_registered(c, v, scope)?,
         "principal.renamed" => principal_renamed(c, v, scope)?,
+        "agent.retired" => agent_retired(v)?,
         "profile.saved" => profile_saved(c, v, scope)?,
         "grant.recorded" => grant_recorded(c, v, scope)?,
         "credential.issued" => credential_issued(v)?,
@@ -323,7 +324,21 @@ fn principal_registered(
             .transpose()?,
         name: field(&v, "name")?,
         role: field(&v, "role")?,
+        ephemeral: v
+            .get("ephemeral")
+            .filter(|v| !v.is_null())
+            .map(|v| serde_json::from_value(v.clone()).map_err(invalid))
+            .transpose()?,
         expected: field(&v, "expected")?,
+    })
+}
+
+fn agent_retired(v: serde_json::Value) -> StoreResult<EventBody<StoredText>> {
+    use EventBody::*;
+    Ok(AgentRetired {
+        agent: field(&v, "agent")?,
+        reason: field(&v, "reason")?,
+        final_session: field(&v, "final_session")?,
     })
 }
 

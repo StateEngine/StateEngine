@@ -172,6 +172,7 @@ fn sender_sent_listing_omits_the_recipient_phone_route() -> Check {
                 created_by: None,
                 name: "owner".into(),
                 role: "owner".into(),
+                ephemeral: None,
                 expected: Expected::Absent,
             }],
         )?,

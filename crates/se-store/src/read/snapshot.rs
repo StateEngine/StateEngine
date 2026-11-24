@@ -510,6 +510,34 @@ impl Snapshot for SqliteSnapshot {
             _budget,
         )
     }
+    fn active_principals(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
+        self.require_local_port()?;
+        if self.scope.admission.scope == Scope::Registry || self.info.schema_version < 17 {
+            return self.principals(budget);
+        }
+        let p = self.project_bytes()?;
+        self.list_heads(
+            "principals",
+            "first_seq",
+            "project_id=? AND retired_seq IS NULL",
+            vec![rusqlite::types::Value::Blob(p)],
+            budget,
+        )
+    }
+    fn principal_retired(&mut self, agent: AgentId) -> StoreResult<bool> {
+        self.require_local_port()?;
+        let p = self.project_bytes()?;
+        let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
+        let a = key(&self.db, "agent", agent.as_str(), &scope, false)?;
+        self.is_principal_retired(&p, &a)
+    }
+    fn active_ephemeral_agents(
+        &mut self,
+        after_seq: Option<u64>,
+        limit: u32,
+    ) -> StoreResult<(Vec<EphemeralAgentRecord>, Option<u64>)> {
+        self.read_active_ephemeral_agents(after_seq, limit)
+    }
     fn session(&mut self, _id: SessionId) -> StoreResult<Read<ProjectionRecord>> {
         self.read_session(_id)
     }

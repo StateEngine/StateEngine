@@ -87,18 +87,33 @@ pub struct ProjectInit {
 fn main_agent() -> String {
     "main".into()
 }
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum StatusScope {
+    #[default]
+    Selected,
+    All,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectStatus {
     #[serde(skip)]
     #[schemars(skip)]
-    pub all: bool,
+    pub scope: StatusScope,
     /// Re-scan the working tree instead of using a watched observation.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fresh: bool,
     /// Return only a watched observation; the caller supplies any fresh fallback.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub watch_only: bool,
+    /// Include retired temporary agents in the status roster.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_temp: bool,
+}
+impl ProjectStatus {
+    pub const fn is_all(&self) -> bool {
+        matches!(self.scope, StatusScope::All)
+    }
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

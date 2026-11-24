@@ -351,6 +351,7 @@ const PUBLIC_KINDS: &[(&str, se_store::EventKind)] = &[
         se_store::EventKind::PrincipalRegistered,
     ),
     ("principal.renamed", se_store::EventKind::PrincipalRenamed),
+    ("agent.retired", se_store::EventKind::AgentRetired),
     ("profile.saved", se_store::EventKind::ProfileSaved),
     ("grant.recorded", se_store::EventKind::GrantRecorded),
     ("decision.proposed", se_store::EventKind::DecisionProposed),

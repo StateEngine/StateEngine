@@ -411,6 +411,7 @@ fn seed_selection(f: &Fixture) -> Check {
                     created_by: None,
                     name: "Owner".into(),
                     role: "owner".into(),
+                    ephemeral: None,
                     expected: Expected::Absent,
                 },
                 EventBody::ProfileSaved {

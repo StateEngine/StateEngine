@@ -31,6 +31,15 @@ pub fn bind_provider<R: Snapshot>(
             "native owner admission without an inherited session",
         ));
     }
+    if cx
+        .read
+        .principal_retired(binding.agent.clone())
+        .map_err(|e| store_error(&e))?
+    {
+        return Err(super::process_plan::retired_agent_refusal(
+            "provider adoption",
+        ));
+    }
     match cx
         .read
         .session(binding.session.clone())

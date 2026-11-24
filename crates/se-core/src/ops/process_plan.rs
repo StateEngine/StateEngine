@@ -49,6 +49,47 @@ pub fn target<R: Snapshot>(
         }
     }
 }
+pub(crate) fn retired_agent_refusal(op: &str) -> SeError {
+    SeError::new(se_types::Detail::StateConflict(
+        se_types::details::StateConflict {
+            subject: op.into(),
+            reason: "this temporary agent is retired".into(),
+            next_step: "This temporary agent is retired; export its history with se handoff export --from <agent> and create a new agent with se agent add.".into(),
+        },
+    ))
+}
+
+fn refuse_retired_or_expired(
+    kernel: &Kernel,
+    control: &se_store::ControlTarget,
+    op: &str,
+) -> Result<()> {
+    if control.retired {
+        return Err(retired_agent_refusal(op));
+    }
+    let registration = control
+        .principal
+        .original
+        .as_deref()
+        .unwrap_or(&control.principal.current);
+    if let EventBody::PrincipalRegistered {
+        ephemeral: Some(se_store::EphemeralSpec { ttl_seconds, .. }),
+        ..
+    } = &registration.body
+    {
+        let ttl_us = i64::from(*ttl_seconds).saturating_mul(1_000_000);
+        if kernel
+            .facts()?
+            .occurred_at_us
+            .saturating_sub(super::receipt::event_time(registration))
+            > ttl_us
+        {
+            return Err(retired_agent_refusal(op));
+        }
+    }
+    Ok(())
+}
+
 pub fn launch<R: Snapshot>(
     kernel: &Kernel,
     mut input: AgentLaunch,
@@ -68,6 +109,7 @@ pub fn launch<R: Snapshot>(
         "launch target",
         "Choose a saved agent in this project that you own or are currently allowed to control.",
     )?;
+    refuse_retired_or_expired(kernel, &control, "agent.launch")?;
     let name = match &control.principal.current.body {
         EventBody::PrincipalRegistered { name, .. } | EventBody::PrincipalRenamed { name, .. } => {
             name.clone()

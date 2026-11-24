@@ -119,6 +119,7 @@ fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() 
                     created_by: None,
                     name: "Owner".into(),
                     role: "owner".into(),
+                    ephemeral: None,
                     expected: Expected::Absent,
                 },
                 EventBody::ProfileSaved {
