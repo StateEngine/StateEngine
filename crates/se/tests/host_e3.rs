@@ -58,11 +58,31 @@ use std::{
 };
 /// Protects: wave-1 hosted E3 — real authenticated listener/supervisor commits message, working state and pinned Claude stop; fresh outside snapshots observe their atomic facts and natural replay.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn listener_message_working_and_hook() -> Check {
+    // The Windows PE entry stack is 1 MiB, and in the debug test profile this
+    // case's listener/supervisor future overflows it on the harness main
+    // thread. As with the standalone host loop in se/src/runtime/host/stack.rs,
+    // run the whole case on a dedicated thread with an explicit stack. Sixteen
+    // MiB is twice the 8 MiB Linux main-thread budget this case already passes.
+    // The case's failure travels back as its display text: the harness reports
+    // case errors exactly that way, and its error type is not Send.
+    let worker = std::thread::Builder::new()
+        .name("host-e3-listener".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| run_listener_case().map_err(|error| error.to_string()))
+        .map_err(|error| error.to_string())?;
+    match worker.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(message)) => Err(message.into()),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[expect(
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
-fn listener_message_working_and_hook() -> Check {
+fn run_listener_case() -> Check {
     let initialized = se_host::initialize_host_process()?;
     let f = std::mem::ManuallyDrop::new(Fixture::new()?);
     let (mut direct, lease) = f.direct()?;
