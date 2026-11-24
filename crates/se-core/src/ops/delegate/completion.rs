@@ -20,7 +20,7 @@ pub enum CaptureOutcome {
 
 /// Metadata required to build the single atomic post-`SessionEnded` batch
 /// containing both the automated completion notice (`MessageSent`) and
-/// terminal retirement (`AgentRetired { Completed }`).
+/// terminal retirement (`AgentRetired`).
 pub struct CompletionNoticeInput {
     pub agent: Named<AgentId>,
     pub owner: se_types::HumanId,
@@ -30,10 +30,11 @@ pub struct CompletionNoticeInput {
     pub model: Option<String>,
     pub outcome: String,
     pub capture: CaptureOutcome,
+    pub reason: RetirementReason,
 }
 
 /// Build one atomic `Door::Host` / owner batch committing both `MessageSent`
-/// (automated completion notice) and `AgentRetired { Completed }`, keyed
+/// (automated completion notice) and `AgentRetired { reason }`, keyed
 /// deterministically on `child_session`. Returns `(batch, notify_agent)`.
 pub fn completion_notice_batch<R: Snapshot>(
     kernel: &Kernel,
@@ -71,8 +72,16 @@ pub fn completion_notice_batch<R: Snapshot>(
     };
     let provider_label = input.provider.map_or("unknown", stored_provider_label);
     let model_label = input.model.as_deref().unwrap_or("default");
+    let (headline, reason_key) = match input.reason {
+        RetirementReason::Completed => ("finished", "completed"),
+        RetirementReason::ParentEnded => {
+            ("stopped because its parent session ended", "parent-ended")
+        }
+        RetirementReason::Cancelled => ("was cancelled", "cancelled"),
+        RetirementReason::Expired => ("expired after reaching its TTL", "expired"),
+    };
     let mut text = format!(
-        "[StateEngine automated notice] Temporary agent {} ({}) finished.\nProvider: {} ({})\nOutcome: {}\nCapture: {}\nHistory: se history --agent {}",
+        "[StateEngine automated notice] Temporary agent {} ({}) {headline}.\nProvider: {} ({})\nOutcome: {}\nCapture: {}\nHistory: se history --agent {}",
         input.agent.name,
         input.agent.id,
         provider_label,
@@ -97,7 +106,7 @@ pub fn completion_notice_batch<R: Snapshot>(
     };
     let retire = EventBody::AgentRetired {
         agent: input.agent.id.clone(),
-        reason: RetirementReason::Completed,
+        reason: input.reason,
         final_session: Some(input.child_session.clone()),
     };
     let batch = process_commit::batch(
@@ -107,7 +116,7 @@ pub fn completion_notice_batch<R: Snapshot>(
         serde_json::json!({
             "agent": input.agent.id,
             "session": input.child_session,
-            "reason": "completed",
+            "reason": reason_key,
         }),
         vec![notice, retire],
         cx,

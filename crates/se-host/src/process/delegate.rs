@@ -26,25 +26,10 @@ pub(super) struct OneShotCompletion {
     pub model: Option<String>,
     pub outcome: String,
     pub capture: se_core::ops::delegate::CaptureOutcome,
+    pub reason: RetirementReason,
 }
 
 impl LaunchCoordinator {
-    fn parent_delegate_lock(
-        &self,
-        project: &se_types::ProjectId,
-        creator: &se_store::Actor,
-    ) -> Result<Arc<tokio::sync::Mutex<()>>> {
-        let key = (project.clone(), format!("{creator:?}"));
-        let mut map = self
-            .delegate_locks
-            .lock()
-            .map_err(|_| error("delegate lock table", "lock table is poisoned"))?;
-        Ok(map
-            .entry(key)
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone())
-    }
-
     /// Qualify provider/harness BEFORE creating the ephemeral principal so a
     /// failed qualification never leaves an orphan agent behind (`I12`).
     pub(super) async fn delegate_start(
@@ -58,8 +43,6 @@ impl LaunchCoordinator {
             existing.clone()
         } else {
             self.qualify_delegate(&plan, deadline).await?;
-            let parent_lock = self.parent_delegate_lock(&plan.project.id, &plan.creator)?;
-            let _guard = crate::runtime::pool::within(deadline, parent_lock.lock()).await?;
             let commit_plan = plan.clone();
             self.store
                 .commit(admission.clone(), deadline, None, move |kernel, cx| {
@@ -100,9 +83,18 @@ impl LaunchCoordinator {
         let reply = match reply {
             Ok(reply) => reply,
             Err(launch_err) => {
-                if newly_created {
-                    self.retire_failed_delegate(&plan.project.id, &agent_id, &admission, deadline)
-                        .await;
+                if newly_created
+                    && let Err(cleanup_err) = self
+                        .retire_failed_delegate(&plan.project.id, &agent_id, &admission, deadline)
+                        .await
+                {
+                    return Err(error(
+                        "delegate.start",
+                        format!(
+                            "launch failed ({}); cleanup of temporary agent {agent_id} also failed ({}) and it remains active until TTL",
+                            launch_err.body, cleanup_err.body
+                        ),
+                    ));
                 }
                 return Err(launch_err);
             }
@@ -163,33 +155,33 @@ impl LaunchCoordinator {
 
     /// Clean up a freshly created ephemeral agent if `self.launch` fails before
     /// activation, so failed launches never leave counted orphans until TTL.
+    /// Surfaces any cleanup failure instead of discarding it silently.
     async fn retire_failed_delegate(
         &self,
         project: &se_types::ProjectId,
         agent: &se_types::AgentId,
         admission: &Admission,
         deadline: &Deadline,
-    ) {
-        let Ok(bound) = deadline.stage(Duration::from_secs(5)) else {
-            return;
-        };
-        let _ = self
-            .stop_ephemeral_jobs(project, agent, None, owned::OneShotExit::Cancelled, &bound)
-            .await;
+    ) -> Result<()> {
+        let bound = deadline.stage(Duration::from_secs(5))?;
+        self.stop_ephemeral_jobs(project, agent, None, owned::OneShotExit::Cancelled, &bound)
+            .await?;
         if self
             .has_unresolved_live_work(project, agent, &bound)
-            .await
-            .unwrap_or(true)
+            .await?
         {
-            return;
+            return Err(error(
+                "delegate.start cleanup",
+                format!("temporary agent {agent} still has unresolved live work"),
+            ));
         }
         let target = agent.clone();
-        let _ = self
-            .store
+        self.store
             .commit(admission.clone(), &bound, None, move |kernel, cx| {
                 process_commit::retire_agent(kernel, target, RetirementReason::Cancelled, None, cx)
             })
-            .await;
+            .await?;
+        Ok(())
     }
 
     /// Stop any active lifecycle for a temporary agent and terminally retire it
@@ -330,6 +322,7 @@ impl LaunchCoordinator {
         work: &owned::Work,
         outcome: String,
         capture: se_core::ops::delegate::CaptureOutcome,
+        reason: RetirementReason,
         deadline: &Deadline,
     ) {
         let Ok(remaining) = deadline.remaining() else {
@@ -353,6 +346,7 @@ impl LaunchCoordinator {
                     model: work.meta.model.clone(),
                     outcome,
                     capture,
+                    reason,
                 },
                 &bound,
             )
@@ -379,6 +373,7 @@ impl LaunchCoordinator {
             model,
             outcome,
             capture,
+            reason,
         } = info;
         let admission = self.owner_project_admission(&project);
         let lookup_agent = agent.id.clone();
@@ -424,6 +419,7 @@ impl LaunchCoordinator {
                         model,
                         outcome,
                         capture,
+                        reason,
                     },
                     cx,
                 )?;

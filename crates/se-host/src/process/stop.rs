@@ -525,6 +525,12 @@ impl LaunchCoordinator {
             ),
             None => reason.to_owned(),
         };
+        let reason = match work.one_shot_exit {
+            owned::OneShotExit::ParentEnded => format!("parent session ended; {reason}"),
+            owned::OneShotExit::Cancelled => format!("delegation cancelled; {reason}"),
+            owned::OneShotExit::Expired => format!("ephemeral TTL expired; {reason}"),
+            owned::OneShotExit::Natural | owned::OneShotExit::FailedPreparation => reason,
+        };
         let session = work.meta.session.clone();
         let active = work.active;
         let outcome = reason.clone();
@@ -539,7 +545,14 @@ impl LaunchCoordinator {
         work.session_retired = true;
         self.proofs.remove(&work.meta.session)?;
         if work.meta.ephemeral_one_shot {
-            if work.one_shot_exit == owned::OneShotExit::Natural
+            let live_reason = match work.one_shot_exit {
+                owned::OneShotExit::Natural => Some(se_store::RetirementReason::Completed),
+                owned::OneShotExit::ParentEnded => Some(se_store::RetirementReason::ParentEnded),
+                owned::OneShotExit::Cancelled
+                | owned::OneShotExit::Expired
+                | owned::OneShotExit::FailedPreparation => None,
+            };
+            if let Some(retirement_reason) = live_reason
                 && !self.stopping.load(std::sync::atomic::Ordering::Acquire)
             {
                 let capture = if !work.meta.capture {
@@ -549,8 +562,14 @@ impl LaunchCoordinator {
                 } else {
                     se_core::ops::delegate::CaptureOutcome::Verified
                 };
-                self.finalize_one_shot_completion(work, outcome, capture, deadline)
-                    .await;
+                self.finalize_one_shot_completion(
+                    work,
+                    outcome,
+                    capture,
+                    retirement_reason,
+                    deadline,
+                )
+                .await;
             }
         } else {
             Box::pin(self.cascade_parent_ended(

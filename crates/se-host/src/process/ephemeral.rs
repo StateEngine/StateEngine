@@ -381,12 +381,9 @@ impl LaunchCoordinator {
                     se_store::StoredText::Present(text) => text.clone(),
                     _ => "session ended".to_owned(),
                 };
-                if outcome == process_commit::ENDED_BY_REBOOT
-                    || outcome == "launch preparation failed"
-                    || outcome == se_core::ops::agent_launch::ATTENDED_RECONNECT_FAILED
-                {
+                let Some(retirement_reason) = classify_ended_reason(&outcome) else {
                     return Ok(None);
-                }
+                };
                 let prepared = session_head
                     .original
                     .as_deref()
@@ -429,6 +426,7 @@ impl LaunchCoordinator {
                     model,
                     outcome,
                     capture,
+                    reason: retirement_reason,
                 }))
             })
             .await?;
@@ -643,57 +641,82 @@ async fn run_ephemeral_ttl_loop(coordinator: std::sync::Weak<LaunchCoordinator>)
     }
 }
 
+fn classify_ended_reason(outcome: &str) -> Option<RetirementReason> {
+    if outcome == process_commit::ENDED_BY_REBOOT
+        || outcome == "launch preparation failed"
+        || outcome == se_core::ops::agent_launch::ATTENDED_RECONNECT_FAILED
+    {
+        return None;
+    }
+    Some(if outcome.starts_with("parent session ended") {
+        RetirementReason::ParentEnded
+    } else if outcome.starts_with("delegation cancelled") {
+        RetirementReason::Cancelled
+    } else if outcome.starts_with("ephemeral TTL expired") {
+        RetirementReason::Expired
+    } else {
+        RetirementReason::Completed
+    })
+}
+
 fn inspect_session_completion<R: Snapshot>(
     read: &mut R,
     session: &SessionId,
     capture_enabled: bool,
 ) -> Result<(bool, se_core::ops::delegate::CaptureOutcome)> {
     use se_core::ops::delegate::CaptureOutcome;
-    let budget = se_store::ReadBudget {
-        page: PageRequest {
-            after: None,
-            limit: NonZeroU32::new(64)
-                .ok_or_else(|| se_types::SeError::invalid("limit", "positive"))?,
-            max_bytes: NonZeroU32::new(256 * 1024)
-                .ok_or_else(|| se_types::SeError::invalid("bytes", "positive"))?,
-        },
-        deadline: Duration::from_secs(2),
-    };
-    let page = read
-        .history(
-            se_store::HistoryQuery {
-                agent: None,
-                kinds: vec![
-                    se_store::EventKind::SessionActivated,
-                    se_store::EventKind::CaptureVerified,
-                    se_store::EventKind::CaptureFailed,
-                ],
-                families: Vec::new(),
-                session: Some(session.clone()),
-                transcript: se_store::TranscriptFilter::All,
-                since: None,
-                direction: se_store::HistoryDirection::OldestFirst,
-            },
-            budget,
-        )
-        .map_err(|e| store_error(&e))?;
+    let mut after = None;
     let mut activated = false;
     let mut capture = if capture_enabled {
         CaptureOutcome::Incomplete
     } else {
         CaptureOutcome::Disabled
     };
-    for event in page.into_items() {
-        match event.body {
-            EventBody::SessionActivated { .. } => activated = true,
-            EventBody::CaptureVerified { .. } if capture_enabled => {
-                capture = CaptureOutcome::Verified;
+    loop {
+        let budget = se_store::ReadBudget {
+            page: PageRequest {
+                after: after.clone(),
+                limit: NonZeroU32::new(64)
+                    .ok_or_else(|| se_types::SeError::invalid("limit", "positive"))?,
+                max_bytes: NonZeroU32::new(256 * 1024)
+                    .ok_or_else(|| se_types::SeError::invalid("bytes", "positive"))?,
+            },
+            deadline: Duration::from_secs(2),
+        };
+        let page = read
+            .history(
+                se_store::HistoryQuery {
+                    agent: None,
+                    kinds: vec![
+                        se_store::EventKind::SessionActivated,
+                        se_store::EventKind::CaptureVerified,
+                        se_store::EventKind::CaptureFailed,
+                    ],
+                    families: Vec::new(),
+                    session: Some(session.clone()),
+                    transcript: se_store::TranscriptFilter::All,
+                    since: None,
+                    direction: se_store::HistoryDirection::OldestFirst,
+                },
+                budget,
+            )
+            .map_err(|e| store_error(&e))?;
+        let next = page.next().cloned();
+        for event in page.into_items() {
+            match event.body {
+                EventBody::SessionActivated { .. } => activated = true,
+                EventBody::CaptureVerified { .. } if capture_enabled => {
+                    capture = CaptureOutcome::Verified;
+                }
+                EventBody::CaptureFailed { .. } if capture_enabled => {
+                    capture = CaptureOutcome::Incomplete;
+                }
+                _ => {}
             }
-            EventBody::CaptureFailed { .. } if capture_enabled => {
-                capture = CaptureOutcome::Incomplete;
-            }
-            _ => {}
+        }
+        match next {
+            Some(cursor) => after = Some(cursor),
+            None => return Ok((activated, capture)),
         }
     }
-    Ok((activated, capture))
 }
