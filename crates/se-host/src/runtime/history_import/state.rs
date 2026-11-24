@@ -220,10 +220,6 @@ pub(super) fn tombstone(
     })
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn resume(
     context: &ExecutionContext,
     cx: &NodeContext,
@@ -249,69 +245,7 @@ pub(super) fn resume(
                 if original.header.door != Door::Import {
                     continue;
                 }
-                let EventBody::SessionPrepared {
-                    session: session_id,
-                    agent,
-                    provider,
-                    native_ref,
-                    ..
-                } = &original.body
-                else {
-                    return Err(scope::unreadable(
-                        "imported session reference",
-                        "original historical session metadata is absent",
-                    ));
-                };
-                let provider = match provider {
-                    Provider::Claude => "claude",
-                    Provider::Codex => "codex",
-                    Provider::SeCode => "secode",
-                    Provider::Acp => "acp",
-                };
-                let reference = (!native_ref.is_empty()).then(|| native_ref.clone());
-                let unsupported = if native_ref.is_empty() {
-                    match &original.header.cause {
-                        Some(cause) => match batch::required(
-                            r.event(cause.clone()).map_err(|e| store_error(&e))?,
-                            "historical conversation provenance",
-                        )?
-                        .body
-                        {
-                            EventBody::LegacyRetained {
-                                bytes: Some(bytes), ..
-                            } => {
-                                serde_json::from_slice::<serde_json::Value>(&bytes.bytes)
-                                    .map_err(|e| {
-                                        scope::unreadable(
-                                            "historical reference state",
-                                            &e.to_string(),
-                                        )
-                                    })?
-                                    .get("native_reference_state")
-                                    .and_then(serde_json::Value::as_str)
-                                    == Some("unsupported")
-                            }
-                            _ => false,
-                        },
-                        None => false,
-                    }
-                } else {
-                    false
-                };
-                output.push(se_core::ops::store_import::ImportResume {
-                    session: session_id.to_string(),
-                    agent: agent.to_string(),
-                    provider: provider.into(),
-                    native_reference: reference,
-                    state: if unsupported {
-                        "unsupported"
-                    } else if native_ref.is_empty() {
-                        "missing"
-                    } else {
-                        "retained"
-                    }
-                    .into(),
-                });
+                output.push(resume_entry(r, original)?);
             }
             if let Some(next) = page.next() {
                 after = Some(next.clone());
@@ -330,4 +264,70 @@ pub(super) fn resume(
             "session inventory exceeds its 6400-record bound; no references were silently omitted",
         ))
     })
+}
+
+fn resume_entry(
+    r: &mut SqliteSnapshot,
+    original: &StoredEvent,
+) -> Result<se_core::ops::store_import::ImportResume> {
+    let EventBody::SessionPrepared {
+        session: session_id,
+        agent,
+        provider,
+        native_ref,
+        ..
+    } = &original.body
+    else {
+        return Err(scope::unreadable(
+            "imported session reference",
+            "original historical session metadata is absent",
+        ));
+    };
+    let provider = match provider {
+        Provider::Claude => "claude",
+        Provider::Codex => "codex",
+        Provider::SeCode => "secode",
+        Provider::Acp => "acp",
+    };
+    let reference = (!native_ref.is_empty()).then(|| native_ref.clone());
+    let unsupported =
+        native_ref.is_empty() && reference_unsupported(r, original.header.cause.as_ref())?;
+    Ok(se_core::ops::store_import::ImportResume {
+        session: session_id.to_string(),
+        agent: agent.to_string(),
+        provider: provider.into(),
+        native_reference: reference,
+        state: if unsupported {
+            "unsupported"
+        } else if native_ref.is_empty() {
+            "missing"
+        } else {
+            "retained"
+        }
+        .into(),
+    })
+}
+
+fn reference_unsupported(
+    r: &mut SqliteSnapshot,
+    cause: Option<&se_types::EventId>,
+) -> Result<bool> {
+    let Some(cause) = cause else {
+        return Ok(false);
+    };
+    let event = batch::required(
+        r.event(cause.clone()).map_err(|e| store_error(&e))?,
+        "historical conversation provenance",
+    )?;
+    let EventBody::LegacyRetained {
+        bytes: Some(bytes), ..
+    } = event.body
+    else {
+        return Ok(false);
+    };
+    Ok(serde_json::from_slice::<serde_json::Value>(&bytes.bytes)
+        .map_err(|e| scope::unreadable("historical reference state", &e.to_string()))?
+        .get("native_reference_state")
+        .and_then(serde_json::Value::as_str)
+        == Some("unsupported"))
 }

@@ -4,10 +4,6 @@ use se_types::HumanId;
 use std::collections::{BTreeMap, BTreeSet};
 pub(super) type Names = std::sync::Arc<BTreeMap<HumanId, String>>;
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn inspect(
     context: &ExecutionContext,
     admission: &Admission,
@@ -15,8 +11,24 @@ pub(super) fn inspect(
     mappings: &BTreeMap<HumanId, HumanId>,
     deadline: &Deadline,
 ) -> Result<Names> {
+    let humans = read_source_humans(&plan.root, deadline)?;
+    for project in &plan.projects {
+        deadline.remaining()?;
+        let mut own = admission.clone();
+        own.scope = Scope::Project(project.id.clone());
+        read::snapshot(context, &own, |read| {
+            verify_project_correspondence(read, &own, &project.id, &humans, mappings)
+        })?;
+    }
+    assign_human_names(humans, mappings)
+}
+
+fn read_source_humans(
+    root: &std::path::Path,
+    deadline: &Deadline,
+) -> Result<BTreeMap<HumanId, Option<String>>> {
     let mut humans = BTreeMap::new();
-    match source::SourceFile::open(plan.root.join(".stateengine/humans.jsonl"), None, deadline)? {
+    match source::SourceFile::open(root.join(".stateengine/humans.jsonl"), None, deadline)? {
         Read::Present { mut value } => {
             while let Some(row) = value.next(deadline)? {
                 let Some(row) = row.value else { continue };
@@ -49,73 +61,84 @@ pub(super) fn inspect(
         Read::Unreadable { source, reason, .. } => return Err(scope::unreadable(&source, &reason)),
         Read::Unknown { what } => return Err(scope::unreadable("source human names", &what)),
     }
-    for project in &plan.projects {
-        deadline.remaining()?;
-        let mut own = admission.clone();
-        own.scope = Scope::Project(project.id.clone());
-        read::snapshot(context, &own, |read| {
-            for source in humans.keys() {
-                let target = mappings.get(source).unwrap_or(source);
-                let key = format!("owned:owners:human:{source}");
-                let event = node::event_id(&own.scope, &key).map_err(|e| store_error(&e))?;
-                match read.event(event).map_err(|e| store_error(&e))? {
-                    Read::Present { value } => {
-                        let EventBody::LegacyRetained { mapped_id, .. } = value.body else {
-                            return Err(scope::unreadable(
-                                "human correspondence",
-                                "original source owner has another event kind",
-                            ));
-                        };
-                        let proposed =
-                            import::LegacyTarget::Principal(Actor::Human(target.clone()));
-                        if mapped_id != proposed {
-                            return Err(se_types::SeError::new(se_types::Detail::StateConflict(se_types::details::StateConflict {
-                                subject: "historical human correspondence".into(),
-                                reason: format!("source human {source} in project {} has earlier correspondence {mapped_id:?}; requested target is {target}", project.id),
-                                next_step: "Reuse the earlier correspondence, including its --map-human argument; another request key cannot replace it. Preserve this home and use a separate destination for a different identity correspondence.".into(),
-                            })));
-                        }
-                    }
-                    Read::Absent { .. } => (),
-                    Read::Unreadable { source, reason, .. } => {
-                        return Err(scope::unreadable(&source, &reason));
-                    }
-                    Read::Unknown { what } => {
-                        return Err(scope::unreadable("human correspondence", &what));
-                    }
-                }
-            }
-            for (source, target) in mappings {
-                // Explicitly mapping onto the importing owner is intentional:
-                // project adoption already registers that current owner.
-                if own.actor == Actor::Human(target.clone()) {
-                    continue;
-                }
-                match read
-                    .principal(Actor::Human(target.clone()))
-                    .map_err(|e| store_error(&e))?
-                {
-                    Read::Present { .. } => (),
-                    Read::Absent { .. } => {
-                        return Err(scope::unreadable(
-                            "--map-human target",
-                            &format!(
-                                "source human {source} names target {target}, which is not registered in project {}; no import run or project was adopted",
-                                project.id
+    Ok(humans)
+}
+
+fn verify_project_correspondence(
+    read: &mut SqliteSnapshot,
+    own: &Admission,
+    project_id: &se_types::ProjectId,
+    humans: &BTreeMap<HumanId, Option<String>>,
+    mappings: &BTreeMap<HumanId, HumanId>,
+) -> Result<()> {
+    for source in humans.keys() {
+        let target = mappings.get(source).unwrap_or(source);
+        let key = format!("owned:owners:human:{source}");
+        let event = node::event_id(&own.scope, &key).map_err(|e| store_error(&e))?;
+        match read.event(event).map_err(|e| store_error(&e))? {
+            Read::Present { value } => {
+                let EventBody::LegacyRetained { mapped_id, .. } = value.body else {
+                    return Err(scope::unreadable(
+                        "human correspondence",
+                        "original source owner has another event kind",
+                    ));
+                };
+                let proposed = import::LegacyTarget::Principal(Actor::Human(target.clone()));
+                if mapped_id != proposed {
+                    return Err(se_types::SeError::new(se_types::Detail::StateConflict(
+                        se_types::details::StateConflict {
+                            subject: "historical human correspondence".into(),
+                            reason: format!(
+                                "source human {source} in project {project_id} has earlier correspondence {mapped_id:?}; requested target is {target}"
                             ),
-                        ));
-                    }
-                    Read::Unreadable { source, reason, .. } => {
-                        return Err(scope::unreadable(&source, &reason));
-                    }
-                    Read::Unknown { what } => {
-                        return Err(scope::unreadable("--map-human target", &what));
-                    }
+                            next_step: "Reuse the earlier correspondence, including its --map-human argument; another request key cannot replace it. Preserve this home and use a separate destination for a different identity correspondence.".into(),
+                        },
+                    )));
                 }
             }
-            Ok(())
-        })?;
+            Read::Absent { .. } => (),
+            Read::Unreadable { source, reason, .. } => {
+                return Err(scope::unreadable(&source, &reason));
+            }
+            Read::Unknown { what } => {
+                return Err(scope::unreadable("human correspondence", &what));
+            }
+        }
     }
+    for (source, target) in mappings {
+        // Explicitly mapping onto the importing owner is intentional:
+        // project adoption already registers that current owner.
+        if own.actor == Actor::Human(target.clone()) {
+            continue;
+        }
+        match read
+            .principal(Actor::Human(target.clone()))
+            .map_err(|e| store_error(&e))?
+        {
+            Read::Present { .. } => (),
+            Read::Absent { .. } => {
+                return Err(scope::unreadable(
+                    "--map-human target",
+                    &format!(
+                        "source human {source} names target {target}, which is not registered in project {project_id}; no import run or project was adopted"
+                    ),
+                ));
+            }
+            Read::Unreadable { source, reason, .. } => {
+                return Err(scope::unreadable(&source, &reason));
+            }
+            Read::Unknown { what } => {
+                return Err(scope::unreadable("--map-human target", &what));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn assign_human_names(
+    humans: BTreeMap<HumanId, Option<String>>,
+    mappings: &BTreeMap<HumanId, HumanId>,
+) -> Result<Names> {
     let mut first = BTreeSet::new();
     let mut names = BTreeMap::new();
     let mut assigned = BTreeSet::new();
