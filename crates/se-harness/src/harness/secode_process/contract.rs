@@ -78,6 +78,14 @@ impl AcceptedInput {
         Ok(())
     }
 }
+struct ExpectedInput<'a> {
+    session: &'a str,
+    input: &'a str,
+    text: &'a str,
+    kind: &'a str,
+    delivery: &'a str,
+    metadata: &'a Value,
+}
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Acceptance {
@@ -96,12 +104,14 @@ impl Acceptance {
     ) -> Result<Read<AcceptedInput>> {
         self.verify(
             service,
-            session,
-            input,
-            text,
-            "user",
-            "queue",
-            &serde_json::json!({"origin":"seat-startup"}),
+            &ExpectedInput {
+                session,
+                input,
+                text,
+                kind: "user",
+                delivery: "queue",
+                metadata: &serde_json::json!({"origin":"seat-startup"}),
+            },
         )
     }
     pub fn verify_notice(
@@ -119,38 +129,31 @@ impl Acceptance {
         });
         self.verify(
             &binding.service,
-            &binding.session_id,
-            input,
-            &text,
-            "synthetic",
-            "steer",
-            &metadata,
+            &ExpectedInput {
+                session: &binding.session_id,
+                input,
+                text: &text,
+                kind: "synthetic",
+                delivery: "steer",
+                metadata: &metadata,
+            },
         )
     }
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "all durable input coordinates must be checked together"
-    )]
     fn verify(
         self,
         service: &ServiceIdentity,
-        session: &str,
-        input: &str,
-        text: &str,
-        kind: &str,
-        delivery: &str,
-        metadata: &Value,
+        expected: &ExpectedInput<'_>,
     ) -> Result<Read<AcceptedInput>> {
         service.require_same(&self.service)?;
         let Some(data) = self.data else {
             return Ok(Read::Absent { checked: "no matching admission in the authenticated original incarnation; uncertain writes remain pending/no-replay".into() });
         };
-        if data.session_id != session
-            || data.id != input
-            || data.text != text
-            || data.kind != kind
-            || data.delivery != delivery
-            || data.metadata.as_ref() != Some(metadata)
+        if data.session_id != expected.session
+            || data.id != expected.input
+            || data.text != expected.text
+            || data.kind != expected.kind
+            || data.delivery != expected.delivery
+            || data.metadata.as_ref() != Some(expected.metadata)
         {
             return Err(unreadable(
                 "SE Code input acceptance",
