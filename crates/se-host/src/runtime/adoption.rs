@@ -162,6 +162,7 @@ impl HostedRouter {
                         ),
                         provider: Some(kind.policy()),
                         model: None,
+                        profile: None,
                         idempotency_key: format!("observe-agent-{selected}").parse()?,
                     },
                     &config,

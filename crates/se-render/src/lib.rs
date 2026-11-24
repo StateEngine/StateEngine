@@ -135,9 +135,12 @@ fn render_human(value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
         | HumanKind::AgentPage
         | HumanKind::AgentStatus
         | HumanKind::AgentReceipt => render_administration(kind, value, out),
-        HumanKind::Launch | HumanKind::Stop | HumanKind::Wake | HumanKind::Remove => {
-            render_control(kind, value, out)
-        }
+        HumanKind::Launch
+        | HumanKind::Stop
+        | HumanKind::Wake
+        | HumanKind::DelegateStart
+        | HumanKind::DelegateCancel
+        | HumanKind::Remove => render_control(kind, value, out),
         HumanKind::HistoryPage | HumanKind::SearchPage | HumanKind::Event => {
             render_history(kind, value, out)
         }
@@ -310,6 +313,27 @@ fn render_control(kind: HumanKind, value: &AnyOutput, out: &mut impl Write) -> i
         (HumanKind::Launch, AnyOutput::AgentLaunch(value)) => control::launch(&value.value, out),
         (HumanKind::Stop, AnyOutput::AgentStop(value)) => stop::output(&value.value, out),
         (HumanKind::Wake, AnyOutput::AgentWake(value)) => wake::output(&value.value, out),
+        (HumanKind::DelegateStart, AnyOutput::DelegateStart(value)) => {
+            let v = &value.value;
+            writeln!(
+                out,
+                "Delegated {} ({}) on {} [profile {}, ttl {}s]\nSession: {}",
+                v.name,
+                v.agent_id,
+                labels::provider(v.provider),
+                v.profile,
+                v.ttl_seconds,
+                v.session_id
+            )
+        }
+        (HumanKind::DelegateCancel, AnyOutput::DelegateCancel(value)) => {
+            let v = &value.value;
+            writeln!(
+                out,
+                "Cancelled temporary agent {} ({}): retired={}, stopped_lifecycle={}",
+                v.name, v.agent_id, v.retired, v.stopped_lifecycle
+            )
+        }
         (HumanKind::Remove, AnyOutput::ProjectRemove(value)) => control::remove(&value.value, out),
         _ => Err(renderer_disagreement()),
     }

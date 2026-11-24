@@ -16,6 +16,7 @@ pub(super) fn group(name: &str) -> Option<&'static str> {
         "config" => "Read or change user configuration and saved agent settings",
         "hook" => "Receive provider lifecycle events",
         "handoff" => "Export bounded cross-model context handoffs",
+        "delegate" => "Create and manage one-shot temporary child agents",
         "session" => "Read the current agent session",
         _ => return None,
     })
@@ -79,6 +80,10 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
         }
         "agent.stop" => "Stop a selected agent's running session",
         "agent.wake" => "Offer a running agent's pending mail and report the committed result",
+        "delegate.start" => {
+            "Create and launch a one-shot temporary agent with optional context handoff"
+        }
+        "delegate.cancel" => "Stop a running temporary agent and terminally retire it",
         "project.remove" => "Unregister projects while preserving repository files and history",
         "agent.show" => "Show one saved agent's identity and saved settings",
         "config.get" => "Read one saved agent setting",

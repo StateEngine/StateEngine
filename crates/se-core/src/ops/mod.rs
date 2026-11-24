@@ -30,6 +30,7 @@ pub mod agent;
 pub mod agent_launch;
 pub mod agent_stop;
 pub mod agent_wake;
+pub mod delegate;
 pub mod process_commit;
 pub mod process_plan;
 pub mod project_remove;
@@ -42,6 +43,9 @@ pub mod store_restore;
 pub use agent_launch::{AgentLaunch, LaunchPending, LaunchPendingState, LaunchReply, LaunchResult};
 pub use agent_stop::{AgentStop, StopResult};
 pub use agent_wake::{AgentWake, WakeResult};
+pub use delegate::{
+    DelegateCancel, DelegateCancelOutput, DelegateHandoff, DelegateStart, DelegateStartOutput,
+};
 pub use project_remove::{ProjectRemove, RemoveResult};
 pub use store_forget::{ErasureReceipt, StoreForget};
 pub use store_restore::{RestoreResult, StoreRestore};
@@ -270,6 +274,8 @@ ops! {
     AgentLaunch => AgentLaunch, LaunchReply, ("agent.launch",leaf(&["launch"]),tool("stateengine_agent_launch","Launch an agent","Start self or your controlled child fresh with StateEngine context; resume:true or resume:session-ID reopens your own saved conversation (resuming a child's saved conversation requires the project Owner). Same-key retry for pending; force consents to stop existing jobs."),Either,false,Never,Custody,Project,HostAutoStart,"se.launch",Launch,&["J2","J3"]);
     AgentStop => AgentStop, StopResult, ("agent.stop",leaf(&["stop"]),tool("stateengine_agent_stop","Stop an agent","Stop self or your controlled child; returns original-conversation resume command."),Either,false,Never,Custody,ProjectOrAll,HostAutoStart,"se.stop",Stop,&["J3","J5"]);
     AgentWake => AgentWake, WakeResult, ("agent.wake",leaf(&["agent","wake"]),tool("stateengine_agent_wake","Wake an agent","Arm this running agent's pending mail delivery and report the committed offer; never launches a process."),Either,false,Never,Custody,Project,Host,"se.wake",Wake,&["J4"]);
+    DelegateStart => DelegateStart, DelegateStartOutput, ("delegate.start",leaf(&["delegate"]),tool("stateengine_delegate","Delegate temporary agent","Create and launch a one-shot temporary child agent with optional context handoff. Requires owner authority or an active create grant and an allowlisted (provider, profile)."),Either,false,Never,Custody,Project,HostAutoStart,"se.delegate-start",DelegateStart,&["J2","J3","J4"]);
+    DelegateCancel => DelegateCancel, DelegateCancelOutput, ("delegate.cancel",leaf(&["delegate","cancel"]),tool("stateengine_delegate_cancel","Cancel temporary agent","Stop a running temporary agent and terminally retire it."),Either,false,Never,Custody,Project,HostAutoStart,"se.delegate-cancel",DelegateCancel,&["J3","J4"]);
     StoreRestore => StoreRestore, RestoreResult, ("store.restore",leaf(&["restore"]),no_mcp("Restoring history replaces the store; it needs the verified owner at a human terminal."),Owner,false,Always,Custody,Home,None,"se.restore-result",Restore,&["J3","J5"]);
     StoreForget => StoreForget, ErasureReceipt, ("store.forget",leaf(&["forget"]),no_mcp("Forgetting is irreversible; it needs the verified owner at a human terminal."),Owner,false,Always,Custody,Home,HostAutoStart,"se.erasure-receipt",Erasure,&["J3","J5"]);
     ProjectRemove => ProjectRemove, RemoveResult, ("project.remove",leaf(&["remove"]),no_mcp("Project removal requires the verified owner at a human terminal."),Owner,false,Always,Custody,ProjectOrAll,HostAutoStart,"se.remove",Remove,&["J5"]);

@@ -58,6 +58,8 @@ pub const MCP_IDENTITY_ARGUMENT_ROLES: &[(&str, &[FieldRole])] = &[
     ("stateengine_agent_launch", LAUNCH_FIELDS),
     ("stateengine_agent_stop", STOP_FIELDS),
     ("stateengine_agent_wake", WAKE_FIELDS),
+    ("stateengine_delegate", CALLER_FIELDS),
+    ("stateengine_delegate_cancel", CALLER_FIELDS),
     ("stateengine_atlas_find", CALLER_FIELDS),
     ("stateengine_atlas_refs", CALLER_FIELDS),
     ("stateengine_atlas_impact", CALLER_FIELDS),

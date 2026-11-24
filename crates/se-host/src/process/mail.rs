@@ -101,6 +101,7 @@ impl LaunchCoordinator {
             || work.session_retired
             || work.stop_key.is_some()
             || work.binding.is_none()
+            || work.meta.ephemeral_one_shot
         {
             return Ok(());
         }

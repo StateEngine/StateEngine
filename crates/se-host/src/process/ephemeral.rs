@@ -11,45 +11,67 @@ use std::{num::NonZeroU32, sync::atomic::Ordering, time::Duration};
 pub(super) const SWEEP_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 const PAGE_SIZE: u32 = 100;
 
+/// Single deadline-driven timer slot for ephemeral TTL sweeps. When `running`
+/// is false, no background task is active (zero idle wakeups or open read
+/// connections). A monotonic `generation` counter prevents disarming when a
+/// new TTL child registers concurrently during an active sweep.
+struct TtlTimerState {
+    next_deadline: Option<tokio::time::Instant>,
+    generation: u64,
+    running: bool,
+}
+
+pub(super) struct TtlTimer {
+    state: std::sync::Mutex<TtlTimerState>,
+    wake: tokio::sync::Notify,
+}
+
+impl TtlTimer {
+    pub(super) fn new() -> Self {
+        Self {
+            state: std::sync::Mutex::new(TtlTimerState {
+                next_deadline: None,
+                generation: 0,
+                running: false,
+            }),
+            wake: tokio::sync::Notify::new(),
+        }
+    }
+}
+
 impl LaunchCoordinator {
-    /// Deadline-driven TTL sweeper: sleeps until the earliest remaining
-    /// ephemeral TTL deadline (recomputing after each sweep), and exits as soon
-    /// as no unretired TTL-bearing ephemeral agents remain so an idle host has
-    /// zero periodic wakeups or resident read connections.
-    pub(super) fn spawn_ephemeral_ttl_timer(self: &Arc<Self>, mut delay: Duration) {
-        let coordinator = Arc::downgrade(self);
-        tokio::spawn(async move {
-            let mut last_warning: Option<String> = None;
-            loop {
-                tokio::time::sleep(delay).await;
-                let Some(current) = coordinator.upgrade() else {
-                    return;
-                };
-                if current.stopping.load(Ordering::Acquire) {
-                    return;
-                }
-                let swept = async {
-                    let deadline = Deadline::idle()?.stage(Duration::from_secs(30))?;
-                    current.sweep_ephemeral_expired(&deadline).await
-                }
-                .await;
-                match swept {
-                    Ok(Some(next_delay)) => {
-                        last_warning = None;
-                        delay = next_delay;
-                    }
-                    Ok(None) => return,
-                    Err(failure) => {
-                        let msg = failure.body.to_string();
-                        if last_warning.as_deref() != Some(msg.as_str()) {
-                            eprintln!("Ephemeral TTL sweep incomplete: {msg}");
-                            last_warning = Some(msg);
-                        }
-                        delay = SWEEP_RETRY_INTERVAL;
-                    }
-                }
+    /// Arm or shorten the host's single deadline-driven TTL sweeper.
+    /// Spawns a background task only when none is currently active; if a timer
+    /// is already sleeping or sweeping, bumps `generation`, records the
+    /// earliest deadline, and notifies the waiter.
+    pub(super) fn arm_ephemeral_ttl(self: &Arc<Self>, delay: Duration) {
+        if self.stopping.load(Ordering::Acquire) {
+            return;
+        }
+        let target = tokio::time::Instant::now() + delay;
+        let should_spawn = {
+            let Ok(mut state) = self.ephemeral_ttl.state.lock() else {
+                return;
+            };
+            state.generation = state.generation.wrapping_add(1);
+            state.next_deadline = Some(match state.next_deadline {
+                Some(existing) => existing.min(target),
+                None => target,
+            });
+            if !state.running {
+                state.running = true;
+                true
+            } else {
+                drop(state);
+                self.ephemeral_ttl.wake.notify_one();
+                false
             }
-        });
+        };
+        if !should_spawn {
+            return;
+        }
+        let coordinator = Arc::downgrade(self);
+        tokio::spawn(run_ephemeral_ttl_loop(coordinator));
     }
 
     /// When a non-owner agent's session ends (outside host shutdown), stop its
@@ -90,7 +112,13 @@ impl LaunchCoordinator {
                 continue;
             }
             if let Err(failure) = self
-                .stop_ephemeral_jobs(project, &child.agent, Some(parent_lifecycle), &bound)
+                .stop_ephemeral_jobs(
+                    project,
+                    &child.agent,
+                    Some(parent_lifecycle),
+                    owned::OneShotExit::ParentEnded,
+                    &bound,
+                )
                 .await
             {
                 eprintln!(
@@ -154,6 +182,14 @@ impl LaunchCoordinator {
             if self.stopping.load(Ordering::Acquire) {
                 break;
             }
+            if child.one_shot
+                && let Some(session_id) = &child.latest_session
+                && self
+                    .finish_ended_one_shot(project, &child.agent, session_id, deadline)
+                    .await?
+            {
+                continue;
+            }
             let Some(ttl_seconds) = child.ttl_seconds else {
                 continue;
             };
@@ -171,7 +207,13 @@ impl LaunchCoordinator {
             }
             deadline.remaining()?;
             if let Err(failure) = self
-                .stop_ephemeral_jobs(project, &child.agent, None, deadline)
+                .stop_ephemeral_jobs(
+                    project,
+                    &child.agent,
+                    None,
+                    owned::OneShotExit::Expired,
+                    deadline,
+                )
                 .await
             {
                 first_failure.get_or_insert(failure);
@@ -292,7 +334,110 @@ impl LaunchCoordinator {
         }
     }
 
-    async fn has_unresolved_live_work(
+    /// Crash-recovery re-derivation (`B3`): if a one-shot temporary agent's
+    /// latest session has already committed `SessionEnded` (with no live
+    /// sessions or processes remaining) but `retired_seq` is still NULL, commit
+    /// the exact same idempotent completion notice + `AgentRetired { Completed }`
+    /// batch. Returns `Ok(true)` if the child was finalized.
+    async fn finish_ended_one_shot(
+        &self,
+        project: &ProjectId,
+        agent: &AgentId,
+        session: &SessionId,
+        deadline: &Deadline,
+    ) -> Result<bool> {
+        let admission = self.owner_project_admission(project);
+        let target_agent = agent.clone();
+        let target_session = session.clone();
+        let owner = self.capability_admission.owner.clone();
+        let project_id = project.clone();
+        let recovered = self
+            .store
+            .read(admission, deadline, move |cx| {
+                let Read::Present { value: control } = cx
+                    .read
+                    .control_target(target_agent.clone())
+                    .map_err(|e| store_error(&e))?
+                else {
+                    return Ok(None);
+                };
+                if control.retired || !control.sessions.is_empty() || !control.processes.is_empty()
+                {
+                    return Ok(None);
+                }
+                let Read::Present {
+                    value: session_head,
+                } = cx
+                    .read
+                    .session(target_session.clone())
+                    .map_err(|e| store_error(&e))?
+                else {
+                    return Ok(None);
+                };
+                let EventBody::SessionEnded { reason, .. } = &session_head.current.body else {
+                    return Ok(None);
+                };
+                let outcome = match reason {
+                    se_store::StoredText::Present(text) => text.clone(),
+                    _ => "session ended".to_owned(),
+                };
+                let Some(retirement_reason) = classify_ended_reason(&outcome) else {
+                    return Ok(None);
+                };
+                let prepared = session_head
+                    .original
+                    .as_deref()
+                    .unwrap_or(&session_head.current);
+                let capture_enabled = matches!(
+                    prepared.body,
+                    EventBody::SessionPrepared {
+                        consent: se_store::Consent::Capture,
+                        ..
+                    }
+                );
+                let (activated, capture) =
+                    inspect_session_completion(cx.read, &target_session, capture_enabled)?;
+                if !activated {
+                    return Ok(None);
+                }
+                let name = match &control.principal.current.body {
+                    EventBody::PrincipalRegistered { name, .. }
+                    | EventBody::PrincipalRenamed { name, .. } => name.clone(),
+                    _ => target_agent.as_str().to_owned(),
+                };
+                let (provider, model) = match control.profile {
+                    Read::Present { value } => match value.current.body {
+                        EventBody::ProfileSaved { profile, .. } => {
+                            (Some(profile.provider), profile.model)
+                        }
+                        _ => (None, None),
+                    },
+                    _ => (None, None),
+                };
+                Ok(Some(super::delegate::OneShotCompletion {
+                    project: project_id,
+                    agent: se_types::Named {
+                        id: target_agent,
+                        name,
+                    },
+                    owner,
+                    child_session: target_session,
+                    provider,
+                    model,
+                    outcome,
+                    capture,
+                    reason: retirement_reason,
+                }))
+            })
+            .await?;
+        let Some(info) = recovered else {
+            return Ok(false);
+        };
+        self.commit_one_shot_completion(info, deadline).await?;
+        Ok(true)
+    }
+
+    pub(super) async fn has_unresolved_live_work(
         &self,
         project: &ProjectId,
         agent: &AgentId,
@@ -324,7 +469,7 @@ impl LaunchCoordinator {
             .await
     }
 
-    fn owner_project_admission(&self, project: &ProjectId) -> Admission {
+    pub(super) fn owner_project_admission(&self, project: &ProjectId) -> Admission {
         Admission {
             scope: Scope::Project(project.clone()),
             actor: Actor::Human(self.capability_admission.owner.clone()),
@@ -335,13 +480,15 @@ impl LaunchCoordinator {
 
     /// Filter jobs by `(project, agent)` and `exclude_lifecycle` BEFORE locking
     /// any `job.state` mutex so a parent's retirement never self-deadlocks.
-    async fn stop_ephemeral_jobs(
+    /// Returns `true` if at least one active lifecycle job was stopped.
+    pub(super) async fn stop_ephemeral_jobs(
         &self,
         project: &ProjectId,
         agent: &AgentId,
         exclude_lifecycle: Option<&LifecycleId>,
+        exit_kind: owned::OneShotExit,
         deadline: &Deadline,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let matching: Vec<_> = self
             .jobs
             .0
@@ -356,9 +503,11 @@ impl LaunchCoordinator {
             })
             .cloned()
             .collect();
+        let mut stopped = false;
         for job in matching {
             let mut work = crate::runtime::pool::within(deadline, job.state.lock()).await?;
             if !work.released && !work.session_retired {
+                work.one_shot_exit = exit_kind;
                 work.admission = work.cleanup_admission.clone();
                 if !work.active {
                     self.cleanup_failed(&mut work, deadline).await?;
@@ -371,11 +520,12 @@ impl LaunchCoordinator {
                     self.activity
                         .send_modify(|count| *count = count.saturating_sub(1));
                 }
+                stopped = true;
             }
             work.wake.event.notify_waiters();
             work.wake.event.notify_one();
         }
-        Ok(())
+        Ok(stopped)
     }
 
     async fn commit_agent_retired(
@@ -405,5 +555,168 @@ impl LaunchCoordinator {
             })
             .await?;
         Ok(())
+    }
+}
+
+async fn run_ephemeral_ttl_loop(coordinator: std::sync::Weak<LaunchCoordinator>) {
+    let mut last_warning: Option<String> = None;
+    loop {
+        let Some(current) = coordinator.upgrade() else {
+            return;
+        };
+        if current.stopping.load(Ordering::Acquire) {
+            if let Ok(mut state) = current.ephemeral_ttl.state.lock() {
+                state.next_deadline = None;
+                state.running = false;
+            }
+            return;
+        }
+        let (target, gen_before) = {
+            let Ok(mut state) = current.ephemeral_ttl.state.lock() else {
+                return;
+            };
+            match state.next_deadline {
+                Some(t) => (t, state.generation),
+                None => {
+                    state.running = false;
+                    return;
+                }
+            }
+        };
+        let woken_early = tokio::select! {
+            () = tokio::time::sleep_until(target) => false,
+            () = current.ephemeral_ttl.wake.notified() => true,
+        };
+        if woken_early {
+            continue;
+        }
+        if current.stopping.load(Ordering::Acquire) {
+            if let Ok(mut state) = current.ephemeral_ttl.state.lock() {
+                state.next_deadline = None;
+                state.running = false;
+            }
+            return;
+        }
+        let swept = async {
+            let deadline = Deadline::idle()?.stage(Duration::from_secs(30))?;
+            current.sweep_ephemeral_expired(&deadline).await
+        }
+        .await;
+        let now = tokio::time::Instant::now();
+        let Ok(mut state) = current.ephemeral_ttl.state.lock() else {
+            return;
+        };
+        let dirty = state.generation != gen_before;
+        match swept {
+            Ok(Some(next_delay)) => {
+                last_warning = None;
+                let candidate = now + next_delay;
+                state.next_deadline = Some(if dirty {
+                    state.next_deadline.map_or(candidate, |d| d.min(candidate))
+                } else {
+                    candidate
+                });
+            }
+            Ok(None) => {
+                if !dirty {
+                    state.next_deadline = None;
+                    state.running = false;
+                    return;
+                }
+            }
+            Err(failure) => {
+                let msg = failure.body.to_string();
+                if last_warning.as_deref() != Some(msg.as_str()) {
+                    eprintln!("Ephemeral TTL sweep incomplete: {msg}");
+                    last_warning = Some(msg);
+                }
+                let retry = now + SWEEP_RETRY_INTERVAL;
+                state.next_deadline = Some(if dirty {
+                    state.next_deadline.map_or(retry, |d| d.min(retry))
+                } else {
+                    retry
+                });
+            }
+        }
+    }
+}
+
+fn classify_ended_reason(outcome: &str) -> Option<RetirementReason> {
+    if outcome == process_commit::ENDED_BY_REBOOT
+        || outcome == "launch preparation failed"
+        || outcome == se_core::ops::agent_launch::ATTENDED_RECONNECT_FAILED
+    {
+        return None;
+    }
+    Some(if outcome.starts_with("parent session ended") {
+        RetirementReason::ParentEnded
+    } else if outcome.starts_with("delegation cancelled") {
+        RetirementReason::Cancelled
+    } else if outcome.starts_with("ephemeral TTL expired") {
+        RetirementReason::Expired
+    } else {
+        RetirementReason::Completed
+    })
+}
+
+fn inspect_session_completion<R: Snapshot>(
+    read: &mut R,
+    session: &SessionId,
+    capture_enabled: bool,
+) -> Result<(bool, se_core::ops::delegate::CaptureOutcome)> {
+    use se_core::ops::delegate::CaptureOutcome;
+    let mut after = None;
+    let mut activated = false;
+    let mut capture = if capture_enabled {
+        CaptureOutcome::Incomplete
+    } else {
+        CaptureOutcome::Disabled
+    };
+    loop {
+        let budget = se_store::ReadBudget {
+            page: PageRequest {
+                after: after.clone(),
+                limit: NonZeroU32::new(64)
+                    .ok_or_else(|| se_types::SeError::invalid("limit", "positive"))?,
+                max_bytes: NonZeroU32::new(256 * 1024)
+                    .ok_or_else(|| se_types::SeError::invalid("bytes", "positive"))?,
+            },
+            deadline: Duration::from_secs(2),
+        };
+        let page = read
+            .history(
+                se_store::HistoryQuery {
+                    agent: None,
+                    kinds: vec![
+                        se_store::EventKind::SessionActivated,
+                        se_store::EventKind::CaptureVerified,
+                        se_store::EventKind::CaptureFailed,
+                    ],
+                    families: Vec::new(),
+                    session: Some(session.clone()),
+                    transcript: se_store::TranscriptFilter::All,
+                    since: None,
+                    direction: se_store::HistoryDirection::OldestFirst,
+                },
+                budget,
+            )
+            .map_err(|e| store_error(&e))?;
+        let next = page.next().cloned();
+        for event in page.into_items() {
+            match event.body {
+                EventBody::SessionActivated { .. } => activated = true,
+                EventBody::CaptureVerified { .. } if capture_enabled => {
+                    capture = CaptureOutcome::Verified;
+                }
+                EventBody::CaptureFailed { .. } if capture_enabled => {
+                    capture = CaptureOutcome::Incomplete;
+                }
+                _ => {}
+            }
+        }
+        match next {
+            Some(cursor) => after = Some(cursor),
+            None => return Ok((activated, capture)),
+        }
     }
 }

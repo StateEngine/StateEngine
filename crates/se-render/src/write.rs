@@ -54,6 +54,11 @@ pub fn init(value: &InitOutput, out: &mut impl Write) -> io::Result<()> {
         &value.next,
         out,
     )?;
+    writeln!(
+        out,
+        "To let {} delegate temporary agents, run: se config set agent.{}.can-create true and configure [delegation].allow in config.toml",
+        value.agent.name, value.agent.name
+    )?;
     Ok(())
 }
 

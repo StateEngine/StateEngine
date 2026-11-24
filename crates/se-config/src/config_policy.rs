@@ -11,9 +11,14 @@ pub use se_types::{DEFAULT_BLOCKING_JOBS, MAX_BLOCKING_JOBS, MIN_BLOCKING_JOBS};
 
 pub use se_types::Provider;
 mod acp;
+pub mod delegation;
 pub mod harness;
 mod providers;
 pub use acp::AcpConfig;
+pub use delegation::{
+    DEFAULT_MAX_ACTIVE_PER_PARENT, DEFAULT_TTL_SECONDS, DelegationAllowEntry, DelegationConfig,
+    MAX_ACTIVE_PER_PARENT, MAX_TTL_SECONDS,
+};
 pub use providers::{ProviderConfig, Providers};
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -186,6 +191,8 @@ pub struct ConfigFile {
     pub atlas: AtlasConfig,
     #[serde(default)]
     pub capture: CaptureConfig,
+    #[serde(default, skip_serializing_if = "DelegationConfig::is_default")]
+    pub delegation: DelegationConfig,
 }
 impl Default for ConfigFile {
     fn default() -> Self {
@@ -200,6 +207,7 @@ impl Default for ConfigFile {
             profiles: default_profiles(),
             atlas: AtlasConfig::default(),
             capture: CaptureConfig::default(),
+            delegation: DelegationConfig::default(),
         }
     }
 }
@@ -213,6 +221,38 @@ fn invalid(subject: &str, reason: &str) -> SeError {
     ))
 }
 impl ConfigFile {
+    fn validate_profiles(&self) -> Result<()> {
+        for (name, profile) in &self.profiles {
+            if name.is_empty()
+                || name.len() > 64
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+            {
+                return Err(invalid(
+                    "profiles",
+                    "profile names use 1..64 ASCII letters, digits, underscore or hyphen",
+                ));
+            }
+            if name == "default" && profile.bypass {
+                return Err(invalid(
+                    "profiles.default.bypass",
+                    "bypass requires an explicitly selected named profile",
+                ));
+            }
+            if profile.git_write
+                && (name == "default"
+                    || profile.sandbox != Sandbox::WorkspaceWrite
+                    || profile.bypass)
+            {
+                return Err(invalid(
+                    "profiles.git_write",
+                    "Git writes require an explicitly selected named workspace-write profile without bypass",
+                ));
+            }
+        }
+        Ok(())
+    }
     pub fn validate(&self) -> Result<()> {
         if self.version != 1 {
             return Err(invalid("version", "expected version = 1"));
@@ -249,36 +289,9 @@ impl ConfigFile {
                 "expected a bounded terminal command",
             ));
         }
-        for (name, profile) in &self.profiles {
-            if name.is_empty()
-                || name.len() > 64
-                || !name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-            {
-                return Err(invalid(
-                    "profiles",
-                    "profile names use 1..64 ASCII letters, digits, underscore or hyphen",
-                ));
-            }
-            if name == "default" && profile.bypass {
-                return Err(invalid(
-                    "profiles.default.bypass",
-                    "bypass requires an explicitly selected named profile",
-                ));
-            }
-            if profile.git_write
-                && (name == "default"
-                    || profile.sandbox != Sandbox::WorkspaceWrite
-                    || profile.bypass)
-            {
-                return Err(invalid(
-                    "profiles.git_write",
-                    "Git writes require an explicitly selected named workspace-write profile without bypass",
-                ));
-            }
-        }
+        self.validate_profiles()?;
         self.acp.validate()?;
+        self.delegation.validate(&self.profiles)?;
         harness::validate_registry(&self.harnesses)?;
         self.selected_harness(Provider::Acp, self.acp.harness.as_deref())?;
         for registration in se_types::HARNESS_REGISTRY {

@@ -209,6 +209,7 @@ impl LaunchCoordinator {
         } else {
             "launch preparation failed"
         };
+        work.one_shot_exit = owned::OneShotExit::FailedPreparation;
         self.retire_session(work, reason, deadline).await
     }
     async fn recover_failed_preparation(
@@ -524,8 +525,15 @@ impl LaunchCoordinator {
             ),
             None => reason.to_owned(),
         };
+        let reason = match work.one_shot_exit {
+            owned::OneShotExit::ParentEnded => format!("parent session ended; {reason}"),
+            owned::OneShotExit::Cancelled => format!("delegation cancelled; {reason}"),
+            owned::OneShotExit::Expired => format!("ephemeral TTL expired; {reason}"),
+            owned::OneShotExit::Natural | owned::OneShotExit::FailedPreparation => reason,
+        };
         let session = work.meta.session.clone();
         let active = work.active;
+        let outcome = reason.clone();
         self.store
             .commit(
                 work.cleanup_admission.clone(),
@@ -536,13 +544,42 @@ impl LaunchCoordinator {
             .await?;
         work.session_retired = true;
         self.proofs.remove(&work.meta.session)?;
-        Box::pin(self.cascade_parent_ended(
-            &work.meta.project.id,
-            &work.meta.agent.id,
-            &work.meta.lifecycle,
-            deadline,
-        ))
-        .await;
+        if work.meta.ephemeral_one_shot {
+            let live_reason = match work.one_shot_exit {
+                owned::OneShotExit::Natural => Some(se_store::RetirementReason::Completed),
+                owned::OneShotExit::ParentEnded => Some(se_store::RetirementReason::ParentEnded),
+                owned::OneShotExit::Cancelled
+                | owned::OneShotExit::Expired
+                | owned::OneShotExit::FailedPreparation => None,
+            };
+            if let Some(retirement_reason) = live_reason
+                && !self.stopping.load(std::sync::atomic::Ordering::Acquire)
+            {
+                let capture = if !work.meta.capture {
+                    se_core::ops::delegate::CaptureOutcome::Disabled
+                } else if work.capture_failure.is_some() || work.secode_service_lost {
+                    se_core::ops::delegate::CaptureOutcome::Incomplete
+                } else {
+                    se_core::ops::delegate::CaptureOutcome::Verified
+                };
+                self.finalize_one_shot_completion(
+                    work,
+                    outcome,
+                    capture,
+                    retirement_reason,
+                    deadline,
+                )
+                .await;
+            }
+        } else {
+            Box::pin(self.cascade_parent_ended(
+                &work.meta.project.id,
+                &work.meta.agent.id,
+                &work.meta.lifecycle,
+                deadline,
+            ))
+            .await;
+        }
         Ok(())
     }
 }

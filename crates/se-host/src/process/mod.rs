@@ -9,6 +9,7 @@ mod codex_capture;
 pub(crate) mod codex_server;
 mod cold_stop;
 mod control;
+mod delegate;
 mod dispatch;
 mod embedded_stop;
 mod ephemeral;
@@ -126,6 +127,8 @@ pub struct LaunchCoordinator {
     proofs: PreparedRequestProofs,
     stopping: std::sync::atomic::AtomicBool,
     orphans: std::sync::Mutex<std::collections::BTreeSet<se_types::LifecycleId>>,
+    ephemeral_ttl: Arc<ephemeral::TtlTimer>,
+    delegate_create_lock: tokio::sync::Mutex<()>,
 }
 struct ProviderHarnesses {
     claude: Arc<ClaudeHarness>,
@@ -163,13 +166,13 @@ impl LaunchCoordinator {
                 .push(format!("Codex shared server custody: {}", failure.body));
         }
         match coordinator.sweep_ephemeral_expired(deadline).await {
-            Ok(Some(next_delay)) => coordinator.spawn_ephemeral_ttl_timer(next_delay),
+            Ok(Some(next_delay)) => coordinator.arm_ephemeral_ttl(next_delay),
             Ok(None) => {}
             Err(failure) => {
                 report
                     .unproved
                     .push(format!("Ephemeral TTL sweep: {}", failure.body));
-                coordinator.spawn_ephemeral_ttl_timer(ephemeral::SWEEP_RETRY_INTERVAL);
+                coordinator.arm_ephemeral_ttl(ephemeral::SWEEP_RETRY_INTERVAL);
             }
         }
         coordinator.watch_codex_server();
@@ -250,6 +253,8 @@ impl LaunchCoordinator {
             controls: requests::Controls::default(),
             stopping: std::sync::atomic::AtomicBool::new(false),
             orphans: std::sync::Mutex::default(),
+            ephemeral_ttl: Arc::new(ephemeral::TtlTimer::new()),
+            delegate_create_lock: tokio::sync::Mutex::new(()),
         }))
     }
 

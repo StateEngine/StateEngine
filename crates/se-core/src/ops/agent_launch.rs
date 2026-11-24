@@ -205,6 +205,7 @@ pub struct LaunchPlan {
     pub conversation: Read<ProviderSessionId>,
     pub saved_conversation_age: Read<SavedConversationAge>,
     pub capture: bool,
+    pub ephemeral_one_shot: bool,
     pub control: se_store::ControlTarget,
     pub seed: EventId,
     pub replayed: bool,

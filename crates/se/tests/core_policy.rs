@@ -135,6 +135,7 @@ fn receipt_case(family: &str) -> Check {
             name: "receipt-agent".into(),
             provider: None,
             model: None,
+            profile: None,
             idempotency_key: key.clone(),
         }),
         "config" => AnyOp::ConfigSet(ConfigSet {

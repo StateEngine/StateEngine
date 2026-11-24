@@ -55,10 +55,17 @@ pub fn create<R: Snapshot>(
         crate::harness_selection::resolve(configuration, input.provider, input.harness.as_deref())?;
     let provider = binding.provider;
     let harness = binding.harness;
+    if matches!(cx.admission.actor, Actor::Agent(_)) && !input.provider_settings.is_empty() {
+        return Err(SeError::invalid(
+            "provider_settings",
+            "agent callers cannot supply custom provider_settings or base_url",
+        ));
+    }
     input.provider_settings.validate(provider)?;
     let defaults = configuration.provider(provider);
+    let named_profile = input.profile.as_deref().unwrap_or(&defaults.profile);
     let permission = match configuration
-        .resolve_profile(&defaults.profile, provider, false)?
+        .resolve_profile(named_profile, provider, false)?
         .sandbox
     {
         EffectiveSandbox::ReadOnly => PermissionProfile::ReadOnly,
@@ -97,7 +104,7 @@ pub fn create<R: Snapshot>(
                 model,
                 permission,
                 harness,
-                named_profile: defaults.profile.clone(),
+                named_profile: named_profile.to_owned(),
                 effort: None,
             },
             expected: Expected::Absent,

@@ -327,11 +327,28 @@ fn input_command_agent(name: &str, c: Command) -> Command {
             .arg(positional("name", 1, true).help("Name for the new saved agent"))
             .arg(value("provider").value_parser(["claude", "codex", "secode", "acp"]).help("Provider for the new agent: claude, codex, secode or acp"))
             .arg(value("model").help("Model for the new agent"))
+            .arg(value("profile").help("Named permission profile for the new agent"))
             .arg(value("model-provider").help("Per-agent Codex model provider name"))
             .arg(value("base-url").help("Non-secret provider endpoint; requires --model-provider"))
             .arg(value("wire-api").help("Provider wire protocol: responses"))
             .arg(value("reasoning-effort").help("Per-agent reasoning effort"))
             .arg(value("context-window").help("Per-agent positive token count")),
+        "delegate.start" => c
+            .subcommand_negates_reqs(true)
+            .arg(value("task").required(true).help("Initial task prompt for the temporary agent"))
+            .arg(value("role").help("Short role label for the temporary name tmp-<role>-<4hex>"))
+            .arg(value("provider").value_parser(["claude", "codex", "secode", "acp"]).help("Provider for the temporary agent: claude, codex, secode or acp"))
+            .arg(value("harness").help("Native provider or named declarative ACP harness"))
+            .arg(value("model").help("Model override for the temporary agent"))
+            .arg(value("profile").help("Named permission profile (must be in [delegation].allow for agent callers)"))
+            .arg(toggle("handoff").help("Prepend a bounded cross-model context handoff to --task"))
+            .arg(value("handoff_from").long("handoff-from").help("Agent name or ID to export context handoff from (implies --handoff)"))
+            .arg(value("handoff_budget").long("handoff-budget").help("Maximum UTF-8 bytes in the handoff packet (256..=8192, implies --handoff)"))
+            .arg(value("handoff_since").long("handoff-since").help("Continuity cursor for incremental handoff export (implies --handoff)"))
+            .arg(value("ttl").help("TTL backstop in seconds (1..=86400)")),
+        "delegate.cancel" => c.arg(
+            positional("agent", 1, true).help("Temporary agent name or ID to stop and retire"),
+        ),
         "agent.rename" => c
             .arg(positional("agent", 1, true).help("Saved agent name or ID to rename"))
             .arg(positional("name", 2, true).help("New display name for the saved agent")),
