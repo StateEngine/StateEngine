@@ -118,6 +118,7 @@ fn automatic_retention_is_visible_and_live_or_unsafe_records_are_preserved() -> 
             .arg(repository)
             .output_executable()?,
     )?;
+    runtime_host::use_ephemeral_listen_port(home)?;
     // The plain `se up` calls below start hosts no RunningHost owns yet.
     let mut down = command(&image, home, true);
     down.arg("down");
@@ -288,6 +289,7 @@ fn empty_live_endpoint_is_diagnosed_and_send_keeps_the_same_cause() -> Check {
             .arg("claude")
             .output_executable()?,
     )?;
+    runtime_host::use_ephemeral_listen_port(home)?;
     let agent = initialized["agent"]["id"]
         .as_str()
         .ok_or("init omitted agent")?;

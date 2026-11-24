@@ -161,6 +161,7 @@ fn uninstall_live_host(json: bool) -> Check {
             .args(["--name", "runtime-refusal"])
             .output_executable()?,
     )?;
+    runtime_host::use_ephemeral_listen_port(home)?;
     let installed = f.home.join(if cfg!(windows) {
         "installed-se.exe"
     } else {
@@ -482,6 +483,7 @@ fn live_host_init_refuses_with_down_then_retry_succeeds() -> Check {
             .args(["--name", "before-host"])
             .output_executable()?,
     )?;
+    runtime_host::use_ephemeral_listen_port(home)?;
     let host = RunningHost::start(&image, home)?;
     let retained = ["machine.json", "credential", "endpoint.json"]
         .map(|name| std::fs::read(home.join(name)).map(|bytes| (name, bytes)))

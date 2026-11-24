@@ -245,6 +245,7 @@ fn stale_address_cli_names_lease_safe_recovery_and_preserves_foreign_socket() ->
             .arg(repository)
             .output_executable()?,
     )?;
+    runtime_host::use_ephemeral_listen_port(home)?;
     // The plain `se up` in the loop below may succeed; stop that host on any exit.
     let mut down = command(&image, home, true);
     down.arg("down");

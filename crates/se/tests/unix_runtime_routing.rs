@@ -90,6 +90,7 @@ fn repeated_up_for_a_long_home_keeps_the_same_xdg_host_and_native_socket() -> Ch
             .arg(&repository)
             .output_executable()?,
     )?;
+    runtime_host::use_ephemeral_listen_port(&home)?;
     let host = runtime_host::RunningHost::start(&image, &home)?;
     let record = fs::read(home.join("endpoint.json"))?;
     let endpoint = se_host::client::endpoint::decode_endpoint(&record)?;

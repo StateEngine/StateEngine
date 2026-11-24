@@ -71,6 +71,7 @@ fn failed_reply_and_panicked_observation_close_the_published_host_but_keep_its_h
                 .arg(&repo)
                 .output_executable()?,
         )?;
+        runtime_host::use_ephemeral_listen_port(&home)?;
         let wrapper = case.join("reply-wrapper");
         let observed_endpoint = case.join("published.json");
         fs::write(
