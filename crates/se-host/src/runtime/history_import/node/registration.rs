@@ -29,57 +29,17 @@ fn path(text: &str) -> StoreResult<NativePath> {
     };
     NativePath::from_encoded(encoding).map_err(invalid)
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-pub(super) fn project<R: ImportSnapshot>(
-    cx: &NodeContext,
+enum ProjectBody {
+    Duplicate,
+    Event(Box<EventBody<InputText>>),
+}
+fn plan_project_body<R: ImportSnapshot>(
     read: &mut R,
-    row: &Value,
-) -> StoreResult<DecodedRow> {
-    if cx.admission.scope != Scope::Registry {
-        return Err(invalid("project import requires registry scope"));
-    }
-    let id = ProjectId::from_legacy(str_at(row, "project_id")?).map_err(invalid)?;
-    if !matches!(
-        row.get("schema_version").and_then(Value::as_u64),
-        Some(1 | 2)
-    ) {
-        return Err(invalid("unsupported Node project registration version"));
-    }
-    let revision = row
-        .get("revision")
-        .and_then(Value::as_u64)
-        .filter(|v| *v > 0)
-        .ok_or_else(|| invalid("Node project revision absent"))?;
-    let key = format!("project:{id}:{revision}");
-    let mut out = result(
-        ImportFamily::Projects,
-        key.clone(),
-        LegacyTarget::Project(id.clone()),
-    );
-    time::micros(str_at(row, "ts")?)?;
-    out.retained = Some(
-        json!({"project_id":id,"source_owner_human_id":row.get("owner_human_id").and_then(Value::as_str),"source_revision":revision,"source_timestamp":row.get("ts").and_then(Value::as_str),"record_type":row.get("record_type").and_then(Value::as_str)}),
-    );
-    if row.get("record_type").and_then(Value::as_str) == Some("project-decommission") {
-        require(read.project(id)?)?;
-        return Ok(out);
-    }
-    if row.get("record_type").and_then(Value::as_str) != Some("project-registration") {
-        return Err(invalid("unsupported project source operation"));
-    }
-    let root = path(str_at(row, "repo_root")?)?;
-    if seen(read, cx, event_id(&cx.admission.scope, &key)?)? {
-        out.duplicate = true;
-        return Ok(out);
-    }
-    let owner = match &cx.admission.actor {
-        Actor::Human(owner) => owner.clone(),
-        _ => return Err(invalid("owner import admission required")),
-    };
-    let name = optional(row, "name").unwrap_or_else(|| id.to_string());
+    id: ProjectId,
+    name: String,
+    root: NativePath,
+    owner: HumanId,
+) -> StoreResult<ProjectBody> {
     let canonical_key = serde_json::to_vec(&root).map_err(invalid)?;
     if let Some(current) = read.import_root_claim(&canonical_key)?
         && current != id
@@ -115,10 +75,9 @@ pub(super) fn project<R: ImportSnapshot>(
                 }
             };
             if current.iter().any(|r| r.path == root)
-                && matches!(&value.current.body,EventBody::ProjectRegistered{name:old,..}|EventBody::ProjectUpdated{name:old,..} if old==&name)
+                && matches!(&value.current.body, EventBody::ProjectRegistered { name: old, .. } | EventBody::ProjectUpdated { name: old, .. } if old == &name)
             {
-                out.duplicate = true;
-                return Ok(out);
+                return Ok(ProjectBody::Duplicate);
             }
             EventBody::ProjectUpdated {
                 project: id,
@@ -137,6 +96,62 @@ pub(super) fn project<R: ImportSnapshot>(
         },
         Read::Unreadable { reason, .. } => return Err(fail(StoreErrorCode::Unreadable, reason)),
         Read::Unknown { what } => return Err(fail(StoreErrorCode::Unreadable, what)),
+    };
+    Ok(ProjectBody::Event(Box::new(body)))
+}
+pub(super) fn project<R: ImportSnapshot>(
+    cx: &NodeContext,
+    read: &mut R,
+    row: &Value,
+) -> StoreResult<DecodedRow> {
+    if cx.admission.scope != Scope::Registry {
+        return Err(invalid("project import requires registry scope"));
+    }
+    let id = ProjectId::from_legacy(str_at(row, "project_id")?).map_err(invalid)?;
+    if !matches!(
+        row.get("schema_version").and_then(Value::as_u64),
+        Some(1 | 2)
+    ) {
+        return Err(invalid("unsupported Node project registration version"));
+    }
+    let revision = row
+        .get("revision")
+        .and_then(Value::as_u64)
+        .filter(|v| *v > 0)
+        .ok_or_else(|| invalid("Node project revision absent"))?;
+    let key = format!("project:{id}:{revision}");
+    let mut out = result(
+        ImportFamily::Projects,
+        key.clone(),
+        LegacyTarget::Project(id.clone()),
+    );
+    time::micros(str_at(row, "ts")?)?;
+    out.retained = Some(
+        json!({"project_id":id,"source_owner_human_id":row.get("owner_human_id").and_then(Value::as_str),"source_revision":revision,"source_timestamp":row.get("ts").and_then(Value::as_str),"record_type":row.get("record_type").and_then(Value::as_str)}),
+    );
+    match row.get("record_type").and_then(Value::as_str) {
+        Some("project-decommission") => {
+            require(read.project(id)?)?;
+            return Ok(out);
+        }
+        Some("project-registration") => {}
+        _ => return Err(invalid("unsupported project source operation")),
+    }
+    let root = path(str_at(row, "repo_root")?)?;
+    if seen(read, cx, event_id(&cx.admission.scope, &key)?)? {
+        out.duplicate = true;
+        return Ok(out);
+    }
+    let Actor::Human(owner) = &cx.admission.actor else {
+        return Err(invalid("owner import admission required"));
+    };
+    let name = optional(row, "name").unwrap_or_else(|| id.to_string());
+    let body = match plan_project_body(read, id, name, root, owner.clone())? {
+        ProjectBody::Duplicate => {
+            out.duplicate = true;
+            return Ok(out);
+        }
+        ProjectBody::Event(body) => *body,
     };
     // The new native owner adopts this registration now; the historical owner
     // and timestamp remain correspondence fields, never native ownership proof.
@@ -177,8 +192,7 @@ pub(super) fn owner<R: Snapshot>(
     out.retained = Some(
         json!({"source_human_id":human,"display_name":str_at(row,"display_name")?,"mapped_human_id":target,"created_at":str_at(row,"created_at")?}),
     );
-    let current = expected(read.principal(principal.clone())?)?;
-    if current != Expected::Absent {
+    if expected(read.principal(principal.clone())?)? != Expected::Absent {
         out.duplicate = true;
         return Ok(out);
     }
