@@ -26,8 +26,11 @@ fn fail(api: &str, cause: io::Error) -> ProcError {
 fn last(api: &str) -> ProcError {
     fail(api, io::Error::last_os_error())
 }
-fn handle(raw: HANDLE, api: &'static str) -> ProcResult<OwnedHandle> {
-    // SAFETY: callers pass only newly created/opened Win32 handles (or null/INVALID_HANDLE_VALUE).
+/// # Safety
+/// `raw` must be null, `INVALID_HANDLE_VALUE`, or a newly created/opened handle
+/// whose sole ownership is transferred to this call.
+unsafe fn handle(raw: HANDLE, api: &'static str) -> ProcResult<OwnedHandle> {
+    // SAFETY: this function's safety contract guarantees `raw`'s precondition.
     unsafe { crate::windows_native::handle(raw, api) }.map_err(|e| fail(e.operation, e.source))
 }
 fn duplicate(raw: HANDLE, inherit: bool) -> ProcResult<OwnedHandle> {
@@ -47,7 +50,8 @@ fn duplicate(raw: HANDLE, inherit: bool) -> ProcResult<OwnedHandle> {
     {
         return Err(last("duplicate bootstrap handle"));
     }
-    handle(out, "own bootstrap handle")
+    // SAFETY: the successful duplication above transferred a new owned reference to `out`.
+    unsafe { handle(out, "own bootstrap handle") }
 }
 fn clear(raw: HANDLE) -> ProcResult<()> {
     // SAFETY: modifies only the inheritance bit of this retained local handle-table entry.
@@ -79,8 +83,10 @@ fn pipe() -> ProcResult<(File, File)> {
     if unsafe { CreatePipe(&mut a, &mut b, ptr::null(), 4096) } == 0 {
         return Err(last("create runtime startup pipe"));
     }
-    let read = File::from(handle(a, "own startup reader")?);
-    let write = File::from(handle(b, "own startup writer")?);
+    // SAFETY: the successful CreatePipe above transferred a new owned reader reference to `a`.
+    let read = File::from(unsafe { handle(a, "own startup reader") }?);
+    // SAFETY: the successful CreatePipe above transferred a new owned writer reference to `b`.
+    let write = File::from(unsafe { handle(b, "own startup writer") }?);
     let mode = PIPE_NOWAIT;
     // SAFETY: private pipe write handle and exact native mode value. Nonblocking
     // writes preserve the single startup deadline even when a child stops reading.

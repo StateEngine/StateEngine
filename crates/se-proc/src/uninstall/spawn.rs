@@ -103,11 +103,13 @@ fn command_inner(
     {
         return Err(native::last("launch protected uninstall helper"));
     }
-    let process = native::handle(result.hProcess, "pin uninstall helper")?;
+    // SAFETY: the successful CreateProcessW above transferred ownership of the new process reference.
+    let process = unsafe { native::handle(result.hProcess, "pin uninstall helper") }?;
     for stream in &streams {
         native::clear_inherit(stream.as_raw_handle())?;
     }
-    let _thread = native::handle(result.hThread, "close uninstall helper thread")?;
+    // SAFETY: the successful CreateProcessW above transferred ownership of the new thread reference.
+    let _thread = unsafe { native::handle(result.hThread, "close uninstall helper thread") }?;
     Ok(process)
 }
 

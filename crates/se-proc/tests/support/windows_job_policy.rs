@@ -11,7 +11,8 @@ fn job_requires_exact_user_and_system_allow_aces() -> Check {
     let raw = own(unsafe { CreateJobObjectW(&descriptor.attributes(), ptr::null()) })?;
     // Transfer the unique job handle to the production RAII wrapper.
     use std::os::windows::io::IntoRawHandle;
-    let job = Handle::new(raw.into_raw_handle(), "own policy fixture job")
+    // SAFETY: `raw` is the job handle created above; `into_raw_handle` transfers its sole ownership here.
+    let job = unsafe { Handle::new(raw.into_raw_handle(), "own policy fixture job") }
         .map_err(|e| format!("{e:?}"))?;
     verify_job(&job).map_err(|e| format!("positive job: {e:?}"))?;
     for (label, acl, reason) in [

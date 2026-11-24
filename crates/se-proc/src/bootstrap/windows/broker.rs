@@ -57,19 +57,18 @@ impl Broker {
             check(deadline)?;
             examined += 1;
             // SAFETY: read/query/duplicate/create-child rights only; native validates PID.
-            let process = match handle(
-                unsafe {
-                    OpenProcess(
-                        PROCESS_CREATE_PROCESS
-                            | PROCESS_DUP_HANDLE
-                            | PROCESS_QUERY_LIMITED_INFORMATION
-                            | SYNCHRONIZE,
-                        0,
-                        pid,
-                    )
-                },
-                "open detached broker candidate",
-            ) {
+            let raw = unsafe {
+                OpenProcess(
+                    PROCESS_CREATE_PROCESS
+                        | PROCESS_DUP_HANDLE
+                        | PROCESS_QUERY_LIMITED_INFORMATION
+                        | SYNCHRONIZE,
+                    0,
+                    pid,
+                )
+            };
+            // SAFETY: the OpenProcess result is a newly opened handle or null, which `handle` rejects.
+            let process = match unsafe { handle(raw, "open detached broker candidate") } {
                 Ok(process) => process,
                 Err(_) => {
                     unreadable += 1;
@@ -184,7 +183,8 @@ impl RemoteHandles<'_> {
             if closed == 0 {
                 failure.get_or_insert_with(|| last("close private broker handle"));
             } else {
-                drop(handle(local, "own returned broker handle")?);
+                // SAFETY: the successful duplication above transferred a new owned reference to `local`.
+                drop(unsafe { handle(local, "own returned broker handle") }?);
             }
         }
         failure.map_or(Ok(()), Err)

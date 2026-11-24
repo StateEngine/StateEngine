@@ -91,7 +91,8 @@ impl Driver {
         // noninheritable private job ownership is immediately RAII-held.
         let raw =
             unsafe { CreateJobObjectW(&attributes, wide(std::ffi::OsStr::new(&name)).as_ptr()) };
-        let job = Handle::new(raw, "CreateJobObjectW")?;
+        // SAFETY: the successful CreateJobObjectW above transferred unique ownership to `raw`.
+        let job = unsafe { Handle::new(raw, "CreateJobObjectW") }?;
         // SAFETY: thread-local error of the immediately preceding native creation.
         if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
             return Err(input(

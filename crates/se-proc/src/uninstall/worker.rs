@@ -292,21 +292,20 @@ fn perform(parent: &OwnedHandle, objects: &mut [Object], deadline: u64) -> Resul
 }
 fn unlink_directory(object: &Object, require_empty: bool) -> Result<()> {
     let path = &object.entry.path;
-    let file = File::from(native::handle(
-        // SAFETY: terminated path and explicit no-follow directory flags.
-        unsafe {
-            CreateFileW(
-                native::wide(path)?.as_ptr(),
-                DELETE | FILE_READ_ATTRIBUTES,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                ptr::null(),
-                OPEN_EXISTING,
-                FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
-                ptr::null_mut(),
-            )
-        },
-        "open exact uninstall directory",
-    )?);
+    // SAFETY: terminated path and explicit no-follow directory flags.
+    let raw = unsafe {
+        CreateFileW(
+            native::wide(path)?.as_ptr(),
+            DELETE | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+            ptr::null_mut(),
+        )
+    };
+    // SAFETY: the successful open above transferred unique ownership to `raw`.
+    let file = File::from(unsafe { native::handle(raw, "open exact uninstall directory") }?);
     if identity(&file, true)? != object.entry.identity
         || identity(&object.file, true)? != object.entry.identity
     {

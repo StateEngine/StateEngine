@@ -139,18 +139,17 @@ fn rename_stream(file: &File) -> Result<()> {
     for (slot, unit) in info.name.iter_mut().zip(stream.encode_utf16()) {
         *slot = unit;
     }
-    let reopened = native::handle(
-        // SAFETY: the existing pin selects the exact helper object and DELETE is requested explicitly.
-        unsafe {
-            ReOpenFile(
-                file.as_raw_handle(),
-                DELETE | FILE_READ_ATTRIBUTES,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                FILE_FLAG_OPEN_REPARSE_POINT,
-            )
-        },
-        "reopen uninstall helper stream",
-    )?;
+    // SAFETY: the existing pin selects the exact helper object and DELETE is requested explicitly.
+    let raw = unsafe {
+        ReOpenFile(
+            file.as_raw_handle(),
+            DELETE | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+        )
+    };
+    // SAFETY: the successful reopen above transferred unique ownership to `raw`.
+    let reopened = unsafe { native::handle(raw, "reopen uninstall helper stream") }?;
     // SAFETY: native buffer layout and byte length match FILE_RENAME_INFO and contain a bounded stream name.
     if unsafe {
         SetFileInformationByHandle(

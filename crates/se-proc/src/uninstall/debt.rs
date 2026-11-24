@@ -107,7 +107,8 @@ impl UninstallHelperCleanup {
                 return Err(error("read pending helper process", cause));
             }
         } else {
-            let process = native::handle(raw, "pin pending helper process")?;
+            // SAFETY: the successful OpenProcess above transferred unique ownership to `raw`.
+            let process = unsafe { native::handle(raw, "pin pending helper process") }?;
             // SAFETY: `process` is a retained query-capable process handle pinned above.
             let start = unsafe { crate::windows_native::process_start(process.as_raw_handle()) }
                 .map_err(|e| error(e.operation, e.source))?;

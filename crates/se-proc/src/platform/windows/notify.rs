@@ -75,10 +75,10 @@ impl CompletionQueue {
 impl Collector {
     pub fn new() -> ProcResult<Self> {
         // SAFETY: creates this host's one unassociated completion port.
-        let handle = Arc::new(Handle::new(
-            unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, ptr::null_mut(), 0, 1) },
-            "CreateIoCompletionPort",
-        )?);
+        let raw_port =
+            unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, ptr::null_mut(), 0, 1) };
+        // SAFETY: the successful port creation above transferred unique ownership to `raw_port`.
+        let handle = Arc::new(unsafe { Handle::new(raw_port, "CreateIoCompletionPort") }?);
         let slots: Arc<Targets> = Arc::new(Mutex::new(HashMap::new()));
         let closing = Arc::new(AtomicBool::new(false));
         let (port, lookup, shutdown) = (handle.clone(), slots.clone(), closing.clone());

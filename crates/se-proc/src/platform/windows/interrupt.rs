@@ -154,7 +154,9 @@ fn inherited(selector: u64) -> ProcResult<Handle> {
             "seal inherited console capability",
         ));
     }
-    Handle::new(raw, "own inherited console capability")
+    // SAFETY: this helper exclusively owns the inherited handle-table entry; closing
+    // it removes only this entry, never the creator's reference.
+    unsafe { Handle::new(raw, "own inherited console capability") }
 }
 
 /// Private helper entry. Identity text grants no rights: the native creator
