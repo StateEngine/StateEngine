@@ -3,7 +3,6 @@
 #![cfg(any(target_os = "linux", windows))]
 use se_store::*;
 use se_types::{AgentId, LifecycleId, NativePath};
-use std::time::Duration;
 #[path = "support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
@@ -316,6 +315,6 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
         )?],
     )?)?)??;
     assert_eq!(head(&f, i.record.clone())?.revision.value.get(), 4);
-    drop(wait(writer.drain(Duration::from_secs(2)))??);
+    drop(wait_drained(writer.drain(DRAIN_DEADLINE))??);
     Ok(())
 }

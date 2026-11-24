@@ -1,7 +1,6 @@
 #![cfg(any(target_os = "linux", windows))]
 use se_store::*;
 use se_types::LifecycleId;
-use std::time::Duration;
 #[path = "support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
@@ -135,7 +134,7 @@ fn typed_process_registration_and_stop_transitions_roundtrip() -> Check {
             .processes
             .is_empty()
     );
-    drop(wait(owner.drain(Duration::from_secs(2)))??);
+    drop(wait_drained(owner.drain(DRAIN_DEADLINE))??);
     Ok(())
 }
 
@@ -172,7 +171,7 @@ fn successor_reconciliation_is_full_before_provider_control_resumes() -> Check {
             );
         }
     }
-    drop(wait(writer.drain(Duration::from_secs(2)))??);
+    drop(wait_drained(writer.drain(DRAIN_DEADLINE))??);
     Ok(())
 }
 
@@ -307,7 +306,7 @@ fn process_transition_cas_identity_and_atomic_rollback() -> Check {
         )?)?)?
         .is_err()
     );
-    drop(wait(owner.drain(Duration::from_secs(2)))??);
+    drop(wait_drained(owner.drain(DRAIN_DEADLINE))??);
     Ok(())
 }
 
@@ -341,7 +340,7 @@ fn loss_never_discards_an_already_published_native_birth_identity() -> Check {
         )?],
     )?)?)?;
     let retained_revision = head(&f, i.record.clone())?.revision.value.get();
-    drop(wait(owner.drain(Duration::from_secs(2)))??);
+    drop(wait_drained(owner.drain(DRAIN_DEADLINE))??);
     let error = result
         .err()
         .ok_or("loss discarded a previously published native birth identity")?;
@@ -407,7 +406,7 @@ fn direct_registration_and_foreign_session_refuse() -> Check {
             .processes
             .is_empty()
     );
-    drop(wait(owner.drain(Duration::from_secs(2)))??);
+    drop(wait_drained(owner.drain(DRAIN_DEADLINE))??);
     Ok(())
 }
 
@@ -477,7 +476,7 @@ fn saved_native_identity_survives_loss_and_recovery() -> Check {
         return Err("recovery discarded the saved native identity".into());
     };
     assert_eq!(saved, original);
-    drop(wait(owner.drain(Duration::from_secs(2)))??);
+    drop(wait_drained(owner.drain(DRAIN_DEADLINE))??);
     Ok(())
 }
 
@@ -607,7 +606,7 @@ fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
         )?],
     )?)?)??;
     assert_eq!(head(&f, i.record.clone())?.revision.value.get(), 5);
-    drop(wait(owner.drain(Duration::from_secs(2)))??);
+    drop(wait_drained(owner.drain(DRAIN_DEADLINE))??);
     Ok(())
 }
 
@@ -743,6 +742,6 @@ fn exec_checkpoint_precedes_readiness_without_reopening_identity() -> Check {
         )?],
     )?)?)??;
     assert_eq!(head(&f, i.record)?.revision.value.get(), 5);
-    drop(wait(owner.drain(Duration::from_secs(2)))??);
+    drop(wait_drained(owner.drain(DRAIN_DEADLINE))??);
     Ok(())
 }

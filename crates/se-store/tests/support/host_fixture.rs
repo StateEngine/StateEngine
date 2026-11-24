@@ -19,6 +19,17 @@ const STEP: Duration = Duration::from_secs(5);
 pub fn wait<F: Future>(future: F) -> Result<F::Output, Box<dyn std::error::Error>> {
     wait_until(future, Instant::now() + STEP)
 }
+/// Close deadline for a case's own drain. The join can wait out a background
+/// checkpoint already in flight, and a loaded runner can stretch its flushes
+/// past a few seconds; the host passes its remaining shutdown budget instead.
+#[allow(dead_code, reason = "Only the binaries that drain a writer use it.")]
+pub const DRAIN_DEADLINE: Duration = Duration::from_secs(10);
+/// Observe a drain: its join can spend the close deadline, and the final flush
+/// after the join is not deadline-bounded.
+#[allow(dead_code, reason = "Only the binaries that drain a writer use it.")]
+pub fn wait_drained<F: Future>(future: F) -> Result<F::Output, Box<dyn std::error::Error>> {
+    wait_until(future, Instant::now() + DRAIN_DEADLINE * 2)
+}
 /// Poll a completion against an absolute deadline. A load phase passes one
 /// deadline to every step so the allowance scales with the workload instead
 /// of slicing a fixed window off each commit: a slow runner spends the

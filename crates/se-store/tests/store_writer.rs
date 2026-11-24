@@ -39,7 +39,7 @@ fn dropped_waiter_is_resolved_by_the_same_key_and_drain_releases_the_lock() -> C
         .ok_or("host replay omitted its own timing")?;
     assert_eq!(timings.request_key, replay.request_key);
     assert!(timings.group_requests >= 1);
-    let drained = wait(owner.drain(Duration::from_secs(2)))??;
+    let drained = wait_drained(owner.drain(DRAIN_DEADLINE))??;
     assert_eq!(drained.report.pending_requests, 0);
     assert_eq!(
         client
@@ -90,7 +90,7 @@ fn queue_backpressure_and_failed_operation_do_not_cancel_other_work() -> Check {
     );
     let good = wait(client.submit(f.working("good", revision(1)?, "good")?)?)??;
     assert_eq!(good.state, CommitState::Committed);
-    let drained = wait(owner.drain(Duration::from_secs(2)))??;
+    let drained = wait_drained(owner.drain(DRAIN_DEADLINE))??;
     drop(drained);
     Ok(())
 }
@@ -101,7 +101,7 @@ fn drained_host_keeps_exclusive_custody_until_its_connection_closes() -> Check {
     let f = Fixture::new()?;
     let (host, lease) = host(&f)?;
     let owner = host.start_writer(options(256)?, lease)?;
-    let drained = wait(owner.drain(Duration::from_secs(2)))??;
+    let drained = wait_drained(owner.drain(DRAIN_DEADLINE))??;
     let competitor = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -127,7 +127,7 @@ fn writer_configuration_refuses_more_than_one_mib_resident_bytes() -> Check {
     match host.start_writer(config, lease) {
         Err(error) => assert_eq!(error.code, StoreErrorCode::EventInvalid),
         Ok(owner) => {
-            drop(wait(owner.drain(Duration::from_secs(2)))??);
+            drop(wait_drained(owner.drain(DRAIN_DEADLINE))??);
             return Err(
                 "writer admitted a resident-byte ceiling above section 20's 1 MiB bound".into(),
             );

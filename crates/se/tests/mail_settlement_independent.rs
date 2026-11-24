@@ -8,7 +8,6 @@ use se_core::{
 };
 use se_store::{mail::MailSnapshot, *};
 use se_types::{EventId, Read};
-use std::time::Duration;
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
@@ -326,6 +325,6 @@ fn actual_recipient_read_and_dismiss_settle_only_complete_original_debt() -> Che
         matches!(plan(vec![])?, OpStep::Complete(Read::Present { value }) if value.event_id == settled.event_id),
         "fresh reservation changed the original settlement replay"
     );
-    drop(wait(owner.drain(Duration::from_secs(2)))??);
+    drop(wait_drained(owner.drain(DRAIN_DEADLINE))??);
     Ok(())
 }
