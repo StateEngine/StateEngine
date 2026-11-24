@@ -10,10 +10,6 @@ use std::{
     time::Instant,
 };
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn read_process_descendants(
     root: &ProcessIdentity,
     deadline: Instant,
@@ -28,6 +24,67 @@ pub fn read_process_descendants(
         )),
     };
     verify_root()?;
+    let facts = snapshot(deadline)?;
+    let Some((_, root_start, _)) = facts.get(&root.pid.0) else {
+        return Err(input(
+            "process ancestry",
+            "root absent from the native snapshot; not an empty job list",
+        ));
+    };
+    if root.start
+        != (StartIdentity::Linux {
+            start_ticks: *root_start,
+        })
+    {
+        return Err(changed(root, None));
+    }
+    let mut selected = BTreeSet::from([root.pid.0]);
+    loop {
+        if Instant::now() >= deadline {
+            return Err(input("process ancestry", "selection deadline elapsed"));
+        }
+        let before = selected.len();
+        for (pid, (parent, start, _)) in &facts {
+            if selected.contains(parent)
+                && facts.get(parent).is_some_and(|(_, born, _)| born <= start)
+            {
+                selected.insert(*pid);
+            }
+        }
+        if selected.len() == before {
+            break;
+        }
+        if selected.len() > 4096 {
+            return Err(capacity("process descendants", 4096));
+        }
+    }
+    let mut result = Vec::new();
+    for pid in selected.into_iter().filter(|pid| *pid != root.pid.0) {
+        let (parent, start, state) = facts[&pid];
+        if matches!(state, b'Z' | b'X' | b'x') {
+            continue;
+        }
+        match crate::read_process_until(root.machine.clone(), ProcessId(pid), deadline)? {
+            ProcessRead::Present(live)
+                if live.identity.start == (StartIdentity::Linux { start_ticks: start })
+                    && live.parent == Some(ProcessId(parent)) =>
+            {
+                result.push(live.identity)
+            }
+            ProcessRead::Absent { .. } | ProcessRead::ExitedRecord { .. } => {}
+            _ => {
+                return Err(input(
+                    "process ancestry",
+                    "a selected descendant changed identity or parent; retry the inspection",
+                ));
+            }
+        }
+    }
+    verify_root()?;
+    Ok(result)
+}
+
+fn snapshot(deadline: Instant) -> ProcResult<BTreeMap<u32, (u32, u64, u8)>> {
     let mut facts = BTreeMap::new();
     for entry in std::fs::read_dir("/proc").map_err(|e| {
         native(
@@ -93,61 +150,5 @@ pub fn read_process_descendants(
             })?,
         );
     }
-    let Some((_, root_start, _)) = facts.get(&root.pid.0) else {
-        return Err(input(
-            "process ancestry",
-            "root absent from the native snapshot; not an empty job list",
-        ));
-    };
-    if root.start
-        != (StartIdentity::Linux {
-            start_ticks: *root_start,
-        })
-    {
-        return Err(changed(root, None));
-    }
-    let mut selected = BTreeSet::from([root.pid.0]);
-    loop {
-        if Instant::now() >= deadline {
-            return Err(input("process ancestry", "selection deadline elapsed"));
-        }
-        let before = selected.len();
-        for (pid, (parent, start, _)) in &facts {
-            if selected.contains(parent)
-                && facts.get(parent).is_some_and(|(_, born, _)| born <= start)
-            {
-                selected.insert(*pid);
-            }
-        }
-        if selected.len() == before {
-            break;
-        }
-        if selected.len() > 4096 {
-            return Err(capacity("process descendants", 4096));
-        }
-    }
-    let mut result = Vec::new();
-    for pid in selected.into_iter().filter(|pid| *pid != root.pid.0) {
-        let (parent, start, state) = facts[&pid];
-        if matches!(state, b'Z' | b'X' | b'x') {
-            continue;
-        }
-        match crate::read_process_until(root.machine.clone(), ProcessId(pid), deadline)? {
-            ProcessRead::Present(live)
-                if live.identity.start == (StartIdentity::Linux { start_ticks: start })
-                    && live.parent == Some(ProcessId(parent)) =>
-            {
-                result.push(live.identity)
-            }
-            ProcessRead::Absent { .. } | ProcessRead::ExitedRecord { .. } => {}
-            _ => {
-                return Err(input(
-                    "process ancestry",
-                    "a selected descendant changed identity or parent; retry the inspection",
-                ));
-            }
-        }
-    }
-    verify_root()?;
-    Ok(result)
+    Ok(facts)
 }
