@@ -64,7 +64,7 @@ fn copy(
         }
         staged.file.write_all(&buffer[..count]).map_err(invalid)?;
     }
-    staged.file.sync_all().map_err(invalid)?;
+    // Publication flushes the staged data before moving its name.
     drop(staged.file);
     files.publish_no_replace(&staged.path, to)
 }
