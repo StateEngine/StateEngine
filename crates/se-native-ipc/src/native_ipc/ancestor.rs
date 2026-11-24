@@ -142,7 +142,7 @@ fn parent(pid: u32) -> IpcNativeResult<u32> {
     }
     #[cfg(windows)]
     {
-        crate::windows_native::parents()
+        crate::windows_process::parents()
             .map_err(|e| error("read provider ancestry", e.source))?
             .get(&pid)
             .copied()

@@ -7,6 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+se-native-ipc = { path = "../se-native-ipc" }
 se-native-path = { path = "../se-native-path" }
 se-state-files = { path = "../se-state-files" }
 se-types = { path = "../se-types" }

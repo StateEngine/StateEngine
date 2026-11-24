@@ -108,7 +108,8 @@ impl UninstallHelperCleanup {
             }
         } else {
             let process = native::handle(raw, "pin pending helper process")?;
-            let start = crate::windows_native::process_start(process.as_raw_handle())
+            // SAFETY: `process` is a retained query-capable process handle pinned above.
+            let start = unsafe { crate::windows_native::process_start(process.as_raw_handle()) }
                 .map_err(|e| error(e.operation, e.source))?;
             if start == self.creation_filetime && !native::exited(&process)? {
                 return Ok(HelperCleanupOutcome::StillRunning);

@@ -38,7 +38,8 @@ impl Handle {
     }
     pub fn new(handle: HANDLE, api: &str) -> ProcResult<Self> {
         use std::os::windows::io::IntoRawHandle;
-        crate::windows_native::handle(handle, "own process custody handle")
+        // SAFETY: callers pass only newly created/opened Win32 handles (or null/INVALID_HANDLE_VALUE).
+        unsafe { crate::windows_native::handle(handle, "own process custody handle") }
             .map(|handle| Self(handle.into_raw_handle()))
             .map_err(|e| native(ProcErrorCode::LaunchFailed, api, e.source))
     }
@@ -71,7 +72,8 @@ pub(super) fn lookup(pid: ProcessId) -> ProcResult<Option<Handle>> {
     Ok(Some(Handle(handle)))
 }
 pub(super) fn birth(handle: &Handle) -> ProcResult<StartIdentity> {
-    let creation_filetime = crate::windows_native::process_start(handle.0)
+    // SAFETY: `handle` retains a valid query-capable process handle.
+    let creation_filetime = unsafe { crate::windows_native::process_start(handle.0) }
         .map_err(|e| native(ProcErrorCode::IdentityUnreadable, e.operation, e.source))?;
     Ok(StartIdentity::Windows { creation_filetime })
 }

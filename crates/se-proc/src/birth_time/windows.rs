@@ -17,7 +17,8 @@ impl Pin {
                 expected.pid.0,
             )
         };
-        crate::windows_native::handle(raw, "pin native process birth")
+        // SAFETY: OpenProcess transfers sole ownership of a newly opened handle on success.
+        unsafe { crate::windows_native::handle(raw, "pin native process birth") }
             .map(Self)
             .map_err(|e| native(ProcErrorCode::IdentityUnreadable, e.operation, e.source))
     }
@@ -39,7 +40,8 @@ impl Pin {
         deadline: Instant,
     ) -> ProcResult<ProcessBirthTime> {
         bound(deadline)?;
-        let actual = crate::windows_native::process_start(self.0.as_raw_handle())
+        // SAFETY: `self.0` retains a valid query-capable process handle.
+        let actual = unsafe { crate::windows_native::process_start(self.0.as_raw_handle()) }
             .map_err(|e| native(ProcErrorCode::IdentityUnreadable, e.operation, e.source))?;
         if expected.start
             != (StartIdentity::Windows {

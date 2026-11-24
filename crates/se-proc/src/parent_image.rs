@@ -11,24 +11,29 @@ pub fn parent_process_image() -> io::Result<Option<PathBuf>> {
     // SAFETY: the current-process pseudo handle is borrowed for this query.
     let current = unsafe { GetCurrentProcess() };
     let pid = std::process::id();
-    let parent = match crate::windows_native::parent(current, pid).map_err(|e| e.source)? {
-        Some(parent) => parent,
-        None => crate::windows_native::parents()
-            .map_err(|e| e.source)?
-            .get(&pid)
-            .copied()
-            .ok_or_else(|| io::Error::other("creator is absent from the native snapshot"))?,
-    };
+    // SAFETY: `current` is the current-process pseudo handle obtained above.
+    let parent =
+        match unsafe { crate::windows_native::parent(current, pid) }.map_err(|e| e.source)? {
+            Some(parent) => parent,
+            None => crate::windows_native::parents()
+                .map_err(|e| e.source)?
+                .get(&pid)
+                .copied()
+                .ok_or_else(|| io::Error::other("creator is absent from the native snapshot"))?,
+        };
     if parent == 0 {
         return Ok(None);
     }
     // SAFETY: read-only query access to the recorded creator; successful open is owned below.
     let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, parent) };
-    let process =
-        crate::windows_native::handle(raw, "query command shell").map_err(|e| e.source)?;
-    let created =
-        crate::windows_native::process_start(process.as_raw_handle()).map_err(|e| e.source)?;
-    let child = crate::windows_native::process_start(current).map_err(|e| e.source)?;
+    // SAFETY: OpenProcess transfers sole ownership of `raw` on success.
+    let process = unsafe { crate::windows_native::handle(raw, "query command shell") }
+        .map_err(|e| e.source)?;
+    // SAFETY: `process` is a valid query-capable process handle pinned above.
+    let created = unsafe { crate::windows_native::process_start(process.as_raw_handle()) }
+        .map_err(|e| e.source)?;
+    // SAFETY: `current` is the current-process pseudo handle obtained above.
+    let child = unsafe { crate::windows_native::process_start(current) }.map_err(|e| e.source)?;
     if created > child {
         return Err(io::Error::other("creator PID has been reused"));
     }

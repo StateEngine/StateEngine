@@ -21,17 +21,16 @@ pub use se_state_files::advisory_lock;
 pub use windows_package::process_has_package_identity;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod allocator;
-mod canonical_path;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub use allocator::{reclaim_unused_allocator_pages, release_read_only_mapped_pages};
 mod checkpoint;
 mod command;
-pub use canonical_path::canonicalize_path;
 pub use checkpoint::{
     Checkpoint, CheckpointError, CheckpointKind, CheckpointPrincipal, CheckpointSource,
     HistoricalCheckpoint, RootPublication, decode_checkpoint, encode_checkpoint,
 };
 pub use command::background_command;
+pub use se_native_ipc::canonicalize_path;
 mod error;
 pub use se_state_files::NativeFileIdentity;
 mod identity;
@@ -41,10 +40,8 @@ pub use reboot_proof::{
     observe_reboot_boot, prove_reboot,
 };
 mod launch;
+pub use se_native_ipc as native_ipc;
 pub(crate) use se_state_files::native_error;
-#[cfg(windows)]
-mod native_file_revision;
-pub mod native_ipc;
 mod owner_probe;
 #[cfg(windows)]
 mod uninstall;
@@ -116,7 +113,7 @@ pub use bootstrap::{
     RuntimeStartupStderr, current_process_identity, current_runtime_identity,
 };
 #[cfg(target_os = "linux")]
-mod linux_native;
+pub(crate) use se_native_ipc::linux_native;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod platform;
 #[cfg(windows)]

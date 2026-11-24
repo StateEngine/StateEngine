@@ -107,7 +107,7 @@ use std::{
 };
 
 fn private_directory(path: &Path) -> IpcNativeResult<File> {
-    let pin = crate::state_files::pin_owned_directory(path)
+    let pin = se_state_files::state_files::pin_owned_directory(path)
         .map_err(|e| error("pin protected IPC directory", io::Error::other(e)))?;
     let meta = pin
         .metadata()

@@ -17,7 +17,9 @@ use windows_sys::Win32::{
     System::{IO::*, Pipes::*, Threading::*},
 };
 pub(super) fn owned(raw: HANDLE, operation: &'static str) -> IpcNativeResult<OwnedHandle> {
-    crate::windows_native::handle(raw, operation).map_err(|e| error(e.operation, e.source))
+    // SAFETY: callers pass only newly created/opened handles from Win32 APIs (or null/INVALID_HANDLE_VALUE).
+    unsafe { crate::windows_process::handle(raw, operation) }
+        .map_err(|e| error(e.operation, e.source))
 }
 fn wide(name: &OsStr) -> IpcNativeResult<Vec<u16>> {
     let value: Vec<_> = name.encode_wide().collect();
@@ -480,7 +482,7 @@ mod tests {
     #[test]
     fn pending_read_reports_clean_eof_when_peer_closes() -> Check {
         let mut entropy = [0; 16];
-        crate::fill_entropy(&mut entropy)?;
+        se_state_files::fill_entropy(&mut entropy)?;
         let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
         let name = std::ffi::OsString::from(format!(r"\\.\pipe\se-winpipe-eof-{suffix}"));
         let server_handle = create(&name)?;

@@ -12,14 +12,16 @@ pub fn retain_package_parent(expected: u32) -> io::Result<()> {
     // SAFETY: this borrowed pseudo handle refers to the current process.
     let current = unsafe { GetCurrentProcess() };
     let pid = std::process::id();
-    let parent = match crate::windows_native::parent(current, pid).map_err(|e| e.source)? {
-        Some(parent) => parent,
-        None => crate::windows_native::parents()
-            .map_err(|e| e.source)?
-            .get(&pid)
-            .copied()
-            .ok_or_else(|| io::Error::other("package wrapper creator is absent"))?,
-    };
+    // SAFETY: `current` is the current-process pseudo handle obtained above.
+    let parent =
+        match unsafe { crate::windows_native::parent(current, pid) }.map_err(|e| e.source)? {
+            Some(parent) => parent,
+            None => crate::windows_native::parents()
+                .map_err(|e| e.source)?
+                .get(&pid)
+                .copied()
+                .ok_or_else(|| io::Error::other("package wrapper creator is absent"))?,
+        };
     if expected == 0 || parent != expected {
         return Err(io::Error::other(
             "package wrapper is not the native creator",
@@ -27,11 +29,14 @@ pub fn retain_package_parent(expected: u32) -> io::Result<()> {
     }
     // SAFETY: query and synchronize access only; the successful handle is owned below.
     let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, parent) };
-    let retained =
-        crate::windows_native::handle(raw, "retain package wrapper").map_err(|e| e.source)?;
-    let created =
-        crate::windows_native::process_start(retained.as_raw_handle()).map_err(|e| e.source)?;
-    let child = crate::windows_native::process_start(current).map_err(|e| e.source)?;
+    // SAFETY: OpenProcess transfers sole ownership of `raw` on success.
+    let retained = unsafe { crate::windows_native::handle(raw, "retain package wrapper") }
+        .map_err(|e| e.source)?;
+    // SAFETY: `retained` is a valid query-capable process handle pinned above.
+    let created = unsafe { crate::windows_native::process_start(retained.as_raw_handle()) }
+        .map_err(|e| e.source)?;
+    // SAFETY: `current` is the current-process pseudo handle obtained above.
+    let child = unsafe { crate::windows_native::process_start(current) }.map_err(|e| e.source)?;
     // SAFETY: retained process handle has synchronize access; zero timeout never blocks.
     let state = unsafe { WaitForSingleObject(retained.as_raw_handle(), 0) };
     if created > child || state != WAIT_TIMEOUT {

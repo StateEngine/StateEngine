@@ -15,7 +15,9 @@ pub(super) fn last(operation: &'static str) -> UninstallNativeError {
     error(operation, io::Error::last_os_error())
 }
 pub(super) fn handle(raw: HANDLE, operation: &'static str) -> Result<OwnedHandle> {
-    crate::windows_native::handle(raw, operation).map_err(|e| error(e.operation, e.source))
+    // SAFETY: callers pass only newly created/opened Win32 handles (or null/INVALID_HANDLE_VALUE).
+    unsafe { crate::windows_native::handle(raw, operation) }
+        .map_err(|e| error(e.operation, e.source))
 }
 pub(super) fn wide(path: &Path) -> Result<Vec<u16>> {
     crate::state_files::windows::wide(path).map_err(custody)

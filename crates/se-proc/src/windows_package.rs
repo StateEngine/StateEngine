@@ -22,7 +22,8 @@ pub fn process_has_package_identity(pid: ProcessId) -> ProcResult<bool> {
     }
     // SAFETY: read-only process lookup; no pointers or inherited handles.
     let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid.0) };
-    let process = crate::windows_native::handle(raw, "OpenProcess(package identity)")
+    // SAFETY: OpenProcess transfers ownership of a newly opened handle on success.
+    let process = unsafe { crate::windows_native::handle(raw, "OpenProcess(package identity)") }
         .map_err(|e| failed(e.operation, e.source))?;
     let mut length = 0;
     // SAFETY: retained query handle and documented null-buffer sizing call.

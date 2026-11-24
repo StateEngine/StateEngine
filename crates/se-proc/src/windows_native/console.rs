@@ -40,7 +40,7 @@ fn word(process: HANDLE, address: usize, width: usize) -> Result<usize> {
 }
 
 fn parameters(process: HANDLE, expected_pid: u32) -> Result<(usize, usize)> {
-    let query = super::process_query::query().ok_or_else(|| {
+    let query = super::query().ok_or_else(|| {
         invalid(
             "locate console reference",
             "native process query is unavailable",
@@ -164,7 +164,8 @@ pub(crate) fn server(process: HANDLE, expected_pid: u32) -> Result<u32> {
     {
         return Err(last("pin console connection"));
     }
-    let connection = handle(raw, "pin console connection")?;
+    // SAFETY: DuplicateHandle transferred sole ownership of `raw` on success.
+    let connection = unsafe { handle(raw, "pin console connection") }?;
     let mut pid = 0_usize;
     let mut bytes = 0;
     // IOCTL_CONDRV_GET_SERVER_PID: FILE_DEVICE_CONSOLE, function 8,

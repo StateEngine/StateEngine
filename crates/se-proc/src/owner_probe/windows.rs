@@ -17,11 +17,14 @@ fn last(operation: &'static str) -> OwnerProbeError {
     native(operation, io::Error::last_os_error())
 }
 fn handle(raw: HANDLE, operation: &'static str) -> Result<OwnedHandle> {
-    crate::windows_native::handle(raw, operation).map_err(|e| native(e.operation, e.source))
+    // SAFETY: callers pass only newly created/opened Win32 handles (or null/INVALID_HANDLE_VALUE).
+    unsafe { crate::windows_native::handle(raw, operation) }
+        .map_err(|e| native(e.operation, e.source))
 }
 fn owner(process: &OwnedHandle) -> Result<NativeOwner> {
     Ok(NativeOwner::Windows {
-        sid: crate::windows_native::process_sid(process.as_raw_handle())
+        // SAFETY: `process` is a retained query-capable process handle.
+        sid: unsafe { crate::windows_native::process_sid(process.as_raw_handle()) }
             .map_err(|e| native(e.operation, e.source))?,
     })
 }
@@ -63,7 +66,8 @@ fn parent(
     process: &OwnedHandle,
     fallback: &mut Option<BTreeMap<u32, u32>>,
 ) -> Result<u32> {
-    if let Some(value) = crate::windows_native::parent(process.as_raw_handle(), pid.0)
+    // SAFETY: `process` is a retained query-capable process handle.
+    if let Some(value) = unsafe { crate::windows_native::parent(process.as_raw_handle(), pid.0) }
         .map_err(|e| native(e.operation, e.source))?
     {
         return Ok(value);
@@ -91,8 +95,10 @@ fn open(pid: ProcessId) -> Result<Option<OwnedHandle>> {
     handle(raw, "open native ancestor").map(Some)
 }
 fn stamp(pid: ProcessId, parent: ProcessId, process: &OwnedHandle) -> Result<ProcessStamp> {
-    let creation_filetime = crate::windows_native::process_start(process.as_raw_handle())
-        .map_err(|e| native(e.operation, e.source))?;
+    // SAFETY: `process` is a retained query-capable process handle.
+    let creation_filetime =
+        unsafe { crate::windows_native::process_start(process.as_raw_handle()) }
+            .map_err(|e| native(e.operation, e.source))?;
     Ok(ProcessStamp {
         pid,
         parent,
