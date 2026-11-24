@@ -127,7 +127,7 @@ fn write_document(
         let files = se_proc::NativeStateFiles::create(parent).map_err(native)?;
         let mut staged = files.create_staging(parent).map_err(native)?;
         staged.file.write_all(&bytes).map_err(io)?;
-        staged.file.sync_all().map_err(io)?;
+        // Publication flushes the staged data before moving its name.
         drop(staged.file);
         files
             .publish_no_replace(&staged.path, path)

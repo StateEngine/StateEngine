@@ -101,7 +101,8 @@ impl CodexHarness {
             let parent = record.parent().ok_or_else(|| SeError::invalid("Codex runtime record", "a protected launch directory"))?;
             let files = se_proc::NativeStateFiles::open(parent).map_err(native_error)?;
             let mut staged = files.create_staging(parent).map_err(native_error)?;
-            staged.file.write_all(&bytes).and_then(|()| staged.file.sync_all()).map_err(|e| se_core::scope::unreadable("Codex runtime durability", &e.to_string()))?;
+            // Publication flushes the staged data before moving its name.
+            staged.file.write_all(&bytes).map_err(|e| se_core::scope::unreadable("Codex runtime durability", &e.to_string()))?;
             drop(staged.file);
             files.publish_no_replace(&staged.path, &record).map_err(native_error)?;
             let mut witness = se_proc::OwnedFile::open(&record).map_err(native_error)?.ok_or_else(|| se_core::scope::unreadable("Codex runtime record", "published record is absent"))?;

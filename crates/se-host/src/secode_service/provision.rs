@@ -110,11 +110,11 @@ impl LaunchCoordinator {
                     let mut staged = files
                         .create_staging(&profile)
                         .map_err(|e| error("SE Code policy staging", e))?;
+                    // Publication flushes the staged data before moving its name.
                     staged
                         .file
                         .write_all(&bytes)
-                        .and_then(|()| staged.file.sync_all())
-                        .map_err(|e| error("SE Code policy sync", e))?;
+                        .map_err(|e| error("SE Code policy write", e))?;
                     drop(staged.file);
                     files
                         .publish_no_replace(&staged.path, &path)

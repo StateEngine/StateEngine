@@ -48,11 +48,8 @@ fn publish(
         return Ok(path);
     }
     let mut staged = parent.create_staging(parent.root()).map_err(failure)?;
-    staged
-        .file
-        .write_all(bytes)
-        .and_then(|()| staged.file.sync_all())
-        .map_err(failure)?;
+    // Publication flushes the staged data before moving its name.
+    staged.file.write_all(bytes).map_err(failure)?;
     drop(staged.file);
     match parent.publish_no_replace(&staged.path, &path) {
         Ok(()) => Ok(path),

@@ -31,10 +31,7 @@ impl Helper {
                     "helper image differs from the admitted executable",
                 ));
             }
-            staged
-                .file
-                .sync_all()
-                .map_err(|cause| error("flush uninstall helper", cause))?;
+            // Publication flushes the staged data before moving its name.
             if elevated {
                 staging::verify_high(&staged.file, false)?;
             }

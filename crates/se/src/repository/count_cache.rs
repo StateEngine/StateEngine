@@ -77,10 +77,8 @@ impl<'a> CountCache<'a> {
         let Ok(mut staged) = self.files.create_staging(directory) else {
             return;
         };
-        let written = staged
-            .file
-            .write_all(bytes)
-            .and_then(|()| staged.file.sync_all());
+        // Publication flushes the staged data before moving its name.
+        let written = staged.file.write_all(bytes);
         drop(staged.file);
         if written.is_ok()
             && self

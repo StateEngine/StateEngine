@@ -62,10 +62,10 @@ impl NativeChannelCredentials {
             .files
             .create_staging(self.files.root())
             .map_err(credential_store_unavailable)?;
+        // Publication flushes the staged data before moving its name.
         stage
             .file
             .write_all(&bytes)
-            .and_then(|()| stage.file.sync_all())
             .map_err(credential_store_unavailable)?;
         drop(stage.file);
         self.files

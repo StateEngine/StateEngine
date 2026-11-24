@@ -188,10 +188,10 @@ impl Output {
             let mut staged = files
                 .create_staging(parent)
                 .map_err(|e| error("SE Code auxiliary diagnostics", e))?;
+            // Publication flushes the staged data before moving its name.
             staged
                 .file
                 .write_all(&bytes)
-                .and_then(|()| staged.file.sync_all())
                 .map_err(|e| error("SE Code auxiliary diagnostics", e))?;
             drop(staged.file);
             files

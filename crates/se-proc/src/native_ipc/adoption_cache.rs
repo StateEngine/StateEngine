@@ -138,10 +138,7 @@ fn lock(files: &NativeStateFiles, bound: &IpcIoBound) -> IpcNativeResult<File> {
         let staged = files
             .create_staging(files.root())
             .map_err(|e| error("stage adoption cache lock", std::io::Error::other(e)))?;
-        staged
-            .file
-            .sync_all()
-            .map_err(|e| error("flush adoption cache lock", e))?;
+        // Publication flushes the staged file before moving its name.
         drop(staged.file);
         match files.publish_no_replace(&staged.path, &path) {
             Ok(()) => (),

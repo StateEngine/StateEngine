@@ -216,11 +216,11 @@ impl Journal {
             let mut staging = files
                 .create_staging(directory)
                 .map_err(|e| error("SE Code custody staging", e))?;
+            // Publication flushes the staged data before moving its name.
             staging
                 .file
                 .write_all(&bytes)
-                .and_then(|()| staging.file.sync_all())
-                .map_err(|e| error("SE Code custody sync", e))?;
+                .map_err(|e| error("SE Code custody write", e))?;
             drop(staging.file);
             files
                 .publish_no_replace(&staging.path, path)

@@ -65,7 +65,7 @@ impl MailWait {
         let lock_path = directory.join(format!("{name}.lock"));
         if files.readback(&lock_path).map_err(native)?.is_none() {
             let staging = files.create_staging(&directory).map_err(native)?;
-            staging.file.sync_all().map_err(failure)?;
+            // Publication flushes the staged file before moving its name.
             drop(staging.file);
             match files.publish_no_replace(&staging.path, &lock_path) {
                 Ok(()) => (),
@@ -237,7 +237,7 @@ impl MailWait {
             } else {
                 let mut staged = self.files.create_staging(&self.directory).map_err(native)?;
                 staged.file.write_all(&bytes).map_err(failure)?;
-                staged.file.sync_all().map_err(failure)?;
+                // Publication flushes the staged data before moving its name.
                 drop(staged.file);
                 self.files
                     .publish_no_replace(&staged.path, &self.offered_path)

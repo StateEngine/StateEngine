@@ -47,8 +47,8 @@ pub(super) fn file(
         .create_staging(parent)
         .map_err(|e| se_core::store_error::store_error(&e))?;
     let mut file = staged.file;
+    // Publication flushes the staged data before moving its name.
     file.write_all(secret.expose())
-        .and_then(|()| file.sync_all())
         .map_err(|e| scope::unreadable("remote key staging", &e.to_string()))?;
     drop(file);
     match files.publish_no_replace(&staged.path, path) {
