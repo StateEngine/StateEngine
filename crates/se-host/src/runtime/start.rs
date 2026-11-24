@@ -203,26 +203,13 @@ fn present<T>(read: Read<T>, subject: &str) -> Result<T> {
         Read::Unknown { what } => Err(se_core::scope::unreadable(subject, &what)),
     }
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn prepare(
     options: HostStart,
     blocking: BlockingPool,
     deadline: crate::client::lease::Deadline,
 ) -> Result<HostedRuntime> {
     deadline.remaining()?;
-    if options.limits.response_bytes.get() as usize > crate::client::wire::MAX_FRAME_BYTES
-        || options.limits.active_connections.get() > 256
-        || options.limits.preauth_connections.get() > 64
-        || options.limits.preauth_connections > options.limits.active_connections
-    {
-        return Err(SeError::invalid(
-            "host ingress limits",
-            "at most 1 MiB per reply, 256 active connections and min(active,64) pending handshakes",
-        ));
-    }
+    check_limits(&options.limits)?;
     let files = Files::open_with_policy(&options.state_directory, FilePolicy::Host)
         .map_err(|e| store_error(&e))?;
     let lock_path = options.state_directory.join("runtime.lock");
@@ -250,26 +237,7 @@ fn prepare(
         .map_err(|e| store_error(&e))?,
         "state store",
     )?;
-    // Reuse one pooled read phase for owner inventory, prior runtime owner,
-    // and remote-mail contact check instead of opening three extra connections.
-    let mut phase = admission_reads.read_phase().map_err(|e| store_error(&e))?;
-    let preflight = (|| -> Result<_> {
-        let inventory = phase
-            .owner_guard(&files, owner_budget()?)
-            .map_err(|e| store_error(&e))?;
-        let old = phase.runtime_owner().map_err(|e| store_error(&e))?;
-        #[cfg(feature = "remote")]
-        let has_remote_contacts = phase
-            .has_remote_mail_contacts()
-            .map_err(|e| store_error(&e))?;
-        #[cfg(not(feature = "remote"))]
-        let has_remote_contacts = false;
-        Ok((inventory, old, has_remote_contacts))
-    })();
-    let (inventory, old, has_remote_contacts) =
-        super::executor::close_read(preflight, phase.close())?;
-    #[cfg(not(feature = "remote"))]
-    let _ = has_remote_contacts;
+    let (inventory, old, has_remote_contacts) = preflight(&admission_reads, &files)?;
     let [owner] = inventory.owners.as_slice() else {
         return Err(SeError::invalid("host owner", "one protected store owner"));
     };
@@ -278,17 +246,7 @@ fn prepare(
     // runs before readiness; it never blocks taking ownership.
     let retained_custody = inventory.processes.clone();
     deadline.remaining()?;
-    let (previous, expected) = match old {
-        Read::Present { value } => (
-            Some(value.generation),
-            se_store::Expected::Revision(value.revision),
-        ),
-        Read::Absent { .. } => (None, se_store::Expected::Absent),
-        Read::Unreadable { reason, .. } => {
-            return Err(se_core::scope::unreadable("runtime owner", &reason));
-        }
-        Read::Unknown { what } => return Err(se_core::scope::unreadable("runtime owner", &what)),
-    };
+    let (previous, expected) = prior_owner(old)?;
     let next = previous
         .map_or(Some(1), |generation| generation.get().checked_add(1))
         .filter(|g| *g <= i64::MAX as u64)
@@ -326,60 +284,155 @@ fn prepare(
         generation: next,
     };
     deadline.remaining()?;
+    let established = se_store::EventBody::RuntimeOwnerEstablished {
+        epoch: options.epoch.clone(),
+        generation,
+        expected_owner_generation: previous,
+        expected,
+        witnesses: vec![],
+        recovered: None,
+    };
     host.record_runtime_ownership(
-        se_store::AtomicBatch {
-            expected_incarnation: inventory.store.incarnation,
-            admission: admission.clone(),
-            request: None,
-            import_checkpoint: None,
-            events: vec![se_store::NewEvent {
-                header: se_store::EventHeader {
-                    event: facts.event,
-                    scope: admission.scope,
-                    actor: admission.actor,
-                    session: None,
-                    origin: inventory.store.id,
-                    door: se_store::Door::Host,
-                    occurred_at_us: facts.occurred_at_us,
-                    cause: None,
-                    supersedes: None,
-                },
-                body: se_store::EventBody::RuntimeOwnerEstablished {
-                    epoch: options.epoch.clone(),
-                    generation,
-                    expected_owner_generation: previous,
-                    expected,
-                    witnesses: vec![],
-                    recovered: None,
-                },
-            }],
-        },
+        ownership_batch(inventory.store, admission, facts, established),
         lease.as_ref(),
     )
     .map_err(|e| store_error(&e))?;
     // Ownership is committed. Return its writer/lease custody even if the
     // native commit consumed the final part of the admission budget.
+    let owned = Owned {
+        host,
+        lease,
+        reader,
+        admission_reads,
+        generation,
+        owner: owner.clone(),
+        image_sha256: peer.image_sha256(),
+        retained_custody,
+        has_remote_contacts,
+    };
+    launch(options, blocking, owned)
+}
+/// At most 1 MiB per reply, 256 active connections and min(active,64) handshakes.
+fn check_limits(limits: &crate::HostLimits) -> Result<()> {
+    if limits.response_bytes.get() as usize > crate::client::wire::MAX_FRAME_BYTES
+        || limits.active_connections.get() > 256
+        || limits.preauth_connections.get() > 64
+        || limits.preauth_connections > limits.active_connections
+    {
+        return Err(SeError::invalid(
+            "host ingress limits",
+            "at most 1 MiB per reply, 256 active connections and min(active,64) pending handshakes",
+        ));
+    }
+    Ok(())
+}
+/// Reuse one pooled read phase for owner inventory, prior runtime owner,
+/// and remote-mail contact check instead of opening three extra connections.
+fn preflight(
+    admission_reads: &se_store::ReadPhasePool,
+    files: &Files,
+) -> Result<(
+    se_store::OwnerGuardInventory,
+    Read<se_store::RuntimeOwnerHead>,
+    bool,
+)> {
+    let mut phase = admission_reads.read_phase().map_err(|e| store_error(&e))?;
+    let preflight = (|| -> Result<_> {
+        let inventory = phase
+            .owner_guard(files, owner_budget()?)
+            .map_err(|e| store_error(&e))?;
+        let old = phase.runtime_owner().map_err(|e| store_error(&e))?;
+        #[cfg(feature = "remote")]
+        let has_remote_contacts = phase
+            .has_remote_mail_contacts()
+            .map_err(|e| store_error(&e))?;
+        #[cfg(not(feature = "remote"))]
+        let has_remote_contacts = false;
+        Ok((inventory, old, has_remote_contacts))
+    })();
+    super::executor::close_read(preflight, phase.close())
+}
+/// The prior owner's generation and the revision this ownership must replace.
+fn prior_owner(
+    old: Read<se_store::RuntimeOwnerHead>,
+) -> Result<(Option<Generation>, se_store::Expected)> {
+    match old {
+        Read::Present { value } => Ok((
+            Some(value.generation),
+            se_store::Expected::Revision(value.revision),
+        )),
+        Read::Absent { .. } => Ok((None, se_store::Expected::Absent)),
+        Read::Unreadable { reason, .. } => {
+            Err(se_core::scope::unreadable("runtime owner", &reason))
+        }
+        Read::Unknown { what } => Err(se_core::scope::unreadable("runtime owner", &what)),
+    }
+}
+fn ownership_batch(
+    store: se_store::StoreInfo,
+    admission: se_store::Admission,
+    facts: se_core::dispatch::CallFacts,
+    body: se_store::EventBody<se_store::InputText>,
+) -> se_store::AtomicBatch {
+    se_store::AtomicBatch {
+        expected_incarnation: store.incarnation,
+        admission: admission.clone(),
+        request: None,
+        import_checkpoint: None,
+        events: vec![se_store::NewEvent {
+            header: se_store::EventHeader {
+                event: facts.event,
+                scope: admission.scope,
+                actor: admission.actor,
+                session: None,
+                origin: store.id,
+                door: se_store::Door::Host,
+                occurred_at_us: facts.occurred_at_us,
+                cause: None,
+                supersedes: None,
+            },
+            body,
+        }],
+    }
+}
+/// What committed runtime ownership holds before its writer starts.
+struct Owned {
+    host: se_store::SqliteHost,
+    lease: Arc<HostLease>,
+    reader: se_store::SqliteReader,
+    admission_reads: se_store::ReadPhasePool,
+    generation: Generation,
+    owner: se_types::HumanId,
+    image_sha256: se_types::Sha256,
+    retained_custody: Vec<se_store::OwnerGuardProcess>,
+    has_remote_contacts: bool,
+}
+/// Start the writer under committed ownership and assemble the prepared runtime.
+fn launch(options: HostStart, blocking: BlockingPool, owned: Owned) -> Result<HostedRuntime> {
     // A commit group's limit is smaller than total admitted outstanding work.
     let pending_writes =
         super::failure::PendingWrites::new(options.writer.queue_requests.get() as usize);
     let mail_waits = crate::http::mail::Waits::new(options.limits.sessions.get() as usize);
     #[cfg(feature = "remote")]
-    if has_remote_contacts {
+    if owned.has_remote_contacts {
         mail_waits.enable_return_mail();
     }
-    let writer = host
-        .start_writer(options.writer, lease.clone())
+    #[cfg(not(feature = "remote"))]
+    let _ = owned.has_remote_contacts;
+    let writer = owned
+        .host
+        .start_writer(options.writer, owned.lease.clone())
         .map_err(|e| store_error(&e))?;
     let execution = ExecutionContext {
         atlas: Arc::default(),
         mail_waits,
         http_proofs: Arc::default(),
         state_directory: options.state_directory.clone(),
-        reader: Arc::new(reader),
-        reads: admission_reads.clone(),
+        reader: Arc::new(owned.reader),
+        reads: owned.admission_reads.clone(),
         writer: writer.client(),
         blocking,
-        generation,
+        generation: owned.generation,
         pending_writes,
         custody: Arc::default(),
         ownership_fault: Arc::default(),
@@ -396,7 +449,7 @@ fn prepare(
         #[cfg(unix)]
         socket_paths: Default::default(),
         execution,
-        admission_reads,
+        admission_reads: owned.admission_reads,
         configuration: None,
         configuration_file: None,
         prepared_requests: Arc::default(),
@@ -406,7 +459,7 @@ fn prepare(
         flush: None,
         storage_report: None,
         shutdown_deadline: None,
-        lease,
+        lease: owned.lease,
         epoch: options.epoch,
         phase: crate::HostPhase::Prepared,
         connection_failures: Some(0),
@@ -417,12 +470,12 @@ fn prepare(
         response_bytes: options.limits.response_bytes,
         limits: options.limits,
         state_directory: options.state_directory,
-        owner: owner.clone(),
+        owner: owned.owner,
         kind: options.kind,
-        image_sha256: peer.image_sha256(),
+        image_sha256: owned.image_sha256,
         http_port: Arc::default(),
         http: None,
-        retained_custody: Some(retained_custody),
+        retained_custody: Some(owned.retained_custody),
         local_stop: None,
         auto_start: false,
         activity: None,

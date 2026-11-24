@@ -228,10 +228,6 @@ impl HostedRuntime {
         self.capture_fenced
             .store(false, std::sync::atomic::Ordering::Release);
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     async fn publish_listener(
         &mut self,
         runtime: tokio::runtime::Handle,
@@ -259,90 +255,109 @@ impl HostedRuntime {
                 "recorded unresolved native custody requires the coordinator's reconciliation before readiness",
             ));
         }
-        let directory = self.state_directory.clone();
-        let lease = Arc::clone(&self.lease);
-        let epoch = self.epoch.clone();
-        let generation = self.generation();
-        let kind = self.kind;
-        let image_sha256 = self.image_sha256;
-        let slots = self.execution.blocking.foreground_admission();
-        let limits = self.limits.clone();
-        let bind_deadline = deadline.clone();
-        #[cfg(unix)]
-        let socket_paths = self.socket_paths.clone();
+        let bind = ListenerBind {
+            directory: self.state_directory.clone(),
+            lease: Arc::clone(&self.lease),
+            epoch: self.epoch.clone(),
+            generation: self.generation(),
+            kind: self.kind,
+            image_sha256: self.image_sha256,
+            slots: self.execution.blocking.foreground_admission(),
+            limits: self.limits.clone(),
+            deadline: deadline.clone(),
+            #[cfg(unix)]
+            socket_paths: self.socket_paths.clone(),
+        };
         let listener = self
             .execution
             .blocking
-            .run_owned(deadline, move || {
-                #[cfg(unix)]
-                let address = IpcEndpoint::UnixSocket(se_types::NativePath::from_local(
-                    socket_paths
-                        .prepare(&directory, &bind_deadline.native_bound())
-                        .map_err(crate::client::lease::native_error)?,
-                )?);
-                #[cfg(windows)]
-                let address = address()?;
-                let record = EndpointRecord {
-                    schema: 1,
-                    address,
-                    epoch,
-                    generation,
-                    kind,
-                    listener_port: None,
-                    api: se_types::API_VERSION,
-                    package_version: env!("CARGO_PKG_VERSION").into(),
-                    image_sha256,
-                };
-                let recovery = EndpointPublication::retire_stale(
-                    &lease,
-                    &directory,
-                    &record.address,
-                    &bind_deadline,
-                )?;
-                se_proc::native_ipc::publish_image_cache(
-                    &directory,
-                    image_sha256,
-                    &bind_deadline.native_bound(),
-                )
-                .map_err(crate::client::lease::native_error)?;
-                let listener =
-                    IpcListener::bind_with_limits(record.clone(), runtime, slots, &limits)
-                        .map_err(|error| {
-                            super::recovery::after_retention(&directory, recovery.as_ref(), error)
-                        })?;
-                let retained = recovery.clone();
-                let publication = match EndpointPublication::publish(
-                    lease,
-                    directory.clone(),
-                    record,
-                    recovery,
-                ) {
-                    Ok(publication) => publication,
-                    Err(error) => {
-                        let error = match listener.close() {
-                            Ok(crate::IpcClose::Closed) => error,
-                            Ok(crate::IpcClose::PendingRelease { error: close }) | Err(close) => se_core::scope::unreadable(
-                                "listener publication cleanup",
-                                &format!(
-                                    "publication failed: {error}; listener close failed: {close}"
-                                ),
-                            )
-                            .with_cause(error.with_cause(close)),
-                        };
-                        return Err(super::recovery::after_retention(
-                            &directory,
-                            retained.as_ref(),
-                            error,
-                        ));
-                    }
-                };
-                Ok(HostedListener {
-                    listener,
-                    publication,
-                })
-            })
+            .run_owned(deadline, move || bind.run(runtime))
             .await?;
         Ok(listener)
+    }
+}
+/// The blocking bind and protected publication, captured under the retained lease.
+struct ListenerBind {
+    directory: std::path::PathBuf,
+    lease: Arc<HostLease>,
+    epoch: se_types::HostEpoch,
+    generation: se_types::Generation,
+    kind: crate::HostKind,
+    image_sha256: se_types::Sha256,
+    slots: Arc<tokio::sync::Semaphore>,
+    limits: crate::HostLimits,
+    deadline: crate::client::lease::Deadline,
+    #[cfg(unix)]
+    socket_paths: se_proc::native_ipc::UnixSocketPaths,
+}
+impl ListenerBind {
+    fn run(self, runtime: tokio::runtime::Handle) -> Result<HostedListener> {
+        #[cfg(unix)]
+        let address = IpcEndpoint::UnixSocket(se_types::NativePath::from_local(
+            self.socket_paths
+                .prepare(&self.directory, &self.deadline.native_bound())
+                .map_err(crate::client::lease::native_error)?,
+        )?);
+        #[cfg(windows)]
+        let address = address()?;
+        let record = EndpointRecord {
+            schema: 1,
+            address,
+            epoch: self.epoch,
+            generation: self.generation,
+            kind: self.kind,
+            listener_port: None,
+            api: se_types::API_VERSION,
+            package_version: env!("CARGO_PKG_VERSION").into(),
+            image_sha256: self.image_sha256,
+        };
+        let recovery = EndpointPublication::retire_stale(
+            &self.lease,
+            &self.directory,
+            &record.address,
+            &self.deadline,
+        )?;
+        se_proc::native_ipc::publish_image_cache(
+            &self.directory,
+            self.image_sha256,
+            &self.deadline.native_bound(),
+        )
+        .map_err(crate::client::lease::native_error)?;
+        let listener =
+            IpcListener::bind_with_limits(record.clone(), runtime, self.slots, &self.limits)
+                .map_err(|error| {
+                    super::recovery::after_retention(&self.directory, recovery.as_ref(), error)
+                })?;
+        let retained = recovery.clone();
+        let publication = match EndpointPublication::publish(
+            self.lease,
+            self.directory.clone(),
+            record,
+            recovery,
+        ) {
+            Ok(publication) => publication,
+            Err(error) => {
+                let error = match listener.close() {
+                    Ok(crate::IpcClose::Closed) => error,
+                    Ok(crate::IpcClose::PendingRelease { error: close }) | Err(close) => {
+                        se_core::scope::unreadable(
+                            "listener publication cleanup",
+                            &format!("publication failed: {error}; listener close failed: {close}"),
+                        )
+                        .with_cause(error.with_cause(close))
+                    }
+                };
+                return Err(super::recovery::after_retention(
+                    &self.directory,
+                    retained.as_ref(),
+                    error,
+                ));
+            }
+        };
+        Ok(HostedListener {
+            listener,
+            publication,
+        })
     }
 }
 /// Default address for an embedding without explicit Unix platform roots.

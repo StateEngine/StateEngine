@@ -16,6 +16,10 @@ use std::{
     task::Poll,
 };
 use tokio::{sync::watch, task::JoinSet};
+mod fence;
+mod supervisor;
+type Idle = std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
+use supervisor::Supervisor;
 
 pub struct HostServeExit {
     pub runtime: HostedRuntime,
@@ -54,11 +58,6 @@ impl HostedRuntime {
     /// OS accept, bounded per-connection authentication and the sole core/store
     /// executor all share the supplied runtime. No callback/dispatcher or runtime
     /// is manufactured here. On stop/fault, fence and join accepted tasks first.
-    #[expect(
-        clippy::cognitive_complexity,
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub async fn serve(mut self, mut listener: HostedListener) -> HostServeExit {
         let router = match self.router() {
             Ok(router)
@@ -96,39 +95,23 @@ impl HostedRuntime {
         };
         let mut local_stop = self.local_stop.take();
         let activity = self.activity.clone();
-        let mut catch_up_running = false;
-        // Only an automatically started host with a known activity count may
-        // exit when idle; an explicit `se up` or an unknown count stays resident.
-        // Built once: unrelated traffic must not restart its zero-activity window.
-        let idle: std::pin::Pin<Box<dyn Future<Output = ()> + Send>> =
-            match self.auto_start.then(|| self.activity.take()).flatten() {
-                Some(mut activity) => {
-                    #[cfg(feature = "channels")]
-                    let channels = channels.clone();
-                    let waits = self.execution.mail_waits.clone();
-                    Box::pin(async move {
-                        super::client_activity::idle(
-                            waits,
-                            &mut activity,
-                            #[cfg(feature = "channels")]
-                            channels,
-                        )
-                        .await;
-                    })
-                }
-                None => Box::pin(std::future::pending()),
-            };
-        let (shutdown, cancelled) = watch::channel(None);
-        #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        let idle: std::pin::Pin<Box<dyn Future<Output = ()> + Send>> = Box::pin(
-            super::memory::while_serving(idle, self.memory_reclaim.clone()),
+        let idle = self.idle_window(
+            #[cfg(feature = "channels")]
+            &channels,
         );
-        let mut tasks = JoinSet::new();
+        let (shutdown, cancelled) = watch::channel(None);
+        let mut supervisor = Supervisor::new(
+            router,
+            runtime.clone(),
+            cancelled.clone(),
+            http.port(),
+            activity.clone(),
+        );
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         if let Some(service) = self.atlas_owner.clone() {
             let context = self.execution.clone();
             let stopped = cancelled.clone();
-            tasks.spawn_on(
+            supervisor.tasks.spawn_on(
                 async move {
                     Ok(ConnectionEnd::Atlas(
                         super::atlas_owner::run(service, context, stopped).await,
@@ -139,264 +122,67 @@ impl HostedRuntime {
         }
         #[cfg(feature = "channels")]
         let channel_task = runtime.spawn(channels.run(cancelled.clone(), self.receiver_intervals));
-        let mut timers = super::live::Timers::new(
-            idle,
-            activity.clone(),
-            self.execution.ownership_fault.clone(),
-        );
-        let mut accept_backoff = std::time::Duration::from_millis(1);
-        let mut accept_retry_at = tokio::time::Instant::now();
-        let mut http_backoff = std::time::Duration::from_millis(1);
-        let mut http_retry_at = tokio::time::Instant::now();
+        let mut timers =
+            super::live::Timers::new(idle, activity, self.execution.ownership_fault.clone());
         let mut outcome = loop {
-            match event(
+            let event = event(
                 &mut listener,
                 &http,
-                &mut tasks,
+                &mut supervisor.tasks,
                 local_stop.as_mut(),
                 &mut timers,
-                accept_retry_at,
-                http_retry_at,
+                supervisor.accept.retry_at,
+                supervisor.http.retry_at,
             )
-            .await
-            {
-                Event::LocalStop => break ended(self, listener, None),
-                Event::IdleExpired => break ended(self, listener, None),
-                Event::OwnershipFault => {
-                    break ended(
-                        self,
-                        listener,
-                        Some(se_core::scope::unreadable(
-                            "writer/native collector ownership",
-                            "the writer or shared collector failed; this generation is fenced and retains custody for controlled recovery",
-                        )),
-                    );
-                }
-                Event::CatchUp => {
-                    timers.catch_up = super::live::timer(activity.clone());
-                    if let Err(error) = self.execution.mail_waits.catch_up_native() {
-                        self.failed_connection(error);
-                    }
-                    if !catch_up_running
-                        && let Some(custody) = self.execution.custody.get().cloned()
-                    {
-                        catch_up_running = true;
-                        tasks.spawn_on(
-                            async move {
-                                let result = match options(CALL_TIMEOUT) {
-                                    Ok(deadline) => custody.catch_up(&deadline).await,
-                                    Err(error) => Err(error),
-                                };
-                                Ok(ConnectionEnd::CatchUp(result))
-                            },
-                            &runtime,
-                        );
-                    }
-                }
-                Event::Accepted(Ok(stream)) => {
-                    if let Err(error) = self.execution.ownership_fault.route("IPC listener", false)
-                    {
-                        self.failed_connection(error);
-                    }
-                    accept_backoff = std::time::Duration::from_millis(1);
-                    let router = router.clone();
-                    let cancelled = cancelled.clone();
-                    tasks.spawn_on(connection(router, stream, cancelled), &runtime);
-                }
-                Event::Accepted(Err(error)) if transient_accept(&error) => {
-                    self.failed_connection(error);
-                    accept_retry_at = tokio::time::Instant::now() + accept_backoff;
-                    accept_backoff =
-                        (accept_backoff * 2).min(std::time::Duration::from_millis(250));
-                }
-                Event::Accepted(Err(error)) => {
-                    self.failed_connection(error);
-                    if let Err(error) = self.execution.ownership_fault.route("IPC listener", true) {
-                        self.failed_connection(error);
-                    }
-                    accept_retry_at =
-                        tokio::time::Instant::now() + std::time::Duration::from_secs(60);
-                }
-                Event::Http(Ok((stream, permit))) => {
-                    if let Err(error) = self.execution.ownership_fault.route("HTTP listener", false)
-                    {
-                        self.failed_connection(error);
-                    }
-                    http_backoff = std::time::Duration::from_millis(1);
-                    let (router, cancelled, port) =
-                        (router.clone(), cancelled.clone(), http.port());
-                    let served = async move {
-                        crate::http::connection(router, stream, port, permit, cancelled)
-                            .await
-                            .map(|()| ConnectionEnd::Closed)
-                    };
-                    tasks.spawn_on(served, &runtime);
-                }
-                Event::Http(Err(error)) if transient_accept(&error) => {
-                    self.failed_connection(error);
-                    http_retry_at = tokio::time::Instant::now() + http_backoff;
-                    http_backoff = (http_backoff * 2).min(std::time::Duration::from_millis(250));
-                }
-                Event::Http(Err(error)) => {
-                    self.failed_connection(error);
-                    if let Err(error) = self.execution.ownership_fault.route("HTTP listener", true)
-                    {
-                        self.failed_connection(error);
-                    }
-                    http_retry_at =
-                        tokio::time::Instant::now() + std::time::Duration::from_secs(60);
-                }
-                Event::Joined(Ok(Ok(ConnectionEnd::Stop(stop)))) => {
-                    let mut exit = ended(self, listener, None);
-                    exit.stop = Some(stop);
-                    break exit;
-                }
-                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-                Event::Joined(Ok(Ok(ConnectionEnd::Atlas(result)))) => {
-                    if let Err(error) = result {
-                        eprintln!("Code index owner paused: {error}");
-                    }
-                }
-                Event::Joined(Ok(Ok(ConnectionEnd::CatchUp(result)))) => {
-                    catch_up_running = false;
-                    if let Err(error) = result {
-                        self.failed_connection(error);
-                    }
-                }
-                Event::Joined(Ok(Ok(ConnectionEnd::Closed | ConnectionEnd::Cancelled))) =>
-                {
-                    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-                    if let Some(memory) = &self.memory_reclaim {
-                        memory.completed();
-                    }
-                }
-                Event::Joined(Ok(Err(error))) => {
-                    self.failed_connection(error);
-                }
-                Event::Joined(Err(error)) => {
-                    self.failed_connection(
-                        se_core::scope::unreadable("host connection task", &error.to_string())
-                            .with_cause(error),
-                    );
-                    catch_up_running = false;
-                }
+            .await;
+            if let Some((failure, stop)) = supervisor.handle(&mut self, &mut timers, event) {
+                let mut exit = ended(self, listener, failure);
+                exit.stop = stop;
+                break exit;
             }
         };
-        outcome.runtime.fenced.store(true, Ordering::Release);
-        if let Err(error) = outcome.runtime.execution.mail_waits.close() {
-            outcome.failure.get_or_insert(error);
-        }
-        outcome.runtime.phase = crate::HostPhase::Draining;
-        // Waiting for the next request is cancellable; an admitted request owns
-        // its execution and reply until completion. Charge that join against the
-        // same shutdown budget used by storage drain, rather than renewing it.
-        outcome.runtime.shutdown_deadline = match shutdown_bound(outcome.stop.as_deref()) {
-            Ok(deadline) => Some(deadline),
-            Err(error) => {
-                outcome.failure.get_or_insert(error);
-                None
-            }
-        };
-        shutdown.send_replace(outcome.runtime.shutdown_deadline.clone());
-        // A launch call can itself be waiting for readiness. Request its
-        // authorized FULL stop before joining that call, while the writer is
-        // still available; otherwise it spends shutdown's storage budget.
-        if let (Some(custody), Some(deadline)) = (
-            outcome.runtime.execution.custody.get().cloned(),
-            outcome.runtime.shutdown_deadline.as_ref(),
-        ) && let Err(error) = custody.begin_shutdown(deadline).await
-        {
-            outcome.failure.get_or_insert(error);
-        }
-        #[cfg(feature = "channels")]
-        match channel_task.await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                outcome.failure.get_or_insert(error);
-            }
-            Err(error) => {
-                outcome.failure.get_or_insert(se_core::scope::unreadable(
-                    "channel receiver",
-                    &error.to_string(),
-                ));
-            }
-        }
-        while let Some(joined) = tasks.join_next().await {
-            match joined {
-                Ok(Ok(ConnectionEnd::Stop(stop))) => {
-                    // A second authenticated stop raced the fence. Its original
-                    // control request is refused, never relabelled as success.
-                    let error = SeError::invalid(
-                        "runtime stop",
-                        "the already admitted shutdown result; preserve this original key and rediscover",
-                    );
-                    let request = match stop.request() {
-                        Ok(request) => request,
-                        Err(error) => {
-                            outcome.runtime.failed_connection(error);
-                            continue;
-                        }
-                    };
-                    let reply = crate::client::endpoint::RuntimeStopReply {
-                        epoch: request.expected_epoch.clone(),
-                        generation: request.generation,
-                        key: request.key.clone(),
-                        outcome: crate::client::endpoint::RuntimeStopOutcome::Refused {
-                            error: match se_types::ErrorEnvelope::new(
-                                error.body,
-                                &se_types::RenderCx::default(),
-                            ) {
-                                Ok(envelope) => envelope,
-                                Err(error) => {
-                                    outcome.runtime.failed_connection(error);
-                                    continue;
-                                }
-                            },
-                        },
-                    };
-                    match outcome
-                        .runtime
-                        .shutdown_deadline
-                        .as_ref()
-                        .cloned()
-                        .map_or_else(|| options(CALL_TIMEOUT), Ok)
-                    {
-                        Ok(deadline) => {
-                            if let Err(error) = stop.reply(&reply, &deadline).await {
-                                outcome.runtime.failed_connection(error);
-                            }
-                        }
-                        Err(error) => outcome.runtime.failed_connection(error),
-                    }
-                }
-                Ok(Err(error)) => outcome.runtime.failed_connection(error),
-                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-                Ok(Ok(ConnectionEnd::Atlas(Err(error)))) => {
-                    outcome.failure.get_or_insert(error);
-                }
-                Ok(Ok(ConnectionEnd::CatchUp(Err(error)))) => {
-                    outcome.runtime.failed_connection(error)
-                }
-                Err(error) => {
-                    outcome.failure.get_or_insert_with(|| {
-                        se_core::scope::unreadable("joined host task", &error.to_string())
-                    });
-                }
-                _ => (),
-            }
-        }
-        outcome.failed_connections = outcome.runtime.connection_failures;
-        outcome.last_connection_error = outcome.runtime.last_connection_error.clone();
-        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-        if let (Some(service), Some(bound)) = (
-            outcome.runtime.atlas_owner.clone(),
-            outcome.runtime.shutdown_deadline.as_ref(),
-        ) && let Err(error) =
-            super::atlas_owner::close(service, &outcome.runtime.execution, bound).await
-        {
-            outcome.failure.get_or_insert(error);
-        }
         outcome
+            .fence_and_join(
+                supervisor.tasks,
+                &shutdown,
+                #[cfg(feature = "channels")]
+                channel_task,
+            )
+            .await;
+        outcome
+    }
+    /// Only an automatically started host with a known activity count may exit
+    /// when idle; any other host's window never expires.
+    fn idle_window(
+        &mut self,
+        #[cfg(feature = "channels")] channels: &Arc<crate::channels::Channels>,
+    ) -> Idle {
+        // Only an automatically started host with a known activity count may
+        // exit when idle; an explicit `se up` or an unknown count stays resident.
+        // Built once: unrelated traffic must not restart its zero-activity window.
+        let idle: Idle = match self.auto_start.then(|| self.activity.take()).flatten() {
+            Some(mut activity) => {
+                #[cfg(feature = "channels")]
+                let channels = Arc::clone(channels);
+                let waits = self.execution.mail_waits.clone();
+                Box::pin(async move {
+                    super::client_activity::idle(
+                        waits,
+                        &mut activity,
+                        #[cfg(feature = "channels")]
+                        channels,
+                    )
+                    .await;
+                })
+            }
+            None => Box::pin(std::future::pending()),
+        };
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        let idle: Idle = Box::pin(super::memory::while_serving(
+            idle,
+            self.memory_reclaim.clone(),
+        ));
+        idle
     }
     fn failed_connection(&mut self, error: SeError) {
         // None explicitly reports counter exhaustion rather than a false exact
