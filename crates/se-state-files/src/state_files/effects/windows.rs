@@ -356,10 +356,6 @@ impl Pin {
             )),
         }
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(in crate::state_files) fn replace(self, expected: [u8; 32], bytes: &[u8]) -> Result<()> {
         let _guard = self.mutation_guard()?;
         self.check()?;
@@ -370,69 +366,100 @@ impl Pin {
         let backup_path = self
             .physical
             .with_file_name(format!(".se-edit-backup-{suffix}"));
-        let mut stage = open_shared_with_layout(&stage_path, false, 0, true, true, self.layout)?;
+        let stage_identity = self.stage_replacement(&stage_path, bytes, expected)?;
+        self.replace_file(&stage_path, &backup_path, stage_identity)?;
+        self.verify_published(&backup_path, stage_identity, bytes)?;
+        self.retire_backup(&backup_path)
+    }
+    /// Write and flush a private staging file, recheck the original, then close
+    /// the staging handle: ReplaceFileW opens the replacement with no sharing.
+    fn stage_replacement(
+        &self,
+        stage_path: &Path,
+        bytes: &[u8],
+        expected: [u8; 32],
+    ) -> Result<Identity> {
+        let mut stage = open_shared_with_layout(stage_path, false, 0, true, true, self.layout)?;
         if self.layout == security::Layout::UserPrivate {
-            security::verify_for(&stage, &stage_path, true, self.layout)?;
+            security::verify_for(&stage, stage_path, true, self.layout)?;
         }
-        let stage_identity = metadata(&stage, &stage_path, false, false)?;
+        let stage_identity = metadata(&stage, stage_path, false, false)?;
         let prepared = (|| {
             stage
                 .write_all(bytes)
-                .map_err(|e| io_error("write staged profile", &stage_path, e))?;
+                .map_err(|e| io_error("write staged profile", stage_path, e))?;
             stage
                 .sync_all()
-                .map_err(|e| io_error("flush staged profile", &stage_path, e))?;
+                .map_err(|e| io_error("flush staged profile", stage_path, e))?;
             self.check()?;
             verify(&self.file, &self.path, expected)?;
             self.check()
         })();
         if let Err(error) = prepared {
-            dispose(&stage, &stage_path)?;
+            dispose(&stage, stage_path)?;
             return Err(error);
         }
-        // ReplaceFileW opens the replacement with no sharing. Close our staging
-        // handle, retaining its native identity and the original profile pin.
+        // Close our staging handle, retaining its native identity and the
+        // original profile pin.
         drop(stage);
+        Ok(stage_identity)
+    }
+    fn replace_file(
+        &self,
+        stage_path: &Path,
+        backup_path: &Path,
+        stage_identity: Identity,
+    ) -> Result<()> {
         // SAFETY: absolute physical names below pinned parents and terminated
         // UTF-16 buffers. A unique backup preserves the old profile even for the
         // documented partial-failure outcomes of ReplaceFileW; it is not a journal.
         if unsafe {
             ReplaceFileW(
                 wide(&self.physical)?.as_ptr(),
-                wide(&stage_path)?.as_ptr(),
-                wide(&backup_path)?.as_ptr(),
+                wide(stage_path)?.as_ptr(),
+                wide(backup_path)?.as_ptr(),
                 0,
                 ptr::null(),
                 ptr::null(),
             )
-        } == 0
+        } != 0
         {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(ERROR_UNABLE_TO_REMOVE_REPLACED as i32) {
-                let staging = open(&stage_path, false, 0, false)?;
-                if metadata(&staging, &stage_path, false, false)? != stage_identity {
-                    return Err(changed(
-                        "profile staging identity changed before cleanup",
-                        &stage_path,
-                    ));
-                }
-                dispose(&staging, &stage_path)?;
-                drop(staging);
-                self.parent.sync(&self.path)?;
-                return Err(io_error(
-                    "profile replacement refused before publication; staging removed",
-                    &self.path,
-                    error,
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(ERROR_UNABLE_TO_REMOVE_REPLACED as i32) {
+            let staging = open(stage_path, false, 0, false)?;
+            if metadata(&staging, stage_path, false, false)? != stage_identity {
+                return Err(changed(
+                    "profile staging identity changed before cleanup",
+                    stage_path,
                 ));
             }
-            // Other outcomes may have displaced the old profile. Retain recovery
-            // siblings and the exact native cause, rather than deleting evidence.
+            dispose(&staging, stage_path)?;
+            drop(staging);
+            self.parent.sync(&self.path)?;
             return Err(io_error(
-                "profile replacement failed; preserve recovery siblings",
-                &backup_path,
+                "profile replacement refused before publication; staging removed",
+                &self.path,
                 error,
             ));
         }
+        // Other outcomes may have displaced the old profile. Retain recovery
+        // siblings and the exact native cause, rather than deleting evidence.
+        Err(io_error(
+            "profile replacement failed; preserve recovery siblings",
+            backup_path,
+            error,
+        ))
+    }
+    /// The published name must be our staged identity and bytes, owned by us,
+    /// with the private layout finished on that verified object only.
+    fn verify_published(
+        &self,
+        backup_path: &Path,
+        stage_identity: Identity,
+        bytes: &[u8],
+    ) -> Result<()> {
         self.check_parent()?;
         let access = if self.layout == security::Layout::UserPrivate {
             WRITE_DAC
@@ -446,7 +473,7 @@ impl Pin {
         {
             return Err(changed(
                 "profile replacement readback differs; original retained at recovery sibling",
-                &backup_path,
+                backup_path,
             ));
         }
         security::verify_owner(&observed, &self.path)?;
@@ -457,21 +484,25 @@ impl Pin {
             security::finish_private_replacement(&observed, &self.path)?;
             security::verify_for(&observed, &self.path, true, self.layout)?;
         }
-        // The backup is the still-held original object, not a new path claim.
-        let backup = open(&backup_path, false, 0, false)?;
-        if metadata(&backup, &backup_path, false, false)? != self.identity {
-            return Err(changed("profile backup identity changed", &backup_path));
+        Ok(())
+    }
+    /// Delete the backup through the still-held original object, never by a new
+    /// path claim, and prove the recovery sibling is gone.
+    fn retire_backup(self, backup_path: &Path) -> Result<()> {
+        let backup = open(backup_path, false, 0, false)?;
+        if metadata(&backup, backup_path, false, false)? != self.identity {
+            return Err(changed("profile backup identity changed", backup_path));
         }
         drop(backup);
-        dispose(&self.file, &backup_path)?;
+        dispose(&self.file, backup_path)?;
         drop(self.file);
         self.parent.sync(&self.path)?;
-        match open(&backup_path, false, 0, false) {
+        match open(backup_path, false, 0, false) {
             Err(e) if absent(&e) => Ok(()),
             Err(e) => Err(e),
             Ok(_) => Err(changed(
                 "profile recovery sibling remained after completion",
-                &backup_path,
+                backup_path,
             )),
         }
     }

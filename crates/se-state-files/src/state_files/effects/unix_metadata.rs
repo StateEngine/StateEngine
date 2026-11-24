@@ -40,12 +40,33 @@ pub(super) fn copy(source: &File, destination: &File, path: &Path) -> Result<()>
 }
 
 #[cfg(target_os = "linux")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn copy(source: &File, destination: &File, path: &Path) -> Result<()> {
     use std::ffi::CString;
+    preserve_owner_and_mode(source, destination, path)?;
+    let names = attribute_names(source, path)?;
+    let mut access_acl = false;
+    for name in names
+        .split(|byte| *byte == 0)
+        .filter(|name| !name.is_empty())
+    {
+        access_acl |= name == b"system.posix_acl_access";
+        let name = CString::new(name).map_err(|_| {
+            io_error(
+                "decode native profile attribute name",
+                path,
+                io::Error::from(io::ErrorKind::InvalidData),
+            )
+        })?;
+        copy_attr(source, destination, &name, path)?;
+    }
+    if !access_acl {
+        remove_inherited_access_acl(destination, path)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn preserve_owner_and_mode(source: &File, destination: &File, path: &Path) -> Result<()> {
     let meta = source
         .metadata()
         .map_err(|e| io_error("read original profile security", path, e))?;
@@ -72,6 +93,12 @@ pub(super) fn copy(source: &File, destination: &File, path: &Path) -> Result<()>
             io::Error::last_os_error(),
         ));
     }
+    Ok(())
+}
+
+/// The original's NUL-separated extended attribute names, read in one sized pass.
+#[cfg(target_os = "linux")]
+fn attribute_names(source: &File, path: &Path) -> Result<Vec<u8>> {
     // SAFETY: documented native sizing query, no writable buffer is supplied.
     let count = unsafe { libc::flistxattr(source.as_raw_fd(), std::ptr::null_mut(), 0) };
     if count < 0 {
@@ -96,64 +123,58 @@ pub(super) fn copy(source: &File, destination: &File, path: &Path) -> Result<()>
         ));
     }
     names.truncate(read as usize);
-    let mut access_acl = false;
-    for name in names
-        .split(|byte| *byte == 0)
-        .filter(|name| !name.is_empty())
-    {
-        access_acl |= name == b"system.posix_acl_access";
-        let name = CString::new(name).map_err(|_| {
-            io_error(
-                "decode native profile attribute name",
-                path,
-                io::Error::from(io::ErrorKind::InvalidData),
-            )
-        })?;
-        let value = read_attr(source, &name, path)?.ok_or_else(|| {
-            io_error(
-                "original profile attribute changed",
-                path,
-                io::Error::from(io::ErrorKind::NotFound),
-            )
-        })?;
-        if read_attr(destination, &name, path)?.as_ref() == Some(&value) {
-            continue;
-        }
-        // SAFETY: retained new file, terminated native attribute name and bounded
-        // value read from the original. Failures preserve the original profile.
-        if unsafe {
-            libc::fsetxattr(
-                destination.as_raw_fd(),
-                name.as_ptr(),
-                value.as_ptr().cast(),
-                value.len(),
-                0,
-            )
-        } < 0
-        {
-            return Err(io_error(
-                "preserve profile attribute",
-                path,
-                io::Error::last_os_error(),
-            ));
-        }
+    Ok(names)
+}
+
+#[cfg(target_os = "linux")]
+fn copy_attr(source: &File, destination: &File, name: &std::ffi::CStr, path: &Path) -> Result<()> {
+    let value = read_attr(source, name, path)?.ok_or_else(|| {
+        io_error(
+            "original profile attribute changed",
+            path,
+            io::Error::from(io::ErrorKind::NotFound),
+        )
+    })?;
+    if read_attr(destination, name, path)?.as_ref() == Some(&value) {
+        return Ok(());
     }
-    if !access_acl {
-        let name = c"system.posix_acl_access";
-        // SAFETY: remove only an inherited staging ACL absent from the original;
-        // otherwise fchmod could activate unintended entries inherited from parent.
-        if unsafe { libc::fremovexattr(destination.as_raw_fd(), name.as_ptr()) } < 0 {
-            let error = io::Error::last_os_error();
-            if !matches!(
-                error.raw_os_error(),
-                Some(libc::ENODATA) | Some(libc::ENOTSUP)
-            ) {
-                return Err(io_error(
-                    "remove foreign inherited profile ACL",
-                    path,
-                    error,
-                ));
-            }
+    // SAFETY: retained new file, terminated native attribute name and bounded
+    // value read from the original. Failures preserve the original profile.
+    if unsafe {
+        libc::fsetxattr(
+            destination.as_raw_fd(),
+            name.as_ptr(),
+            value.as_ptr().cast(),
+            value.len(),
+            0,
+        )
+    } < 0
+    {
+        return Err(io_error(
+            "preserve profile attribute",
+            path,
+            io::Error::last_os_error(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn remove_inherited_access_acl(destination: &File, path: &Path) -> Result<()> {
+    let name = c"system.posix_acl_access";
+    // SAFETY: remove only an inherited staging ACL absent from the original;
+    // otherwise fchmod could activate unintended entries inherited from parent.
+    if unsafe { libc::fremovexattr(destination.as_raw_fd(), name.as_ptr()) } < 0 {
+        let error = io::Error::last_os_error();
+        if !matches!(
+            error.raw_os_error(),
+            Some(libc::ENODATA) | Some(libc::ENOTSUP)
+        ) {
+            return Err(io_error(
+                "remove foreign inherited profile ACL",
+                path,
+                error,
+            ));
         }
     }
     Ok(())
