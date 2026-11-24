@@ -197,7 +197,9 @@ impl LaunchCoordinator {
             self.preflight_acp(plan, admission, deadline).await?;
         }
         if let Err(failure) = self.check_resume_source(plan, admission, deadline).await {
-            if !plan.input.override_live {
+            if !plan.input.override_live
+                || matches!(failure.body.detail(), Detail::CapabilityInvalid(_))
+            {
                 return Err(failure);
             }
             plan.start_new_conversation(format!("Forced relaunch preserved the previous history and starts a new conversation because its saved source could not be resumed: {failure}"));

@@ -41,7 +41,7 @@ impl LaunchCoordinator {
                         }
                     });
                 detail.next_step = match command {
-                    Some(command) => format!("The saved capture source is private to its principal. Ask the project Owner to use se launch from their own terminal. {}: {}", AgentCommand::instruction("Run"), command.command),
+                    Some(command) => format!("The saved capture source is private to its principal. Omit resume to launch a fresh conversation, or ask the project Owner to use se launch from their own terminal. {}: {}", AgentCommand::instruction("Run"), command.command),
                     None => AgentCommand::HOME_UNAVAILABLE.into(),
                 };
                 failure.body = se_types::ErrorBody::new(se_types::Detail::CapabilityInvalid(detail));
