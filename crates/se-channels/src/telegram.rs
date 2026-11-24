@@ -12,10 +12,20 @@ use std::time::Duration;
 
 #[derive(Clone)]
 pub struct Telegram {
-    client: reqwest::Client,
+    client: std::sync::Arc<super::http_client::LazyClient>,
+}
+impl Default for Telegram {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 impl Telegram {
-    pub fn new() -> ChannelResult<Self> {
+    pub fn new() -> Self {
+        Self {
+            client: std::sync::Arc::new(super::http_client::LazyClient::new(Self::client_builder)),
+        }
+    }
+    fn client_builder() -> reqwest::ClientBuilder {
         reqwest::Client::builder()
             .https_only(true)
             .no_proxy()
@@ -25,9 +35,6 @@ impl Telegram {
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(35))
             .user_agent("StateEngine Channels")
-            .build()
-            .map(|client| Self { client })
-            .map_err(|_| Error::ProviderUnreachable)
     }
     pub async fn identity(&self, token: &Secret) -> ChannelResult<BotIdentity> {
         let result = self.call(token, "getMe", json!({})).await?;
@@ -159,6 +166,7 @@ impl Telegram {
         };
         let mut response = self
             .client
+            .get()?
             .post(url.as_str())
             .timeout(Duration::from_secs(if method == "getUpdates" {
                 35

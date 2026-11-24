@@ -141,10 +141,8 @@ impl crate::HostedRuntime {
             port,
             match &self.channel_transport {
                 Some(transport) => vec![transport.clone()],
-                None => vec![
-                    Arc::new(Telegram::new().map_err(ChannelError::refusal)?),
-                    Arc::new(Discord::new().map_err(ChannelError::refusal)?),
-                ],
+                // Each provider client loads TLS roots on its first request.
+                None => vec![Arc::new(Telegram::new()), Arc::new(Discord::new())],
             },
             self.configuration.clone(),
             self.owner.clone(),
