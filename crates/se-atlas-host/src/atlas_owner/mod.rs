@@ -3,7 +3,7 @@
 //! from queries; the owner loop feeds committed records into each engine.
 //! No SQL handle crosses an await, and all disk work runs off the runtime.
 mod read;
-mod records;
+pub mod records;
 mod roots;
 use crate::host::AtlasHost;
 use se_atlas_service::{Root, RootSpec};

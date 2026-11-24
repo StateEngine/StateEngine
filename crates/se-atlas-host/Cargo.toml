@@ -22,3 +22,7 @@ tokio = { workspace = true, optional = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+rusqlite = { version = "0.41", features = ["bundled"] }
+se-proc = { path = "../se-proc" }
