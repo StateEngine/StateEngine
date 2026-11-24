@@ -20,6 +20,41 @@ pub enum Outcome {
     },
     Custody(CustodyPlan),
 }
+impl Outcome {
+    /// The route's output. A custody plan here was never routed to its host
+    /// coordinator, which is an internal fault rather than a result.
+    pub fn into_output(self) -> Result<AnyOutput> {
+        match self {
+            Outcome::Complete(output) | Outcome::Committed { output, .. } => Ok(output),
+            Outcome::Custody(plan) => Err(SeError::new(se_types::Detail::Internal(
+                se_types::details::Internal {
+                    report_id: "unrouted-cli-custody".into(),
+                    location: match plan {
+                        CustodyPlan::AtlasAugment(_) => "host Atlas augmentation reader",
+                        CustodyPlan::AtlasRead(_) => "host Atlas reader",
+                        CustodyPlan::ClaudeHook(_) => "hook",
+                        CustodyPlan::Initialize(_) => "init",
+                        #[cfg(feature = "import")]
+                        CustodyPlan::ImportNode(_) => "host history importer",
+                        CustodyPlan::ObserveStatus(_) => "status",
+                        CustodyPlan::RuntimeUp(_) => "runtime.up",
+                        CustodyPlan::RuntimeDown(_) => "runtime.down",
+                        CustodyPlan::Uninstall(_) => "uninstall",
+                        CustodyPlan::Launch(_) => "host launch coordinator",
+                        CustodyPlan::Stop(_) => "host stop coordinator",
+                        CustodyPlan::AgentWake(_) => "host wake coordinator",
+                        CustodyPlan::DelegateStart(_) | CustodyPlan::DelegateCancel(_) => {
+                            "host delegation coordinator"
+                        }
+                        CustodyPlan::Remove(_) => "host removal coordinator",
+                        CustodyPlan::Forget(_) => "host erasure coordinator",
+                    }
+                    .into(),
+                },
+            ))),
+        }
+    }
+}
 /// A custody result carries no store read lease. The caller must release its
 /// direct shared runtime lease before activating or forwarding to a host.
 pub fn execute<S: DirectStore>(
