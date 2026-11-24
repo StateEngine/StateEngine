@@ -39,32 +39,35 @@ impl SqliteReader {
     /// Bind native database identity once here and retain it until close, even
     /// when no idle connections remain after a refused checkout.
     pub fn phase_pool(&self, open_identity: OpenIdentity) -> StoreResult<ReadPhasePool> {
-        self.validate_identity()?;
-        let identity = Arc::from(open_identity(&self.path)?);
-        self.validate_identity()?;
-        Ok(ReadPhasePool(Arc::new(Pool {
-            reader: self.clone(),
-            state: Mutex::new(State {
-                closed: false,
-                idle: Vec::new(),
-                identity: Some(identity),
-            }),
-        })))
+        self.build_phase_pool(open_identity, None)
     }
     pub(crate) fn phase_pool_seeded(
         &self,
         open_identity: OpenIdentity,
         db: Connection,
     ) -> StoreResult<ReadPhasePool> {
+        self.build_phase_pool(open_identity, Some(db))
+    }
+    fn build_phase_pool(
+        &self,
+        open_identity: OpenIdentity,
+        seeded: Option<Connection>,
+    ) -> StoreResult<ReadPhasePool> {
         self.validate_identity()?;
         let identity: Arc<dyn ReadConnectionIdentity> = Arc::from(open_identity(&self.path)?);
         self.validate_identity()?;
-        identity.validate(&self.path)?;
+        let idle = match seeded {
+            Some(db) => {
+                identity.validate(&self.path)?;
+                vec![db]
+            }
+            None => Vec::new(),
+        };
         Ok(ReadPhasePool(Arc::new(Pool {
             reader: self.clone(),
             state: Mutex::new(State {
                 closed: false,
-                idle: vec![db],
+                idle,
                 identity: Some(identity),
             }),
         })))

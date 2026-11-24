@@ -131,6 +131,31 @@ impl SqliteFactory {
     ) -> StoreResult<Read<SqliteReader>> {
         Self::existing_with_slots(options, crate::read_slots::ReadSlots::new(capacity)?)
     }
+    /// Open a writable connection, verifying native file identity and SQLite
+    /// header (`application_id` and schema range) BEFORE `configure` runs any
+    /// write pragmas (`PRAGMA journal_mode=WAL`), so refusals never mutate a
+    /// foreign or too-new file.
+    fn open_verified_writer(
+        reader: &SqliteReader,
+        timeout: Duration,
+    ) -> StoreResult<(Connection, StoreInfo)> {
+        let mut verified_info = None;
+        let db = connection::connect_checked(&reader.path, true, timeout, |db| {
+            reader.validate_connection(db)?;
+            db.busy_timeout(timeout)
+                .map_err(|error| sqlite_context(error, &reader.path, StoreIoStage::Open))?;
+            verified_info = Some(connection::info_at(db, &reader.path)?);
+            Ok(())
+        })?;
+        let info = verified_info.ok_or_else(|| {
+            context(
+                invalid("verified writer open returned no store info"),
+                &reader.path,
+                StoreIoStage::Open,
+            )
+        })?;
+        Ok((db, info))
+    }
     /// Trusted in-process test hook opening the host writer on a shortened
     /// channel delayed-status threshold. Production keeps the sixty-second
     /// constant and no user configuration surface grows.
@@ -145,12 +170,11 @@ impl SqliteFactory {
         }
         match Self::existing_protected(o, lease)? {
             Read::Present { value: reader } => {
-                let db = connection::connect_checked(&reader.path, true, o.busy_timeout, |db| {
-                    reader.validate_connection(db)
-                })?;
-                let info = connection::info_at(&db, &reader.path)?;
+                let (db, info) = Self::open_verified_writer(&reader, o.busy_timeout)?;
                 let identity = crate::open::validate_lease(&info, lease, LeaseMode::Host)?;
                 crate::erasure::permit::install(&db)?;
+                // Skip BackupContext construction and migration::upgrade's
+                // redundant info() read on current-schema starts.
                 if info.schema_version < connection::SCHEMA {
                     let context = BackupContext::bound(
                         &info,
@@ -203,10 +227,7 @@ impl StoreFactory for SqliteFactory {
     fn open_direct(o: &StoreOptions, lease: &dyn RuntimeLease) -> StoreResult<Read<Self::Direct>> {
         match Self::existing_protected(o, lease)? {
             Read::Present { value: reader } => {
-                let db = connection::connect_checked(&reader.path, true, o.busy_timeout, |db| {
-                    reader.validate_connection(db)
-                })?;
-                let info = connection::info_at(&db, &reader.path)?;
+                let (db, info) = Self::open_verified_writer(&reader, o.busy_timeout)?;
                 let identity = crate::open::validate_lease(&info, lease, LeaseMode::DirectClient)?;
                 let reader_path = reader.path.clone();
                 Ok(Read::Present {

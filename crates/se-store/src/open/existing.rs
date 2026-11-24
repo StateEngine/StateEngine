@@ -148,8 +148,9 @@ impl SqliteFactory {
             .inspect_metadata(&path)
             .map_err(|error| context(error, &path, StoreIoStage::Open))?
         {
-            // Callers immediately open the writable connection with
-            // `connect_checked` and read `info_at`, so skip an extra read-only open.
+            // Callers open the writable connection via `open_verified_writer`,
+            // validating native identity and `info_at` inside `connect_checked`
+            // before `configure` runs any write pragmas, so skip an extra open.
             Read::Present { .. } => {
                 Self::existing_reader(o, crate::read_slots::ReadSlots::default())
             }
