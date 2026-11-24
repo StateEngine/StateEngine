@@ -166,36 +166,38 @@ def main():
                 log_directory=str(args.output.resolve()) if args.workspace else None)
     foreground = None
     gate = None
-    if args.delay_commit:
-        gate = f.log_root / 'gate'
-        gate.mkdir()
-        library = f.log_root / 'barrier.so'
-        source = Path(__file__).with_name('capture_stop_barrier.c')
-        subprocess.run(['cc', '-std=c11', '-shared', '-fPIC', '-Wall', '-Wextra', '-Werror',
-                        '-O2', str(source), '-o', str(library)], check=True,
-                       capture_output=True, timeout=30)
-        f.env.update(LD_PRELOAD=str(library), CAPTURE_ORDER_GATE=str(gate),
-                     CAPTURE_ORDER_HOME=str(f.home),
-                     CAPTURE_ORDER_TURN=ANSWER if args.delay_record == 'reply' else 'api-request-shape')
-        log = (f.log_root / 'foreground.log').open('wb')
-        foreground = subprocess.Popen([str(f.se), '--home', str(f.home), 'up', '--foreground', '--json'],
-                                     env=f.env, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
-        until = time.monotonic() + 30
-        while not (f.home / 'endpoint.json').exists():
-            assert foreground.poll() is None, 'foreground host exited before endpoint publication'
-            assert time.monotonic() < until, 'foreground host did not publish'
-            time.sleep(.02)
-        process = Path('/proc') / str(foreground.pid)
-        assert process.joinpath('exe').resolve() == f.se
-        argv = process.joinpath('cmdline').read_bytes().split(b'\0')
-        assert str(f.home).encode() in argv and b'--foreground' in argv, argv
-        owner = json.loads((f.home / 'endpoint.json').read_text())['epoch']['owner']
-        fields = process.joinpath('stat').read_text().rsplit(') ', 1)[1].split()
-        assert owner['pid'] == foreground.pid and str(owner['started']['start_ticks']) == fields[19]
-        assert str(library) in process.joinpath('maps').read_text(), 'barrier not mapped in owned host'
-        (gate / 'host-pid').write_text(str(foreground.pid))
     print('1..1', flush=True)
     try:
+        # Set up inside the try, so the finally's public down also stops a
+        # host whose startup checks failed.
+        if args.delay_commit:
+            gate = f.log_root / 'gate'
+            gate.mkdir()
+            library = f.log_root / 'barrier.so'
+            source = Path(__file__).with_name('capture_stop_barrier.c')
+            subprocess.run(['cc', '-std=c11', '-shared', '-fPIC', '-Wall', '-Wextra', '-Werror',
+                            '-O2', str(source), '-o', str(library)], check=True,
+                           capture_output=True, timeout=30)
+            f.env.update(LD_PRELOAD=str(library), CAPTURE_ORDER_GATE=str(gate),
+                         CAPTURE_ORDER_HOME=str(f.home),
+                         CAPTURE_ORDER_TURN=ANSWER if args.delay_record == 'reply' else 'api-request-shape')
+            log = (f.log_root / 'foreground.log').open('wb')
+            foreground = subprocess.Popen([str(f.se), '--home', str(f.home), 'up', '--foreground', '--json'],
+                                         env=f.env, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+            until = time.monotonic() + 30
+            while not (f.home / 'endpoint.json').exists():
+                assert foreground.poll() is None, 'foreground host exited before endpoint publication'
+                assert time.monotonic() < until, 'foreground host did not publish'
+                time.sleep(.02)
+            process = Path('/proc') / str(foreground.pid)
+            assert process.joinpath('exe').resolve() == f.se
+            argv = process.joinpath('cmdline').read_bytes().split(b'\0')
+            assert str(f.home).encode() in argv and b'--foreground' in argv, argv
+            owner = json.loads((f.home / 'endpoint.json').read_text())['epoch']['owner']
+            fields = process.joinpath('stat').read_text().rsplit(') ', 1)[1].split()
+            assert owner['pid'] == foreground.pid and str(owner['started']['start_ticks']) == fields[19]
+            assert str(library) in process.joinpath('maps').read_text(), 'barrier not mapped in owned host'
+            (gate / 'host-pid').write_text(str(foreground.pid))
         run(f, gate, args.delay_record)
     except Exception:
         print('not ok 1 - first reply capture must finish after temporary writer delay', flush=True)

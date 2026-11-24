@@ -1,5 +1,7 @@
 //! Protects: 70 §4.2 / T19 — browser and DNS-rebinding requests cannot enter even
 //! the anonymous HTTP route; an initialized owner's local process gets no TCP authority.
+#[path = "../../test-support/home_reaper.rs"]
+mod home_reaper;
 #[path = "../../test-support/provider_home.rs"]
 mod provider_home;
 use std::{

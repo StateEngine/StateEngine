@@ -21,6 +21,8 @@ pub struct ForegroundHost {
     ready: serde_json::Value,
     stdout: PathBuf,
     stderr: PathBuf,
+    // Declared last: it disarms only after Drop has run the public shutdown.
+    _reaper: crate::home_reaper::HomeReaper,
 }
 
 fn copy_command(source: &Command) -> Command {
@@ -53,6 +55,8 @@ impl ForegroundHost {
         let stderr = home.join(format!("{label}.stderr"));
         let mut down = copy_command(&command);
         down.arg("down");
+        // A killed test process runs no Drop; the reaper stops this host then.
+        let reaper = crate::home_reaper::HomeReaper::arm(&down, home, false)?;
         let child = command
             .args(["up", "--foreground"])
             .stdin(Stdio::null())
@@ -75,6 +79,7 @@ impl ForegroundHost {
             ready: serde_json::Value::Null,
             stdout,
             stderr,
+            _reaper: reaper,
         };
         let until = Instant::now() + Duration::from_secs(30);
         loop {

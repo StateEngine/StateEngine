@@ -5,6 +5,10 @@
 //! harness's `mcp get` readback does.
 #![cfg(target_os = "linux")]
 
+#[path = "../../test-support/home_reaper.rs"]
+mod home_reaper;
+#[path = "../../test-support/host_guard.rs"]
+mod host_guard;
 #[path = "support/installation_claim_guard.rs"]
 mod installation_claim_guard;
 #[path = "../../test-support/provider_home.rs"]
@@ -29,7 +33,8 @@ impl Drop for Scratch {
     }
 }
 
-/// Process ids whose command line names this state home, read from /proc.
+/// Process ids whose command line names this state home, read from /proc,
+/// excluding this test and its direct children.
 fn processes_naming(home: &Path) -> Result<Vec<(u32, String)>, Box<dyn Error>> {
     let needle = home.to_str().ok_or("non-UTF8 home")?.as_bytes().to_vec();
     let mut found = Vec::new();
@@ -42,7 +47,15 @@ fn processes_naming(home: &Path) -> Result<Vec<(u32, String)>, Box<dyn Error>> {
         else {
             continue;
         };
-        if pid == std::process::id() {
+        // This test and its own children, such as the home reaper, are not
+        // what init left behind: a leftover host is detached, never our child.
+        let parent = fs::read_to_string(entry.path().join("stat"))
+            .ok()
+            .and_then(|stat| {
+                let (_, after) = stat.rsplit_once(") ")?;
+                after.split_whitespace().nth(1)?.parse::<u32>().ok()
+            });
+        if pid == std::process::id() || parent == Some(std::process::id()) {
             continue;
         }
         let Ok(cmdline) = fs::read(entry.path().join("cmdline")) else {
@@ -90,14 +103,14 @@ exit 91
     Ok(path)
 }
 
-fn run(
+fn command(
     se: &Path,
     root: &Path,
     config: &Path,
     home: &Path,
     repo: &Path,
     args: &[&str],
-) -> Result<String, Box<dyn Error>> {
+) -> Command {
     let owner = root.join("owner");
     let mut command = Command::new(se);
     command.env_clear();
@@ -108,14 +121,25 @@ fn run(
         &owner.join(".codex"),
         &owner.join("claude"),
     );
-    let output = command
+    command
         .env("XDG_CONFIG_HOME", owner.join("config"))
         .env("SE_CONFIG", config)
         .args(["--json", "--home"])
         .arg(home)
         .args(args)
-        .current_dir(repo)
-        .output()?;
+        .current_dir(repo);
+    command
+}
+
+fn run(
+    se: &Path,
+    root: &Path,
+    config: &Path,
+    home: &Path,
+    repo: &Path,
+    args: &[&str],
+) -> Result<String, Box<dyn Error>> {
+    let output = command(se, root, config, home, repo, args).output()?;
     assert!(
         output.status.success(),
         "{args:?}: {} {}",
@@ -136,7 +160,7 @@ fn init_readback_leaves_no_host_running() -> Check {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::create_dir_all(root.join("owner/claude"))?;
-    let scratch = Scratch(root.clone());
+    let _scratch = Scratch(root.clone());
     let (home, repo) = (root.join("state"), root.join("repo"));
     fs::create_dir(&repo)?;
     let se = PathBuf::from(env!("CARGO_BIN_EXE_se"));
@@ -149,7 +173,14 @@ fn init_readback_leaves_no_host_running() -> Check {
             provider.to_str().ok_or("path")?
         ),
     )?;
-    let result = (|| -> Check {
+    // Declared after `_scratch`, so whatever a failed or panicking run started
+    // is stopped by the product's own `down` before the home is removed.
+    let _host_guard = host_guard::HostGuard::arm(
+        command(&se, &root, &config, &home, &repo, &["down"]),
+        &home,
+        true,
+    )?;
+    (|| -> Check {
         run(
             &se,
             &root,
@@ -183,13 +214,7 @@ fn init_readback_leaves_no_host_running() -> Check {
             "processes still name the state home: {left:?}"
         );
         Ok(())
-    })();
-    if result.is_err() {
-        // Best effort: stop whatever the failed run started, by the product's own door.
-        let _ = run(&se, &root, &config, &home, &repo, &["stop", "--yes"]);
-    }
-    drop(scratch);
-    result
+    })()
 }
 
 // ---- host-less guest catalogue equals the host-served catalogue ----

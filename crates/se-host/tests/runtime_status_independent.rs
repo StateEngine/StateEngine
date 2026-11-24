@@ -1,6 +1,10 @@
 //! Protects: CLI status retains authenticated resource samples from the exact
 //! standalone or embedded host, and unavailable observations never become zeros.
 #![cfg(all(feature = "secode", target_os = "linux"))]
+#[path = "../../test-support/home_reaper.rs"]
+mod home_reaper;
+#[path = "../../test-support/host_guard.rs"]
+mod host_guard;
 #[path = "support/shutdown_linked_fixture.rs"]
 mod linked_fixture;
 #[path = "../../test-support/provider_home.rs"]
@@ -274,6 +278,7 @@ fn standalone_direct_and_hosted_status_obey_section_50() -> Check {
         root.join("absent.json"),
         serde_json::to_vec_pretty(&absent)?,
     )?;
+    let _host_guard = host_guard::HostGuard::arm(command(&binary, &home, &["down"]), &home, true)?;
     cli(&binary, &home, &["up"])?;
     let observation = (|| -> Check<_> {
         let direct = cli(&binary, &home, &["status"])?;
@@ -411,6 +416,7 @@ fn unreachable_host_resources_remain_unavailable() -> Check {
     let binary = image("SE_RUNTIME_JUDGE_SE")?;
     let root = root("unavailable")?;
     let home = initialize(&binary, &root)?;
+    let _host_guard = host_guard::HostGuard::arm(command(&binary, &home, &["down"]), &home, true)?;
     cli(&binary, &home, &["up"])?;
     let path = home.join("endpoint.json");
     let original = fs::read(&path)?;

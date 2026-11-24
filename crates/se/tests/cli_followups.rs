@@ -2,6 +2,12 @@
     dead_code,
     reason = "Shared native fixture supports several public consumers."
 )]
+#[cfg(unix)]
+#[path = "../../test-support/home_reaper.rs"]
+mod home_reaper;
+#[cfg(unix)]
+#[path = "../../test-support/host_guard.rs"]
+mod host_guard;
 #[path = "../../test-support/provider_home.rs"]
 mod provider_home;
 use se_store::*;
@@ -729,10 +735,16 @@ struct StatusHost {
     endpoint: se_host::EndpointRecord,
     key: se_types::Secret,
     identity: se_proc::ProcessIdentity,
+    // Stops the host on a failed start, a failed assertion or a killed test.
+    _guard: host_guard::HostGuard,
 }
 #[cfg(unix)]
 impl StatusHost {
     fn start(image: &Path, home: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut down = Command::new(image);
+        clean(&mut down);
+        down.arg("--json").arg("--home").arg(home).arg("down");
+        let guard = host_guard::HostGuard::arm(down, home, false)?;
         let mut up = Command::new(image);
         clean(&mut up);
         let up = up
@@ -769,6 +781,7 @@ impl StatusHost {
             endpoint,
             key: se_types::Secret::new(std::fs::read(home.join("credential"))?)?,
             identity: observed.identity,
+            _guard: guard,
         })
     }
     fn live_until(

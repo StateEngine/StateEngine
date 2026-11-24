@@ -2,6 +2,10 @@
 #![cfg(windows)]
 #[path = "../../test-support/directory.rs"]
 mod cleanup_directory;
+#[path = "../../test-support/home_reaper.rs"]
+mod home_reaper;
+#[path = "../../test-support/host_guard.rs"]
+mod host_guard;
 #[path = "../../test-support/provider_home.rs"]
 mod provider_home;
 use std::{
@@ -147,6 +151,10 @@ fn multilink_image_names_the_launch_precondition_and_a_single_link_copy_starts()
             .args(["init", "--name", "image-remedy"])
             .output_executable()?,
     )?;
+    // A regression that admits the refused `up` must not leak its host.
+    let mut down = command(&installed, &home, &root, true);
+    down.arg("down");
+    let _host_guard = host_guard::HostGuard::arm(down, &home, false)?;
     for (json, executable) in [(true, &image), (false, &alias)] {
         let output = command(executable, &home, &root, json)
             .arg("up")

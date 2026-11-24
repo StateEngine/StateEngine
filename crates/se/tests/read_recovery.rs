@@ -4,6 +4,9 @@
 )]
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
+#[cfg(unix)]
+#[path = "../../test-support/home_reaper.rs"]
+mod home_reaper;
 #[path = "../../test-support/provider_home.rs"]
 mod provider_home;
 #[path = "../../se-render/src/error.rs"]
@@ -207,6 +210,9 @@ fn absent_down_endpoint_names_status_and_preserves_initialized_state() -> Check 
 }
 
 #[cfg(unix)]
+#[path = "../../test-support/host_guard.rs"]
+mod host_guard;
+#[cfg(unix)]
 #[path = "support/runtime_host.rs"]
 mod runtime_host;
 
@@ -239,6 +245,10 @@ fn stale_address_cli_names_lease_safe_recovery_and_preserves_foreign_socket() ->
             .arg(repository)
             .output_executable()?,
     )?;
+    // The plain `se up` in the loop below may succeed; stop that host on any exit.
+    let mut down = command(&image, home, true);
+    down.arg("down");
+    let _host_guard = host_guard::HostGuard::arm(down, home, false)?;
     let first = runtime_host::RunningHost::start(&image, home)?;
     let mut record =
         se_host::client::endpoint::decode_endpoint(&std::fs::read(home.join("endpoint.json"))?)?;

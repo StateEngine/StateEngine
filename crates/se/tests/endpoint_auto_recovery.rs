@@ -3,6 +3,10 @@
 #![allow(dead_code, reason = "Shared native fixture serves other consumers.")]
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
+#[path = "../../test-support/home_reaper.rs"]
+mod home_reaper;
+#[path = "../../test-support/host_guard.rs"]
+mod host_guard;
 #[path = "../../test-support/provider_home.rs"]
 mod provider_home;
 #[path = "support/runtime_host.rs"]
@@ -114,6 +118,10 @@ fn automatic_retention_is_visible_and_live_or_unsafe_records_are_preserved() -> 
             .arg(repository)
             .output_executable()?,
     )?;
+    // The plain `se up` calls below start hosts no RunningHost owns yet.
+    let mut down = command(&image, home, true);
+    down.arg("down");
+    let _host_guard = host_guard::HostGuard::arm(down, home, false)?;
     let first = runtime_host::RunningHost::start(&image, home)?;
     let mut stale =
         se_host::client::endpoint::decode_endpoint(&fs::read(home.join("endpoint.json"))?)?;

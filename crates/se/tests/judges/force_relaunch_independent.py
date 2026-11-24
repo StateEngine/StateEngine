@@ -28,11 +28,16 @@ def interrupted(binary, root):
     # force join of the idle startup is unaffected.
     f.env['SE_PROVIDER_STOP_GRACE_MS'] = '500'
     (f.repo / 'startup-mode').write_text('idle')
-    up = f.ok('up')
-    identities = [pin(up['process']['pid'])]
-    first = subprocess.Popen([str(binary), '--json', '--home', str(f.home), '--project', f.project,
-                              '--key', 'interrupted-original', 'launch', f.agent, '--detach', '--task', 'Original'],
-                             env=f.env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        up = f.ok('up')
+        identities = [pin(up['process']['pid'])]
+        first = subprocess.Popen([str(binary), '--json', '--home', str(f.home), '--project', f.project,
+                                  '--key', 'interrupted-original', 'launch', f.agent, '--detach', '--task', 'Original'],
+                                 env=f.env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except BaseException:
+        # The finally below needs the original launch; stop the host here instead.
+        f.close()
+        raise
     failure = None
     try:
         marker = f.repo / 'startup-pids.json'

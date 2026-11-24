@@ -2,6 +2,11 @@
     dead_code,
     reason = "Shared native fixture also serves other store consumers."
 )]
+#[path = "../../test-support/home_reaper.rs"]
+mod home_reaper;
+#[cfg(not(windows))]
+#[path = "../../test-support/host_guard.rs"]
+mod host_guard;
 #[path = "../../test-support/provider_home.rs"]
 mod provider_home;
 use se_store::*;
@@ -89,11 +94,21 @@ struct Host {
     identity: se_proc::ProcessIdentity,
     generation: u64,
     stopped: bool,
+    // Declared last: it stops the detached host for a failed start, a panic
+    // or a killed test, after Drop's own graceful stop.
+    #[cfg(not(windows))]
+    _guard: host_guard::HostGuard,
 }
 impl Host {
     fn start(image: &Path, home: &Path, root: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         #[cfg(windows)]
         let child = foreground_host::ForegroundHost::start(command(image, home, root), home)?;
+        #[cfg(not(windows))]
+        let guard = {
+            let mut down = command(image, home, root);
+            down.arg("down");
+            host_guard::HostGuard::arm(down, home, false)?
+        };
         #[cfg(not(windows))]
         value(command(image, home, root).arg("up").output_executable()?)?;
         let endpoint = se_host::client::endpoint::decode_endpoint(&std::fs::read(
@@ -125,6 +140,8 @@ impl Host {
             identity: observed.identity,
             generation: endpoint.generation.get(),
             stopped: false,
+            #[cfg(not(windows))]
+            _guard: guard,
         })
     }
     fn exited(&self, until: Instant) -> Result<bool, Box<dyn std::error::Error>> {
@@ -158,11 +175,14 @@ impl Host {
             let output = command(&self.image, &self.home, &self.root)
                 .arg("down")
                 .output_executable()?;
-            assert!(
-                matches!(output.status.code(), Some(0) | Some(2)),
-                "actual down failed: {}",
-                String::from_utf8_lossy(&output.stdout)
-            );
+            // Drop calls this too; a panic while unwinding would abort the run.
+            if !matches!(output.status.code(), Some(0) | Some(2)) {
+                return Err(format!(
+                    "actual down failed: {}",
+                    String::from_utf8_lossy(&output.stdout)
+                )
+                .into());
+            }
         }
         while !self.exited(until)? {
             if Instant::now() >= until {
