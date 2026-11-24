@@ -1,10 +1,9 @@
 //! Bounded macOS file notifications. The operating system owns event delivery;
 //! this port owns every stream, callback context and queued record.
-use std::io;
 use std::{
     collections::VecDeque,
     ffi::{CStr, CString, c_char, c_void},
-    ptr,
+    io, ptr,
     sync::{Arc, Mutex, mpsc},
     time::Duration,
 };
@@ -179,11 +178,12 @@ impl Watcher {
             .next
             .checked_add(1)
             .ok_or_else(|| invalid("source watch identifier overflow"))?;
+        let root = std::fs::canonicalize(root)?; // match FSEvents' canonical paths
         let path = CString::new(root.as_os_str().as_encoded_bytes())
             .map_err(|_| invalid("source path encoding"))?;
         let context = Box::into_raw(Box::new(Context {
             id,
-            root: root.to_path_buf(),
+            root,
             queue: self.queue.clone(),
         }));
         // SAFETY: path is NUL-terminated; returned Core Foundation objects are retained.

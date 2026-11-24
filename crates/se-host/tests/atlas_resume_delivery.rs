@@ -1,5 +1,5 @@
 //! Native continuity assembly and sole-writer cursor checks, not latency qualification.
-#![cfg(any(target_os = "linux", windows))]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 use se_core::{atlas_resume::*, commit::Cx, ops::continuity::*};
 use se_store::{atlas_resume::*, *};
 use se_types::{UnixMicros, code::*};

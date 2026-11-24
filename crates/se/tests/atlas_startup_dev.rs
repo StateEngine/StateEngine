@@ -1,6 +1,6 @@
 //! Development consumer of automatic after-ready composition and record wakes.
 //! It reads the v5 store the owner writes; no legacy cache or memory profile.
-#![cfg(all(target_os = "linux", not(debug_assertions)))]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 use se_host::*;
 use se_store::*;
 use se_types::code::AtlasText as _;
@@ -70,9 +70,8 @@ fn start(f: &Fixture) -> Result<HostStart, Box<dyn std::error::Error>> {
     })
 }
 
-fn setup(f: &Fixture) -> Check {
-    let source = f.home.join("source");
-    std::fs::create_dir(&source)?;
+fn seed_source_repo(source: &std::path::Path) -> Check {
+    std::fs::create_dir(source)?;
     std::fs::write(source.join("good.js"), "export function good(){return 1;}")?;
     for name in [
         ".env",
@@ -90,8 +89,6 @@ fn setup(f: &Fixture) -> Check {
         source.join(".gitignore"),
         "!.env\n!secrets.py\n!config.js\n!private.pem\n!credentials.json\n",
     )?;
-    // The automatic owner must discover this registration itself and seed
-    // history after the real installed parser image has been exactly reaped.
     for args in [
         vec!["init", "--initial-branch=main"],
         vec!["add", "--", "."],
@@ -107,10 +104,13 @@ fn setup(f: &Fixture) -> Check {
     ] {
         let output = std::process::Command::new("git")
             .arg("-C")
-            .arg(&source)
+            .arg(source)
             .args(args)
             .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env(
+                "GIT_CONFIG_GLOBAL",
+                if cfg!(windows) { "NUL" } else { "/dev/null" },
+            )
             .output()?;
         if !output.status.success() {
             return Err(format!(
@@ -120,6 +120,12 @@ fn setup(f: &Fixture) -> Check {
             .into());
         }
     }
+    Ok(())
+}
+
+fn setup(f: &Fixture) -> Check {
+    let source = f.home.join("source");
+    seed_source_repo(&source)?;
     let (mut direct, lease) = f.direct()?;
     let mut registration = f.batch(
         f.admission(Scope::Registry, Actor::Human(f.owner.clone())),
