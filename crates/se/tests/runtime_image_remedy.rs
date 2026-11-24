@@ -128,10 +128,6 @@ impl Drop for Host {
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn multilink_image_names_the_launch_precondition_and_a_single_link_copy_starts() -> Check {
     se_proc::initialize_file_creation_owner()?;
     let root_owner = cleanup_directory::private_case_directory()?;
@@ -156,56 +152,7 @@ fn multilink_image_names_the_launch_precondition_and_a_single_link_copy_starts()
     down.arg("down");
     let _host_guard = host_guard::HostGuard::arm(down, &home, false)?;
     for (json, executable) in [(true, &image), (false, &alias)] {
-        let output = command(executable, &home, &root, json)
-            .arg("up")
-            .output_executable()?;
-        assert_eq!(
-            output.status.code(),
-            Some(1),
-            "expected Refused: {output:?}"
-        );
-        let diagnostic = String::from_utf8(output.stderr)?;
-        let expected = executable
-            .to_str()
-            .ok_or("fixture image path is not UTF-8")?;
-        assert!(
-            diagnostic.contains("error[launch-failed]")
-                && diagnostic.contains(expected)
-                && diagnostic.contains("single-link regular disk file required")
-                && diagnostic.contains("Reinstall StateEngine")
-                && diagnostic.contains("copy this executable")
-                && diagnostic.contains("single-link file"),
-            "wrong image diagnostic: {diagnostic}"
-        );
-        assert!(
-            !diagnostic.contains("Restore access") && !diagnostic.contains("source-unreadable")
-        );
-        if json {
-            let error: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-            assert_eq!(error["code"], "launch-failed");
-            assert_eq!(error["exit"], 1);
-            let subject = error["detail"]["subject"]
-                .as_str()
-                .ok_or("image subject absent")?;
-            assert_eq!(fs::canonicalize(subject)?, fs::canonicalize(executable)?);
-            assert!(
-                error["detail"]["reason"]
-                    .as_str()
-                    .ok_or("native reason absent")?
-                    .contains("single-link regular disk file required")
-            );
-            let remedy = error["remedy"]["text"].as_str().ok_or("remedy absent")?;
-            assert!(remedy.contains("Reinstall StateEngine") && remedy.contains("single-link"));
-        } else {
-            assert!(
-                output.stdout.is_empty(),
-                "human refusal contaminated stdout"
-            );
-        }
-        assert!(
-            !home.join("endpoint.json").try_exists()?,
-            "refusal published a host"
-        );
+        multilink_image_is_refused(executable, &home, &root, json)?;
     }
     #[cfg(windows)]
     let child =
@@ -246,6 +193,60 @@ fn multilink_image_names_the_launch_precondition_and_a_single_link_copy_starts()
     host.stop()?;
     drop(host);
     root_owner.finish(Ok(()))
+}
+
+/// `up` from a multi-link image refuses with the launch precondition and the
+/// reinstall remedy, in JSON or human form, and publishes no host.
+fn multilink_image_is_refused(executable: &Path, home: &Path, root: &Path, json: bool) -> Check {
+    let output = command(executable, home, root, json)
+        .arg("up")
+        .output_executable()?;
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected Refused: {output:?}"
+    );
+    let diagnostic = String::from_utf8(output.stderr)?;
+    let expected = executable
+        .to_str()
+        .ok_or("fixture image path is not UTF-8")?;
+    assert!(
+        diagnostic.contains("error[launch-failed]")
+            && diagnostic.contains(expected)
+            && diagnostic.contains("single-link regular disk file required")
+            && diagnostic.contains("Reinstall StateEngine")
+            && diagnostic.contains("copy this executable")
+            && diagnostic.contains("single-link file"),
+        "wrong image diagnostic: {diagnostic}"
+    );
+    assert!(!diagnostic.contains("Restore access") && !diagnostic.contains("source-unreadable"));
+    if json {
+        let error: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(error["code"], "launch-failed");
+        assert_eq!(error["exit"], 1);
+        let subject = error["detail"]["subject"]
+            .as_str()
+            .ok_or("image subject absent")?;
+        assert_eq!(fs::canonicalize(subject)?, fs::canonicalize(executable)?);
+        assert!(
+            error["detail"]["reason"]
+                .as_str()
+                .ok_or("native reason absent")?
+                .contains("single-link regular disk file required")
+        );
+        let remedy = error["remedy"]["text"].as_str().ok_or("remedy absent")?;
+        assert!(remedy.contains("Reinstall StateEngine") && remedy.contains("single-link"));
+    } else {
+        assert!(
+            output.stdout.is_empty(),
+            "human refusal contaminated stdout"
+        );
+    }
+    assert!(
+        !home.join("endpoint.json").try_exists()?,
+        "refusal published a host"
+    );
+    Ok(())
 }
 
 #[path = "../../test-support/executable.rs"]
