@@ -201,6 +201,30 @@ pub(super) fn refuse_retired(
     Ok(())
 }
 
+fn refuse_live_work(c: &Connection, project: &[u8], target: &[u8]) -> StoreResult<()> {
+    let has_live_session: bool = c
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=? AND agent_id=? AND state IN ('prepared','active'))",
+            crate::sql_value::sql_params![project, target],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    let has_unreleased_process: bool = c
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM processes h INDEXED BY processes_live JOIN process_data d ON d.event_seq=h.last_seq WHERE h.project_id=? AND d.principal_id=? AND h.ownership_released=0 AND h.state NOT IN ('exited','historical'))",
+            crate::sql_value::sql_params![project, target],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    if has_live_session || has_unreleased_process {
+        return Err(fail(
+            StoreErrorCode::InvalidTransition,
+            "cannot retire an agent while it still has live sessions or unreleased processes",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn retire(
     c: &Connection,
     header: &EventHeader,
@@ -282,6 +306,7 @@ pub(super) fn retire(
             ));
         }
     }
+    refuse_live_work(c, project, &target)?;
     // Intentionally update ONLY retired_seq — never advance principals.last_seq
     // or principals.revision so principal_metadata and existing readers stay intact.
     let changed = c

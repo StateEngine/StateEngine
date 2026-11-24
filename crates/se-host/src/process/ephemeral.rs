@@ -8,22 +8,20 @@ use se_store::{
 use se_types::{AgentId, LifecycleId, PageRequest, ProjectId, Read, Result, SessionId};
 use std::{num::NonZeroU32, sync::atomic::Ordering, time::Duration};
 
-const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+pub(super) const SWEEP_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 const PAGE_SIZE: u32 = 100;
 
 impl LaunchCoordinator {
-    /// Background TTL sweep so expired ephemeral agents are retired even on an
-    /// otherwise-idle host. Stops cleanly once the host begins shutting down.
-    pub(super) fn watch_ephemeral_ttl(self: &Arc<Self>) {
+    /// Deadline-driven TTL sweeper: sleeps until the earliest remaining
+    /// ephemeral TTL deadline (recomputing after each sweep), and exits as soon
+    /// as no unretired TTL-bearing ephemeral agents remain so an idle host has
+    /// zero periodic wakeups or resident read connections.
+    pub(super) fn spawn_ephemeral_ttl_timer(self: &Arc<Self>, mut delay: Duration) {
         let coordinator = Arc::downgrade(self);
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(SWEEP_INTERVAL);
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            // Startup already ran an initial sweep; wait one interval first.
-            interval.tick().await;
             let mut last_warning: Option<String> = None;
             loop {
-                interval.tick().await;
+                tokio::time::sleep(delay).await;
                 let Some(current) = coordinator.upgrade() else {
                     return;
                 };
@@ -36,13 +34,18 @@ impl LaunchCoordinator {
                 }
                 .await;
                 match swept {
-                    Ok(()) => last_warning = None,
+                    Ok(Some(next_delay)) => {
+                        last_warning = None;
+                        delay = next_delay;
+                    }
+                    Ok(None) => return,
                     Err(failure) => {
                         let msg = failure.body.to_string();
                         if last_warning.as_deref() != Some(msg.as_str()) {
                             eprintln!("Ephemeral TTL sweep incomplete: {msg}");
                             last_warning = Some(msg);
                         }
+                        delay = SWEEP_RETRY_INTERVAL;
                     }
                 }
             }
@@ -98,28 +101,43 @@ impl LaunchCoordinator {
         }
     }
 
-    /// Startup and periodic sweep: stop and retire ephemeral agents whose TTL
-    /// has elapsed. Paginates all projects and all matching agents, isolates
-    /// per-project errors, and never retires an agent with unwitnessed live work.
-    pub(super) async fn sweep_ephemeral_expired(&self, deadline: &Deadline) -> Result<()> {
+    /// Startup and deadline-driven sweep: stop and retire ephemeral agents whose
+    /// TTL has elapsed, returning the earliest remaining wait duration among any
+    /// still-active TTL agents (or `None` when none remain). Paginates all
+    /// projects and matching agents, isolates per-project errors, and never
+    /// retires an agent with unwitnessed live work.
+    pub(super) async fn sweep_ephemeral_expired(
+        &self,
+        deadline: &Deadline,
+    ) -> Result<Option<Duration>> {
         if self.stopping.load(Ordering::Acquire) {
-            return Ok(());
+            return Ok(None);
         }
         let now_us = crate::runtime::start::now_unix_micros()?;
         let projects = self.all_active_projects(deadline).await?;
         let mut first_failure = None;
+        let mut next_delay: Option<Duration> = None;
         for project in projects {
             if self.stopping.load(Ordering::Acquire) {
                 break;
             }
             deadline.remaining()?;
-            if let Err(failure) = self.sweep_project_expired(&project, now_us, deadline).await {
-                first_failure.get_or_insert(failure);
+            match self.sweep_project_expired(&project, now_us, deadline).await {
+                Ok(Some(delay)) => {
+                    next_delay = Some(match next_delay {
+                        Some(current) => current.min(delay),
+                        None => delay,
+                    });
+                }
+                Ok(None) => {}
+                Err(failure) => {
+                    first_failure.get_or_insert(failure);
+                }
             }
         }
         match first_failure {
             Some(failure) => Err(failure),
-            None => Ok(()),
+            None => Ok(next_delay),
         }
     }
 
@@ -128,9 +146,10 @@ impl LaunchCoordinator {
         project: &ProjectId,
         now_us: i64,
         deadline: &Deadline,
-    ) -> Result<()> {
+    ) -> Result<Option<Duration>> {
         let active = self.all_active_ephemeral_agents(project, deadline).await?;
         let mut first_failure = None;
+        let mut next_delay: Option<Duration> = None;
         for child in active {
             if self.stopping.load(Ordering::Acquire) {
                 break;
@@ -139,7 +158,15 @@ impl LaunchCoordinator {
                 continue;
             };
             let ttl_us = i64::from(ttl_seconds).saturating_mul(1_000_000);
-            if now_us.saturating_sub(child.registered_at_us) <= ttl_us {
+            let elapsed_us = now_us.saturating_sub(child.registered_at_us);
+            if elapsed_us <= ttl_us {
+                let remaining_us = ttl_us.saturating_sub(elapsed_us);
+                let wait = Duration::from_micros(u64::try_from(remaining_us).unwrap_or(0))
+                    .saturating_add(Duration::from_millis(100));
+                next_delay = Some(match next_delay {
+                    Some(current) => current.min(wait),
+                    None => wait,
+                });
                 continue;
             }
             deadline.remaining()?;
@@ -187,7 +214,7 @@ impl LaunchCoordinator {
         }
         match first_failure {
             Some(failure) => Err(failure),
-            None => Ok(()),
+            None => Ok(next_delay),
         }
     }
 

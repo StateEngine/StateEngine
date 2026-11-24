@@ -162,13 +162,17 @@ impl LaunchCoordinator {
                 .unproved
                 .push(format!("Codex shared server custody: {}", failure.body));
         }
-        if let Err(failure) = coordinator.sweep_ephemeral_expired(deadline).await {
-            report
-                .unproved
-                .push(format!("Ephemeral TTL sweep: {}", failure.body));
+        match coordinator.sweep_ephemeral_expired(deadline).await {
+            Ok(Some(next_delay)) => coordinator.spawn_ephemeral_ttl_timer(next_delay),
+            Ok(None) => {}
+            Err(failure) => {
+                report
+                    .unproved
+                    .push(format!("Ephemeral TTL sweep: {}", failure.body));
+                coordinator.spawn_ephemeral_ttl_timer(ephemeral::SWEEP_RETRY_INTERVAL);
+            }
         }
         coordinator.watch_codex_server();
-        coordinator.watch_ephemeral_ttl();
         Ok((coordinator, report))
     }
     /// Called once, after loopback listener publication selected its actual
