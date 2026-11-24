@@ -433,3 +433,115 @@ fn implicit_snapshot_drop_closes_sql_and_returns_shared_capacity() -> Check {
     pool.close()?;
     Ok(())
 }
+
+/// Protects: warm idle pooled checkout refuses a moved database with SourceChanged and recovers when restored.
+#[cfg(unix)]
+#[test]
+fn warm_idle_checkout_refuses_moved_database_and_recovers_after_restore() -> Check {
+    let f = initialized_fixture()?;
+    let (writer, lease) = f.direct()?;
+    writer.close()?;
+    drop(lease);
+    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+    let pool = reader.phase_pool(native::open_identity)?;
+    // Warm one idle pooled connection.
+    pool.read_phase()?.close()?;
+    let path = f.options.state_directory.join("state.db");
+    let moved = f.options.state_directory.join("moved.db");
+    fs::rename(&path, &moved)?;
+    assert_eq!(
+        pool.read_phase()
+            .err()
+            .ok_or("warm pooled checkout succeeded after state.db was moved away")?
+            .code,
+        StoreErrorCode::SourceChanged
+    );
+    fs::rename(&moved, &path)?;
+    pool.read_phase()?.close()?;
+    pool.close()?;
+    Ok(())
+}
+
+/// Protects: warm idle pooled checkout refuses a byte-identical replacement with SourceChanged and leaves the replacement intact.
+#[cfg(unix)]
+#[test]
+fn warm_idle_checkout_refuses_byte_identical_replacement_without_corrupting_it() -> Check {
+    let f = initialized_fixture()?;
+    let (writer, lease) = f.direct()?;
+    writer.close()?;
+    drop(lease);
+    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+    let pool = reader.phase_pool(native::open_identity)?;
+    // Warm one idle pooled connection.
+    pool.read_phase()?.close()?;
+    let path = f.options.state_directory.join("state.db");
+    let original = f.options.state_directory.join("original.db");
+    let copy = f.options.state_directory.join("replacement.db");
+    fs::copy(&path, &copy)?;
+    fs::rename(&path, &original)?;
+    fs::rename(&copy, &path)?;
+    let replacement = se_proc::NativeSourcePin::open(&path)?.ok_or("replacement absent")?;
+    let old = se_proc::NativeSourcePin::open(&original)?.ok_or("original absent")?;
+    assert_ne!(
+        replacement.identity(),
+        old.identity(),
+        "the replacement did not change native file identity"
+    );
+    drop((replacement, old));
+    for _ in 0..3 {
+        assert_eq!(
+            pool.read_phase()
+                .err()
+                .ok_or("warm pooled checkout silently rebound to a byte-identical replacement")?
+                .code,
+            StoreErrorCode::SourceChanged
+        );
+    }
+    let check_conn = rusqlite::Connection::open(&path)?;
+    let integrity: String = check_conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+    assert_eq!(integrity, "ok");
+    check_conn.close().map_err(|(_, e)| e)?;
+    pool.close()?;
+    Ok(())
+}
+
+/// Protects: replacing state.db mid-phase lets close() return Ok(()) while subsequent checkouts refuse with SourceChanged without rebinding.
+#[cfg(unix)]
+#[test]
+fn warm_phase_replaced_mid_phase_closes_ok_and_refuses_subsequent_checkouts() -> Check {
+    let f = initialized_fixture()?;
+    let (writer, lease) = f.direct()?;
+    writer.close()?;
+    drop(lease);
+    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+    let pool = reader.phase_pool(native::open_identity)?;
+    // Warm one idle pooled connection, then open a warm phase.
+    pool.read_phase()?.close()?;
+    let active = pool.read_phase()?;
+    let path = f.options.state_directory.join("state.db");
+    let original = f.options.state_directory.join("original.db");
+    let copy = f.options.state_directory.join("replacement.db");
+    fs::copy(&path, &copy)?;
+    fs::rename(&path, &original)?;
+    fs::rename(&copy, &path)?;
+    let replacement = se_proc::NativeSourcePin::open(&path)?.ok_or("replacement absent")?;
+    let old = se_proc::NativeSourcePin::open(&original)?.ok_or("original absent")?;
+    assert_ne!(
+        replacement.identity(),
+        old.identity(),
+        "the replacement did not change native file identity"
+    );
+    drop((replacement, old));
+    active.close()?;
+    for _ in 0..3 {
+        assert_eq!(
+            pool.read_phase()
+                .err()
+                .ok_or("pool rebound after mid-phase replacement and close()")?
+                .code,
+            StoreErrorCode::SourceChanged
+        );
+    }
+    pool.close()?;
+    Ok(())
+}
