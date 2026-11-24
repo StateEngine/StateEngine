@@ -308,6 +308,125 @@ fn remote_image_hint_child() -> Result<()> {
     Ok(())
 }
 
+/// Protects: warm starts of the same image skip the hint rewrite, and a
+/// changed image still replaces the hint with its updated entry.
+#[test]
+fn warm_publication_keeps_hint_until_image_changes() -> Result<()> {
+    use std::io::Write;
+    let _root_owner = cleanup_directory::private_case_directory()?;
+    let root = _root_owner.to_path_buf();
+    let files = NativeStateFiles::create(&root)?;
+    let digest = observe_ipc_self_bounded(&bound())?.image_sha256();
+    let path = root.join("ipc-image-cache.json");
+
+    publish_image_cache(&root, digest, &bound())?;
+    let first = fs::metadata(&path)?;
+    let first_bytes = fs::read(&path)?;
+    #[cfg(unix)]
+    let first_ino = {
+        use std::os::unix::fs::MetadataExt;
+        first.ino()
+    };
+    #[cfg(windows)]
+    let first_id = se_native_path::windows::file::file_id(&fs::File::open(&path)?)?;
+
+    // A warm start of the same image measures the same entry, so publication
+    // must skip the rewrite and leave the hint file exactly in place.
+    publish_image_cache(&root, digest, &bound())?;
+    let warm = fs::metadata(&path)?;
+    assert_eq!(
+        warm.modified()?,
+        first.modified()?,
+        "a warm publication of the unchanged image rewrote the hint"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            warm.ino(),
+            first_ino,
+            "a warm publication of the unchanged image replaced the hint file"
+        );
+    }
+    #[cfg(windows)]
+    {
+        let file = fs::File::open(&path)?;
+        assert_eq!(
+            se_native_path::windows::file::file_id(&file)?,
+            first_id,
+            "a warm publication of the unchanged image replaced the hint file"
+        );
+    }
+    assert_eq!(fs::read(&path)?, first_bytes);
+
+    // A changed image publishes a different entry and must replace the hint.
+    let image = root.join(if cfg!(windows) {
+        "warm-skip.exe"
+    } else {
+        "warm-skip"
+    });
+    fs::copy(std::env::current_exe()?, &image)?;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&image)?
+        .write_all(&[0; 4096])?;
+    let digest_path = root.join("child-digest.json");
+    let output = Command::new(&image)
+        .args(["--ignored", "--exact", "warm_skip_changed_image_child"])
+        .env("SE_IMAGE_WARM_SKIP_ROOT", &root)
+        .env("SE_IMAGE_WARM_SKIP_DIGEST", &digest_path)
+        .output_executable()?;
+    assert!(output.status.success(), "child: {output:?}");
+    let changed: Sha256 = serde_json::from_slice(&fs::read(&digest_path)?)?;
+    assert_ne!(
+        changed, digest,
+        "the mutated copy still hashes to the original image"
+    );
+    let replaced = fs::read(&path)?;
+    assert_ne!(
+        replaced, first_bytes,
+        "a changed image left the old hint in place"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_ne!(
+            fs::metadata(&path)?.ino(),
+            first_ino,
+            "a changed image updated the hint in place instead of replacing it"
+        );
+    }
+    #[cfg(windows)]
+    {
+        let file = fs::File::open(&path)?;
+        assert_ne!(
+            se_native_path::windows::file::file_id(&file)?,
+            first_id,
+            "a changed image updated the hint in place instead of replacing it"
+        );
+    }
+    assert_eq!(
+        restore_image_cache(&root, changed, &bound())?,
+        ImageCacheRead::Current
+    );
+    drop(files);
+    _root_owner.finish(Ok(()))
+}
+
+#[test]
+#[ignore = "fresh-process helper invoked by warm_publication_keeps_hint_until_image_changes"]
+fn warm_skip_changed_image_child() -> Result<()> {
+    let root = std::env::var_os("SE_IMAGE_WARM_SKIP_ROOT").ok_or("missing warm-skip home")?;
+    let root = Path::new(&root);
+    let digest_raw =
+        std::env::var_os("SE_IMAGE_WARM_SKIP_DIGEST").ok_or("missing warm-skip digest path")?;
+    let digest_path = Path::new(&digest_raw);
+    let digest = observe_ipc_self_bounded(&bound())?.image_sha256();
+    publish_image_cache(root, digest, &bound())?;
+    fs::write(digest_path, serde_json::to_vec(&digest)?)?;
+    Ok(())
+}
+
 #[path = "../../test-support/executable.rs"]
 mod executable;
 use executable::ExecutableCommand;
