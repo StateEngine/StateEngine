@@ -105,10 +105,6 @@ fn stamp(pid: ProcessId, parent: ProcessId, process: &OwnedHandle) -> Result<Pro
 pub(super) fn console_presence() -> Result<(bool, bool)> {
     Ok((console(STD_INPUT_HANDLE)?, console(STD_OUTPUT_HANDLE)?))
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn observe(
     target: ProcessId,
     expected: Option<&StartIdentity>,
@@ -131,6 +127,46 @@ pub(super) fn observe(
         ));
     }
     let user = owner(&target_pin)?;
+    let ancestry = walk(target, records)?;
+    let (current, _) = ancestry
+        .live
+        .first()
+        .ok_or_else(|| refuse("read native ancestry", "current process absent"))?;
+    let mut matches = Vec::new();
+    for (record_index, record) in records.iter().enumerate() {
+        if let Some(basis) = record_basis(record, current, &ancestry, &target_pin)? {
+            matches.push(AgentTreeMatch {
+                record_index,
+                basis,
+            });
+        }
+    }
+    ancestry.recheck()?;
+    // SAFETY: the exact target process remains pinned through the entire walk.
+    if unsafe { WaitForSingleObject(target_pin.as_raw_handle(), 0) } != WAIT_TIMEOUT
+        || stamp(target, ProcessId(0), &target_pin)?.start != first.start
+        || owner(&target_pin)? != user
+    {
+        return Err(refuse("recheck native owner", "OS owner changed"));
+    }
+    Ok(OwnerTreeObservation {
+        owner: user,
+        pid: target,
+        start: first.start,
+        agent_trees: matches,
+        ancestry_bound: ancestry.bound,
+    })
+}
+
+/// The pinned live creator chain from the target upward, plus the immediate
+/// exited creator if the walk ended at one, and how far the walk could see.
+struct Ancestry {
+    live: Vec<(ProcessStamp, OwnedHandle)>,
+    exited_creator: Option<(ProcessStamp, OwnedHandle)>,
+    bound: AncestryBound,
+}
+
+fn walk(target: ProcessId, records: &[ProcessRecord]) -> Result<Ancestry> {
     let mut fallback = None;
     let mut pid = target;
     let mut ancestry: Vec<(ProcessStamp, OwnedHandle)> = Vec::new();
@@ -150,43 +186,7 @@ pub(super) fn observe(
                 if pid != target
                     && cause.source.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) =>
             {
-                // Root queryability is relative to the caller's actual token.
-                // A protected SYSTEM creator ends the permitted live walk; keep
-                // the actual bound so admission never calls this a full census.
-                // Keep following only the snapshot's numeric creators. Those
-                // numbers cannot prove outside membership, but a recorded root
-                // PID above this bound must conservatively refuse admission.
-                let mut unqueried = pid.0;
-                let mut seen = std::collections::BTreeSet::new();
-                while unqueried != 0 {
-                    if seen.len() >= 4096 {
-                        return Err(refuse(
-                            "inspect bounded ancestry",
-                            "snapshot ancestry cycle or capacity exceeded",
-                        ));
-                    }
-                    // A repeated numeric creator can reflect PID reuse. Every
-                    // reachable selector in this snapshot has already passed
-                    // the recorded-root check; another lap adds no evidence.
-                    if !seen.insert(unqueried) {
-                        break;
-                    }
-                    if records.iter().any(|record| record.root.pid.0 == unqueried) {
-                        return Err(refuse(
-                            "inspect bounded ancestry",
-                            "unopenable ancestor chain reaches a recorded agent root PID; birth cannot be verified",
-                        ));
-                    }
-                    let Some(parent) = snapshot(&mut fallback)?.get(&unqueried) else {
-                        break;
-                    };
-                    unqueried = *parent;
-                }
-                ancestry_bound = AncestryBound::UnopenableAncestor {
-                    pid,
-                    native_code: cause.source.raw_os_error(),
-                    reason: format!("ancestor not ours: unopenable ({})", cause.source),
-                };
+                ancestry_bound = unopenable_bound(pid, &cause, records, &mut fallback)?;
                 break;
             }
             Err(cause) => return Err(cause),
@@ -244,119 +244,163 @@ pub(super) fn observe(
         pid = value.parent;
         ancestry.push((value, process));
     }
-    let (current, _) = ancestry
-        .first()
-        .ok_or_else(|| refuse("read native ancestry", "current process absent"))?;
-    let mut matches = Vec::new();
-    for (record_index, record) in records.iter().enumerate() {
-        if record.root.boot != BootIdentity::WindowsAbsoluteCreationClock {
-            return Err(refuse(
-                "inspect managed job",
-                "recorded scope belongs to another platform",
-            ));
-        }
-        let basis = if current.instance_matches(&record.root) {
-            Some(AgentTreeBasis::ExactRoot)
-        } else if ancestry
-            .iter()
-            .skip(1)
-            .any(|(p, _)| p.instance_matches(&record.root))
-            || exited_creator
-                .as_ref()
-                .is_some_and(|(p, _)| p.instance_matches(&record.root))
-        {
-            Some(AgentTreeBasis::Ancestor)
-        } else {
-            let ScopeIdentity::WindowsJob { host, name, .. } = &record.scope else {
-                return Err(refuse(
-                    "inspect managed job",
-                    "unresolved recorded job scope",
-                ));
-            };
-            if host != &record.host || name.is_empty() || name.encode_utf16().any(|c| c == 0) {
-                return Err(refuse(
-                    "inspect managed job",
-                    "inconsistent recorded job identity",
-                ));
-            }
-            let name: Vec<_> = std::ffi::OsStr::new(name)
-                .encode_wide()
-                .chain(Some(0))
-                .collect();
-            // SAFETY: bounded terminated recorded job name; query access grants no signal authority.
-            let raw = unsafe { OpenJobObjectW(JOB_OBJECT_QUERY, 0, name.as_ptr()) };
-            // SAFETY: reads this thread's immediately preceding native error without clearing it.
-            if raw.is_null() && unsafe { GetLastError() } == ERROR_FILE_NOT_FOUND {
-                None
-            } else {
-                // Query-only: this never reacquires signal or close authority.
-                let job = handle(raw, "open recorded job for membership query")?;
-                let mut member = 0;
-                // SAFETY: retained query-only job/process handles and initialized membership output.
-                if unsafe {
-                    IsProcessInJob(target_pin.as_raw_handle(), job.as_raw_handle(), &mut member)
-                } == 0
-                {
-                    return Err(last("query native managed-job membership"));
-                }
-                if member != 0 {
-                    Some(AgentTreeBasis::WindowsJob)
-                } else {
-                    None
-                }
-            }
-        };
-        if let Some(basis) = basis {
-            matches.push(AgentTreeMatch {
-                record_index,
-                basis,
-            });
-        }
-    }
-    let mut recheck = None;
-    for (expected, process) in &ancestry {
-        // A retained handle can still query an exited process. The former
-        // Toolhelp recheck excluded those objects; preserve that refusal here.
-        // SAFETY: retained SYNCHRONIZE handle and a nonblocking liveness query.
-        if unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } != WAIT_TIMEOUT
-            || parent(expected.pid, process, &mut recheck)? != expected.parent.0
-        {
-            return Err(refuse(
-                "recheck native ancestry",
-                "ancestor exited or changed during observation",
-            ));
-        }
-        if stamp(expected.pid, expected.parent, process)? != *expected {
-            return Err(refuse(
-                "recheck native ancestry",
-                "ancestor identity changed",
-            ));
-        }
-    }
-    if let Some((expected, process)) = exited_creator {
-        // SAFETY: the retained creator handle identifies the same exited object;
-        // PID reuse cannot change either this handle or its native birth clock.
-        if unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } != WAIT_OBJECT_0
-            || stamp(expected.pid, ProcessId(0), &process)?.start != expected.start
-        {
-            return Err(refuse(
-                "recheck native ancestry",
-                "exited creator identity changed",
-            ));
-        }
-    }
-    // SAFETY: the exact target process remains pinned through the entire walk.
-    if unsafe { WaitForSingleObject(target_pin.as_raw_handle(), 0) } != WAIT_TIMEOUT
-        || stamp(target, ProcessId(0), &target_pin)?.start != first.start
-        || owner(&target_pin)? != user
-    {
-        return Err(refuse("recheck native owner", "OS owner changed"));
-    }
-    Ok(OwnerTreeObservation {
-        owner: user,
-        pid: target,
-        start: first.start,
-        agent_trees: matches,
-        ancestry_bound,
+    Ok(Ancestry {
+        live: ancestry,
+        exited_creator,
+        bound: ancestry_bound,
     })
+}
+
+/// Root queryability is relative to the caller's actual token. A protected
+/// SYSTEM creator ends the permitted live walk; keep the actual bound so
+/// admission never calls this a full census. Keep following only the
+/// snapshot's numeric creators. Those numbers cannot prove outside membership,
+/// but a recorded root PID above this bound must conservatively refuse admission.
+fn unopenable_bound(
+    pid: ProcessId,
+    cause: &OwnerProbeError,
+    records: &[ProcessRecord],
+    fallback: &mut Option<BTreeMap<u32, u32>>,
+) -> Result<AncestryBound> {
+    let mut unqueried = pid.0;
+    let mut seen = std::collections::BTreeSet::new();
+    while unqueried != 0 {
+        if seen.len() >= 4096 {
+            return Err(refuse(
+                "inspect bounded ancestry",
+                "snapshot ancestry cycle or capacity exceeded",
+            ));
+        }
+        // A repeated numeric creator can reflect PID reuse. Every
+        // reachable selector in this snapshot has already passed
+        // the recorded-root check; another lap adds no evidence.
+        if !seen.insert(unqueried) {
+            break;
+        }
+        if records.iter().any(|record| record.root.pid.0 == unqueried) {
+            return Err(refuse(
+                "inspect bounded ancestry",
+                "unopenable ancestor chain reaches a recorded agent root PID; birth cannot be verified",
+            ));
+        }
+        let Some(parent) = snapshot(fallback)?.get(&unqueried) else {
+            break;
+        };
+        unqueried = *parent;
+    }
+    Ok(AncestryBound::UnopenableAncestor {
+        pid,
+        native_code: cause.source.raw_os_error(),
+        reason: format!("ancestor not ours: unopenable ({})", cause.source),
+    })
+}
+
+/// How the target belongs to one recorded agent tree, if it does.
+fn record_basis(
+    record: &ProcessRecord,
+    current: &ProcessStamp,
+    ancestry: &Ancestry,
+    target_pin: &OwnedHandle,
+) -> Result<Option<AgentTreeBasis>> {
+    if record.root.boot != BootIdentity::WindowsAbsoluteCreationClock {
+        return Err(refuse(
+            "inspect managed job",
+            "recorded scope belongs to another platform",
+        ));
+    }
+    if current.instance_matches(&record.root) {
+        return Ok(Some(AgentTreeBasis::ExactRoot));
+    }
+    if ancestry
+        .live
+        .iter()
+        .skip(1)
+        .any(|(p, _)| p.instance_matches(&record.root))
+        || ancestry
+            .exited_creator
+            .as_ref()
+            .is_some_and(|(p, _)| p.instance_matches(&record.root))
+    {
+        return Ok(Some(AgentTreeBasis::Ancestor));
+    }
+    let ScopeIdentity::WindowsJob { host, name, .. } = &record.scope else {
+        return Err(refuse(
+            "inspect managed job",
+            "unresolved recorded job scope",
+        ));
+    };
+    if host != &record.host || name.is_empty() || name.encode_utf16().any(|c| c == 0) {
+        return Err(refuse(
+            "inspect managed job",
+            "inconsistent recorded job identity",
+        ));
+    }
+    let name: Vec<_> = std::ffi::OsStr::new(name)
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    // SAFETY: bounded terminated recorded job name; query access grants no signal authority.
+    let raw = unsafe { OpenJobObjectW(JOB_OBJECT_QUERY, 0, name.as_ptr()) };
+    // SAFETY: reads this thread's immediately preceding native error without clearing it.
+    Ok(
+        if raw.is_null() && unsafe { GetLastError() } == ERROR_FILE_NOT_FOUND {
+            None
+        } else {
+            // Query-only: this never reacquires signal or close authority.
+            let job = handle(raw, "open recorded job for membership query")?;
+            let mut member = 0;
+            // SAFETY: retained query-only job/process handles and initialized membership output.
+            if unsafe {
+                IsProcessInJob(target_pin.as_raw_handle(), job.as_raw_handle(), &mut member)
+            } == 0
+            {
+                return Err(last("query native managed-job membership"));
+            }
+            if member != 0 {
+                Some(AgentTreeBasis::WindowsJob)
+            } else {
+                None
+            }
+        },
+    )
+}
+
+impl Ancestry {
+    /// Re-read every pinned ancestor and the exited creator after matching, so
+    /// a change during observation refuses instead of reading as Outside.
+    fn recheck(&self) -> Result<()> {
+        let mut recheck = None;
+        for (expected, process) in &self.live {
+            // A retained handle can still query an exited process. The former
+            // Toolhelp recheck excluded those objects; preserve that refusal here.
+            // SAFETY: retained SYNCHRONIZE handle and a nonblocking liveness query.
+            if unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } != WAIT_TIMEOUT
+                || parent(expected.pid, process, &mut recheck)? != expected.parent.0
+            {
+                return Err(refuse(
+                    "recheck native ancestry",
+                    "ancestor exited or changed during observation",
+                ));
+            }
+            if stamp(expected.pid, expected.parent, process)? != *expected {
+                return Err(refuse(
+                    "recheck native ancestry",
+                    "ancestor identity changed",
+                ));
+            }
+        }
+        if let Some((expected, process)) = &self.exited_creator {
+            // SAFETY: the retained creator handle identifies the same exited object;
+            // PID reuse cannot change either this handle or its native birth clock.
+            if unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } != WAIT_OBJECT_0
+                || stamp(expected.pid, ProcessId(0), process)?.start != expected.start
+            {
+                return Err(refuse(
+                    "recheck native ancestry",
+                    "exited creator identity changed",
+                ));
+            }
+        }
+        Ok(())
+    }
 }

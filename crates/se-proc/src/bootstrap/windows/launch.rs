@@ -135,10 +135,6 @@ struct Attempt {
     bytes: Vec<u8>,
     error: Option<ProcError>,
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn create(
     spec: &RuntimeLaunchSpec,
     frame: &mut Frame,
@@ -164,28 +160,7 @@ fn create(
         return Err(capacity("runtime frame bytes", MAX_FRAME as u64));
     }
     let native_parent = [broker.map_or(ptr::null_mut(), |broker| broker.handle())];
-    let mut attributes = crate::windows_native::attributes::Attributes::new(
-        if broker.is_some() { 2 } else { 1 },
-        "size runtime process attributes",
-        "initialize runtime process attributes",
-    )
-    .map_err(|e| fail(e.operation, e.source))?;
-    attributes
-        .set(
-            PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
-            &inherited,
-            "set runtime handle inheritance",
-        )
-        .map_err(|e| fail(e.operation, e.source))?;
-    if broker.is_some() {
-        attributes
-            .set(
-                PROC_THREAD_ATTRIBUTE_PARENT_PROCESS as usize,
-                &native_parent,
-                "set detached runtime broker",
-            )
-            .map_err(|e| fail(e.operation, e.source))?;
-    }
+    let attributes = process_attributes(&inherited, &native_parent, broker.is_some())?;
     // SAFETY: startup and process outputs are native POD; used fields are initialized below.
     let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
@@ -204,19 +179,7 @@ fn create(
         .encode_wide()
         .chain(Some(0))
         .collect();
-    let mut sorted: Vec<_> = spec.environment.entries.iter().collect();
-    sorted.sort_by_key(|(key, _)| key.to_string_lossy().to_uppercase());
-    let mut environment = Vec::new();
-    for (key, value) in sorted {
-        environment.extend(key.encode_wide());
-        environment.push(b'=' as u16);
-        environment.extend(value.encode_wide());
-        environment.push(0);
-    }
-    if environment.is_empty() {
-        environment.push(0);
-    }
-    environment.push(0);
+    let environment = environment_block(spec);
     // SAFETY: native process output POD is writable and owned only after successful creation.
     let mut info: PROCESS_INFORMATION = unsafe { zeroed() };
     // SAFETY: exact installed application, owned terminated argv/env, explicit
@@ -242,29 +205,9 @@ fn create(
         )
     };
     let cause = io::Error::last_os_error();
-    // Handles are about to close in the parent, regardless of native outcome.
-    // Clearing their flags first also covers an independent later child spawn.
-    let mut clear_error = None;
-    for borrowed in &local {
-        if let Err(cause) = clear(borrowed.as_raw_handle()) {
-            clear_error.get_or_insert(cause);
-        }
-    }
-    if let Some(remote) = &mut remote
-        && let Err(error) = remote.close()
-    {
-        clear_error.get_or_insert(error);
-    }
+    let clear_error = clear_inherited(&local, remote.as_mut());
     if created == 0 {
-        return Err(native(
-            if cause.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
-                ProcErrorCode::BreakawayDenied
-            } else {
-                ProcErrorCode::LaunchFailed
-            },
-            "create detached runtime outside caller jobs",
-            cause,
-        ));
+        return Err(creation_refused(cause));
     }
     // SAFETY: successful CreateProcessW transfers two valid independent owned
     // references. No fallible operation occurs before custody is returned.
@@ -277,6 +220,89 @@ fn create(
         bytes,
         error: clear_error,
     })
+}
+
+/// The handle list and optional broker parent stay borrowed by the returned
+/// list until it is dropped after `CreateProcessW`.
+fn process_attributes<'a>(
+    inherited: &'a [HANDLE],
+    native_parent: &'a [HANDLE],
+    brokered: bool,
+) -> ProcResult<crate::windows_native::attributes::Attributes<'a>> {
+    let mut attributes = crate::windows_native::attributes::Attributes::new(
+        if brokered { 2 } else { 1 },
+        "size runtime process attributes",
+        "initialize runtime process attributes",
+    )
+    .map_err(|e| fail(e.operation, e.source))?;
+    attributes
+        .set(
+            PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+            inherited,
+            "set runtime handle inheritance",
+        )
+        .map_err(|e| fail(e.operation, e.source))?;
+    if brokered {
+        attributes
+            .set(
+                PROC_THREAD_ATTRIBUTE_PARENT_PROCESS as usize,
+                native_parent,
+                "set detached runtime broker",
+            )
+            .map_err(|e| fail(e.operation, e.source))?;
+    }
+    Ok(attributes)
+}
+
+/// A sorted, double-terminated UTF-16 environment block.
+fn environment_block(spec: &RuntimeLaunchSpec) -> Vec<u16> {
+    let mut sorted: Vec<_> = spec.environment.entries.iter().collect();
+    sorted.sort_by_key(|(key, _)| key.to_string_lossy().to_uppercase());
+    let mut environment = Vec::new();
+    for (key, value) in sorted {
+        environment.extend(key.encode_wide());
+        environment.push(b'=' as u16);
+        environment.extend(value.encode_wide());
+        environment.push(0);
+    }
+    if environment.is_empty() {
+        environment.push(0);
+    }
+    environment.push(0);
+    environment
+}
+
+/// Handles are about to close in the parent, regardless of native outcome.
+/// Clearing their flags first also covers an independent later child spawn.
+/// Every handle is attempted; the first failure is reported.
+fn clear_inherited(
+    local: &[OwnedHandle],
+    remote: Option<&mut broker::RemoteHandles<'_>>,
+) -> Option<ProcError> {
+    let mut clear_error = None;
+    for borrowed in local {
+        if let Err(cause) = clear(borrowed.as_raw_handle()) {
+            clear_error.get_or_insert(cause);
+        }
+    }
+    if let Some(remote) = remote
+        && let Err(error) = remote.close()
+    {
+        clear_error.get_or_insert(error);
+    }
+    clear_error
+}
+
+fn creation_refused(cause: io::Error) -> ProcError {
+    native(
+        if cause.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
+            ProcErrorCode::BreakawayDenied
+        } else {
+            ProcErrorCode::LaunchFailed
+        },
+        "create detached runtime outside caller jobs",
+        cause,
+    )
 }
 
 pub(in crate::bootstrap) fn receive() -> ProcResult<(Frame, File, File, File, Instant)> {

@@ -341,47 +341,8 @@ impl NativeProcessApi for NativeProcessRuntime {
     fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<ProcessRead> {
         crate::read_process(machine, pid)
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     fn spawn_runtime(spec: RuntimeLaunchSpec) -> Result<RuntimeLaunch, Box<RuntimeSpawnFailure>> {
-        let before = || -> ProcResult<Frame> {
-            check(spec.deadline)?;
-            validate_spec(&spec)?;
-            if !spec.executable.is_absolute()
-                || spec.startup_nonce == [0; 16]
-                || spec.arguments.len() > 1024
-                || spec.deadline.duration_since(Instant::now()) > Duration::from_secs(300)
-            {
-                return Err(input(
-                    "runtime launch",
-                    "absolute installed image, nonzero nonce and deadline within 300 seconds required",
-                ));
-            }
-            Ok(Frame {
-                version: 1,
-                parent: current_process_identity(spec.machine.clone())?,
-                nonce: spec.startup_nonce,
-                deadline_ms: os::clock()?
-                    .checked_add(
-                        spec.deadline
-                            .saturating_duration_since(Instant::now())
-                            .as_millis() as u64,
-                    )
-                    .ok_or_else(|| input("runtime deadline", "native clock overflow"))?,
-                arguments: spec
-                    .arguments
-                    .iter()
-                    .map(|a| Argument(PathBuf::from(a)))
-                    .collect(),
-                #[cfg(windows)]
-                handles: [0; 2],
-                #[cfg(windows)]
-                broker: None,
-            })
-        };
-        let frame = before().map_err(|error| {
+        let frame = launch_frame(&spec).map_err(|error| {
             Box::new(RuntimeSpawnFailure {
                 error,
                 remaining: None,
@@ -392,7 +353,7 @@ impl NativeProcessApi for NativeProcessRuntime {
             events,
             authorization,
             detachment,
-            mut plan,
+            plan,
             encoded,
             error: creation_error,
             diagnostics,
@@ -418,65 +379,7 @@ impl NativeProcessApi for NativeProcessRuntime {
                 diagnostics,
             },
         };
-        let result = (|| {
-            child.state.identity = os::initial_identity(&child.state.native, &spec.machine)?;
-            if let Some(cause) = creation_error {
-                return Err(cause);
-            }
-            #[cfg(target_os = "linux")]
-            {
-                child.state.lifetime = os::background_lifetime(&child.state.native, &spec);
-                if child.state.lifetime.user_scope.is_some() {
-                    child.state.detachment = RuntimeDetachment::UserManagerUnit;
-                }
-            }
-            frame_write(&mut plan, &encoded, spec.deadline)?;
-            drop(plan);
-            let pid = os::receive_hello(
-                &mut child.state.native,
-                &mut child.state.events,
-                spec.deadline,
-            )?;
-            // Establish exact cleanup custody before parsing any reported bytes.
-            os::pin(&mut child.state.native, pid)?;
-            let observed = match crate::read_process(spec.machine.clone(), pid)? {
-                ProcessRead::Present(live) => live.identity,
-                _ => return Err(input("runtime startup", "native child has already exited")),
-            };
-            #[cfg(not(target_os = "macos"))]
-            {
-                child.state.identity = Some(observed.clone());
-            }
-            let reported: ProcessIdentity =
-                serde_json::from_slice(&frame_read(&mut child.state.events, spec.deadline)?)
-                    .map_err(|e| input("runtime identity frame", &e.to_string()))?;
-            if reported != observed {
-                return Err(changed(&observed, Some(&reported)));
-            }
-            #[cfg(target_os = "macos")]
-            {
-                child.state.identity = Some(observed.clone());
-            }
-            os::verify_image(&child.state.native, &spec.executable, &observed)?;
-            #[cfg(target_os = "linux")]
-            if let Some(scope) = &child.state.lifetime.user_scope {
-                crate::user_manager::verify(scope, observed.pid, spec.deadline)
-                    .map_err(|reason| input("native runtime user scope", &reason))?;
-            }
-            os::settle_launcher(&mut child.state.native, spec.deadline)?;
-            let mut pinned = [0; 17];
-            pinned[0] = b'P';
-            pinned[1..].copy_from_slice(&spec.startup_nonce);
-            os::write(
-                child.state.authorization.as_mut().ok_or_else(|| {
-                    input("runtime child pin", "private authorization channel absent")
-                })?,
-                &pinned,
-                spec.deadline,
-            )?;
-            Ok(observed)
-        })();
-        match result {
+        match child.state.admit(&spec, plan, &encoded, creation_error) {
             Ok(identity) => Ok(RuntimeLaunch {
                 detachment: child.state.detachment,
                 child,
@@ -583,5 +486,107 @@ impl NativeProcessApi for NativeProcessRuntime {
         child.state.released = true;
         child.state.authorization = None;
         Ok(())
+    }
+}
+
+/// Validate the launch request and build the child's startup frame. Nothing is
+/// spawned yet, so a refusal here leaves no child to clean up.
+fn launch_frame(spec: &RuntimeLaunchSpec) -> ProcResult<Frame> {
+    check(spec.deadline)?;
+    validate_spec(spec)?;
+    if !spec.executable.is_absolute()
+        || spec.startup_nonce == [0; 16]
+        || spec.arguments.len() > 1024
+        || spec.deadline.duration_since(Instant::now()) > Duration::from_secs(300)
+    {
+        return Err(input(
+            "runtime launch",
+            "absolute installed image, nonzero nonce and deadline within 300 seconds required",
+        ));
+    }
+    Ok(Frame {
+        version: 1,
+        parent: current_process_identity(spec.machine.clone())?,
+        nonce: spec.startup_nonce,
+        deadline_ms: os::clock()?
+            .checked_add(
+                spec.deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis() as u64,
+            )
+            .ok_or_else(|| input("runtime deadline", "native clock overflow"))?,
+        arguments: spec
+            .arguments
+            .iter()
+            .map(|a| Argument(PathBuf::from(a)))
+            .collect(),
+        #[cfg(windows)]
+        handles: [0; 2],
+        #[cfg(windows)]
+        broker: None,
+    })
+}
+impl Parent {
+    /// Hand the child its frame, then admit it only after its native identity,
+    /// reported identity and image agree, and pin it before parsing its bytes.
+    fn admit(
+        &mut self,
+        spec: &RuntimeLaunchSpec,
+        mut plan: File,
+        encoded: &[u8],
+        creation_error: Option<ProcError>,
+    ) -> ProcResult<ProcessIdentity> {
+        self.identity = os::initial_identity(&self.native, &spec.machine)?;
+        if let Some(cause) = creation_error {
+            return Err(cause);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            self.lifetime = os::background_lifetime(&self.native, spec);
+            if self.lifetime.user_scope.is_some() {
+                self.detachment = RuntimeDetachment::UserManagerUnit;
+            }
+        }
+        frame_write(&mut plan, encoded, spec.deadline)?;
+        drop(plan);
+        let pid = os::receive_hello(&mut self.native, &mut self.events, spec.deadline)?;
+        // Establish exact cleanup custody before parsing any reported bytes.
+        os::pin(&mut self.native, pid)?;
+        let observed = match crate::read_process(spec.machine.clone(), pid)? {
+            ProcessRead::Present(live) => live.identity,
+            _ => return Err(input("runtime startup", "native child has already exited")),
+        };
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.identity = Some(observed.clone());
+        }
+        let reported: ProcessIdentity =
+            serde_json::from_slice(&frame_read(&mut self.events, spec.deadline)?)
+                .map_err(|e| input("runtime identity frame", &e.to_string()))?;
+        if reported != observed {
+            return Err(changed(&observed, Some(&reported)));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.identity = Some(observed.clone());
+        }
+        os::verify_image(&self.native, &spec.executable, &observed)?;
+        #[cfg(target_os = "linux")]
+        if let Some(scope) = &self.lifetime.user_scope {
+            crate::user_manager::verify(scope, observed.pid, spec.deadline)
+                .map_err(|reason| input("native runtime user scope", &reason))?;
+        }
+        os::settle_launcher(&mut self.native, spec.deadline)?;
+        let mut pinned = [0; 17];
+        pinned[0] = b'P';
+        pinned[1..].copy_from_slice(&spec.startup_nonce);
+        os::write(
+            self.authorization.as_mut().ok_or_else(|| {
+                input("runtime child pin", "private authorization channel absent")
+            })?,
+            &pinned,
+            spec.deadline,
+        )?;
+        Ok(observed)
     }
 }
