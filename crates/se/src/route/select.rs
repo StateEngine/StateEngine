@@ -121,14 +121,13 @@ pub fn apply<S: Snapshot>(
     if retained_exact_id(snapshot, admission, op, requested)? {
         return Ok(());
     }
-    let cwd = se_proc::canonicalize_path(&cx.cwd)
+    let ancestry_cwd = requested
+        .is_none()
+        .then(|| std::fs::canonicalize(&cx.cwd))
+        .transpose()
         .map_err(|e| scope::unreadable("current directory", &e.to_string()))?;
-    // Ancestry comparisons need one prefix form, including verbatim-only
-    // Windows children of ordinary roots. Retained exact lookup uses the
-    // ordinary-consumer representation above, matching init's stored paths.
-    let ancestry_cwd = std::fs::canonicalize(&cwd)
-        .map_err(|e| scope::unreadable("current directory", &e.to_string()))?;
-    let (candidates, choices) = gather_candidates(snapshot, requested, &cwd, &ancestry_cwd, op)?;
+    let (candidates, choices) =
+        gather_candidates(snapshot, requested, &cx.cwd, ancestry_cwd.as_deref(), op)?;
     select_scope(candidates, choices, requested, op, admission)
 }
 fn bound_project_check<S: Snapshot>(
@@ -195,8 +194,8 @@ type Candidate = (usize, ProjectId);
 fn gather_candidates<S: Snapshot>(
     snapshot: &mut S,
     requested: Option<&str>,
-    cwd: &std::path::Path,
-    ancestry_cwd: &std::path::Path,
+    raw_cwd: &std::path::Path,
+    ancestry_cwd: Option<&std::path::Path>,
     op: &se_core::ops::AnyOp,
 ) -> Result<(Vec<Candidate>, Vec<ProjectChoice>)> {
     let mut candidates = Vec::new();
@@ -226,7 +225,7 @@ fn gather_candidates<S: Snapshot>(
         && (op.meta().effect == registry::Effect::Read
             || matches!(op, se_core::ops::AnyOp::ProjectRemove(_)))
     {
-        for record in super::retained::select(snapshot, requested, cwd)? {
+        for record in super::retained::select(snapshot, requested, raw_cwd)? {
             let view = se_core::ops::project_remove::removed_view(&record)?.ok_or_else(|| {
                 scope::unreadable(
                     "retained project selection",
@@ -248,7 +247,7 @@ fn candidate_depth(
     id: &ProjectId,
     name: &str,
     roots: &[Root],
-    ancestry_cwd: &std::path::Path,
+    ancestry_cwd: Option<&std::path::Path>,
 ) -> Result<Option<usize>> {
     if let Some(selector) = requested {
         return Ok(if selector == name || selector == id.to_string() {
@@ -257,6 +256,9 @@ fn candidate_depth(
             None
         });
     }
+    let Some(ancestry_cwd) = ancestry_cwd else {
+        return Ok(None);
+    };
     let mut nearest = None;
     for root in roots {
         let root = match std::fs::canonicalize(root.path.to_local()?) {

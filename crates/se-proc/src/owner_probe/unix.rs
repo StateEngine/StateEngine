@@ -49,6 +49,15 @@ pub(super) fn observe(
         ));
     }
     let owner = os::owner(pid)?;
+    if records.is_empty() {
+        return Ok(OwnerTreeObservation {
+            owner,
+            pid,
+            start: first.start,
+            agent_trees: Vec::new(),
+            ancestry_bound: AncestryBound::Complete,
+        });
+    }
     #[cfg(target_os = "macos")]
     let walk = os::ancestry::observe(pid, &boot, records)?;
     #[cfg(target_os = "macos")]

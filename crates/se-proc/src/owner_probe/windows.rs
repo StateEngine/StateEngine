@@ -127,6 +127,15 @@ pub(super) fn observe(
         ));
     }
     let user = owner(&target_pin)?;
+    if records.is_empty() {
+        return Ok(OwnerTreeObservation {
+            owner: user,
+            pid: target,
+            start: first.start,
+            agent_trees: Vec::new(),
+            ancestry_bound: AncestryBound::Complete,
+        });
+    }
     let ancestry = walk(target, records)?;
     let (current, _) = ancestry
         .live

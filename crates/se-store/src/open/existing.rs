@@ -8,7 +8,7 @@ impl SqliteFactory {
         o: &StoreOptions,
         slots: crate::read_slots::ReadSlots,
     ) -> StoreResult<Read<SqliteReader>> {
-        Self::existing_finish(o, slots, |reader, db| {
+        Self::existing_finish(o, slots, true, |reader, db| {
             connection::info_at(&db, &reader.path)?;
             Ok(reader)
         })
@@ -19,11 +19,16 @@ impl SqliteFactory {
     pub fn open_reader_with_phase(
         o: &StoreOptions,
     ) -> StoreResult<Read<(SqliteReader, ReadPhase)>> {
-        Self::existing_finish(o, crate::read_slots::ReadSlots::default(), |reader, db| {
-            let slot = reader.slots.acquire()?;
-            let phase = reader.read_phase_on(slot, db)?;
-            Ok((reader, phase))
-        })
+        Self::existing_finish(
+            o,
+            crate::read_slots::ReadSlots::default(),
+            false,
+            |r, db| {
+                let slot = r.slots.acquire()?;
+                let phase = r.read_phase_on(slot, db)?;
+                Ok((r, phase))
+            },
+        )
     }
     /// Open and validate one existing store and seed its read-phase pool with
     /// the validated connection, avoiding a redundant second open during startup.
@@ -35,6 +40,7 @@ impl SqliteFactory {
         Self::existing_finish(
             o,
             crate::read_slots::ReadSlots::new(capacity)?,
+            true,
             |reader, db| {
                 connection::info_at(&db, &reader.path)?;
                 let pool = reader.phase_pool_seeded(open_identity, db)?;
@@ -117,54 +123,42 @@ impl SqliteFactory {
     fn existing_finish<T>(
         o: &StoreOptions,
         slots: crate::read_slots::ReadSlots,
+        check_path: bool,
         finish: impl FnOnce(SqliteReader, Connection) -> StoreResult<T>,
     ) -> StoreResult<Read<T>> {
-        let reader = match Self::existing_reader(o, slots)? {
-            Read::Present { value } => value,
-            Read::Absent { checked } => return Ok(Read::Absent { checked }),
-            Read::Unreadable {
-                source,
-                reason,
-                error,
-            } => {
-                return Ok(Read::Unreadable {
-                    source,
-                    reason,
-                    error,
-                });
-            }
-            Read::Unknown { what } => return Ok(Read::Unknown { what }),
-        };
-        let db = reader.connect()?;
-        finish(reader, db).map(|value| Read::Present { value })
+        try_map_present(Self::existing_reader(o, slots)?, |r| {
+            let db = r.connect_bound(check_path)?;
+            finish(r, db).map(|value| Read::Present { value })
+        })
     }
     pub(super) fn existing_protected(
         o: &StoreOptions,
         lease: &dyn RuntimeLease,
     ) -> StoreResult<Read<SqliteReader>> {
         let path = o.state_directory.join("state.db");
-        match lease
+        let meta = lease
             .files()
             .inspect_metadata(&path)
-            .map_err(|error| context(error, &path, StoreIoStage::Open))?
-        {
-            // Callers open the writable connection via `open_verified_writer`,
-            // validating native identity and `info_at` inside `connect_checked`
-            // before `configure` runs any write pragmas, so skip an extra open.
-            Read::Present { .. } => {
-                Self::existing_reader(o, crate::read_slots::ReadSlots::default())
-            }
-            Read::Absent { checked } => Ok(Read::Absent { checked }),
-            Read::Unreadable {
-                source,
-                reason,
-                error,
-            } => Ok(Read::Unreadable {
-                source,
-                reason,
-                error,
-            }),
-            Read::Unknown { what } => Ok(Read::Unknown { what }),
-        }
+            .map_err(|e| context(e, &path, StoreIoStage::Open))?;
+        try_map_present(meta, |_| Self::existing_reader(o, Default::default()))
+    }
+}
+fn try_map_present<A, B>(
+    read: Read<A>,
+    f: impl FnOnce(A) -> StoreResult<Read<B>>,
+) -> StoreResult<Read<B>> {
+    match read {
+        Read::Present { value } => f(value),
+        Read::Absent { checked } => Ok(Read::Absent { checked }),
+        Read::Unreadable {
+            source,
+            reason,
+            error,
+        } => Ok(Read::Unreadable {
+            source,
+            reason,
+            error,
+        }),
+        Read::Unknown { what } => Ok(Read::Unknown { what }),
     }
 }

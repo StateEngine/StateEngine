@@ -67,11 +67,12 @@ impl SqliteReader {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(self.identity_observation_error(e)),
         }
-        let db = connection::connect_checked(&self.path, false, self.timeout, |db| {
-            self.validate_connection(db)
-        })?;
-        self.validate_identity()?;
-        Ok(db)
+        self.connect_bound(true)
+    }
+    pub(crate) fn connect_bound(&self, check_path: bool) -> StoreResult<Connection> {
+        connection::connect_checked(&self.path, false, self.timeout, |db| {
+            self.validate_connection(db, check_path)
+        })
     }
     pub(crate) fn bind_identity(&mut self) -> StoreResult<()> {
         self.identity = Some(
@@ -80,7 +81,7 @@ impl SqliteReader {
         );
         Ok(())
     }
-    pub(crate) fn validate_connection(&self, db: &Connection) -> StoreResult<()> {
+    pub(crate) fn validate_connection(&self, db: &Connection, check_path: bool) -> StoreResult<()> {
         #[cfg(unix)]
         let matches = se_proc::NativeFileIdentity::sqlite_path_moved(db).map(|moved| !moved);
         #[cfg(windows)]
@@ -97,7 +98,10 @@ impl SqliteReader {
         if !matches {
             return Err(self.identity_changed("SQLite's opened database file no longer matches"));
         }
-        self.validate_identity()
+        if check_path {
+            self.validate_identity()?;
+        }
+        Ok(())
     }
     pub(crate) fn identity_observation_error(&self, error: std::io::Error) -> Box<StoreError> {
         if error.kind() == std::io::ErrorKind::InvalidInput {
@@ -141,7 +145,7 @@ impl SqliteFactory {
     ) -> StoreResult<(Connection, StoreInfo)> {
         let mut verified_info = None;
         let db = connection::connect_checked(&reader.path, true, timeout, |db| {
-            reader.validate_connection(db)?;
+            reader.validate_connection(db, true)?;
             db.busy_timeout(timeout)
                 .map_err(|error| sqlite_context(error, &reader.path, StoreIoStage::Open))?;
             verified_info = Some(connection::info_at(db, &reader.path)?);
