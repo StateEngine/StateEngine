@@ -27,69 +27,48 @@ impl SqliteSnapshot {
             "SELECT revision,last_seq,{first} FROM {table} WHERE {filter} AND {first}>? ORDER BY {first} LIMIT ?"
         );
         let rows = self.query_seqs_before(&sql, params, deadline)?;
-        let mut items = Vec::new();
-        let mut bytes = 0u64;
-        let mut last = after;
-        let mut stop = StopReason::Exhausted;
-        for (revision, seq, sort) in rows {
-            check_deadline(deadline)?;
-            if items.len() == budget.page.limit.get() as usize {
-                stop = StopReason::ItemLimit;
-                break;
-            }
-            let current = if table == "principals" {
-                self.principal_metadata(seq)?
-            } else {
-                self.record(seq)?
-            };
-            let original = if matches!(first, "first_seq" | "requested_seq" | "opened_seq")
-                && sort != seq as u64
-            {
-                Some(Box::new(if table == "principals" {
-                    self.principal_metadata(sort as i64)?
-                } else {
-                    self.record(sort as i64)?
-                }))
-            } else {
-                None
-            };
-            let cost = event_size(&current)?
-                + original
-                    .as_ref()
-                    .map(|e| event_size(e))
-                    .transpose()?
-                    .unwrap_or(0);
-            if bytes + cost > u64::from(budget.page.max_bytes.get()) {
-                if items.is_empty() {
-                    return Err(budget_failure(
-                        &budget,
-                        cost,
-                        "first head exceeds page bytes",
-                    ));
-                }
-                stop = StopReason::ByteLimit;
-                break;
-            }
-            bytes += cost;
-            last = sort;
-            items.push(ProjectionRecord {
-                revision: codec::revision(revision)?,
-                original,
-                current,
-            });
-        }
-        check_deadline(deadline)?;
-        self.page(
-            items,
-            &budget,
-            &binding,
-            page::PageFacts {
+        self.collect_page(
+            rows,
+            page::PageCollect {
+                budget: &budget,
+                binding: &binding,
                 h,
                 after,
-                last,
-                bytes,
-                stop,
-                remaining: None,
+                deadline,
+                oversize_cause: "first head exceeds page bytes",
+            },
+            |(revision, seq, sort)| {
+                let current = if table == "principals" {
+                    self.principal_metadata(seq)?
+                } else {
+                    self.record(seq)?
+                };
+                let original = if matches!(first, "first_seq" | "requested_seq" | "opened_seq")
+                    && sort != seq as u64
+                {
+                    Some(Box::new(if table == "principals" {
+                        self.principal_metadata(sort as i64)?
+                    } else {
+                        self.record(sort as i64)?
+                    }))
+                } else {
+                    None
+                };
+                let cost = event_size(&current)?
+                    + original
+                        .as_ref()
+                        .map(|e| event_size(e))
+                        .transpose()?
+                        .unwrap_or(0);
+                Ok((
+                    ProjectionRecord {
+                        revision: codec::revision(revision)?,
+                        original,
+                        current,
+                    },
+                    cost,
+                    sort,
+                ))
             },
         )
     }

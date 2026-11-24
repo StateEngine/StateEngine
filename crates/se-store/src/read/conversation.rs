@@ -4,10 +4,6 @@ use rusqlite::types::Value;
 use std::collections::BTreeSet;
 
 impl SqliteSnapshot {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) fn read_conversation_turns(
         &mut self,
         agent: AgentId,
@@ -23,6 +19,54 @@ impl SqliteSnapshot {
             agent.as_str()
         );
         let (high, after) = self.window(&budget, &binding, false)?;
+        let sessions = self.conversation_source_sessions(&agent, native_ref, high, deadline)?;
+        let placeholders = if sessions.is_empty() {
+            "NULL".into()
+        } else {
+            vec!["?"; sessions.len()].join(",")
+        };
+        let sql = format!(
+            "SELECT e.entity_revision,t.event_seq,t.event_seq
+             FROM turn_data t INDEXED BY turn_data_session_seq JOIN events e ON e.seq=t.event_seq
+             WHERE t.project_id=? AND t.agent_id=? AND t.provider=?
+             AND t.role IN ('user','assistant') AND t.event_seq>? AND t.event_seq<=?
+             AND t.session_id IN ({placeholders}) ORDER BY t.event_seq LIMIT ?"
+        );
+        let mut params = vec![
+            Value::Blob(project),
+            Value::Blob(agent_key),
+            Value::Text(codec::capture::provider(provider).into()),
+            Value::Integer(after as i64),
+            Value::Integer(high as i64),
+        ];
+        params.extend(sessions.into_iter().map(Value::Blob));
+        params.push(Value::Integer(i64::from(budget.page.limit.get()) + 1));
+        let rows = self.query_seqs_before(&sql, params, deadline)?;
+        self.collect_page(
+            rows,
+            page::PageCollect {
+                budget: &budget,
+                binding: &binding,
+                h: high,
+                after,
+                deadline,
+                oversize_cause: "first complete conversation turn exceeds page bytes",
+            },
+            |(_, seq, _)| {
+                let event = self.record(seq)?;
+                let cost = query::event_size(&event)?;
+                Ok((event, cost, seq as u64))
+            },
+        )
+    }
+
+    fn conversation_source_sessions(
+        &mut self,
+        agent: &AgentId,
+        native_ref: &str,
+        high: u64,
+        deadline: Instant,
+    ) -> StoreResult<BTreeSet<Vec<u8>>> {
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let project_wire = crate::identity::project(&self.scope.admission.scope)?;
         let mut sessions = BTreeSet::new();
@@ -59,7 +103,7 @@ impl SqliteSnapshot {
                     )
                     .map_err(|error| self.read_sql(error))?;
                 let selected = SessionId::try_from(selected).map_err(invalid)?;
-                if !self.session_visible(&selected, &agent)? {
+                if !self.session_visible(&selected, agent)? {
                     continue;
                 }
                 let source = self.record(seq)?;
@@ -89,68 +133,6 @@ impl SqliteSnapshot {
                 }
             }
         }
-        let placeholders = if sessions.is_empty() {
-            "NULL".into()
-        } else {
-            vec!["?"; sessions.len()].join(",")
-        };
-        let sql = format!(
-            "SELECT e.entity_revision,t.event_seq,t.event_seq
-             FROM turn_data t INDEXED BY turn_data_session_seq JOIN events e ON e.seq=t.event_seq
-             WHERE t.project_id=? AND t.agent_id=? AND t.provider=?
-             AND t.role IN ('user','assistant') AND t.event_seq>? AND t.event_seq<=?
-             AND t.session_id IN ({placeholders}) ORDER BY t.event_seq LIMIT ?"
-        );
-        let mut params = vec![
-            Value::Blob(project),
-            Value::Blob(agent_key),
-            Value::Text(codec::capture::provider(provider).into()),
-            Value::Integer(after as i64),
-            Value::Integer(high as i64),
-        ];
-        params.extend(sessions.into_iter().map(Value::Blob));
-        params.push(Value::Integer(i64::from(budget.page.limit.get()) + 1));
-        let rows = self.query_seqs_before(&sql, params, deadline)?;
-        let mut items = Vec::new();
-        let mut bytes = 0;
-        let mut last = after;
-        let mut stop = StopReason::Exhausted;
-        for (_, seq, _) in rows {
-            query::check_deadline(deadline)?;
-            if items.len() == budget.page.limit.get() as usize {
-                stop = StopReason::ItemLimit;
-                break;
-            }
-            let event = self.record(seq)?;
-            let cost = query::event_size(&event)?;
-            if bytes + cost > u64::from(budget.page.max_bytes.get()) {
-                if items.is_empty() {
-                    return Err(query::budget_failure(
-                        &budget,
-                        cost,
-                        "first complete conversation turn exceeds page bytes",
-                    ));
-                }
-                stop = StopReason::ByteLimit;
-                break;
-            }
-            bytes += cost;
-            last = seq as u64;
-            items.push(event);
-        }
-        query::check_deadline(deadline)?;
-        self.page(
-            items,
-            &budget,
-            &binding,
-            page::PageFacts {
-                h: high,
-                after,
-                last,
-                bytes,
-                stop,
-                remaining: None,
-            },
-        )
+        Ok(sessions)
     }
 }

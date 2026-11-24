@@ -154,50 +154,20 @@ impl SqliteSnapshot {
         let binding = format!("history:turns:{}", agent.as_str());
         let (h, after) = self.window(&budget, &binding, false)?;
         let rows=self.query_seqs_before("SELECT e.entity_revision,t.event_seq,t.event_seq FROM turn_data t INDEXED BY turn_data_agent_seq JOIN events e ON e.seq=t.event_seq WHERE t.project_id=? AND t.agent_id=? AND t.event_seq>? AND t.event_seq<=? ORDER BY t.event_seq LIMIT ?",vec![rusqlite::types::Value::Blob(p),rusqlite::types::Value::Blob(a),rusqlite::types::Value::Integer(after as i64),rusqlite::types::Value::Integer(h as i64),rusqlite::types::Value::Integer(i64::from(budget.page.limit.get())+1)],deadline)?;
-        let mut items = Vec::new();
-        let mut bytes = 0;
-        let mut last = after;
-        let mut stop = StopReason::Exhausted;
-        for (_, seq, _) in rows {
-            if Instant::now() >= deadline {
-                return Err(fail(
-                    StoreErrorCode::ReadIncomplete,
-                    "turn read deadline exhausted",
-                ));
-            }
-            if items.len() == budget.page.limit.get() as usize {
-                stop = StopReason::ItemLimit;
-                break;
-            }
-            let e = self.record(seq)?;
-            let cost = query::event_size(&e)?;
-            if bytes + cost > u64::from(budget.page.max_bytes.get()) {
-                if items.is_empty() {
-                    return Err(query::budget_failure(
-                        &budget,
-                        cost,
-                        "first complete turn exceeds page bytes",
-                    ));
-                }
-                stop = StopReason::ByteLimit;
-                break;
-            }
-            bytes += cost;
-            last = seq as u64;
-            items.push(e);
-        }
-        query::check_deadline(deadline)?;
-        self.page(
-            items,
-            &budget,
-            &binding,
-            page::PageFacts {
+        self.collect_page(
+            rows,
+            page::PageCollect {
+                budget: &budget,
+                binding: &binding,
                 h,
                 after,
-                last,
-                bytes,
-                stop,
-                remaining: None,
+                deadline,
+                oversize_cause: "first complete turn exceeds page bytes",
+            },
+            |(_, seq, _)| {
+                let event = self.record(seq)?;
+                let cost = query::event_size(&event)?;
+                Ok((event, cost, seq as u64))
             },
         )
     }

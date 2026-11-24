@@ -7,7 +7,82 @@ pub(super) struct PageFacts {
     pub stop: StopReason,
     pub remaining: Option<u64>,
 }
+pub(super) struct PageCollect<'a> {
+    pub budget: &'a ReadBudget,
+    pub binding: &'a str,
+    pub h: u64,
+    pub after: u64,
+    pub deadline: Instant,
+    pub oversize_cause: &'static str,
+}
+pub(super) fn collect_page_rows<R, T, F>(
+    rows: Vec<R>,
+    budget: &ReadBudget,
+    after: u64,
+    deadline: Instant,
+    oversize_cause: &'static str,
+    mut load: F,
+) -> StoreResult<(Vec<T>, u64, u64, StopReason)>
+where
+    F: FnMut(R) -> StoreResult<(T, u64, u64)>,
+{
+    let mut items = Vec::new();
+    let mut bytes = 0u64;
+    let mut last = after;
+    let mut stop = StopReason::Exhausted;
+    for row in rows {
+        query::check_deadline(deadline)?;
+        if items.len() == budget.page.limit.get() as usize {
+            stop = StopReason::ItemLimit;
+            break;
+        }
+        let (item, cost, cursor) = load(row)?;
+        if bytes + cost > u64::from(budget.page.max_bytes.get()) {
+            if items.is_empty() {
+                return Err(query::budget_failure(budget, cost, oversize_cause));
+            }
+            stop = StopReason::ByteLimit;
+            break;
+        }
+        bytes += cost;
+        last = cursor;
+        items.push(item);
+    }
+    query::check_deadline(deadline)?;
+    Ok((items, bytes, last, stop))
+}
 impl SqliteSnapshot {
+    pub(super) fn collect_page<R, T, F>(
+        &self,
+        rows: Vec<R>,
+        spec: PageCollect<'_>,
+        load: F,
+    ) -> StoreResult<Page<T>>
+    where
+        F: FnMut(R) -> StoreResult<(T, u64, u64)>,
+    {
+        let (items, bytes, last, stop) = collect_page_rows(
+            rows,
+            spec.budget,
+            spec.after,
+            spec.deadline,
+            spec.oversize_cause,
+            load,
+        )?;
+        self.page(
+            items,
+            spec.budget,
+            spec.binding,
+            PageFacts {
+                h: spec.h,
+                after: spec.after,
+                last,
+                bytes,
+                stop,
+                remaining: None,
+            },
+        )
+    }
     /// The window source for rows read from this store and admitted scope.
     pub(super) fn store_source(&self) -> Source {
         let project = match &self.scope.admission.scope {

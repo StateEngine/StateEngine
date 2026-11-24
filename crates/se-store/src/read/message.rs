@@ -3,6 +3,13 @@ use crate::sql_value::value;
 use rusqlite::types::Value;
 pub(super) type MarkRow = (i64, u64, Option<u64>, Option<u64>, Option<u64>);
 type DeliveryRow = (i64, u64, Option<u64>, Option<u64>, Option<u64>, Vec<u8>);
+struct MailActors<'a> {
+    project: &'a [u8],
+    to: Option<&'a [u8]>,
+    from: Option<&'a [u8]>,
+    own: Option<&'a [u8]>,
+}
+
 impl SqliteSnapshot {
     /// Schema 3 adds delivery heads; it still needs the retained direct-mail
     /// projection and marks for decoding and subsequent recipient mutations.
@@ -30,10 +37,7 @@ impl SqliteSnapshot {
     ) -> StoreResult<Page<MessageRecord>> {
         self.read_messages_with_delivery(query, budget, false, false)
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
+
     pub(super) fn read_messages_with_delivery(
         &mut self,
         query: MessageQuery,
@@ -77,188 +81,34 @@ impl SqliteSnapshot {
             Visibility::SelfOnly(a) => Some(self.agent_bytes(a)?),
             _ => None,
         };
-        let start = Instant::now();
-        let deadline = start + budget.deadline;
-        self.db
-            .progress_handler(1000, Some(move || Instant::now() >= deadline))
-            .map_err(|error| self.read_sql(error))?;
-        let result: StoreResult<Vec<DeliveryRow>> = (|| {
-            let mut rows = if own
-                .as_ref()
-                .is_some_and(|own| to.as_ref() == Some(own) || from.as_ref() == Some(own))
-            {
-                // An explicit self sender or recipient already bounds visibility.
-                // Its intersection with the other self stream is a subset, so
-                // querying that stream again can scan the whole unread inbox
-                // just to prove an empty self-sent intersection.
-                self.mail_stream(
-                    &p,
-                    to.as_deref(),
-                    from.as_deref(),
-                    &query,
-                    h,
-                    after,
-                    &budget,
-                    pending,
-                )?
-            } else if let Some(own) = own {
-                // A sent-or-received view is two index streams, not a broad page
-                // followed by a visibility filter that can hide eligible rows.
-                let mut sent = if from.as_ref().is_none_or(|v| v == &own) {
-                    self.mail_stream(
-                        &p,
-                        to.as_deref(),
-                        Some(&own),
-                        &query,
-                        h,
-                        after,
-                        &budget,
-                        pending,
-                    )?
-                } else {
-                    Vec::new()
-                };
-                let received = if to.as_ref().is_none_or(|v| v == &own) {
-                    self.mail_stream(
-                        &p,
-                        Some(&own),
-                        from.as_deref(),
-                        &query,
-                        h,
-                        after,
-                        &budget,
-                        pending,
-                    )?
-                } else {
-                    Vec::new()
-                };
-                sent.extend(received);
-                sent
-            } else {
-                self.mail_stream(
-                    &p,
-                    to.as_deref(),
-                    from.as_deref(),
-                    &query,
-                    h,
-                    after,
-                    &budget,
-                    pending,
-                )?
-            };
-            if query.direction == MailDirection::NewestFirst {
-                rows.sort_by_key(|r| i64::MAX - r.0);
-            } else {
-                rows.sort_by_key(|r| r.0);
-            }
-            rows.dedup_by_key(|r| r.0);
-            rows.truncate(budget.page.limit.get() as usize + 1);
-            Ok(rows)
-        })();
-        self.db
-            .progress_handler(0, None::<fn() -> bool>)
-            .map_err(|error| self.read_sql(error))?;
-        let rows: Vec<DeliveryRow> = result?;
-        let mut items = Vec::new();
-        let mut bytes = 0;
-        let mut last = after;
-        let mut stop = StopReason::Exhausted;
-        for (sent, revision, d, r, x, recipient) in rows {
-            if items.len() == budget.page.limit.get() as usize {
-                stop = StopReason::ItemLimit;
-                break;
-            }
-            if start.elapsed() >= budget.deadline {
-                return Err(fail(
-                    StoreErrorCode::ReadIncomplete,
-                    "mail read deadline exhausted",
-                ));
-            }
-            let mut message = self.message_at(sent, revision, d, r, x, Some(&recipient))?;
-            if !query.full_body
-                && let StoredText::Present(s) = &mut message.body
-            {
-                let end = s.char_indices().nth(400).map(|p| p.0).unwrap_or(s.len());
-                if end < s.len() {
-                    s.truncate(end);
-                    message.body_complete = false
-                }
-            }
-            let body = match &message.body {
-                StoredText::Present(s) => codec::encode(s)?,
-                StoredText::Erased { .. } => String::new(),
-            };
-            let metadata = codec::encode(&(
-                &message.message,
-                &message.event,
-                &message.sender,
-                &message.recipient,
-                &message.work,
-                &message.kind,
-                &message.refs,
-                &message.reply_to,
-                message.body_complete,
-            ))?;
-            let notifications = message
-                .notifications
-                .iter()
-                .map(|n| {
-                    n.recipient.wire().len()
-                        + n.state.len()
-                        + n.code.as_ref().map_or(0, String::len)
-                        + 256
-                })
-                .sum::<usize>();
-            let cost = (body.len() + metadata.len() + notifications) as u64 + 1024;
-            if cost + bytes > u64::from(budget.page.max_bytes.get()) {
-                if items.is_empty() {
-                    let mut e = fail(
-                        StoreErrorCode::ReadBudgetTooSmall,
-                        "first complete mail item exceeds page bytes",
-                    );
-                    e.detail = StoreDetail::Budget {
-                        allowed: u64::from(budget.page.max_bytes.get()),
-                        required: Some(cost),
-                    };
-                    return Err(e);
-                }
-                stop = StopReason::ByteLimit;
-                break;
-            }
-            bytes += cost;
-            last = sent as u64;
-            items.push(message);
-        }
-        let remaining = if !pending
-            && !skip_count
-            && after == 0
-            && query.unread_only
-            && query.kind.is_none()
-            && query.sender.is_none()
-            && query.recipient.is_some()
-            && match &self.scope.visibility {
-                Visibility::SelfOnly(agent) => {
-                    query.recipient.as_ref() == Some(&Actor::Agent(agent.clone()))
-                }
-                _ => true,
-            } {
-            let total = self.count_messages(query.clone())?;
-            let remaining = total.checked_sub(items.len() as u64).ok_or_else(|| {
-                fail(
-                    StoreErrorCode::ProjectionInconsistent,
-                    "unread count is smaller than its eligible page",
-                )
-            })?;
-            if stop == StopReason::Exhausted && remaining != 0 {
-                return Err(fail(
-                    StoreErrorCode::ProjectionInconsistent,
-                    "unread count disagrees with exhausted mail query",
-                ));
-            }
-            Some(remaining)
-        } else {
-            None
-        };
+        let deadline = Instant::now() + budget.deadline;
+        let rows = self.query_mail_delivery_rows(
+            &MailActors {
+                project: &p,
+                to: to.as_deref(),
+                from: from.as_deref(),
+                own: own.as_deref(),
+            },
+            &query,
+            (h, after),
+            &budget,
+            pending,
+            deadline,
+        )?;
+        let (items, bytes, last, stop) = page::collect_page_rows(
+            rows,
+            &budget,
+            after,
+            deadline,
+            "first complete mail item exceeds page bytes",
+            |(sent, revision, d, r, x, recipient)| {
+                let mut message = self.message_at(sent, revision, d, r, x, Some(&recipient))?;
+                let cost = trim_and_cost_message(&mut message, query.full_body)?;
+                Ok((message, cost, sent as u64))
+            },
+        )?;
+        let remaining =
+            self.unread_remaining_count(&query, pending, skip_count, after, items.len(), stop)?;
         self.page(
             items,
             &budget,
@@ -278,6 +128,97 @@ impl SqliteSnapshot {
                 remaining,
             },
         )
+    }
+
+    fn query_mail_delivery_rows(
+        &mut self,
+        actors: &MailActors<'_>,
+        query: &MessageQuery,
+        (h, after): (u64, u64),
+        budget: &ReadBudget,
+        pending: bool,
+        deadline: Instant,
+    ) -> StoreResult<Vec<DeliveryRow>> {
+        self.db
+            .progress_handler(1000, Some(move || Instant::now() >= deadline))
+            .map_err(|error| self.read_sql(error))?;
+        let result: StoreResult<Vec<DeliveryRow>> = (|| {
+            let stream = |to, from| {
+                self.mail_stream(actors.project, to, from, query, h, after, budget, pending)
+            };
+            let mut rows = if let Some(own) = actors
+                .own
+                .filter(|own| actors.to != Some(*own) && actors.from != Some(*own))
+            {
+                // A sent-or-received view is two index streams, not a broad page
+                // followed by a visibility filter that can hide eligible rows.
+                let mut sent = if actors.from.is_none_or(|v| v == own) {
+                    stream(actors.to, Some(own))?
+                } else {
+                    Vec::new()
+                };
+                if actors.to.is_none_or(|v| v == own) {
+                    sent.extend(stream(Some(own), actors.from)?);
+                }
+                sent
+            } else {
+                // Either unscoped or an explicit self sender/recipient already bounds visibility.
+                stream(actors.to, actors.from)?
+            };
+            if query.direction == MailDirection::NewestFirst {
+                rows.sort_by_key(|r| i64::MAX - r.0);
+            } else {
+                rows.sort_by_key(|r| r.0);
+            }
+            rows.dedup_by_key(|r| r.0);
+            rows.truncate(budget.page.limit.get() as usize + 1);
+            Ok(rows)
+        })();
+        self.db
+            .progress_handler(0, None::<fn() -> bool>)
+            .map_err(|error| self.read_sql(error))?;
+        result
+    }
+
+    fn unread_remaining_count(
+        &mut self,
+        query: &MessageQuery,
+        pending: bool,
+        skip_count: bool,
+        after: u64,
+        returned: usize,
+        stop: StopReason,
+    ) -> StoreResult<Option<u64>> {
+        if pending
+            || skip_count
+            || after != 0
+            || !query.unread_only
+            || query.kind.is_some()
+            || query.sender.is_some()
+            || query.recipient.is_none()
+            || !match &self.scope.visibility {
+                Visibility::SelfOnly(agent) => {
+                    query.recipient.as_ref() == Some(&Actor::Agent(agent.clone()))
+                }
+                _ => true,
+            }
+        {
+            return Ok(None);
+        }
+        let total = self.count_messages(query.clone())?;
+        let remaining = total.checked_sub(returned as u64).ok_or_else(|| {
+            fail(
+                StoreErrorCode::ProjectionInconsistent,
+                "unread count is smaller than its eligible page",
+            )
+        })?;
+        if stop == StopReason::Exhausted && remaining != 0 {
+            return Err(fail(
+                StoreErrorCode::ProjectionInconsistent,
+                "unread count disagrees with exhausted mail query",
+            ));
+        }
+        Ok(Some(remaining))
     }
     #[allow(
         clippy::too_many_arguments,
@@ -352,6 +293,39 @@ impl SqliteSnapshot {
             _ => sql(e),
         })
     }
+}
+
+fn trim_and_cost_message(message: &mut MessageRecord, full_body: bool) -> StoreResult<u64> {
+    if !full_body && let StoredText::Present(s) = &mut message.body {
+        let end = s.char_indices().nth(400).map(|p| p.0).unwrap_or(s.len());
+        if end < s.len() {
+            s.truncate(end);
+            message.body_complete = false;
+        }
+    }
+    let body = match &message.body {
+        StoredText::Present(s) => codec::encode(s)?,
+        StoredText::Erased { .. } => String::new(),
+    };
+    let metadata = codec::encode(&(
+        &message.message,
+        &message.event,
+        &message.sender,
+        &message.recipient,
+        &message.work,
+        &message.kind,
+        &message.refs,
+        &message.reply_to,
+        message.body_complete,
+    ))?;
+    let notifications = message
+        .notifications
+        .iter()
+        .map(|n| {
+            n.recipient.wire().len() + n.state.len() + n.code.as_ref().map_or(0, String::len) + 256
+        })
+        .sum::<usize>();
+    Ok((body.len() + metadata.len() + notifications) as u64 + 1024)
 }
 
 #[allow(
