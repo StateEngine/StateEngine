@@ -29,34 +29,64 @@ pub fn configure(
         // Other harnesses receive StateEngine's tools at launch; no provider file is edited.
         _ => return Ok(Vec::new()),
     };
-    if kind == Kind::Codex
-        && let Some(conflict) = codex_transport::observe(root)?.conflict()
-    {
-        return Err(failure(&conflict));
+    let mut changed = Vec::new();
+    if kind == Kind::Codex {
+        let observed = codex_transport::observe(root)?;
+        let stripped = codex_transport::strip_owned_urls(&observed)?;
+        changed.extend(stripped.iter().map(|file| {
+            format!(
+                "removed a conflicting `url` from StateEngine's Codex MCP entry in {}",
+                file.display()
+            )
+        }));
+        let observed = if stripped.is_empty() {
+            observed
+        } else {
+            codex_transport::observe(root)?
+        };
+        if let Some(conflict) = observed.conflict() {
+            return Err(failure(&conflict));
+        }
+        // Codex has one user-wide MCP list: a custom home written there would serve every
+        // project and break once that home is gone. Leave the choice to the user.
+        if alternate_home.is_some() {
+            changed.push(manual(
+                kind,
+                &args,
+                "Codex MCP settings apply to every project; to use this home with Codex",
+            )?);
+            return Ok(changed);
+        }
     }
     let command = configuration.provider_command(kind.provider().into());
     let path = Path::new(command);
     if !path.is_absolute() && path.components().count() == 1 && std::env::var_os("PATH").is_none() {
-        return Ok(vec![missing(kind, &args)?]);
+        changed.push(missing(kind, &args)?);
+        return Ok(changed);
     }
     match crate::resolve_provider_executable(configuration, kind.provider().into(), None, None) {
         Ok(executable) if install(root, &executable, kind, &args)? => {
-            Ok(vec![format!("configured {} MCP", kind.label())])
+            changed.push(format!("configured {} MCP", kind.label()));
         }
-        Ok(_) => Ok(Vec::new()),
+        Ok(_) => (),
         Err(error)
             if matches!(
                 error.body.detail(),
                 se_types::Detail::ProviderCliNotFound(_)
             ) =>
         {
-            Ok(vec![missing(kind, &args)?])
+            changed.push(missing(kind, &args)?);
         }
-        Err(error) => Err(error),
+        Err(error) => return Err(error),
     }
+    Ok(changed)
 }
 
 fn missing(kind: Kind, args: &[&str]) -> Result<String> {
+    manual(kind, args, &format!("Install {}, then", kind.label()))
+}
+
+fn manual(kind: Kind, args: &[&str], lead: &str) -> Result<String> {
     let prefix = match kind {
         Kind::Claude => "claude mcp add --scope local stateengine -- se",
         Kind::Codex => "codex mcp add stateengine -- se",
@@ -75,10 +105,7 @@ fn missing(kind: Kind, args: &[&str]) -> Result<String> {
     } else {
         "run"
     };
-    Ok(format!(
-        "Install {}, then {prompt}: {prefix} {words}",
-        kind.label()
-    ))
+    Ok(format!("{lead} {prompt}: {prefix} {words}"))
 }
 
 pub fn install(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) -> Result<bool> {

@@ -70,43 +70,20 @@ fn cli(kind: Kind, state: CliState, any_ready: bool, at: &str) -> DiagnosisCheck
 fn codex_mcp(at: &str) -> DiagnosisCheck {
     let mut value = super::check(
         "provider.codex_mcp",
-        "Codex MCP transport",
+        "Codex MCP entry",
         CheckState::Ok,
         String::new(),
         at,
     );
     value.expected = Some(
-        "The Codex `stateengine` MCP server sets one transport across the user and project configuration files"
+        "The Codex `stateengine` MCP server sets one transport across the user and project configuration files, and its home and executable exist"
             .into(),
     );
     let observed = std::env::current_dir()
         .map_err(|error| error.to_string())
         .and_then(|cwd| codex_transport::observe(&cwd).map_err(|error| error.body.message()));
     match observed {
-        Ok(Transports::Consistent { files }) if files.is_empty() => {
-            value.observed = Some("No Codex configuration file exists yet".into());
-        }
-        Ok(Transports::Consistent { files }) => {
-            value.observed = Some(format!(
-                "One transport or none in {}",
-                files
-                    .iter()
-                    .map(|file| file.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-        Ok(conflict @ Transports::Conflict { .. }) => {
-            value.state = CheckState::Failed;
-            if let Transports::Conflict { command, url } = &conflict {
-                value.observed = Some(format!(
-                    "`command` in {}; `url` in {}",
-                    command.display(),
-                    url.display()
-                ));
-            }
-            value.fix = conflict.conflict().map(text);
-        }
+        Ok(read @ Transports::Read { .. }) => codex_entries(&mut value, &read),
         Ok(Transports::Unreadable { file, reason }) => {
             value.state = CheckState::Unmeasured;
             value.observed = Some(format!("{} could not be read: {reason}", file.display()));
@@ -117,6 +94,36 @@ fn codex_mcp(at: &str) -> DiagnosisCheck {
         }
     }
     value
+}
+
+fn codex_entries(value: &mut DiagnosisCheck, read: &Transports) {
+    let Transports::Read { files, .. } = read else {
+        return;
+    };
+    let mut problems: Vec<String> = read.conflict().into_iter().collect();
+    problems.extend(read.stale());
+    if let Some((command, url)) = read.split() {
+        value.observed = Some(format!(
+            "`command` in {}; `url` in {}",
+            command.display(),
+            url.display()
+        ));
+    } else if files.is_empty() {
+        value.observed = Some("No Codex configuration file exists yet".into());
+    } else {
+        value.observed = Some(format!(
+            "Read {}",
+            files
+                .iter()
+                .map(|file| file.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !problems.is_empty() {
+        value.state = CheckState::Failed;
+        value.fix = Some(text(problems.join(" ")));
+    }
 }
 
 fn minimum(kind: Kind) -> &'static str {
