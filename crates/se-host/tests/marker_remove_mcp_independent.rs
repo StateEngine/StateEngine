@@ -7,12 +7,102 @@ use serde_json::json;
 mod support;
 use support::*;
 
+async fn run_marker_probe(
+    initialized: HostProcessInitialization,
+    f: &Fixture,
+    rt: &tokio::runtime::Runtime,
+) -> Check {
+    let mut host =
+        HostedRuntime::prepare(initialized, start(f)?, rt.handle().clone(), &bound()?).await?;
+    let listener = host.listen(rt.handle().clone(), &bound()?).await?;
+    let port = host.http_port().ok_or("HTTP port absent")?;
+    let stop = host.local_stop();
+    let consumer = async {
+        let result: Check = async {
+            let bearer = "synthetic-marker-remove-capability";
+            let listed = rpc(port, bearer, "tools/list", json!({})).await?;
+            let tools = listed["result"]["tools"]
+                .as_array()
+                .ok_or("tool list absent")?;
+            require(
+                !tools
+                    .iter()
+                    .any(|tool| tool["name"] == "stateengine_remove"),
+                "MCP advertised owner-only Remove",
+            )?;
+            // WorkingStateGet has an empty DTO: its agent is selected by
+            // the authenticated session, not invented read arguments.
+            let before = rpc(
+                port,
+                bearer,
+                "tools/call",
+                json!({"name":"stateengine_working_state_get", "arguments":{}}),
+            )
+            .await?;
+            require(
+                before["result"]["isError"] == false,
+                format!("initial public working-state read failed: {before}"),
+            )?;
+            let note = &before["result"]["structuredContent"];
+            require(
+                note["agent"]["id"] == json!(f.a)
+                    && note["value"]["state"] == "present"
+                    && note["value"]["value"]["text"] == "retained-marker-remove-note"
+                    && note["value"]["value"]["revision"] == 1,
+                format!("initial public read did not return the exact saved note: {before}"),
+            )?;
+            // Actual ProjectRemove input shape, not a fabricated keep-data flag.
+            for all in [false, true] {
+                let refused = rpc(
+                    port,
+                    bearer,
+                    "tools/call",
+                    json!({
+                        "name":"stateengine_remove",
+                        "arguments":{
+                            "all":all,
+                            "keep_integrations":false,
+                            "idempotency_key":format!("mcp-remove-{all}")
+                        }
+                    }),
+                )
+                .await?;
+                require(
+                    refused["result"]["isError"] == true,
+                    format!("MCP Remove succeeded: {refused}"),
+                )?;
+            }
+            // Status needs native process custody absent from this fixture.
+            // Instead prove the original saved note remains publicly readable.
+            let after = rpc(
+                port,
+                bearer,
+                "tools/call",
+                json!({"name":"stateengine_working_state_get", "arguments":{}}),
+            )
+            .await?;
+            require(
+                after["result"]["isError"] == false
+                    && after["result"]["structuredContent"] == *note,
+                format!("saved note changed or became unreadable after refused Remove: {after}"),
+            )?;
+            Ok(())
+        }
+        .await;
+        stop.request();
+        result
+    };
+    let (exit, result) = join(host.serve(listener), consumer).await;
+    let closed = exit.finish(&bound()?).await;
+    require(
+        closed.transport_closed && closed.endpoint_retired,
+        "host cleanup incomplete",
+    )?;
+    result
+}
+
 /// Protects: actual HTTP tool discovery/calls refuse Remove, with project state retained.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn authenticated_mcp_cannot_remove_a_project() -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;
@@ -62,97 +152,7 @@ fn authenticated_mcp_cannot_remove_a_project() -> Check {
         .enable_all()
         .max_blocking_threads(2)
         .build()?;
-    rt.block_on(async {
-        let mut host =
-            HostedRuntime::prepare(initialized, start(&f)?, rt.handle().clone(), &bound()?).await?;
-        let listener = host.listen(rt.handle().clone(), &bound()?).await?;
-        let port = host.http_port().ok_or("HTTP port absent")?;
-        let stop = host.local_stop();
-        let consumer = async {
-            let result: Check = async {
-                let bearer = "synthetic-marker-remove-capability";
-                let listed = rpc(port, bearer, "tools/list", json!({})).await?;
-                let tools = listed["result"]["tools"]
-                    .as_array()
-                    .ok_or("tool list absent")?;
-                require(
-                    !tools
-                        .iter()
-                        .any(|tool| tool["name"] == "stateengine_remove"),
-                    "MCP advertised owner-only Remove",
-                )?;
-                // WorkingStateGet has an empty DTO: its agent is selected by
-                // the authenticated session, not invented read arguments.
-                let before = rpc(
-                    port,
-                    bearer,
-                    "tools/call",
-                    json!({"name":"stateengine_working_state_get", "arguments":{}}),
-                )
-                .await?;
-                require(
-                    before["result"]["isError"] == false,
-                    format!("initial public working-state read failed: {before}"),
-                )?;
-                let note = &before["result"]["structuredContent"];
-                require(
-                    note["agent"]["id"] == json!(f.a)
-                        && note["value"]["state"] == "present"
-                        && note["value"]["value"]["text"] == "retained-marker-remove-note"
-                        && note["value"]["value"]["revision"] == 1,
-                    format!("initial public read did not return the exact saved note: {before}"),
-                )?;
-                // Actual ProjectRemove input shape, not a fabricated keep-data flag.
-                for all in [false, true] {
-                    let refused = rpc(
-                        port,
-                        bearer,
-                        "tools/call",
-                        json!({
-                            "name":"stateengine_remove",
-                            "arguments":{
-                                "all":all,
-                                "keep_integrations":false,
-                                "idempotency_key":format!("mcp-remove-{all}")
-                            }
-                        }),
-                    )
-                    .await?;
-                    require(
-                        refused["result"]["isError"] == true,
-                        format!("MCP Remove succeeded: {refused}"),
-                    )?;
-                }
-                // Status needs native process custody absent from this fixture.
-                // Instead prove the original saved note remains publicly readable.
-                let after = rpc(
-                    port,
-                    bearer,
-                    "tools/call",
-                    json!({"name":"stateengine_working_state_get", "arguments":{}}),
-                )
-                .await?;
-                require(
-                    after["result"]["isError"] == false
-                        && after["result"]["structuredContent"] == *note,
-                    format!(
-                        "saved note changed or became unreadable after refused Remove: {after}"
-                    ),
-                )?;
-                Ok(())
-            }
-            .await;
-            stop.request();
-            result
-        };
-        let (exit, result) = join(host.serve(listener), consumer).await;
-        let closed = exit.finish(&bound()?).await;
-        require(
-            closed.transport_closed && closed.endpoint_retired,
-            "host cleanup incomplete",
-        )?;
-        result
-    })?;
+    rt.block_on(run_marker_probe(initialized, &f, &rt))?;
     // Retained notes alone do not prove a project was not tombstoned: removal
     // deliberately preserves history. Read the durable registration separately.
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
