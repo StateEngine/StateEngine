@@ -16,11 +16,64 @@ fn run(f: &Fixture, args: &[String]) -> Result<Output, Box<dyn std::error::Error
         .output()?)
 }
 
+fn verify_resume_refusal_and_remedy(f: &Fixture, args: &[String]) -> Check {
+    let plain = run(f, args)?;
+    assert_eq!(plain.status.code(), Some(64));
+    assert!(plain.stdout.is_empty());
+    let mut json_args = vec!["--json".into()];
+    json_args.extend(args.iter().cloned());
+    let output = run(f, &json_args)?;
+    assert_eq!(output.status.code(), Some(64));
+    let error: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(error["code"], "usage-missing-argument");
+    let argv = error["remedy"]["command"]["argv"]
+        .as_array()
+        .ok_or("owner resume refusal omitted its executable selection remedy")?
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .map(str::to_owned)
+                .ok_or("non-string remedy argument")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(
+        argv,
+        [
+            "se",
+            "--home",
+            f.options.state_directory.to_str().ok_or("home encoding")?,
+            "--project",
+            f.project.as_str(),
+            "agent",
+            "list"
+        ]
+    );
+    let quoted = se_core::ops::AgentCommand::from_argv(argv.clone())
+        .ok_or("unrenderable selection command")?;
+    let text = String::from_utf8(plain.stderr)?;
+    assert!(
+        text.contains(&quoted.command),
+        "plain refusal lost its literal recovery command: {text}"
+    );
+    assert!(
+        text.contains("does not restart"),
+        "context inspection was not distinguished from provider restart: {text}"
+    );
+    let listed = run(f, &argv[1..])?;
+    assert!(
+        listed.status.success(),
+        "literal selection remedy failed: {}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    let listed = String::from_utf8(listed.stdout)?;
+    assert!(
+        listed.contains("Sable") && listed.contains("Juniper"),
+        "selection remedy did not list both saved agents: {listed}"
+    );
+    Ok(())
+}
+
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn owner_resume_refusal_lists_saved_agents_with_the_exact_home_and_project() -> Check {
     let mut f = Fixture::new()?;
     let renamed = f.home.with_extension("owner's selected home");
@@ -62,59 +115,7 @@ fn owner_resume_refusal_lists_saved_agents_with_the_exact_home_and_project() -> 
         f.project.to_string(),
         "resume".into(),
     ];
-    let plain = run(&f, &args)?;
-    assert_eq!(plain.status.code(), Some(64));
-    assert!(plain.stdout.is_empty());
-    let mut json_args = vec!["--json".into()];
-    json_args.extend(args.clone());
-    let output = run(&f, &json_args)?;
-    assert_eq!(output.status.code(), Some(64));
-    let error: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(error["code"], "usage-missing-argument");
-    let argv = error["remedy"]["command"]["argv"]
-        .as_array()
-        .ok_or("owner resume refusal omitted its executable selection remedy")?
-        .iter()
-        .map(|v| {
-            v.as_str()
-                .map(str::to_owned)
-                .ok_or("non-string remedy argument")
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    assert_eq!(
-        argv,
-        [
-            "se",
-            "--home",
-            f.options.state_directory.to_str().ok_or("home encoding")?,
-            "--project",
-            f.project.as_str(),
-            "agent",
-            "list"
-        ]
-    );
-    let quoted = se_core::ops::AgentCommand::from_argv(argv.clone())
-        .ok_or("unrenderable selection command")?;
-    let text = String::from_utf8(plain.stderr)?;
-    assert!(
-        text.contains(&quoted.command),
-        "plain refusal lost its literal recovery command: {text}"
-    );
-    assert!(
-        text.contains("does not restart"),
-        "context inspection was not distinguished from provider restart: {text}"
-    );
-    let listed = run(&f, &argv[1..])?;
-    assert!(
-        listed.status.success(),
-        "literal selection remedy failed: {}",
-        String::from_utf8_lossy(&listed.stderr)
-    );
-    let listed = String::from_utf8(listed.stdout)?;
-    assert!(
-        listed.contains("Sable") && listed.contains("Juniper"),
-        "selection remedy did not list both saved agents: {listed}"
-    );
+    verify_resume_refusal_and_remedy(&f, &args)?;
     let mut preview = args;
     preview.extend(["--preview".into(), f.a.to_string()]);
     let preview = run(&f, &preview)?;

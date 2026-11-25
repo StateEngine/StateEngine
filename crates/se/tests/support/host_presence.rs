@@ -100,35 +100,15 @@ pub fn client(args: &[std::ffi::OsString]) -> Check {
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-pub fn clients(f: &Fixture) -> Check {
-    let image = std::env::current_exe()?;
-    let mut pipe = std::process::Command::new(&image);
-    pipe.arg("--owner-client")
-        .arg(&f.options.state_directory)
-        .arg(f.project.as_str())
-        .arg(f.a.as_str())
-        .arg("pipe");
-    for name in ["SE_SESSION", "CLAUDECODE", "CODEX_THREAD_ID", "CODEX_CI"] {
-        pipe.env_remove(name);
-    }
-    let output = pipe.output()?;
-    assert!(
-        output.status.success(),
-        "native pipe client: {}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    print!("{}", String::from_utf8_lossy(&output.stdout));
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    for mode in ["provider", "session", "terminal"] {
-        // A real OS pseudo-terminal supplies the native console facts. The
-        // Python fixture only owns descriptor plumbing and its exact child;
-        // it neither asserts nor serializes a passing presence observation.
-        let output=std::process::Command::new("python3").arg("-c").arg(r#"
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn run_console_presence_client(image: &std::path::Path, f: &Fixture, mode: &str) -> Check {
+    // A real OS pseudo-terminal supplies the native console facts. The
+    // Python fixture only owns descriptor plumbing and its exact child;
+    // it neither asserts nor serializes a passing presence observation.
+    let output = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(
+            r#"
 import os,pty,select,signal,subprocess,sys,time
 image,home,project,agent,mode=sys.argv[1:]
 env=os.environ.copy()
@@ -163,34 +143,43 @@ else:
 os.close(master)
 sys.stdout.buffer.write(data)
 sys.exit(child.wait(timeout=3))
-"#).arg(&image).arg(&f.options.state_directory).arg(f.project.as_str()).arg(f.a.as_str()).arg(mode).output()?;
-        assert!(
-            output.status.success(),
-            "native PTY {mode}: {}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        print!("{}", String::from_utf8_lossy(&output.stdout));
+"#,
+        )
+        .arg(image)
+        .arg(&f.options.state_directory)
+        .arg(f.project.as_str())
+        .arg(f.a.as_str())
+        .arg(mode)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "native PTY {mode}: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    Ok(())
+}
+
+#[cfg(windows)]
+fn run_console_presence_client(image: &std::path::Path, f: &Fixture, mode: &str) -> Check {
+    fn literal(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "''"))
     }
-    #[cfg(windows)]
-    for mode in ["provider", "session", "terminal"] {
-        fn literal(value: &str) -> String {
-            format!("'{}'", value.replace('\'', "''"))
-        }
-        let image_literal = literal(image.to_str().ok_or("native executable encoding")?);
-        let home = f
-            .options
-            .state_directory
-            .to_str()
-            .ok_or("native home encoding")?;
-        let home_argument = literal(&format!("\"{home}\""));
-        let marker = match mode {
-            "provider" => "$env:CLAUDECODE='native-fixture-provider'",
-            "session" => "$env:SE_SESSION='native-fixture-session'",
-            _ => "",
-        };
-        let script = format!(
-            r#"
+    let image_literal = literal(image.to_str().ok_or("native executable encoding")?);
+    let home = f
+        .options
+        .state_directory
+        .to_str()
+        .ok_or("native home encoding")?;
+    let home_argument = literal(&format!("\"{home}\""));
+    let marker = match mode {
+        "provider" => "$env:CLAUDECODE='native-fixture-provider'",
+        "session" => "$env:SE_SESSION='native-fixture-session'",
+        _ => "",
+    };
+    let script = format!(
+        r#"
 $ErrorActionPreference='Stop'
 {marker}
 $image={image_literal}
@@ -206,22 +195,46 @@ $child.Refresh()
 if($child.ExitCode -ne 0) {{ throw "Native console fixture failed: {mode}, exit $($child.ExitCode)" }}
 Write-Output 'PASS owner_presence_client {mode}: real native Windows console and authenticated admission'
 "#,
-            project = f.project,
-            agent = f.a
-        );
-        let mut command = std::process::Command::new("powershell.exe");
-        command.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
-        for name in ["SE_SESSION", "CLAUDECODE", "CODEX_THREAD_ID", "CODEX_CI"] {
-            command.env_remove(name);
-        }
-        let output = command.output()?;
-        assert!(
-            output.status.success(),
-            "native Windows console {mode}: {}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        print!("{}", String::from_utf8_lossy(&output.stdout));
+        project = f.project,
+        agent = f.a
+    );
+    let mut command = std::process::Command::new("powershell.exe");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    for name in ["SE_SESSION", "CLAUDECODE", "CODEX_THREAD_ID", "CODEX_CI"] {
+        command.env_remove(name);
+    }
+    let output = command.output()?;
+    assert!(
+        output.status.success(),
+        "native Windows console {mode}: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    Ok(())
+}
+
+pub fn clients(f: &Fixture) -> Check {
+    let image = std::env::current_exe()?;
+    let mut pipe = std::process::Command::new(&image);
+    pipe.arg("--owner-client")
+        .arg(&f.options.state_directory)
+        .arg(f.project.as_str())
+        .arg(f.a.as_str())
+        .arg("pipe");
+    for name in ["SE_SESSION", "CLAUDECODE", "CODEX_THREAD_ID", "CODEX_CI"] {
+        pipe.env_remove(name);
+    }
+    let output = pipe.output()?;
+    assert!(
+        output.status.success(),
+        "native pipe client: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    for mode in ["provider", "session", "terminal"] {
+        run_console_presence_client(&image, f, mode)?;
     }
     let reader = database_check(
         f,

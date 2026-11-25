@@ -130,12 +130,133 @@ fn request(
     Ok(Response { status, body })
 }
 
+struct AdmissionCase<'a> {
+    name: &'static str,
+    method: &'static str,
+    target: String,
+    headers: Vec<(&'static str, &'a str)>,
+}
+
+fn admission_cases<'a>(authority: &'a str, origin: &str) -> Vec<AdmissionCase<'a>> {
+    vec![
+        AdmissionCase {
+            name: "foreign host",
+            method: "GET",
+            target: "/stateengine/livez".to_owned(),
+            headers: vec![("Host", "attacker.invalid")],
+        },
+        AdmissionCase {
+            name: "null origin",
+            method: "GET",
+            target: "/stateengine/livez".to_owned(),
+            headers: vec![("Host", authority), ("Origin", "null")],
+        },
+        AdmissionCase {
+            name: "foreign origin",
+            method: "GET",
+            target: "/stateengine/livez".to_owned(),
+            headers: vec![("Host", authority), ("Origin", "https://attacker.invalid")],
+        },
+        AdmissionCase {
+            name: "cross-site fetch",
+            method: "GET",
+            target: "/stateengine/livez".to_owned(),
+            headers: vec![("Host", authority), ("Sec-Fetch-Site", "cross-site")],
+        },
+        AdmissionCase {
+            name: "same-site fetch",
+            method: "GET",
+            target: "/stateengine/livez".to_owned(),
+            headers: vec![("Host", authority), ("Sec-Fetch-Site", "same-site")],
+        },
+        AdmissionCase {
+            name: "absolute target",
+            method: "GET",
+            target: format!("{origin}/stateengine/livez"),
+            headers: vec![("Host", authority)],
+        },
+        AdmissionCase {
+            name: "private route without bearer",
+            method: "POST",
+            target: "/mcp".to_owned(),
+            headers: vec![("Host", authority), ("Content-Type", "application/json")],
+        },
+        AdmissionCase {
+            name: "query bearer",
+            method: "POST",
+            target: "/mcp?access_token=sels-invalid".to_owned(),
+            headers: vec![("Host", authority), ("Content-Type", "application/json")],
+        },
+        AdmissionCase {
+            name: "form post",
+            method: "POST",
+            target: "/mcp".to_owned(),
+            headers: vec![("Host", authority), ("Content-Type", "text/plain")],
+        },
+        AdmissionCase {
+            name: "preflight",
+            method: "OPTIONS",
+            target: "/mcp".to_owned(),
+            headers: vec![("Host", authority)],
+        },
+    ]
+}
+
+fn assert_admission_refusal(name: &str, response: &Response) -> Check {
+    if name == "private route without bearer" && response.status == 200 {
+        let body: serde_json::Value = serde_json::from_str(&response.body)?;
+        assert_eq!(
+            body["jsonrpc"], "2.0",
+            "missing-session reply lost RPC envelope"
+        );
+        assert_eq!(
+            body["id"], 1,
+            "missing-session reply changed the actual request id"
+        );
+        if body.get("error").is_some() {
+            assert!(
+                body.get("result").is_none(),
+                "refusal also carried a success result: {body}"
+            );
+            assert_eq!(
+                body["error"]["code"], -32001,
+                "wrong missing-session RPC refusal: {body}"
+            );
+            assert!(
+                body["error"]["message"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("session-required:")),
+                "missing-session RPC refusal lost its reason: {body}"
+            );
+        } else {
+            assert_eq!(
+                body["result"]["isError"], true,
+                "anonymous private call succeeded: {body}"
+            );
+            assert_eq!(
+                body["result"]["structuredContent"]["code"], "session-required",
+                "anonymous private call lacked the session-required refusal: {body}"
+            );
+        }
+    } else {
+        assert!(
+            (400..500).contains(&response.status),
+            "{name} was not refused: {}",
+            response.status
+        );
+    }
+    if name == "preflight" {
+        assert_eq!(
+            response.status, 405,
+            "preflight did not name method refusal"
+        );
+    }
+    println!("HTTP admission: {name}: {}", response.status);
+    Ok(())
+}
+
 /// Protects: T19 — actual loopback HTTP admission, not a private router or fake server.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn public_http_admission_precedes_anonymous_and_private_routes() -> Check {
     se_proc::initialize_file_creation_owner()?;
     let f = std::mem::ManuallyDrop::new(fixture::Fixture::new()?);
@@ -178,134 +299,9 @@ fn public_http_admission_precedes_anonymous_and_private_routes() -> Check {
         assert_eq!(body["ok"], true);
         assert!(object.contains_key("api"));
     }
-    let cases = [
-        (
-            "foreign host",
-            "GET",
-            "/stateengine/livez".to_owned(),
-            vec![("Host", "attacker.invalid")],
-        ),
-        (
-            "null origin",
-            "GET",
-            "/stateengine/livez".to_owned(),
-            vec![("Host", authority.as_str()), ("Origin", "null")],
-        ),
-        (
-            "foreign origin",
-            "GET",
-            "/stateengine/livez".to_owned(),
-            vec![
-                ("Host", authority.as_str()),
-                ("Origin", "https://attacker.invalid"),
-            ],
-        ),
-        (
-            "cross-site fetch",
-            "GET",
-            "/stateengine/livez".to_owned(),
-            vec![
-                ("Host", authority.as_str()),
-                ("Sec-Fetch-Site", "cross-site"),
-            ],
-        ),
-        (
-            "same-site fetch",
-            "GET",
-            "/stateengine/livez".to_owned(),
-            vec![
-                ("Host", authority.as_str()),
-                ("Sec-Fetch-Site", "same-site"),
-            ],
-        ),
-        (
-            "absolute target",
-            "GET",
-            format!("{origin}/stateengine/livez"),
-            vec![("Host", authority.as_str())],
-        ),
-        (
-            "private route without bearer",
-            "POST",
-            "/mcp".to_owned(),
-            vec![
-                ("Host", authority.as_str()),
-                ("Content-Type", "application/json"),
-            ],
-        ),
-        (
-            "query bearer",
-            "POST",
-            "/mcp?access_token=sels-invalid".to_owned(),
-            vec![
-                ("Host", authority.as_str()),
-                ("Content-Type", "application/json"),
-            ],
-        ),
-        (
-            "form post",
-            "POST",
-            "/mcp".to_owned(),
-            vec![("Host", authority.as_str()), ("Content-Type", "text/plain")],
-        ),
-        (
-            "preflight",
-            "OPTIONS",
-            "/mcp".to_owned(),
-            vec![("Host", authority.as_str())],
-        ),
-    ];
-    for (name, method, target, headers) in cases {
-        let response = request(port, method, &target, &headers)?;
-        if name == "private route without bearer" && response.status == 200 {
-            let body: serde_json::Value = serde_json::from_str(&response.body)?;
-            assert_eq!(
-                body["jsonrpc"], "2.0",
-                "missing-session reply lost RPC envelope"
-            );
-            assert_eq!(
-                body["id"], 1,
-                "missing-session reply changed the actual request id"
-            );
-            if body.get("error").is_some() {
-                assert!(
-                    body.get("result").is_none(),
-                    "refusal also carried a success result: {body}"
-                );
-                assert_eq!(
-                    body["error"]["code"], -32001,
-                    "wrong missing-session RPC refusal: {body}"
-                );
-                assert!(
-                    body["error"]["message"]
-                        .as_str()
-                        .is_some_and(|text| text.starts_with("session-required:")),
-                    "missing-session RPC refusal lost its reason: {body}"
-                );
-            } else {
-                assert_eq!(
-                    body["result"]["isError"], true,
-                    "anonymous private call succeeded: {body}"
-                );
-                assert_eq!(
-                    body["result"]["structuredContent"]["code"], "session-required",
-                    "anonymous private call lacked the session-required refusal: {body}"
-                );
-            }
-        } else {
-            assert!(
-                (400..500).contains(&response.status),
-                "{name} was not refused: {}",
-                response.status
-            );
-        }
-        if name == "preflight" {
-            assert_eq!(
-                response.status, 405,
-                "preflight did not name method refusal"
-            );
-        }
-        println!("HTTP admission: {name}: {}", response.status);
+    for case in admission_cases(&authority, &origin) {
+        let response = request(port, case.method, &case.target, &case.headers)?;
+        assert_admission_refusal(case.name, &response)?;
     }
     assert_eq!(
         request(
