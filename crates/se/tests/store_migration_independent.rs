@@ -95,10 +95,40 @@ fn backup_is_original(f: &Fixture, expected_schema: u32, expected_head: u64) -> 
     );
     Ok(())
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+fn verify_post_migration_schema(f: &Fixture, from: u32, obstruct: bool) -> Check {
+    let db = rusqlite::Connection::open_with_flags(
+        f.options.state_directory.join("state.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let added: u32 = db.query_row("SELECT count(*) FROM sqlite_schema WHERE type='index' AND name IN ('cursor_data_cursor','process_data_principal','effect_offer_attempt','sessions_cleanup','process_data_session')", [], |row| row.get(0))?;
+    assert_eq!(
+        added,
+        if obstruct { 1 } else { 5 },
+        "DDL was only partly committed"
+    );
+    let atlas: u32 = db.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN ('atlas_resume_roots','atlas_resume_cursors','atlas_resume_deliveries')", [], |row| row.get(0))?;
+    assert_eq!(atlas, if obstruct { 0 } else { 3 });
+    let channels: u32 = db.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN ('channel_connections','channel_updates','channel_outbox','channel_actions')", [], |r| r.get(0))?;
+    assert_eq!(channels, if obstruct { 0 } else { 4 });
+    if from == 4 {
+        let quiet_messages: u32 =
+            db.query_row("SELECT count(*) FROM message_data WHERE quiet=1", [], |r| {
+                r.get(0)
+            })?;
+        let quiet_deliveries: u32 = db.query_row(
+            "SELECT count(*) FROM message_deliveries WHERE quiet=1 AND wake_state='quiet'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(
+            (quiet_messages, quiet_deliveries),
+            (1, 1),
+            "Atlas migration changed existing quiet-mail intent"
+        );
+    }
+    Ok(())
+}
+
 fn check(from: u32, obstruct: bool) -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;
@@ -173,37 +203,7 @@ fn check(from: u32, obstruct: bool) -> Check {
     assert_eq!(after.id, before.id);
     // Startup may append runtime ownership; the backup must bind the old head.
     backup_is_original(&f, from, u64::try_from(before_sequence)?)?;
-    let db = rusqlite::Connection::open_with_flags(
-        f.options.state_directory.join("state.db"),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?;
-    let added: u32 = db.query_row("SELECT count(*) FROM sqlite_schema WHERE type='index' AND name IN ('cursor_data_cursor','process_data_principal','effect_offer_attempt','sessions_cleanup','process_data_session')", [], |row| row.get(0))?;
-    assert_eq!(
-        added,
-        if obstruct { 1 } else { 5 },
-        "DDL was only partly committed"
-    );
-    let atlas: u32 = db.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN ('atlas_resume_roots','atlas_resume_cursors','atlas_resume_deliveries')", [], |row| row.get(0))?;
-    assert_eq!(atlas, if obstruct { 0 } else { 3 });
-    let channels: u32 = db.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN ('channel_connections','channel_updates','channel_outbox','channel_actions')", [], |r| r.get(0))?;
-    assert_eq!(channels, if obstruct { 0 } else { 4 });
-    if from == 4 {
-        let quiet_messages: u32 =
-            db.query_row("SELECT count(*) FROM message_data WHERE quiet=1", [], |r| {
-                r.get(0)
-            })?;
-        let quiet_deliveries: u32 = db.query_row(
-            "SELECT count(*) FROM message_deliveries WHERE quiet=1 AND wake_state='quiet'",
-            [],
-            |r| r.get(0),
-        )?;
-        assert_eq!(
-            (quiet_messages, quiet_deliveries),
-            (1, 1),
-            "Atlas migration changed existing quiet-mail intent"
-        );
-    }
-    Ok(())
+    verify_post_migration_schema(&f, from, obstruct)
 }
 /// Protects: 49 — preserve verified pre-Atlas backups and quiet mail while adding channels.
 #[test]
