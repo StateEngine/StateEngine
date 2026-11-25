@@ -239,17 +239,9 @@ fn append_channel(
 
 #[test]
 #[ignore = "run on the historical revision with SE_CHANNEL_UPGRADE_PRODUCE set"]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn produce_schema_eight() -> Check {
     let root = evidence_path("SE_CHANNEL_UPGRADE_PRODUCE")?;
-    match fs::symlink_metadata(&root) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-        Ok(_) => return Err("producer refuses an existing evidence directory".into()),
-    }
+    require_fresh_evidence_root(&root)?;
     let f = Fixture::new()?;
     let (mut writer, lease) = f.direct()?;
     assert_eq!(
@@ -261,171 +253,45 @@ fn produce_schema_eight() -> Check {
     let receipt = ReceiptId::new("chr-72727272727272727272727272727272")?;
     let original = message()?;
     let reply = message()?;
-    let expires = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?
-        .checked_add(3_600_000_000)
-        .ok_or("expiry overflow")?;
-    let phone = json!({
-        "subject": SUBJECT, "private_chat": SUBJECT,
-        "display_name": "Fixture sender", "username": null,
-    });
-    // Deliberately omit the future connector/cursor fields and retain integers.
-    let initial = json!({
-        "id": connection, "owner": f.owner,
-        "credential": {"store": f.store, "owner": f.owner,
-            "id": "ccr-73737373737373737373737373737373", "revision": 1},
-        "target": {"project": f.project, "agent": f.a, "selection_revision": 1},
-        "bot": {"id": BOT, "username": "upgrade_fixture_bot", "display_name": "Fixture bot"},
-        "policy": {"kind": "save_only"},
-        "pairing": {"kind": "challenge", "digest": vec![19u8; 32], "expires_at_us": expires},
-        "revision": 1, "credential_removed": false, "resume_configuration": null,
-    });
+    let (phone, initial) = initial_connection_json(&f, &connection)?;
     let mut retained = Vec::new();
-    for (change, key) in [
-        (
-            json!({"kind": "connected", "connection": initial}),
-            "upgrade-connect",
-        ),
-        (
-            json!({"kind": "pairing_seen", "connection": connection, "expected": 1,
-            "digest": vec![19u8; 32], "phone": phone}),
-            "upgrade-seen",
-        ),
-        (
-            json!({"kind": "pairing_confirmed", "connection": connection, "expected": 2}),
-            "upgrade-confirm",
-        ),
-    ] {
-        append_channel(&f, &mut writer, &lease, &mut retained, change, key)?;
-    }
-    writer.append(
-        f.batch(
-            f.owner_project(),
-            Some(request("upgrade-project-owner")?),
-            vec![EventBody::PrincipalRegistered {
-                principal: Actor::Human(f.owner.clone()),
-                kind: PrincipalKind::Human,
-                owner: f.owner.clone(),
-                created_by: None,
-                name: "Fixture owner".into(),
-                role: "owner".into(),
-                ephemeral: None,
-                expected: Expected::Absent,
-            }],
-        )?,
-        &*lease,
-    )?;
-    let saved = json!({
-        "kind": "update_handled", "connection": connection, "binding_revision": 3,
-        "update": UPDATE, "disposition": {"kind": "saved", "receipt": receipt,
-            "message": original, "subject": SUBJECT, "private_chat": SUBJECT},
-    });
-    let mut batch = f.send(
-        Actor::Human(f.owner.clone()),
-        Actor::Agent(f.a.clone()),
-        original.clone(),
-        INPUT,
-        "upgrade-save",
-    )?;
-    let original_event = batch.events[0].header.event.clone();
-    let mut metadata = channel_batch(&f, saved.clone(), "unused-save-metadata")?;
-    let saved_event = metadata.events[0].header.event.clone();
-    batch.events.append(&mut metadata.events);
-    for event in &mut batch.events {
-        event.header.door = Door::Host;
-    }
-    writer.append(batch, &*lease)?;
-    retained.push(LegacyEvent {
-        id: saved_event.clone(),
-        change: saved,
-    });
-
-    let read = writer.append(
-        f.batch(
-            f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.a.clone())),
-            Some(request("upgrade-recipient-read")?),
-            vec![EventBody::MessageRead {
-                message: original.clone(),
-                recipient: Actor::Agent(f.a.clone()),
-            }],
-        )?,
-        &*lease,
-    )?;
-    let mut batch = f.send(
-        Actor::Agent(f.a.clone()),
-        Actor::Human(f.owner.clone()),
-        reply.clone(),
-        REPLY,
-        "upgrade-linked-reply",
-    )?;
-    let EventBody::MessageSent { reply_to, .. } = &mut batch.events[0].body else {
-        return Err("expected ordinary reply batch".into());
-    };
-    *reply_to = Some(original.clone());
-    let replied = writer.append(batch, &*lease)?;
-    append_channel(
+    append_pairing_history(
         &f,
         &mut writer,
         &lease,
         &mut retained,
-        json!({
-            "kind": "update_handled", "connection": connection, "binding_revision": 3,
-            "update": UPDATE + 1, "disposition": {"kind": "rejected_paired",
-                "reason": "unsupported", "subject": SUBJECT, "private_chat": SUBJECT},
-        }),
-        "upgrade-reject",
+        &connection,
+        &phone,
+        &initial,
     )?;
-
-    let mut view = writer.snapshot(f.scoped(Visibility::Owner))?;
-    let queued = view.channel_outbox(&connection, 0)?;
-    assert_eq!(queued.omitted, 0);
-    assert_eq!(queued.items.len(), 5);
-    view.close()?;
-    let mut outputs = Vec::new();
-    for (index, output) in queued.items.into_iter().enumerate() {
-        let provider_message = FIRST_PROVIDER_MESSAGE + i64::try_from(index)?;
-        append_channel(
-            &f,
-            &mut writer,
-            &lease,
-            &mut retained,
-            json!({
-                "kind": "output_started", "connection": connection, "binding_revision": 3,
-                "output": output.output, "expected_attempt": 0,
-            }),
-            &format!("upgrade-output-start-{index}"),
-        )?;
-        let completed = append_channel(
-            &f,
-            &mut writer,
-            &lease,
-            &mut retained,
-            json!({
-                "kind": "output_finished", "connection": connection, "output": output.output,
-                "attempt": 1, "outcome": {"kind": "sent", "provider_message": provider_message},
-            }),
-            &format!("upgrade-output-finish-{index}"),
-        )?;
-        let mut view = writer.snapshot(f.scoped(Visibility::Owner))?;
-        let at_us = present(view.event(completed.primary_event.clone())?)?.recorded_at_us;
-        view.close()?;
-        outputs.push(AcceptedOutput {
-            id: output.output,
-            kind: output.kind,
-            original: output.original,
-            reply: output.reply,
-            provider_message,
-            completed: completed.primary_event,
-            at_us,
-        });
-    }
-    let mut view = writer.snapshot(f.scoped(Visibility::Owner))?;
-    let connection_json = serde_json::to_value(present(view.channel_connection(&connection)?)?)?;
-    assert!(connection_json["bot"]["id"].is_i64());
-    assert!(connection_json.get("connector").is_none());
-    let saved = present(view.channel_receipt(&connection, &receipt)?)?;
-    assert_eq!(saved.event, saved_event);
-    assert_eq!(saved.message, original);
-    view.close()?;
+    append_owner_principal(&f, &mut writer, &lease)?;
+    let (original_event, saved_event) = append_saved_exchange(
+        &f,
+        &mut writer,
+        &lease,
+        &mut retained,
+        &connection,
+        &receipt,
+        &original,
+    )?;
+    let (read, replied) = append_read_and_reply(
+        &f,
+        &mut writer,
+        &lease,
+        &mut retained,
+        &connection,
+        &original,
+        &reply,
+    )?;
+    let outputs = complete_accepted_outputs(&f, &mut writer, &lease, &mut retained, &connection)?;
+    let (connection_json, saved) = assert_connection_retained(
+        &f,
+        &mut writer,
+        &connection,
+        &receipt,
+        &saved_event,
+        &original,
+    )?;
     writer.close()?;
     drop(lease);
 
@@ -466,13 +332,18 @@ fn produce_schema_eight() -> Check {
         history,
         database_sha256: Sha256::digest(&bytes).into(),
     };
-    let evidence = NativeStateFiles::create(&root)?;
+    publish_evidence(&root, &manifest, &bytes)?;
+    Ok(())
+}
+
+fn publish_evidence(root: &Path, manifest: &Manifest, bytes: &[u8]) -> Check {
+    let evidence = NativeStateFiles::create(root)?;
     let state = NativeStateFiles::create(&root.join("state"))?;
-    publish(&state, "state.db", &bytes)?;
+    publish(&state, "state.db", bytes)?;
     publish(
         &evidence,
         "manifest.json",
-        &serde_json::to_vec_pretty(&manifest)?,
+        &serde_json::to_vec_pretty(manifest)?,
     )?;
     eprintln!(
         "Closed schema-eight fixture published at {}",
@@ -481,12 +352,253 @@ fn produce_schema_eight() -> Check {
     Ok(())
 }
 
-#[expect(
-    clippy::cognitive_complexity,
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+fn require_fresh_evidence_root(root: &Path) -> Check {
+    match fs::symlink_metadata(root) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+        Ok(_) => return Err("producer refuses an existing evidence directory".into()),
+    }
+    Ok(())
+}
+
+fn initial_connection_json(f: &Fixture, connection: &ChannelId) -> Fallible<(Value, Value)> {
+    let expires = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?
+        .checked_add(3_600_000_000)
+        .ok_or("expiry overflow")?;
+    let phone = json!({
+        "subject": SUBJECT, "private_chat": SUBJECT,
+        "display_name": "Fixture sender", "username": null,
+    });
+    // Deliberately omit the future connector/cursor fields and retain integers.
+    let initial = json!({
+        "id": connection, "owner": f.owner,
+        "credential": {"store": f.store, "owner": f.owner,
+            "id": "ccr-73737373737373737373737373737373", "revision": 1},
+        "target": {"project": f.project, "agent": f.a, "selection_revision": 1},
+        "bot": {"id": BOT, "username": "upgrade_fixture_bot", "display_name": "Fixture bot"},
+        "policy": {"kind": "save_only"},
+        "pairing": {"kind": "challenge", "digest": vec![19u8; 32], "expires_at_us": expires},
+        "revision": 1, "credential_removed": false, "resume_configuration": null,
+    });
+    Ok((phone, initial))
+}
+
+fn append_pairing_history(
+    f: &Fixture,
+    writer: &mut SqliteDirect,
+    lease: &Lease,
+    retained: &mut Vec<LegacyEvent>,
+    connection: &ChannelId,
+    phone: &Value,
+    initial: &Value,
+) -> Check {
+    for (change, key) in [
+        (
+            json!({"kind": "connected", "connection": initial}),
+            "upgrade-connect",
+        ),
+        (
+            json!({"kind": "pairing_seen", "connection": connection, "expected": 1,
+            "digest": vec![19u8; 32], "phone": phone}),
+            "upgrade-seen",
+        ),
+        (
+            json!({"kind": "pairing_confirmed", "connection": connection, "expected": 2}),
+            "upgrade-confirm",
+        ),
+    ] {
+        append_channel(f, writer, lease, retained, change, key)?;
+    }
+    Ok(())
+}
+
+fn append_owner_principal(f: &Fixture, writer: &mut SqliteDirect, lease: &Lease) -> Check {
+    writer.append(
+        f.batch(
+            f.owner_project(),
+            Some(request("upgrade-project-owner")?),
+            vec![EventBody::PrincipalRegistered {
+                principal: Actor::Human(f.owner.clone()),
+                kind: PrincipalKind::Human,
+                owner: f.owner.clone(),
+                created_by: None,
+                name: "Fixture owner".into(),
+                role: "owner".into(),
+                ephemeral: None,
+                expected: Expected::Absent,
+            }],
+        )?,
+        lease,
+    )?;
+    Ok(())
+}
+
+fn append_saved_exchange(
+    f: &Fixture,
+    writer: &mut SqliteDirect,
+    lease: &Lease,
+    retained: &mut Vec<LegacyEvent>,
+    connection: &ChannelId,
+    receipt: &ReceiptId,
+    original: &MessageId,
+) -> Fallible<(EventId, EventId)> {
+    let saved = json!({
+        "kind": "update_handled", "connection": connection, "binding_revision": 3,
+        "update": UPDATE, "disposition": {"kind": "saved", "receipt": receipt,
+            "message": original, "subject": SUBJECT, "private_chat": SUBJECT},
+    });
+    let mut batch = f.send(
+        Actor::Human(f.owner.clone()),
+        Actor::Agent(f.a.clone()),
+        original.clone(),
+        INPUT,
+        "upgrade-save",
+    )?;
+    let original_event = batch.events[0].header.event.clone();
+    let mut metadata = channel_batch(f, saved.clone(), "unused-save-metadata")?;
+    let saved_event = metadata.events[0].header.event.clone();
+    batch.events.append(&mut metadata.events);
+    for event in &mut batch.events {
+        event.header.door = Door::Host;
+    }
+    writer.append(batch, lease)?;
+    retained.push(LegacyEvent {
+        id: saved_event.clone(),
+        change: saved,
+    });
+    Ok((original_event, saved_event))
+}
+
+fn append_read_and_reply(
+    f: &Fixture,
+    writer: &mut SqliteDirect,
+    lease: &Lease,
+    retained: &mut Vec<LegacyEvent>,
+    connection: &ChannelId,
+    original: &MessageId,
+    reply: &MessageId,
+) -> Fallible<(CommitReceipt, CommitReceipt)> {
+    let read = writer.append(
+        f.batch(
+            f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.a.clone())),
+            Some(request("upgrade-recipient-read")?),
+            vec![EventBody::MessageRead {
+                message: original.clone(),
+                recipient: Actor::Agent(f.a.clone()),
+            }],
+        )?,
+        lease,
+    )?;
+    let mut batch = f.send(
+        Actor::Agent(f.a.clone()),
+        Actor::Human(f.owner.clone()),
+        reply.clone(),
+        REPLY,
+        "upgrade-linked-reply",
+    )?;
+    let EventBody::MessageSent { reply_to, .. } = &mut batch.events[0].body else {
+        return Err("expected ordinary reply batch".into());
+    };
+    *reply_to = Some(original.clone());
+    let replied = writer.append(batch, lease)?;
+    append_channel(
+        f,
+        writer,
+        lease,
+        retained,
+        json!({
+            "kind": "update_handled", "connection": connection, "binding_revision": 3,
+            "update": UPDATE + 1, "disposition": {"kind": "rejected_paired",
+                "reason": "unsupported", "subject": SUBJECT, "private_chat": SUBJECT},
+        }),
+        "upgrade-reject",
+    )?;
+    Ok((read, replied))
+}
+
+fn complete_accepted_outputs(
+    f: &Fixture,
+    writer: &mut SqliteDirect,
+    lease: &Lease,
+    retained: &mut Vec<LegacyEvent>,
+    connection: &ChannelId,
+) -> Fallible<Vec<AcceptedOutput>> {
+    let mut view = writer.snapshot(f.scoped(Visibility::Owner))?;
+    let queued = view.channel_outbox(connection, 0)?;
+    assert_eq!(queued.omitted, 0);
+    assert_eq!(queued.items.len(), 5);
+    view.close()?;
+    let mut outputs = Vec::new();
+    for (index, output) in queued.items.into_iter().enumerate() {
+        let provider_message = FIRST_PROVIDER_MESSAGE + i64::try_from(index)?;
+        append_channel(
+            f,
+            writer,
+            lease,
+            retained,
+            json!({
+                "kind": "output_started", "connection": connection, "binding_revision": 3,
+                "output": output.output, "expected_attempt": 0,
+            }),
+            &format!("upgrade-output-start-{index}"),
+        )?;
+        let completed = append_channel(
+            f,
+            writer,
+            lease,
+            retained,
+            json!({
+                "kind": "output_finished", "connection": connection, "output": output.output,
+                "attempt": 1, "outcome": {"kind": "sent", "provider_message": provider_message},
+            }),
+            &format!("upgrade-output-finish-{index}"),
+        )?;
+        let mut view = writer.snapshot(f.scoped(Visibility::Owner))?;
+        let at_us = present(view.event(completed.primary_event.clone())?)?.recorded_at_us;
+        view.close()?;
+        outputs.push(AcceptedOutput {
+            id: output.output,
+            kind: output.kind,
+            original: output.original,
+            reply: output.reply,
+            provider_message,
+            completed: completed.primary_event,
+            at_us,
+        });
+    }
+    Ok(outputs)
+}
+
+fn assert_connection_retained(
+    f: &Fixture,
+    writer: &mut SqliteDirect,
+    connection: &ChannelId,
+    receipt: &ReceiptId,
+    saved_event: &EventId,
+    original: &MessageId,
+) -> Fallible<(Value, channel::SavedUpdate)> {
+    let mut view = writer.snapshot(f.scoped(Visibility::Owner))?;
+    let connection_json = serde_json::to_value(present(view.channel_connection(connection)?)?)?;
+    assert!(connection_json["bot"]["id"].is_i64());
+    assert!(connection_json.get("connector").is_none());
+    let saved = present(view.channel_receipt(connection, receipt)?)?;
+    assert_eq!(saved.event, *saved_event);
+    assert_eq!(saved.message, *original);
+    view.close()?;
+    Ok((connection_json, saved))
+}
+
 fn check_public_readback(view: &mut SqliteSnapshot, m: &Manifest) -> Check {
+    assert_readback_connection(view, m)?;
+    assert_readback_saved(view, m)?;
+    assert_readback_mail(view, m)?;
+    assert_readback_reply(view, m)?;
+    assert_readback_outputs(view, m)?;
+    assert_readback_legacy(view, m)?;
+    Ok(())
+}
+
+fn assert_readback_connection(view: &mut SqliteSnapshot, m: &Manifest) -> Check {
     let state = present(view.channel_connection(&m.connection)?)?;
     let expected: channel::Connection = serde_json::from_value(m.connection_json.clone())?;
     assert_eq!(state, expected);
@@ -502,7 +614,10 @@ fn check_public_readback(view: &mut SqliteSnapshot, m: &Manifest) -> Check {
     let listed = view.channel_connections(0)?;
     assert_eq!(listed.omitted, 0);
     assert_eq!(listed.items, vec![state]);
+    Ok(())
+}
 
+fn assert_readback_saved(view: &mut SqliteSnapshot, m: &Manifest) -> Check {
     let saved = present(view.channel_receipt(&m.connection, &m.receipt)?)?;
     assert_eq!(saved.connection, m.connection);
     assert_eq!(saved.receipt, m.receipt);
@@ -516,7 +631,10 @@ fn check_public_readback(view: &mut SqliteSnapshot, m: &Manifest) -> Check {
     assert_eq!(saved_page.items[0].receipt, m.receipt);
     assert_eq!(saved_page.items[0].message, m.original);
     assert_eq!(saved_page.items[0].event, m.saved_event);
+    Ok(())
+}
 
+fn assert_readback_mail(view: &mut SqliteSnapshot, m: &Manifest) -> Check {
     let original = present(view.message(m.original.clone())?)?;
     assert_eq!(original.event, m.original_event);
     assert_eq!(original.sender, Actor::Human(m.owner.clone()));
@@ -535,6 +653,10 @@ fn check_public_readback(view: &mut SqliteSnapshot, m: &Manifest) -> Check {
         matches!(read.body, EventBody::MessageRead { message, recipient }
         if message == m.original && recipient == Actor::Agent(m.recipient.clone()))
     );
+    Ok(())
+}
+
+fn assert_readback_reply(view: &mut SqliteSnapshot, m: &Manifest) -> Check {
     let reply = present(view.message(m.reply.clone())?)?;
     assert_eq!(reply.event, m.reply_event);
     assert_eq!(reply.sender, Actor::Agent(m.recipient.clone()));
@@ -552,7 +674,10 @@ fn check_public_readback(view: &mut SqliteSnapshot, m: &Manifest) -> Check {
     assert_eq!(replies.omitted, 0);
     assert_eq!(replies.items.len(), 1);
     assert_eq!(replies.items[0].reply.as_ref(), Some(&m.reply));
+    Ok(())
+}
 
+fn assert_readback_outputs(view: &mut SqliteSnapshot, m: &Manifest) -> Check {
     let outputs = view.channel_outbox(&m.connection, 0)?;
     assert_eq!(outputs.omitted, 0);
     assert_eq!(outputs.items.len(), m.outputs.len());
@@ -598,6 +723,10 @@ fn check_public_readback(view: &mut SqliteSnapshot, m: &Manifest) -> Check {
     );
     assert_eq!(rejected.items[0].reason, channel::Rejection::Unsupported);
     assert_eq!(rejected.items[0].output_state, "sent");
+    Ok(())
+}
+
+fn assert_readback_legacy(view: &mut SqliteSnapshot, m: &Manifest) -> Check {
     for legacy in &m.legacy_events {
         let event = present(view.event(legacy.id.clone())?)?;
         let EventBody::ChannelRecorded { change } = event.body else {

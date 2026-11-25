@@ -220,10 +220,6 @@ fn status_delay_uses_saved_commit_time_and_never_marks_mail_read() -> Check {
 
 /// Protects: 49 — bound pending mail and status output while keeping read facts and failed inputs honest.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn pending_capacity_recovers_after_recipient_read_and_known_output_completion() -> Check {
     let f = Fixture::new()?;
     let (mut writer, lease) = f.direct()?;
@@ -236,30 +232,75 @@ fn pending_capacity_recovers_after_recipient_read_and_known_output_completion() 
         .next()
         .ok_or("pairing output absent")?;
     view.close()?;
+    complete_output(
+        &f,
+        &mut writer,
+        &lease,
+        &s,
+        paired.output,
+        1.into(),
+        "capacity-pair",
+    )?;
+    let first = fill_capacity(&f, &mut writer, &lease, &s)?;
+    let (next_output, blocked) = assert_overflow_blocked(&f, &mut writer, &lease, &s)?;
+    let original = first.ok_or("original input absent")?;
+    mark_original_read(&f, &mut writer, &lease, &original)?;
+    complete_output(
+        &f,
+        &mut writer,
+        &lease,
+        &s,
+        next_output,
+        2.into(),
+        "capacity-save",
+    )?;
+    assert_capacity_restored(&f, &mut writer, &s, original, blocked)?;
+    writer.close()?;
+    Ok(())
+}
+
+fn complete_output(
+    f: &Fixture,
+    writer: &mut SqliteDirect,
+    lease: &Lease,
+    s: &channel::Connection,
+    output: OutputId,
+    provider_message: ExternalId,
+    name: &str,
+) -> Check {
+    let start_key = format!("{name}-start");
+    let sent_key = format!("{name}-sent");
     for (key, fact) in [
         (
-            "capacity-pair-start",
+            start_key,
             Change::OutputStarted {
                 connection: s.id.clone(),
                 binding_revision: s.revision,
-                output: paired.output.clone(),
+                output: output.clone(),
                 expected_attempt: 0,
             },
         ),
         (
-            "capacity-pair-sent",
+            sent_key,
             Change::OutputFinished {
                 connection: s.id.clone(),
-                output: paired.output,
+                output,
                 attempt: 1,
-                outcome: OutputOutcome::Sent {
-                    provider_message: 1.into(),
-                },
+                outcome: OutputOutcome::Sent { provider_message },
             },
         ),
     ] {
-        writer.append(change(&f, fact, key)?, &*lease)?;
+        writer.append(change(f, fact, &key)?, lease)?;
     }
+    Ok(())
+}
+
+fn fill_capacity(
+    f: &Fixture,
+    writer: &mut SqliteDirect,
+    lease: &Lease,
+    s: &channel::Connection,
+) -> Result<Option<MessageId>, Box<dyn std::error::Error>> {
     let mut first = None;
     for chunk in 0..40 {
         let mut batch = f.batch(
@@ -275,10 +316,19 @@ fn pending_capacity_recovers_after_recipient_read_and_known_output_completion() 
             let update = 10000 + chunk * 25 + ordinal;
             batch
                 .events
-                .extend(saved(&f, &s, id, update, &format!("capacity-input-{update}"))?.events);
+                .extend(saved(f, s, id, update, &format!("capacity-input-{update}"))?.events);
         }
-        writer.append(batch, &*lease)?;
+        writer.append(batch, lease)?;
     }
+    Ok(first)
+}
+
+fn assert_overflow_blocked(
+    f: &Fixture,
+    writer: &mut SqliteDirect,
+    lease: &Lease,
+    s: &channel::Connection,
+) -> Result<(OutputId, MessageId), Box<dyn std::error::Error>> {
     let mut view = writer.snapshot(f.scoped(Visibility::Owner))?;
     assert!(!view.channel_has_capacity(&s.id)?);
     let next = view
@@ -292,12 +342,20 @@ fn pending_capacity_recovers_after_recipient_read_and_known_output_completion() 
     assert!(
         writer
             .append(
-                saved(&f, &s, blocked.clone(), 12000, "capacity-overflow")?,
-                &*lease
+                saved(f, s, blocked.clone(), 12000, "capacity-overflow")?,
+                lease
             )
             .is_err()
     );
-    let original = first.ok_or("original input absent")?;
+    Ok((next.output, blocked))
+}
+
+fn mark_original_read(
+    f: &Fixture,
+    writer: &mut SqliteDirect,
+    lease: &Lease,
+    original: &MessageId,
+) -> Check {
     writer.append(
         f.batch(
             f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.a.clone())),
@@ -307,32 +365,18 @@ fn pending_capacity_recovers_after_recipient_read_and_known_output_completion() 
                 recipient: Actor::Agent(f.a.clone()),
             }],
         )?,
-        &*lease,
+        lease,
     )?;
-    for (key, fact) in [
-        (
-            "capacity-save-start",
-            Change::OutputStarted {
-                connection: s.id.clone(),
-                binding_revision: s.revision,
-                output: next.output.clone(),
-                expected_attempt: 0,
-            },
-        ),
-        (
-            "capacity-save-sent",
-            Change::OutputFinished {
-                connection: s.id.clone(),
-                output: next.output,
-                attempt: 1,
-                outcome: OutputOutcome::Sent {
-                    provider_message: 2.into(),
-                },
-            },
-        ),
-    ] {
-        writer.append(change(&f, fact, key)?, &*lease)?;
-    }
+    Ok(())
+}
+
+fn assert_capacity_restored(
+    f: &Fixture,
+    writer: &mut SqliteDirect,
+    s: &channel::Connection,
+    original: MessageId,
+    blocked: MessageId,
+) -> Check {
     let mut view = writer.snapshot(f.scoped(Visibility::Owner))?;
     assert!(view.channel_has_capacity(&s.id)?);
     assert!(matches!(view.message(blocked)?, Read::Absent { .. }));
@@ -344,6 +388,5 @@ fn pending_capacity_recovers_after_recipient_read_and_known_output_completion() 
     assert_eq!(saved.items.len(), 100);
     assert_eq!(saved.omitted, 900);
     view.close()?;
-    writer.close()?;
     Ok(())
 }
