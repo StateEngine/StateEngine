@@ -148,12 +148,12 @@ pub(crate) fn insert_covers(tx: &Transaction<'_>, covers: &[Cover]) -> Result<()
         "INSERT OR REPLACE INTO covers(test_file, target_file, how, via_helper)
          VALUES (?1, ?2, ?3, ?4)",
     )?;
-    for c in covers {
+    for cover in covers {
         insert.execute(params![
-            c.test_file,
-            c.target_file,
-            c.how as i64,
-            c.via_helper
+            cover.test_file,
+            cover.target_file,
+            cover.how as i64,
+            cover.via_helper
         ])?;
     }
     Ok(())

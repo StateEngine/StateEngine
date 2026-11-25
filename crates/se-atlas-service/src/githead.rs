@@ -46,10 +46,8 @@ fn git_dir(source: &Path) -> Option<GitDir> {
 #[cfg(target_os = "linux")]
 pub(crate) fn linked_roots(source: &Path) -> Option<(NativeSourceRoot, Option<NativeSourceRoot>)> {
     let git = git_dir(source)?;
-    (git.path != source.join(".git")).then(|| {
-        let common = common_dir(&git);
-        (git.root, common)
-    })
+    let common = common_dir(&git);
+    (git.path != source.join(".git")).then_some((git.root, common))
 }
 
 /// Whether Git holds its index lock: a checkout or commit is under way, so
@@ -91,21 +89,12 @@ pub(crate) fn head(source: &Path) -> Option<Vec<u8>> {
 /// A Git-written path, absolute or relative to `base`, with `.` and `..`
 /// resolved by name: custody opens only absolute, normalized roots.
 fn resolve(base: &Path, spelling: &str) -> Option<PathBuf> {
-    let path = Path::new(spelling);
-    let joined = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        base.join(path)
-    };
     let mut out = PathBuf::new();
-    for component in joined.components() {
+    for component in base.join(spelling).components() {
         match component {
             Component::CurDir => {}
-            Component::ParentDir => {
-                if !out.pop() {
-                    return None;
-                }
-            }
+            Component::ParentDir if !out.pop() => return None,
+            Component::ParentDir => {}
             other => out.push(other),
         }
     }

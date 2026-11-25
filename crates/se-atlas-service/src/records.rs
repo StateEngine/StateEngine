@@ -22,17 +22,20 @@ fn clip(text: &str, max: usize) -> &str {
     &text[..text.floor_char_boundary(max)]
 }
 
-/// The last core event the store has folded in.
-pub(crate) fn cursor(conn: &Connection) -> Result<Option<EventId>> {
-    let saved: Option<Option<String>> = conn
+/// The last core event folded in, and whether any unreadable event was skipped.
+pub(crate) fn state(conn: &Connection) -> Result<(Option<EventId>, bool)> {
+    let row: Option<(Option<String>, i64)> = conn
         .query_row(
-            "SELECT last_event FROM record_feed WHERE singleton=1",
+            "SELECT last_event, degraded FROM record_feed WHERE singleton=1",
             [],
-            |row| row.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()
         .map_err(|e| sqlite(&e))?;
-    saved.flatten().map(|id| id.parse()).transpose()
+    match row {
+        Some((saved, flag)) => Ok((saved.map(|id| id.parse()).transpose()?, flag != 0)),
+        None => Ok((None, false)),
+    }
 }
 
 pub(crate) fn apply(
@@ -47,27 +50,29 @@ pub(crate) fn apply(
             "a feed of this worktree's project",
         ));
     }
-    let saved = cursor(conn)?;
+    let (saved, was_degraded) = state(conn)?;
     if saved.as_ref() == Some(&feed.through) {
         return Ok(FeedReceipt {
             changed: 0,
-            complete: feed.complete,
+            complete: feed.complete && !was_degraded,
         });
     }
     if saved != feed.after {
+        let fmt = |id: &Option<EventId>| {
+            id.as_ref()
+                .map_or_else(|| "absent".into(), ToString::to_string)
+        };
         return Err(SeError::new(se_types::Detail::RevisionConflict(
             se_types::details::RevisionConflict {
                 entity: "Atlas record feed".into(),
-                expected: feed
-                    .after
-                    .as_ref()
-                    .map_or("absent".into(), ToString::to_string),
-                current: saved.map_or("absent".into(), |id| id.to_string()),
+                expected: fmt(&feed.after),
+                current: fmt(&saved),
             },
         )));
     }
     let run = || -> rusqlite::Result<FeedReceipt> {
         let tx = conn.unchecked_transaction()?;
+        let mut degraded = was_degraded;
         for change in &feed.changes {
             match change {
                 RecordFeedChange::Remove { key, .. } => {
@@ -76,17 +81,19 @@ pub(crate) fn apply(
                     refresh(&tx, &old)?;
                 }
                 RecordFeedChange::Upsert(record) => upsert(&tx, record)?,
+                RecordFeedChange::Skipped(_) => degraded = true,
             }
         }
         tx.execute(
-            "INSERT INTO record_feed(singleton, last_event) VALUES (1, ?1)
-             ON CONFLICT(singleton) DO UPDATE SET last_event=excluded.last_event",
-            [feed.through.as_str()],
+            "INSERT INTO record_feed(singleton, last_event, degraded) VALUES (1, ?1, ?2)
+             ON CONFLICT(singleton) DO UPDATE SET last_event=excluded.last_event,
+             degraded=MAX(record_feed.degraded, excluded.degraded)",
+            params![feed.through.as_str(), i64::from(degraded)],
         )?;
         tx.commit()?;
         Ok(FeedReceipt {
             changed: u32::try_from(feed.changes.len()).unwrap_or(u32::MAX),
-            complete: feed.complete,
+            complete: feed.complete && !degraded,
         })
     };
     run().map_err(|e| sqlite(&e))

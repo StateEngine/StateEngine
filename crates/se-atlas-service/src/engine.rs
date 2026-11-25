@@ -197,13 +197,13 @@ impl<'a> Engine<'a> {
             )
             .map_err(|e| e.to_string())?;
         // Arm before building, so edits made during the build are not lost.
-        let discovery = walk::discover(&self.source, &walk_options()).map_err(|e| e.to_string())?;
-        self.arm(&discovery.directories);
+        let dirs = self.directories().map_err(|e| e.to_string())?;
+        self.arm(&dirs);
         if self.rebuild || discovery_complete == 0 {
-            self.cold(discovery).map_err(|e| e.to_string())?;
+            self.cold(None).map_err(|e| e.to_string())?;
         } else {
             set_phase(self.shared, Phase::Reconciling);
-            self.reconcile(Some(discovery)).map_err(|e| e.to_string())?;
+            self.reconcile().map_err(|e| e.to_string())?;
         }
         self.record_head();
         self.refresh();
@@ -212,10 +212,11 @@ impl<'a> Engine<'a> {
     }
 
     fn directories(&self) -> se_atlas_index::Result<Vec<String>> {
-        if !cfg!(target_os = "linux") {
-            return Ok(Vec::new());
+        if cfg!(target_os = "linux") {
+            Ok(walk::discover(&self.source, &walk_options())?.directories)
+        } else {
+            Ok(Vec::new())
         }
-        Ok(walk::discover(&self.source, &walk_options())?.directories)
     }
 
     fn arm(&mut self, directories: &[String]) {
@@ -243,7 +244,7 @@ impl<'a> Engine<'a> {
 
     /// Rebuild the store. Files the build could not read are counted, and a
     /// reconcile soon after names each one; the build never recurses into it.
-    fn cold(&mut self, discovery: walk::Discovery) -> se_atlas_index::Result<()> {
+    fn cold(&mut self, discovery: Option<walk::Discovery>) -> se_atlas_index::Result<()> {
         if self.shared.stopping() {
             return Ok(());
         }
@@ -259,9 +260,12 @@ impl<'a> Engine<'a> {
             walk: walk_options(),
             ..BuildOptions::default()
         };
-        let report = self
-            .store
-            .cold_build_with_discovery(&self.source, &options, discovery)?;
+        let report = match discovery {
+            Some(d) => self
+                .store
+                .cold_build_with_discovery(&self.source, &options, d)?,
+            None => self.store.cold_build(&self.source, &options)?,
+        };
         self.resolver = self.indexed_resolver()?;
         self.failed.clear();
         self.unnamed_failed = report.read_failed as u64;
@@ -292,18 +296,15 @@ impl<'a> Engine<'a> {
 
     /// Re-index what changed since the store was last written, and remove
     /// what discovery no longer lists (deleted, newly ignored or denied).
-    fn reconcile(&mut self, discovery: Option<walk::Discovery>) -> se_atlas_index::Result<()> {
+    fn reconcile(&mut self) -> se_atlas_index::Result<()> {
         if self.shared.stopping() {
             return Ok(());
         }
         self.last_reconcile = Instant::now();
-        let discovery = match discovery {
-            Some(discovery) => discovery,
-            None => walk::discover(&self.source, &walk_options())?,
-        };
+        let discovery = walk::discover(&self.source, &walk_options())?;
         let delta = reconcile::changed(&self.store, &self.source, &discovery.files)?;
         if delta.changed.len() + delta.gone.len() > 2_000.max(discovery.files.len() / 2) {
-            return self.cold(discovery);
+            return self.cold(Some(discovery));
         }
         self.resolver = Resolver::new(discovery.files.iter().map(String::as_str));
         self.record_discovery(
@@ -492,7 +493,7 @@ impl<'a> Engine<'a> {
             self.arm(&directories);
         }
         if overflowed || rules {
-            match self.reconcile(None) {
+            match self.reconcile() {
                 Ok(()) if overflowed => {
                     if let Ok(mut dirty) = self.shared.dirty() {
                         dirty.end_reconcile(token);
@@ -611,9 +612,9 @@ impl<'a> Engine<'a> {
     }
 }
 
-/// The store's record cursor, read through a query connection.
-pub(crate) fn feed_cursor(shared: &Shared) -> se_types::Result<Option<se_types::EventId>> {
-    shared.with_reader(|reader| records::cursor(reader.connection()))
+/// The store's record cursor and degraded flag, read through a query connection.
+pub(crate) fn feed_state(shared: &Shared) -> se_types::Result<(Option<se_types::EventId>, bool)> {
+    shared.with_reader(|reader| records::state(reader.connection()))
 }
 
 #[cfg(test)]

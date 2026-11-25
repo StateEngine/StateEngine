@@ -50,7 +50,8 @@ impl Watcher {
     pub fn arm(shared: &Arc<Shared>, directories: &[String]) -> Result<(Self, u64), String> {
         let root = NativeSourceRoot::open(&shared.spec.source).map_err(|e| e.to_string())?;
         let watch = NativeSourceWatch::new().map_err(|e| e.to_string())?;
-        let (names, watched) = subscribe(&watch, &root, &shared.spec.source, directories)?;
+        let (names, watched, refs_root) =
+            subscribe(&watch, &root, &shared.spec.source, directories)?;
         let stop = Arc::new(AtomicBool::new(false));
         let (wake, woken) = signal(&watch)?;
         let thread = std::thread::Builder::new()
@@ -62,6 +63,7 @@ impl Watcher {
                         shared: &shared,
                         watch,
                         root,
+                        refs_root,
                         names,
                         ignores: Ignores::default(),
                     };
@@ -119,9 +121,9 @@ fn subscribe(
     root: &NativeSourceRoot,
     _: &std::path::Path,
     _: &[String],
-) -> Result<(Names, u64), String> {
+) -> Result<(Names, u64, Option<NativeSourceRoot>), String> {
     match watch.subscribe_tree(root) {
-        Ok(Some(_)) => Ok((Names::new(), 1)),
+        Ok(Some(_)) => Ok((Names::new(), 1, None)),
         Ok(None) => Err("the project folder disappeared".into()),
         Err(error) => Err(error.to_string()),
     }
@@ -135,7 +137,7 @@ fn subscribe(
     root: &NativeSourceRoot,
     source: &std::path::Path,
     directories: &[String],
-) -> Result<(Names, u64), String> {
+) -> Result<(Names, u64, Option<NativeSourceRoot>), String> {
     let needed = directories.len().saturating_add(1);
     if let Some(limit) = std::fs::read_to_string("/proc/sys/fs/inotify/max_user_watches")
         .ok()
@@ -150,13 +152,7 @@ fn subscribe(
     // Git metadata is optional enrichment; a failed watch there only loses head tracking.
     let linked = crate::githead::linked_roots(source);
     let (git_root, git_dir, refs_root, refs_dir, prefix) = match &linked {
-        Some((git, common)) => (
-            git,
-            "",
-            common.as_ref().unwrap_or(git),
-            "refs/heads",
-            ".git/",
-        ),
+        Some((g, c)) => (g, "", c.as_ref().unwrap_or(g), "refs/heads", ".git/"),
         None => (root, ".git", root, ".git/refs/heads", ""),
     };
     if let Ok(Some(reg)) = watch.subscribe(git_root, git_dir) {
@@ -169,17 +165,16 @@ fn subscribe(
         }
         branches.extend(subdirectories(refs_root, &dir).unwrap_or_default());
     }
-    for directory in std::iter::once("").chain(directories.iter().map(String::as_str)) {
-        match watch.subscribe(root, directory) {
-            Ok(Some(registration)) => {
-                names.insert(registration.descriptor, directory.to_owned());
-            }
-            Ok(None) => {}
-            Err(error) => return Err(format!("watching {directory:?}: {error}")),
+    for dir in std::iter::once("").chain(directories.iter().map(String::as_str)) {
+        if let Some(reg) = watch
+            .subscribe(root, dir)
+            .map_err(|e| format!("watching {dir:?}: {e}"))?
+        {
+            names.insert(reg.descriptor, dir.to_owned());
         }
     }
     let watched = names.len() as u64;
-    Ok((names, watched))
+    Ok((names, watched, linked.map(|(g, c)| c.unwrap_or(g))))
 }
 
 /// Child directories of `directory`, listed through custody without
@@ -219,6 +214,8 @@ struct Thread<'a> {
     watch: NativeSourceWatch,
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     root: NativeSourceRoot,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    refs_root: Option<NativeSourceRoot>,
     names: Names,
     /// Discovery's ignore rules, so an ignored new folder costs no watch.
     ignores: Ignores,
@@ -478,36 +475,39 @@ impl Thread<'_> {
     /// Names are listed and subscribed through custody.
     #[cfg(target_os = "linux")]
     fn watch_new(&mut self, path: &str) {
-        let mut pending = vec![path.to_owned()];
-        let mut added = 0u64;
+        let (use_refs, prefix, initial) = match (path.strip_prefix(".git/"), &self.refs_root) {
+            (Some(rel), Some(_)) => (true, ".git/", rel.to_owned()),
+            _ => (false, "", path.to_owned()),
+        };
+        let (mut pending, mut added) = (vec![initial], 0u64);
         while let Some(directory) = pending.pop() {
             if added >= MAX_NEW_DIRECTORIES {
-                self.fail("too many new directories appeared at once to watch each one");
-                return;
+                return self.fail("too many new directories appeared at once to watch each one");
             }
-            if self.ignored(&directory) {
+            let logical = format!("{prefix}{directory}");
+            if self.ignored(&logical) {
                 continue;
             }
-            match self.watch.subscribe(&self.root, &directory) {
-                Ok(Some(registration)) => {
-                    self.names
-                        .insert(registration.descriptor, directory.clone());
+            let target = use_refs
+                .then_some(self.refs_root.as_ref())
+                .flatten()
+                .unwrap_or(&self.root);
+            let sub = self.watch.subscribe(target, &directory);
+            let children = subdirectories(target, &directory);
+            match sub {
+                Ok(Some(reg)) => {
+                    self.names.insert(reg.descriptor, logical);
                     added += 1;
                 }
-                // Gone again before it could be watched.
                 Ok(None) => continue,
-                // Watched under an older name: a reconcile settles the tree.
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     self.lose();
                     continue;
                 }
-                Err(error) => {
-                    self.fail(&format!("watching {directory:?}: {error}"));
-                    return;
-                }
+                Err(e) => return self.fail(&format!("watching {logical:?}: {e}")),
             }
-            match subdirectories(&self.root, &directory) {
-                Ok(children) => pending.extend(children),
+            match children {
+                Ok(kids) => pending.extend(kids),
                 Err(_) => self.lose(),
             }
         }

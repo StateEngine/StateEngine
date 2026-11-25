@@ -42,29 +42,18 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
         pointer: &RecordPointer,
         query: Option<&QueryText>,
     ) -> Result<Read<HitBody>> {
-        match self.load(project, viewer, pointer)? {
-            Read::Present { value } => {
-                let (text, complete) = excerpt::body(&value.body, query);
-                Ok(Read::Present {
-                    value: HitBody::new(
-                        BodyOrigin::AuthoritativeRecord(pointer.clone()),
-                        text,
-                        complete,
-                    )?,
-                })
-            }
-            Read::Absent { checked } => Ok(Read::Absent { checked }),
-            Read::Unknown { what } => Ok(Read::Unknown { what }),
-            Read::Unreadable {
-                source,
-                reason,
-                error,
-            } => Ok(Read::Unreadable {
-                source,
-                reason,
-                error,
-            }),
-        }
+        let value = match self.load(project, viewer, pointer)?.into_present() {
+            Ok(value) => value,
+            Err(other) => return Ok(other),
+        };
+        let (text, complete) = excerpt::body(&value.body, query);
+        Ok(Read::Present {
+            value: HitBody::new(
+                BodyOrigin::AuthoritativeRecord(pointer.clone()),
+                text,
+                complete,
+            )?,
+        })
     }
     fn load(
         &mut self,
@@ -95,7 +84,7 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
         let captured = if pointer.kind == RecordKind::Edit {
             captured::successful(&source)?
         } else {
-            None
+            captured::Captured::Skip
         };
         let body = match (source.body, pointer.kind) {
             (_, RecordKind::Decision) => return Ok(Read::Absent {
@@ -157,11 +146,19 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
         &mut self,
         project: &ProjectId,
         pointer: &RecordPointer,
-        captured: Option<captured::Successful>,
+        captured: captured::Captured,
         at: i64,
     ) -> Result<Read<Document>> {
-        let Some(tool) = captured else {
-            return Ok(stale());
+        let tool = match captured {
+            captured::Captured::Match(tool) => tool,
+            captured::Captured::Skip => return Ok(stale()),
+            captured::Captured::Oversized(bytes) => {
+                return Ok(Read::Unreadable {
+                    source: "captured tool metadata".into(),
+                    reason: format!("captured metadata exceeds 8192 bytes ({bytes} bytes)"),
+                    error: None,
+                });
+            }
         };
         tool.validate_source(self.read, project)?;
         if tool.key()? != pointer.key {

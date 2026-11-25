@@ -140,10 +140,10 @@ fn regex_files(
     Ok(holders)
 }
 
-/// Maximum vocabulary rows scanned when supplementing trigram hits with
+/// Maximum total vocabulary rows scanned when supplementing trigram hits with
 /// untrigrammed tokens. Exceeding this falls back to a live tree scan so a
-/// match is never silently dropped and memory/CPU stay bounded.
-const UNTRIGRAMMED_SCAN_CAP: usize = PIECE_TOKEN_CAP * 4;
+/// match is never silently dropped and SQLite work stays O(1)-bounded.
+const UNTRIGRAMMED_VOCAB_SCAN_CAP: usize = 32_768;
 
 /// Add to each piece the indexed tokens holding it that the trigram index
 /// leaves out, found in one bounded scan of the vocabulary.
@@ -151,24 +151,18 @@ fn add_untrigrammed(
     snapshot: &ReadSnapshot<'_>,
     narrowing: &mut Vec<(&str, Vec<i64>)>,
 ) -> Result<()> {
-    let tests: Vec<String> = (1..=narrowing.len())
-        .map(|n| format!("instr(tok, ?{n}) > 0"))
-        .collect();
-    let sql = format!(
-        "SELECT id, tok FROM vocab WHERE {} LIMIT {}",
-        tests.join(" OR "),
-        UNTRIGRAMMED_SCAN_CAP + 1
-    );
-    let mut select = snapshot.connection().prepare_cached(&sql)?;
-    let pieces: Vec<&str> = narrowing.iter().map(|(piece, _)| *piece).collect();
-    let rows = select.query_map(rusqlite::params_from_iter(pieces), |row| {
+    let mut select = snapshot
+        .connection()
+        .prepare_cached("SELECT id, tok FROM vocab ORDER BY id LIMIT ?1")?;
+    let limit = (UNTRIGRAMMED_VOCAB_SCAN_CAP + 1) as i64;
+    let rows = select.query_map([limit], |row| {
         Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
     })?;
-    let mut seen = 0usize;
+    let mut scanned = 0usize;
     let mut overflowed = vec![false; narrowing.len()];
     for row in rows {
-        seen += 1;
-        if seen > UNTRIGRAMMED_SCAN_CAP {
+        scanned += 1;
+        if scanned > UNTRIGRAMMED_VOCAB_SCAN_CAP {
             narrowing.clear();
             return Ok(());
         }

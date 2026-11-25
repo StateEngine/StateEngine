@@ -45,7 +45,12 @@ pub fn chunk(host: &dyn AtlasHost, owner: &HumanId, root: &Root) -> Result<Fed> 
         )?;
         let complete = match feed {
             Some(feed) => root.apply_feed(feed, FEED_WRITE)?.complete,
-            None => true,
+            None => {
+                if root.feed_degraded()? {
+                    return Ok(Fed::Waiting);
+                }
+                true
+            }
         };
         if !complete {
             return Ok(Fed::More);

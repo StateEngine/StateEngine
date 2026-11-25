@@ -183,11 +183,35 @@ impl NativeSourceWatch {
         {
             return Err(changed("watched directory changed during subscription"));
         }
+        let mut ancestors = Vec::new();
+        if path.is_empty()
+            && let (Some(parent), Some(name)) = (root.path.parent(), root.path.file_name())
+        {
+            let name = name
+                .to_str()
+                .ok_or_else(|| invalid("source ancestry encoding"))?;
+            let parent_root = NativeSourceRoot::open(parent)
+                .map_err(|error| watch_error("open watched ancestor", error))?;
+            let parent_pin = parent_root
+                .open_directory("")?
+                .ok_or_else(|| changed("source ancestor disappeared"))?;
+            let parent_file = open_async(parent)
+                .map_err(|error| watch_error("open ancestor notification", error))?;
+            if !parent_pin.validate_name()?
+                || !parent_pin.identity.same_object(
+                    &os::revision(&parent_file, true)
+                        .map_err(|error| watch_error("inspect watched ancestor", error))?,
+                )
+            {
+                return Err(changed("source ancestor changed during subscription"));
+            }
+            ancestors.push((parent_file, name.to_owned()));
+        }
         let (response, result) = mpsc::channel();
         self.post(Command::Subscribe {
             directory: file,
             identity,
-            ancestors: Vec::new(),
+            ancestors,
             recursive,
             response,
         })?;

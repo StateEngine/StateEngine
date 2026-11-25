@@ -158,6 +158,8 @@ pub enum RecordFeedChange {
         project: ProjectId,
         key: RecordKey,
     },
+    /// Unreadable event skipped so cursor advances with degraded coverage.
+    Skipped(ProjectId),
 }
 /// One bounded feed chunk. `after` and `through` are authoritative event IDs,
 /// never Atlas generations; cursor advancement and changes commit together.
@@ -176,35 +178,30 @@ impl RecordFeed {
         }
         let mut bytes = 0usize;
         let mut metadata = 0usize;
+        let project_err = || SeError::invalid("Atlas record feed", "one verified project");
         for change in &self.changes {
             match change {
                 RecordFeedChange::Upsert(record) => {
                     record.validate()?;
                     if record.project != self.project {
-                        return Err(SeError::invalid(
-                            "Atlas record feed",
-                            "one verified project",
-                        ));
+                        return Err(project_err());
                     }
+                    let enc = |r: serde_json::Result<Vec<u8>>, label| {
+                        r.map(|b| b.len())
+                            .map_err(|e| SeError::invalid(label, &e.to_string()))
+                    };
                     bytes += record.body.len();
-                    metadata += record.title.len();
-                    metadata += serde_json::to_vec(&record.mentions)
-                        .map_err(|e| SeError::invalid("Atlas mentions", &e.to_string()))?
-                        .len()
-                        + serde_json::to_vec(&record.actor)
-                            .map_err(|e| SeError::invalid("Atlas actor", &e.to_string()))?
-                            .len()
-                        + serde_json::to_vec(&record.visibility)
-                            .map_err(|e| SeError::invalid("Atlas visibility", &e.to_string()))?
-                            .len()
+                    metadata += record.title.len()
+                        + enc(serde_json::to_vec(&record.mentions), "Atlas mentions")?
+                        + enc(serde_json::to_vec(&record.actor), "Atlas actor")?
+                        + enc(serde_json::to_vec(&record.visibility), "Atlas visibility")?
                         + record.pointer.key.as_str().len()
                         + record.pointer.source_event.as_str().len();
                 }
-                RecordFeedChange::Remove { project, .. } if project != &self.project => {
-                    return Err(SeError::invalid(
-                        "Atlas record feed",
-                        "one verified project",
-                    ));
+                RecordFeedChange::Remove { project, .. } | RecordFeedChange::Skipped(project)
+                    if project != &self.project =>
+                {
+                    return Err(project_err());
                 }
                 _ => (),
             }

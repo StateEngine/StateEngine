@@ -57,7 +57,13 @@ impl Successful {
         "Captured native file edit succeeded; current-content author unknown".into()
     }
 }
-pub(super) fn successful(event: &StoredEvent) -> Result<Option<Successful>> {
+pub(super) enum Captured {
+    Match(Box<Successful>),
+    Skip,
+    Oversized(usize),
+}
+
+pub(super) fn successful(event: &StoredEvent) -> Result<Captured> {
     let EventBody::SessionTurn {
         session,
         agent,
@@ -69,19 +75,17 @@ pub(super) fn successful(event: &StoredEvent) -> Result<Option<Successful>> {
         ..
     } = &event.body
     else {
-        return Ok(None);
+        return Ok(Captured::Skip);
     };
     if !vendor_ref.starts_with(se_store::TRANSCRIPT_EVENT_PREFIX) {
-        return Ok(None);
+        return Ok(Captured::Skip);
     }
-    // Skip oversized captured metadata so the record feed cursor advances
-    // instead of retrying the same event forever.
     if text.len() > 8192 {
-        return Ok(None);
+        return Ok(Captured::Oversized(text.len()));
     }
     let metadata = Record::decode(text)?;
     if metadata.kind != "captured-tool" {
-        return Ok(None);
+        return Ok(Captured::Skip);
     }
     if metadata.kind_truncated || metadata.subtype_truncated {
         return Err(SeError::invalid(
@@ -94,29 +98,18 @@ pub(super) fn successful(event: &StoredEvent) -> Result<Option<Successful>> {
         SeError::invalid("captured metadata", "the retained native tool observation")
     })?;
     tool.validate_binding(session, agent, *provider, tool.source, evidence)?;
+    const EDIT_TOOLS: &str =
+        "Edit Write MultiEdit apply_patch FileChange fileChange file_change write_file edit_file";
+    let ToolName::Known(name) = &tool.tool else {
+        return Ok(Captured::Skip);
+    };
     if !matches!(tool.phase, Phase::Completed)
         || !matches!(tool.outcome, Outcome::Succeeded)
         || matches!(tool.native, NativeIdentity::Unknown(_))
         || !matches!(tool.target, Target::Paths(_))
+        || !EDIT_TOOLS.split(' ').any(|t| t == name)
     {
-        return Ok(None);
+        return Ok(Captured::Skip);
     }
-    let ToolName::Known(name) = &tool.tool else {
-        return Ok(None);
-    };
-    if !matches!(
-        name.as_str(),
-        "Edit"
-            | "Write"
-            | "MultiEdit"
-            | "apply_patch"
-            | "FileChange"
-            | "fileChange"
-            | "file_change"
-            | "write_file"
-            | "edit_file"
-    ) {
-        return Ok(None);
-    }
-    Ok(Some(Successful(tool)))
+    Ok(Captured::Match(Box::new(Successful(tool))))
 }
