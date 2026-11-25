@@ -358,15 +358,15 @@ fn short_hex(agent: &AgentId) -> String {
         .chars()
         .rev()
         .filter(char::is_ascii_hexdigit)
-        .take(4)
+        .take(8)
         .collect::<String>()
         .chars()
         .rev()
         .collect();
-    if hex.len() == 4 {
+    if hex.len() == 8 {
         hex.to_ascii_lowercase()
     } else {
-        "0000".to_owned()
+        "00000000".to_owned()
     }
 }
 

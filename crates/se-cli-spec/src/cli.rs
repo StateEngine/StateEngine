@@ -336,7 +336,7 @@ fn input_command_agent(name: &str, c: Command) -> Command {
         "delegate.start" => c
             .subcommand_negates_reqs(true)
             .arg(value("task").required(true).help("Initial task prompt for the temporary agent"))
-            .arg(value("role").help("Short role label for the temporary name tmp-<role>-<4hex>"))
+            .arg(value("role").help("Short role label for the temporary name tmp-<role>-<8hex>"))
             .arg(value("provider").value_parser(["claude", "codex", "secode", "acp"]).help("Provider for the temporary agent: claude, codex, secode or acp"))
             .arg(value("harness").help("Native provider or named declarative ACP harness"))
             .arg(value("model").help("Model override for the temporary agent"))

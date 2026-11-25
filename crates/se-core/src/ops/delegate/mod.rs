@@ -48,7 +48,7 @@ pub struct DelegateHandoff {
 pub struct DelegateStart {
     /// Initial task prompt delivered to the temporary agent.
     pub task: String,
-    /// Short role label used in the temporary name `tmp-<role>-<4hex>` (default: `helper`).
+    /// Short role label used in the temporary name `tmp-<role>-<8hex>` (default: `helper`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
     /// Target provider (defaults to configured launch provider).

@@ -19,7 +19,7 @@ def observe(pid):
         stat = (proc / "stat").read_text().rsplit(") ", 1)[1].split()
         return {"pid": pid, "birth": stat[19], "state": stat[0], "ppid": int(stat[1]),
                 "argv": argv, "image": str((proc / "exe").resolve())}
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
 
 
