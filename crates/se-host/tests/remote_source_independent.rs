@@ -14,6 +14,7 @@ use se_host::*;
 use se_store::*;
 use se_types::Read;
 use serde_json::json;
+use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -95,29 +96,27 @@ impl RemoteClient for Reader {
         })
     }
 }
-/// Protects: actual MCP admission and protected aliases remain effective after a source broker caches a connection.
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-fn actual_mcp_source_broker_refuses_loosened_key_and_revoked_credential() -> Check {
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-    let initialized = initialize_host_process()?;
-    let f = Fixture::new()?;
-    seed(&f)?;
-    let session = session::session()?;
-    let credential = session::record()?;
-    let at = now()?;
-    let (mut direct, lease) = direct(&f)?;
+fn require_refusal(reply: &serde_json::Value, reason: impl Into<String>) -> Check {
+    require(
+        reply.get("error").is_some() || reply.pointer("/result/isError") == Some(&json!(true)),
+        reason,
+    )
+}
+
+fn seed_source_credential(
+    f: &Fixture,
+    session: &se_types::SessionId,
+    credential: RecordId,
+    at: i64,
+) -> Check {
+    let (mut direct, lease) = direct(f)?;
     direct.append(
         f.batch(
             f.owner_project(),
             Some(fixture::request("source-credential")?),
             vec![
-                session::prepared(&f, &session, &f.a),
-                session::activated(&session)?,
+                session::prepared(f, session, &f.a),
+                session::activated(session)?,
                 EventBody::CredentialIssued {
                     credential,
                     session: session.clone(),
@@ -142,6 +141,13 @@ fn actual_mcp_source_broker_refuses_loosened_key_and_revoked_credential() -> Che
     )?;
     direct.close()?;
     drop(lease);
+    Ok(())
+}
+
+fn source_binding(
+    f: &Fixture,
+    at: i64,
+) -> Result<(Arc<ProtectedBindings>, PathBuf, RemoteHostId), Box<dyn std::error::Error>> {
     let owner = VerifiedLocalOwner::from_native(
         &f.admission(Scope::Registry, Actor::Human(f.owner.clone())),
         &se_core::admission::HumanTerminal::OutsideAgentTree,
@@ -191,6 +197,22 @@ fn actual_mcp_source_broker_refuses_loosened_key_and_revoked_credential() -> Che
         },
         None,
     )?;
+    Ok((records, path, source_host))
+}
+
+/// Protects: actual MCP admission and protected aliases remain effective after a source broker caches a connection.
+#[test]
+fn actual_mcp_source_broker_refuses_loosened_key_and_revoked_credential() -> Check {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    let initialized = initialize_host_process()?;
+    let f = Fixture::new()?;
+    seed(&f)?;
+    let session = session::session()?;
+    let credential = session::record()?;
+    let at = now()?;
+    seed_source_credential(&f, &session, credential, at)?;
+    let (records, path, source_host) = source_binding(&f, at)?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(2)
@@ -214,7 +236,7 @@ fn actual_mcp_source_broker_refuses_loosened_key_and_revoked_credential() -> Che
         std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o644))?;
         let loose=rpc(port,"source-independent","tools/call",params.clone()).await?;
         std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600))?;
-        require(loose.get("error").is_some()||loose.pointer("/result/isError")==Some(&json!(true)),format!("loose key accepted: {loose}"))?;
+        require_refusal(&loose,format!("loose key accepted: {loose}"))?;
     }
     #[cfg(not(unix))]
     let _ = &path;
@@ -222,7 +244,7 @@ fn actual_mcp_source_broker_refuses_loosened_key_and_revoked_credential() -> Che
     revoked.admission.generation=runtime_generation;
     execution.writer.submit(revoked)?.await?;
     let revoked=rpc(port,"source-independent","tools/call",params).await?;
-    require(revoked.get("error").is_some()||revoked.pointer("/result/isError")==Some(&json!(true)),format!("revoked source accepted: {revoked}"))?;
+    require_refusal(&revoked,format!("revoked source accepted: {revoked}"))?;
     require(connector.connects.load(Ordering::Relaxed)==1,"refused calls reconnected with a fallback key")?;
     require(connector.list_calls.load(Ordering::Relaxed)==2,"a refused source call reached the retained target client")?;
     Ok(())
