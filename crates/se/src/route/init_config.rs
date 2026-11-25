@@ -8,6 +8,10 @@ use se_store::StateFiles;
 use se_types::{Result, SeError};
 use sha2::{Digest, Sha256};
 
+/// The largest configuration setup reads back. A replacement is refused at this
+/// size before publication, so a failed readback never follows a changed file.
+const LIMIT: usize = 1024 * 1024;
+
 pub fn listener_port(
     cx: &Bootstrap,
     files: &Files,
@@ -47,7 +51,7 @@ pub(super) fn load_observed_config(
 ) -> Result<(ConfigFile, Option<Vec<u8>>)> {
     let prior = pin
         .as_mut()
-        .map(|p| p.read(1024 * 1024))
+        .map(|p| p.read(LIMIT))
         .transpose()
         .map_err(|e| scope::unreadable("setup configuration", &e.to_string()))?;
     let observed = match &prior {
@@ -129,6 +133,16 @@ pub(super) fn publish_bytes(
     prior: Option<&[u8]>,
     bytes: &[u8],
 ) -> Result<()> {
+    if bytes.len() > LIMIT {
+        return Err(SeError::invalid(
+            "configuration size",
+            &format!(
+                "at most {LIMIT} bytes; the edited file would be {} bytes, so {} was not changed. Remove unused entries from it, then retry",
+                bytes.len(),
+                path.display()
+            ),
+        ));
+    }
     match pin {
         Some(pin) => pin
             .replace(
@@ -152,7 +166,7 @@ pub(super) fn publish_bytes(
             )
         })?;
     if readback
-        .read(1024 * 1024)
+        .read(LIMIT)
         .map_err(|e| scope::unreadable("setup configuration readback", &e.to_string()))?
         != bytes
     {

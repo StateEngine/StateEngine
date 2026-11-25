@@ -1,7 +1,11 @@
 //! Harness descriptors in `config.toml`: prepare a catalogue choice from an
 //! existing installation before setup writes, or register an owner's own
 //! protocol agent by appending its entry, so existing bytes survive.
-use super::{files::Files, init_config, owner};
+use super::{
+    execute,
+    files::{DirectLease, Files},
+    init_config, owner, setup,
+};
 use crate::{bootstrap::Bootstrap, config::Origin};
 use se_config::config_policy::{
     Approval, ConfigFile, Profile,
@@ -9,10 +13,11 @@ use se_config::config_policy::{
 };
 use se_core::{
     harness_selection::catalog,
-    ops::{AnyOutput, HarnessAdd, HarnessAddOutput, ProjectInit, inputs::Validate},
+    ops::{AnyOutput, HarnessAdd, HarnessAddOutput, ProjectInit, inputs::Validate, receipt},
     scope,
     store_error::store_error,
 };
+use se_store::{LeaseIdentity, LeaseMode};
 use se_types::{Result, SeError};
 use std::collections::BTreeMap;
 
@@ -151,14 +156,10 @@ fn resolve(
 
 pub(super) fn add(cx: &Bootstrap, input: HarnessAdd) -> Result<AnyOutput> {
     input.validate()?;
-    let observed_owner = owner::observe(&[])?;
-    observed_owner.authorize(
-        "harness.add",
-        observed_owner.os_owner(),
-        cx.session.is_some(),
-        true,
-    )?;
-    let files = Files::open(&cx.home).map_err(|e| store_error(&e))?;
+    authorize(cx, None)?;
+    let lease = exclusive_home(cx)?;
+    authorize(cx, Some(&lease.files))?;
+    let files = &lease.files;
     let path = match &cx.config.origin {
         Origin::File(path) => path.clone(),
         Origin::BuiltIn => cx.home.join("config.toml"),
@@ -211,7 +212,7 @@ pub(super) fn add(cx: &Bootstrap, input: HarnessAdd) -> Result<AnyOutput> {
         ));
     }
     resolve_command(&updated, &input.name)?;
-    init_config::publish_bytes(&path, pin, &files, prior.as_deref(), bytes.as_bytes())?;
+    init_config::publish_bytes(&path, pin, files, prior.as_deref(), bytes.as_bytes())?;
     Ok(HarnessAddOutput {
         name: input.name,
         command: input.command,
@@ -221,6 +222,55 @@ pub(super) fn add(cx: &Bootstrap, input: HarnessAdd) -> Result<AnyOutput> {
         configuration: path.display().to_string(),
     }
     .into())
+}
+
+/// Custody comes from the complete home-wide inventory, or from measured store
+/// absence before first setup. Either refusal happens before any file changes.
+fn authorize(cx: &Bootstrap, files: Option<&Files>) -> Result<()> {
+    let before = setup::inspect(&cx.home, receipt::timestamp(execute::now_us()?)?)?;
+    let observed = match &before {
+        setup::Setup::Absent(_) => owner::observe(&[])?,
+        setup::Setup::Present(reader) => {
+            let opened;
+            let files = match files {
+                Some(files) => files,
+                None => {
+                    opened = Files::open(&cx.home).map_err(|e| store_error(&e))?;
+                    &opened
+                }
+            };
+            owner::from_inventory(&owner::inventory(reader, files)?)?
+        }
+    };
+    observed.authorize(
+        "harness.add",
+        observed.os_owner(),
+        cx.session.is_some(),
+        true,
+    )
+}
+
+/// A running host keeps the configuration it started with, so registration
+/// takes setup's exclusive home lease: no host runs or starts until the new
+/// entry is published. Before first setup this creates the home as init would.
+fn exclusive_home(cx: &Bootstrap) -> Result<DirectLease> {
+    let files = Files::create(&cx.home).map_err(|e| store_error(&e))?;
+    let identity = LeaseIdentity {
+        store: None,
+        generation: 1,
+        mode: LeaseMode::DirectClient,
+    };
+    DirectLease::acquire_setup(files, identity)
+        .map_err(|e| store_error(&e))?
+        .ok_or_else(|| {
+            SeError::new(se_types::Detail::StateConflict(
+                se_types::details::StateConflict {
+                    subject: "harness registration".into(),
+                    reason: "a running host or another setup holds this home's lease; a running host would not see the new harness until it restarts".into(),
+                    next_step: "Wait for any setup or removal to finish, or run se down with the same --home; then retry se harness add and run se up".into(),
+                },
+            ))
+        })
 }
 
 /// Appends `[harnesses.NAME]` and its permission mapping after the existing

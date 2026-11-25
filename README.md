@@ -358,13 +358,16 @@ For any other installed protocol agent, register it from your own terminal
 without editing the file by hand:
 
 ```sh
+se down
 se harness add my-agent --command protocol-agent --arg=--acp --env OPENAI_API_KEY
+se up
 se agent add helper --harness my-agent
 ```
 
 `se harness add` appends `[harnesses.my-agent]` to `config.toml`, keeping the
 existing contents, and maps the `[providers.acp].profile` launch profile to the
-agent's native default. `--env` lists variable names only; values stay in your
+agent's native default. A running host keeps the configuration it started
+with, so registration refuses while one runs; it also works before `se init`. `--env` lists variable names only; values stay in your
 environment. The command must already be installed, built-in provider names are
 refused, and an existing entry is never replaced.
 
