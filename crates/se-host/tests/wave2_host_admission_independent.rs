@@ -8,19 +8,8 @@ use serde_json::json;
 mod support;
 use support::*;
 
-/// Protects: only a live current Prepared bearer gets the retryable activation
-/// refusal. Expiry, revocation, purpose and supersession are checked first.
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-fn prepared_refusals_validate_authority_before_naming_activation() -> Check {
-    let initialized = initialize_host_process()?;
-    let f = Fixture::new()?;
-    seed(&f)?;
-    let (mut d, lease) = direct(&f)?;
-    let now = now()?;
+fn seed_refusal_authorities(f: &Fixture, now: i64) -> Check {
+    let (mut d, lease) = direct(f)?;
     let s = session::session()?;
     let current = credential(
         &s,
@@ -45,7 +34,7 @@ fn prepared_refusals_validate_authority_before_naming_activation() -> Check {
                 serial()
             ))?),
             vec![
-                session::prepared(&f, &s, &f.a),
+                session::prepared(f, &s, &f.a),
                 current,
                 credential(
                     &s,
@@ -85,6 +74,100 @@ fn prepared_refusals_validate_authority_before_naming_activation() -> Check {
     )?;
     d.close()?;
     drop(lease);
+    Ok(())
+}
+
+async fn prepared_refusal_checks(
+    f: &Fixture,
+    port: u16,
+    execution: ExecutionContext,
+    now: i64,
+) -> Check {
+    let listed = rpc(port, "live-prepared", "tools/list", json!({})).await?;
+    require(
+        listed["result"]["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty()),
+        format!("Prepared discovery refused: {listed}"),
+    )?;
+    let call = |bearer: String| async move {
+        rpc(
+            port,
+            &bearer,
+            "tools/call",
+            json!({"name":"stateengine_working_state_get","arguments":{}}),
+        )
+        .await
+    };
+    let live = call("live-prepared".into()).await?;
+    require(
+        live["result"]["structuredContent"]["code"] == "session-not-active",
+        format!("live Prepared refusal: {live}"),
+    )?;
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let mut failures = Vec::new();
+    for token in ["expired", "past-activation", "revoked", "wrong-purpose"] {
+        let response = call(token.into()).await?;
+        if response["result"]["structuredContent"]["code"] != "capability-invalid" {
+            failures.push(format!("{token}: {response}"));
+        }
+    }
+    let successor = session::session()?;
+    execution
+        .writer
+        .submit(f.batch(
+            f.owner_project(),
+            Some(fixture::request(&format!(
+                "fixture-wave2_host_admission_independent-126-{}",
+                serial()
+            ))?),
+            vec![
+                session::prepared(f, &successor, &f.a),
+                credential(
+                    &successor,
+                    "http",
+                    "current-successor",
+                    now + 300_000_000,
+                    now + 60_000_000,
+                )?,
+            ],
+        )?)?
+        .await?;
+    let old = call("live-prepared".into()).await?;
+    if old["result"]["structuredContent"]["code"] != "capability-invalid" {
+        failures.push(format!("superseded: {old}"));
+    }
+    let next = call("current-successor".into()).await?;
+    if next["result"]["structuredContent"]["code"] != "session-not-active" {
+        failures.push(format!("current successor: {next}"));
+    }
+    require(
+        failures.is_empty(),
+        format!("refusal ordering: {failures:?}"),
+    )
+}
+
+async fn prepared_refusals_client(
+    f: &Fixture,
+    port: u16,
+    execution: ExecutionContext,
+    now: i64,
+    stop: LocalStop,
+) -> Check {
+    let result: Check = prepared_refusal_checks(f, port, execution, now).await;
+    stop.request();
+    result
+}
+
+/// Protects: only a live current Prepared bearer gets the retryable activation
+/// refusal. Expiry, revocation, purpose and supersession are checked first.
+#[test]
+fn prepared_refusals_validate_authority_before_naming_activation() -> Check {
+    let initialized = initialize_host_process()?;
+    let f = Fixture::new()?;
+    seed(&f)?;
+    let now = now()?;
+    seed_refusal_authorities(&f, now)?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(2)
@@ -96,75 +179,7 @@ fn prepared_refusals_validate_authority_before_naming_activation() -> Check {
         let port = host.http_port().ok_or("published HTTP port absent")?;
         let stop = host.local_stop();
         let execution = host.execution_context();
-        let client = async {
-            let result: Check = async {
-                let listed = rpc(port, "live-prepared", "tools/list", json!({})).await?;
-                require(
-                    listed["result"]["tools"]
-                        .as_array()
-                        .is_some_and(|tools| !tools.is_empty()),
-                    format!("Prepared discovery refused: {listed}"),
-                )?;
-                let call = |bearer: String| async move {
-                    rpc(
-                        port,
-                        &bearer,
-                        "tools/call",
-                        json!({"name":"stateengine_working_state_get","arguments":{}}),
-                    )
-                    .await
-                };
-                let live = call("live-prepared".into()).await?;
-                require(
-                    live["result"]["structuredContent"]["code"] == "session-not-active",
-                    format!("live Prepared refusal: {live}"),
-                )?;
-                tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-                let mut failures = Vec::new();
-                for token in ["expired", "past-activation", "revoked", "wrong-purpose"] {
-                    let response = call(token.into()).await?;
-                    if response["result"]["structuredContent"]["code"] != "capability-invalid" {
-                        failures.push(format!("{token}: {response}"));
-                    }
-                }
-                let successor = session::session()?;
-                execution
-                    .writer
-                    .submit(f.batch(
-                        f.owner_project(),
-                        Some(fixture::request(&format!(
-                            "fixture-wave2_host_admission_independent-126-{}",
-                            serial()
-                        ))?),
-                        vec![
-                            session::prepared(&f, &successor, &f.a),
-                            credential(
-                                &successor,
-                                "http",
-                                "current-successor",
-                                now + 300_000_000,
-                                now + 60_000_000,
-                            )?,
-                        ],
-                    )?)?
-                    .await?;
-                let old = call("live-prepared".into()).await?;
-                if old["result"]["structuredContent"]["code"] != "capability-invalid" {
-                    failures.push(format!("superseded: {old}"));
-                }
-                let next = call("current-successor".into()).await?;
-                if next["result"]["structuredContent"]["code"] != "session-not-active" {
-                    failures.push(format!("current successor: {next}"));
-                }
-                require(
-                    failures.is_empty(),
-                    format!("refusal ordering: {failures:?}"),
-                )
-            }
-            .await;
-            stop.request();
-            result
-        };
+        let client = prepared_refusals_client(&f, port, execution, now, stop);
         let (exit, result) = join(host.serve(listener), client).await;
         let report = exit.finish(&bound()?).await;
         require(

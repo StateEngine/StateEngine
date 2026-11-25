@@ -26,13 +26,16 @@ fn bound() -> se_types::Result<Deadline> {
     })
 }
 
-#[test]
-#[ignore = "native helper: invoke with the stop_admission_deadline Python consumer"]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-fn native_admission_host() -> Check {
+struct AdmissionFixture {
+    initialized: HostProcessInitialization,
+    root: PathBuf,
+    home: PathBuf,
+    configuration: PathBuf,
+    config: se_config::config_policy::ConfigFile,
+    start: HostStart,
+}
+
+fn admission_fixture() -> Result<AdmissionFixture, Box<dyn std::error::Error>> {
     let initialized = initialize_host_process()?;
     let root = PathBuf::from(std::env::var_os("STOP_ADMISSION_ROOT").ok_or("fixture root absent")?);
     let home = root.join("state");
@@ -78,6 +81,98 @@ fn native_admission_host() -> Check {
             blocking_jobs: positive(2)?,
         },
     };
+    Ok(AdmissionFixture {
+        initialized,
+        root,
+        home,
+        configuration,
+        config,
+        start,
+    })
+}
+
+async fn admission_controller(
+    control: PathBuf,
+    slots: Arc<tokio::sync::Semaphore>,
+    reader: Arc<se_store::SqliteReader>,
+    files: se_host::state_files::Files,
+    stop: LocalStop,
+) -> std::io::Result<()> {
+    let outcome = async move {
+        while !control.join("enable").exists() && !control.join("finish").exists() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        if control.join("enable").exists() {
+            // One reserved slot leaves a single FIFO lane. Each real finite
+            // job queues behind a 700 ms holder without changing its result.
+            let reserved = slots
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(std::io::Error::other)?;
+            let mut rounds = 0_u64;
+            while control.join("enable").exists() && !control.join("finish").exists() {
+                let permit = slots
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(std::io::Error::other)?;
+                rounds += 1;
+                std::fs::write(control.join("admission-held"), rounds.to_string())?;
+                if control.join("expire").exists() {
+                    let inventory = reader
+                        .owner_guard(
+                            &files,
+                            se_store::ReadBudget {
+                                page: se_types::PageRequest {
+                                    after: None,
+                                    limit: positive(16)?,
+                                    max_bytes: positive(1_048_576)?,
+                                },
+                                deadline: Duration::from_secs(1),
+                            },
+                        )
+                        .map_err(std::io::Error::other)?;
+                    if inventory
+                        .processes
+                        .iter()
+                        .any(|p| p.state == se_store::ProcessState::StopRequested)
+                    {
+                        // Stop is already admitted and durably requested. Keep
+                        // its next finite job queued beyond its original clock.
+                        std::fs::write(control.join("outer-held"), rounds.to_string())?;
+                        while control.join("enable").exists() && !control.join("finish").exists() {
+                            tokio::time::sleep(Duration::from_millis(5)).await;
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(700)).await;
+                drop(permit);
+            }
+            drop(reserved);
+            std::fs::write(control.join("released"), "released")?;
+        }
+        while !control.join("finish").exists() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        Ok::<(), std::io::Error>(())
+    }
+    .await;
+    stop.request();
+    outcome
+}
+
+#[test]
+#[ignore = "native helper: invoke with the stop_admission_deadline Python consumer"]
+fn native_admission_host() -> Check {
+    let AdmissionFixture {
+        initialized,
+        root,
+        home,
+        configuration,
+        config,
+        start,
+    } = admission_fixture()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(4)
@@ -115,72 +210,7 @@ fn native_admission_host() -> Check {
         let files = se_host::state_files::Files::open(&home)?;
         let stop = host.local_stop();
         let control = root.join("control");
-        let controller = tokio::spawn(async move {
-            let outcome = async move {
-                while !control.join("enable").exists() && !control.join("finish").exists() {
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-                if control.join("enable").exists() {
-                    // One reserved slot leaves a single FIFO lane. Each real finite
-                    // job queues behind a 700 ms holder without changing its result.
-                    let reserved = slots
-                        .clone()
-                        .acquire_owned()
-                        .await
-                        .map_err(std::io::Error::other)?;
-                    let mut rounds = 0_u64;
-                    while control.join("enable").exists() && !control.join("finish").exists() {
-                        let permit = slots
-                            .clone()
-                            .acquire_owned()
-                            .await
-                            .map_err(std::io::Error::other)?;
-                        rounds += 1;
-                        std::fs::write(control.join("admission-held"), rounds.to_string())?;
-                        if control.join("expire").exists() {
-                            let inventory = reader
-                                .owner_guard(
-                                    &files,
-                                    se_store::ReadBudget {
-                                        page: se_types::PageRequest {
-                                            after: None,
-                                            limit: positive(16)?,
-                                            max_bytes: positive(1_048_576)?,
-                                        },
-                                        deadline: Duration::from_secs(1),
-                                    },
-                                )
-                                .map_err(std::io::Error::other)?;
-                            if inventory
-                                .processes
-                                .iter()
-                                .any(|p| p.state == se_store::ProcessState::StopRequested)
-                            {
-                                // Stop is already admitted and durably requested. Keep
-                                // its next finite job queued beyond its original clock.
-                                std::fs::write(control.join("outer-held"), rounds.to_string())?;
-                                while control.join("enable").exists()
-                                    && !control.join("finish").exists()
-                                {
-                                    tokio::time::sleep(Duration::from_millis(5)).await;
-                                }
-                            }
-                        }
-                        tokio::time::sleep(Duration::from_millis(700)).await;
-                        drop(permit);
-                    }
-                    drop(reserved);
-                    std::fs::write(control.join("released"), "released")?;
-                }
-                while !control.join("finish").exists() {
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-                Ok::<(), std::io::Error>(())
-            }
-            .await;
-            stop.request();
-            outcome
-        });
+        let controller = tokio::spawn(admission_controller(control, slots, reader, files, stop));
         let listener = host.listen(runtime.handle().clone(), &bound()?).await?;
         let report = host.serve(listener).await.finish(&bound()?).await;
         controller.await??;
