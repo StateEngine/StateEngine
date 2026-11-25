@@ -1,8 +1,8 @@
 //! Project-scoped latest hook outcomes, including refusals before agent binding.
 //! These are observations, never evidence that a caller belongs to an agent.
 use super::*;
-use crate::state_files::{Acquisition, AcquisitionRetry};
 use se_core::ops::{AgentCommand, PendingFact, StatusOutput};
+use se_harness::acquisition::{Acquisition, AcquisitionRetry};
 const MAX_BYTES: usize = 64 * 1024;
 
 #[derive(Serialize, Deserialize)]
@@ -159,7 +159,7 @@ fn read_attempt(
     file.take(MAX_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(io)?;
-    let attempt: Attempt = crate::client::wire::decode_json(&bytes, MAX_BYTES)?;
+    let attempt: Attempt = se_mcp::wire::decode_json(&bytes, MAX_BYTES)?;
     if attempt.schema != 1 || &attempt.project != project || attempt.action != action {
         return Err(invalid("the exact project and hook observation"));
     }

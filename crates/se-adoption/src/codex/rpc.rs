@@ -5,14 +5,14 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::Command,
 };
-const MAX: usize = crate::client::wire::MAX_FRAME_BYTES;
+const MAX: usize = se_mcp::wire::MAX_FRAME_BYTES;
 // Cold discovery measured up to eight seconds under load. Keep its independent
 // startup allowance separate from the five-second, non-replayable mail offer.
 const DISCOVERY_SECONDS: u64 = 30;
 const DISCOVERY_SHUTDOWN_SECONDS: u64 = 10;
 const DIAGNOSTIC_BYTES: u64 = 8192;
 
-async fn request(writer: &mut crate::child_io::Input, value: Value) -> Result<()> {
+async fn request(writer: &mut se_harness::child_io::Input, value: Value) -> Result<()> {
     let mut bytes =
         serde_json::to_vec(&value).map_err(|_| invalid("serializable native provider input"))?;
     if bytes.len() > MAX {
@@ -22,7 +22,7 @@ async fn request(writer: &mut crate::child_io::Input, value: Value) -> Result<()
     writer.write_all(&bytes).await.map_err(io)?;
     writer.flush().await.map_err(io)
 }
-async fn response(reader: &mut BufReader<crate::child_io::Output>, id: u64) -> Result<Value> {
+async fn response(reader: &mut BufReader<se_harness::child_io::Output>, id: u64) -> Result<Value> {
     let mut total = 0;
     for _ in 0..256 {
         let mut line = Vec::new();
@@ -43,7 +43,7 @@ async fn response(reader: &mut BufReader<crate::child_io::Output>, id: u64) -> R
                 break;
             }
         }
-        let row: Value = crate::client::wire::decode_json(&line, MAX)?;
+        let row: Value = se_mcp::wire::decode_json(&line, MAX)?;
         if row.get("id").and_then(Value::as_u64) == Some(id) {
             return row.get("result").cloned().ok_or_else(|| {
                 invalid("a successful native provider request; Codex refused the request")
@@ -71,12 +71,12 @@ pub(super) fn call(
         if discovery {
             command.arg("--strict-config");
         }
-        let mut child = crate::child_io::spawn(
+        let mut child = se_harness::child_io::spawn(
             command
                 .current_dir(cwd)
                 .env_clear()
                 .envs(
-                    crate::harness::codex_input::provider_environment()
+                    se_harness::harness::codex_input::provider_environment()
                         .into_iter()
                         .filter(|(name, _)| {
                             !name
@@ -87,7 +87,7 @@ pub(super) fn call(
                 )
                 .env("CODEX_HOME", config_home)
                 .kill_on_drop(true),
-            crate::child_io::Pipes {
+            se_harness::child_io::Pipes {
                 stdin: true,
                 stdout: true,
                 stderr: true,
@@ -111,7 +111,7 @@ pub(super) fn call(
                 .ok_or_else(|| invalid("the native helper output pipe"))?,
         );
         let exchange = async {
-            request(&mut writer, json!({"id":1,"method":"initialize","params":crate::harness::codex_input::initialize()})).await?;
+            request(&mut writer, json!({"id":1,"method":"initialize","params":se_harness::harness::codex_input::initialize()})).await?;
             response(&mut reader, 1).await?;
             request(&mut writer, json!({"method":"initialized"})).await?;
             request(&mut writer, json!({"id":2,"method":method,"params":params})).await?;

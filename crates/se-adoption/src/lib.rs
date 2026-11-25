@@ -68,7 +68,7 @@ impl Kind {
 #[cfg(feature = "listener")]
 pub(crate) trait Adapter: Send + Sync {
     #[cfg(any(target_os = "linux", windows))]
-    fn prepare(&self, command: &Path) -> Result<ProviderSetup>;
+    fn prepare(&self, command: &Path, host: &HostSetup) -> Result<ProviderSetup>;
     #[cfg(any(target_os = "linux", windows))]
     fn hooks(&self, executable: &Path, home: &Path) -> Result<Vec<(String, serde_json::Value)>>;
     fn discover(&self, _home: &Path, _saved: &mut Registration, _root: &Path) -> Result<()> {
@@ -93,11 +93,11 @@ static CLAUDE_ADOPTION: ClaudeAdoption = ClaudeAdoption;
 #[cfg(feature = "listener")]
 impl Adapter for ClaudeAdoption {
     #[cfg(any(target_os = "linux", windows))]
-    fn prepare(&self, command: &Path) -> Result<ProviderSetup> {
-        crate::harness::qualify_claude_adoption(command)?;
+    fn prepare(&self, command: &Path, _host: &HostSetup) -> Result<ProviderSetup> {
+        se_harness::harness::qualify_claude_adoption(command)?;
         Ok(ProviderSetup {
             executable: command.to_owned(),
-            config_home: crate::harness::claude::config_home(
+            config_home: se_harness::harness::claude::config_home(
                 &std::env::vars_os().collect::<Vec<_>>(),
             )?,
         })
@@ -114,18 +114,26 @@ impl Adapter for ClaudeAdoption {
 struct CodexAdoption;
 #[cfg(feature = "listener")]
 static CODEX_ADOPTION: CodexAdoption = CodexAdoption;
-#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
-pub(crate) use first_setup::FirstSetup;
+/// Proof that first setup (provider adoption) is asking for a login. Only
+/// this crate can make one, so no agent launch can obtain the setup login.
 #[cfg(feature = "listener")]
-mod first_setup {
+pub struct FirstSetup(());
+/// Host policy that first setup uses but adoption does not own.
+#[cfg(feature = "listener")]
+pub struct HostSetup {
+    /// The host's provider executable policy, the same one launches use.
+    pub resolve: ProviderResolver,
+    /// The user's own Codex login, available only to first setup.
+    pub codex_login: fn(&FirstSetup) -> Result<std::path::PathBuf>,
+}
+#[cfg(feature = "listener")]
+mod codex_adapter {
     use super::*;
-    #[cfg(any(target_os = "linux", windows))]
-    pub(crate) struct FirstSetup(());
     impl Adapter for CodexAdoption {
         #[cfg(any(target_os = "linux", windows))]
-        fn prepare(&self, command: &Path) -> Result<ProviderSetup> {
+        fn prepare(&self, command: &Path, host: &HostSetup) -> Result<ProviderSetup> {
             let executable = codex::native_executable(command)?;
-            let home = crate::process::codex_server::setup_codex_login(&FirstSetup(()))?;
+            let home = (host.codex_login)(&FirstSetup(()))?;
             settings::prepare(&home, &home.join(Kind::Codex.settings()))?;
             codex::qualify(&executable)?;
             Ok(ProviderSetup {
@@ -218,7 +226,7 @@ pub fn read_for(home: &Path, kind: Kind) -> Result<Option<Registration>> {
     file.take(LIMIT as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(io)?;
-    crate::client::wire::decode_json(&bytes, LIMIT).map(Some)
+    se_mcp::wire::decode_json(&bytes, LIMIT).map(Some)
 }
 pub fn publish(home: &Path, registration: &Registration) -> Result<()> {
     publish_for(home, Kind::Claude, registration)
@@ -254,10 +262,10 @@ pub fn remove_for(home: &Path, kind: Kind) -> Result<()> {
     }
     Ok(())
 }
-pub(crate) fn invalid(expected: &str) -> SeError {
+pub fn invalid(expected: &str) -> SeError {
     SeError::invalid("provider adoption", expected)
 }
-pub(crate) fn native(error: se_proc::StateFileError) -> SeError {
+pub fn native(error: se_proc::StateFileError) -> SeError {
     se_core::scope::unreadable("provider adoption file", &error.to_string()).with_cause(error)
 }
 pub(crate) fn io(error: std::io::Error) -> SeError {
@@ -314,29 +322,32 @@ pub struct Input {
     pub offered: Vec<se_types::MessageId>,
 }
 #[cfg(feature = "listener")]
-pub(crate) struct NativeCall {
+pub struct NativeCall {
     pub input: Input,
     pub provider: se_proc::native_ipc::NativeIpcPeer,
 }
 
-#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
-pub fn resolve_provider(
-    configuration: &se_config::config_policy::ConfigFile,
-    file: Option<&Path>,
-) -> Result<std::path::PathBuf> {
-    resolve_provider_for(Kind::Claude, configuration, file)
-}
+/// The host's provider executable policy: configuration, selected file and
+/// optional harness in, one canonical native executable out.
+#[cfg(feature = "listener")]
+pub type ProviderResolver = fn(
+    &se_config::config_policy::ConfigFile,
+    se_types::Provider,
+    Option<&Path>,
+    Option<&str>,
+) -> Result<std::path::PathBuf>;
 #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
 pub fn resolve_provider_for(
     kind: Kind,
     configuration: &se_config::config_policy::ConfigFile,
     file: Option<&Path>,
+    resolve: ProviderResolver,
 ) -> Result<std::path::PathBuf> {
     let provider = match kind {
         Kind::Claude => se_types::Provider::Claude,
         Kind::Codex => se_types::Provider::Codex,
     };
-    crate::process::launch_util::resolve_provider(configuration, provider, file, None)
+    resolve(configuration, provider, file, None)
 }
 
 /// A discovery receipt is only a cache hint. Configuration or executable drift

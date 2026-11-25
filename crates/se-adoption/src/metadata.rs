@@ -36,7 +36,7 @@ pub fn current(
     if !chunk.end_of_file {
         return Err(invalid("provider discovery within 64 KiB"));
     }
-    let row: Value = crate::client::wire::decode_json(&chunk.bytes, 65536)?;
+    let row: Value = se_mcp::wire::decode_json(&chunk.bytes, 65536)?;
     let start = row
         .get("procStart")
         .and_then(Value::as_str)
@@ -101,7 +101,7 @@ fn witness(
 }
 /// SessionEnd runs after the provider removes its discovery file. Only an
 /// earlier natively verified association may authorize that final retirement.
-pub(crate) fn authorize(
+pub fn authorize(
     home: &std::path::Path,
     generation: se_types::Generation,
     registration: &Registration,
@@ -143,7 +143,7 @@ pub(crate) fn authorize(
         Err(error) => Err(native(error)),
     }
 }
-pub(crate) fn forget(
+pub fn forget(
     home: &std::path::Path,
     generation: se_types::Generation,
     provider: &NativeIpcPeer,

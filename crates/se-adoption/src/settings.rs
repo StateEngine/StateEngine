@@ -95,7 +95,7 @@ pub(super) fn read_document(path: &Path) -> Result<(Option<se_proc::OwnedFile>, 
     let value: Value = if is_toml(path) {
         toml::read(path, &bytes)?
     } else {
-        crate::client::wire::decode_json(&bytes, LIMIT)?
+        se_mcp::wire::decode_json(&bytes, LIMIT)?
     };
     if !value.is_object() {
         return Err(invalid(
