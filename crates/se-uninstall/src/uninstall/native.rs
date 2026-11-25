@@ -26,22 +26,8 @@ pub(super) fn wide(path: &Path) -> Result<Vec<u16>> {
     se_state_files::state_files::windows::wide(path).map_err(custody)
 }
 pub(super) fn open_image(path: &Path, delete: bool) -> Result<File> {
-    let encoded = wide(path)?;
-    // SAFETY: callers retain a validated terminated path; these are the shared
-    // read/delete rights, sharing mode and no-follow flags for uninstall images.
-    let raw = unsafe {
-        CreateFileW(
-            encoded.as_ptr(),
-            GENERIC_READ | READ_CONTROL | if delete { DELETE } else { 0 },
-            FILE_SHARE_READ | FILE_SHARE_DELETE,
-            ptr::null(),
-            OPEN_EXISTING,
-            FILE_FLAG_OPEN_REPARSE_POINT,
-            ptr::null_mut(),
-        )
-    };
-    // SAFETY: successful CreateFileW transferred one unique reference.
-    let file = File::from(unsafe { handle(raw, "pin uninstall image") }?);
+    let file = se_native_path::windows::file::open_image_file(&wide(path)?, delete)
+        .map_err(|e| error("pin uninstall image", e))?;
     file_id(&file)?;
     Ok(file)
 }
