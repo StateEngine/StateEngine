@@ -9,7 +9,7 @@ use se_store::{
     mail::{MailSnapshot, OfferObservation, OfferReport},
     *,
 };
-use se_types::{WorkAction, WorkAddressing};
+use se_types::{MessageId, WorkAction, WorkAddressing};
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
@@ -167,10 +167,6 @@ fn quiet_prefix_cannot_hide_new_notification_debt_or_change_read_marks() -> Chec
     Ok(())
 }
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn notification_failure_retry_and_observation_are_per_recipient_and_never_read_marks() -> Check {
     let f = Fixture::new()?;
     let (host, lease) = host(&f)?;
@@ -219,10 +215,52 @@ fn notification_failure_retry_and_observation_are_per_recipient_and_never_read_m
         notice_id,
         effect_id: effect,
     };
+    let reservation = reserve_and_commit(&k, &writer, &reader, &scope, reserve)?;
+    assert_eq!(reservation.ids, vec![id.clone()]);
+    let states = offer_states();
+    for (state, report) in states {
+        let k = kernel()?;
+        let request = ObserveOffer {
+            target: target.clone(),
+            effect,
+            attempt: record()?,
+            evidence: OfferObservation {
+                version: 1,
+                notice_id,
+                target_agent: f.a.clone(),
+                session: target.session.clone(),
+                epoch: target.epoch.clone(),
+                generation: 1,
+                fingerprint: target.fingerprint,
+                observed_at_us: 1_700_000_000_000_000,
+                digest: *reservation.digest.as_bytes(),
+                report,
+            },
+        };
+        commit_observation(&k, &writer, &reader, &scope, request)?;
+        notifications_are_per_recipient(&f, &reader, &id, state)?;
+    }
+    let mut a = reader.snapshot(scope)?;
+    assert_eq!(
+        a.message_count(query(Some(Actor::Agent(f.a.clone())), true))?,
+        1
+    );
+    a.close()?;
+    drop(wait(owner.drain(std::time::Duration::from_secs(3)))??);
+    Ok(())
+}
+
+fn reserve_and_commit(
+    k: &Kernel,
+    writer: &SqliteClient,
+    reader: &SqliteReader,
+    scope: &ReadScope,
+    reserve: ReserveNotice,
+) -> Result<Reservation, Box<dyn std::error::Error>> {
     let step = {
         let mut read = reader.snapshot(scope.clone())?;
         reserve_notice(
-            &k,
+            k,
             &mut Cx {
                 read: &mut read,
                 admission: &scope.admission,
@@ -237,7 +275,7 @@ fn notification_failure_retry_and_observation_are_per_recipient_and_never_read_m
     let reservation = {
         let mut read = reader.snapshot(scope.clone())?;
         committed(
-            &k,
+            k,
             &mut Cx {
                 read: &mut read,
                 admission: &scope.admission,
@@ -246,8 +284,11 @@ fn notification_failure_retry_and_observation_are_per_recipient_and_never_read_m
             receipt,
         )?
     };
-    assert_eq!(reservation.ids, vec![id.clone()]);
-    let states = [
+    Ok(reservation)
+}
+
+fn offer_states() -> [(&'static str, OfferReport); 4] {
+    [
         (
             "failed",
             OfferReport::Failed {
@@ -268,75 +309,66 @@ fn notification_failure_retry_and_observation_are_per_recipient_and_never_read_m
                 sequence: 1,
             },
         ),
-    ];
-    for (state, report) in states {
-        let k = kernel()?;
-        let request = ObserveOffer {
-            target: target.clone(),
-            effect,
-            attempt: record()?,
-            evidence: OfferObservation {
-                version: 1,
-                notice_id,
-                target_agent: f.a.clone(),
-                session: target.session.clone(),
-                epoch: target.epoch.clone(),
-                generation: 1,
-                fingerprint: target.fingerprint,
-                observed_at_us: 1_700_000_000_000_000,
-                digest: *reservation.digest.as_bytes(),
-                report,
+    ]
+}
+
+fn commit_observation(
+    k: &Kernel,
+    writer: &SqliteClient,
+    reader: &SqliteReader,
+    scope: &ReadScope,
+    request: ObserveOffer,
+) -> Check {
+    let step = {
+        let mut read = reader.snapshot(scope.clone())?;
+        observe_offer(
+            k,
+            &mut Cx {
+                read: &mut read,
+                admission: &scope.admission,
             },
-        };
-        let step = {
-            let mut read = reader.snapshot(scope.clone())?;
-            observe_offer(
-                &k,
-                &mut Cx {
-                    read: &mut read,
-                    admission: &scope.admission,
-                },
-                request,
-            )?
-        };
-        let OpStep::Commit { batch, then } = step else {
-            return Err("observation not planned".into());
-        };
-        let receipt = wait(writer.submit(batch)?)??;
-        {
-            let mut read = reader.snapshot(scope.clone())?;
-            observation_committed(
-                &k,
-                &mut Cx {
-                    read: &mut read,
-                    admission: &scope.admission,
-                },
-                then,
-                receipt,
-            )?;
-        }
-        let mut inspect = reader.snapshot(f.scoped(Visibility::Owner))?;
-        let row = present(inspect.message(id.clone())?)?;
-        assert!(row.read.is_none() && row.delivered.is_none());
-        assert_eq!(row.notifications.len(), 2);
-        for n in row.notifications {
-            assert_eq!(
-                n.state,
-                if n.recipient == Actor::Agent(f.a.clone()) {
-                    state
-                } else {
-                    "pending"
-                }
-            );
-        }
-        inspect.close()?;
+            request,
+        )?
+    };
+    let OpStep::Commit { batch, then } = step else {
+        return Err("observation not planned".into());
+    };
+    let receipt = wait(writer.submit(batch)?)??;
+    {
+        let mut read = reader.snapshot(scope.clone())?;
+        observation_committed(
+            k,
+            &mut Cx {
+                read: &mut read,
+                admission: &scope.admission,
+            },
+            then,
+            receipt,
+        )?;
     }
-    let mut a = reader.snapshot(scope)?;
-    assert_eq!(
-        a.message_count(query(Some(Actor::Agent(f.a.clone())), true))?,
-        1
-    );
-    a.close()?;
-    drop(wait(owner.drain(std::time::Duration::from_secs(3)))??);
+    Ok(())
+}
+
+fn notifications_are_per_recipient(
+    f: &Fixture,
+    reader: &SqliteReader,
+    id: &MessageId,
+    state: &str,
+) -> Check {
+    let mut inspect = reader.snapshot(f.scoped(Visibility::Owner))?;
+    let row = present(inspect.message(id.clone())?)?;
+    assert!(row.read.is_none() && row.delivered.is_none());
+    assert_eq!(row.notifications.len(), 2);
+    for n in row.notifications {
+        assert_eq!(
+            n.state,
+            if n.recipient == Actor::Agent(f.a.clone()) {
+                state
+            } else {
+                "pending"
+            }
+        );
+    }
+    inspect.close()?;
     Ok(())
 }

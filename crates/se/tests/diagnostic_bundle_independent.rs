@@ -85,10 +85,6 @@ impl Fixture {
         self.read_bundle(self.command(home).output()?, complete)
     }
 
-    #[expect(
-        clippy::cognitive_complexity,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     fn read_bundle(&self, output: Output, complete: bool) -> Check<Bundle> {
         assert_eq!(
             output.status.code(),
@@ -126,65 +122,8 @@ impl Fixture {
         assert_eq!(receipt["sha256"].as_str(), Some(actual_digest.as_str()));
         let document: Value = serde_json::from_slice(&bytes)?;
         assert_eq!(document["schema"], "se.diagnostic-bundle-file/v1");
-        for section in ["version", "status", "doctor"] {
-            assert!(
-                matches!(
-                    document[section]["state"].as_str(),
-                    Some("observed" | "unreadable" | "oversized")
-                ),
-                "unknown section state for {section}"
-            );
-            if document[section]["state"] == "observed" {
-                assert!(
-                    document[section]["data"].is_object(),
-                    "missing {section} data"
-                );
-            } else {
-                assert!(
-                    document[section].get("data").is_none(),
-                    "unobserved data must not be exported"
-                );
-            }
-        }
-        assert!(matches!(
-            document["logs"]["state"].as_str(),
-            Some("observed" | "absent" | "unreadable")
-        ));
-        assert!(document["logs"]["entries"].is_array());
-        let inventory_complete = document["logs"]["inventory_complete"]
-            .as_bool()
-            .ok_or("inventory completeness missing")?;
-        let omitted = document["logs"]
-            .get("omitted")
-            .ok_or("omitted metadata missing")?;
-        if inventory_complete {
-            assert!(
-                omitted.as_u64().is_some(),
-                "complete inventory needs a known omitted count"
-            );
-        } else {
-            assert!(
-                omitted.is_null(),
-                "an unknown omitted count must not become a false zero"
-            );
-        }
-        for entry in entries(&document)? {
-            assert!(entry["name"].is_string());
-            assert!(entry["truncated"].is_boolean());
-            match entry["state"].as_str() {
-                Some("observed") => {
-                    assert!(entry["content"].is_string());
-                    assert_eq!(entry["truncated"], false);
-                }
-                Some("unreadable" | "oversized") => {
-                    assert!(
-                        entry.get("content").is_none(),
-                        "non-observed log leaked content"
-                    );
-                }
-                _ => panic!("unknown log state"),
-            }
-        }
+        assert_sections(&document);
+        assert_logs(&document)?;
         Ok(Bundle {
             path,
             bytes,
@@ -386,12 +325,34 @@ fn uninitialized_home_exports_real_observations_with_verified_private_unique_rec
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn actual_allowlisted_log_redacts_credentials_and_homes_but_preserves_benign_text() -> Check {
     let fixture = Fixture::new()?;
+    let text = synthetic_log_text(&fixture);
+    let forbidden = forbidden_values(&fixture);
+    let name = fixture.log(11, text.as_bytes(), 1)?;
+    let bundle = fixture.collect(true)?;
+    assert_uninitialized_observations(&bundle.document)?;
+    assert_no_leaks(&bundle, &forbidden)?;
+    assert_eq!(bundle.document["logs"]["state"], "observed");
+    assert_eq!(bundle.document["logs"]["omitted"], 0);
+    assert_eq!(bundle.document["logs"]["inventory_complete"], true);
+    assert_eq!(entries(&bundle.document)?.len(), 1);
+    let observed = entry(&bundle.document, &name)?;
+    assert_eq!(observed["state"], "observed");
+    let content = observed["content"]
+        .as_str()
+        .ok_or("observed log content missing")?;
+    assert!(content.contains("benign startup marker: synthetic diagnostics remain useful"));
+    assert!(content.contains("benign final marker: collection finished"));
+    assert_eq!(
+        fs::read(fixture.home.join(name))?,
+        text.as_bytes(),
+        "redaction modified the source log"
+    );
+    Ok(())
+}
+
+fn synthetic_log_text(fixture: &Fixture) -> String {
     // Every value below is synthetic and deliberately useless as a credential.
     let mut text = String::from(concat!(
         "benign startup marker: synthetic diagnostics remain useful\n",
@@ -434,7 +395,11 @@ fn actual_allowlisted_log_redacts_credentials_and_homes_but_preserves_benign_tex
         fixture.home.display(),
         fixture.user_home.display()
     ));
-    let forbidden = [
+    text
+}
+
+fn forbidden_values(fixture: &Fixture) -> Vec<String> {
+    [
         "synthetic-unquoted-assignment",
         "synthetic quoted assignment with spaces",
         "synthetic single quoted assignment",
@@ -489,28 +454,7 @@ fn actual_allowlisted_log_redacts_credentials_and_homes_but_preserves_benign_tex
         fixture.home.to_string_lossy().into_owned(),
         fixture.user_home.to_string_lossy().into_owned(),
     ])
-    .collect::<Vec<_>>();
-    let name = fixture.log(11, text.as_bytes(), 1)?;
-    let bundle = fixture.collect(true)?;
-    assert_uninitialized_observations(&bundle.document)?;
-    assert_no_leaks(&bundle, &forbidden)?;
-    assert_eq!(bundle.document["logs"]["state"], "observed");
-    assert_eq!(bundle.document["logs"]["omitted"], 0);
-    assert_eq!(bundle.document["logs"]["inventory_complete"], true);
-    assert_eq!(entries(&bundle.document)?.len(), 1);
-    let observed = entry(&bundle.document, &name)?;
-    assert_eq!(observed["state"], "observed");
-    let content = observed["content"]
-        .as_str()
-        .ok_or("observed log content missing")?;
-    assert!(content.contains("benign startup marker: synthetic diagnostics remain useful"));
-    assert!(content.contains("benign final marker: collection finished"));
-    assert_eq!(
-        fs::read(fixture.home.join(name))?,
-        text.as_bytes(),
-        "redaction modified the source log"
-    );
-    Ok(())
+    .collect::<Vec<_>>()
 }
 
 #[test]
@@ -856,5 +800,71 @@ fn non_utf8_home_value_display_and_private_log_suffix_are_redacted() -> Check {
         original_entries,
         "diagnosis created the environment-only user home or other artifacts"
     );
+    Ok(())
+}
+
+fn assert_sections(document: &Value) {
+    for section in ["version", "status", "doctor"] {
+        assert!(
+            matches!(
+                document[section]["state"].as_str(),
+                Some("observed" | "unreadable" | "oversized")
+            ),
+            "unknown section state for {section}"
+        );
+        if document[section]["state"] == "observed" {
+            assert!(
+                document[section]["data"].is_object(),
+                "missing {section} data"
+            );
+        } else {
+            assert!(
+                document[section].get("data").is_none(),
+                "unobserved data must not be exported"
+            );
+        }
+    }
+}
+
+fn assert_logs(document: &Value) -> Check {
+    assert!(matches!(
+        document["logs"]["state"].as_str(),
+        Some("observed" | "absent" | "unreadable")
+    ));
+    assert!(document["logs"]["entries"].is_array());
+    let inventory_complete = document["logs"]["inventory_complete"]
+        .as_bool()
+        .ok_or("inventory completeness missing")?;
+    let omitted = document["logs"]
+        .get("omitted")
+        .ok_or("omitted metadata missing")?;
+    if inventory_complete {
+        assert!(
+            omitted.as_u64().is_some(),
+            "complete inventory needs a known omitted count"
+        );
+    } else {
+        assert!(
+            omitted.is_null(),
+            "an unknown omitted count must not become a false zero"
+        );
+    }
+    for entry in entries(document)? {
+        assert!(entry["name"].is_string());
+        assert!(entry["truncated"].is_boolean());
+        match entry["state"].as_str() {
+            Some("observed") => {
+                assert!(entry["content"].is_string());
+                assert_eq!(entry["truncated"], false);
+            }
+            Some("unreadable" | "oversized") => {
+                assert!(
+                    entry.get("content").is_none(),
+                    "non-observed log leaked content"
+                );
+            }
+            _ => panic!("unknown log state"),
+        }
+    }
     Ok(())
 }

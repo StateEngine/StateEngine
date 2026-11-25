@@ -270,12 +270,7 @@ fn public_history_page_and_exact_event_show_chat_text_without_payload_envelope()
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn public_tool_history_and_exact_events_show_actions_and_keep_unknowns_honest() -> Check {
-    use se_core::ops::transcript::{Position, Record, tool::*};
     let f = Fixture::new()?;
     let (mut store, lease) = f.direct()?;
     let session = capture::session()?;
@@ -285,87 +280,7 @@ fn public_tool_history_and_exact_events_show_actions_and_keep_unknowns_honest() 
         f.home.join("transcript.jsonl"),
         b"ten bytes!ten bytes!ten bytes!ten bytes!",
     )?;
-    for (n, name, target, phase, outcome) in [
-        (
-            0,
-            "Edit",
-            Target::Paths(vec![ObservedPath {
-                spelling: "src/main.rs".into(),
-                cwd: None,
-                content_revision: None,
-            }]),
-            Phase::Completed,
-            Outcome::Succeeded,
-        ),
-        (
-            1,
-            "Bash",
-            Target::Unknown(UnknownReason::NoNativeTarget),
-            Phase::Completed,
-            Outcome::Succeeded,
-        ),
-        (
-            2,
-            "Write",
-            Target::Paths(vec![ObservedPath {
-                spelling: "failed.txt".into(),
-                cwd: None,
-                content_revision: None,
-            }]),
-            Phase::Completed,
-            Outcome::Failed,
-        ),
-        (
-            3,
-            "Edit",
-            Target::Paths(vec![ObservedPath {
-                spelling: "requested.txt".into(),
-                cwd: None,
-                content_revision: None,
-            }]),
-            Phase::Called,
-            Outcome::Unknown(UnknownReason::Pending),
-        ),
-    ] {
-        let mut batch = capture::capture(
-            &f,
-            &session,
-            source,
-            b"first",
-            n * 10,
-            n + 1,
-            &format!("{}tool-history-{n}", TRANSCRIPT_EVENT_PREFIX),
-        )?;
-        let position = Position {
-            offset: n * 10,
-            length: 10,
-        };
-        let mut record = Record::new("captured-tool", None);
-        record.position = position.clone();
-        record.captured_tool = Some(Observation {
-            schema: SCHEMA.into(),
-            session: session.clone(),
-            agent: f.a.clone(),
-            provider: Provider::Claude,
-            source,
-            position,
-            native: NativeIdentity::ClaudeCall {
-                tool_use_id: format!("native-{n}"),
-            },
-            phase,
-            tool: ToolName::Known(name.into()),
-            target,
-            outcome,
-        });
-        for event in &mut batch.events {
-            event.header.door = Door::Hook;
-            if let EventBody::SessionTurn { role, text, .. } = &mut event.body {
-                *role = Role::System;
-                *text = InputText::Inline(record.body()?.as_str().into());
-            }
-        }
-        store.append(batch, &*lease)?;
-    }
+    capture_tool_actions(&f, &mut store, &lease, &session, source)?;
     let args = [
         "--agent",
         f.a.as_str(),
@@ -411,6 +326,98 @@ fn public_tool_history_and_exact_events_show_actions_and_keep_unknowns_honest() 
             item.pointer("/payload/metadata/captured_tool/native")
                 .is_some()
         );
+    }
+    Ok(())
+}
+
+fn capture_tool_actions(
+    f: &Fixture,
+    store: &mut SqliteDirect,
+    lease: &Lease,
+    session: &se_types::SessionId,
+    source: RecordId,
+) -> Check {
+    use se_core::ops::transcript::{Position, Record, tool::*};
+    for (n, name, target, phase, outcome) in [
+        (
+            0,
+            "Edit",
+            Target::Paths(vec![ObservedPath {
+                spelling: "src/main.rs".into(),
+                cwd: None,
+                content_revision: None,
+            }]),
+            Phase::Completed,
+            Outcome::Succeeded,
+        ),
+        (
+            1,
+            "Bash",
+            Target::Unknown(UnknownReason::NoNativeTarget),
+            Phase::Completed,
+            Outcome::Succeeded,
+        ),
+        (
+            2,
+            "Write",
+            Target::Paths(vec![ObservedPath {
+                spelling: "failed.txt".into(),
+                cwd: None,
+                content_revision: None,
+            }]),
+            Phase::Completed,
+            Outcome::Failed,
+        ),
+        (
+            3,
+            "Edit",
+            Target::Paths(vec![ObservedPath {
+                spelling: "requested.txt".into(),
+                cwd: None,
+                content_revision: None,
+            }]),
+            Phase::Called,
+            Outcome::Unknown(UnknownReason::Pending),
+        ),
+    ] {
+        let mut batch = capture::capture(
+            f,
+            session,
+            source,
+            b"first",
+            n * 10,
+            n + 1,
+            &format!("{}tool-history-{n}", TRANSCRIPT_EVENT_PREFIX),
+        )?;
+        let position = Position {
+            offset: n * 10,
+            length: 10,
+        };
+        let mut record = Record::new("captured-tool", None);
+        record.position = position.clone();
+        record.captured_tool = Some(Observation {
+            schema: SCHEMA.into(),
+            session: session.clone(),
+            agent: f.a.clone(),
+            provider: Provider::Claude,
+            source,
+            position,
+            native: NativeIdentity::ClaudeCall {
+                tool_use_id: format!("native-{n}"),
+            },
+            phase,
+            tool: ToolName::Known(name.into()),
+            target,
+            outcome,
+        });
+        for event in &mut batch.events {
+            event.header.door = Door::Hook;
+            if let EventBody::SessionTurn { role, text, .. } = &mut event.body {
+                *role = Role::System;
+                *text = InputText::Inline(record.body()?.as_str().into());
+            }
+        }
+        store.append(batch, lease)?;
     }
     Ok(())
 }

@@ -17,10 +17,6 @@ fn fresh_claude_and_codex_commands_reach_history_page_and_exact_event() -> Check
     }
     Ok(())
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn capture_and_read(provider: Provider) -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;
@@ -28,20 +24,7 @@ fn capture_and_read(provider: Provider) -> Check {
     let session = session::session()?;
     let conversation = ProviderSessionId::new(format!("shell-{}", f.a.as_str()))?;
     let command = "printf SHELL_HISTORY_NATIVE > not-an-edit-witness.rs";
-    let rows = if provider == Provider::Claude {
-        vec![
-            json!({"type":"assistant","uuid":"shell-called","sessionId":conversation.as_str(),
-                "message":{"role":"assistant","content":[{"type":"tool_use","id":"native-shell","name":"Bash","input":{"command":command}}]}}),
-            json!({"type":"user","uuid":"shell-result","sessionId":conversation.as_str(),
-                "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"native-shell","is_error":false,"content":"PRIVATE_OUTPUT"}]}}),
-        ]
-    } else {
-        vec![
-            json!({"type":"session_meta","payload":{"id":conversation.as_str()}}),
-            json!({"type":"event_msg","payload":{"type":"item_completed","thread_id":conversation.as_str(),"turn_id":"native-turn",
-                "item":{"type":"CommandExecution","id":"native-shell","command":["/bin/bash","-lc",command],"status":"completed","exit_code":0,"aggregated_output":"PRIVATE_OUTPUT"}}}),
-        ]
-    };
+    let rows = native_rows(provider, &conversation, command);
     let mut bytes = Vec::new();
     for row in rows {
         bytes.extend(serde_json::to_vec(&row)?);
@@ -52,82 +35,16 @@ fn capture_and_read(provider: Provider) -> Check {
     let pin = se_proc::NativeSourcePin::open(&path)?.ok_or("source absent")?;
     let native_path = NativePath::from_local(path)?;
     let source = session::record()?;
-    let (mut store, lease) = direct(&f)?;
-    let mut prepared = session::prepared(&f, &session, &f.a);
-    if let EventBody::SessionPrepared {
-        provider: actual,
-        native_ref,
-        ..
-    } = &mut prepared
-    {
-        *actual = provider;
-        *native_ref = conversation.as_str().into();
-    }
-    store.append(
-        f.batch(
-            f.owner_project(),
-            Some(fixture::request("native-shell-setup")?),
-            vec![
-                prepared,
-                session::activated(&session)?,
-                session::source(source, &session, &pin.identity(), Expected::Absent),
-            ],
-        )?,
-        &*lease,
+    seed_native_session(&f, provider, &session, &conversation, source, &pin)?;
+    serve_capture(
+        &f,
+        initialized,
+        &session,
+        conversation,
+        native_path,
+        source,
+        pin,
     )?;
-    store.close()?;
-    drop(lease);
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .max_blocking_threads(2)
-        .build()?;
-    rt.block_on(async {
-        let mut host =
-            HostedRuntime::prepare(initialized, start(&f)?, rt.handle().clone(), &bound()?).await?;
-        configure_private_listener(&mut host)?;
-        let capture = host.capture_handle();
-        capture
-            .bind(
-                TranscriptPin {
-                    identity: SessionIdentity {
-                        project: f.project.clone(),
-                        agent: f.a.clone(),
-                        session: session.clone(),
-                    },
-                    conversation: conversation.clone(),
-                    path: native_path.clone(),
-                    file_identity: Sha256::from_bytes(pin.identity()),
-                },
-                source,
-                pin,
-                &bound()?,
-            )
-            .await?;
-        let mut admitted = f.self_scope(&f.a).admission;
-        admitted.session = Some(session.clone());
-        let stop = host.local_stop();
-        let listener = host.listen(rt.handle().clone(), &bound()?).await?;
-        let capture_bound = bound()?;
-        let consumer = async {
-            let result = capture
-                .catch_up(admitted, conversation, native_path, &capture_bound)
-                .await;
-            stop.request();
-            result
-        };
-        let (exit, result) = join(host.serve(listener), consumer).await;
-        drop(capture);
-        let report = exit.finish(&bound()?).await;
-        require(
-            report.transport_closed && report.endpoint_retired,
-            "native command host did not close",
-        )?;
-        require(
-            !result?.capture_commits.is_empty(),
-            "native command did not commit",
-        )?;
-        Ok::<(), Box<dyn std::error::Error>>(())
-    })?;
     let history =
         |json: bool, args: &[&str]| -> Result<std::process::Output, Box<dyn std::error::Error>> {
             let mut cli = Command::new(env!("CARGO_BIN_EXE_se"));
@@ -172,6 +89,133 @@ fn capture_and_read(provider: Provider) -> Check {
         .and_then(Value::as_str)
         .ok_or("native command text not retained")?;
     require(target.contains(command), "actual command text differs")?;
+    plain_history_shows_command(history, &args, event, command)?;
+    exact_turns_keep_command_target(&f)?;
+    Ok(())
+}
+
+fn native_rows(provider: Provider, conversation: &ProviderSessionId, command: &str) -> Vec<Value> {
+    if provider == Provider::Claude {
+        vec![
+            json!({"type":"assistant","uuid":"shell-called","sessionId":conversation.as_str(),
+                "message":{"role":"assistant","content":[{"type":"tool_use","id":"native-shell","name":"Bash","input":{"command":command}}]}}),
+            json!({"type":"user","uuid":"shell-result","sessionId":conversation.as_str(),
+                "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"native-shell","is_error":false,"content":"PRIVATE_OUTPUT"}]}}),
+        ]
+    } else {
+        vec![
+            json!({"type":"session_meta","payload":{"id":conversation.as_str()}}),
+            json!({"type":"event_msg","payload":{"type":"item_completed","thread_id":conversation.as_str(),"turn_id":"native-turn",
+                "item":{"type":"CommandExecution","id":"native-shell","command":["/bin/bash","-lc",command],"status":"completed","exit_code":0,"aggregated_output":"PRIVATE_OUTPUT"}}}),
+        ]
+    }
+}
+
+fn seed_native_session(
+    f: &Fixture,
+    provider: Provider,
+    session: &se_types::SessionId,
+    conversation: &ProviderSessionId,
+    source: RecordId,
+    pin: &se_proc::NativeSourcePin,
+) -> Check {
+    let (mut store, lease) = direct(f)?;
+    let mut prepared = session::prepared(f, session, &f.a);
+    if let EventBody::SessionPrepared {
+        provider: actual,
+        native_ref,
+        ..
+    } = &mut prepared
+    {
+        *actual = provider;
+        *native_ref = conversation.as_str().into();
+    }
+    store.append(
+        f.batch(
+            f.owner_project(),
+            Some(fixture::request("native-shell-setup")?),
+            vec![
+                prepared,
+                session::activated(session)?,
+                session::source(source, session, &pin.identity(), Expected::Absent),
+            ],
+        )?,
+        &*lease,
+    )?;
+    store.close()?;
+    drop(lease);
+    Ok(())
+}
+
+fn serve_capture(
+    f: &Fixture,
+    initialized: HostProcessInitialization,
+    session: &se_types::SessionId,
+    conversation: ProviderSessionId,
+    native_path: NativePath,
+    source: RecordId,
+    pin: se_proc::NativeSourcePin,
+) -> Check {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(2)
+        .build()?;
+    rt.block_on(async {
+        let mut host =
+            HostedRuntime::prepare(initialized, start(f)?, rt.handle().clone(), &bound()?).await?;
+        configure_private_listener(&mut host)?;
+        let capture = host.capture_handle();
+        capture
+            .bind(
+                TranscriptPin {
+                    identity: SessionIdentity {
+                        project: f.project.clone(),
+                        agent: f.a.clone(),
+                        session: session.clone(),
+                    },
+                    conversation: conversation.clone(),
+                    path: native_path.clone(),
+                    file_identity: Sha256::from_bytes(pin.identity()),
+                },
+                source,
+                pin,
+                &bound()?,
+            )
+            .await?;
+        let mut admitted = f.self_scope(&f.a).admission;
+        admitted.session = Some(session.clone());
+        let stop = host.local_stop();
+        let listener = host.listen(rt.handle().clone(), &bound()?).await?;
+        let capture_bound = bound()?;
+        let consumer = async {
+            let result = capture
+                .catch_up(admitted, conversation, native_path, &capture_bound)
+                .await;
+            stop.request();
+            result
+        };
+        let (exit, result) = join(host.serve(listener), consumer).await;
+        drop(capture);
+        let report = exit.finish(&bound()?).await;
+        require(
+            report.transport_closed && report.endpoint_retired,
+            "native command host did not close",
+        )?;
+        require(
+            !result?.capture_commits.is_empty(),
+            "native command did not commit",
+        )?;
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })?;
+    Ok(())
+}
+
+fn plain_history_shows_command(
+    history: impl Fn(bool, &[&str]) -> Result<std::process::Output, Box<dyn std::error::Error>>,
+    args: &[&str],
+    event: &Value,
+    command: &str,
+) -> Check {
     for args in [
         args.to_vec(),
         vec![
@@ -198,7 +242,11 @@ fn capture_and_read(provider: Provider) -> Check {
             "fresh known arguments became legacy unknown",
         )?;
     }
-    let (reader, lease) = direct(&f)?;
+    Ok(())
+}
+
+fn exact_turns_keep_command_target(f: &Fixture) -> Check {
+    let (reader, lease) = direct(f)?;
     let mut snapshot = reader.snapshot(f.self_scope(&f.a))?;
     let turns = snapshot.turns(f.a.clone(), budget(10, 100_000, None)?)?;
     for event in turns.items() {
