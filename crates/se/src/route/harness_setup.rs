@@ -1,6 +1,6 @@
 //! Prepare a catalogue choice from an existing installation before setup writes.
 use crate::bootstrap::Bootstrap;
-use se_config::config_policy::ConfigFile;
+use se_config::config_policy::{Approval, ConfigFile, Profile};
 use se_core::{harness_selection::catalog, ops::ProjectInit};
 use se_types::{Result, SeError};
 
@@ -31,7 +31,7 @@ pub(super) fn prepare(cx: &Bootstrap, input: &ProjectInit) -> Result<ConfigFile>
             "an announced native permission default",
         )
     })?;
-    let profile = protocol_profile(&mut configuration);
+    let profile = protocol_profile(&mut configuration)?;
     descriptor.permissions.insert(profile, native);
     configuration
         .harnesses
@@ -65,23 +65,40 @@ pub(super) fn prepare(cx: &Bootstrap, input: &ProjectInit) -> Result<ConfigFile>
 
 /// Protocol sessions are headless and cannot collect approval, so catalogue
 /// setup saves a named profile whose approval is explicit, and init prints it.
-/// An owner's own `[providers.acp].profile` choice, or an existing profile of
-/// that name, is kept as written.
-fn protocol_profile(configuration: &mut ConfigFile) -> String {
+/// `[providers.acp].profile` serves every protocol agent, so it moves to that
+/// profile only while nothing else depends on it: the shared choice and its
+/// `default` profile are as shipped and no protocol agent is configured yet.
+/// Otherwise the owner's profile, and an existing `protocol` profile, stay as
+/// written and the catalogue agent maps its native default to them.
+fn protocol_profile(configuration: &mut ConfigFile) -> Result<String> {
     const PROTOCOL: &str = "protocol";
-    let acp = &mut configuration.providers.acp;
-    if acp.profile != "default" {
-        return acp.profile.clone();
+    let acp = &configuration.providers.acp;
+    let shipped = |profile: &Profile| -> Result<bool> {
+        let identity = |value: &Profile| {
+            serde_json::to_value(value)
+                .map_err(|e| SeError::invalid("launch profile", &e.to_string()))
+        };
+        Ok(identity(profile)? == identity(&Profile::default())?)
+    };
+    let untouched = acp.profile == "default"
+        && acp.command.is_none()
+        && configuration.harnesses.is_empty()
+        && match configuration.profiles.get("default") {
+            Some(profile) => shipped(profile)?,
+            None => true,
+        };
+    if !untouched {
+        return Ok(acp.profile.clone());
     }
-    acp.profile = PROTOCOL.into();
+    configuration.providers.acp.profile = PROTOCOL.into();
     configuration
         .profiles
         .entry(PROTOCOL.into())
-        .or_insert_with(|| se_config::config_policy::Profile {
-            approval: Some(se_config::config_policy::Approval::Never),
+        .or_insert_with(|| Profile {
+            approval: Some(Approval::Never),
             ..Default::default()
         });
-    PROTOCOL.into()
+    Ok(PROTOCOL.into())
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]

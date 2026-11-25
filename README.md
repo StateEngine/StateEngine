@@ -284,7 +284,9 @@ each protocol permission request once; it never selects a persistent "always
 allow" option. Other approval settings refuse them with a reason because a
 headless approval interface is not implemented yet. `se init --harness` for a
 catalogue agent saves a `[profiles.protocol]` profile with `approval = "never"`
-and prints it, unless `[providers.acp].profile` already names your own profile.
+and prints it when it is the first protocol agent and the shared profile is
+unchanged. Otherwise your `[providers.acp].profile` and its settings are kept,
+and init prints the profile the agent will use.
 A protocol mode or saved StateEngine profile does not establish OS containment.
 
 After installing and configuring a protocol agent, add these sections to the

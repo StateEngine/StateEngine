@@ -11,17 +11,34 @@ pub struct Item {
     pub role: Role,
     pub bytes: Vec<u8>,
     pub facts: Vec<Fact>,
-    text: Option<String>,
+    content: Content,
 }
+/// What an item's durable history record says, beyond its exact source bytes.
+enum Content {
+    /// A message, or the system text of an interrupted prompt.
+    Text(String),
+    /// A tool update, described by its facts.
+    Tool,
+    /// A session update this client does not interpret, kept by variant name.
+    Unrecognized { variant: String, message: String },
+}
+/// The largest unrecognised update copied into history; its source range always
+/// holds the whole update.
+const UNRECOGNIZED_HISTORY_BYTES: usize = 65536;
 impl Item {
     pub fn body(&self, position: Position) -> Result<Body> {
-        let kind = match &self.text {
-            Some(text) if self.role != Role::System => return Body::new(text.clone()),
-            Some(_) => "acp-interrupted-prefix",
-            None => "acp-tool-update",
+        let (kind, subtype, message) = match &self.content {
+            Content::Text(text) if self.role != Role::System => return Body::new(text.clone()),
+            Content::Text(text) => ("acp-interrupted-prefix", None, Some(text)),
+            Content::Tool => ("acp-tool-update", None, None),
+            Content::Unrecognized { variant, message } => (
+                "acp-unrecognized-update",
+                Some(variant.as_str()),
+                Some(message),
+            ),
         };
-        let mut record = Record::new(kind, None);
-        record.message = self.text.clone();
+        let mut record = Record::new(kind, subtype);
+        record.message = message.cloned();
         record.position = position;
         record.body()
     }
@@ -72,7 +89,7 @@ impl Binding {
                 role: Role::System,
                 bytes: body.as_bytes().to_vec(),
                 facts: Vec::new(),
-                text: Some(body),
+                content: Content::Text(body),
             })
         }).collect::<Result<Vec<_>>>()?;
         Ok(Some(items))
@@ -139,7 +156,7 @@ impl Binding {
                         role: Role::System,
                         bytes: serde_json::to_vec(update).map_err(error)?,
                         facts: tool_capture::acp::facts(update, turn.request, &self.cwd)?,
-                        text: None,
+                        content: Content::Tool,
                     });
                 }
                 TurnItem::Unrecognized { index } => {
@@ -147,7 +164,18 @@ impl Binding {
                         .unrecognized
                         .get(index)
                         .ok_or_else(|| error("sealed update index differs"))?;
-                    let kind = update.get("sessionUpdate").cloned().unwrap_or_default();
+                    let variant = update
+                        .get("sessionUpdate")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("unnamed")
+                        .to_owned();
+                    let bytes = serde_json::to_vec(update).map_err(error)?;
+                    // Bounded for history; a larger update says so and keeps its size.
+                    let message = if bytes.len() <= UNRECOGNIZED_HISTORY_BYTES {
+                        json!({"interpreted": false, "update": update})
+                    } else {
+                        json!({"interpreted": false, "update_bytes": bytes.len(), "update_omitted": format!("larger than {UNRECOGNIZED_HISTORY_BYTES} bytes; its source range holds it whole")})
+                    };
                     items.push(Item {
                         vendor: format!(
                             "{}acp/{}/unrecognized/{index}",
@@ -155,14 +183,12 @@ impl Binding {
                             se_types::hex_lower(&Sha256::digest(turn.input_key.as_bytes()))
                         ),
                         role: Role::System,
-                        bytes: serde_json::to_vec(&json!({
-                            "unrecognized_update": kind,
-                            "interpreted": false,
-                            "update": update,
-                        }))
-                        .map_err(error)?,
+                        bytes,
                         facts: Vec::new(),
-                        text: None,
+                        content: Content::Unrecognized {
+                            variant,
+                            message: serde_json::to_string(&message).map_err(error)?,
+                        },
                     });
                 }
             }
@@ -182,6 +208,6 @@ fn text(turn: &CompletedTurn, label: &str, role: Role, text: &str) -> Result<Ite
         role,
         bytes,
         facts: Vec::new(),
-        text: Some(text.into()),
+        content: Content::Text(text.into()),
     })
 }

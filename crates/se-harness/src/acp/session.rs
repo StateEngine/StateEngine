@@ -665,7 +665,9 @@ fn normalize(messages: Vec<CapturedMessage>) -> Vec<CapturedMessage> {
     result
 }
 /// A loaded conversation must end with the latest captured exchange: the last
-/// user message and every reply after it, exactly and with nothing after it.
+/// user message and every reply after it, in order and with nothing after it.
+/// Roles must match exactly; text is compared after trimming surrounding
+/// whitespace, which providers add or drop when they replay a conversation.
 /// The match is anchored at the replay's own last user message, so a different
 /// conversation that once contained the same exchange earlier does not match.
 /// Messages before that boundary, such as a banner or a compaction summary that
