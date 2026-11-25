@@ -3,7 +3,7 @@
 //! This is transport custody evidence, not real-provider journey qualification.
 //! Build with cargo, then run the produced test exe DIRECTLY: cargo's Windows
 //! job object denies the breakaway required by the native process boundary.
-#![cfg(windows)]
+#![cfg(all(windows, feature = "listener"))]
 use se_host::{
     CallContext, ClaudeHarness, Harness, HarnessAttach, HarnessKind, HarnessRequest, LaunchOutcome,
     ProbeRequest, ProviderIoPlatform, ProviderTransport, SessionIdentity, WindowsProviderIo,
