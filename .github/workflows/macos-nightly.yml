@@ -41,16 +41,49 @@ jobs:
       id: binding
       env:
         WORKFLOW_SHA: ${{ github.workflow_sha }}
-      run: "python3 -B - <<'PY'\nimport hashlib, json, os, subprocess, sys\nfrom pathlib import Path\nroot = Path(os.environ['RUNNER_TEMP'])\n\
-        controller = Path(os.environ['GITHUB_WORKSPACE']) / 'controller'\ncommit = subprocess.check_output(['git', '-C', str(controller),\
-        \ 'rev-parse', 'HEAD'], text=True).strip()\nif commit != os.environ['WORKFLOW_SHA']:\n    raise RuntimeError('Adapter\
-        \ checkout differs from the workflow commit')\nsource = controller / 'journeys/hosted_macos'\nsys.path.insert(0, str(source))\n\
-        from common import binding, save\nvalue = os.environ['NIGHTLY_BINDING']\nif len(value.encode()) > 4096:\n    raise\
-        \ RuntimeError('Nightly binding is oversized')\nnightly = binding(json.loads(value))\nsave(root / 'nightly-binding.json',\
-        \ nightly)\nfiles = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(source.glob('*.py'))}\n\
-        if not files:\n    raise RuntimeError('Adapter source inventory is absent')\nsave(root / 'observer-source.json', dict(schema='se.hosted-observer/v1',\
-        \ commit=commit, files=files))\nwith open(os.environ['GITHUB_OUTPUT'], 'a') as out:\n    print('product_commit=' +\
-        \ nightly['product_commit'], file=out)\nPY\n"
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        python3 -B - <<'PY'
+        import hashlib, json, os, re, subprocess, sys
+        from pathlib import Path
+        root = Path(os.environ['RUNNER_TEMP'])
+        controller = Path(os.environ['GITHUB_WORKSPACE']) / 'controller'
+        commit = subprocess.check_output(['git', '-C', str(controller), 'rev-parse', 'HEAD'], text=True).strip()
+        if commit != os.environ['WORKFLOW_SHA']:
+            raise RuntimeError('Adapter checkout differs from the workflow commit')
+        source = controller / 'journeys/hosted_macos'
+        sys.path.insert(0, str(source))
+        from common import binding, save
+        value = os.environ['NIGHTLY_BINDING']
+        if len(value.encode()) > 4096:
+            raise RuntimeError('Nightly binding is oversized')
+        nightly = binding(json.loads(value))
+        product_commit = nightly['product_commit']
+        if not re.fullmatch(r'[0-9a-f]{40}', product_commit):
+            raise RuntimeError(f'Invalid product_commit: {product_commit!r}')
+        compare_raw = subprocess.check_output(
+            ['gh', 'api', f"repos/{os.environ['GH_REPO']}/compare/{product_commit}...main"],
+            text=True,
+        )
+        compare = json.loads(compare_raw)
+        if (
+            compare.get('status') not in ('identical', 'ahead')
+            or compare.get('behind_by') != 0
+            or (compare.get('merge_base_commit') or {}).get('sha') != product_commit
+        ):
+            raise RuntimeError(
+                f"product_commit {product_commit} is not an ancestor of main "
+                f"(status={compare.get('status')!r}, behind_by={compare.get('behind_by')!r})"
+            )
+        save(root / 'nightly-binding.json', nightly)
+        files = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(source.glob('*.py'))}
+        if not files:
+            raise RuntimeError('Adapter source inventory is absent')
+        save(root / 'observer-source.json', dict(schema='se.hosted-observer/v1', commit=commit, files=files))
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+            print('product_commit=' + product_commit, file=out)
+        PY
     - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       with:
         repository: StateEngine/StateEngine
