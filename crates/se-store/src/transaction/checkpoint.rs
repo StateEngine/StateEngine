@@ -282,6 +282,22 @@ fn cutoff_refusal_names_own_maintenance() {
     let cause = cutoff_refusal(gate.acquire(Duration::ZERO).err().as_deref()).cause;
     assert!(cause.contains("background store maintenance"), "{cause}");
 }
+/// Protects: a backup that suppressed the checkpoint is named as the holder.
+#[cfg(test)]
+#[test]
+fn cutoff_refusal_names_the_backup_when_no_checkpoint_ran() {
+    let refusal = cutoff_refusal(None);
+    assert_eq!(refusal.code, StoreErrorCode::Busy);
+    let cause = refusal.cause;
+    assert!(
+        cause.contains("let the running or aborted backup close"),
+        "{cause}"
+    );
+    assert!(
+        !cause.contains("readers") && !cause.contains("maintenance finish"),
+        "{cause}"
+    );
+}
 /// Protects: equal negative frame counts are Unreadable, not the success arm.
 #[cfg(test)]
 #[test]
