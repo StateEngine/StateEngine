@@ -16,6 +16,7 @@ pub(super) fn group(name: &str) -> Option<&'static str> {
         "agent" => "Create and inspect saved agents",
         "atlas" => "Find code and inspect references, impact, changes and file outlines",
         "config" => "Read or change user configuration and saved agent settings",
+        "harness" => "Register protocol agents that saved agents can run",
         "hook" => "Receive provider lifecycle events",
         "handoff" => "Export bounded cross-model context handoffs",
         "delegate" => "Create and manage one-shot temporary child agents",
@@ -93,6 +94,7 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
         "config.get" => "Read one saved agent setting",
         "config.list" => "List the effective user configuration settings",
         "config.set" => "Change one saved agent setting",
+        "harness.add" => "Register an ACP agent command as a named harness in config.toml",
         _ => return None,
     })
 }

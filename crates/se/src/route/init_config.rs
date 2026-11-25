@@ -42,7 +42,7 @@ pub fn listener_port(
     publish_and_verify(&path, pin, files, prior.as_deref(), &updated)?;
     Ok((port, true))
 }
-fn load_observed_config(
+pub(super) fn load_observed_config(
     pin: &mut Option<se_proc::OwnedFile>,
 ) -> Result<(ConfigFile, Option<Vec<u8>>)> {
     let prior = pin
@@ -62,7 +62,7 @@ fn load_observed_config(
     observed.validate()?;
     Ok((observed, prior))
 }
-fn observed_matches_bootstrap(observed: &ConfigFile, cx: &Bootstrap) -> Result<()> {
+pub(super) fn observed_matches_bootstrap(observed: &ConfigFile, cx: &Bootstrap) -> Result<()> {
     if serde_json::to_value(observed)
         .map_err(|e| scope::unreadable("configuration identity", &e.to_string()))?
         != serde_json::to_value(&cx.config.value)
@@ -119,6 +119,16 @@ fn publish_and_verify(
     let bytes = toml::to_string_pretty(updated)
         .map_err(|e| scope::unreadable("setup configuration encoding", &e.to_string()))?
         .into_bytes();
+    publish_bytes(path, pin, files, prior, &bytes)
+}
+/// Replaces the file only if it still holds `prior`, then rereads it independently.
+pub(super) fn publish_bytes(
+    path: &std::path::Path,
+    pin: Option<se_proc::OwnedFile>,
+    files: &Files,
+    prior: Option<&[u8]>,
+    bytes: &[u8],
+) -> Result<()> {
     match pin {
         Some(pin) => pin
             .replace(
@@ -126,11 +136,11 @@ fn publish_and_verify(
                     SeError::invalid("configuration identity", "the retained prior bytes")
                 })?)
                 .into(),
-                &bytes,
+                bytes,
             )
             .map_err(|e| scope::unreadable("setup configuration publication", &e.to_string()))?,
         None => files
-            .replace_owned(path, None, &bytes)
+            .replace_owned(path, None, bytes)
             .map_err(|e| store_error(&e))?,
     }
     let mut readback = se_proc::OwnedFile::open(path)

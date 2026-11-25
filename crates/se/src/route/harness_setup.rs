@@ -1,8 +1,20 @@
-//! Prepare a catalogue choice from an existing installation before setup writes.
-use crate::bootstrap::Bootstrap;
-use se_config::config_policy::{Approval, ConfigFile, Profile};
-use se_core::{harness_selection::catalog, ops::ProjectInit};
+//! Harness descriptors in `config.toml`: prepare a catalogue choice from an
+//! existing installation before setup writes, or register an owner's own
+//! protocol agent by appending its entry, so existing bytes survive.
+use super::{files::Files, init_config, owner};
+use crate::{bootstrap::Bootstrap, config::Origin};
+use se_config::config_policy::{
+    Approval, ConfigFile, Profile,
+    harness::{Driver, HarnessDescriptor, PermissionChoice},
+};
+use se_core::{
+    harness_selection::catalog,
+    ops::{AnyOutput, HarnessAdd, HarnessAddOutput, ProjectInit, inputs::Validate},
+    scope,
+    store_error::store_error,
+};
 use se_types::{Result, SeError};
+use std::collections::BTreeMap;
 
 pub(super) fn prepare(cx: &Bootstrap, input: &ProjectInit) -> Result<ConfigFile> {
     let mut configuration = cx.config.value.clone();
@@ -135,4 +147,114 @@ fn resolve(
                 .into(),
         },
     )))
+}
+
+pub(super) fn add(cx: &Bootstrap, input: HarnessAdd) -> Result<AnyOutput> {
+    input.validate()?;
+    let observed_owner = owner::observe(&[])?;
+    observed_owner.authorize(
+        "harness.add",
+        observed_owner.os_owner(),
+        cx.session.is_some(),
+        true,
+    )?;
+    let files = Files::open(&cx.home).map_err(|e| store_error(&e))?;
+    let path = match &cx.config.origin {
+        Origin::File(path) => path.clone(),
+        Origin::BuiltIn => cx.home.join("config.toml"),
+    };
+    let mut pin = se_proc::OwnedFile::open(&path)
+        .map_err(|e| scope::unreadable("harness configuration", &e.to_string()))?;
+    let (observed, prior) = init_config::load_observed_config(&mut pin)?;
+    init_config::observed_matches_bootstrap(&observed, cx)?;
+    if observed.harnesses.contains_key(&input.name) {
+        return Err(SeError::invalid(
+            "harness name",
+            &format!(
+                "a new name; [harnesses.{}] already exists in {}. Edit that entry there, or choose another name",
+                input.name,
+                path.display()
+            ),
+        ));
+    }
+    let profile = observed.providers.acp.profile.clone();
+    let descriptor = HarnessDescriptor {
+        driver: Driver::AcpStdio,
+        command: input.command.clone(),
+        arguments: input.arguments.clone(),
+        model_arguments: Vec::new(),
+        environment: input.environment.clone(),
+        model_environment: None,
+        unadvertised_http_mcp: false,
+        permissions: BTreeMap::from([(profile.clone(), PermissionChoice::default())]),
+    };
+    // Without a file yet, start from the defaults the observed reader applied.
+    let text = match &prior {
+        Some(bytes) => std::str::from_utf8(bytes)
+            .map_err(|_| SeError::invalid("configuration", "UTF-8 TOML"))?
+            .to_owned(),
+        None => toml::to_string_pretty(&observed)
+            .map_err(|e| scope::unreadable("configuration encoding", &e.to_string()))?,
+    };
+    let bytes = with_harness(&text, &input.name, &descriptor)?;
+    let updated: ConfigFile = toml::from_str(&bytes)
+        .map_err(|e| scope::unreadable("harness configuration", &e.to_string()))?;
+    updated.validate()?;
+    let saved = updated
+        .harnesses
+        .get(&input.name)
+        .ok_or_else(|| scope::unreadable("harness configuration", "the new entry is absent"))?;
+    if identity(saved)? != identity(&descriptor)? {
+        return Err(scope::unreadable(
+            "harness configuration",
+            "the edited file decodes to a different descriptor; nothing was written",
+        ));
+    }
+    resolve_command(&updated, &input.name)?;
+    init_config::publish_bytes(&path, pin, &files, prior.as_deref(), bytes.as_bytes())?;
+    Ok(HarnessAddOutput {
+        name: input.name,
+        command: input.command,
+        arguments: input.arguments,
+        environment: input.environment,
+        profile,
+        configuration: path.display().to_string(),
+    }
+    .into())
+}
+
+/// Appends `[harnesses.NAME]` and its permission mapping after the existing
+/// bytes, which stay exactly as the owner wrote them. The caller decodes the
+/// result, so a file that already defines `harnesses` another way refuses.
+fn with_harness(text: &str, name: &str, descriptor: &HarnessDescriptor) -> Result<String> {
+    let entry = BTreeMap::from([("harnesses", BTreeMap::from([(name, descriptor)]))]);
+    let encoded = toml::to_string(&entry)
+        .map_err(|e| scope::unreadable("harness encoding", &e.to_string()))?;
+    let mut updated = text.to_owned();
+    if !updated.is_empty() {
+        if !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        updated.push('\n');
+    }
+    updated.push_str(&encoded);
+    Ok(updated)
+}
+
+fn identity(descriptor: &HarnessDescriptor) -> Result<serde_json::Value> {
+    serde_json::to_value(descriptor)
+        .map_err(|e| scope::unreadable("harness identity", &e.to_string()))
+}
+
+/// The command must already be installed: a descriptor nothing can run would
+/// only fail later, at an agent's first launch.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn resolve_command(configuration: &ConfigFile, name: &str) -> Result<()> {
+    se_host::resolve_provider_executable(configuration, se_types::Provider::Acp, None, Some(name))
+        .map(drop)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn resolve_command(_: &ConfigFile, _: &str) -> Result<()> {
+    Ok(())
 }

@@ -12,6 +12,8 @@ use se_store::{
 use se_types::{AgentId, EventId, IdempotencyKey, MessageId, Result, SeError};
 use sha2::{Digest, Sha256};
 use std::num::NonZeroU64;
+mod refusals;
+use refusals::*;
 
 /// The adapter allocates fresh IDs/time per invocation, before entering the pure planner.
 /// These observations are excluded from the normalized intent digest.
@@ -369,7 +371,9 @@ impl Kernel {
             AnyOp::EventRead(input) => complete_step(crate::ops::event::read(input, cx)),
             AnyOp::MessageList(input) => plan_message_list(input, cx),
             AnyOp::MessageInbox(input) => plan_message_inbox(input, cx),
-            AnyOp::DiagnosticBundle(_) | AnyOp::StoreRestore(_) => Err(home_owner_refused()),
+            AnyOp::DiagnosticBundle(_) | AnyOp::StoreRestore(_) | AnyOp::HarnessAdd(_) => {
+                Err(home_owner_refused())
+            }
             AnyOp::DoctorInspect(_) | AnyOp::DoctorRepair(_) => Err(doctor_refused()),
             AnyOp::ProjectInit(input) => Ok(OpStep::Custody(CustodyPlan::Initialize(input))),
             // The owner CLI route performs the native git identity proof and
@@ -440,13 +444,6 @@ fn plan_atlas_read(read: crate::ops::AtlasRead) -> Result<PlanStep> {
     Ok(OpStep::Custody(crate::ports::CustodyPlan::AtlasRead(
         Box::new(read),
     )))
-}
-
-fn remote_refused() -> SeError {
-    SeError::invalid(
-        "remote execution",
-        "the protected source host broker; no direct store or Owner fallback",
-    )
 }
 
 fn plan_resume<R: Snapshot>(
@@ -768,33 +765,4 @@ fn plan_message_inbox<R: Snapshot>(
     cx: &mut Cx<'_, R>,
 ) -> Result<PlanStep> {
     Ok(OpStep::Complete(crate::ops::inbox::read(input, cx)?.into()))
-}
-
-// Home-wide owner work: a diagnostic bundle or a store restore.
-fn home_owner_refused() -> SeError {
-    SeError::invalid(
-        "home-wide owner adapter",
-        "the installed owner CLI; home-wide work is not a project-session tool",
-    )
-}
-
-fn doctor_refused() -> SeError {
-    SeError::invalid(
-        "doctor adapter",
-        "the installed owner CLI with current native observations",
-    )
-}
-
-fn project_move_refused() -> SeError {
-    SeError::invalid(
-        "project move adapter",
-        "the owner CLI with the native git identity observation",
-    )
-}
-
-fn metadata_refused() -> SeError {
-    scope::unreadable(
-        "metadata dispatch",
-        "registered metadata produced no output",
-    )
 }

@@ -84,6 +84,7 @@ pub enum HumanKind {
     ConfigValue,
     ConfigReceipt,
     ConfigPage,
+    HarnessReceipt,
     RuntimeStart,
     RuntimeStop,
     AgentPage,

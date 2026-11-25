@@ -54,7 +54,7 @@
  },
  "directories": {
   "crates/se-host/src/runtime": 20253,
-  "crates/se-core/src/ops": 21582,
+  "crates/se-core/src/ops": 21497,
   "crates/se-host/src/process": 15596,
   "crates/se-harness/src/harness": 12242,
   "crates/se-host/src/remote": 6921,

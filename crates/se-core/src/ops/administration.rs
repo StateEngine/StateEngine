@@ -116,3 +116,51 @@ impl Validate for ConfigList {
         Ok(())
     }
 }
+/// Owner registration of a protocol harness descriptor in the state home's
+/// `config.toml`. The owner CLI route edits the file; the kernel never plans it.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HarnessAdd {
+    /// New `[harnesses.NAME]` entry; built-in provider names are refused.
+    pub name: String,
+    /// Native executable that speaks ACP version 1 over standard input and output.
+    pub command: String,
+    /// Arguments passed to the executable without a shell.
+    #[serde(default)]
+    pub arguments: Vec<String>,
+    /// Environment variable names the harness may read from the owner's environment.
+    #[serde(default)]
+    pub environment: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct HarnessAddOutput {
+    pub name: String,
+    pub command: String,
+    pub arguments: Vec<String>,
+    pub environment: Vec<String>,
+    /// Launch profile the new descriptor maps, from `[providers.acp].profile`.
+    pub profile: String,
+    /// The configuration file that now holds the descriptor.
+    pub configuration: String,
+}
+
+impl Validate for HarnessAdd {
+    fn validate(&self) -> Result<()> {
+        se_config::config_policy::harness::validate_name(&self.name)?;
+        if se_types::Provider::from_id(&self.name).is_some() {
+            return Err(SeError::invalid(
+                "harness name",
+                "a name other than a built-in provider; built-in providers need no descriptor",
+            ));
+        }
+        bounded("harness command", &self.command, 4096, false)?;
+        if self.arguments.len() > 128 || self.environment.len() > 128 {
+            return Err(SeError::invalid(
+                "harness descriptor",
+                "at most 128 arguments and 128 environment variable names",
+            ));
+        }
+        Ok(())
+    }
+}

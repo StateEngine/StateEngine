@@ -140,6 +140,7 @@ AssignmentWrite => AssignmentWrite, AssignmentWriteOutput;
 ConfigGet => ConfigGet, ConfigValueOutput;
 ConfigSet => ConfigSet, AgentConfigReceipt;
 ConfigList => ConfigList, ConfigPageOutput;
+HarnessAdd => HarnessAdd, HarnessAddOutput;
 }
 
 impl From<LaunchResult> for AnyOutput {

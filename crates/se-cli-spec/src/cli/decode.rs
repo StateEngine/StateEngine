@@ -312,6 +312,12 @@ fn decode_config(
             value: required(m, "setting_value")?,
             idempotency_key: key()?,
         }),
+        "harness.add" => AnyOp::HarnessAdd(se_core::ops::HarnessAdd {
+            name: required(m, "harness_name")?,
+            command: required(m, "command")?,
+            arguments: many(m, "arg"),
+            environment: many(m, "env"),
+        }),
         "config.list" => AnyOp::ConfigList(ConfigList {
             origin: flag(m, "origin"),
             limit: required(m, "limit")?
