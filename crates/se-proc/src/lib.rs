@@ -123,8 +123,6 @@ pub use se_native_proc::{observe_boot_id, process_attach_entry};
 pub(crate) use se_native_ipc::linux_native;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) use se_native_proc::bootstrap;
-#[cfg(target_os = "macos")]
-pub(crate) use se_native_proc::owner_probe;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) use se_native_proc::platform;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]

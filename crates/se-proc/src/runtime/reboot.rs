@@ -5,7 +5,7 @@ use se_types::BootId;
 pub(super) fn macos_boot_session() -> ProcResult<Option<BootId>> {
     #[cfg(target_os = "macos")]
     {
-        crate::owner_probe::macos::boot_session()
+        crate::observe_boot_id()
             .map(Some)
             .map_err(|e| input("reboot recovery", &e.to_string()))
     }
