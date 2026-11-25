@@ -16,6 +16,10 @@ from native_payload import publish
 from release_archive import digest, extract
 
 HERE = Path(__file__).resolve().parent
+REPOSITORY = {
+    "type": "git",
+    "url": "git+https://github.com/StateEngine/StateEngine.git",
+}
 PLATFORMS = {
     "linux-x64": "x86_64-unknown-linux-gnu",
     "win32-x64": "x86_64-pc-windows-msvc",
@@ -72,7 +76,7 @@ def prepare(release_directory, output):
             metadata = {"name": name, "version": release["version"], "private": False,
                         "description": "Native StateEngine payload", "os": [operating_system],
                         "cpu": [cpu], "files": ["payload"],
-                        "repository": "github:StateEngine/StateEngine"}
+                        "repository": REPOSITORY}
             if operating_system == "linux":
                 metadata["libc"] = ["glibc"]
             document(package / "package.json", metadata)
@@ -88,7 +92,7 @@ def prepare(release_directory, output):
             "name": "@stateengine/cli", "version": release["version"], "type": "module",
             "description": "StateEngine native command-line interface", "bin": {"se": "bin/se.mjs"},
             "engines": {"node": ">=18"}, "files": ["bin", "platforms.json", "LICENSE", "README.md"],
-            "repository": "github:StateEngine/StateEngine",
+            "repository": REPOSITORY,
             "optionalDependencies": {pin["package"]: release["version"] for pin in pins.values()},
         })
         document(wrapper / "platforms.json", {"source_commit": release["source_commit"], "platforms": pins})

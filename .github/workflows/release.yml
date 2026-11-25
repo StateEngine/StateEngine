@@ -196,3 +196,241 @@ jobs:
             *-*) gh release view "$RELEASE_TAG" ;;
             *) gh release edit "$RELEASE_TAG" --prerelease=false --latest ;;
           esac
+  publish-npm:
+    needs: [promote]
+    if: github.event_name == 'push' && !contains(github.ref_name, '-')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: {python-version: '3.12'}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: {node-version: '24'}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: {name: release-assets, path: '${{ runner.temp }}/release'}
+      - name: Build verified npm packages from release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B scripts/release/npm_release.py \
+            --release-dir "$RUNNER_TEMP/release" \
+            --out "$RUNNER_TEMP/npm-packages"
+      - name: Publish npm packages in dependency order
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          NPMRC=""
+          cleanup() {
+            if [ -n "$NPMRC" ]; then rm -f "$NPMRC"; fi
+          }
+          trap cleanup EXIT
+          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+            NPMRC="$RUNNER_TEMP/.npmrc"
+            umask 077
+            printf "%s\n" "//registry.npmjs.org/:_authToken=\${NODE_AUTH_TOKEN}" > "$NPMRC"
+            export NPM_CONFIG_USERCONFIG="$NPMRC"
+          else
+            # Tokenless npm OIDC Trusted Publishing requires npm >= 11.5.1.
+            NPM_VER="$(npm --version)"
+            python3 - "$NPM_VER" <<'PY'
+          import sys
+          parts = tuple(int(x) for x in sys.argv[1].split("-")[0].split(".")[:3])
+          if parts < (11, 5, 1):
+              raise SystemExit(f"npm Trusted Publishing requires npm >= 11.5.1; found {sys.argv[1]}")
+          PY
+          fi
+          ORDER_JSON="$RUNNER_TEMP/npm-packages/publish-order.json"
+          PLAN_TSV="$RUNNER_TEMP/npm-plan.tsv"
+          VERSION="$(python3 - "$ORDER_JSON" "$RUNNER_TEMP/npm-packages" "$PLAN_TSV" <<'PY'
+          import json, pathlib, sys
+          sys.path.insert(0, "scripts/release")
+          import npm_release
+          doc = json.load(open(sys.argv[1], encoding="utf-8"))
+          root = pathlib.Path(sys.argv[2])
+          version = doc["version"]
+          packages = doc["packages"]
+          if not isinstance(version, str) or not version:
+              raise SystemExit("publish-order.json missing version")
+          expected = [
+              ("@stateengine/cli-" + platform, platform)
+              for platform in npm_release.PLATFORMS
+          ] + [("@stateengine/cli", "cli")]
+          if not isinstance(packages, list):
+              raise SystemExit("publish-order.json packages must be a list")
+          actual = [(entry.get("name"), entry.get("directory")) for entry in packages]
+          if actual != expected:
+              raise SystemExit(f"publish-order.json mismatch: actual={actual!r} expected={expected!r}")
+          lines = []
+          for name, directory in actual:
+              manifest_path = root / directory / "package.json"
+              if not manifest_path.is_file():
+                  raise SystemExit(f"missing package.json in {manifest_path.parent}")
+              manifest = json.load(open(manifest_path, encoding="utf-8"))
+              if manifest.get("name") != name or manifest.get("version") != version:
+                  raise SystemExit(
+                      f"manifest mismatch in {manifest_path}: got ({manifest.get('name')!r}, {manifest.get('version')!r}), expected ({name!r}, {version!r})"
+                  )
+              lines.append(f"{name}\t{directory}\n")
+          pathlib.Path(sys.argv[3]).write_text("".join(lines), encoding="utf-8")
+          print(version)
+          PY
+          )"
+          PUBLISHED=0
+          SKIPPED=0
+          while IFS=$'\t' read -r PKG_NAME PKG_DIR; do
+            FULL_DIR="$RUNNER_TEMP/npm-packages/$PKG_DIR"
+            VIEW_OUT="$RUNNER_TEMP/npm-view.out"
+            VIEW_ERR="$RUNNER_TEMP/npm-view.err"
+            set +e
+            npm view "${PKG_NAME}@${VERSION}" version --json --registry=https://registry.npmjs.org >"$VIEW_OUT" 2>"$VIEW_ERR"
+            VIEW_RC=$?
+            set -e
+            STATE="$(python3 - "$VIEW_RC" "$VERSION" "$VIEW_OUT" "$VIEW_ERR" <<'PY'
+          import json, pathlib, sys
+          rc = int(sys.argv[1])
+          expected = sys.argv[2]
+          stdout = pathlib.Path(sys.argv[3]).read_text(encoding="utf-8", errors="replace").strip()
+          stderr = pathlib.Path(sys.argv[4]).read_text(encoding="utf-8", errors="replace").strip()
+          if rc == 0:
+              if not stdout:
+                  print("absent")
+              else:
+                  parsed = json.loads(stdout)
+                  if parsed == expected:
+                      print("present")
+                  else:
+                      raise SystemExit(f"unexpected npm view version {parsed!r} (expected {expected!r})")
+          else:
+              err_obj = None
+              for candidate in (stdout, stderr):
+                  if not candidate:
+                      continue
+                  try:
+                      parsed = json.loads(candidate)
+                  except json.JSONDecodeError:
+                      continue
+                  if isinstance(parsed, dict) and isinstance(parsed.get("error"), dict):
+                      err_obj = parsed["error"]
+                      break
+              if err_obj is not None and err_obj.get("code") == "E404":
+                  print("absent")
+              else:
+                  raise SystemExit(f"npm view failed with exit {rc}: {(stdout or stderr).strip()}")
+          PY
+          )"
+            if [ "$STATE" = "present" ]; then
+              echo "Skipping ${PKG_NAME}@${VERSION}: already published on npm."
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
+            echo "Publishing ${PKG_NAME}@${VERSION} from ${PKG_DIR}..."
+            (cd "$FULL_DIR" && npm publish --access public --provenance --registry=https://registry.npmjs.org)
+            PUBLISHED=$((PUBLISHED + 1))
+          done < "$PLAN_TSV"
+          echo "npm \`${VERSION}\`: published ${PUBLISHED}, skipped ${SKIPPED} already present." >> "$GITHUB_STEP_SUMMARY"
+  publish-homebrew:
+    needs: [promote]
+    if: github.event_name == 'push' && !contains(github.ref_name, '-')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: {python-version: '3.12'}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: {name: release-assets, path: '${{ runner.temp }}/release'}
+      - name: Generate verified Homebrew formula
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B scripts/release/brew_release.py \
+            --release-dir "$RUNNER_TEMP/release" \
+            --out "$RUNNER_TEMP/stateengine.rb" \
+            --repository "$GITHUB_WORKSPACE"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: homebrew-formula
+          path: '${{ runner.temp }}/stateengine.rb'
+          retention-days: 14
+          if-no-files-found: error
+      - name: Push formula to StateEngine/homebrew-tap when configured
+        shell: bash
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "Homebrew formula uploaded as artifact homebrew-formula; tap push skipped because HOMEBREW_TAP_TOKEN is not configured." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          B64_AUTH="$(printf 'x-access-token:%s' "$HOMEBREW_TAP_TOKEN" | base64 -w0)"
+          printf '::add-mask::%s\n' "$B64_AUTH"
+          AUTH_HEADER="AUTHORIZATION: basic ${B64_AUTH}"
+          printf '::add-mask::%s\n' "$AUTH_HEADER"
+          TAP_DIR="$RUNNER_TEMP/homebrew-tap"
+          GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="$AUTH_HEADER" \
+            git clone --depth 1 https://github.com/StateEngine/homebrew-tap.git "$TAP_DIR"
+          ACTION="$(python3 - "$TAP_DIR/Formula/stateengine.rb" "$RUNNER_TEMP/stateengine.rb" <<'PY'
+          import pathlib, re, sys
+          existing_path = pathlib.Path(sys.argv[1])
+          candidate_path = pathlib.Path(sys.argv[2])
+          def parse_ver(text):
+              m = re.search(r'^\s*version\s+"([0-9]+)\.([0-9]+)\.([0-9]+)"\s*$', text, re.M)
+              if not m:
+                  raise SystemExit("unable to parse stable version from formula")
+              return tuple(int(g) for g in m.groups())
+          cand_text = candidate_path.read_text(encoding="utf-8")
+          cand_ver = parse_ver(cand_text)
+          if existing_path.is_file():
+              cur_text = existing_path.read_text(encoding="utf-8")
+              cur_ver = parse_ver(cur_text)
+              if cand_ver < cur_ver:
+                  print(f"downgrade:{cur_ver[0]}.{cur_ver[1]}.{cur_ver[2]}")
+                  raise SystemExit(0)
+              if cand_text == cur_text:
+                  print("unchanged")
+                  raise SystemExit(0)
+          print("update")
+          PY
+          )"
+          case "$ACTION" in
+            downgrade:*)
+              CUR_VER="${ACTION#downgrade:}"
+              echo "Skipping Homebrew tap update: candidate ${RELEASE_TAG} is older than existing tap version ${CUR_VER}." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+            unchanged)
+              echo "Homebrew tap formula already up to date for \`${RELEASE_TAG}\`." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+            update) ;;
+            *)
+              echo "Unexpected formula comparison result: $ACTION" >&2
+              exit 1
+              ;;
+          esac
+          mkdir -p "$TAP_DIR/Formula"
+          cp "$RUNNER_TEMP/stateengine.rb" "$TAP_DIR/Formula/stateengine.rb"
+          cd "$TAP_DIR"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/stateengine.rb
+          git commit -m "chore(formula): update stateengine to ${RELEASE_TAG}"
+          GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="$AUTH_HEADER" \
+            git push origin HEAD
+          echo "Published Homebrew formula to StateEngine/homebrew-tap for \`${RELEASE_TAG}\`." >> "$GITHUB_STEP_SUMMARY"
