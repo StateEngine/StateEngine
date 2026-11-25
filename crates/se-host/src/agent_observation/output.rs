@@ -1,9 +1,9 @@
-//! Hosted reads share the direct consumer's two-phase observation. Rebuild page
-//! accounting after enrichment without changing its keyset or omission facts.
+//! Hosted reads share the direct consumer's two-phase observation. Observed rows
+//! past the byte budget cut the page at the last fitting row's resume cursor.
 use super::*;
 use se_core::ops::AnyOutput;
 use se_store::{Scope, Snapshot};
-use se_types::{Page, Window};
+use se_types::Page;
 
 pub(crate) fn prepare<S: Snapshot>(
     scope: &Scope,
@@ -96,18 +96,12 @@ fn enrich_page(
     for row in &mut rows {
         apply(row, observations)?;
     }
-    let mut fields = page
+    let fields = page
         .window()
         .fields()
         .cloned()
         .ok_or_else(|| invalid("original store page accounting"))?;
-    fields.bytes = serde_json::to_vec(&rows)
-        .map_err(|error| invalid(&format!("encodable observed rows: {error}")))?
-        .len() as u64;
-    if fields.bytes > u64::from(fields.max_bytes.get()) {
-        return Err(invalid(
-            "observed rows within the original page byte budget; request a smaller page",
-        ));
-    }
-    Page::new(rows, Window::new(fields)?, page.next().cloned())
+    Page::fit(rows, fields, page.next().cloned(), |row| {
+        row.resume_after.clone()
+    })
 }

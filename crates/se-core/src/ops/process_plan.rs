@@ -228,12 +228,7 @@ fn saved_profile(
             "wrong immutable profile event",
         ));
     };
-    let provider = match profile.provider {
-        se_store::Provider::Claude => Provider::Claude,
-        se_store::Provider::Codex => Provider::Codex,
-        se_store::Provider::SeCode => Provider::SeCode,
-        se_store::Provider::Acp => Provider::Acp,
-    };
+    let provider = Provider::from(profile.provider);
     if matches!(provider, Provider::SeCode | Provider::Acp) && input.override_live {
         input.detach = true;
     }

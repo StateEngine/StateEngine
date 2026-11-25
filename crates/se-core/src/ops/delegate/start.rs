@@ -11,7 +11,7 @@ use crate::{
     scope,
     store_error::store_error,
 };
-use se_config::config_policy::{ConfigFile, EffectiveSandbox, Provider};
+use se_config::config_policy::{ConfigFile, EffectiveSandbox};
 use se_store::{
     Actor, AtomicBatch, EphemeralSpec, EventBody, Expected, GrantKey, PermissionProfile,
     PrincipalKind, Profile, ReadBudget, Snapshot,
@@ -94,7 +94,7 @@ pub fn plan_start<R: Snapshot>(
         name,
         role,
         provider,
-        stored_provider: to_stored_provider(provider),
+        stored_provider: provider.into(),
         harness: binding.harness,
         model,
         named_profile,
@@ -367,14 +367,5 @@ fn short_hex(agent: &AgentId) -> String {
         hex.to_ascii_lowercase()
     } else {
         "00000000".to_owned()
-    }
-}
-
-fn to_stored_provider(provider: Provider) -> se_store::Provider {
-    match provider {
-        Provider::Claude => se_store::Provider::Claude,
-        Provider::Codex => se_store::Provider::Codex,
-        Provider::SeCode => se_store::Provider::SeCode,
-        Provider::Acp => se_store::Provider::Acp,
     }
 }

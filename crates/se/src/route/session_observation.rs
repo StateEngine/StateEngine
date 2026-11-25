@@ -273,23 +273,14 @@ fn enrich_page(
     for row in &mut rows {
         apply(row)?;
     }
-    let mut fields = page.window().fields().cloned().ok_or_else(|| {
+    let fields = page.window().fields().cloned().ok_or_else(|| {
         scope::unreadable(
             "observed agent page",
             "producer response accounting is unavailable",
         )
     })?;
-    let bytes = serde_json::to_vec(&rows)
-        .map_err(|error| scope::unreadable("observed agent page", &error.to_string()))?
-        .len();
-    if bytes as u64 > u64::from(fields.max_bytes.get()) {
-        return Err(SeError::too_large(
-            "complete observed agent page",
-            fields.max_bytes.get() as usize,
-            bytes,
-        ));
-    }
-    fields.bytes = bytes as u64;
-    *page = Page::new(rows, se_types::Window::new(fields)?, page.next().cloned())?;
+    *page = Page::fit(rows, fields, page.next().cloned(), |row| {
+        row.resume_after.clone()
+    })?;
     Ok(())
 }

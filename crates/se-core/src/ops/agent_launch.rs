@@ -131,12 +131,7 @@ impl LaunchPlan {
 
     pub fn details(&self) -> se_types::LaunchDetails {
         se_types::LaunchDetails {
-            provider: match self.profile.provider {
-                se_store::Provider::Claude => se_types::Provider::Claude,
-                se_store::Provider::Codex => se_types::Provider::Codex,
-                se_store::Provider::SeCode => se_types::Provider::SeCode,
-                se_store::Provider::Acp => se_types::Provider::Acp,
-            },
+            provider: self.profile.provider.into(),
             model: self
                 .input
                 .model

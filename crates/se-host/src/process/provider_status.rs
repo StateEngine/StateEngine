@@ -1,7 +1,7 @@
 //! Provider turn state is joined only to the exact current native session.
 use super::*;
 use se_core::ops::{AgentCommand, AgentRow, AnyOutput, ProviderActivityView};
-use se_types::{Page, Read, Window};
+use se_types::{Page, Read};
 use std::sync::atomic::Ordering;
 
 impl LaunchCoordinator {
@@ -37,22 +37,15 @@ impl LaunchCoordinator {
         for row in &mut rows {
             self.observe_provider_row(row);
         }
-        let mut fields = page.window().fields().cloned().ok_or_else(|| {
+        let fields = page.window().fields().cloned().ok_or_else(|| {
             error(
                 "provider activity page",
                 "original page accounting unavailable",
             )
         })?;
-        fields.bytes = serde_json::to_vec(&rows)
-            .map_err(|e| error("provider activity page", e))?
-            .len() as u64;
-        if fields.bytes > u64::from(fields.max_bytes.get()) {
-            return Err(error(
-                "provider activity page",
-                "enriched rows exceed the requested byte bound; request a smaller page",
-            ));
-        }
-        Page::new(rows, Window::new(fields)?, page.next().cloned())
+        Page::fit(rows, fields, page.next().cloned(), |row| {
+            row.resume_after.clone()
+        })
     }
     fn with_provider_recovery(
         &self,

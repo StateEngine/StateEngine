@@ -341,6 +341,7 @@ fn observe(
         ephemeral: false,
         retired: false,
         created_by: None,
+        resume_after: None,
     };
     let recorded_session = match &facts.session {
         Read::Present { value } => Some(value),

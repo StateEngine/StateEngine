@@ -1,7 +1,7 @@
 //! Join only the exact current protocol owner; stored liveness stays separate.
 use super::*;
 use se_core::ops::{AcpRuntimeView, AgentRow, AnyOutput};
-use se_types::{Page, Read, Window};
+use se_types::{Page, Read};
 impl LaunchCoordinator {
     pub(in crate::process) fn observe_acp_output(
         &self,
@@ -30,20 +30,13 @@ impl LaunchCoordinator {
         for row in &mut rows {
             self.observe_acp_row(row);
         }
-        let mut fields =
+        let fields =
             page.window().fields().cloned().ok_or_else(|| {
                 error("ACP observed page", "original page accounting unavailable")
             })?;
-        fields.bytes = serde_json::to_vec(&rows)
-            .map_err(|e| error("ACP observed page", e))?
-            .len() as u64;
-        if fields.bytes > u64::from(fields.max_bytes.get()) {
-            return Err(error(
-                "ACP observed page",
-                "enriched rows exceed the requested byte bound; request a smaller page",
-            ));
-        }
-        Page::new(rows, Window::new(fields)?, page.next().cloned())
+        Page::fit(rows, fields, page.next().cloned(), |row| {
+            row.resume_after.clone()
+        })
     }
     fn observe_acp_row(&self, row: &mut AgentRow) {
         if row.provider != se_types::Provider::Acp {

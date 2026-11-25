@@ -3,7 +3,7 @@
 use super::*;
 use se_core::ops::{AgentRow, AnyOutput, SecodeRuntimeView};
 use se_harness::secode_process::{Control, QualifiedControl};
-use se_types::{Page, Read, Window};
+use se_types::{Page, Read};
 use serde_json::Value;
 
 struct ObservedRuntime {
@@ -59,22 +59,15 @@ impl<H: HostPort> Coordinator<'_, H> {
         for row in &mut rows {
             self.observe_secode_row(row, deadline).await;
         }
-        let mut fields = page.window().fields().cloned().ok_or_else(|| {
+        let fields = page.window().fields().cloned().ok_or_else(|| {
             error(
                 "SE Code observed page",
                 "original page accounting unavailable",
             )
         })?;
-        fields.bytes = serde_json::to_vec(&rows)
-            .map_err(|e| error("SE Code observed page", e))?
-            .len() as u64;
-        if fields.bytes > u64::from(fields.max_bytes.get()) {
-            return Err(error(
-                "SE Code observed page",
-                "enriched rows exceed the requested byte bound; request a smaller page",
-            ));
-        }
-        Page::new(rows, Window::new(fields)?, page.next().cloned())
+        Page::fit(rows, fields, page.next().cloned(), |row| {
+            row.resume_after.clone()
+        })
     }
     async fn observe_secode_row(&self, row: &mut AgentRow, deadline: &Deadline) {
         if !matches!(&row.secode_binding, Some(Read::Present { .. })) {
