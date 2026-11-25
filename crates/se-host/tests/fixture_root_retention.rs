@@ -2,6 +2,7 @@
 //!
 //! Both halves run in a child process, because the evidence is what a panic
 //! leaves behind and a panic may not be caught twice in one process.
+#![cfg(feature = "listener")]
 use std::path::{Path, PathBuf};
 #[path = "support/ipc_fixture.rs"]
 mod fixture;

@@ -13,7 +13,7 @@ mod acp_transport_independent;
 pub mod adoption;
 #[cfg(feature = "channels")]
 pub mod channels;
-#[cfg(feature = "listener")]
+#[cfg(feature = "remote")]
 pub(crate) use se_harness::child_io;
 pub mod client;
 pub mod host_process;
