@@ -212,3 +212,67 @@ impl StopWitness {
         self.scope_exit.exit_basis == Some(ScopeExitBasis::Reboot)
     }
 }
+
+/// Host commits this before native scope creation, including its exact random
+/// suffix, so a cold owner can account for pre-publication reservations.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchReservation {
+    pub format_version: u16,
+    pub lifecycle: LifecycleId,
+    pub host: HostInstanceId,
+    pub owner: ProcessIdentity,
+    pub generation: GenerationId,
+    pub scope_nonce: [u8; 16],
+    pub parent: ReservationParent,
+    #[serde(with = "crate::checkpoint::decimal::u128")]
+    pub created_at_unix_ns: u128,
+}
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum ReservationParent {
+    Windows,
+    Linux {
+        #[serde(with = "crate::checkpoint::native_path")]
+        path: PathBuf,
+        #[serde(with = "crate::checkpoint::decimal::u64")]
+        device: u64,
+        #[serde(with = "crate::checkpoint::decimal::u64")]
+        inode: u64,
+        boot_id: [u8; 16],
+    },
+    /// Lazy manager lookup; exact unit derives from reservation host/nonce.
+    LinuxUserManager,
+    /// No delegated cgroup; helper/group identity is checkpointed before exec.
+    LinuxTracked,
+    MacOs,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RecoverySource {
+    Record(Box<ProcessRecord>),
+    Reservation(Box<LaunchReservation>),
+    Prepared(Box<ScopeCheckpoint>),
+    RootPrepared(Box<RootCheckpoint>),
+}
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScopeCheckpoint {
+    pub reservation: LaunchReservation,
+    /// Resolved physical parent, or the explicitly selected tracked-group parent.
+    pub parent: ReservationParent,
+    pub scope: ScopeIdentity,
+    pub guarantee: ContainmentGuarantee,
+}
+/// Before-exec root publication for macOS and terminal attach. The only
+/// authorized pre-publication exec intent; final native image is independently
+/// read (a script may execute an interpreter). Published records pin that image.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RootCheckpoint {
+    pub scope: ScopeCheckpoint,
+    pub pre_exec: ProcessIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub macos_boot_session: Option<se_types::BootId>,
+    #[serde(with = "crate::checkpoint::native_path")]
+    pub intended_executable: PathBuf,
+}

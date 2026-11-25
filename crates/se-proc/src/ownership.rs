@@ -1,46 +1,11 @@
 use crate::*;
 pub use se_custody::{
-    EnumerationExtent, LifecycleState, Population, ProcessRecord, RemainingScope, RootWitness,
-    ScopeExitBasis, ScopeIdentity, ScopeObservation, StopWitness, TrackedObligations,
-    UnwitnessedRelease,
+    EnumerationExtent, LaunchReservation, LifecycleState, Population, ProcessRecord,
+    RecoverySource, RemainingScope, ReservationParent, RootCheckpoint, RootWitness,
+    ScopeCheckpoint, ScopeExitBasis, ScopeIdentity, ScopeObservation, StopWitness,
+    TrackedObligations, UnwitnessedRelease,
 };
-use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::Arc, time::Instant};
-
-/// Host commits this before native scope creation, including its exact random
-/// suffix, so a cold owner can account for pre-publication reservations.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LaunchReservation {
-    pub format_version: u16,
-    pub lifecycle: LifecycleId,
-    pub host: HostInstanceId,
-    pub owner: ProcessIdentity,
-    pub generation: GenerationId,
-    pub scope_nonce: [u8; 16],
-    pub parent: ReservationParent,
-    #[serde(with = "crate::checkpoint::decimal::u128")]
-    pub created_at_unix_ns: u128,
-}
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub enum ReservationParent {
-    Windows,
-    Linux {
-        #[serde(with = "crate::checkpoint::native_path")]
-        path: PathBuf,
-        #[serde(with = "crate::checkpoint::decimal::u64")]
-        device: u64,
-        #[serde(with = "crate::checkpoint::decimal::u64")]
-        inode: u64,
-        boot_id: [u8; 16],
-    },
-    /// Lazy manager lookup; exact unit derives from reservation host/nonce.
-    LinuxUserManager,
-    /// No delegated cgroup; helper/group identity is checkpointed before exec.
-    LinuxTracked,
-    MacOs,
-}
+use std::{sync::Arc, time::Instant};
 /// Runtime owns all resources. This is a revocable reference, not a second
 /// native owner; multiple same-generation references are legal.
 pub struct OwnedProcess {
@@ -165,13 +130,6 @@ pub trait ExitSink: Send + Sync {
     fn notify(&self, notice: ExitNotice);
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RecoverySource {
-    Record(Box<ProcessRecord>),
-    Reservation(Box<LaunchReservation>),
-    Prepared(Box<ScopeCheckpoint>),
-    RootPrepared(Box<RootCheckpoint>),
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RecoveryDisposition {
     ReattachLinuxScope,
     ReattachWindowsJob,
@@ -279,15 +237,6 @@ pub trait ProcessRuntime: Send + Sync {
     fn recover(&self, plan: RecoveryPlan, generation: GenerationId) -> ProcResult<RecoveryOutcome>;
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ScopeCheckpoint {
-    pub reservation: LaunchReservation,
-    /// Resolved physical parent, or the explicitly selected tracked-group parent.
-    pub parent: ReservationParent,
-    pub scope: ScopeIdentity,
-    pub guarantee: ContainmentGuarantee,
-}
 pub struct PreparedScope {
     /// Validated native argv digest, reused by pre-exec protected indices.
     pub argv_sha256: [u8; 32],
@@ -323,20 +272,6 @@ pub struct TransferReceipt {
     pub generation: GenerationId,
     pub peer: ProcessIdentity,
     pub resources_sha256: [u8; 32],
-}
-
-/// Before-exec root publication for macOS and terminal attach. The only
-/// authorized pre-publication exec intent; final native image is independently
-/// read (a script may execute an interpreter). Published records pin that image.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RootCheckpoint {
-    pub scope: ScopeCheckpoint,
-    pub pre_exec: ProcessIdentity,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub macos_boot_session: Option<se_types::BootId>,
-    #[serde(with = "crate::checkpoint::native_path")]
-    pub intended_executable: PathBuf,
 }
 
 /// Safe host-supplied port to its existing reactor; no tokio dependency enters

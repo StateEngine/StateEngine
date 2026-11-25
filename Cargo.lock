@@ -1721,6 +1721,7 @@ version = "0.0.1-alpha.1"
 dependencies = [
  "se-types",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
