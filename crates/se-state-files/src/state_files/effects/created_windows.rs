@@ -81,21 +81,21 @@ pub(in crate::state_files) fn prepare_created_directory(
     let descriptor = security::descriptor(path, true)?;
     let access = GENERIC_READ | GENERIC_WRITE | READ_CONTROL | SYNCHRONIZE;
     // SAFETY: `descriptor` is the protected security descriptor built above.
-    let (file, reported) =
-        match unsafe { create_directory_at(parent.file()?, name, path, &descriptor, access) } {
-            Ok(created) => created,
-            Err(error)
-                if error
-                    .source
-                    .as_ref()
-                    .is_some_and(|cause| cause.kind() == io::ErrorKind::AlreadyExists) =>
-            {
-                let file = open(&physical, true, 0, false)?;
-                metadata(&file, path, true, false)?;
-                return Ok(());
-            }
-            Err(error) => return Err(error),
-        };
+    let file = match unsafe { create_directory_at(parent.file()?, name, path, &descriptor, access) }
+    {
+        Ok(file) => file,
+        Err(error)
+            if error
+                .source
+                .as_ref()
+                .is_some_and(|cause| cause.kind() == io::ErrorKind::AlreadyExists) =>
+        {
+            let file = open(&physical, true, 0, false)?;
+            metadata(&file, path, true, false)?;
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     let identity = metadata(&file, path, true, false)?;
     // Retain custody before any later verification can fail, so failed init
     // still offers exact identity-bound cleanup for everything it created.
@@ -108,9 +108,6 @@ pub(in crate::state_files) fn prepare_created_directory(
     let held = created
         .last()
         .ok_or_else(|| changed("created directory custody unavailable", path))?;
-    if !reported {
-        return Err(changed("native create did not report FILE_CREATED", path));
-    }
     security::verify(&held.file, path, false)?;
     let named = open(&physical, true, 0, false)?;
     if metadata(&named, path, true, false)? != held.identity {
@@ -123,11 +120,11 @@ pub(in crate::state_files) fn prepare_created_directory(
 }
 
 /// Exclusively creates the single literal directory `leaf` beneath the held
-/// `parent` handle, with `descriptor` installed at creation. Returns the new
-/// handle and whether the native create reported `FILE_CREATED`; only then is
-/// the handle proven to be custody of an object this call created. An error
-/// means this call created nothing, except `SourceChanged`: creation was
-/// reported without a handle, so `path` may now exist.
+/// `parent` handle, with `descriptor` installed at creation. A returned handle
+/// is custody of an object this call confirmed it created (`FILE_CREATED`), so
+/// only it may be retired. An error means this call created nothing, except
+/// `SourceChanged`: success was reported without a handle or without
+/// `FILE_CREATED`, so `path` may now exist and must be preserved.
 ///
 /// # Safety
 /// `descriptor` must hold a valid security descriptor for the whole call.
@@ -137,7 +134,7 @@ pub unsafe fn create_directory_at(
     path: &Path,
     descriptor: &se_native_path::windows::allocation::Allocation,
     access: u32,
-) -> Result<(File, bool)> {
+) -> Result<File> {
     let mut units = literal_leaf(leaf, path)?;
     let mut unicode = UNICODE_STRING {
         Length: (units.len() * 2) as u16,
@@ -190,7 +187,10 @@ pub unsafe fn create_directory_at(
     }
     // SAFETY: successful synchronous FILE_CREATE transferred unique ownership.
     let file = unsafe { File::from_raw_handle(raw) };
-    Ok((file, status.Information == 2))
+    if status.Information != 2 {
+        return Err(changed("native create did not report FILE_CREATED", path));
+    }
+    Ok(file)
 }
 /// Removes the directory object behind `held` through an empty relative name,
 /// which reopens that exact object with DELETE access and no pathname lookup.

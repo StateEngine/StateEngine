@@ -272,23 +272,13 @@ fn create_retained(
             access,
         )
     };
-    match created {
-        Ok((file, true)) => Ok(file),
-        // The handle does not prove this call created the object: never retire it.
-        Ok((_, false)) => Err(pending(
-            refuse(
-                "create High uninstall staging directory",
-                "native create did not report a new directory",
-            ),
-            path,
-        )),
-        Err(failure) => {
-            // Creation was reported without held custody, so the name may exist.
-            let unheld = failure.code == se_state_files::StateFileErrorCode::SourceChanged;
-            let cause = custody(failure);
-            Err(if unheld { pending(cause, path) } else { cause })
-        }
-    }
+    created.map_err(|failure| {
+        // Creation was not confirmed with held custody, so the name may
+        // exist; it is reported pending and never retired.
+        let unheld = failure.code == se_state_files::StateFileErrorCode::SourceChanged;
+        let cause = custody(failure);
+        if unheld { pending(cause, path) } else { cause }
+    })
 }
 pub(super) fn verify_directory(custody: &DirectoryCustody) -> Result<File> {
     let pin = open_directory(&custody.path, false, false)?;
