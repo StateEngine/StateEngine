@@ -15,7 +15,7 @@ mod rows;
 mod source;
 mod state;
 use self::node::{NodeContext, NodeKind};
-use super::{BlockingClass, ExecutionContext};
+use super::ExecutionContext;
 use crate::client::lease::Deadline;
 use se_core::{
     ops::{
@@ -37,11 +37,7 @@ async fn job<T: Send + 'static>(
     deadline: &Deadline,
     work: impl FnOnce(&ExecutionContext) -> Result<T> + Send + 'static,
 ) -> Result<T> {
-    let copy = context.clone();
-    context
-        .blocking
-        .run(BlockingClass::Foreground, deadline, move || work(&copy))
-        .await
+    context.run_foreground(deadline, work).await
 }
 fn now() -> Result<i64> {
     SystemTime::now()

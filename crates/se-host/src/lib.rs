@@ -56,6 +56,40 @@ pub mod mcp {
     pub use se_mcp::{McpBackend, McpPrincipal, McpReply, dispatch};
 }
 pub(crate) use se_harness::model;
+
+#[cfg(feature = "listener")]
+pub(crate) fn read_budget(
+    after: Option<se_types::Cursor>,
+    limit: u32,
+    max_bytes: u32,
+    deadline: std::time::Duration,
+) -> se_store::ReadBudget {
+    se_store::ReadBudget {
+        page: se_types::PageRequest {
+            after,
+            limit: std::num::NonZeroU32::new(limit).unwrap_or(std::num::NonZeroU32::MIN),
+            max_bytes: std::num::NonZeroU32::new(max_bytes).unwrap_or(std::num::NonZeroU32::MIN),
+        },
+        deadline,
+    }
+}
+
+/// Resolve a `Read<T>` into `Option<T>`, converting `Unreadable`/`Unknown` into
+/// `scope::unreadable` without ever collapsing failures into `None`.
+#[cfg(feature = "listener")]
+pub(crate) fn read_optional<T>(
+    read: se_types::Read<T>,
+    subject: &str,
+) -> se_types::Result<Option<T>> {
+    match read {
+        se_types::Read::Present { value } => Ok(Some(value)),
+        se_types::Read::Absent { .. } => Ok(None),
+        se_types::Read::Unreadable { source, reason, .. } => {
+            Err(se_core::scope::unreadable(&source, &reason))
+        }
+        se_types::Read::Unknown { what } => Err(se_core::scope::unreadable(subject, &what)),
+    }
+}
 #[cfg(all(
     feature = "listener",
     any(target_os = "linux", target_os = "macos", windows)

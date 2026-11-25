@@ -390,31 +390,31 @@ fn backend(state: &Path, project: &str, floor: &Path, deadline: &Deadline) -> Re
         .join("runtime")
         .join(directory)
         .join("floor-storage/storage.json");
-    match SourceFile::open(path, None, deadline)? {
-        Read::Absent { .. } => Ok(()),
-        Read::Present { mut value } => {
-            let row = value.next(deadline)?.ok_or_else(|| {
-                io(
-                    "Node backend authority",
-                    "empty control file is not absence",
-                )
-            })?;
-            let row = row
-                .value
-                .ok_or_else(|| io("Node backend authority", "unreadable control document"))?;
-            if row.get("schema").and_then(serde_json::Value::as_str) != Some("floor-storage/v1")
-                || row.get("project_id").and_then(serde_json::Value::as_str) != Some(project)
-                || row.get("mode").and_then(serde_json::Value::as_str) != Some("files")
-                || row.get("transition").is_some_and(|v| !v.is_null())
-            {
-                return Err(io(
-                    "Node backend authority",
-                    "the retained file floor is not proven authoritative; preserve an authenticated immutable user-record export instead of importing a database/transition window",
-                ));
-            }
-            value.verify(deadline)
-        }
-        Read::Unreadable { source, reason, .. } => Err(io(&source, reason)),
-        Read::Unknown { what } => Err(io("Node backend authority", what)),
+    let Some(mut value) = crate::read_optional(
+        SourceFile::open(path, None, deadline)?,
+        "Node backend authority",
+    )?
+    else {
+        return Ok(());
+    };
+    let row = value.next(deadline)?.ok_or_else(|| {
+        io(
+            "Node backend authority",
+            "empty control file is not absence",
+        )
+    })?;
+    let row = row
+        .value
+        .ok_or_else(|| io("Node backend authority", "unreadable control document"))?;
+    if row.get("schema").and_then(serde_json::Value::as_str) != Some("floor-storage/v1")
+        || row.get("project_id").and_then(serde_json::Value::as_str) != Some(project)
+        || row.get("mode").and_then(serde_json::Value::as_str) != Some("files")
+        || row.get("transition").is_some_and(|v| !v.is_null())
+    {
+        return Err(io(
+            "Node backend authority",
+            "the retained file floor is not proven authoritative; preserve an authenticated immutable user-record export instead of importing a database/transition window",
+        ));
     }
+    value.verify(deadline)
 }

@@ -88,42 +88,18 @@ async fn measured_with(
                     // Install the observer before returning from submission:
                     // a cancelled connection can drop this worker's result.
                     // It holds no blocking permit while awaiting the store.
-                    Ok(runtime.spawn(async move {
-                        let receipt = completion.await;
-                        if receipt.as_ref().is_err_and(|e| {
-                            e.code == se_store::StoreErrorCode::CommitOutcomeUnknown
-                        }) {
-                            record_write.uncertain();
-                        } else {
-                            drop(record_write);
-                        }
-                        if let Err(error) = &receipt {
-                            fault.observe_writer(error);
-                        }
-                        let settled = match &receipt {
-                            Ok(_) => pending.resolve(&submitted),
-                            Err(error)
-                                if error.code == se_store::StoreErrorCode::CommitOutcomeUnknown =>
-                            {
-                                Ok(())
-                            }
-                            Err(_) => pending.failed_attempt(&submitted),
-                        };
-                        let notified = if receipt.is_ok() {
-                            mail_waits
-                                .remote_fence_committed(&revocations)
-                                .and_then(|()| mail_waits.committed(&recipients))
-                                .and_then(|()| mail_waits.revoked(&revocations))
-                                .and_then(|()| {
-                                    custody
-                                        .as_ref()
-                                        .map_or(Ok(()), |custody| custody.notify_mail(&recipients))
-                                })
-                        } else {
-                            Ok(())
-                        };
-                        (receipt, settled.and(notified))
-                    }))
+                    Ok(CommitObserver {
+                        completion,
+                        record_write,
+                        fault,
+                        pending,
+                        submitted,
+                        mail_waits,
+                        revocations,
+                        recipients,
+                        custody,
+                    }
+                    .spawn(&runtime))
                 }
                 Err(error) => {
                     pending.failed_attempt(&submitted)?;
@@ -169,4 +145,59 @@ async fn measured_with(
     };
     settled.map_err(|error| committed.response_error(error))?;
     Ok((receipt, submission, completion_wait_us))
+}
+
+pub(super) struct CommitObserver {
+    pub(super) completion: <se_store::SqliteClient as WriterClient>::Completion,
+    pub(super) record_write: crate::atlas_runtime::record_fence::RecordFeedWrite,
+    pub(super) fault: Arc<super::tasks::OwnershipFault>,
+    pub(super) pending: super::failure::PendingWrites,
+    pub(super) submitted: WriteIdentity,
+    pub(super) mail_waits: Arc<crate::http::mail::Waits>,
+    pub(super) revocations: super::mail::Revocations,
+    pub(super) recipients: Vec<super::mail::MailRecipient>,
+    pub(super) custody: Option<Arc<dyn super::CustodyExecutor>>,
+}
+
+impl CommitObserver {
+    pub(super) fn spawn(
+        self,
+        runtime: &tokio::runtime::Handle,
+    ) -> tokio::task::JoinHandle<(se_store::StoreResult<CommitReceipt>, Result<()>)> {
+        runtime.spawn(async move {
+            let receipt = self.completion.await;
+            if receipt
+                .as_ref()
+                .is_err_and(|e| e.code == se_store::StoreErrorCode::CommitOutcomeUnknown)
+            {
+                self.record_write.uncertain();
+            } else {
+                drop(self.record_write);
+            }
+            if let Err(error) = &receipt {
+                self.fault.observe_writer(error);
+            }
+            let settled = match &receipt {
+                Ok(_) => self.pending.resolve(&self.submitted),
+                Err(error) if error.code == se_store::StoreErrorCode::CommitOutcomeUnknown => {
+                    Ok(())
+                }
+                Err(_) => self.pending.failed_attempt(&self.submitted),
+            };
+            let notified = if receipt.is_ok() {
+                self.mail_waits
+                    .remote_fence_committed(&self.revocations)
+                    .and_then(|()| self.mail_waits.committed(&self.recipients))
+                    .and_then(|()| self.mail_waits.revoked(&self.revocations))
+                    .and_then(|()| {
+                        self.custody
+                            .as_ref()
+                            .map_or(Ok(()), |custody| custody.notify_mail(&self.recipients))
+                    })
+            } else {
+                Ok(())
+            };
+            (receipt, settled.and(notified))
+        })
+    }
 }

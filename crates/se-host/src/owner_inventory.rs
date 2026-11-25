@@ -7,7 +7,7 @@ use se_proc::{
 use se_store::{
     Actor, ContainmentFact, OwnerGuardInventory, ProcessState, RecordedIdentity, RootIdentityState,
 };
-use se_types::{Result, StartIdentity};
+use se_types::Result;
 
 pub fn decode_owner_inventory(inventory: &OwnerGuardInventory) -> Result<Vec<ProcessRecord>> {
     let mut records = Vec::with_capacity(inventory.processes.len());
@@ -196,31 +196,8 @@ fn verify_recorded_root(
         ));
     };
     let fields = instance.fields();
-    let started = match (&record.root.start, &fields.started) {
-        (
-            se_proc::StartIdentity::Linux { start_ticks: a },
-            StartIdentity::Linux { start_ticks: b },
-        ) => a == b,
-        (
-            se_proc::StartIdentity::Windows {
-                creation_filetime: a,
-            },
-            StartIdentity::Windows {
-                creation_filetime: b,
-            },
-        ) => *a == b.get(),
-        (
-            se_proc::StartIdentity::MacOs {
-                seconds: a,
-                microseconds: b,
-            },
-            StartIdentity::Macos {
-                start_seconds: c,
-                start_micros: d,
-            },
-        ) => a == c && b == d,
-        _ => false,
-    };
+    let started =
+        crate::host_process::same_start(&record.root.start, &fields.started).unwrap_or(false);
     if record.root.machine != fields.machine
         || record.root.pid.0 != fields.pid.get()
         || !started

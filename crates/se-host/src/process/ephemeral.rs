@@ -5,8 +5,8 @@ use se_core::{ops::process_commit, store_error::store_error};
 use se_store::{
     Actor, Admission, EphemeralAgentRecord, EventBody, RetirementReason, Scope, Snapshot,
 };
-use se_types::{AgentId, LifecycleId, PageRequest, ProjectId, Read, Result, SessionId};
-use std::{num::NonZeroU32, sync::atomic::Ordering, time::Duration};
+use se_types::{AgentId, LifecycleId, ProjectId, Read, Result, SessionId};
+use std::{sync::atomic::Ordering, time::Duration};
 
 pub(super) const SWEEP_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 const PAGE_SIZE: u32 = 100;
@@ -275,16 +275,8 @@ impl LaunchCoordinator {
             let (mut batch, next) = self
                 .store
                 .read(registry.clone(), deadline, move |cx| {
-                    let budget = se_store::ReadBudget {
-                        page: PageRequest {
-                            after: cursor,
-                            limit: NonZeroU32::new(PAGE_SIZE)
-                                .ok_or_else(|| se_types::SeError::invalid("limit", "positive"))?,
-                            max_bytes: NonZeroU32::new(256 * 1024)
-                                .ok_or_else(|| se_types::SeError::invalid("bytes", "positive"))?,
-                        },
-                        deadline: Duration::from_secs(2),
-                    };
+                    let budget =
+                        crate::read_budget(cursor, PAGE_SIZE, 256 * 1024, Duration::from_secs(2));
                     let page = cx.read.projects(budget).map_err(|e| store_error(&e))?;
                     let next = page.next().cloned();
                     let mut batch = Vec::new();
@@ -673,16 +665,7 @@ fn inspect_session_completion<R: Snapshot>(
         CaptureOutcome::Disabled
     };
     loop {
-        let budget = se_store::ReadBudget {
-            page: PageRequest {
-                after: after.clone(),
-                limit: NonZeroU32::new(64)
-                    .ok_or_else(|| se_types::SeError::invalid("limit", "positive"))?,
-                max_bytes: NonZeroU32::new(256 * 1024)
-                    .ok_or_else(|| se_types::SeError::invalid("bytes", "positive"))?,
-            },
-            deadline: Duration::from_secs(2),
-        };
+        let budget = crate::read_budget(after.clone(), 64, 256 * 1024, Duration::from_secs(2));
         let page = read
             .history(
                 se_store::HistoryQuery {

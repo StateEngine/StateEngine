@@ -485,16 +485,12 @@ fn launch(options: HostStart, blocking: BlockingPool, owned: Owned) -> Result<Ho
     })
 }
 pub(crate) fn owner_budget() -> Result<se_store::ReadBudget> {
-    Ok(se_store::ReadBudget {
-        page: se_types::PageRequest {
-            after: None,
-            limit: std::num::NonZeroU32::new(1000)
-                .ok_or_else(|| SeError::invalid("owner budget", "positive items"))?,
-            max_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024)
-                .ok_or_else(|| SeError::invalid("owner budget", "positive bytes"))?,
-        },
-        deadline: Duration::from_secs(5),
-    })
+    Ok(crate::read_budget(
+        None,
+        1000,
+        2 * 1024 * 1024,
+        Duration::from_secs(5),
+    ))
 }
 pub(crate) fn allocate_facts() -> Result<se_core::dispatch::CallFacts> {
     let time = std::time::SystemTime::now()

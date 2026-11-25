@@ -50,22 +50,21 @@ pub(super) fn start(
     source: NativePath,
 ) -> Result<Option<AtomicBatch>> {
     read::snapshot(context, &cx.admission, |r| {
-        match r.import_run(cx.import).map_err(|e| store_error(&e))? {
-            Read::Present { value } => {
-                let first = value.original.as_deref().unwrap_or(&value.current);
-                if !matches!(&first.body,EventBody::ImportStarted{source:actual,policy_version:2,format,..} if *actual==source && format=="node-user-history/v1")
-                {
-                    return Err(scope::unreadable(
-                        "import source binding",
-                        "the retained run has a different source or policy",
-                    ));
-                }
-                Ok(None)
+        if let Some(value) = crate::read_optional(
+            r.import_run(cx.import).map_err(|e| store_error(&e))?,
+            "import run",
+        )? {
+            let first = value.original.as_deref().unwrap_or(&value.current);
+            if !matches!(&first.body,EventBody::ImportStarted{source:actual,policy_version:2,format,..} if *actual==source && format=="node-user-history/v1")
+            {
+                return Err(scope::unreadable(
+                    "import source binding",
+                    "the retained run has a different source or policy",
+                ));
             }
-            Read::Absent { .. } => Ok(Some(batch::start(cx, source)?)),
-            Read::Unreadable { source, reason, .. } => Err(scope::unreadable(&source, &reason)),
-            Read::Unknown { what } => Err(scope::unreadable("import run", &what)),
+            return Ok(None);
         }
+        Ok(Some(batch::start(cx, source)?))
     })
 }
 pub(super) fn progress(
@@ -75,33 +74,31 @@ pub(super) fn progress(
     key: &[u8],
 ) -> Result<Progress> {
     read::snapshot(context, &cx.admission, |r| {
-        match r
-            .import_source(cx.import, family, key)
-            .map_err(|e| store_error(&e))?
-        {
-            Read::Present { value } => {
-                let EventBody::ImportProgress {
-                    mut checkpoint,
-                    counts,
-                } = value.current.body
-                else {
-                    return Err(scope::unreadable("import checkpoint", "head kind differs"));
-                };
-                checkpoint.expected = Expected::Revision(value.revision);
-                Ok(Progress {
-                    checkpoint: Some(checkpoint),
-                    deferred: counts.deferred,
-                    counts,
-                })
-            }
-            Read::Absent { .. } => Ok(Progress {
+        let Some(value) = crate::read_optional(
+            r.import_source(cx.import, family, key)
+                .map_err(|e| store_error(&e))?,
+            "import checkpoint",
+        )?
+        else {
+            return Ok(Progress {
                 checkpoint: None,
                 counts: ImportCounts::default(),
                 deferred: 0,
-            }),
-            Read::Unreadable { source, reason, .. } => Err(scope::unreadable(&source, &reason)),
-            Read::Unknown { what } => Err(scope::unreadable("import checkpoint", &what)),
-        }
+            });
+        };
+        let EventBody::ImportProgress {
+            mut checkpoint,
+            counts,
+        } = value.current.body
+        else {
+            return Err(scope::unreadable("import checkpoint", "head kind differs"));
+        };
+        checkpoint.expected = Expected::Revision(value.revision);
+        Ok(Progress {
+            checkpoint: Some(checkpoint),
+            deferred: counts.deferred,
+            counts,
+        })
     })
 }
 pub(super) fn finish(
@@ -134,15 +131,12 @@ pub(super) fn owner_project(
     cx: &NodeContext,
 ) -> Result<Option<AtomicBatch>> {
     let present = read::snapshot(context, &cx.admission, |r| {
-        match r
-            .principal(cx.admission.actor.clone())
-            .map_err(|e| store_error(&e))?
-        {
-            Read::Present { .. } => Ok(true),
-            Read::Absent { .. } => Ok(false),
-            Read::Unreadable { source, reason, .. } => Err(scope::unreadable(&source, &reason)),
-            Read::Unknown { what } => Err(scope::unreadable("import owner principal", &what)),
-        }
+        Ok(crate::read_optional(
+            r.principal(cx.admission.actor.clone())
+                .map_err(|e| store_error(&e))?,
+            "import owner principal",
+        )?
+        .is_some())
     })?;
     if present {
         return Ok(None);
@@ -229,16 +223,12 @@ pub(super) fn resume(
         let mut output = Vec::new();
         for _ in 0..64 {
             let page = r
-                .sessions(ReadBudget {
-                    page: se_types::PageRequest {
-                        after,
-                        limit: std::num::NonZeroU32::new(100)
-                            .ok_or_else(|| scope::unreadable("session read bound", "zero limit"))?,
-                        max_bytes: std::num::NonZeroU32::new(1024 * 1024)
-                            .ok_or_else(|| scope::unreadable("session read bound", "zero bytes"))?,
-                    },
-                    deadline: std::time::Duration::from_millis(250),
-                })
+                .sessions(crate::read_budget(
+                    after,
+                    100,
+                    1024 * 1024,
+                    std::time::Duration::from_millis(250),
+                ))
                 .map_err(|e| store_error(&e))?;
             for session in page.items() {
                 let original = session.original.as_deref().unwrap_or(&session.current);

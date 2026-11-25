@@ -14,12 +14,12 @@ use se_core::{
     store_error::store_error,
 };
 use se_store::{
-    Actor, EventBody, EventKind, HistoryDirection, HistoryQuery, ReadBudget, Scope, Snapshot,
-    StoredEvent, TranscriptFilter,
+    Actor, EventBody, EventKind, HistoryDirection, HistoryQuery, Scope, Snapshot, StoredEvent,
+    TranscriptFilter,
     mail::{MailTransport, OfferEvidence, OfferReport},
 };
 use se_types::Result;
-use std::{num::NonZeroU32, sync::atomic::Ordering, time::Duration};
+use std::{sync::atomic::Ordering, time::Duration};
 
 /// One offer read: every committed mail offer for the admitted target
 /// session, oldest first, until the finite window completes.
@@ -43,14 +43,7 @@ fn offers_for<R: Snapshot>(
                     since: None,
                     direction: HistoryDirection::OldestFirst,
                 },
-                ReadBudget {
-                    page: se_types::PageRequest {
-                        after: after.clone(),
-                        limit: NonZeroU32::new(1000).unwrap_or(NonZeroU32::MIN),
-                        max_bytes: NonZeroU32::new(2 * 1024 * 1024).unwrap_or(NonZeroU32::MIN),
-                    },
-                    deadline: Duration::from_secs(1),
-                },
+                crate::read_budget(after.clone(), 1000, 2 * 1024 * 1024, Duration::from_secs(1)),
             )
             .map_err(|e| store_error(&e))?;
         result.extend(

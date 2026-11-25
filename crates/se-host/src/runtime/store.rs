@@ -231,37 +231,18 @@ impl Store {
                 pending.register(&submitted)?;
                 mail_waits.fence_remote(&revocations)?;
                 match enqueue(&writer, batch) {
-                    Ok(completion) => Ok(runtime.spawn(async move {
-                        let receipt = completion.await;
-                        if receipt.as_ref().is_err_and(|e| {
-                            e.code == se_store::StoreErrorCode::CommitOutcomeUnknown
-                        }) {
-                            record_write.uncertain();
-                        } else {
-                            drop(record_write);
-                        }
-                        if let Err(error) = &receipt {
-                            fault.observe_writer(error);
-                        }
-                        let settled = match &receipt {
-                            Ok(_) => pending.resolve(&submitted),
-                            Err(error)
-                                if error.code == se_store::StoreErrorCode::CommitOutcomeUnknown =>
-                            {
-                                Ok(())
-                            }
-                            Err(_) => pending.failed_attempt(&submitted),
-                        };
-                        let notified = if receipt.is_ok() {
-                            mail_waits
-                                .remote_fence_committed(&revocations)
-                                .and_then(|()| mail_waits.committed(&recipients))
-                                .and_then(|()| mail_waits.revoked(&revocations))
-                        } else {
-                            Ok(())
-                        };
-                        (receipt, settled.and(notified))
-                    })),
+                    Ok(completion) => Ok(super::submit::CommitObserver {
+                        completion,
+                        record_write,
+                        fault,
+                        pending,
+                        submitted,
+                        mail_waits,
+                        revocations,
+                        recipients,
+                        custody: None,
+                    }
+                    .spawn(&runtime)),
                     Err(error) => {
                         pending.failed_attempt(&submitted)?;
                         Err(error)

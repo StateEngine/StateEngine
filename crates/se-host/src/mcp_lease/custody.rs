@@ -59,7 +59,7 @@ impl AdmissionContext {
                 .owner_guard(lease.files(), owner_budget()?)
                 .map_err(|error| store_error(&error))?;
             let records = decode_owner_inventory(&inventory)?;
-            let start = process_start(peer.native().started());
+            let start = crate::host_process::proc_start(peer.native().started());
             let observation = se_proc::observe_owner(
                 se_proc::OwnerTarget::Process {
                     pid: se_proc::ProcessId(peer.native().pid()),
@@ -102,23 +102,5 @@ impl AdmissionContext {
             Ok(credential)
         })();
         crate::runtime::executor::close_read(result, phase.close())
-    }
-}
-
-fn process_start(start: &se_types::StartIdentity) -> se_proc::StartIdentity {
-    match start {
-        se_types::StartIdentity::Linux { start_ticks } => se_proc::StartIdentity::Linux {
-            start_ticks: *start_ticks,
-        },
-        se_types::StartIdentity::Macos {
-            start_seconds,
-            start_micros,
-        } => se_proc::StartIdentity::MacOs {
-            seconds: *start_seconds,
-            microseconds: *start_micros,
-        },
-        se_types::StartIdentity::Windows { creation_filetime } => se_proc::StartIdentity::Windows {
-            creation_filetime: creation_filetime.get(),
-        },
     }
 }

@@ -9,10 +9,7 @@ use se_types::{Result, SeError};
 use sha2::{Digest, Sha256 as Hasher};
 use std::sync::Arc;
 mod custody;
-use std::{
-    num::NonZeroU32,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 pub(crate) struct LeaseGrant {
     pub(crate) ticket: crate::ConnectionTicket,
@@ -133,18 +130,12 @@ impl AdmissionContext {
             let mut candidates = Vec::new();
             for _ in 0..64 {
                 let page = snapshot
-                    .projects(se_store::ReadBudget {
-                        page: se_types::PageRequest {
-                            after,
-                            limit: NonZeroU32::new(100).ok_or_else(|| {
-                                SeError::invalid("project page", "a positive limit")
-                            })?,
-                            max_bytes: NonZeroU32::new(1024 * 1024).ok_or_else(|| {
-                                SeError::invalid("project page", "a positive byte limit")
-                            })?,
-                        },
-                        deadline: Duration::from_secs(1),
-                    })
+                    .projects(crate::read_budget(
+                        after,
+                        100,
+                        1024 * 1024,
+                        Duration::from_secs(1),
+                    ))
                     .map_err(|error| store_error(&error))?;
                 let next = page.next().cloned();
                 let complete = page.window().complete();
