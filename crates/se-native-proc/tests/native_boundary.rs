@@ -720,4 +720,102 @@ mod windows_stdio_boundary {
         assert_eq!(err.code, ProcErrorCode::IllegalTransition);
         Ok(())
     }
+
+    #[test]
+    fn console_interrupt_entry_refuses_duplicate_selectors_and_preserves_caller_handles() -> Check {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::Foundation::{
+            DUPLICATE_SAME_ACCESS, DuplicateHandle, GetHandleInformation, HANDLE_FLAG_INHERIT,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+        let make_inheritable = |src: &OwnedHandle| -> Check<OwnedHandle> {
+            let mut dup = std::ptr::null_mut();
+            // SAFETY: `src` is a live owned handle; `dup` receives a fresh inheritable duplicate.
+            let ok = unsafe {
+                DuplicateHandle(
+                    GetCurrentProcess(),
+                    src.as_raw_handle(),
+                    GetCurrentProcess(),
+                    &mut dup,
+                    0,
+                    1,
+                    DUPLICATE_SAME_ACCESS,
+                )
+            };
+            if ok == 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            // SAFETY: `DuplicateHandle` transferred sole ownership of `dup`.
+            Ok(unsafe { OwnedHandle::from_raw_handle(dup) })
+        };
+        let assert_still_inheritable = |handle: &OwnedHandle, label: &str| -> Check {
+            let mut flags = 0;
+            // SAFETY: querying flags on a live owned handle.
+            let ok = unsafe { GetHandleInformation(handle.as_raw_handle(), &mut flags) };
+            assert_ne!(ok, 0, "{label}: caller handle was closed");
+            assert_ne!(
+                flags & HANDLE_FLAG_INHERIT,
+                0,
+                "{label}: caller handle inherit flag was mutated"
+            );
+            Ok(())
+        };
+
+        let (reader, writer) = std::io::pipe()?;
+        let r_owned = OwnedHandle::from(reader);
+        let w_owned = OwnedHandle::from(writer);
+        let h1 = make_inheritable(&r_owned)?;
+        let h2 = make_inheritable(&w_owned)?;
+
+        let machine = MachineId::new("interrupt-handle-safety-test")?;
+        let root = current_process_identity(machine)
+            .map_err(|e| format!("current_process_identity: {e:?}"))?;
+
+        // 1. Duplicate selectors must be refused without closing or mutating `h1`.
+        let dup_req = serde_json::json!({
+            "root": &root,
+            "root_handle": h1.as_raw_handle() as usize as u64,
+            "job_handle": h1.as_raw_handle() as usize as u64,
+        })
+        .to_string();
+        let err = se_native_proc::console_interrupt_entry(OsString::from(dup_req).as_os_str())
+            .err()
+            .ok_or("duplicate handle selectors accepted")?;
+        assert_eq!(err.code, ProcErrorCode::InvalidInput);
+        assert_still_inheritable(&h1, "duplicate selectors")?;
+
+        // 2. Distinct inheritable non-process handles must fail validation without closing
+        //    or clearing HANDLE_FLAG_INHERIT on either caller-owned handle.
+        let distinct_req = serde_json::json!({
+            "root": &root,
+            "root_handle": h1.as_raw_handle() as usize as u64,
+            "job_handle": h2.as_raw_handle() as usize as u64,
+        })
+        .to_string();
+        let err = se_native_proc::console_interrupt_entry(OsString::from(distinct_req).as_os_str())
+            .err()
+            .ok_or("pipe handles accepted as process/job capabilities")?;
+        assert_eq!(err.code, ProcErrorCode::InvalidInput);
+        assert_still_inheritable(&h1, "distinct root_handle")?;
+        assert_still_inheritable(&h2, "distinct job_handle")?;
+
+        // 3. Non-inheritable handle must be refused while leaving it open.
+        let non_inherit_req = serde_json::json!({
+            "root": &root,
+            "root_handle": r_owned.as_raw_handle() as usize as u64,
+            "job_handle": h2.as_raw_handle() as usize as u64,
+        })
+        .to_string();
+        let err =
+            se_native_proc::console_interrupt_entry(OsString::from(non_inherit_req).as_os_str())
+                .err()
+                .ok_or("non-inheritable handle accepted")?;
+        assert_eq!(err.code, ProcErrorCode::InvalidInput);
+        let mut flags = 0;
+        // SAFETY: querying flags on a live owned handle.
+        let ok = unsafe { GetHandleInformation(r_owned.as_raw_handle(), &mut flags) };
+        assert_ne!(ok, 0, "non-inheritable caller handle was closed");
+        Ok(())
+    }
 }

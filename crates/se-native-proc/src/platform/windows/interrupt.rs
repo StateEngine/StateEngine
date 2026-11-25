@@ -5,11 +5,12 @@ use crate::{support::*, *};
 use std::{
     ffi::OsStr,
     path::Path,
+    ptr,
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
     Foundation::*,
-    System::{Console::*, JobObjects::*},
+    System::{Console::*, JobObjects::*, Threading::GetCurrentProcess},
 };
 
 pub const CONSOLE_INTERRUPT_ENTRY: &str = "__native-console-interrupt";
@@ -132,8 +133,11 @@ fn inherited(selector: u64) -> ProcResult<Handle> {
     let selector = usize::try_from(selector)
         .map_err(|_| input("console helper", "a native inherited handle"))?;
     let raw = selector as *mut std::ffi::c_void;
+    if raw.is_null() || raw == INVALID_HANDLE_VALUE {
+        return Err(input("console helper", "a native inherited handle"));
+    }
     let mut flags = 0;
-    // SAFETY: the kernel validates the untrusted selector; no ownership yet.
+    // SAFETY: the kernel validates the untrusted selector; no ownership is claimed.
     if unsafe { GetHandleInformation(raw, &mut flags) } == 0 {
         return Err(last(
             ProcErrorCode::StopDispatchFailed,
@@ -146,17 +150,29 @@ fn inherited(selector: u64) -> ProcResult<Handle> {
             "a capability inherited from the native creator",
         ));
     }
-    // SAFETY: this private helper owns the inherited table entry, never a name
-    // lookup. It cannot accidentally hand the capability to another child.
-    if unsafe { SetHandleInformation(raw, HANDLE_FLAG_INHERIT, 0) } == 0 {
+    let mut dup = ptr::null_mut();
+    // SAFETY: `raw` is a validated open handle; duplicating with `bInheritHandle = 0`
+    // creates a fresh, non-inheritable, exclusively owned handle without mutating or
+    // stealing ownership of `raw` from any in-process owner.
+    if unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            raw,
+            GetCurrentProcess(),
+            &mut dup,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS,
+        )
+    } == 0
+    {
         return Err(last(
             ProcErrorCode::StopDispatchFailed,
-            "seal inherited console capability",
+            "duplicate inherited console capability",
         ));
     }
-    // SAFETY: this helper exclusively owns the inherited handle-table entry; closing
-    // it removes only this entry, never the creator's reference.
-    unsafe { Handle::new(raw, "own inherited console capability") }
+    // SAFETY: `DuplicateHandle` above transferred sole ownership of the fresh handle `dup`.
+    unsafe { Handle::new(dup, "own inherited console capability") }
 }
 
 /// Private helper entry. Identity text grants no rights: the native creator
@@ -169,6 +185,12 @@ pub fn console_interrupt_entry(request: &OsStr) -> ProcResult<StopDispatch> {
         .ok_or_else(|| input("console helper", "one bounded UTF-8 identity"))?;
     let request: Request = serde_json::from_str(request)
         .map_err(|_| input("console helper", "the closed native console request"))?;
+    if request.root_handle == request.job_handle {
+        return Err(input(
+            "console helper",
+            "distinct inherited process and job capabilities required",
+        ));
+    }
     let root = inherited(request.root_handle)?;
     let job = inherited(request.job_handle)?;
     // SAFETY: retained inherited process capability; the kernel validates kind.
