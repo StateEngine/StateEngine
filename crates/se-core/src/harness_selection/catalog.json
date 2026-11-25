@@ -117,9 +117,10 @@
         "--acp"
       ],
       "environment": [
+        "GEMINI_API_KEY",
         "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_PROJECT_ID",
         "GOOGLE_CLOUD_LOCATION",
-        "GOOGLE_GENAI_USE_VERTEXAI",
         "GOOGLE_APPLICATION_CREDENTIALS"
       ],
       "permissions": {
@@ -168,7 +169,9 @@
       "arguments": [
         "--acp"
       ],
-      "environment": [],
+      "environment": [
+        "AUGMENT_SESSION_AUTH"
+      ],
       "permissions": {
         "default": {
           "arguments": [],

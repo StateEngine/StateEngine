@@ -142,6 +142,29 @@ impl Binding {
                         text: None,
                     });
                 }
+                TurnItem::Unrecognized { index } => {
+                    let update = turn
+                        .unrecognized
+                        .get(index)
+                        .ok_or_else(|| error("sealed update index differs"))?;
+                    let kind = update.get("sessionUpdate").cloned().unwrap_or_default();
+                    items.push(Item {
+                        vendor: format!(
+                            "{}acp/{}/unrecognized/{index}",
+                            se_store::TRANSCRIPT_EVENT_PREFIX,
+                            se_types::hex_lower(&Sha256::digest(turn.input_key.as_bytes()))
+                        ),
+                        role: Role::System,
+                        bytes: serde_json::to_vec(&json!({
+                            "unrecognized_update": kind,
+                            "interpreted": false,
+                            "update": update,
+                        }))
+                        .map_err(error)?,
+                        facts: Vec::new(),
+                        text: None,
+                    });
+                }
             }
         }
         Ok(items)

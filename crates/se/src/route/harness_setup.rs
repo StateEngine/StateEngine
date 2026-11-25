@@ -25,16 +25,14 @@ pub(super) fn prepare(cx: &Bootstrap, input: &ProjectInit) -> Result<ConfigFile>
         ));
     }
     let mut descriptor = preset.descriptor.clone();
-    let defaults = &configuration.providers.acp;
     let native = descriptor.permissions.remove("default").ok_or_else(|| {
         SeError::invalid(
             "harness catalogue",
             "an announced native permission default",
         )
     })?;
-    descriptor
-        .permissions
-        .insert(defaults.profile.clone(), native);
+    let profile = protocol_profile(&mut configuration);
+    descriptor.permissions.insert(profile, native);
     configuration
         .harnesses
         .insert(name.into(), descriptor.clone());
@@ -63,6 +61,27 @@ pub(super) fn prepare(cx: &Bootstrap, input: &ProjectInit) -> Result<ConfigFile>
     configuration.harnesses.insert(name.into(), descriptor);
     configuration.validate()?;
     Ok(configuration)
+}
+
+/// Protocol sessions are headless and cannot collect approval, so catalogue
+/// setup saves a named profile whose approval is explicit, and init prints it.
+/// An owner's own `[providers.acp].profile` choice, or an existing profile of
+/// that name, is kept as written.
+fn protocol_profile(configuration: &mut ConfigFile) -> String {
+    const PROTOCOL: &str = "protocol";
+    let acp = &mut configuration.providers.acp;
+    if acp.profile != "default" {
+        return acp.profile.clone();
+    }
+    acp.profile = PROTOCOL.into();
+    configuration
+        .profiles
+        .entry(PROTOCOL.into())
+        .or_insert_with(|| se_config::config_policy::Profile {
+            approval: Some(se_config::config_policy::Approval::Never),
+            ..Default::default()
+        });
+    PROTOCOL.into()
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]

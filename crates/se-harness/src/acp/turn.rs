@@ -16,8 +16,16 @@ pub struct CapturedMessage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TurnItem {
-    Message { index: usize },
-    Tool { index: usize },
+    Message {
+        index: usize,
+    },
+    Tool {
+        index: usize,
+    },
+    /// An update variant this version does not recognise, retained raw.
+    Unrecognized {
+        index: usize,
+    },
 }
 /// A complete protocol turn, still awaiting host-owned durable capture.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -27,6 +35,9 @@ pub struct CompletedTurn {
     pub input: String,
     pub messages: Vec<CapturedMessage>,
     pub tools: Vec<Value>,
+    /// Raw updates whose variant this version does not recognise.
+    #[serde(default)]
+    pub unrecognized: Vec<Value>,
     pub order: Vec<TurnItem>,
     pub stop_reason: String,
 }
@@ -42,6 +53,7 @@ pub(super) struct Turn {
     pub input: String,
     pub messages: Vec<CapturedMessage>,
     pub tools: Vec<Value>,
+    unrecognized: Vec<Value>,
     order: Vec<TurnItem>,
     statuses: BTreeMap<String, String>,
     permission_tools: BTreeSet<String>,
@@ -64,6 +76,7 @@ impl Turn {
             input,
             messages: Vec::new(),
             tools: Vec::new(),
+            unrecognized: Vec::new(),
             order: Vec::new(),
             statuses: BTreeMap::new(),
             permission_tools: BTreeSet::new(),
@@ -112,9 +125,15 @@ impl Turn {
                 text(update.get("content"))?;
             }
             "tool_call" | "tool_call_update" => self.tool_call(kind, update)?,
-            // Plans, metadata and vendor extensions carry no conversation text
-            // or tool result, so an unrecognised variant cannot hide content.
-            _ => {}
+            "plan"
+            | "available_commands_update"
+            | "current_mode_update"
+            | "config_option_update"
+            | "session_info_update"
+            | "usage_update" => {}
+            // A variant this version does not know may carry content; keep it
+            // raw and named in the capture instead of claiming it was empty.
+            _ => self.unrecognized(update)?,
         }
         Ok(())
     }
@@ -212,6 +231,18 @@ impl Turn {
         self.last_message = None;
         Ok(())
     }
+    fn unrecognized(&mut self, update: &Value) -> Result<()> {
+        let bytes = serde_json::to_vec(update)
+            .map_err(|_| failure("ACP update", "encoding failed"))?
+            .len();
+        self.count(bytes)?;
+        self.order.push(TurnItem::Unrecognized {
+            index: self.unrecognized.len(),
+        });
+        self.unrecognized.push(update.clone());
+        self.last_message = None;
+        Ok(())
+    }
     fn count(&mut self, bytes: usize) -> Result<()> {
         self.bytes = self
             .bytes
@@ -255,6 +286,7 @@ impl Turn {
             input: self.input.clone(),
             messages: self.messages.clone(),
             tools: self.tools.clone(),
+            unrecognized: self.unrecognized.clone(),
             order: self.order.clone(),
             stop_reason: reason.into(),
         })
@@ -271,6 +303,7 @@ impl Turn {
             "input_echo": self.echo,
             "messages": self.messages,
             "tools": self.tools,
+            "unrecognized": self.unrecognized,
             "order": self.order,
         })
     }

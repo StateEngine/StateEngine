@@ -146,17 +146,19 @@ fn fetch_site(headers: &HeaderMap) -> Result<(), Refusal> {
 }
 
 /// MCP clients may stream a request body with chunked framing; the server
-/// counts the actual bytes against the same 1 MiB bound either way. Any other
-/// transfer coding, or chunked framing beside a length, stays refused.
+/// counts the actual bytes against the same 1 MiB bound either way. Hyper has
+/// already applied RFC 9112 framing here (chunked wins and a competing length
+/// is dropped), so only the coding itself is checked: other codings, and
+/// chunked framing on other routes, stay refused.
 fn framing(headers: &HeaderMap, chunked_allowed: bool) -> Result<(), Refusal> {
     if let Some(coding) = single(headers, &header::TRANSFER_ENCODING)? {
         let chunked = coding
             .to_str()
             .is_ok_and(|value| value.trim().eq_ignore_ascii_case("chunked"));
-        if !chunked_allowed || !chunked || headers.contains_key(header::CONTENT_LENGTH) {
+        if !chunked_allowed || !chunked {
             return Err(Refusal::new(
                 StatusCode::BAD_REQUEST,
-                "this transfer framing is refused; send Content-Length, or chunked framing alone to /mcp",
+                "this transfer framing is refused; send Content-Length, or chunked framing to /mcp",
             ));
         }
     }

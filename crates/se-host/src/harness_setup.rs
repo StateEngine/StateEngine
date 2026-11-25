@@ -22,7 +22,7 @@ pub fn node_entrypoint(package: &NodePackage, executable: &Path) -> Result<PathB
     }
     let mut seen = BTreeSet::new();
     for directory in directories {
-        for root in package_roots(&directory, package) {
+        for root in package_roots(&directory, package)? {
             if !seen.insert(root.clone()) {
                 continue;
             }
@@ -83,11 +83,13 @@ pub fn node_entrypoint(package: &NodePackage, executable: &Path) -> Result<PathB
 
 /// Where global installs from one command directory keep the named package:
 /// npm (`node_modules` beside Windows `.cmd`/`.ps1` shims, `lib/node_modules`
-/// elsewhere), pnpm (`global/<layout>/node_modules` under its home), Bun
-/// (`install/global/node_modules` under `~/.bun`), Yarn on Windows
-/// (`Data/global/node_modules`), and any symlinked bin that resolves into a
-/// package directory, as Bun and Yarn create outside Windows.
-fn package_roots(directory: &Path, package: &NodePackage) -> Vec<PathBuf> {
+/// elsewhere), pnpm (`global/<layout>/node_modules`, or pnpm 11's
+/// `global/v<layout>/<group>/node_modules`, under its home or the home above a
+/// `bin` directory), Bun (`install/global/node_modules` under `~/.bun`), Yarn
+/// on Windows (`Data/global/node_modules`), and any symlinked bin that resolves
+/// into a package directory, as Bun and Yarn create outside Windows. Listings
+/// are sorted and bounded, and an unreadable or oversized one refuses by name.
+fn package_roots(directory: &Path, package: &NodePackage) -> Result<Vec<PathBuf>> {
     let parent = directory.parent().unwrap_or(directory);
     let mut modules = vec![
         directory.join("node_modules"),
@@ -95,14 +97,8 @@ fn package_roots(directory: &Path, package: &NodePackage) -> Vec<PathBuf> {
         parent.join("install/global/node_modules"),
         parent.join("Data/global/node_modules"),
     ];
-    if let Ok(layouts) = std::fs::read_dir(directory.join("global")) {
-        modules.extend(
-            layouts
-                .take(16)
-                .filter_map(|entry| entry.ok())
-                .filter(|entry| entry.file_name().to_str().is_some_and(is_layout))
-                .map(|entry| entry.path().join("node_modules")),
-        );
+    for home in [directory, parent] {
+        modules.extend(pnpm_modules(&home.join("global"), package)?);
     }
     let mut roots: Vec<_> = modules
         .into_iter()
@@ -117,7 +113,63 @@ fn package_roots(directory: &Path, package: &NodePackage) -> Vec<PathBuf> {
     {
         roots.push(root.to_path_buf());
     }
-    roots
+    Ok(roots)
+}
+
+/// pnpm global stores: `<n>/node_modules` layouts, and pnpm 11 `v<n>/<group>`
+/// install groups. Two groups holding the package refuse as ambiguous.
+fn pnpm_modules(global: &Path, package: &NodePackage) -> Result<Vec<PathBuf>> {
+    let mut modules = Vec::new();
+    for layout in sorted_entries(global)? {
+        let Some(name) = layout.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if is_layout(name) {
+            modules.push(layout.join("node_modules"));
+        } else if name.strip_prefix('v').is_some_and(is_layout) {
+            let holding: Vec<_> = sorted_entries(&layout)?
+                .into_iter()
+                .map(|group| group.join("node_modules"))
+                .filter(|modules| modules.join(&package.name).join("package.json").is_file())
+                .collect();
+            if holding.len() > 1 {
+                return Err(unreadable(format!(
+                    "several pnpm install groups hold {}: {}; remove the extra global installs, then retry",
+                    package.name,
+                    holding
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+            modules.extend(holding);
+        }
+    }
+    Ok(modules)
+}
+
+/// A directory's entries in name order; absent is empty, unreadable refuses.
+fn sorted_entries(directory: &Path) -> Result<Vec<PathBuf>> {
+    let listing = match std::fs::read_dir(directory) {
+        Ok(listing) => listing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(unreadable(format!("{}: {error}", directory.display()))),
+    };
+    let mut entries = Vec::new();
+    for entry in listing {
+        let entry =
+            entry.map_err(|error| unreadable(format!("{}: {error}", directory.display())))?;
+        if entries.len() == 256 {
+            return Err(unreadable(format!(
+                "{} lists more than 256 entries; discovery is incomplete",
+                directory.display()
+            )));
+        }
+        entries.push(entry.path());
+    }
+    entries.sort();
+    Ok(entries)
 }
 
 /// pnpm names each global store layout with a version number.

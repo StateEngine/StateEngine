@@ -30,28 +30,13 @@ const NAMES: &[&str] = &[
     "TMP",
     "ProgramData",
     "ProgramFiles",
-    // Proxy and TLS trust settings, so a harness reaches its provider the same
-    // way other tools on this machine do.
-    "HTTPS_PROXY",
-    "HTTP_PROXY",
-    "ALL_PROXY",
-    "NO_PROXY",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    "NODE_EXTRA_CA_CERTS",
 ];
 
-/// Lower-case proxy spellings are distinct variables outside Windows, where
-/// names are case-insensitive and the upper-case read already finds them.
-#[cfg(not(windows))]
-const LOWER_CASE: &[&str] = &["https_proxy", "http_proxy", "all_proxy", "no_proxy"];
-#[cfg(windows)]
-const LOWER_CASE: &[&str] = &[];
-
 pub(super) fn inherited() -> Vec<(OsString, OsString)> {
-    NAMES
+    let mut entries: Vec<_> = NAMES
         .iter()
-        .chain(LOWER_CASE)
         .filter_map(|name| std::env::var_os(name).map(|value| (OsString::from(name), value)))
-        .collect()
+        .collect();
+    entries.extend(crate::acp::network_environment());
+    entries
 }

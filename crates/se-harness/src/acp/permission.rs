@@ -101,25 +101,30 @@ impl Permission {
         })
     }
     pub fn automatic(&self, policy: PermissionPolicy) -> (Value, Option<&'static str>) {
-        let (kinds, reason) = match policy {
-            PermissionPolicy::NeverAsk => (["allow_once", "allow_always"], None),
+        let (kinds, reason): (&[&str], _) = match policy {
+            // A never-ask profile approves this one call. A persistent allow
+            // would change the harness's own future policy, so it is not chosen.
+            PermissionPolicy::NeverAsk => (&["allow_once"], None),
             PermissionPolicy::Refuse => (
-                ["reject_once", "reject_always"],
+                &["reject_once", "reject_always"],
                 Some(
                     "The saved profile requires approval; no approval path is available. This tool call was refused.",
                 ),
             ),
         };
         for kind in kinds {
-            if let Some(option) = self.view.options.iter().find(|v| v.kind == kind) {
+            if let Some(option) = self.view.options.iter().find(|v| v.kind == *kind) {
                 return (selected(&option.id), reason);
             }
         }
+        let persistent_only = self.view.options.iter().any(|v| v.kind == "allow_always");
         (
             cancelled(),
-            reason.or(Some(
-                "The harness offered no allow option; this tool call was refused.",
-            )),
+            reason.or(Some(if persistent_only {
+                "The harness offered only a persistent allow, which would change its own future policy; this tool call was refused. Set the harness's native permission level instead."
+            } else {
+                "The harness offered no allow option; this tool call was refused."
+            })),
         )
     }
     pub fn select(&mut self, option: Option<&str>) -> Result<Value> {

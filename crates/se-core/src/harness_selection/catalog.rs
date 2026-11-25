@@ -24,22 +24,7 @@ pub struct NodePackage {
 pub fn presets() -> Result<&'static BTreeMap<String, Preset>> {
     static DATA: OnceLock<std::result::Result<BTreeMap<String, Preset>, String>> = OnceLock::new();
     DATA.get_or_init(|| {
-        let mut presets: BTreeMap<String, Preset> =
-            serde_json::from_str(include_str!("catalog.json")).map_err(|e| e.to_string())?;
-        // Standard provider credential and routing names every catalogue harness
-        // reads from the user's environment; setup saves the names, never values.
-        let shared: Vec<String> = serde_json::from_str(include_str!("provider_environment.json"))
-            .map_err(|e| e.to_string())?;
-        for names in presets.values_mut().map(|p| &mut p.descriptor.environment) {
-            names.extend(
-                shared
-                    .iter()
-                    .filter(|n| !names.contains(n))
-                    .cloned()
-                    .collect::<Vec<_>>(),
-            );
-        }
-        Ok(presets)
+        serde_json::from_str(include_str!("catalog.json")).map_err(|e| e.to_string())
     })
     .as_ref()
     .map_err(|error| SeError::invalid("harness catalogue", error))

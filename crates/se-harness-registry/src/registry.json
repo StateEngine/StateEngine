@@ -40,7 +40,7 @@
     "command": "",
     "omit_default_config": true,
     "seed_profile": false,
-    "detached_no_approval": true,
+    "detached_no_approval": false,
     "selection": "configured",
     "selection_title": "Configured protocol agent"
   }
