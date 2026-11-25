@@ -35,11 +35,13 @@ fn revoke_is_retryable_and_fences_the_old_grant_by_name() {
             &host,
             &session,
             generation,
-            "conv-revoke-1",
-            api::TurnRole::User,
-            "vt-1",
-            "judge revoked session turn",
-            "judge-capture-11",
+            TurnInput {
+                conversation: "conv-revoke-1",
+                role: api::TurnRole::User,
+                vendor_turn: "vt-1",
+                text: "judge revoked session turn",
+                key: "judge-capture-11",
+            },
         )
         .required();
 
@@ -65,11 +67,13 @@ fn revoke_is_retryable_and_fences_the_old_grant_by_name() {
         &host,
         &session,
         generation,
-        "conv-revoke-1",
-        api::TurnRole::Assistant,
-        "vt-2",
-        "judge after revocation",
-        "judge-capture-12",
+        TurnInput {
+            conversation: "conv-revoke-1",
+            role: api::TurnRole::Assistant,
+            vendor_turn: "vt-2",
+            text: "judge after revocation",
+            key: "judge-capture-12",
+        },
     );
     refusal_contains(
         &fenced_capture
@@ -184,11 +188,13 @@ fn restart_recovers_only_a_process_free_older_generation_binding() {
         &second_host,
         &old_session,
         second_generation,
-        "conv-restart-1",
-        api::TurnRole::Assistant,
-        "vt-1",
-        "judge against a restarted host",
-        "judge-capture-13",
+        TurnInput {
+            conversation: "conv-restart-1",
+            role: api::TurnRole::Assistant,
+            vendor_turn: "vt-1",
+            text: "judge against a restarted host",
+            key: "judge-capture-13",
+        },
     );
     let stale_error = stale_capture
         .err()

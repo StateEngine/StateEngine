@@ -346,11 +346,14 @@ impl Drop for Judge {
         }
     }
 }
-// The judge helpers carry the public ApiError by value so refusals can be
-// asserted by code and message, and capture's arguments mirror the public
-// capture surface 1:1.
-#[allow(clippy::result_large_err)]
-#[allow(clippy::too_many_arguments)]
+pub(super) struct TurnInput<'a> {
+    pub(super) conversation: &'a str,
+    pub(super) role: api::TurnRole,
+    pub(super) vendor_turn: &'a str,
+    pub(super) text: &'a str,
+    pub(super) key: &'a str,
+}
+
 impl Judge {
     pub(super) fn new(label: &str) -> Result<Self, String> {
         let helper = require_se().map_err(|_| "se binary missing".to_owned())?;
@@ -448,7 +451,7 @@ impl Judge {
         generation: api::Generation,
         conversation: &str,
         key: &str,
-    ) -> Result<api::IssuedSession, api::ApiError> {
+    ) -> Result<api::IssuedSession, Box<api::ApiError>> {
         let request = api::BindingRequest {
             project: api::ProjectId(self.project.clone()),
             agent: api::AgentId(self.agent.clone()),
@@ -467,36 +470,33 @@ impl Judge {
         let options = call_options(generation, Duration::from_secs(20));
         self.runtime
             .block_on(host.bind_session(&authority, request, options))
+            .map_err(Box::new)
     }
     pub(super) fn capture(
         &self,
         host: &Arc<dyn api::Host>,
         session: &api::BoundSession,
         generation: api::Generation,
-        conversation: &str,
-        role: api::TurnRole,
-        vendor_turn: &str,
-        text: &str,
-        key: &str,
-    ) -> Result<api::Receipt<api::EventRef>, api::ApiError> {
+        input: TurnInput<'_>,
+    ) -> Result<api::Receipt<api::EventRef>, Box<api::ApiError>> {
         let turn = api::CapturedTurn {
-            conversation: api::ProviderSessionId(conversation.into()),
-            vendor_turn: vendor_turn.into(),
-            vendor_event: Some(format!("evt-{vendor_turn}")),
+            conversation: api::ProviderSessionId(input.conversation.into()),
+            vendor_turn: input.vendor_turn.into(),
+            vendor_event: Some(format!("evt-{}", input.vendor_turn)),
             machine_id: None,
-            source_ref: Some(format!("secode-event:{vendor_turn}")),
+            source_ref: Some(format!("secode-event:{}", input.vendor_turn)),
             source_cli: "secode".into(),
             nesting: None,
-            role,
-            occurred_at: api::UnixMicros(turn_occurred_micros(vendor_turn)),
+            role: input.role,
+            occurred_at: api::UnixMicros(turn_occurred_micros(input.vendor_turn)),
             content: api::BoundedText {
-                text: text.into(),
-                utf8_bytes: text.len() as u64,
+                text: input.text.into(),
+                utf8_bytes: input.text.len() as u64,
                 complete: true,
                 omitted_bytes: Some(0),
             },
-            source_sha256: api::Sha256(Sha256::digest(text.as_bytes()).into()),
-            idempotency_key: api::IdempotencyKey(key.into()),
+            source_sha256: api::Sha256(Sha256::digest(input.text.as_bytes()).into()),
+            idempotency_key: api::IdempotencyKey(input.key.into()),
         };
         self.capture_with(host, session, generation, turn)
     }
@@ -506,17 +506,18 @@ impl Judge {
         session: &api::BoundSession,
         generation: api::Generation,
         turn: api::CapturedTurn,
-    ) -> Result<api::Receipt<api::EventRef>, api::ApiError> {
+    ) -> Result<api::Receipt<api::EventRef>, Box<api::ApiError>> {
         let options = call_options(generation, Duration::from_secs(20));
         self.runtime
             .block_on(host.capture_turn(session, turn, options))
+            .map_err(Box::new)
     }
     pub(super) fn continuity(
         &self,
         host: &Arc<dyn api::Host>,
         session: &api::BoundSession,
         generation: api::Generation,
-    ) -> Result<api::SessionContext, api::ApiError> {
+    ) -> Result<api::SessionContext, Box<api::ApiError>> {
         let request = api::ContinuityRequest {
             page: api::PageRequest {
                 after: None,
@@ -528,6 +529,7 @@ impl Judge {
         let options = call_options(generation, Duration::from_secs(20));
         self.runtime
             .block_on(host.continuity(session, request, options))
+            .map_err(Box::new)
     }
     pub(super) fn revoke(
         &self,
@@ -535,7 +537,7 @@ impl Judge {
         generation: api::Generation,
         session: &str,
         key: &str,
-    ) -> Result<api::Receipt<api::SessionIdentity>, api::ApiError> {
+    ) -> Result<api::Receipt<api::SessionIdentity>, Box<api::ApiError>> {
         let request = api::RevokeRequest {
             session: api::SessionId(session.into()),
             reason: api::EndReason::Replaced,
@@ -545,6 +547,7 @@ impl Judge {
         let options = call_options(generation, Duration::from_secs(20));
         self.runtime
             .block_on(host.revoke_session(&authority, request, options))
+            .map_err(Box::new)
     }
     pub(super) fn drain_close(
         &self,
