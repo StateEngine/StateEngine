@@ -18,17 +18,189 @@ enum StopClient {
     Cancelled,
     Waiting,
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+async fn terminate_stop_child(
+    child: &mut crate::recovery_judge::OwnedChild,
+    machine: &se_types::MachineId,
+    cancelled: bool,
+) -> Check {
+    let observed = match se_proc::NativeProcessRuntime::read_process(
+        machine.clone(),
+        se_proc::ProcessId(child.0.id()),
+    )
+    .map_err(|error| format!("read exact owned stop client: {error:?}"))?
+    {
+        se_proc::ProcessRead::Present(value) => value,
+        other => return Err(format!("stop client is not natively live: {other:?}").into()),
+    };
+    assert_eq!(observed.identity.image, std::env::current_exe()?);
+    if cancelled {
+        let mut input = child
+            .0
+            .stdin
+            .take()
+            .ok_or("stop client cancellation channel")?;
+        input.write_all(b"x")?;
+        drop(input);
+        let status = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(status) = child.0.try_wait()? {
+                    return Ok::<_, std::io::Error>(status);
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .map_err(|_| "native stop client cancellation did not return within three seconds")??;
+        assert!(
+            status.success(),
+            "cancelled stop client did not preserve its bounded refusal"
+        );
+    } else {
+        child.0.kill()?;
+        assert!(!child.0.wait()?.success());
+    }
+    wait_native_exit(&observed.identity)
+}
+
+fn verify_pending_drain_reply(
+    client: std::thread::JoinHandle<Result<se_host::client::endpoint::RuntimeStopReply, String>>,
+    outcome: &se_host::HostShutdown,
+) -> Check {
+    let reply = client
+        .join()
+        .map_err(|_| "stop client panicked")?
+        .map_err(|e| format!("pending drain returned untyped stop I/O: {e}"))?;
+    let RuntimeStopOutcome::Facts {
+        achieved, pending, ..
+    } = reply.outcome
+    else {
+        return Err("pending drain omitted achieved/pending facts".into());
+    };
+    assert!(achieved.contains(&se_host::client::endpoint::RuntimeStopFact::WriterJoined));
+    assert!(!achieved.contains(&se_host::client::endpoint::RuntimeStopFact::ResourcesClosed));
+    assert!(!achieved.contains(&se_host::client::endpoint::RuntimeStopFact::LeaseReleased));
+    assert!(
+        !pending.is_empty(),
+        "busy checkpoint claimed no pending obligations"
+    );
+    assert!(!outcome.pending.is_empty(), "busy drain was reported clean");
+    let storage = match &outcome.storage {
+        Read::Present { value } => value,
+        other => return Err(format!("actual busy drain report was lost: {other:?}").into()),
+    };
+    assert!(storage.writer_joined);
+    assert!(!storage.pending.is_empty());
+    assert!(
+        !matches!(storage.backup, Read::Present { .. }),
+        "busy checkpoint fabricated a clean-close backup"
+    );
+    Ok(())
+}
+
+fn spawn_waiting_stop_client(
+    endpoint: se_host::EndpointRecord,
+    credential: &Secret,
+) -> Result<
+    std::thread::JoinHandle<Result<se_host::client::endpoint::RuntimeStopReply, String>>,
+    Box<dyn std::error::Error>,
+> {
+    let client_options = options();
+    let client_key = copy_secret(credential)?;
+    Ok(std::thread::spawn(move || {
+        let until = se_types::UnixMicros::new(
+            (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_micros()
+                + 10_000_000) as u64,
+        )
+        .map_err(|e| e.to_string())?;
+        se_host::client::BlockingIpcClient::stop(
+            &endpoint,
+            &client_key,
+            key("shutdown-failure-path").map_err(|e| e.to_string())?,
+            until,
+            &client_options,
+        )
+        .map_err(|e| e.to_string())
+    }))
+}
+
+async fn verify_shutdown_outcome(
+    f: &Fixture,
+    exit: se_host::HostServeExit,
+    disconnect: bool,
+    mut client: Option<
+        std::thread::JoinHandle<Result<se_host::client::endpoint::RuntimeStopReply, String>>,
+    >,
+    competing: Option<rusqlite::Connection>,
+) -> Check {
+    let mut drain_options = options();
+    if !disconnect {
+        // Exceed the fixture's two-second native SQLite busy timeout so
+        // this control observes a returned busy checkpoint, not a race
+        // to start the drain before an exhausted admission deadline.
+        drain_options.timeout = Duration::from_secs(3);
+    }
+    let deadline = se_host::client::lease::Deadline::from_options(&drain_options)?;
+    let mut outcome = exit.finish(&deadline).await;
+    assert!(
+        outcome.transport_closed,
+        "transport remained open: {:?}",
+        outcome.pending
+    );
+    assert!(
+        outcome.endpoint_retired,
+        "endpoint remained published: {:?}",
+        outcome.pending
+    );
+    assert!(
+        !f.options
+            .state_directory
+            .join("endpoint.json")
+            .try_exists()?
+    );
+    if disconnect {
+        assert!(
+            !outcome.errors.is_empty(),
+            "failed reply lost its typed error"
+        );
+        assert!(
+            outcome
+                .pending
+                .iter()
+                .any(|value| value.to_lowercase().contains("reply")),
+            "failed reply is not a pending fact: {:?}",
+            outcome.pending
+        );
+    } else {
+        verify_pending_drain_reply(client.take().ok_or("stop client")?, &outcome)?;
+    }
+    if let Some(database) = competing {
+        database.execute_batch("ROLLBACK")?;
+        drop(database);
+        let resumed = outcome.runtime.drain_storage(&bound()?).await?;
+        assert!(
+            resumed.pending.is_empty(),
+            "actual released writer did not allow drain retry: {:?}",
+            resumed.pending
+        );
+    }
+    drop(outcome);
+    drop(Lease::acquire(
+        &f.options.state_directory,
+        LeaseMode::Host,
+        Some(f.store.clone()),
+    )?);
+    Ok(())
+}
+
 fn run(control: StopClient) -> Check {
     let disconnect = !matches!(control, StopClient::Waiting);
     let cancelled = matches!(control, StopClient::Cancelled);
     let f = std::mem::ManuallyDrop::new(Fixture::new()?);
     let (direct, lease) = f.direct()?;
-    drop(direct);
-    drop(lease);
+    drop((direct, lease));
     let machine = route::identity::ensure_machine_identity(&f.options.state_directory)?;
     let credential = secret()?;
     publish(&f, "credential", credential.expose())?;
@@ -60,29 +232,10 @@ fn run(control: StopClient) -> Check {
         } else {
             None
         };
-        let client_options = options();
-        let client_key = copy_secret(&credential)?;
-        let mut client = if disconnect {
+        let client = if disconnect {
             None
         } else {
-            Some(std::thread::spawn(move || {
-                let until = se_types::UnixMicros::new(
-                    (std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_err(|e| e.to_string())?
-                        .as_micros()
-                        + 10_000_000) as u64,
-                )
-                .map_err(|e| e.to_string())?;
-                se_host::client::BlockingIpcClient::stop(
-                    &endpoint,
-                    &client_key,
-                    key("shutdown-failure-path").map_err(|e| e.to_string())?,
-                    until,
-                    &client_options,
-                )
-                .map_err(|e| e.to_string())
-            }))
+            Some(spawn_waiting_stop_client(endpoint, &credential)?)
         };
         let exit = tokio::time::timeout(Duration::from_secs(10), runtime.serve(listener))
             .await
@@ -92,135 +245,9 @@ fn run(control: StopClient) -> Check {
             "failure control has no authenticated stop"
         );
         if let Some(child) = process.as_mut() {
-            let observed = match se_proc::NativeProcessRuntime::read_process(
-                machine.clone(),
-                se_proc::ProcessId(child.0.id()),
-            )
-            .map_err(|error| format!("read exact owned stop client: {error:?}"))?
-            {
-                se_proc::ProcessRead::Present(value) => value,
-                other => return Err(format!("stop client is not natively live: {other:?}").into()),
-            };
-            assert_eq!(observed.identity.image, std::env::current_exe()?);
-            if cancelled {
-                let mut input = child
-                    .0
-                    .stdin
-                    .take()
-                    .ok_or("stop client cancellation channel")?;
-                input.write_all(b"x")?;
-                drop(input);
-                let status = tokio::time::timeout(Duration::from_secs(3), async {
-                    loop {
-                        if let Some(status) = child.0.try_wait()? {
-                            return Ok::<_, std::io::Error>(status);
-                        }
-                        tokio::time::sleep(Duration::from_millis(5)).await;
-                    }
-                })
-                .await
-                .map_err(
-                    |_| "native stop client cancellation did not return within three seconds",
-                )??;
-                assert!(
-                    status.success(),
-                    "cancelled stop client did not preserve its bounded refusal"
-                );
-            } else {
-                child.0.kill()?;
-                assert!(!child.0.wait()?.success());
-            }
-            wait_native_exit(&observed.identity)?;
+            terminate_stop_child(child, &machine, cancelled).await?;
         }
-        let mut drain_options = options();
-        if !disconnect {
-            // Exceed the fixture's two-second native SQLite busy timeout so
-            // this control observes a returned busy checkpoint, not a race
-            // to start the drain before an exhausted admission deadline.
-            drain_options.timeout = Duration::from_secs(3);
-        }
-        let deadline = se_host::client::lease::Deadline::from_options(&drain_options)?;
-        let mut outcome = exit.finish(&deadline).await;
-        assert!(
-            outcome.transport_closed,
-            "transport remained open: {:?}",
-            outcome.pending
-        );
-        assert!(
-            outcome.endpoint_retired,
-            "endpoint remained published: {:?}",
-            outcome.pending
-        );
-        assert!(
-            !f.options
-                .state_directory
-                .join("endpoint.json")
-                .try_exists()?
-        );
-        if disconnect {
-            assert!(
-                !outcome.errors.is_empty(),
-                "failed reply lost its typed error"
-            );
-            assert!(
-                outcome
-                    .pending
-                    .iter()
-                    .any(|value| value.to_lowercase().contains("reply")),
-                "failed reply is not a pending fact: {:?}",
-                outcome.pending
-            );
-        } else {
-            let reply = client
-                .take()
-                .ok_or("stop client")?
-                .join()
-                .map_err(|_| "stop client panicked")?
-                .map_err(|e| format!("pending drain returned untyped stop I/O: {e}"))?;
-            let RuntimeStopOutcome::Facts {
-                achieved, pending, ..
-            } = reply.outcome
-            else {
-                return Err("pending drain omitted achieved/pending facts".into());
-            };
-            assert!(achieved.contains(&se_host::client::endpoint::RuntimeStopFact::WriterJoined));
-            assert!(
-                !achieved.contains(&se_host::client::endpoint::RuntimeStopFact::ResourcesClosed)
-            );
-            assert!(!achieved.contains(&se_host::client::endpoint::RuntimeStopFact::LeaseReleased));
-            assert!(
-                !pending.is_empty(),
-                "busy checkpoint claimed no pending obligations"
-            );
-            assert!(!outcome.pending.is_empty(), "busy drain was reported clean");
-            let storage = match &outcome.storage {
-                Read::Present { value } => value,
-                other => return Err(format!("actual busy drain report was lost: {other:?}").into()),
-            };
-            assert!(storage.writer_joined);
-            assert!(!storage.pending.is_empty());
-            assert!(
-                !matches!(storage.backup, Read::Present { .. }),
-                "busy checkpoint fabricated a clean-close backup"
-            );
-        }
-        if let Some(database) = competing {
-            database.execute_batch("ROLLBACK")?;
-            drop(database);
-            let resumed = outcome.runtime.drain_storage(&bound()?).await?;
-            assert!(
-                resumed.pending.is_empty(),
-                "actual released writer did not allow drain retry: {:?}",
-                resumed.pending
-            );
-        }
-        drop(outcome);
-        drop(Lease::acquire(
-            &f.options.state_directory,
-            LeaseMode::Host,
-            Some(f.store.clone()),
-        )?);
-        Ok::<(), Box<dyn std::error::Error>>(())
+        verify_shutdown_outcome(&f, exit, disconnect, client, competing).await
     })?;
     println!(
         "PASS {}: shared shutdown retired the real endpoint and transport with truthful pending facts",

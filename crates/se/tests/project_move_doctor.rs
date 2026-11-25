@@ -193,26 +193,16 @@ fn event_id(stdout: &str) -> Result<&str, Box<dyn Error>> {
         .ok_or_else(|| err("event line has no id"))
 }
 
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-fn move_replays_the_retained_receipt_on_the_same_request_key() -> Check {
-    se_proc::initialize_file_creation_owner()?;
-    let fixture = Fixture::new()?;
-    let home = &fixture.options.state_directory;
-    let original = fixture.home.join("replay repository");
-    let moved = fixture.home.join("replayed repository");
-    std::fs::create_dir(&original)?;
-    git(&original, &["init", "-q", "-b", "main", "."])?;
-    git(&original, &["config", "user.email", "se@stateengine.local"])?;
-    git(&original, &["config", "user.name", "SE"])?;
-    std::fs::write(original.join("note.txt"), "replayed\n")?;
-    git(&original, &["add", "."])?;
-    git(&original, &["commit", "-qm", "base"])?;
-    let output = command(home, &original, true, None)
-        .args(["init", "--name", "Replayer"])
+fn init_git_project(home: &Path, root: &Path, name: &str, note: &str) -> Check {
+    std::fs::create_dir(root)?;
+    git(root, &["init", "-q", "-b", "main", "."])?;
+    git(root, &["config", "user.email", "se@stateengine.local"])?;
+    git(root, &["config", "user.name", "SE"])?;
+    std::fs::write(root.join("note.txt"), note)?;
+    git(root, &["add", "."])?;
+    git(root, &["commit", "-qm", "base"])?;
+    let output = command(home, root, true, None)
+        .args(["init", "--name", name])
         .output()?;
     assert!(
         output.status.success(),
@@ -220,19 +210,64 @@ fn move_replays_the_retained_receipt_on_the_same_request_key() -> Check {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    std::fs::rename(&original, &moved)?;
-    let moved_str = moved.to_str().ok_or("moved root is not UTF-8")?;
-    let key = "se-fh07-replay-key-1";
-    let first = command(home, &moved, false, Some("Replayer"))
-        .args(["project", "move", moved_str, "--key", key])
+    Ok(())
+}
+
+fn move_ok(
+    home: &Path,
+    cwd: &Path,
+    project: &str,
+    target: &Path,
+    key: &str,
+    label: &str,
+) -> Result<String, Box<dyn Error>> {
+    let target_str = target.to_str().ok_or("target root is not UTF-8")?;
+    let output = command(home, cwd, false, Some(project))
+        .args(["project", "move", target_str, "--key", key])
         .output()?;
     assert!(
-        first.status.success(),
-        "first move refused: {} {}",
-        String::from_utf8_lossy(&first.stdout),
-        String::from_utf8_lossy(&first.stderr)
+        output.status.success(),
+        "{label}: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
-    let first_stdout = String::from_utf8(first.stdout)?;
+    Ok(String::from_utf8(output.stdout)?)
+}
+
+fn move_refused(
+    home: &Path,
+    cwd: &Path,
+    project: &str,
+    target: &Path,
+    key: &str,
+    expected: &str,
+    label: &str,
+) -> Check {
+    let target_str = target.to_str().ok_or("target root is not UTF-8")?;
+    let output = command(home, cwd, false, Some(project))
+        .args(["project", "move", target_str, "--key", key])
+        .output()?;
+    assert!(!output.status.success(), "{label}");
+    let rendered = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(rendered.contains(expected), "{rendered}");
+    Ok(())
+}
+
+#[test]
+fn move_replays_the_retained_receipt_on_the_same_request_key() -> Check {
+    se_proc::initialize_file_creation_owner()?;
+    let fixture = Fixture::new()?;
+    let home = &fixture.options.state_directory;
+    let original = fixture.home.join("replay repository");
+    let moved = fixture.home.join("replayed repository");
+    init_git_project(home, &original, "Replayer", "replayed\n")?;
+    std::fs::rename(&original, &moved)?;
+    let key = "se-fh07-replay-key-1";
+    let first_stdout = move_ok(home, &moved, "Replayer", &moved, key, "first move refused")?;
     assert!(
         first_stdout.contains("Project Replayer moved from"),
         "{first_stdout}"
@@ -240,16 +275,14 @@ fn move_replays_the_retained_receipt_on_the_same_request_key() -> Check {
     let first_event = event_id(&first_stdout)?;
     // Same key, same target: the move already committed, so the retry returns
     // the original receipt instead of refusing the present folder as a copy.
-    let replay = command(home, &moved, false, Some("Replayer"))
-        .args(["project", "move", moved_str, "--key", key])
-        .output()?;
-    assert!(
-        replay.status.success(),
-        "same-key replay refused: {} {}",
-        String::from_utf8_lossy(&replay.stdout),
-        String::from_utf8_lossy(&replay.stderr)
-    );
-    let replay_stdout = String::from_utf8(replay.stdout)?;
+    let replay_stdout = move_ok(
+        home,
+        &moved,
+        "Replayer",
+        &moved,
+        key,
+        "same-key replay refused",
+    )?;
     assert!(
         replay_stdout.contains("Project Replayer moved from"),
         "{replay_stdout}"
@@ -264,82 +297,49 @@ fn move_replays_the_retained_receipt_on_the_same_request_key() -> Check {
     // original receipt without that folder remaining.
     let again = fixture.home.join("moved on repository");
     std::fs::rename(&moved, &again)?;
-    let again_str = again.to_str().ok_or("again root is not UTF-8")?;
-    let second_move = command(home, &again, false, Some("Replayer"))
-        .args([
-            "project",
-            "move",
-            again_str,
-            "--key",
-            "se-fh07-replay-key-3",
-        ])
-        .output()?;
-    assert!(
-        second_move.status.success(),
-        "move on refused: {} {}",
-        String::from_utf8_lossy(&second_move.stdout),
-        String::from_utf8_lossy(&second_move.stderr)
-    );
-    let replay_after = command(home, &again, false, Some("Replayer"))
-        .args(["project", "move", moved_str, "--key", key])
-        .output()?;
-    assert!(
-        replay_after.status.success(),
-        "replay of a retained key must not require its target folder to remain: {} {}",
-        String::from_utf8_lossy(&replay_after.stdout),
-        String::from_utf8_lossy(&replay_after.stderr)
-    );
+    move_ok(
+        home,
+        &again,
+        "Replayer",
+        &again,
+        "se-fh07-replay-key-3",
+        "move on refused",
+    )?;
+    let replay_after = move_ok(
+        home,
+        &again,
+        "Replayer",
+        &moved,
+        key,
+        "replay of a retained key must not require its target folder to remain",
+    )?;
     assert_eq!(
-        event_id(&String::from_utf8(replay_after.stdout)?)?,
+        event_id(&replay_after)?,
         first_event,
         "the replay must return the committed receipt after the repository moved on"
     );
     // The same key against a different target is a collision, refused as such.
     let other = fixture.home.join("somewhere else");
     std::fs::create_dir(&other)?;
-    let collision = command(home, &other, false, Some("Replayer"))
-        .args([
-            "project",
-            "move",
-            other.to_str().ok_or("other root is not UTF-8")?,
-            "--key",
-            key,
-        ])
-        .output()?;
-    assert!(!collision.status.success(), "key collision must refuse");
-    let collision_rendered = format!(
-        "{}{}",
-        String::from_utf8_lossy(&collision.stdout),
-        String::from_utf8_lossy(&collision.stderr)
-    );
-    assert!(
-        collision_rendered.contains("retained for a different move target"),
-        "{collision_rendered}"
-    );
+    move_refused(
+        home,
+        &other,
+        "Replayer",
+        &other,
+        key,
+        "retained for a different move target",
+        "key collision must refuse",
+    )?;
     // A different key still refuses the copy: the target folder is present.
-    let copy = command(home, &again, false, Some("Replayer"))
-        .args([
-            "project",
-            "move",
-            again_str,
-            "--key",
-            "se-fh07-replay-key-2",
-        ])
-        .output()?;
-    assert!(
-        !copy.status.success(),
-        "a second key must refuse the present folder"
-    );
-    let copy_rendered = format!(
-        "{}{}",
-        String::from_utf8_lossy(&copy.stdout),
-        String::from_utf8_lossy(&copy.stderr)
-    );
-    assert!(
-        copy_rendered.contains("the original folder still exists at"),
-        "{copy_rendered}"
-    );
-    Ok(())
+    move_refused(
+        home,
+        &again,
+        "Replayer",
+        &again,
+        "se-fh07-replay-key-2",
+        "the original folder still exists at",
+        "a second key must refuse the present folder",
+    )
 }
 
 #[test]
@@ -419,10 +419,6 @@ fn move_refuses_an_unreadable_original_folder_instead_of_copying() -> Check {
 
 #[test]
 #[cfg(unix)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn move_replay_identifies_a_gone_target_spelled_through_a_folder_symlink() -> Check {
     use std::os::unix::fs::symlink;
     se_proc::initialize_file_creation_owner()?;
@@ -431,145 +427,94 @@ fn move_replay_identifies_a_gone_target_spelled_through_a_folder_symlink() -> Ch
     let original = fixture.home.join("original repository");
     let moved = fixture.home.join("moved repository");
     let again = fixture.home.join("moved on repository");
-    std::fs::create_dir(&original)?;
-    git(&original, &["init", "-q", "-b", "main", "."])?;
-    git(&original, &["config", "user.email", "se@stateengine.local"])?;
-    git(&original, &["config", "user.name", "SE"])?;
-    std::fs::write(original.join("note.txt"), "symlink replay\n")?;
-    git(&original, &["add", "."])?;
-    git(&original, &["commit", "-qm", "base"])?;
-    let output = command(home, &original, true, None)
-        .args(["init", "--name", "Shortcut"])
-        .output()?;
-    assert!(
-        output.status.success(),
-        "init refused: {} {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    init_git_project(home, &original, "Shortcut", "symlink replay\n")?;
     std::fs::rename(&original, &moved)?;
     let key = "se-fh07-symlink-replay-key";
-    let moved_str = moved.to_str().ok_or("moved root is not UTF-8")?;
-    let output = command(home, &moved, false, Some("Shortcut"))
-        .args(["project", "move", moved_str, "--key", key])
-        .output()?;
-    assert!(
-        output.status.success(),
-        "move refused: {} {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let first_stdout = String::from_utf8(output.stdout)?;
+    let first_stdout = move_ok(home, &moved, "Shortcut", &moved, key, "move refused")?;
     let first_event = event_id(&first_stdout)?;
     // While the target is still live, the spelling through a folder symlink
     // canonicalizes to the committed target and replays.
     let link = fixture.home.join("shortcut");
     symlink(&fixture.home, &link)?;
     let linked = link.join("moved repository");
-    let linked_str = linked.to_str().ok_or("linked root is not UTF-8")?;
-    let pre = command(home, &moved, false, Some("Shortcut"))
-        .args(["project", "move", linked_str, "--key", key])
-        .output()?;
-    assert!(
-        pre.status.success(),
-        "symlink-spelled replay of a live target refused: {} {}",
-        String::from_utf8_lossy(&pre.stdout),
-        String::from_utf8_lossy(&pre.stderr)
-    );
-    assert_eq!(event_id(&String::from_utf8(pre.stdout)?)?, first_event);
+    let pre = move_ok(
+        home,
+        &moved,
+        "Shortcut",
+        &linked,
+        key,
+        "symlink-spelled replay of a live target refused",
+    )?;
+    assert_eq!(event_id(&pre)?, first_event);
     // An alias pointing directly at the moved folder canonicalizes to the
     // committed target while the folder is still live.
     let alias = fixture.home.join("alias");
     symlink(&moved, &alias)?;
-    let alias_str = alias.to_str().ok_or("alias is not UTF-8")?;
-    let alias_pre = command(home, &moved, false, Some("Shortcut"))
-        .args(["project", "move", alias_str, "--key", key])
-        .output()?;
-    assert!(
-        alias_pre.status.success(),
-        "direct-alias replay of a live target refused: {} {}",
-        String::from_utf8_lossy(&alias_pre.stdout),
-        String::from_utf8_lossy(&alias_pre.stderr)
-    );
-    assert_eq!(
-        event_id(&String::from_utf8(alias_pre.stdout)?)?,
-        first_event
-    );
+    let alias_pre = move_ok(
+        home,
+        &moved,
+        "Shortcut",
+        &alias,
+        key,
+        "direct-alias replay of a live target refused",
+    )?;
+    assert_eq!(event_id(&alias_pre)?, first_event);
     // The repository moves on under a new key; the committed target is gone,
     // but the same request spelled through the folder symlink must still
     // identify it and return the retained receipt.
     std::fs::rename(&moved, &again)?;
-    let replay = command(home, &again, false, Some("Shortcut"))
-        .args(["project", "move", linked_str, "--key", key])
-        .output()?;
-    assert!(
-        replay.status.success(),
-        "a gone target spelled through a folder symlink must replay its retained receipt: {} {}",
-        String::from_utf8_lossy(&replay.stdout),
-        String::from_utf8_lossy(&replay.stderr)
-    );
+    let replay = move_ok(
+        home,
+        &again,
+        "Shortcut",
+        &linked,
+        key,
+        "a gone target spelled through a folder symlink must replay its retained receipt",
+    )?;
     assert_eq!(
-        event_id(&String::from_utf8(replay.stdout)?)?,
+        event_id(&replay)?,
         first_event,
         "the symlink-spelled replay must return the committed receipt, not a new event"
     );
     // The direct alias now dangles: the retained key must still resolve
     // through it to the committed target.
-    let alias_replay = command(home, &again, false, Some("Shortcut"))
-        .args(["project", "move", alias_str, "--key", key])
-        .output()?;
-    assert!(
-        alias_replay.status.success(),
-        "a dangling direct alias must replay its retained receipt: {} {}",
-        String::from_utf8_lossy(&alias_replay.stdout),
-        String::from_utf8_lossy(&alias_replay.stderr)
-    );
+    let alias_replay = move_ok(
+        home,
+        &again,
+        "Shortcut",
+        &alias,
+        key,
+        "a dangling direct alias must replay its retained receipt",
+    )?;
     assert_eq!(
-        event_id(&String::from_utf8(alias_replay.stdout)?)?,
+        event_id(&alias_replay)?,
         first_event,
         "the dangling-alias replay must return the committed receipt, not a new event"
     );
     // A different gone folder behind the same symlink is a different target.
     let other = link.join("never moved here");
-    let other_str = other.to_str().ok_or("other root is not UTF-8")?;
-    let refused = command(home, &again, false, Some("Shortcut"))
-        .args(["project", "move", other_str, "--key", key])
-        .output()?;
-    assert!(
-        !refused.status.success(),
-        "a different gone target must refuse"
-    );
-    let rendered = format!(
-        "{}{}",
-        String::from_utf8_lossy(&refused.stdout),
-        String::from_utf8_lossy(&refused.stderr)
-    );
-    assert!(
-        rendered.contains("retained for a different move target"),
-        "{rendered}"
-    );
+    move_refused(
+        home,
+        &again,
+        "Shortcut",
+        &other,
+        key,
+        "retained for a different move target",
+        "a different gone target must refuse",
+    )?;
     // A dangling alias to a different gone folder still refuses.
     let side = fixture.home.join("side repository");
     std::fs::create_dir(&side)?;
     let side_alias = fixture.home.join("side alias");
     symlink(&side, &side_alias)?;
     std::fs::remove_dir(&side)?;
-    let side_alias_str = side_alias.to_str().ok_or("side alias is not UTF-8")?;
-    let side_refused = command(home, &again, false, Some("Shortcut"))
-        .args(["project", "move", side_alias_str, "--key", key])
-        .output()?;
-    assert!(
-        !side_refused.status.success(),
-        "a different dangling target must refuse"
-    );
-    let side_rendered = format!(
-        "{}{}",
-        String::from_utf8_lossy(&side_refused.stdout),
-        String::from_utf8_lossy(&side_refused.stderr)
-    );
-    assert!(
-        side_rendered.contains("retained for a different move target"),
-        "{side_rendered}"
-    );
-    Ok(())
+    move_refused(
+        home,
+        &again,
+        "Shortcut",
+        &side_alias,
+        key,
+        "retained for a different move target",
+        "a different dangling target must refuse",
+    )
 }

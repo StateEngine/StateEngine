@@ -148,11 +148,87 @@ fn retained_client(
     }))
 }
 
+struct LostReplyCx<'a> {
+    f: &'a Fixture,
+    router: &'a se_host::HostedRouter,
+    endpoint: &'a se_host::EndpointRecord,
+    session_key: &'a Secret,
+    reader: &'a SqliteReader,
+}
+
+async fn run_late_and_conflict_checks(
+    cx: &LostReplyCx<'_>,
+    listener: &mut se_host::HostedListener,
+    op: &se_core::ops::AnyOp,
+) -> Result<
+    (se_types::Result<se_core::ops::AnyOutput>, serde_json::Value),
+    Box<dyn std::error::Error>,
+> {
+    let mut late_op = op.clone();
+    let se_core::ops::AnyOp::WorkingStateSet(ref mut input) = late_op else {
+        return Err("wrong late family".into());
+    };
+    input.expect = se_core::commit::ExpectedRevision::Revision(1);
+    input.idempotency_key = key("late-host-reply")?;
+    input.text = "a late acknowledged effect".into();
+    let late_client = client(cx.endpoint, cx.session_key, late_op, 1_000)?;
+    let mut exchange = receive(listener, cx.router).await?;
+    let late_commit = cx
+        .router
+        .execute_call(exchange.take_call()?, &bound()?)
+        .await?;
+    let late_fact = serde_json::to_value(&late_commit.output)?;
+    // Delay only delivery, after a real durable receipt; neither the store
+    // nor the native clock is replaced by a fixture.
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    drop(exchange.reply(Ok(late_commit), &bound()?).await);
+    let late = late_client
+        .join()
+        .map_err(|_| "late-reply client panicked")?;
+
+    // A complete authoritative refusal is not an unknown transport effect.
+    let mut conflict_op = op.clone();
+    let se_core::ops::AnyOp::WorkingStateSet(ref mut input) = conflict_op else {
+        return Err("wrong generated family".into());
+    };
+    input.expect = se_core::commit::ExpectedRevision::Revision(999);
+    input.idempotency_key = key("definite-host-conflict")?;
+    let refused_client = client(cx.endpoint, cx.session_key, conflict_op, 10_000)?;
+    let mut exchange = receive(listener, cx.router).await?;
+    let refused = cx
+        .router
+        .execute_call(exchange.take_call()?, &bound()?)
+        .await
+        .err()
+        .ok_or("invalid revision committed")?;
+    let authoritative = refused.code();
+    drop(exchange.reply(Err(refused), &bound()?).await?);
+    let refusal = refused_client
+        .join()
+        .map_err(|_| "refusal client panicked")?
+        .err()
+        .ok_or("authoritative refusal disappeared")?;
+    assert_eq!(refusal.code(), authoritative);
+    let mut snapshot = cx.reader.snapshot(cx.f.self_scope(&cx.f.a))?;
+    assert_eq!(
+        present(snapshot.working_state(cx.f.a.clone())?)?
+            .revision
+            .value
+            .get(),
+        2
+    );
+    let late_receipt = present(
+        snapshot.operation_receipt(Actor::Agent(cx.f.a.clone()), key("late-host-reply")?)?,
+    )?;
+    assert_eq!(
+        late_receipt.primary_event.to_string(),
+        late_fact["event_id"].as_str().ok_or("late event absent")?
+    );
+    snapshot.close()?;
+    Ok((late, late_fact))
+}
+
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn lost_post_commit_reply_keeps_the_generated_key_and_replay_resolves_one_effect() -> Check {
     se_proc::initialize_file_creation_owner()?;
     let initialized = se_host::initialize_host_process()?;
@@ -218,39 +294,8 @@ fn lost_post_commit_reply_keeps_the_generated_key_and_replay_resolves_one_effect
         assert_eq!(replay["state"], "replayed");
         assert_eq!(replay["event_id"], first["event_id"]);
         assert_eq!(replay["revision"], 1);
-
-        let mut late_op = op.clone();
-        let se_core::ops::AnyOp::WorkingStateSet(ref mut input) = late_op else { return Err("wrong late family".into()); };
-        input.expect = se_core::commit::ExpectedRevision::Revision(1);
-        input.idempotency_key = key("late-host-reply")?;
-        input.text = "a late acknowledged effect".into();
-        let late_client = client(&endpoint, &session_key, late_op, 1_000)?;
-        let mut exchange = receive(&mut listener, &router).await?;
-        let late_commit = router.execute_call(exchange.take_call()?, &bound()?).await?;
-        let late_fact = serde_json::to_value(&late_commit.output)?;
-        // Delay only delivery, after a real durable receipt; neither the store
-        // nor the native clock is replaced by a fixture.
-        tokio::time::sleep(Duration::from_millis(1_200)).await;
-        drop(exchange.reply(Ok(late_commit), &bound()?).await);
-        let late = late_client.join().map_err(|_| "late-reply client panicked")?;
-
-        // A complete authoritative refusal is not an unknown transport effect.
-        let mut conflict_op = op.clone();
-        let se_core::ops::AnyOp::WorkingStateSet(ref mut input) = conflict_op else { return Err("wrong generated family".into()); };
-        input.expect = se_core::commit::ExpectedRevision::Revision(999);
-        input.idempotency_key = key("definite-host-conflict")?;
-        let refused_client = client(&endpoint, &session_key, conflict_op, 10_000)?;
-        let mut exchange = receive(&mut listener, &router).await?;
-        let refused = router.execute_call(exchange.take_call()?, &bound()?).await.err().ok_or("invalid revision committed")?;
-        let authoritative = refused.code();
-        drop(exchange.reply(Err(refused), &bound()?).await?);
-        let refusal = refused_client.join().map_err(|_| "refusal client panicked")?.err().ok_or("authoritative refusal disappeared")?;
-        assert_eq!(refusal.code(), authoritative);
-        let mut snapshot = reader.snapshot(f.self_scope(&f.a))?;
-        assert_eq!(present(snapshot.working_state(f.a.clone())?)?.revision.value.get(), 2);
-        let late_receipt = present(snapshot.operation_receipt(Actor::Agent(f.a.clone()), key("late-host-reply")?)?)?;
-        assert_eq!(late_receipt.primary_event.to_string(), late_fact["event_id"].as_str().ok_or("late event absent")?);
-        snapshot.close()?;
+        let cx = LostReplyCx { f: &f, router: &router, endpoint: &endpoint, session_key: &session_key, reader: &reader };
+        let (late, late_fact) = run_late_and_conflict_checks(&cx, &mut listener, &op).await?;
         drop(router);
         let finished = se_host::HostServeExit { runtime, listener, stop:None, failure:None, failed_connections:Some(0), last_connection_error:None }.finish(&bound()?).await;
         assert!(finished.transport_closed && finished.endpoint_retired, "fixture did not retire its exact listener");

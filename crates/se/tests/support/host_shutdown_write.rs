@@ -17,13 +17,220 @@ pub fn control() -> Check {
     run(true)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-fn run(serial: bool) -> Check {
-    let f = std::mem::ManuallyDrop::new(Fixture::new()?);
-    println!("shutdown_write fixture={}", f.home.display());
+type WriteReply = se_types::Result<se_host::OperationOutput>;
+
+struct IdleClient {
+    close: std::sync::mpsc::SyncSender<()>,
+    handle: std::thread::JoinHandle<Result<(), String>>,
+    connected: tokio::sync::oneshot::Receiver<()>,
+}
+
+struct WriteClient {
+    send: std::sync::mpsc::SyncSender<()>,
+    handle: std::thread::JoinHandle<()>,
+    connected: tokio::sync::oneshot::Receiver<()>,
+    reply: tokio::sync::oneshot::Receiver<WriteReply>,
+}
+
+fn spawn_idle_client(
+    endpoint: se_host::EndpointRecord,
+    credential: &Secret,
+) -> Result<IdleClient, Box<dyn std::error::Error>> {
+    let (idle_ready, idle_connected) = tokio::sync::oneshot::channel();
+    let (close_idle, idle_closed) = std::sync::mpsc::sync_channel(1);
+    let idle_credential = copy_secret(credential)?;
+    let idle = std::thread::spawn(move || -> Result<(), String> {
+        let client = BlockingIpcClient::connect_authenticated(
+            &endpoint,
+            ClientCredential::Machine(idle_credential),
+            NonZeroU32::new(1024 * 1024).ok_or("reply budget")?,
+            &options(),
+        )
+        .map_err(|e| e.to_string())?;
+        idle_ready.send(()).map_err(|_| "idle readiness closed")?;
+        idle_closed
+            .recv_timeout(Duration::from_secs(20))
+            .map_err(|e| e.to_string())?;
+        drop(client);
+        Ok(())
+    });
+    Ok(IdleClient {
+        close: close_idle,
+        handle: idle,
+        connected: idle_connected,
+    })
+}
+
+fn spawn_write_client(
+    f: &Fixture,
+    endpoint: se_host::EndpointRecord,
+    session_credential: &Secret,
+    generation: se_types::Generation,
+) -> Result<WriteClient, Box<dyn std::error::Error>> {
+    let (ready, connected) = tokio::sync::oneshot::channel();
+    let (send, sending) = std::sync::mpsc::sync_channel(1);
+    let (replied, reply) = tokio::sync::oneshot::channel();
+    let write_credential = copy_secret(session_credential)?;
+    let call = ipc::operation(
+        se_core::ops::AnyOp::MessageSend(se_core::ops::MessageSend {
+            quiet: false,
+            to: Some(f.b.as_str().into()),
+            body: "committed while shutdown owns the reply".into(),
+            kind: Default::default(),
+            refs: vec![],
+            reply_to: None,
+            supersedes: None,
+            work: None,
+            idempotency_key: key(WRITE_KEY)?,
+        }),
+        &se_core::ops::CliSelections {
+            project: Some(f.project.clone()),
+            ..Default::default()
+        },
+        generation,
+    )?;
+    let writer = std::thread::spawn(move || {
+        let result = (|| -> WriteReply {
+            let mut client = BlockingIpcClient::connect_authenticated(
+                &endpoint,
+                ClientCredential::Session(write_credential),
+                positive(1024 * 1024)
+                    .map_err(|e| se_core::scope::unreadable("reply budget", &e.to_string()))?,
+                &options(),
+            )?;
+            ready
+                .send(())
+                .map_err(|_| se_core::scope::unreadable("judge", "readiness receiver closed"))?;
+            sending
+                .recv_timeout(Duration::from_secs(10))
+                .map_err(|e| se_core::scope::unreadable("judge", &e.to_string()))?;
+            client.exchange(call, &options())
+        })();
+        let _ = replied.send(result);
+    });
+    Ok(WriteClient {
+        send,
+        handle: writer,
+        connected,
+        reply,
+    })
+}
+
+async fn wait_for_admission_fence(
+    f: &Fixture,
+    router: &se_host::HostedRouter,
+    generation: se_types::Generation,
+    until: &se_host::client::lease::Deadline,
+) -> Check {
+    // Observe the real admission fence with a harmless metadata read. It
+    // refuses synchronously after fencing; dropped queued reads have no
+    // effects. Release SQLite immediately after observing the actual fence.
+    loop {
+        until.remaining()?;
+        let mut probe = std::pin::pin!(router.execute_call(
+            se_host::RoutedCall::Deferred {
+                admitted: Box::new(se_host::HostedCall {
+                    remote_credential: None,
+                    input: se_host::HostedInput::Operation(se_core::ops::AnyOp::MetaVersion(
+                        se_core::ops::MetaVersion {}
+                    )),
+                    kernel: se_core::dispatch::Kernel::new(se_core::dispatch::CallFacts {
+                        event: fixture::event()?,
+                        message: fixture::message()?,
+                        agent: fixture::agent()?,
+                        profile_event: fixture::event()?,
+                        notification_event: fixture::event()?,
+                        notification_message: fixture::message()?,
+                        occurred_at_us: 1_700_000_000_000_000,
+                        door: Door::Cli,
+                    })?,
+                    admission: Admission {
+                        generation: generation.get(),
+                        ..f.owner_project()
+                    },
+                    terminal: se_core::admission::HumanTerminal::Refused {
+                        reason: "metadata read".into()
+                    },
+                    selections: None,
+                }),
+                hook: None,
+            },
+            until
+        ));
+        if let Poll::Ready(Err(error)) =
+            std::future::poll_fn(|cx| Poll::Ready(probe.as_mut().poll(cx))).await
+        {
+            assert!(
+                error.to_string().contains("host admission"),
+                "unexpected fence probe: {error}"
+            );
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+fn verify_post_shutdown_write(
+    f: &Fixture,
+    committed: &se_store::CommitReceipt,
+    write_reply: WriteReply,
+    serial: bool,
+) -> Check {
+    // Check the final state from a newly opened outside reader after close.
+    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+    let mut snapshot = reader.snapshot(f.scoped(Visibility::Owner))?;
+    let receipt = present(snapshot.operation_receipt(Actor::Agent(f.a.clone()), key(WRITE_KEY)?)?)?;
+    assert_eq!(
+        receipt.events, committed.events,
+        "shutdown changed the original write identity"
+    );
+    let event = present(snapshot.event(receipt.primary_event.clone())?)?;
+    assert!(
+        matches!(event.body, EventBody::MessageSent { body: StoredText::Present(ref body), .. }
+        if body == "committed while shutdown owns the reply")
+    );
+    snapshot.close()?;
+    drop(reader);
+    drop(Lease::acquire(
+        &f.options.state_directory,
+        LeaseMode::Host,
+        Some(f.store.clone()),
+    )?);
+    if serial {
+        assert!(
+            write_reply.is_ok(),
+            "serial control lost its normal receipt: {:?}",
+            write_reply.as_ref().err()
+        );
+    }
+    match write_reply {
+        Ok(output) => {
+            assert_eq!(output.value["state"], "committed");
+            assert_eq!(output.value["idempotency_key"], WRITE_KEY);
+            assert_eq!(
+                output.value["event_id"],
+                serde_json::to_value(&receipt.primary_event)?
+            );
+        }
+        Err(error) => {
+            assert_eq!(
+                error.code().as_str(),
+                "committed-response-unavailable",
+                "shutdown lost a known committed write's reply: {error}"
+            );
+            let detail = serde_json::to_value(error.body.detail())?;
+            assert_eq!(detail["detail"]["operation"], "message.send");
+            assert_eq!(detail["detail"]["key"], WRITE_KEY);
+            assert_eq!(
+                detail["detail"]["committed_events"],
+                serde_json::to_value(&receipt.events)?
+            );
+        }
+    }
+    Ok(())
+}
+
+fn prepare_write_session(f: &Fixture) -> Result<Secret, Box<dyn std::error::Error>> {
     let (mut direct, lease) = f.direct()?;
     let session = SessionId::from_parts(1_700_000_000_000 + fixture::serial(), [82; 10])?;
     let conversation = ProviderSessionId::new("shutdown-write-session")?;
@@ -32,7 +239,7 @@ fn run(serial: bool) -> Check {
     std::fs::write(&transcript, b"")?;
     let pin = se_proc::NativeSourcePin::open(&transcript)?.ok_or("session source absent")?;
     prepare_session(
-        &f,
+        f,
         &mut direct,
         &lease,
         SessionSetup {
@@ -43,8 +250,60 @@ fn run(serial: bool) -> Check {
             credential: &session_credential,
         },
     )?;
-    drop(direct);
-    drop(lease);
+    drop((direct, lease));
+    Ok(session_credential)
+}
+
+fn spawn_stop_client(
+    endpoint: se_host::EndpointRecord,
+    credential: &Secret,
+) -> Result<
+    std::thread::JoinHandle<Result<se_host::client::endpoint::RuntimeStopReply, String>>,
+    Box<dyn std::error::Error>,
+> {
+    let stop_credential = copy_secret(credential)?;
+    Ok(std::thread::spawn(move || -> Result<_, String> {
+        let until = se_types::UnixMicros::new(
+            (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_micros()
+                + 10_000_000) as u64,
+        )
+        .map_err(|e| e.to_string())?;
+        BlockingIpcClient::stop(
+            &endpoint,
+            &stop_credential,
+            key("stop-with-admitted-write").map_err(|e| e.to_string())?,
+            until,
+            &options(),
+        )
+        .map_err(|e| e.to_string())
+    }))
+}
+
+async fn wait_for_committed_receipt(
+    f: &Fixture,
+    until: &se_host::client::lease::Deadline,
+) -> Result<se_store::CommitReceipt, Box<dyn std::error::Error>> {
+    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+    loop {
+        until.remaining()?;
+        let mut snapshot = reader.snapshot(f.scoped(Visibility::Owner))?;
+        let receipt = snapshot.operation_receipt(Actor::Agent(f.a.clone()), key(WRITE_KEY)?)?;
+        snapshot.close()?;
+        match receipt {
+            Read::Present { value } => return Ok(value),
+            Read::Absent { .. } => tokio::time::sleep(Duration::from_millis(1)).await,
+            other => return Err(format!("outside receipt unreadable: {other:?}").into()),
+        }
+    }
+}
+
+fn run(serial: bool) -> Check {
+    let f = std::mem::ManuallyDrop::new(Fixture::new()?);
+    println!("shutdown_write fixture={}", f.home.display());
+    let session_credential = prepare_write_session(&f)?;
     let machine = route::identity::ensure_machine_identity(&f.options.state_directory)?;
     let credential = secret()?;
     publish(&f, "credential", credential.expose())?;
@@ -69,73 +328,14 @@ fn run(serial: bool) -> Check {
         let idle_capacity = u32::try_from(slots.available_permits())?;
         assert!(idle_capacity > 0, "capture an idle foreground pool");
         let server = tokio::spawn(runtime.serve(listener));
-        let (idle_ready, idle_connected) = tokio::sync::oneshot::channel();
-        let (close_idle, idle_closed) = std::sync::mpsc::sync_channel(1);
-        let idle_endpoint = endpoint.clone();
-        let idle_credential = copy_secret(&credential)?;
-        let idle = std::thread::spawn(move || -> Result<(), String> {
-            let client = BlockingIpcClient::connect_authenticated(
-                &idle_endpoint,
-                ClientCredential::Machine(idle_credential),
-                NonZeroU32::new(1024 * 1024).ok_or("reply budget")?,
-                &options(),
-            )
-            .map_err(|e| e.to_string())?;
-            idle_ready.send(()).map_err(|_| "idle readiness closed")?;
-            idle_closed
-                .recv_timeout(Duration::from_secs(20))
-                .map_err(|e| e.to_string())?;
-            drop(client);
-            Ok(())
-        });
-        tokio::time::timeout(Duration::from_secs(10), idle_connected).await??;
-        let (ready, connected) = tokio::sync::oneshot::channel();
-        let (send, sending) = std::sync::mpsc::sync_channel(1);
-        let (replied, mut reply) = tokio::sync::oneshot::channel();
-        let write_endpoint = endpoint.clone();
-        let write_credential = copy_secret(&session_credential)?;
-        let call = ipc::operation(
-            se_core::ops::AnyOp::MessageSend(se_core::ops::MessageSend {
-                quiet: false,
-                to: Some(f.b.as_str().into()),
-                body: "committed while shutdown owns the reply".into(),
-                kind: Default::default(),
-                refs: vec![],
-                reply_to: None,
-                supersedes: None,
-                work: None,
-                idempotency_key: key(WRITE_KEY)?,
-            }),
-            &se_core::ops::CliSelections {
-                project: Some(f.project.clone()),
-                ..Default::default()
-            },
-            generation,
-        )?;
-        let writer = std::thread::spawn(move || {
-            let result = (|| -> se_types::Result<se_host::OperationOutput> {
-                let mut client = BlockingIpcClient::connect_authenticated(
-                    &write_endpoint,
-                    ClientCredential::Session(write_credential),
-                    positive(1024 * 1024)
-                        .map_err(|e| se_core::scope::unreadable("reply budget", &e.to_string()))?,
-                    &options(),
-                )?;
-                ready.send(()).map_err(|_| {
-                    se_core::scope::unreadable("judge", "readiness receiver closed")
-                })?;
-                sending
-                    .recv_timeout(Duration::from_secs(10))
-                    .map_err(|e| se_core::scope::unreadable("judge", &e.to_string()))?;
-                client.exchange(call, &options())
-            })();
-            let _ = replied.send(result);
-        });
-        tokio::time::timeout(Duration::from_secs(10), connected).await??;
+        let idle = spawn_idle_client(endpoint.clone(), &credential)?;
+        tokio::time::timeout(Duration::from_secs(10), idle.connected).await??;
+        let mut writer = spawn_write_client(&f, endpoint.clone(), &session_credential, generation)?;
+        tokio::time::timeout(Duration::from_secs(10), writer.connected).await??;
         let mut held = slots.clone().acquire_many_owned(idle_capacity).await?;
         let idle_count = Arc::strong_count(&slots);
         println!("shutdown_write idle foreground refs={idle_count}");
-        send.send(())?;
+        writer.send.send(())?;
         // Step the actual FIFO foreground resource through native call admission,
         // planning, and submission. No executor/store/clock is substituted.
         queued(&slots, idle_count + 1, "native admission").await?;
@@ -143,7 +343,6 @@ fn run(serial: bool) -> Check {
         queued(&slots, idle_count + 2, "planning").await?;
         held = pass(&slots, held).await?;
         queued(&slots, idle_count + 2, "submission").await?;
-
         // An actual competing SQLite writer delays this accepted transaction
         // while the stop traverses both native proof and owner authentication.
         let competing = if serial {
@@ -156,109 +355,33 @@ fn run(serial: bool) -> Check {
         held = pass(&slots, held).await?;
         drop(held);
         let serial_reply = if serial {
-            Some(tokio::time::timeout(Duration::from_secs(10), &mut reply).await??)
+            Some(tokio::time::timeout(Duration::from_secs(10), &mut writer.reply).await??)
         } else {
             None
         };
-        let stop_credential = copy_secret(&credential)?;
-        let stopper = std::thread::spawn(move || -> Result<_, String> {
-            let until = se_types::UnixMicros::new(
-                (std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_err(|e| e.to_string())?
-                    .as_micros()
-                    + 10_000_000) as u64,
-            )
-            .map_err(|e| e.to_string())?;
-            BlockingIpcClient::stop(
-                &endpoint,
-                &stop_credential,
-                key("stop-with-admitted-write").map_err(|e| e.to_string())?,
-                until,
-                &options(),
-            )
-            .map_err(|e| e.to_string())
-        });
-
-        // Observe the real admission fence with a harmless metadata read. It
-        // refuses synchronously after fencing; dropped queued reads have no
-        // effects. Release SQLite immediately after observing the actual fence.
+        let stopper = spawn_stop_client(endpoint, &credential)?;
         let until = bound()?;
-        loop {
-            until.remaining()?;
-            let mut probe = std::pin::pin!(router.execute_call(
-                se_host::RoutedCall::Deferred {
-                    admitted: Box::new(se_host::HostedCall {
-                        remote_credential: None,
-                        input: se_host::HostedInput::Operation(se_core::ops::AnyOp::MetaVersion(
-                            se_core::ops::MetaVersion {}
-                        )),
-                        kernel: se_core::dispatch::Kernel::new(se_core::dispatch::CallFacts {
-                            event: fixture::event()?,
-                            message: fixture::message()?,
-                            agent: fixture::agent()?,
-                            profile_event: fixture::event()?,
-                            notification_event: fixture::event()?,
-                            notification_message: fixture::message()?,
-                            occurred_at_us: 1_700_000_000_000_000,
-                            door: Door::Cli,
-                        })?,
-                        admission: Admission {
-                            generation: generation.get(),
-                            ..f.owner_project()
-                        },
-                        terminal: se_core::admission::HumanTerminal::Refused {
-                            reason: "metadata read".into()
-                        },
-                        selections: None,
-                    }),
-                    hook: None,
-                },
-                &until
-            ));
-            if let Poll::Ready(Err(error)) =
-                std::future::poll_fn(|cx| Poll::Ready(probe.as_mut().poll(cx))).await
-            {
-                assert!(
-                    error.to_string().contains("host admission"),
-                    "unexpected fence probe: {error}"
-                );
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
+        wait_for_admission_fence(&f, &router, generation, &until).await?;
         drop(router);
         if let Some(database) = competing {
             database.execute_batch("ROLLBACK")?;
             drop(database);
         }
-        let reader = present(SqliteFactory::open_reader(&f.options)?)?;
-        let committed = loop {
-            until.remaining()?;
-            let mut snapshot = reader.snapshot(f.scoped(Visibility::Owner))?;
-            let receipt = snapshot.operation_receipt(Actor::Agent(f.a.clone()), key(WRITE_KEY)?)?;
-            snapshot.close()?;
-            match receipt {
-                Read::Present { value } => break value,
-                Read::Absent { .. } => tokio::time::sleep(Duration::from_millis(1)).await,
-                other => return Err(format!("outside receipt unreadable: {other:?}").into()),
-            }
-        };
-        drop(reader);
+        let committed = wait_for_committed_receipt(&f, &until).await?;
         let exit = tokio::time::timeout(Duration::from_secs(12), server).await??;
         assert!(
             exit.stop.is_some(),
             "supervisor lost the authenticated stop"
         );
         let outcome = exit.finish(&bound()?).await;
-        writer.join().map_err(|_| "write client panicked")?;
+        writer.handle.join().map_err(|_| "write client panicked")?;
         let write_reply = match serial_reply {
             Some(value) => value,
-            None => reply.await?,
+            None => writer.reply.await?,
         };
         let stop_reply = stopper.join().map_err(|_| "stop client panicked")??;
-        close_idle.send(())?;
-        idle.join().map_err(|_| "idle client panicked")??;
+        idle.close.send(())?;
+        idle.handle.join().map_err(|_| "idle client panicked")??;
         assert!(matches!(
             stop_reply.outcome,
             se_host::client::endpoint::RuntimeStopOutcome::Facts { .. }
@@ -269,59 +392,7 @@ fn run(serial: bool) -> Check {
             outcome.pending
         );
         drop(outcome);
-        // Check the final state from a newly opened outside reader after close.
-        let reader = present(SqliteFactory::open_reader(&f.options)?)?;
-        let mut snapshot = reader.snapshot(f.scoped(Visibility::Owner))?;
-        let receipt =
-            present(snapshot.operation_receipt(Actor::Agent(f.a.clone()), key(WRITE_KEY)?)?)?;
-        assert_eq!(
-            receipt.events, committed.events,
-            "shutdown changed the original write identity"
-        );
-        let event = present(snapshot.event(receipt.primary_event.clone())?)?;
-        assert!(
-            matches!(event.body, EventBody::MessageSent { body: StoredText::Present(ref body), .. }
-            if body == "committed while shutdown owns the reply")
-        );
-        snapshot.close()?;
-        drop(reader);
-        drop(Lease::acquire(
-            &f.options.state_directory,
-            LeaseMode::Host,
-            Some(f.store.clone()),
-        )?);
-        if serial {
-            assert!(
-                write_reply.is_ok(),
-                "serial control lost its normal receipt: {:?}",
-                write_reply.as_ref().err()
-            );
-        }
-        match write_reply {
-            Ok(output) => {
-                assert_eq!(output.value["state"], "committed");
-                assert_eq!(output.value["idempotency_key"], WRITE_KEY);
-                assert_eq!(
-                    output.value["event_id"],
-                    serde_json::to_value(&receipt.primary_event)?
-                );
-            }
-            Err(error) => {
-                assert_eq!(
-                    error.code().as_str(),
-                    "committed-response-unavailable",
-                    "shutdown lost a known committed write's reply: {error}"
-                );
-                let detail = serde_json::to_value(error.body.detail())?;
-                assert_eq!(detail["detail"]["operation"], "message.send");
-                assert_eq!(detail["detail"]["key"], WRITE_KEY);
-                assert_eq!(
-                    detail["detail"]["committed_events"],
-                    serde_json::to_value(&receipt.events)?
-                );
-            }
-        }
-        Ok::<(), Box<dyn std::error::Error>>(())
+        verify_post_shutdown_write(&f, &committed, write_reply, serial)
     })?;
     drop(std::mem::ManuallyDrop::into_inner(f));
     println!(
