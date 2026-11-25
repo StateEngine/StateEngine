@@ -135,23 +135,7 @@ impl Harness for ClaudeHarness {
         cx: CallContext,
     ) -> HostFuture<'a, ProviderVersion> {
         Box::pin(async move {
-            let command = request.command.clone();
-            let timeout = cx.timeout;
-            let output = version_output(&command, timeout).await?;
-            let version = output
-                .split_whitespace()
-                .next()
-                .filter(|_| output.contains("Claude Code"))
-                .ok_or_else(|| {
-                    SeError::invalid("Claude version", "`<version> (Claude Code)` output")
-                })?
-                .to_owned();
-            if parse_version(&version).is_none_or(|found| found < MINIMUM_VERSION) {
-                return Err(SeError::invalid(
-                    "Claude version",
-                    "Claude Code 2.1.287 or newer; update Claude Code and retry",
-                ));
-            }
+            let version = probe_version(&request.command, cx.timeout).await?;
             let probed = ProviderVersion {
                 kind: HarnessKind::ClaudeCode,
                 executable: NativePath::from_local(request.command)?,
@@ -394,6 +378,24 @@ fn claude_binding(binding: &HarnessBinding) -> Result<&Binding> {
         .get::<crate::harness::ClaudeBinding>()
         .map(std::sync::Arc::as_ref)
         .ok_or_else(|| SeError::invalid("provider binding", "a headless Claude binding"))
+}
+
+/// The launch version floor; diagnosis applies the same check before any launch.
+pub async fn probe_version(command: &Path, timeout: std::time::Duration) -> Result<String> {
+    let output = version_output(command, timeout).await?;
+    let version = output
+        .split_whitespace()
+        .next()
+        .filter(|_| output.contains("Claude Code"))
+        .ok_or_else(|| SeError::invalid("Claude version", "`<version> (Claude Code)` output"))?
+        .to_owned();
+    if parse_version(&version).is_none_or(|found| found < MINIMUM_VERSION) {
+        return Err(SeError::invalid(
+            "Claude version",
+            "Claude Code 2.1.287 or newer; update Claude Code and retry",
+        ));
+    }
+    Ok(version)
 }
 
 /// Opt-in global hooks require provider-owned fail-open and exec-form support.

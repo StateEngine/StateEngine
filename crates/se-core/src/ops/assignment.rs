@@ -59,9 +59,71 @@ impl Validate for AssignmentList {
 pub struct AssignmentRow {
     pub id: EventId,
     pub assignee: AgentId,
+    /// The assignee's registered name, for display; `assignee` stays the exact ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee_name: Option<String>,
+    /// The first line of the opening request, shortened with an ellipsis; erased or missing
+    /// text says so instead of reading as empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<se_types::Read<String>>,
     pub state: String,
     pub revision: u64,
     pub latest_event: EventId,
+}
+const PREVIEW_CHARS: usize = 60;
+fn preview<R: Snapshot>(read: &mut R, floor: &EventId) -> se_types::Read<String> {
+    use se_types::Read;
+    let event = match read.event(floor.clone()) {
+        Ok(Read::Present { value }) => value,
+        Ok(Read::Absent { checked }) => return Read::Absent { checked },
+        Ok(Read::Unknown { what }) => return Read::Unknown { what },
+        Ok(Read::Unreadable {
+            source,
+            reason,
+            error,
+        }) => {
+            return Read::Unreadable {
+                source,
+                reason,
+                error,
+            };
+        }
+        Err(error) => {
+            return Read::Unreadable {
+                source: "assignment request".into(),
+                reason: store_error(&error).body.message(),
+                error: None,
+            };
+        }
+    };
+    match event.body {
+        EventBody::WorkMessageSent {
+            body: se_store::StoredText::Present(text),
+            ..
+        } => {
+            let line = text
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("")
+                .trim();
+            let mut shown: String = line.chars().take(PREVIEW_CHARS).collect();
+            if line.chars().count() > PREVIEW_CHARS || text.trim() != line {
+                shown.push('…');
+            }
+            Read::Present { value: shown }
+        }
+        EventBody::WorkMessageSent {
+            body: se_store::StoredText::Erased { .. },
+            ..
+        } => Read::Absent {
+            checked: "the request text was erased".into(),
+        },
+        _ => Read::Unreadable {
+            source: "assignment request".into(),
+            reason: "the opening floor event has the wrong kind".into(),
+            error: None,
+        },
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct AssignmentPage {
@@ -94,6 +156,7 @@ pub fn list<R: Snapshot>(input: AssignmentList, cx: &mut Cx<'_, R>) -> Result<As
         let EventBody::AssignmentOpened {
             assignment,
             assignee,
+            floor_event,
             ..
         } = &original.body
         else {
@@ -119,9 +182,15 @@ pub fn list<R: Snapshot>(input: AssignmentList, cx: &mut Cx<'_, R>) -> Result<As
                 ));
             }
         };
+        // A name is display only: if it cannot be read, the row still carries the exact ID.
+        let assignee_name = super::receipt::named_agent(cx.read, assignee)
+            .ok()
+            .map(|named| named.name);
         rows.push(AssignmentRow {
             id: assignment.clone(),
             assignee: assignee.clone(),
+            assignee_name,
+            preview: Some(preview(cx.read, floor_event)),
             state: state.into(),
             revision: record.revision.value.get(),
             latest_event: record.current.header.event,

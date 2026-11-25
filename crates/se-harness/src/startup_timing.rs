@@ -91,9 +91,10 @@ impl Timing {
         let next = format!(
             "Run `se agent show {agent}` with the same home and project to check the saved lifecycle before retrying."
         );
+        // The actionable fix leads; phase times are diagnosis for whoever reads further.
         let text = match &recovery {
-            Some(remedy) => format!("{} {next} {}", self.summary(), remedy.text),
-            None => format!("{} {next}", self.summary()),
+            Some(remedy) => format!("{} {next} {}", remedy.text, self.summary()),
+            None => format!("{next} {}", self.summary()),
         };
         failure.with_remedy(Remedy {
             text,

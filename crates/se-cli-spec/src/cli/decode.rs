@@ -145,12 +145,12 @@ fn decode_meta(name: &str, m: &ArgMatches, path: &[String]) -> Result<Option<Any
     let op = match name {
         "meta.version" => AnyOp::MetaVersion(MetaVersion {}),
         "meta.help" => AnyOp::MetaHelp(MetaHelp {
-            path: if flag(m, "help") || path == ["atlas"] {
+            path: if flag(m, "help") || is_group(path) {
                 path.to_vec()
             } else {
                 many(m, "path")
             },
-            all: if flag(m, "help") || path == ["atlas"] {
+            all: if flag(m, "help") || is_group(path) {
                 false
             } else {
                 flag(m, "all")

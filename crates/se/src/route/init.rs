@@ -285,9 +285,15 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
             };
             let alternate_home = (crate::bootstrap::default_home().ok().as_ref() != Some(&cx.home))
                 .then_some(cx.home.as_path());
+            let provider = output.value.agent.provider;
             output.value.changed.extend(
-                se_host::provider_mcp::configure(&repository.path, &configuration, alternate_home)
-                    .map_err(mcp_setup_error)?,
+                se_host::provider_mcp::configure(
+                    &repository.path,
+                    &configuration,
+                    provider,
+                    alternate_home,
+                )
+                .map_err(mcp_setup_error)?,
             );
             Ok(value)
         }

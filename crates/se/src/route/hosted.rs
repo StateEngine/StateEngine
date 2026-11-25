@@ -44,16 +44,7 @@ fn forward_once<R: se_store::ReadStore>(
     } else {
         match execute::endpoint(files)? {
             Read::Present { value } => value,
-            Read::Absent { .. } => {
-                return Err(SeError::new(se_types::Detail::RuntimeNotRunning(
-                    se_types::details::RuntimeNotRunning {
-                        op: operation.meta().name.into(),
-                        reason:
-                            "no live authenticated host endpoint is published in this data home"
-                                .into(),
-                    },
-                )));
-            }
+            Read::Absent { .. } => return Err(stopped(operation.meta().name)),
             Read::Unreadable { source, reason, .. } => {
                 return Err(scope::unreadable(&source, &reason));
             }
@@ -107,6 +98,21 @@ fn forward_once<R: se_store::ReadStore>(
     }
 }
 
+/// No endpoint is published, so nothing was submitted: starting the runtime is the whole fix.
+fn stopped(op: &str) -> SeError {
+    let mut error = SeError::new(se_types::Detail::RuntimeNotRunning(
+        se_types::details::RuntimeNotRunning {
+            op: op.into(),
+            reason: "the runtime is stopped".into(),
+        },
+    ));
+    error.body = error.body.with_remedy(se_types::Remedy {
+        text: "Runtime is stopped. Run `se up` first, then retry.".into(),
+        command: None,
+    });
+    error
+}
+
 /// The status observation as a request that a thread can own.
 ///
 /// A status read may start this before its own local build and collect the
@@ -136,17 +142,11 @@ impl StatusRequest {
         let endpoint = match execute::endpoint(files)? {
             Read::Present { value } => value,
             Read::Absent { .. } => {
-                return Err(SeError::new(se_types::Detail::RuntimeNotRunning(
-                    se_types::details::RuntimeNotRunning {
-                        op: AnyOp::ProjectStatus(se_core::ops::ProjectStatus::default())
-                            .meta()
-                            .name
-                            .into(),
-                        reason:
-                            "no live authenticated host endpoint is published in this data home"
-                                .into(),
-                    },
-                )));
+                return Err(stopped(
+                    AnyOp::ProjectStatus(se_core::ops::ProjectStatus::default())
+                        .meta()
+                        .name,
+                ));
             }
             Read::Unreadable { source, reason, .. } => {
                 return Err(scope::unreadable(&source, &reason));

@@ -5,11 +5,15 @@ use se_types::{Result, SeError};
 use std::{path::Path, process::Stdio, time::Duration};
 use tokio::{io::AsyncReadExt, process::Command};
 
+pub mod codex_transport;
+
 const LIMIT: u64 = 65_536;
 
+/// Registers the MCP entry for the agent's own provider only; other providers' files stay untouched.
 pub fn configure(
     root: &Path,
     configuration: &se_config::config_policy::ConfigFile,
+    provider: se_types::Provider,
     alternate_home: Option<&Path>,
 ) -> Result<Vec<String>> {
     let home = alternate_home
@@ -19,35 +23,37 @@ pub fn configure(
         })
         .transpose()?;
     let args = home.map_or_else(|| vec!["mcp"], |home| vec!["--home", home, "mcp"]);
-    let mut changed = Vec::new();
-    for kind in Kind::ALL {
-        let command = configuration.provider_command(kind.provider().into());
-        let path = Path::new(command);
-        if !path.is_absolute()
-            && path.components().count() == 1
-            && std::env::var_os("PATH").is_none()
-        {
-            changed.push(missing(kind, &args)?);
-            continue;
-        }
-        match crate::resolve_provider_executable(configuration, kind.provider().into(), None, None)
-        {
-            Ok(executable) if install(root, &executable, kind, &args)? => {
-                changed.push(format!("configured {} MCP", kind.label()));
-            }
-            Ok(_) => (),
-            Err(error)
-                if matches!(
-                    error.body.detail(),
-                    se_types::Detail::ProviderCliNotFound(_)
-                ) =>
-            {
-                changed.push(missing(kind, &args)?);
-            }
-            Err(error) => return Err(error),
-        }
+    let kind = match provider {
+        se_types::Provider::Claude => Kind::Claude,
+        se_types::Provider::Codex => Kind::Codex,
+        // Other harnesses receive StateEngine's tools at launch; no provider file is edited.
+        _ => return Ok(Vec::new()),
+    };
+    if kind == Kind::Codex
+        && let Some(conflict) = codex_transport::observe(root)?.conflict()
+    {
+        return Err(failure(&conflict));
     }
-    Ok(changed)
+    let command = configuration.provider_command(kind.provider().into());
+    let path = Path::new(command);
+    if !path.is_absolute() && path.components().count() == 1 && std::env::var_os("PATH").is_none() {
+        return Ok(vec![missing(kind, &args)?]);
+    }
+    match crate::resolve_provider_executable(configuration, kind.provider().into(), None, None) {
+        Ok(executable) if install(root, &executable, kind, &args)? => {
+            Ok(vec![format!("configured {} MCP", kind.label())])
+        }
+        Ok(_) => Ok(Vec::new()),
+        Err(error)
+            if matches!(
+                error.body.detail(),
+                se_types::Detail::ProviderCliNotFound(_)
+            ) =>
+        {
+            Ok(vec![missing(kind, &args)?])
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn missing(kind: Kind, args: &[&str]) -> Result<String> {

@@ -34,11 +34,13 @@ impl DetachmentObservation {
         #[cfg(target_os = "linux")]
         {
             Some(format!(
-                "{} Background work may stop when this login ends. Enable lingering for this account with `loginctl enable-linger`, then stop and restart this host under its owner. {foreground}",
+                "{}. Background work may stop when this login ends. Enable lingering for this account with `loginctl enable-linger`, then stop and restart this host under its owner. {foreground}",
+                // Native reasons are bare clauses; end each one before the advice follows.
                 self.lifetime
                     .session_reason
                     .as_deref()
-                    .unwrap_or("No lasting user-manager scope was observed.")
+                    .unwrap_or("No lasting user-manager scope was observed")
+                    .trim_end_matches('.')
             ))
         }
         #[cfg(not(target_os = "linux"))]

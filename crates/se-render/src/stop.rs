@@ -6,6 +6,17 @@ use se_core::ops::{
 use std::io::{self, Write};
 
 pub(super) fn output(value: &StopResult, out: &mut impl Write) -> io::Result<()> {
+    if let Some(target) = idle(value) {
+        writeln!(
+            out,
+            "Agent {} in {} is not running; nothing was stopped.",
+            target.agent.name, target.project.name
+        )?;
+        if let Some(resume) = value.resume.as_ref().filter(|r| r.state != "unavailable") {
+            resumable(resume, out)?;
+        }
+        return Ok(());
+    }
     writeln!(
         out,
         "Stop {}.",
@@ -214,4 +225,17 @@ fn processes(values: &[se_core::ops::ProcessView], out: &mut impl Write) -> io::
         )?;
     }
     Ok(())
+}
+
+/// A complete stop that found no lifecycle, session or process for its one agent.
+fn idle(value: &StopResult) -> Option<&se_core::ops::agent_stop::StopTarget> {
+    let target = value.target.as_ref()?;
+    (value.complete
+        && value.result == "already-stopped"
+        && value.stops.is_none()
+        && target.session_id.is_none()
+        && target.launch_id.is_none()
+        && target.process.is_none()
+        && value.remaining.as_ref().is_none_or(Vec::is_empty))
+    .then_some(target)
 }

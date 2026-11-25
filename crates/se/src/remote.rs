@@ -33,7 +33,51 @@ impl se_remote_cli::client::ClientPresentation for Host {
     }
 }
 
-pub(crate) fn pending_native(
+/// A native send's keyed pending record. JSON callers get it up front; people see it only
+/// when the outcome is uncertain, because a definite refusal saved nothing to retry.
+pub(crate) struct PendingSend(Option<se_core::ops::MessageSend>);
+
+impl PendingSend {
+    pub(crate) fn before(
+        cx: &Bootstrap,
+        operation: &AnyOp,
+        json: bool,
+        out: &mut impl Write,
+    ) -> io::Result<Self> {
+        let AnyOp::MessageSend(input) = operation else {
+            return Ok(Self(None));
+        };
+        if json {
+            pending_native(cx, input, json, out)?;
+            return Ok(Self(None));
+        }
+        Ok(Self(Some(input.clone())))
+    }
+
+    pub(crate) fn after<T>(
+        self,
+        cx: &Bootstrap,
+        result: &Result<T>,
+        out: &mut impl Write,
+    ) -> io::Result<()> {
+        let uncertain = result.as_ref().is_err_and(|error| {
+            !matches!(
+                error.class(),
+                se_types::Class::Usage
+                    | se_types::Class::Refused
+                    | se_types::Class::Unauthorized
+                    | se_types::Class::Unknown
+                    | se_types::Class::Conflict
+            )
+        });
+        match self.0 {
+            Some(input) if uncertain => pending_native(cx, &input, false, out),
+            _ => Ok(()),
+        }
+    }
+}
+
+fn pending_native(
     cx: &Bootstrap,
     input: &se_core::ops::MessageSend,
     json: bool,

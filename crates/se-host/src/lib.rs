@@ -69,6 +69,11 @@ mod process;
 mod reboot;
 #[cfg(feature = "listener")]
 pub(crate) use se_harness::process_io;
+#[cfg(all(
+    feature = "listener",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
+pub mod provider_cli;
 #[cfg(feature = "listener")]
 pub mod provider_mcp;
 mod runtime;
