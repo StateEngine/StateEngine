@@ -10,7 +10,7 @@ import test_run_scope as scope
 class MovingPulls(OpenPulls):
     """Change API-visible state after a real success status has been written."""
 
-    def __init__(self, when='success', change='shared', armed_by=2):
+    def __init__(self, when='success', change='shared'):
         super().__init__()
         # A is unsigned; B is signed. Their distinct initial heads are checked
         # in order, so A can try borrowing B's just-published success.
@@ -20,9 +20,7 @@ class MovingPulls(OpenPulls):
             'body': checker.individual_statement(
                 self.second['login'], digests()['individual']),
         }]
-        # The request whose terminal status arms the move: B for B's own event and
-        # pushes, A for A's event, which no longer checks B's unrelated head.
-        self.when, self.change, self.armed_by = when, change, armed_by
+        self.when, self.change = when, change
         self.b_succeeded = self.moved = False
 
     def move(self):
@@ -40,7 +38,7 @@ class MovingPulls(OpenPulls):
 
     def status(self, head, state, description):
         super().status(head, state, description)
-        if head == self.pulls[self.armed_by]['head']['sha'] and state != 'pending':
+        if head == self.pulls[2]['head']['sha'] and state == 'success':
             self.b_succeeded = True
             if self.when == 'success' and not self.moved:
                 self.move()
@@ -72,10 +70,10 @@ class MembershipRace(unittest.TestCase):
         return api.latest[(api.pulls[2]['head']['sha'], checker.CONTEXT)]
 
     def test_unsigned_a_cannot_borrow_b_success_after_publication(self):
-        api = MovingPulls(armed_by=1)
-        api.latest[(api.pulls[2]['head']['sha'], checker.CONTEXT)] = 'success'
+        api = MovingPulls()
         self.assertEqual(self.event(api), 1)
         self.assertTrue(api.moved)
+        self.assertIn((api.pulls[2]['head']['sha'], 'success'), api.statuses)
         self.assertEqual(self.latest_b(api), 'failure')
 
     def test_subject_b_also_refuses_a_new_unsigned_shared_head_peer(self):
@@ -84,8 +82,7 @@ class MembershipRace(unittest.TestCase):
         self.assertEqual(self.latest_b(api), 'failure')
 
     def test_comment_event_cannot_borrow_b_success(self):
-        api = MovingPulls(armed_by=1)
-        api.latest[(api.pulls[2]['head']['sha'], checker.CONTEXT)] = 'success'
+        api = MovingPulls()
         self.assertEqual(self.event(api, kind='issue_comment'), 1)
         self.assertEqual(self.latest_b(api), 'failure')
 
@@ -95,7 +92,7 @@ class MembershipRace(unittest.TestCase):
         self.assertEqual(self.latest_b(api), 'failure')
 
     def test_subject_read_detects_move_after_final_membership_snapshot(self):
-        api = MovingPulls(when='subject-read', armed_by=1)
+        api = MovingPulls(when='subject-read')
         self.assertEqual(self.event(api), 1)
         self.assertTrue(api.moved)
         self.assertEqual(self.latest_b(api), 'failure')
@@ -106,7 +103,7 @@ class MembershipRace(unittest.TestCase):
         self.assertEqual(self.latest_b(api), 'failure')
 
     def test_new_head_gets_failure_without_borrowing_any_prior_result(self):
-        api = MovingPulls(change='new-head', armed_by=1)
+        api = MovingPulls(change='new-head')
         self.assertEqual(self.event(api), 1)
         self.assertEqual(api.latest.get(('d' * 40, checker.CONTEXT)), 'failure',
                          'the newly observed head needs an explicit failure status')
@@ -116,7 +113,7 @@ class MembershipRace(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'membership is unreadable'):
             self.event(api, subject=2)
         self.assertEqual(self.latest_b(api), 'failure')
-        self.assertNotIn((api.head, checker.CONTEXT), api.latest)
+        self.assertEqual(api.latest[(api.head, checker.CONTEXT)], 'failure')
 
     def test_closed_subject_finishes_after_refreshing_other_heads(self):
         api = MovingPulls(change='closed')
@@ -128,7 +125,7 @@ class MembershipRace(unittest.TestCase):
         api = MovingPulls(when='never')
         self.assertEqual(self.event(api, subject=2), 0)
         self.assertEqual(self.latest_b(api), 'success')
-        self.assertNotIn((api.head, checker.CONTEXT), api.latest)
+        self.assertEqual(api.latest[(api.head, checker.CONTEXT)], 'failure')
 
 
 if __name__ == '__main__':

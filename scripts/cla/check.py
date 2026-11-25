@@ -247,18 +247,6 @@ def membership(pulls):
     return members
 
 
-def in_scope(members, subject_head):
-    """Heads an event must check: all of them, or the subject's plus every shared head.
-
-    A success status belongs to a SHA, so a head shared by several requests is the
-    only place one request can borrow another's result. Concurrency may drop a
-    queued run, so every scoped run rechecks shared heads, not only its own.
-    """
-    if subject_head is None:
-        return set(members)
-    return {head for head, rows in members.items() if len(rows) > 1} | {subject_head}
-
-
 def open_pulls(github, branch):
     return [pull for pull in github.pages("pulls") if pull["base"]["ref"] == branch]
 
@@ -310,15 +298,12 @@ def run():
         raise ValueError("event pull request identity is unreadable")
     github = GitHub()
     branch = github.request("")["default_branch"]
-    # A pull-request or comment event checks its own head and every shared head, so
-    # comments cannot spend the token's hourly budget re-validating unrelated
-    # requests. A default-branch push may change the agreement and checks them all.
-    subject_head = None if subject is None else github.request(f"pulls/{subject}")["head"]["sha"]
     pulls = open_pulls(github, branch)
-    scope = in_scope(membership(pulls), subject_head)
-    pulls = [pull for pull in pulls if pull["head"]["sha"] in scope]
     checked_members = membership(pulls)
-    # Pending is published inside each head's error boundary.
+    # Every event checks the whole open set, not only its own request: the
+    # repository-wide concurrency group can drop another request's queued run,
+    # and only a later sweep can then revoke its obsolete result. Pending is
+    # published inside each head's error boundary.
     heads = {pull["head"]["sha"]: pull["number"] for pull in pulls}
     results = {}
     for head, number in heads.items():
@@ -338,8 +323,7 @@ def run():
             refuse_head(github, head, checked_members[head],
                         "Pull-request membership could not be rechecked")
         raise ValueError("pull-request membership is unreadable; rerun the check") from error
-    # A request that moved onto a shared head during this run is in scope now.
-    for head in checked_members.keys() | in_scope(current_members, subject_head):
+    for head in checked_members.keys() | current_members.keys():
         if checked_members.get(head) != current_members.get(head):
             results[head] = False
             refuse_head(github, head,
