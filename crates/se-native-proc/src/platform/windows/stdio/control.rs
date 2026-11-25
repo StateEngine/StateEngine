@@ -215,7 +215,8 @@ impl NativeStdio {
         {
             return Err(transition("exact All-close witness required"));
         }
-        if !state.operations.is_empty()
+        if state.init == InitPhase::Initializing
+            || !state.operations.is_empty()
             || state.handles.iter().any(Option::is_some)
             || state.gates != Gates::All
         {

@@ -17,6 +17,7 @@ pub struct Driver {
 pub struct Scope {
     image_custody: Option<NativeExecutableInvocation>,
     child: Option<spawn::Child>,
+    launch: Option<crate::validate::LaunchBinding>,
     recovered: Option<ProcessIdentity>,
     tracked: Vec<ProcessIdentity>,
     group: Option<ProcessId>,
@@ -82,9 +83,11 @@ impl Driver {
                 "native MacOs reservation required",
             ));
         }
+        let launch = crate::validate::LaunchBinding::prepare(reservation, spec)?;
         Ok(Scope {
             image_custody: None,
             child: None,
+            launch: Some(launch),
             recovered: None,
             tracked: Vec::new(),
             group: None,
@@ -103,6 +106,7 @@ impl Driver {
         })
     }
     pub fn begin(&self, scope: &mut Scope, mut spec: LaunchSpec, hub: &Arc<Hub>) -> ProcResult<()> {
+        crate::validate::begin_bound(&mut scope.launch, &spec)?;
         scope.image_custody = spec.executable_custody.take();
         scope.child = Some(spawn::begin(spec, &self.helper)?);
         let child = scope
@@ -176,6 +180,7 @@ impl Driver {
         Ok(Scope {
             image_custody: None,
             child: None,
+            launch: None,
             recovered: Some(root.clone()),
             tracked: history.members.clone(),
             group: Some(*process_group),

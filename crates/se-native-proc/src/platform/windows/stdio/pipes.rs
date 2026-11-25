@@ -6,6 +6,31 @@ use windows_sys::Win32::{
 };
 
 pub(super) fn initialize(port: &NativeStdio) -> ProcResult<StandardIo> {
+    {
+        let mut state = port.lock();
+        if state.released
+            || state.abandoned
+            || state.all_gated
+            || state.write_gated
+            || state.close.is_some()
+        {
+            return Err(transition("port cannot initialize after close or release"));
+        }
+        if let Some(failure) = &state.failure {
+            return Err(failure.clone());
+        }
+        if state.init != InitPhase::Uninitialized {
+            return Err(transition("provider streams already initialized"));
+        }
+        state.init = InitPhase::Initializing;
+    }
+    struct Finish<'a>(&'a NativeStdio);
+    impl Drop for Finish<'_> {
+        fn drop(&mut self) {
+            self.0.lock().init = InitPhase::Initialized;
+        }
+    }
+    let _finish = Finish(port);
     let mut child = [None, None, None];
     for (index, endpoint) in child.iter_mut().enumerate() {
         *endpoint = Some(pair(port, index)?);
@@ -60,6 +85,15 @@ fn pair(port: &NativeStdio, index: usize) -> ProcResult<File> {
         ));
     }
     let mut state = port.lock();
+    if state.released
+        || state.abandoned
+        || state.all_gated
+        || state.write_gated
+        || state.close.is_some()
+        || state.handles[index].is_some()
+    {
+        return Err(transition("port closed during initialization"));
+    }
     state.handles[index] = Some(server);
     let desired = if index == 0 {
         GENERIC_READ

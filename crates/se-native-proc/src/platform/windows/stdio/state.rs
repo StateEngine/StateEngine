@@ -37,6 +37,12 @@ impl Drop for Charge {
     }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum InitPhase {
+    Uninitialized,
+    Initializing,
+    Initialized,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
     Read(StdioReadStream),
     Write,
@@ -97,6 +103,7 @@ pub(super) struct State {
     pub old_binding: Option<Arc<binding::Binding>>,
     pub binding_serial: u64,
     pub bound: bool,
+    pub init: InitPhase,
     pub handles: [Option<Handle>; 3],
     pub operations: BTreeMap<u64, Box<Operation>>,
     pub next: u64,
@@ -117,6 +124,7 @@ impl State {
             old_binding: None,
             binding_serial: 1,
             bound: true,
+            init: InitPhase::Uninitialized,
             handles: [None, None, None],
             operations: BTreeMap::new(),
             next: 1,

@@ -4,7 +4,7 @@ pub(crate) use se_native_proc::notify;
 mod observation;
 mod reboot;
 mod recovery;
-mod validate;
+pub(crate) use se_native_proc::validate;
 #[cfg(target_os = "linux")]
 mod window;
 

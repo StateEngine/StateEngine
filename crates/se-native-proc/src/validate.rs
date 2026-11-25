@@ -1,10 +1,96 @@
 use crate::support::*;
 use crate::*;
 use sha2::{Digest, Sha256};
-use std::{collections::HashSet, ffi::OsStr};
+use std::{collections::HashSet, ffi::OsStr, path::PathBuf};
 
 #[cfg(all(test, windows))]
 mod tests;
+
+/// Immutable launch contract bound to a prepared native `Scope`.
+/// Enforces one-shot `Driver::begin` and prevents direct `se-native-proc`
+/// callers from changing policy/paths/argv or bypassing NUL validation.
+pub(crate) struct LaunchBinding {
+    lifecycle: LifecycleId,
+    generation: GenerationId,
+    mode: LaunchMode,
+    window: Option<WindowSpec>,
+    policy: LaunchPolicy,
+    executable: PathBuf,
+    cwd: PathBuf,
+    argv_sha256: [u8; 32],
+    launched: bool,
+}
+
+impl LaunchBinding {
+    pub(crate) fn prepare(reservation: &LaunchReservation, spec: &LaunchSpec) -> ProcResult<Self> {
+        if reservation.format_version != 1 {
+            return Err(input("reservation version", "expected 1"));
+        }
+        if reservation.lifecycle != spec.lifecycle || reservation.generation != spec.generation {
+            return Err(input(
+                "launch reservation",
+                "lifecycle and generation must match",
+            ));
+        }
+        spec_preconditions(spec)?;
+        working_directory(spec)?;
+        let argv_sha256 = argv_digest(spec)?;
+        Ok(Self {
+            lifecycle: spec.lifecycle.clone(),
+            generation: spec.generation,
+            mode: spec.mode,
+            window: spec.window.clone(),
+            policy: spec.policy.clone(),
+            executable: spec.executable.clone(),
+            cwd: spec.cwd.clone(),
+            argv_sha256,
+            launched: false,
+        })
+    }
+}
+
+pub(crate) fn begin_bound(
+    binding: &mut Option<LaunchBinding>,
+    spec: &LaunchSpec,
+) -> ProcResult<()> {
+    let Some(bound) = binding.as_mut() else {
+        return Err(error(
+            ProcErrorCode::IllegalTransition,
+            ProcErrorDetail::Input {
+                field: "launch".into(),
+                reason: "recovered scope cannot begin a new launch".into(),
+            },
+        ));
+    };
+    if bound.launched {
+        return Err(error(
+            ProcErrorCode::IllegalTransition,
+            ProcErrorDetail::Input {
+                field: "launch".into(),
+                reason: "prepared scope has already begun launch".into(),
+            },
+        ));
+    }
+    spec_preconditions(spec)?;
+    working_directory(spec)?;
+    let digest = argv_digest(spec)?;
+    if spec.lifecycle != bound.lifecycle
+        || spec.generation != bound.generation
+        || spec.mode != bound.mode
+        || spec.window != bound.window
+        || spec.policy != bound.policy
+        || spec.executable != bound.executable
+        || spec.cwd != bound.cwd
+        || digest != bound.argv_sha256
+    {
+        return Err(input(
+            "launch spec",
+            "launch spec does not match prepared scope",
+        ));
+    }
+    bound.launched = true;
+    Ok(())
+}
 
 fn units(value: &OsStr) -> Vec<u8> {
     #[cfg(unix)]
@@ -19,7 +105,7 @@ fn units(value: &OsStr) -> Vec<u8> {
     }
 }
 /// Checks run in this order, so the same input reports the same first refusal.
-pub(super) fn spec(
+pub fn spec(
     reservation: &LaunchReservation,
     spec: &LaunchSpec,
     config: &HostConfig,
@@ -49,6 +135,9 @@ fn preconditions(
             "lifecycle, generation, host and exact owner must match",
         ));
     }
+    spec_preconditions(spec)
+}
+fn spec_preconditions(spec: &LaunchSpec) -> ProcResult<()> {
     if spec.deadline <= std::time::Instant::now() {
         return Err(error(
             ProcErrorCode::LaunchTimedOut,

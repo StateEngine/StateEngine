@@ -81,6 +81,8 @@ pub use bootstrap::{
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod platform;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub mod validate;
 #[cfg(target_os = "macos")]
 pub use platform::process_attach_entry;
 #[cfg(windows)]

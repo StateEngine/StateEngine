@@ -263,6 +263,7 @@ impl Driver {
                 identity: Some(record.root.clone()),
                 pid: record.root.pid,
             }),
+            launch: None,
             console_host: None,
             window: false,
             persistent: true,

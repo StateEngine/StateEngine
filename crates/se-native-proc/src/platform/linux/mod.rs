@@ -16,6 +16,7 @@ pub struct Driver {
 }
 pub struct Scope {
     child: Option<spawn::Child>,
+    launch: Option<crate::validate::LaunchBinding>,
     recovered: Option<ProcessIdentity>,
     tracked: Vec<ProcessIdentity>,
     registrations: Vec<Box<dyn NativeRegistration>>,
@@ -96,8 +97,10 @@ impl Driver {
                 "wave 1 requires LinuxTracked or unresolved LinuxUserManager",
             ));
         }
+        let launch = crate::validate::LaunchBinding::prepare(reservation, spec)?;
         Ok(Scope {
             child: None,
+            launch: Some(launch),
             recovered: None,
             tracked: Vec::new(),
             registrations: Vec::new(),
@@ -118,6 +121,7 @@ impl Driver {
         })
     }
     pub fn begin(&self, scope: &mut Scope, spec: LaunchSpec, hub: &Arc<Hub>) -> ProcResult<()> {
+        crate::validate::begin_bound(&mut scope.launch, &spec)?;
         scope.child = Some(spawn::begin(spec)?);
         // Creation is already in the arena. No query/registration failure can
         // discard the child or its authorization endpoint.
@@ -170,6 +174,7 @@ impl Driver {
         }
         let mut scope = Scope {
             child: None,
+            launch: None,
             recovered: Some(root.clone()),
             tracked: vec![root.clone()],
             registrations: Vec::new(),
@@ -239,6 +244,7 @@ impl Driver {
         };
         let mut scope = Scope {
             child: None,
+            launch: None,
             recovered: Some(root.clone()),
             tracked: vec![root.clone()],
             registrations: Vec::new(),

@@ -29,6 +29,7 @@ pub struct Driver {
 pub struct Scope {
     job: Handle,
     child: Option<spawn::Child>,
+    launch: Option<crate::validate::LaunchBinding>,
     console_host: Option<console::ConsoleHost>,
     window: bool,
     persistent: bool,
@@ -81,6 +82,7 @@ impl Driver {
                 "Windows job reservation required",
             ));
         }
+        let launch = crate::validate::LaunchBinding::prepare(reservation, spec)?;
         if spec.mode == LaunchMode::Window && spec.window != Some(WindowSpec::WindowsConsole) {
             return Err(input("window", "WindowsConsole required"));
         }
@@ -118,6 +120,7 @@ impl Driver {
         let scope = Scope {
             job,
             child: None,
+            launch: Some(launch),
             console_host: None,
             window: spec.mode == LaunchMode::Window,
             persistent,
@@ -141,6 +144,7 @@ impl Driver {
     }
     pub fn begin(&self, scope: &mut Scope, spec: LaunchSpec, _hub: &Arc<Hub>) -> ProcResult<()> {
         scope.verify_limits()?;
+        crate::validate::begin_bound(&mut scope.launch, &spec)?;
         scope.child = Some(spawn::create(spec, &scope.job, scope.persistent)?);
         Ok(())
     }
