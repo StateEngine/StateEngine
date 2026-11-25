@@ -9,17 +9,6 @@ struct MailActors<'a> {
     from: Option<&'a [u8]>,
     own: Option<&'a [u8]>,
 }
-/// One finite mail selection: project key, optional actors, query and the
-/// `(after, high]` window, shared by page, count and legacy-schema SQL.
-#[derive(Clone, Copy)]
-pub(super) struct MailWindow<'a> {
-    pub project: &'a [u8],
-    pub to: Option<&'a [u8]>,
-    pub from: Option<&'a [u8]>,
-    pub query: &'a MessageQuery,
-    pub high: u64,
-    pub after: u64,
-}
 
 impl SqliteSnapshot {
     /// Schema 3 adds delivery heads; it still needs the retained direct-mail

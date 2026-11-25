@@ -1,7 +1,7 @@
 //! Read-only schema 1/2 mail selection until the native host performs migration.
 use super::*;
 use rusqlite::types::Value;
-pub(super) fn sql(w: message::MailWindow<'_>, projection: &str) -> (String, Vec<Value>) {
+pub(super) fn sql(w: MailWindow<'_>, projection: &str) -> (String, Vec<Value>) {
     let unread = w.query.unread_only && w.to.is_some();
     let index = if w.to.is_some() {
         "messages_recipient_seq"

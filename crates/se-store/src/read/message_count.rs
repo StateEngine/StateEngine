@@ -94,7 +94,7 @@ impl SqliteSnapshot {
         sender: Option<&[u8]>,
     ) -> StoreResult<u64> {
         let h = self.info.head.as_ref().map_or(0, StorePosition::sequence);
-        let window = message::MailWindow {
+        let window = MailWindow {
             project,
             to: recipient,
             from: sender,
