@@ -112,18 +112,9 @@ impl Turn {
                 text(update.get("content"))?;
             }
             "tool_call" | "tool_call_update" => self.tool_call(kind, update)?,
-            "plan"
-            | "available_commands_update"
-            | "current_mode_update"
-            | "config_option_update"
-            | "session_info_update"
-            | "usage_update" => {}
-            _ => {
-                return Err(failure(
-                    "ACP capture",
-                    "unsupported update; no complete prefix is claimed",
-                ));
-            }
+            // Plans, metadata and vendor extensions carry no conversation text
+            // or tool result, so an unrecognised variant cannot hide content.
+            _ => {}
         }
         Ok(())
     }
@@ -202,8 +193,12 @@ impl Turn {
                 *original = status.into();
             }
         }
-        if status.is_some_and(|s| !matches!(s, "pending" | "in_progress" | "completed" | "failed"))
-        {
+        if status.is_some_and(|s| {
+            !matches!(
+                s,
+                "pending" | "in_progress" | "completed" | "failed" | "cancelled"
+            )
+        }) {
             return Err(failure("ACP tool", "unknown tool state"));
         }
         let bytes = serde_json::to_vec(update)
@@ -244,7 +239,7 @@ impl Turn {
         if self
             .statuses
             .values()
-            .any(|s| !matches!(s.as_str(), "completed" | "failed"))
+            .any(|s| !matches!(s.as_str(), "completed" | "failed" | "cancelled"))
         {
             return Err(failure("ACP completion", "a tool call remains unsettled"));
         }

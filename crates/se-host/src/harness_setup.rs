@@ -11,6 +11,7 @@ fn unreadable(error: impl std::fmt::Display) -> SeError {
 }
 
 /// Installed package metadata supplies its bin entry; no shim source is executed.
+/// Every candidate root still passes the package name and contained-bin checks.
 pub fn node_entrypoint(package: &NodePackage, executable: &Path) -> Result<PathBuf> {
     let paths = std::env::var_os("PATH").ok_or_else(|| unreadable("PATH is unavailable"))?;
     let mut directories: Vec<_> = std::env::split_paths(&paths)
@@ -21,15 +22,7 @@ pub fn node_entrypoint(package: &NodePackage, executable: &Path) -> Result<PathB
     }
     let mut seen = BTreeSet::new();
     for directory in directories {
-        let roots = [
-            directory.join("node_modules"),
-            directory
-                .parent()
-                .unwrap_or(&directory)
-                .join("lib/node_modules"),
-        ];
-        for root in roots {
-            let root = root.join(&package.name);
+        for root in package_roots(&directory, package) {
             if !seen.insert(root.clone()) {
                 continue;
             }
@@ -86,4 +79,48 @@ pub fn node_entrypoint(package: &NodePackage, executable: &Path) -> Result<PathB
             searched: seen.into_iter().map(|p| p.display().to_string()).collect(),
         },
     )))
+}
+
+/// Where global installs from one command directory keep the named package:
+/// npm (`node_modules` beside Windows `.cmd`/`.ps1` shims, `lib/node_modules`
+/// elsewhere), pnpm (`global/<layout>/node_modules` under its home), Bun
+/// (`install/global/node_modules` under `~/.bun`), Yarn on Windows
+/// (`Data/global/node_modules`), and any symlinked bin that resolves into a
+/// package directory, as Bun and Yarn create outside Windows.
+fn package_roots(directory: &Path, package: &NodePackage) -> Vec<PathBuf> {
+    let parent = directory.parent().unwrap_or(directory);
+    let mut modules = vec![
+        directory.join("node_modules"),
+        parent.join("lib/node_modules"),
+        parent.join("install/global/node_modules"),
+        parent.join("Data/global/node_modules"),
+    ];
+    if let Ok(layouts) = std::fs::read_dir(directory.join("global")) {
+        modules.extend(
+            layouts
+                .take(16)
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.file_name().to_str().is_some_and(is_layout))
+                .map(|entry| entry.path().join("node_modules")),
+        );
+    }
+    let mut roots: Vec<_> = modules
+        .into_iter()
+        .map(|modules| modules.join(&package.name))
+        .collect();
+    let shim = directory.join(&package.bin);
+    if std::fs::symlink_metadata(&shim).is_ok_and(|meta| meta.file_type().is_symlink())
+        && let Ok(target) = se_proc::canonicalize_path(&shim)
+        && let Some(root) = target
+            .ancestors()
+            .find(|path| path.ends_with(Path::new("node_modules").join(&package.name)))
+    {
+        roots.push(root.to_path_buf());
+    }
+    roots
+}
+
+/// pnpm names each global store layout with a version number.
+fn is_layout(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 4 && name.bytes().all(|byte| byte.is_ascii_digit())
 }

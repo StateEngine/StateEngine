@@ -664,12 +664,22 @@ fn normalize(messages: Vec<CapturedMessage>) -> Vec<CapturedMessage> {
     }
     result
 }
+/// A loaded conversation must still hold the latest captured exchange: the last
+/// user message and every message after it, in order. Extra replayed messages,
+/// such as a harness banner or a compaction summary, are allowed, and earlier
+/// captured messages may have been compacted away. An erased or different
+/// conversation lacks that exchange and fails.
 fn same_history(expected: &[CapturedMessage], replay: &[CapturedMessage]) -> bool {
-    expected.len() == replay.len()
-        && expected
-            .iter()
-            .zip(replay)
-            .all(|(a, b)| a.role == b.role && a.text.trim() == b.text.trim())
+    let latest = expected.iter().rposition(|message| message.role == "user");
+    // Nothing the user said was captured, so the replay must not invent any.
+    if latest.is_none() && replay.iter().any(|message| message.role == "user") {
+        return false;
+    }
+    let start = latest.unwrap_or(0);
+    let mut replayed = replay.iter();
+    expected[start..].iter().all(|wanted| {
+        replayed.any(|seen| seen.role == wanted.role && seen.text.trim() == wanted.text.trim())
+    })
 }
 
 fn http_mcp_allowed(state: &State, unadvertised: bool) -> bool {

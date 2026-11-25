@@ -279,10 +279,11 @@ loading saved sessions; agents without that capability can start fresh by omitti
 
 The native agent owns its permissions and sandboxing. StateEngine does not add
 an execution sandbox or network restriction to the protocol. Choose the agent's
-native permission level explicitly. The saved `approval = "never"` setting allows
-protocol permission requests; other approval settings refuse them with a reason
-because a headless approval interface is not implemented yet. A protocol mode or
-saved StateEngine profile does not establish OS containment.
+native permission level explicitly. Protocol sessions run headless, so a profile
+without an `approval` setting, or with `approval = "never"`, allows protocol
+permission requests; an explicit `approval = "on-request"` refuses them with a
+reason because a headless approval interface is not implemented yet. A protocol
+mode or saved StateEngine profile does not establish OS containment.
 
 After installing and configuring a protocol agent, add these sections to the
 existing configuration. Replace `protocol-agent` with its native executable and
@@ -325,23 +326,29 @@ se launch main --resume --detach
 
 Launch and status disclose that the native agent owns its policy. Status shows current activity
 and any permission refusal; streamed text is explicitly provisional until the
-completed turn appears in saved history. Resume loads the same conversation and
-compares its complete text with captured history before offering new input. A
-missing, changed, erased or oversized history refuses resume instead of silently
-starting over. If capture was disabled, omit `--resume` for a fresh conversation.
+completed turn appears in saved history. Resume loads the same conversation and,
+before offering new input, checks that it still holds the latest captured
+exchange (the last user message and every reply after it). Extra messages such as
+a banner or compaction summary are accepted; a missing, changed, erased or
+oversized latest exchange refuses resume instead of silently starting over. If capture was disabled, omit `--resume` for a fresh conversation.
 
 ### Named harness descriptors
 
 `se init --harness NAME` selects `claude`, `codex` or `secode` without a
-configuration edit. For an installed, logged-in `qwen-code`, `goose` or
-`hermes`, init detects the installed executable and any package entrypoint,
+configuration edit. For an installed, logged-in `qwen-code`, `goose`, `hermes`,
+`opencode`, `gemini`, `kimi`, `auggie` or `cline`, init detects the installed executable and any package entrypoint,
 then saves the shared protocol descriptor automatically. Missing or
 unreadable installations refuse with their actual cause and a native setup
 link. Init does not install software or
 log into a provider, and saving the descriptor does not establish a successful
 launch. The normal launch still verifies native capabilities and readiness.
 Existing named entries take precedence over catalogue names and keep their
-original command and permission choices.
+original command and permission choices. A catalogue descriptor lists standard
+provider key names such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and the AWS
+variables in its `environment`, so a harness can read keys already set in your
+environment; StateEngine saves only the names, and you can remove any of them.
+Every protocol agent also inherits the proxy and TLS trust variables
+(`HTTPS_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS` and related).
 
 Several installed protocol agents can share the same adapter. Give each one a
 named entry in `config.toml`, with an explicit mapping for every launch profile

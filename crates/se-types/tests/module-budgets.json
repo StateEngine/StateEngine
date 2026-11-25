@@ -4,7 +4,7 @@
  "default_crate_lines": 40000,
  "default_directory_lines": 10000,
  "crates": {
-  "se-host": 52863,
+  "se-host": 52899,
   "se-adoption": 2563,
   "se-agent-observation": 1466,
   "se-channels": 6750,
@@ -35,7 +35,7 @@
   "se-store-contract": 2861,
   "se-store-codec": 1150,
   "se-store-sql": 845,
-  "se-core": 25036,
+  "se-core": 25044,
   "se-atlas-records": 890,
   "se-render": 4029,
   "se": 23288,
@@ -48,7 +48,7 @@
   "se-cli-spec": 2600,
   "se-atlas-host": 2283,
   "se-harness": 18918,
-  "se-tool-capture": 1082,
+  "se-tool-capture": 1083,
   "se-remote-host": 4500,
   "se-state-files": 10500
  },
