@@ -10,10 +10,6 @@ use se_types::{Result, SeError};
 use std::num::NonZeroU64;
 
 impl LaunchCoordinator {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) async fn release_target(
         &self,
         work: &mut Work,
@@ -41,124 +37,20 @@ impl LaunchCoordinator {
         let mut checkpoint =
             se_proc::decode_checkpoint(identity.custody.format_version, &identity.custody.record)
                 .map_err(|e| error("release custody", e))?;
-        let (source, scope, existing) = match checkpoint.checkpoint.clone() {
-            CheckpointKind::Released { source, release } => {
-                let scope = release.scope.clone();
-                (source, scope, Some(release))
-            }
-            CheckpointKind::Process(record) => {
-                let scope = record.scope.clone();
-                let existing = record.ownership_release.clone();
-                (
-                    Box::new(se_proc::CheckpointSource::Process(record)),
-                    scope,
-                    existing,
-                )
-            }
-            CheckpointKind::Scope(scope) => {
-                let name = scope.scope.clone();
-                (
-                    Box::new(se_proc::CheckpointSource::Scope(scope)),
-                    name,
-                    None,
-                )
-            }
-            CheckpointKind::Root(root) => {
-                let scope = root.scope.scope.clone();
-                (Box::new(se_proc::CheckpointSource::Root(root)), scope, None)
-            }
-            CheckpointKind::Reservation(reservation) => {
-                let scope = match reservation.parent {
-                    se_proc::ReservationParent::LinuxTracked => {
-                        se_proc::ScopeIdentity::LinuxPrepared {
-                            nonce: reservation.scope_nonce,
-                        }
-                    }
-                    se_proc::ReservationParent::MacOs => se_proc::ScopeIdentity::MacOsPrepared {
-                        nonce: reservation.scope_nonce,
-                    },
-                    _ => {
-                        return Err(SeError::invalid(
-                            "ownership release",
-                            "an explicitly uncontained reservation",
-                        ));
-                    }
-                };
-                (
-                    Box::new(se_proc::CheckpointSource::Reservation(reservation)),
-                    scope,
-                    None,
-                )
-            }
-            _ => {
-                return Err(SeError::invalid(
-                    "ownership release",
-                    "unresolved native custody, never a terminal exit",
-                ));
-            }
-        };
-        if !matches!(
-            scope,
-            se_proc::ScopeIdentity::LinuxPrepared { .. }
-                | se_proc::ScopeIdentity::LinuxTracked { .. }
-                | se_proc::ScopeIdentity::MacOsPrepared { .. }
-                | se_proc::ScopeIdentity::MacOsTracked { .. }
-        ) {
-            return Err(SeError::invalid(
-                "ownership release",
-                "an uncontained tracked scope, never a kernel job or cgroup",
-            ));
-        }
+        let (source, scope, existing) = release_source(checkpoint.checkpoint.clone())?;
         let marker = if let Some(marker) = existing.clone() {
             marker
         } else {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| error("release clock", e))?
-                .as_nanos();
-            let unknown = |reason: String| se_proc::RemainingScope {
-                population: se_proc::Population::Unknown,
-                known_live: Vec::new(),
-                extent: se_proc::EnumerationExtent::Partial {
-                    reason,
-                    omitted: None,
-                },
-                observed_at_unix_ns: now,
+            let Some(remaining) = self.unreleased_remaining(work, row, deadline).await? else {
+                return Ok(());
             };
-            let remaining = if work.process.is_some() {
-                match self.exit_observation(work, deadline).await {
-                    Ok(StopObservation::Complete(witness)) => {
-                        self.finish(work, *witness, deadline).await?;
-                        return super::control::fill_stopped(row, work, false, &self.options.home);
-                    }
-                    Ok(StopObservation::Bounded(witness)) => witness.scope_exit.remaining,
-                    Ok(StopObservation::Pending { scope, .. }) => scope.remaining,
-                    Err(error) => unknown(format!(
-                        "Owner release without a usable native observation: {error}"
-                    )),
-                }
-            } else {
-                unknown("Cold recovery acquired no signal or enumeration authority; population remains unknown.".into())
-            };
-            se_proc::UnwitnessedRelease {
-                lifecycle: work.meta.lifecycle.clone(),
-                generation: self.options.epoch.generation,
-                revision: NonZeroU64::new(
-                    previous
-                        .revision
-                        .value
-                        .get()
-                        .checked_add(1)
-                        .ok_or_else(|| error("release revision", "exhausted"))?,
-                )
-                .ok_or_else(|| error("release revision", "zero"))?,
+            unwitnessed_release(
+                work,
+                self.options.epoch.generation,
+                &previous,
                 scope,
                 remaining,
-                released_at_unix_ns: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_err(|e| error("release clock", e))?
-                    .as_nanos(),
-            }
+            )?
         };
         if !work.session_retired {
             self.retire_session(work, "owner released an unproved tracked process", deadline)
@@ -208,6 +100,43 @@ impl LaunchCoordinator {
         work.wake.event.notify_waiters();
         work.wake.event.notify_one();
         self.fill_release(row, work, deadline).await
+    }
+    /// The population still in the tracked scope at release. `None` means
+    /// observation witnessed the native exit, so the stop is recorded instead.
+    async fn unreleased_remaining(
+        &self,
+        work: &mut Work,
+        row: &mut AgentStopResult,
+        deadline: &Deadline,
+    ) -> Result<Option<se_proc::RemainingScope>> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| error("release clock", e))?
+            .as_nanos();
+        let unknown = |reason: String| se_proc::RemainingScope {
+            population: se_proc::Population::Unknown,
+            known_live: Vec::new(),
+            extent: se_proc::EnumerationExtent::Partial {
+                reason,
+                omitted: None,
+            },
+            observed_at_unix_ns: now,
+        };
+        if work.process.is_none() {
+            return Ok(Some(unknown("Cold recovery acquired no signal or enumeration authority; population remains unknown.".into())));
+        }
+        Ok(Some(match self.exit_observation(work, deadline).await {
+            Ok(StopObservation::Complete(witness)) => {
+                self.finish(work, *witness, deadline).await?;
+                super::control::fill_stopped(row, work, false, &self.options.home)?;
+                return Ok(None);
+            }
+            Ok(StopObservation::Bounded(witness)) => witness.scope_exit.remaining,
+            Ok(StopObservation::Pending { scope, .. }) => scope.remaining,
+            Err(error) => unknown(format!(
+                "Owner release without a usable native observation: {error}"
+            )),
+        }))
     }
     pub(super) async fn fill_release(
         &self,
@@ -282,4 +211,111 @@ impl LaunchCoordinator {
         );
         Ok(())
     }
+}
+
+/// What an unproved checkpoint releases: its original source, its tracked
+/// scope, and any release already recorded. Only an uncontained tracked
+/// scope can be released, never a kernel job or cgroup.
+fn release_source(
+    checkpoint: CheckpointKind,
+) -> Result<(
+    Box<se_proc::CheckpointSource>,
+    se_proc::ScopeIdentity,
+    Option<se_proc::UnwitnessedRelease>,
+)> {
+    let (source, scope, existing) = match checkpoint {
+        CheckpointKind::Released { source, release } => {
+            let scope = release.scope.clone();
+            (source, scope, Some(release))
+        }
+        CheckpointKind::Process(record) => {
+            let scope = record.scope.clone();
+            let existing = record.ownership_release.clone();
+            (
+                Box::new(se_proc::CheckpointSource::Process(record)),
+                scope,
+                existing,
+            )
+        }
+        CheckpointKind::Scope(scope) => {
+            let name = scope.scope.clone();
+            (
+                Box::new(se_proc::CheckpointSource::Scope(scope)),
+                name,
+                None,
+            )
+        }
+        CheckpointKind::Root(root) => {
+            let scope = root.scope.scope.clone();
+            (Box::new(se_proc::CheckpointSource::Root(root)), scope, None)
+        }
+        CheckpointKind::Reservation(reservation) => {
+            let scope = match reservation.parent {
+                se_proc::ReservationParent::LinuxTracked => se_proc::ScopeIdentity::LinuxPrepared {
+                    nonce: reservation.scope_nonce,
+                },
+                se_proc::ReservationParent::MacOs => se_proc::ScopeIdentity::MacOsPrepared {
+                    nonce: reservation.scope_nonce,
+                },
+                _ => {
+                    return Err(SeError::invalid(
+                        "ownership release",
+                        "an explicitly uncontained reservation",
+                    ));
+                }
+            };
+            (
+                Box::new(se_proc::CheckpointSource::Reservation(reservation)),
+                scope,
+                None,
+            )
+        }
+        _ => {
+            return Err(SeError::invalid(
+                "ownership release",
+                "unresolved native custody, never a terminal exit",
+            ));
+        }
+    };
+    if !matches!(
+        scope,
+        se_proc::ScopeIdentity::LinuxPrepared { .. }
+            | se_proc::ScopeIdentity::LinuxTracked { .. }
+            | se_proc::ScopeIdentity::MacOsPrepared { .. }
+            | se_proc::ScopeIdentity::MacOsTracked { .. }
+    ) {
+        return Err(SeError::invalid(
+            "ownership release",
+            "an uncontained tracked scope, never a kernel job or cgroup",
+        ));
+    }
+    Ok((source, scope, existing))
+}
+/// The durable release marker, one revision past the StopUnproved head.
+fn unwitnessed_release(
+    work: &Work,
+    generation: se_proc::GenerationId,
+    previous: &se_store::ProjectionRecord,
+    scope: se_proc::ScopeIdentity,
+    remaining: se_proc::RemainingScope,
+) -> Result<se_proc::UnwitnessedRelease> {
+    Ok(se_proc::UnwitnessedRelease {
+        lifecycle: work.meta.lifecycle.clone(),
+        generation,
+        revision: NonZeroU64::new(
+            previous
+                .revision
+                .value
+                .get()
+                .checked_add(1)
+                .ok_or_else(|| error("release revision", "exhausted"))?,
+        )
+        .ok_or_else(|| error("release revision", "zero"))?,
+        scope,
+        remaining,
+        released_at_unix_ns: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| error("release clock", e))?
+            .as_nanos(),
+    })
 }

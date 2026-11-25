@@ -368,10 +368,6 @@ fn empty_row(target: ControlAgent, home: &std::path::Path) -> AgentStopResult {
         },
     }
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(super) fn fill_stopped(
     row: &mut AgentStopResult,
     work: &super::launch::Work,
@@ -397,7 +393,39 @@ pub(super) fn fill_stopped(
     } else {
         work.stop_method.clone()
     };
-    row.witness = StopWitness {
+    row.witness = witnessed(witness)?;
+    row.population = "empty".into();
+    row.population_reason = None;
+    row.remaining.clear();
+    row.enumeration = match witness.scope_exit.remaining.extent {
+        se_proc::EnumerationExtent::Complete => "complete",
+        _ => "best-effort",
+    }
+    .into();
+    if let Some(error) = &work.stop_failure {
+        row.witness.detail = Some(format!(
+            "{}; graceful stop failed before the native fallback: {}",
+            row.witness.detail.as_deref().unwrap_or(""),
+            SeError {
+                body: error.clone(),
+                cause: None
+            }
+        ));
+    }
+    row.capture = StopCapture {
+        flushed: work.capture_flushed,
+        last_event_id: work.last_capture.clone(),
+    };
+    if let Some(failure) = &work.capture_failure {
+        capture_incomplete(row, work, failure, home);
+        return Ok(());
+    }
+    resume_after_stop(row, work);
+    Ok(())
+}
+/// The outside exit witness as the stop receipt reports it.
+fn witnessed(witness: &se_proc::StopWitness) -> Result<StopWitness> {
+    Ok(StopWitness {
         state: "witnessed".into(),
         method: Some(
             match witness.scope_exit.exit_basis {
@@ -423,62 +451,49 @@ pub(super) fn fill_stopped(
             "scope={:?}; guarantee={:?}; root={:?}",
             witness.scope, witness.guarantee, witness.root
         )),
+    })
+}
+/// Native exit is witnessed but capture failed: resume is withheld and the
+/// remedy names what the provider needs.
+fn capture_incomplete(
+    row: &mut AgentStopResult,
+    work: &super::launch::Work,
+    failure: &se_types::ErrorBody,
+    home: &std::path::Path,
+) {
+    row.result = "capture-incomplete".into();
+    row.resume.state = "capture-incomplete".into();
+    let remedy = if work.meta.provider == se_store::Provider::SeCode {
+        "Restore the original authenticated service and retry stop to capture its pending records."
+    } else if work.meta.provider == se_store::Provider::Acp {
+        "The closed protocol source cannot supply another terminal reply. Preserve captured history and use se launch <agent> for a separate conversation without replaying the interrupted input."
+    } else {
+        "Restore the original transcript and retry stop to capture its pending records."
     };
-    row.population = "empty".into();
-    row.population_reason = None;
-    row.remaining.clear();
-    row.enumeration = match witness.scope_exit.remaining.extent {
-        se_proc::EnumerationExtent::Complete => "complete",
-        _ => "best-effort",
-    }
-    .into();
-    if let Some(error) = &work.stop_failure {
-        row.witness.detail = Some(format!(
-            "{}; graceful stop failed before the native fallback: {}",
-            row.witness.detail.as_deref().unwrap_or(""),
-            SeError {
-                body: error.clone(),
-                cause: None
-            }
-        ));
-    }
-    row.capture = StopCapture {
-        flushed: work.capture_flushed,
-        last_event_id: work.last_capture.clone(),
-    };
-    if let Some(failure) = &work.capture_failure {
-        row.result = "capture-incomplete".into();
-        row.resume.state = "capture-incomplete".into();
-        let remedy = if work.meta.provider == se_store::Provider::SeCode {
-            "Restore the original authenticated service and retry stop to capture its pending records."
-        } else if work.meta.provider == se_store::Provider::Acp {
-            "The closed protocol source cannot supply another terminal reply. Preserve captured history and use se launch <agent> for a separate conversation without replaying the interrupted input."
-        } else {
-            "Restore the original transcript and retry stop to capture its pending records."
-        };
-        row.resume.reason = Some(format!(
-            "Native exit is witnessed; capture failed: {}. {remedy} Conversation retention does not establish resume readiness.",
-            failure.message()
-        ));
-        row.resume.conversation_id = None;
-        row.resume.argv.clear();
-        row.resume.command.clear();
-        if work.secode_service_lost {
-            row.resume.state = "service-lost".into();
-            let next = se_core::ops::AgentCommand::launch_in_home(
-                &work.meta.agent.id,
-                home,
-                &work.meta.project.id,
-                true,
-            );
-            row.resume.reason = Some("The original service and client scopes exited. Final capture and uncertain input remain unproved; preserve the original profile and captured history. Use to start a different conversation without replaying the old input; ordinary down can close the lost service.".into());
-            if let Some(next) = next {
-                row.resume.command = next.command;
-                row.resume.argv = next.argv;
-            }
+    row.resume.reason = Some(format!(
+        "Native exit is witnessed; capture failed: {}. {remedy} Conversation retention does not establish resume readiness.",
+        failure.message()
+    ));
+    row.resume.conversation_id = None;
+    row.resume.argv.clear();
+    row.resume.command.clear();
+    if work.secode_service_lost {
+        row.resume.state = "service-lost".into();
+        let next = se_core::ops::AgentCommand::launch_in_home(
+            &work.meta.agent.id,
+            home,
+            &work.meta.project.id,
+            true,
+        );
+        row.resume.reason = Some("The original service and client scopes exited. Final capture and uncertain input remain unproved; preserve the original profile and captured history. Use to start a different conversation without replaying the old input; ordinary down can close the lost service.".into());
+        if let Some(next) = next {
+            row.resume.command = next.command;
+            row.resume.argv = next.argv;
         }
-        return Ok(());
     }
+}
+/// Resume readiness after a fully captured stop.
+fn resume_after_stop(row: &mut AgentStopResult, work: &super::launch::Work) {
     row.resume.model = work.meta.model.clone();
     if work.meta.provider == se_store::Provider::SeCode {
         row.resume.state = "compatible-service-required".into();
@@ -489,7 +504,7 @@ pub(super) fn fill_stopped(
         };
         row.resume.argv.clear();
         row.resume.command.clear();
-        return Ok(());
+        return;
     }
     match (&work.meta.conversation, work.activated) {
         (se_types::Read::Present { value }, true) if !row.resume.argv.is_empty() => {
@@ -508,5 +523,4 @@ pub(super) fn fill_stopped(
             row.resume.conversation_id = None;
         }
     }
-    Ok(())
 }
