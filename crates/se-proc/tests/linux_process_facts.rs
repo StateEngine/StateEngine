@@ -64,10 +64,6 @@ mod linux {
             }
         }
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub fn run() -> Result {
         if std::env::args().nth(1).as_deref() == Some("--facts-child") {
             return child();
@@ -93,58 +89,9 @@ mod linux {
             "native comm fixture not installed"
         );
         let process = live(pid)?;
-        let owner = observe_owner(
-            OwnerTarget::Process {
-                pid,
-                start: &process.identity.start,
-            },
-            &[],
-        )?;
-        assert_eq!(owner.pid(), pid);
-        assert_eq!(owner.start(), &process.identity.start);
-        let se_proc::StartIdentity::Linux { start_ticks } = process.identity.start else {
-            return Err("not Linux birth".into());
-        };
-        let wrong = se_proc::StartIdentity::Linux {
-            start_ticks: start_ticks + 1,
-        };
-        let error = observe_owner(OwnerTarget::Process { pid, start: &wrong }, &[])
-            .err()
-            .ok_or("wrong birth admitted")?;
-        assert_eq!(error.operation, "bind observed owner");
-        assert!(
-            error
-                .source
-                .to_string()
-                .contains("target process start changed")
-        );
+        owner_binding_checks_birth(pid, &process)?;
         drop(child.0.stdin.take());
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            // SAFETY: zeroed siginfo_t is the documented WNOHANG no-event state.
-            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            // SAFETY: this exact unreaped child is retained by Held. WNOWAIT
-            // observes exit without stealing the Child object's eventual reap.
-            if unsafe {
-                libc::waitid(
-                    libc::P_PID,
-                    pid.0,
-                    &mut info,
-                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-                )
-            } != 0
-            {
-                return Err(std::io::Error::last_os_error().into());
-            }
-            // SAFETY: successful waitid initialized this SIGCHLD-layout output.
-            if unsafe { info.si_pid() } == pid.0 as i32 {
-                break;
-            }
-            if Instant::now() >= deadline {
-                return Err("owned child did not reach native exit witness".into());
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        wait_for_native_exit(pid)?;
         match read_process(process.identity.machine.clone(), pid).map_err(|e| format!("{e:?}"))? {
             ProcessRead::ExitedRecord {
                 state: NativeState::ExitedAwaitingReap,
@@ -173,6 +120,65 @@ mod linux {
         println!(
             "linux_process_facts: 4 passed, 0 failed; real comm bytes, cross-reader birth, wrong-birth refusal and unreaped exit distinctions"
         );
+        Ok(())
+    }
+
+    fn owner_binding_checks_birth(pid: ProcessId, process: &se_proc::LiveObservation) -> Result {
+        let owner = observe_owner(
+            OwnerTarget::Process {
+                pid,
+                start: &process.identity.start,
+            },
+            &[],
+        )?;
+        assert_eq!(owner.pid(), pid);
+        assert_eq!(owner.start(), &process.identity.start);
+        let se_proc::StartIdentity::Linux { start_ticks } = process.identity.start else {
+            return Err("not Linux birth".into());
+        };
+        let wrong = se_proc::StartIdentity::Linux {
+            start_ticks: start_ticks + 1,
+        };
+        let error = observe_owner(OwnerTarget::Process { pid, start: &wrong }, &[])
+            .err()
+            .ok_or("wrong birth admitted")?;
+        assert_eq!(error.operation, "bind observed owner");
+        assert!(
+            error
+                .source
+                .to_string()
+                .contains("target process start changed")
+        );
+        Ok(())
+    }
+
+    fn wait_for_native_exit(pid: ProcessId) -> Result {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            // SAFETY: zeroed siginfo_t is the documented WNOHANG no-event state.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // SAFETY: this exact unreaped child is retained by Held. WNOWAIT
+            // observes exit without stealing the Child object's eventual reap.
+            if unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid.0,
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            } != 0
+            {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            // SAFETY: successful waitid initialized this SIGCHLD-layout output.
+            if unsafe { info.si_pid() } == pid.0 as i32 {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err("owned child did not reach native exit witness".into());
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
         Ok(())
     }
 }

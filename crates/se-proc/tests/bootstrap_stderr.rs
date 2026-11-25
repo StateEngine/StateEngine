@@ -191,10 +191,6 @@ mod judge {
             }
         }
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     /// Returns true only when the trial actually ran. A venue that cannot
     /// launch the detached child returns false, so no caller can report a pass
     /// that did not happen.
@@ -210,43 +206,10 @@ mod judge {
             );
             return Ok(false);
         }
-        let root = std::env::temp_dir().join(format!(
-            "se-retained-bootstrap-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(error)?
-                .as_nanos()
-        ));
-        if matches!(mode, "retained-await" | "flood") {
-            std::fs::create_dir(&root).map_err(error)?;
-            eprintln!(
-                "bootstrap fixture retained on failed or interrupted closure: {}",
-                root.display()
-            );
-        }
+        let root = fixture_root(mode)?;
         let machine = MachineId::new("persisted-cold-bootstrap-judge").map_err(error)?;
         #[cfg(windows)]
-        let excluded = if mode == "inheritance" {
-            use std::{mem::size_of, os::windows::io::FromRawHandle};
-            use windows_sys::Win32::{
-                Security::SECURITY_ATTRIBUTES, System::Threading::CreateEventW,
-            };
-            let attributes = SECURITY_ATTRIBUTES {
-                nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-                lpSecurityDescriptor: std::ptr::null_mut(),
-                bInheritHandle: 1,
-            };
-            // SAFETY: creates an unnamed owned event with inheritance explicitly enabled.
-            let raw = unsafe { CreateEventW(&attributes, 1, 0, std::ptr::null()) };
-            if raw.is_null() {
-                return Err(error(std::io::Error::last_os_error()));
-            }
-            // SAFETY: successful event creation transferred unique ownership.
-            Some(unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw) })
-        } else {
-            None
-        };
+        let excluded = inheritable_event(mode)?;
         #[allow(unused_mut)]
         let mut arguments = vec![
             mode.into(),
@@ -289,57 +252,10 @@ mod judge {
         };
         #[cfg(windows)]
         if mode == "broker" {
-            require(
-                observed_detachment == Some(RuntimeDetachment::WindowsBroker),
-                "strict job did not use the broker path",
-            )?;
-            use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-            use windows_sys::Win32::System::{JobObjects::IsProcessInJob, Threading::*};
-            let identity = custody
-                .child()?
-                .identity()
-                .ok_or("broker child identity missing")?;
-            // SAFETY: read-only open of the exact child PID; retained custody pins that birth.
-            let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, identity.pid.0) };
-            require(!raw.is_null(), "outside broker child observation failed")?;
-            // SAFETY: successful native open transfers one owned reference.
-            let observed = unsafe { OwnedHandle::from_raw_handle(raw) };
-            let mut member = 1;
-            // SAFETY: retained exact child reference and writable BOOL.
-            require(
-                // SAFETY: retained process reference and writable native membership output.
-                unsafe {
-                    IsProcessInJob(observed.as_raw_handle(), std::ptr::null_mut(), &mut member)
-                } != 0
-                    && member == 0,
-                "outside observer found the detached child in a job",
-            )?;
+            broker_child_is_outside_any_job(&custody, observed_detachment)?;
         }
         if mode == "live-read" {
-            require(
-                matches!(
-                    NativeProcessRuntime::witness_runtime(custody.child()?).map_err(error)?,
-                    RuntimeExitObservation::Pending { .. }
-                ),
-                "live-read child already exited",
-            )?;
-            let start = Instant::now();
-            let partial = custody
-                .child()?
-                .startup_stderr(start + Duration::from_millis(100))
-                .map_err(error)?;
-            require(
-                !partial.complete,
-                "live child's stderr was falsely labeled EOF",
-            )?;
-            require(
-                start.elapsed() < Duration::from_secs(1),
-                "incomplete stderr read ignored its deadline",
-            )?;
-            require(
-                partial.bytes.len() <= 16384,
-                "incomplete capture exceeded its cap",
-            )?;
+            live_read_is_bounded(&custody)?;
         }
         if mode == "flood" {
             acknowledge_flood(custody.child()?, &root, deadline)?;
@@ -349,6 +265,132 @@ mod judge {
             !matches!(witness.status, ExitStatus::Code(0)),
             "refused cold child exited successfully",
         )?;
+        retained_stderr_is_honest(mode, &custody, machine, &witness)?;
+        custody.release(&witness)?;
+        #[cfg(windows)]
+        if let Some(event) = excluded {
+            event_was_not_inherited(&event)?;
+        }
+        if mode == "retained-await" {
+            retained_cleanup_was_witnessed(&root)?;
+        }
+        if matches!(mode, "retained-await" | "flood") {
+            std::fs::remove_dir(root).map_err(error)?;
+        }
+        println!("PASS {mode}: exact exited child, bounded EOF stderr and public refusal");
+        Ok(true)
+    }
+
+    fn fixture_root(mode: &str) -> Result<std::path::PathBuf> {
+        let root = std::env::temp_dir().join(format!(
+            "se-retained-bootstrap-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(error)?
+                .as_nanos()
+        ));
+        if matches!(mode, "retained-await" | "flood") {
+            std::fs::create_dir(&root).map_err(error)?;
+            eprintln!(
+                "bootstrap fixture retained on failed or interrupted closure: {}",
+                root.display()
+            );
+        }
+        Ok(root)
+    }
+
+    #[cfg(windows)]
+    fn inheritable_event(mode: &str) -> Result<Option<std::os::windows::io::OwnedHandle>> {
+        let excluded = if mode == "inheritance" {
+            use std::{mem::size_of, os::windows::io::FromRawHandle};
+            use windows_sys::Win32::{
+                Security::SECURITY_ATTRIBUTES, System::Threading::CreateEventW,
+            };
+            let attributes = SECURITY_ATTRIBUTES {
+                nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: std::ptr::null_mut(),
+                bInheritHandle: 1,
+            };
+            // SAFETY: creates an unnamed owned event with inheritance explicitly enabled.
+            let raw = unsafe { CreateEventW(&attributes, 1, 0, std::ptr::null()) };
+            if raw.is_null() {
+                return Err(error(std::io::Error::last_os_error()));
+            }
+            // SAFETY: successful event creation transferred unique ownership.
+            Some(unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw) })
+        } else {
+            None
+        };
+        Ok(excluded)
+    }
+
+    #[cfg(windows)]
+    fn broker_child_is_outside_any_job(
+        custody: &Custody,
+        observed_detachment: Option<RuntimeDetachment>,
+    ) -> Result {
+        require(
+            observed_detachment == Some(RuntimeDetachment::WindowsBroker),
+            "strict job did not use the broker path",
+        )?;
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::System::{JobObjects::IsProcessInJob, Threading::*};
+        let identity = custody
+            .child()?
+            .identity()
+            .ok_or("broker child identity missing")?;
+        // SAFETY: read-only open of the exact child PID; retained custody pins that birth.
+        let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, identity.pid.0) };
+        require(!raw.is_null(), "outside broker child observation failed")?;
+        // SAFETY: successful native open transfers one owned reference.
+        let observed = unsafe { OwnedHandle::from_raw_handle(raw) };
+        let mut member = 1;
+        // SAFETY: retained exact child reference and writable BOOL.
+        require(
+            // SAFETY: retained process reference and writable native membership output.
+            unsafe { IsProcessInJob(observed.as_raw_handle(), std::ptr::null_mut(), &mut member) }
+                != 0
+                && member == 0,
+            "outside observer found the detached child in a job",
+        )?;
+        Ok(())
+    }
+
+    fn live_read_is_bounded(custody: &Custody) -> Result {
+        require(
+            matches!(
+                NativeProcessRuntime::witness_runtime(custody.child()?).map_err(error)?,
+                RuntimeExitObservation::Pending { .. }
+            ),
+            "live-read child already exited",
+        )?;
+        let start = Instant::now();
+        let partial = custody
+            .child()?
+            .startup_stderr(start + Duration::from_millis(100))
+            .map_err(error)?;
+        require(
+            !partial.complete,
+            "live child's stderr was falsely labeled EOF",
+        )?;
+        require(
+            start.elapsed() < Duration::from_secs(1),
+            "incomplete stderr read ignored its deadline",
+        )?;
+        require(
+            partial.bytes.len() <= 16384,
+            "incomplete capture exceeded its cap",
+        )?;
+        Ok(())
+    }
+
+    fn retained_stderr_is_honest(
+        mode: &str,
+        custody: &Custody,
+        machine: MachineId,
+        witness: &RuntimeExitWitness,
+    ) -> Result {
         let retained = custody
             .child()?
             .startup_stderr(Instant::now() + Duration::from_secs(2))
@@ -390,38 +432,37 @@ mod judge {
             !matches!(read_process(machine,witness.identity.pid).map_err(error)?, ProcessRead::Present(live) if live.identity==witness.identity && live.state!=NativeState::ExitedAwaitingReap),
             "refused cold child still executing",
         )?;
-        custody.release(&witness)?;
-        #[cfg(windows)]
-        if let Some(event) = excluded {
-            use std::os::windows::io::AsRawHandle;
-            // Observe the original object, not whether its raw number happens to
-            // name another child handle. No child report can substitute for this.
-            // SAFETY: retained parent event and zero-time native observation.
-            let state = unsafe {
-                windows_sys::Win32::System::Threading::WaitForSingleObject(event.as_raw_handle(), 0)
-            };
-            require(
-                state == windows_sys::Win32::Foundation::WAIT_TIMEOUT,
-                "bootstrap leaked an unlisted inheritable event",
-            )?;
-        }
-        if mode == "retained-await" {
-            require(
-                !root.join("endpoint.fixture").try_exists().map_err(error)?,
-                "failed bootstrap publication survived cleanup",
-            )?;
-            require(
-                std::fs::read(root.join("cleanup.witness")).map_err(error)?
-                    == b"cleanup completed before guard drop",
-                "parent did not witness cleanup before guard drop",
-            )?;
-            std::fs::remove_file(root.join("cleanup.witness")).map_err(error)?;
-        }
-        if matches!(mode, "retained-await" | "flood") {
-            std::fs::remove_dir(root).map_err(error)?;
-        }
-        println!("PASS {mode}: exact exited child, bounded EOF stderr and public refusal");
-        Ok(true)
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn event_was_not_inherited(event: &std::os::windows::io::OwnedHandle) -> Result {
+        use std::os::windows::io::AsRawHandle;
+        // Observe the original object, not whether its raw number happens to
+        // name another child handle. No child report can substitute for this.
+        // SAFETY: retained parent event and zero-time native observation.
+        let state = unsafe {
+            windows_sys::Win32::System::Threading::WaitForSingleObject(event.as_raw_handle(), 0)
+        };
+        require(
+            state == windows_sys::Win32::Foundation::WAIT_TIMEOUT,
+            "bootstrap leaked an unlisted inheritable event",
+        )?;
+        Ok(())
+    }
+
+    fn retained_cleanup_was_witnessed(root: &Path) -> Result {
+        require(
+            !root.join("endpoint.fixture").try_exists().map_err(error)?,
+            "failed bootstrap publication survived cleanup",
+        )?;
+        require(
+            std::fs::read(root.join("cleanup.witness")).map_err(error)?
+                == b"cleanup completed before guard drop",
+            "parent did not witness cleanup before guard drop",
+        )?;
+        std::fs::remove_file(root.join("cleanup.witness")).map_err(error)?;
+        Ok(())
     }
     #[cfg(windows)]
     fn strict_job() -> Result {

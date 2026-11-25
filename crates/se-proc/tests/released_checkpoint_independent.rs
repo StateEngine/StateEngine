@@ -4,35 +4,11 @@ use se_proc::*;
 use se_types::AgentId;
 use std::num::NonZeroU64;
 type Check<T = ()> = Result<T, Box<dyn std::error::Error>>;
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn fixture(mac: bool, stage: u8) -> Check<Checkpoint> {
     let lifecycle = LifecycleId::from_parts(1_700_000_000_000, [9; 10])?;
     let host = HostInstanceId([7; 16]);
     let generation = GenerationId::new(2)?;
-    let owner = ProcessIdentity {
-        machine: MachineId::new("release-codec-judge")?,
-        boot: if mac {
-            BootIdentity::MacOs {
-                seconds: 100,
-                microseconds: 7,
-            }
-        } else {
-            BootIdentity::Linux { boot_id: [3; 16] }
-        },
-        start: if mac {
-            StartIdentity::MacOs {
-                seconds: 110,
-                microseconds: 8,
-            }
-        } else {
-            StartIdentity::Linux { start_ticks: 27 }
-        },
-        pid: ProcessId(123),
-        image: std::env::current_exe()?,
-    };
+    let owner = owner_identity(mac)?;
     let mut child = owner.clone();
     child.pid = ProcessId(124);
     let parent = if mac {
@@ -50,32 +26,7 @@ fn fixture(mac: bool, stage: u8) -> Check<Checkpoint> {
         parent: parent.clone(),
         created_at_unix_ns: 1,
     };
-    let prepared_scope = if mac {
-        ScopeIdentity::MacOsPrepared { nonce: [8; 16] }
-    } else {
-        ScopeIdentity::LinuxPrepared { nonce: [8; 16] }
-    };
-    let tracked = if mac {
-        ScopeIdentity::MacOsTracked {
-            process_group: child.pid,
-            root: child.clone(),
-        }
-    } else {
-        ScopeIdentity::LinuxTracked {
-            process_group: child.pid,
-            root: child.clone(),
-        }
-    };
-    let guarantee = if mac {
-        ContainmentGuarantee::TrackedTree {
-            atomic_signal: true,
-            escape_prevented: false,
-        }
-    } else {
-        ContainmentGuarantee::Uncontained {
-            reason: UncontainedReason::NoUserManager,
-        }
-    };
+    let (prepared_scope, tracked, guarantee) = scopes(mac, &child);
     let prepared = ScopeCheckpoint {
         reservation: reservation.clone(),
         parent,
@@ -135,6 +86,73 @@ fn fixture(mac: bool, stage: u8) -> Check<Checkpoint> {
         ),
         _ => return Err("unknown fixture stage".into()),
     };
+    released(lifecycle, root_identity, source, scope)
+}
+
+fn owner_identity(mac: bool) -> Check<ProcessIdentity> {
+    let owner = ProcessIdentity {
+        machine: MachineId::new("release-codec-judge")?,
+        boot: if mac {
+            BootIdentity::MacOs {
+                seconds: 100,
+                microseconds: 7,
+            }
+        } else {
+            BootIdentity::Linux { boot_id: [3; 16] }
+        },
+        start: if mac {
+            StartIdentity::MacOs {
+                seconds: 110,
+                microseconds: 8,
+            }
+        } else {
+            StartIdentity::Linux { start_ticks: 27 }
+        },
+        pid: ProcessId(123),
+        image: std::env::current_exe()?,
+    };
+    Ok(owner)
+}
+
+fn scopes(
+    mac: bool,
+    child: &ProcessIdentity,
+) -> (ScopeIdentity, ScopeIdentity, ContainmentGuarantee) {
+    let prepared_scope = if mac {
+        ScopeIdentity::MacOsPrepared { nonce: [8; 16] }
+    } else {
+        ScopeIdentity::LinuxPrepared { nonce: [8; 16] }
+    };
+    let tracked = if mac {
+        ScopeIdentity::MacOsTracked {
+            process_group: child.pid,
+            root: child.clone(),
+        }
+    } else {
+        ScopeIdentity::LinuxTracked {
+            process_group: child.pid,
+            root: child.clone(),
+        }
+    };
+    let guarantee = if mac {
+        ContainmentGuarantee::TrackedTree {
+            atomic_signal: true,
+            escape_prevented: false,
+        }
+    } else {
+        ContainmentGuarantee::Uncontained {
+            reason: UncontainedReason::NoUserManager,
+        }
+    };
+    (prepared_scope, tracked, guarantee)
+}
+
+fn released(
+    lifecycle: LifecycleId,
+    root_identity: RootPublication,
+    source: CheckpointSource,
+    scope: ScopeIdentity,
+) -> Check<Checkpoint> {
     Ok(Checkpoint {
         format_version: 1,
         lifecycle: lifecycle.clone(),

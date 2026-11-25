@@ -145,10 +145,6 @@ fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(10)
 }
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn run() -> Result {
     let args: Vec<_> = std::env::args().collect();
     let rate = if args.get(1).is_some_and(|v| v == "--expect-native-rate") {
@@ -168,28 +164,7 @@ fn run() -> Result {
             || v == "--expect-mixed-epochs"
             || v == "--expect-source-limit"
     }) {
-        let expected = outside_identity(child.0.id())?;
-        let error = observe_process_birth(&expected, deadline())
-            .err()
-            .ok_or("unreadable/mixed source returned a fabricated birth")?;
-        let mixed = args[1] == "--expect-mixed-epochs";
-        assert_eq!(
-            error.code,
-            if mixed {
-                ProcErrorCode::IdentityChanged
-            } else if args[1] == "--expect-source-limit" {
-                ProcErrorCode::ResourceLimit
-            } else {
-                ProcErrorCode::IdentityUnreadable
-            }
-        );
-        if args[1] == "--expect-tick-failure" {
-            assert!(format!("{error:?}").contains("sysconf(_SC_CLK_TCK)"));
-        }
-        println!(
-            "1 passed, 0 failed; unavailable native birth source refuses without a clock fallback"
-        );
-        return Ok(());
+        return unreadable_source_refuses(&args, child.0.id());
     }
     let (expected, micros, precision) = outside(child.0.id(), rate)?;
     let actual = observe_process_birth(&expected, deadline())
@@ -204,6 +179,47 @@ fn run() -> Result {
         println!("1 passed, 0 failed; conversion honors the reported native tick rate");
         return Ok(());
     }
+    changed_identity_is_refused(&expected)?;
+    drop(child.0.stdin.take());
+    assert!(child.0.wait()?.success());
+    assert!(
+        observe_process_birth(&expected, deadline()).is_err(),
+        "exited process received a fabricated current birth"
+    );
+    println!(
+        "native birth: 8 passed, 0 failed; exact outside time/precision, identity/deadline/absence refusals; CLI started_at NOT GRADED"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn unreadable_source_refuses(args: &[String], pid: u32) -> Result {
+    let expected = outside_identity(pid)?;
+    let error = observe_process_birth(&expected, deadline())
+        .err()
+        .ok_or("unreadable/mixed source returned a fabricated birth")?;
+    let mixed = args[1] == "--expect-mixed-epochs";
+    assert_eq!(
+        error.code,
+        if mixed {
+            ProcErrorCode::IdentityChanged
+        } else if args[1] == "--expect-source-limit" {
+            ProcErrorCode::ResourceLimit
+        } else {
+            ProcErrorCode::IdentityUnreadable
+        }
+    );
+    if args[1] == "--expect-tick-failure" {
+        assert!(format!("{error:?}").contains("sysconf(_SC_CLK_TCK)"));
+    }
+    println!(
+        "1 passed, 0 failed; unavailable native birth source refuses without a clock fallback"
+    );
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn changed_identity_is_refused(expected: &ProcessIdentity) -> Result {
     let mut start = expected.clone();
     start.start = match start.start {
         StartIdentity::Linux { start_ticks } => StartIdentity::Linux {
@@ -241,7 +257,7 @@ fn run() -> Result {
         );
     }
     assert_eq!(
-        observe_process_birth(&expected, Instant::now())
+        observe_process_birth(expected, Instant::now())
             .err()
             .ok_or("expired birth read returned a time")?
             .code,
@@ -264,15 +280,6 @@ fn run() -> Result {
             .ok_or("relative image accepted")?
             .code,
         ProcErrorCode::InvalidInput
-    );
-    drop(child.0.stdin.take());
-    assert!(child.0.wait()?.success());
-    assert!(
-        observe_process_birth(&expected, deadline()).is_err(),
-        "exited process received a fabricated current birth"
-    );
-    println!(
-        "native birth: 8 passed, 0 failed; exact outside time/precision, identity/deadline/absence refusals; CLI started_at NOT GRADED"
     );
     Ok(())
 }
