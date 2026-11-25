@@ -235,16 +235,19 @@ fn verify_console_handle(connection: HANDLE) -> Result<()> {
     // SAFETY: `buffer` holds `capacity` initialized bytes and `returned <= capacity`.
     let bytes = unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), returned) };
     let name_bytes = &bytes[offset..offset_end];
-    const CONDRV_PREFIX: &[u8] = br"\Device\ConDrv\";
-    let is_condrv = name_bytes.len() >= CONDRV_PREFIX.len() * 2
-        && name_bytes
+    const CONDRV_DEVICE: &[u8] = br"\Device\ConDrv";
+    let prefix_bytes = CONDRV_DEVICE.len() * 2;
+    let is_condrv = name_bytes.len() >= prefix_bytes
+        && name_bytes[..prefix_bytes]
             .chunks_exact(2)
-            .take(CONDRV_PREFIX.len())
-            .zip(CONDRV_PREFIX)
+            .zip(CONDRV_DEVICE)
             .all(|(pair, &p)| {
                 let u = u16::from_ne_bytes([pair[0], pair[1]]);
                 u <= 0x7f && (u as u8).eq_ignore_ascii_case(&p)
-            });
+            })
+        && (name_bytes.len() == prefix_bytes
+            || u16::from_ne_bytes([name_bytes[prefix_bytes], name_bytes[prefix_bytes + 1]])
+                == u16::from(b'\\'));
     if !is_condrv {
         return Err(invalid(
             "verify console connection",
