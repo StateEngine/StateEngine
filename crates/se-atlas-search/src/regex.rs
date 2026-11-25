@@ -117,6 +117,9 @@ fn regex_files(
     narrowing.sort_by_key(|(_, ids)| ids.len());
     narrowing.truncate(PIECES_USED);
     add_untrigrammed(snapshot, &mut narrowing)?;
+    if narrowing.is_empty() {
+        return Ok(None);
+    }
     let mut holders: Option<HashMap<i64, u32>> = None;
     for (_, ids) in narrowing {
         let mut files: HashMap<i64, u32> = HashMap::new();
@@ -137,30 +140,59 @@ fn regex_files(
     Ok(holders)
 }
 
+/// Maximum vocabulary rows scanned when supplementing trigram hits with
+/// untrigrammed tokens. Exceeding this falls back to a live tree scan so a
+/// match is never silently dropped and memory/CPU stay bounded.
+const UNTRIGRAMMED_SCAN_CAP: usize = PIECE_TOKEN_CAP * 4;
+
 /// Add to each piece the indexed tokens holding it that the trigram index
-/// leaves out, found in one scan of the vocabulary.
-fn add_untrigrammed(snapshot: &ReadSnapshot<'_>, narrowing: &mut [(&str, Vec<i64>)]) -> Result<()> {
+/// leaves out, found in one bounded scan of the vocabulary.
+fn add_untrigrammed(
+    snapshot: &ReadSnapshot<'_>,
+    narrowing: &mut Vec<(&str, Vec<i64>)>,
+) -> Result<()> {
     let tests: Vec<String> = (1..=narrowing.len())
         .map(|n| format!("instr(tok, ?{n}) > 0"))
         .collect();
-    let sql = format!("SELECT id, tok FROM vocab WHERE {}", tests.join(" OR "));
+    let sql = format!(
+        "SELECT id, tok FROM vocab WHERE {} LIMIT {}",
+        tests.join(" OR "),
+        UNTRIGRAMMED_SCAN_CAP + 1
+    );
     let mut select = snapshot.connection().prepare_cached(&sql)?;
     let pieces: Vec<&str> = narrowing.iter().map(|(piece, _)| *piece).collect();
     let rows = select.query_map(rusqlite::params_from_iter(pieces), |row| {
         Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
     })?;
+    let mut seen = 0usize;
+    let mut overflowed = vec![false; narrowing.len()];
     for row in rows {
+        seen += 1;
+        if seen > UNTRIGRAMMED_SCAN_CAP {
+            narrowing.clear();
+            return Ok(());
+        }
         let (id, token) = row?;
         // Trigram tokens were found already; the sets never overlap.
         if tokens::is_gram_token(&token) {
             continue;
         }
-        for (piece, ids) in narrowing.iter_mut() {
-            if token.contains(*piece) {
-                ids.push(id);
+        for ((piece, ids), over) in narrowing.iter_mut().zip(overflowed.iter_mut()) {
+            if !*over && token.contains(*piece) {
+                if ids.len() >= PIECE_TOKEN_CAP {
+                    *over = true;
+                } else {
+                    ids.push(id);
+                }
             }
         }
     }
+    let mut idx = 0usize;
+    narrowing.retain(|_| {
+        let keep = !overflowed[idx];
+        idx += 1;
+        keep
+    });
     Ok(())
 }
 

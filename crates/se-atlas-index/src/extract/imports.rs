@@ -71,7 +71,7 @@ fn rust_imports(masked: &str, out: &mut Vec<ImportSpec>) {
             continue;
         };
         let mut leaves = Vec::new();
-        expand_tree("", &normalize_tree(&rest[..end]), &mut leaves);
+        expand_tree("", &normalize_tree(&rest[..end]), 0, &mut leaves);
         for leaf in leaves {
             push(
                 out,
@@ -137,8 +137,10 @@ fn normalize_tree(tree: &str) -> String {
     out
 }
 
-fn expand_tree(prefix: &str, tree: &str, out: &mut Vec<String>) {
-    if out.len() >= MAX_TREE_LEAVES {
+const MAX_TREE_DEPTH: usize = 32;
+
+fn expand_tree(prefix: &str, tree: &str, depth: usize, out: &mut Vec<String>) {
+    if out.len() >= MAX_TREE_LEAVES || depth >= MAX_TREE_DEPTH {
         return;
     }
     let join = |head: &str| match (prefix.is_empty(), head.is_empty()) {
@@ -153,7 +155,7 @@ fn expand_tree(prefix: &str, tree: &str, out: &mut Vec<String>) {
                 match part {
                     "" => {}
                     "self" => out.push(base.clone()),
-                    part => expand_tree(&base, part, out),
+                    part => expand_tree(&base, part, depth + 1, out),
                 }
             }
         }
@@ -491,10 +493,7 @@ impl Resolver {
             "self" => (module_dir(from), &segments[1..], true),
             "super" => {
                 let supers = segments.iter().take_while(|s| **s == "super").count();
-                let mut dir = module_dir(from);
-                for _ in 0..supers {
-                    dir = parent_dir(&dir);
-                }
+                let dir = (0..supers).fold(module_dir(from), |d, _| parent_dir(&d));
                 (dir, &segments[supers..], true)
             }
             name => match self.crates.get(name) {
@@ -565,19 +564,18 @@ impl Resolver {
     }
 
     fn go(&self, spelling: &str) -> Option<String> {
-        let dir = self
-            .dirs
-            .keys()
-            .filter(|dir| {
-                let dir = dir.trim_end_matches('/');
-                !dir.is_empty() && (spelling == dir || spelling.ends_with(&format!("/{dir}")))
-            })
-            .max_by_key(|dir| dir.len())?;
-        self.dirs
-            .get(dir)?
-            .iter()
-            .find(|file| file.ends_with(".go") && !file.ends_with("_test.go"))
-            .cloned()
+        let mut suffix = spelling;
+        loop {
+            if !suffix.is_empty()
+                && let Some(entries) = self.dirs.get(&format!("{suffix}/"))
+                && let Some(file) = entries
+                    .iter()
+                    .find(|f| f.ends_with(".go") && !f.ends_with("_test.go"))
+            {
+                return Some(file.clone());
+            }
+            suffix = suffix.split_once('/')?.1;
+        }
     }
 
     fn include(&self, from: &str, spelling: &str) -> Option<String> {

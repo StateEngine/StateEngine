@@ -1,8 +1,5 @@
-//! What one root's index can honestly claim. `Current` holds only when
-//! discovery finished, no batch is pending, the dirty set is empty and not
-//! overflowed, no file failed to read or extract, and the watch is armed.
-//! Skipped files (binary, minified, private, unsupported) and Git history
-//! never hold a root back from `Current`.
+//! Honest index state: `Current` holds only when discovery finished, no batch
+//! or dirty paths remain, no file failed read/extract, and the watch is armed.
 use crate::dirty::DirtySet;
 use se_types::{
     ErrorBody, SeError,
@@ -11,9 +8,10 @@ use se_types::{
 };
 
 /// Where the writer is.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
     /// The writer has not opened the store yet.
+    #[default]
     Opening,
     /// A cold build is running; `job` numbers builds of this root.
     Cold {
@@ -29,10 +27,13 @@ pub enum Phase {
 }
 
 /// Whether the watcher can report changes.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Watch {
+    #[default]
     Pending,
-    Armed { directories: u64 },
+    Armed {
+        directories: u64,
+    },
     Failed(String),
 }
 
@@ -49,7 +50,7 @@ pub struct Counts {
     pub extract_failed: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Progress {
     pub phase: Phase,
     pub counts: Counts,
@@ -59,20 +60,6 @@ pub struct Progress {
     pub watch: Watch,
     pub epoch: Option<CacheEpoch>,
     pub generation: Option<u64>,
-}
-
-impl Default for Progress {
-    fn default() -> Self {
-        Self {
-            phase: Phase::Opening,
-            counts: Counts::default(),
-            discovery_complete: false,
-            batch_running: false,
-            watch: Watch::Pending,
-            epoch: None,
-            generation: None,
-        }
-    }
 }
 
 impl Progress {
@@ -90,7 +77,11 @@ impl Progress {
     pub fn state(&self, dirty: &DirtySet) -> IndexState {
         match &self.phase {
             Phase::Failed(reason) => IndexState::Unreadable {
-                error: unreadable(reason),
+                error: source_error(
+                    "the Atlas code index",
+                    reason,
+                    "Restore access to the project folder and the host state folder, then run se down and se up.",
+                ),
             },
             Phase::Stopped => IndexState::Closed,
             Phase::Opening => IndexState::Opening,
@@ -107,24 +98,18 @@ impl Progress {
                 Watch::Failed(_) | Watch::Pending => IndexState::VerificationNeeded {
                     reason: CoverageReason::WatchLoss,
                 },
-                Watch::Armed { .. } if self.counts.failed > 0 => IndexState::Partial {
-                    error: partial(&format!(
-                        "{} files could not be read; each is retried when it next changes",
-                        self.counts.failed
-                    )),
-                },
-                Watch::Armed { .. } if self.counts.extract_failed > 0 => IndexState::Partial {
-                    error: partial(&format!(
-                        "{} files could not be parsed; their symbols are missing until they next change",
-                        self.counts.extract_failed
-                    )),
-                },
-                Watch::Armed { .. } => IndexState::Partial {
-                    error: partial(&format!(
-                        "discovery stopped early; {} directories could not be listed",
-                        self.counts.unlisted_directories
-                    )),
-                },
+                Watch::Armed { .. } if self.counts.failed > 0 => partial_state(format!(
+                    "{} files could not be read; each is retried when it next changes",
+                    self.counts.failed
+                )),
+                Watch::Armed { .. } if self.counts.extract_failed > 0 => partial_state(format!(
+                    "{} files could not be parsed; their symbols are missing until they next change",
+                    self.counts.extract_failed
+                )),
+                Watch::Armed { .. } => partial_state(format!(
+                    "discovery stopped early; {} directories could not be listed",
+                    self.counts.unlisted_directories
+                )),
             },
         }
     }
@@ -185,23 +170,22 @@ pub fn job_id(job: u64) -> AtlasJobId {
     AtlasJobId(bytes)
 }
 
-fn unreadable(reason: &str) -> ErrorBody {
-    SeError::new(se_types::Detail::SourceUnreadable(
-        details::SourceUnreadable {
-            subject: "the Atlas code index".into(),
-            reason: reason.into(),
-            next_step: "Restore access to the project folder and the host state folder, then run se down and se up.".into(),
-        },
-    ))
-    .body
+fn partial_state(reason: String) -> IndexState {
+    IndexState::Partial {
+        error: source_error(
+            "part of the project folder",
+            &reason,
+            "Restore read access to those files; hits from the rest of the project are still returned.",
+        ),
+    }
 }
 
-fn partial(reason: &str) -> ErrorBody {
+fn source_error(subject: &str, reason: &str, next_step: &str) -> ErrorBody {
     SeError::new(se_types::Detail::SourceUnreadable(
         details::SourceUnreadable {
-            subject: "part of the project folder".into(),
+            subject: subject.into(),
             reason: reason.into(),
-            next_step: "Restore read access to those files; hits from the rest of the project are still returned.".into(),
+            next_step: next_step.into(),
         },
     ))
     .body

@@ -74,10 +74,10 @@ pub(super) fn successful(event: &StoredEvent) -> Result<Option<Successful>> {
     if !vendor_ref.starts_with(se_store::TRANSCRIPT_EVENT_PREFIX) {
         return Ok(None);
     }
-    // Native metadata is already bounded by capture. Avoid parsing arbitrary
-    // chat or scanning bodies for tool-looking strings.
+    // Skip oversized captured metadata so the record feed cursor advances
+    // instead of retrying the same event forever.
     if text.len() > 8192 {
-        return Err(SeError::too_large("captured metadata", 8192, text.len()));
+        return Ok(None);
     }
     let metadata = Record::decode(text)?;
     if metadata.kind != "captured-tool" {

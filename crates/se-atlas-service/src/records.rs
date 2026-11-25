@@ -1,8 +1,5 @@
-//! Fold core's committed record feed into the store's `records`, `mentions`
-//! and `touches`. Each record keeps its visibility: a restricted record's
-//! touches carry `restricted_record`, so queries never count it for a viewer
-//! core has not checked. Bodies are tokenized into a contentless index and
-//! then dropped; no plaintext body is stored.
+//! Fold core's committed record feed into `records`, `mentions`, and `touches`.
+//! Bodies are tokenized into a contentless FTS index and never stored verbatim.
 use crate::{error::sqlite, root::FeedReceipt};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use se_types::code::AtlasText as _;
@@ -20,14 +17,9 @@ const TOUCHES_PER_TARGET: i64 = 10;
 /// Title bytes the store keeps; core may send a longer excerpt.
 const MAX_TITLE: usize = 160;
 
-/// The longest prefix of `text` within `max` bytes, cut on a character
-/// boundary, so an over-long title never stalls the feed on a CHECK.
+/// The longest prefix of `text` within `max` bytes on a character boundary.
 fn clip(text: &str, max: usize) -> &str {
-    let mut end = text.len().min(max);
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[..end]
+    &text[..text.floor_char_boundary(max)]
 }
 
 /// The last core event the store has folded in.
@@ -74,32 +66,30 @@ pub(crate) fn apply(
             },
         )));
     }
-    let tx = conn.unchecked_transaction().map_err(|e| sqlite(&e))?;
-    for change in &feed.changes {
-        match change {
-            RecordFeedChange::Remove { key, .. } => remove(&tx, key),
-            RecordFeedChange::Upsert(record) => upsert(&tx, record),
+    let run = || -> rusqlite::Result<FeedReceipt> {
+        let tx = conn.unchecked_transaction()?;
+        for change in &feed.changes {
+            match change {
+                RecordFeedChange::Remove { key, .. } => {
+                    let old = affected(&tx, key)?;
+                    tx.execute("DELETE FROM records WHERE record_id=?1", [key.as_str()])?;
+                    refresh(&tx, &old)?;
+                }
+                RecordFeedChange::Upsert(record) => upsert(&tx, record)?,
+            }
         }
-        .map_err(|e| sqlite(&e))?;
-    }
-    tx.execute(
-        "INSERT INTO record_feed(singleton, last_event) VALUES (1, ?1)
-         ON CONFLICT(singleton) DO UPDATE SET last_event=excluded.last_event",
-        [feed.through.as_str()],
-    )
-    .map_err(|e| sqlite(&e))?;
-    tx.commit().map_err(|e| sqlite(&e))?;
-    Ok(FeedReceipt {
-        changed: u32::try_from(feed.changes.len()).unwrap_or(u32::MAX),
-        complete: feed.complete,
-    })
-}
-
-fn remove(tx: &Transaction<'_>, key: &RecordKey) -> rusqlite::Result<()> {
-    let old = affected(tx, key)?;
-    // The schema's triggers drop the record's search rows and mentions.
-    tx.execute("DELETE FROM records WHERE record_id=?1", [key.as_str()])?;
-    refresh(tx, &old)
+        tx.execute(
+            "INSERT INTO record_feed(singleton, last_event) VALUES (1, ?1)
+             ON CONFLICT(singleton) DO UPDATE SET last_event=excluded.last_event",
+            [feed.through.as_str()],
+        )?;
+        tx.commit()?;
+        Ok(FeedReceipt {
+            changed: u32::try_from(feed.changes.len()).unwrap_or(u32::MAX),
+            complete: feed.complete,
+        })
+    };
+    run().map_err(|e| sqlite(&e))
 }
 
 fn upsert(tx: &Transaction<'_>, record: &FeedRecord) -> rusqlite::Result<()> {
@@ -111,14 +101,15 @@ fn upsert(tx: &Transaction<'_>, record: &FeedRecord) -> rusqlite::Result<()> {
             "restricted",
             audience
                 .as_ref()
-                .map(|keys| serde_json::to_vec(keys).unwrap_or_default()),
+                .map(|k| serde_json::to_vec(k).unwrap_or_default()),
         ),
     };
     let title = clip(&record.title, MAX_TITLE);
     let actor = record
         .actor
         .as_ref()
-        .and_then(|actor| serde_json::to_string(actor).ok());
+        .and_then(|a| serde_json::to_string(a).ok());
+    let r = &record.pointer;
     tx.execute(
         "INSERT INTO records(record_id, kind, actor, occurred_unix_ms, title, source_event,
            visibility, audience, body_truncated)
@@ -128,12 +119,12 @@ fn upsert(tx: &Transaction<'_>, record: &FeedRecord) -> rusqlite::Result<()> {
            source_event=excluded.source_event, visibility=excluded.visibility,
            audience=excluded.audience, body_truncated=excluded.body_truncated",
         params![
-            record.pointer.key.as_str(),
-            kind_name(record.pointer.kind),
+            r.key.as_str(),
+            kind_name(r.kind),
             actor,
             record.occurred_unix_ms,
             title,
-            record.pointer.source_event.as_str(),
+            r.source_event.as_str(),
             visibility,
             audience,
             record.body_truncated
@@ -318,31 +309,17 @@ fn resolve(
                 .collect::<rusqlite::Result<_>>()?;
             match keys.as_slice() {
                 [key] => push(out, "symbol", key.clone(), "NameOnly"),
-                _ => push(
-                    out,
-                    "identifier",
-                    name.as_str().as_bytes().to_vec(),
-                    "NameOnly",
-                ),
+                _ => push(out, "identifier", name.as_str().into(), "NameOnly"),
             }
         }
-        MentionTarget::Commit(oid) => push(
-            out,
-            "commit",
-            match oid {
-                GitObjectId::Sha1(bytes) => bytes.to_vec(),
-                GitObjectId::Sha256(bytes) => bytes.to_vec(),
-            },
-            "ExplicitImport",
-        ),
-        MentionTarget::Record(key) => {
-            push(
-                out,
-                "record",
-                key.as_str().as_bytes().to_vec(),
-                "ExplicitImport",
-            );
+        MentionTarget::Commit(oid) => {
+            let bytes = match oid {
+                GitObjectId::Sha1(b) => b.as_slice(),
+                GitObjectId::Sha256(b) => b.as_slice(),
+            };
+            push(out, "commit", bytes.to_vec(), "ExplicitImport");
         }
+        MentionTarget::Record(key) => push(out, "record", key.as_str().into(), "ExplicitImport"),
     }
     Ok(())
 }

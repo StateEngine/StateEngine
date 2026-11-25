@@ -1,7 +1,5 @@
-//! Dual tokenization. Whole tokens keep internal name punctuation
-//! (`app-server`, `crate::cache::connection`, `0xc0000142`, `1.2.3`) so
-//! punctuated searches hit the index; their identifier parts (split on `_`,
-//! `-`, `.`, `::`, camelCase and digit transitions) are indexed beside them
+//! Dual tokenization: whole tokens preserve internal punctuation (`app-server`,
+//! `crate::cache::connection`, `1.2.3`); identifier parts are indexed alongside
 //! for partial and typo matches.
 use std::collections::HashMap;
 
@@ -41,14 +39,13 @@ pub fn compact(token: &str) -> String {
         .collect()
 }
 
-/// Whether a token belongs in the trigram index.
-/// Digit-only tokens are left out: a typo match on a number is noise.
+/// Whether a token belongs in the trigram index (digit-only tokens excluded).
 pub fn is_gram_token(token: &str) -> bool {
-    (3..=MAX_GRAM_TOKEN).contains(&token.len())
-        && token.bytes().any(|b| b.is_ascii_lowercase())
-        && token
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    let b = token.as_bytes();
+    (3..=MAX_GRAM_TOKEN).contains(&b.len())
+        && b.iter().any(u8::is_ascii_lowercase)
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_')
 }
 
 /// The trigram ids of a gram token: three bytes packed big-endian.
@@ -81,17 +78,50 @@ pub fn split_parts(token: &str) -> Vec<&str> {
 
 /// Whether an identifier splits between `previous` and `current`.
 pub fn boundary(previous: char, current: char, next: Option<char>) -> bool {
-    let camel = previous.is_lowercase() && current.is_uppercase();
-    let acronym_end =
-        previous.is_uppercase() && current.is_uppercase() && next.is_some_and(char::is_lowercase);
-    let digit = previous.is_ascii_digit() != current.is_ascii_digit();
-    camel || acronym_end || digit
+    (previous.is_lowercase() && current.is_uppercase())
+        || (previous.is_uppercase()
+            && current.is_uppercase()
+            && next.is_some_and(char::is_lowercase))
+        || (previous.is_ascii_digit() != current.is_ascii_digit())
+}
+
+/// Skip high-entropy hashes, SRI digests, and base64 blobs that bloat the vocabulary.
+fn is_noise_blob(raw: &str) -> bool {
+    let b = raw.as_bytes();
+    if b.len() < 32 {
+        return false;
+    }
+    if b.iter().all(u8::is_ascii_hexdigit) {
+        return true;
+    }
+    if let Some((algo, rest)) = raw.split_once('-')
+        && matches!(algo, "sha256" | "sha384" | "sha512")
+        && rest.len() >= 32
+        && rest
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"+/=_-".contains(&c))
+    {
+        return true;
+    }
+    let runs = b
+        .windows(2)
+        .filter(|w| !w[0].is_ascii_digit() && w[1].is_ascii_digit())
+        .count()
+        + usize::from(b[0].is_ascii_digit());
+    runs >= 3
+        && b.iter().any(u8::is_ascii_uppercase)
+        && b.iter().any(u8::is_ascii_lowercase)
+        && b.iter()
+            .all(|c| c.is_ascii_alphanumeric() || b"+/=".contains(c))
 }
 
 /// Count a token and its identifier parts. A whole token over the byte cap
 /// is not stored, but its parts that fit still are, so a long joined name
 /// stays findable by its pieces.
 fn add_token(raw: &str, counts: &mut HashMap<String, u32>) {
+    if is_noise_blob(raw) {
+        return;
+    }
     let whole = (raw.len() <= MAX_TOKEN_BYTES).then(|| raw.to_lowercase());
     // A long hex run is a hash or id: its digit/letter splits are noise.
     let hex = raw.len() >= 16 && raw.bytes().all(|b| b.is_ascii_hexdigit());

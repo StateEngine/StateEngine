@@ -1,12 +1,7 @@
-//! The native watcher thread. Windows and macOS watch the whole tree with one
-//! recursive request; Linux watches each directory. Every reported path goes
-//! through [`crate::filter`] before any filesystem call, so ignored and
-//! private paths never cost a syscall or reach the dirty set. Lost events (a
-//! queue overflow, a moved directory, a failed read) mark the dirty set
-//! overflowed, which makes the writer reconcile the tree by file stats. A
-//! watch that cannot be kept marks the root unwatched instead of current.
-//! The thread drains what is queued, then sleeps with no timer until the
-//! watch signals more events or [`Watcher::stop`] wakes it.
+//! Native watcher thread: recursive on Windows/macOS, per-directory on Linux.
+//! Paths pass through [`crate::filter`] before any syscall; lost events mark
+//! the dirty set overflowed so the writer reconciles by file stats.
+//! Drains queued events, then blocks with no timer until signaled or stopped.
 use crate::{
     dirty::Change,
     filter::{self, Reported},
@@ -55,7 +50,7 @@ impl Watcher {
     pub fn arm(shared: &Arc<Shared>, directories: &[String]) -> Result<(Self, u64), String> {
         let root = NativeSourceRoot::open(&shared.spec.source).map_err(|e| e.to_string())?;
         let watch = NativeSourceWatch::new().map_err(|e| e.to_string())?;
-        let (names, watched) = subscribe(&watch, &root, directories)?;
+        let (names, watched) = subscribe(&watch, &root, &shared.spec.source, directories)?;
         let stop = Arc::new(AtomicBool::new(false));
         let (wake, woken) = signal(&watch)?;
         let thread = std::thread::Builder::new()
@@ -122,6 +117,7 @@ type Names = HashMap<u32, String>;
 fn subscribe(
     watch: &NativeSourceWatch,
     root: &NativeSourceRoot,
+    _: &std::path::Path,
     _: &[String],
 ) -> Result<(Names, u64), String> {
     match watch.subscribe_tree(root) {
@@ -137,30 +133,47 @@ fn subscribe(
 fn subscribe(
     watch: &NativeSourceWatch,
     root: &NativeSourceRoot,
+    source: &std::path::Path,
     directories: &[String],
 ) -> Result<(Names, u64), String> {
-    let mut names = Names::new();
-    let mut git = vec![".git".to_owned(), ".git/refs/heads".to_owned()];
-    let mut branches = vec![".git/refs/heads".to_owned()];
-    while let Some(directory) = branches.pop() {
-        let found = subdirectories(root, &directory).unwrap_or_default();
-        git.extend(found.iter().cloned());
-        branches.extend(found);
+    let needed = directories.len().saturating_add(1);
+    if let Some(limit) = std::fs::read_to_string("/proc/sys/fs/inotify/max_user_watches")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        && needed > limit
+    {
+        return Err(format!(
+            "inotify watch limit ({limit}) is smaller than the {needed} directories in this tree; raise fs.inotify.max_user_watches or ignore large directories"
+        ));
     }
-    // Git metadata is optional enrichment; a failed watch there only loses
-    // head tracking.
-    for directory in &git {
-        if let Ok(Some(registration)) = watch.subscribe(root, directory) {
-            names.insert(registration.descriptor, directory.clone());
+    let mut names = Names::new();
+    // Git metadata is optional enrichment; a failed watch there only loses head tracking.
+    let linked = crate::githead::linked_roots(source);
+    let (git_root, git_dir, refs_root, refs_dir, prefix) = match &linked {
+        Some((git, common)) => (
+            git,
+            "",
+            common.as_ref().unwrap_or(git),
+            "refs/heads",
+            ".git/",
+        ),
+        None => (root, ".git", root, ".git/refs/heads", ""),
+    };
+    if let Ok(Some(reg)) = watch.subscribe(git_root, git_dir) {
+        names.insert(reg.descriptor, ".git".to_owned());
+    }
+    let mut branches = vec![refs_dir.to_owned()];
+    while let Some(dir) = branches.pop() {
+        if let Ok(Some(reg)) = watch.subscribe(refs_root, &dir) {
+            names.insert(reg.descriptor, format!("{prefix}{dir}"));
         }
+        branches.extend(subdirectories(refs_root, &dir).unwrap_or_default());
     }
     for directory in std::iter::once("").chain(directories.iter().map(String::as_str)) {
         match watch.subscribe(root, directory) {
             Ok(Some(registration)) => {
                 names.insert(registration.descriptor, directory.to_owned());
             }
-            // A vanished directory means the tree changed, which the
-            // reconcile after arming catches.
             Ok(None) => {}
             Err(error) => return Err(format!("watching {directory:?}: {error}")),
         }

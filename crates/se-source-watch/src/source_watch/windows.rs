@@ -20,7 +20,7 @@ mod decode;
 mod events;
 pub use events::NativeWatchEvents;
 
-const BUFFER: usize = 4096;
+const BUFFER: usize = 64 * 1024;
 const MAX_WATCHES: usize = 128;
 const MAX_QUEUE: usize = 16384;
 const COMMAND: usize = usize::MAX;
@@ -183,40 +183,11 @@ impl NativeSourceWatch {
         {
             return Err(changed("watched directory changed during subscription"));
         }
-        let mut ancestors = Vec::new();
-        if path.is_empty() {
-            let mut child = root.path.as_path();
-            while let (Some(parent), Some(name)) = (child.parent(), child.file_name()) {
-                if ancestors.len() >= MAX_WATCHES - 1 {
-                    return Err(invalid("source ancestry exceeds watch capacity"));
-                }
-                let name = name
-                    .to_str()
-                    .ok_or_else(|| invalid("source ancestry encoding"))?;
-                let parent_root = NativeSourceRoot::open(parent)
-                    .map_err(|error| watch_error("open watched ancestor", error))?;
-                let parent_pin = parent_root
-                    .open_directory("")?
-                    .ok_or_else(|| changed("source ancestor disappeared"))?;
-                let parent_file = open_async(parent)
-                    .map_err(|error| watch_error("open ancestor notification", error))?;
-                if !parent_pin.validate_name()?
-                    || !parent_pin.identity.same_object(
-                        &os::revision(&parent_file, true)
-                            .map_err(|error| watch_error("inspect watched ancestor", error))?,
-                    )
-                {
-                    return Err(changed("source ancestor changed during subscription"));
-                }
-                ancestors.push((parent_file, name.to_owned()));
-                child = parent;
-            }
-        }
         let (response, result) = mpsc::channel();
         self.post(Command::Subscribe {
             directory: file,
             identity,
-            ancestors,
+            ancestors: Vec::new(),
             recursive,
             response,
         })?;
@@ -364,7 +335,10 @@ fn open_async(path: &std::path::Path) -> io::Result<File> {
 }
 impl Drop for NativeSourceWatch {
     fn drop(&mut self) {
-        if !self.stopping && self.worker.is_some() && self.post(Command::Stop).is_err() {
+        if !self.stopping
+            && self.worker.is_some()
+            && self.shutdown(std::time::Duration::from_secs(2)).is_err()
+        {
             eprintln!("source watch worker could not be stopped");
         }
     }

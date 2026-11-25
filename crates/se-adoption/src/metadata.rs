@@ -74,7 +74,7 @@ pub fn current(
 fn witness(
     home: &std::path::Path,
     generation: se_types::Generation,
-    provider: &NativeIpcPeer,
+    binding: &[u8],
     input: &Input,
 ) -> Result<(std::path::PathBuf, [u8; 32])> {
     use sha2::{Digest, Sha256};
@@ -83,7 +83,7 @@ fn witness(
     if input.kind == Kind::Codex {
         hash.update(b"codex");
     }
-    hash.update(provider.binding());
+    hash.update(binding);
     hash.update(generation.get().to_le_bytes());
     hash.update(input.project.as_str());
     hash.update(input.conversation.as_str());
@@ -108,7 +108,7 @@ pub fn authorize(
     provider: &NativeIpcPeer,
     input: &Input,
 ) -> Result<()> {
-    let (path, expected) = witness(home, generation, provider, input)?;
+    let (path, expected) = witness(home, generation, &provider.binding(), input)?;
     let files = se_proc::NativeStateFiles::open(home).map_err(native)?;
     let remembered = || -> Result<bool> {
         let Some(file) = files.readback(&path).map_err(native)? else {
@@ -146,10 +146,10 @@ pub fn authorize(
 pub fn forget(
     home: &std::path::Path,
     generation: se_types::Generation,
-    provider: &NativeIpcPeer,
+    binding: &[u8],
     input: &Input,
 ) -> Result<()> {
-    let (path, expected) = witness(home, generation, provider, input)?;
+    let (path, expected) = witness(home, generation, binding, input)?;
     if let Some(mut file) = se_proc::OwnedFile::open(&path).map_err(native)? {
         let actual = file.read(33).map_err(native)?;
         if actual != expected {

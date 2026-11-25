@@ -206,7 +206,8 @@ fn binary_bom_minified_and_lock_files_are_classified() {
 
     let lock = extract("Cargo.lock", b"[[package]]\nname = \"serde\"\n", false);
     assert_ne!(lock.flags & flags::GENERATED, 0);
-    assert!(lock.symbols.is_empty() && lock.tokens.iter().any(|(t, _)| t == "serde"));
+    assert!(lock.symbols.is_empty() && lock.tokens.iter().any(|(t, _)| t == "cargo"));
+    assert!(!lock.tokens.iter().any(|(t, _)| t == "serde"));
 }
 
 fn postings(reader: &Reader, token: &str) -> Result<Vec<(i64, u32)>, IndexError> {

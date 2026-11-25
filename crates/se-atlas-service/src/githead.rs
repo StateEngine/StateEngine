@@ -19,6 +19,11 @@ struct GitDir {
     path: PathBuf,
 }
 
+fn common_dir(git: &GitDir) -> Option<NativeSourceRoot> {
+    let text = read(&git.root, "commondir", MAX_FILE)?;
+    NativeSourceRoot::open(&resolve(&git.path, text.trim())?).ok()
+}
+
 /// The worktree's own `.git` directory, or the one a linked worktree's
 /// `.git` file names.
 fn git_dir(source: &Path) -> Option<GitDir> {
@@ -34,6 +39,16 @@ fn git_dir(source: &Path) -> Option<GitDir> {
     Some(GitDir {
         root: NativeSourceRoot::open(&path).ok()?,
         path,
+    })
+}
+
+/// Linked worktree gitdir and optional commondir for head/branch watches.
+#[cfg(target_os = "linux")]
+pub(crate) fn linked_roots(source: &Path) -> Option<(NativeSourceRoot, Option<NativeSourceRoot>)> {
+    let git = git_dir(source)?;
+    (git.path != source.join(".git")).then(|| {
+        let common = common_dir(&git);
+        (git.root, common)
     })
 }
 
@@ -54,9 +69,7 @@ pub(crate) fn head(source: &Path) -> Option<Vec<u8>> {
     if !reference.starts_with("refs/") || reference.split('/').any(|part| part == "..") {
         return None;
     }
-    let common = read(&git.root, "commondir", MAX_FILE)
-        .and_then(|text| resolve(&git.path, text.trim()))
-        .and_then(|dir| NativeSourceRoot::open(&dir).ok());
+    let common = common_dir(&git);
     let stores = std::iter::once(&git.root).chain(common.as_ref());
     for store in stores {
         if let Some(text) = read(store, reference, MAX_FILE) {

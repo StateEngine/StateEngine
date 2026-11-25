@@ -42,11 +42,9 @@ impl CodexHarness {
                 SeError::invalid("Codex attach", "an actual successful executable probe")
             })?;
         let socket = self.socket(request)?;
-        let login = se_core::scope::require_present(
-            self.agent_login(&request.identity.session)?,
-            "Codex login record",
-            "Relaunch the agent; its launch did not record a Codex login.",
-        )?;
+        let login = self
+            .load_agent_login(&request.identity.session, until)
+            .await?;
         let binding = self
             .connect(
                 transport,
@@ -82,7 +80,9 @@ impl CodexHarness {
                 .await?;
             binding.notify("initialized", json!({}), &cx).await?;
             #[cfg(windows)]
-            let named = windows_sandbox::selection(request, &login)?;
+            let named = self
+                .windows_sandbox_selection(request, &login, until)
+                .await?;
             #[cfg(windows)]
             self.confirm_windows_sandbox(&binding, named, &cx).await?;
             timing.advance(Phase::Thread);
@@ -115,6 +115,51 @@ impl CodexHarness {
             },
             binding: HarnessBinding::new(binding),
         })
+    }
+
+    async fn load_agent_login(
+        &self,
+        session: &se_types::SessionId,
+        until: std::time::Instant,
+    ) -> Result<PathBuf> {
+        let path = self.directory(session)?.join(LOGIN_RECORD);
+        let session = session.clone();
+        let deadline = crate::Deadline::idle()?
+            .stage(until.saturating_duration_since(std::time::Instant::now()))?;
+        let recorded = self
+            .pool
+            .run_owned(&deadline, move || Self::read_agent_login(&path, &session))
+            .await?;
+        se_core::scope::require_present(
+            recorded,
+            "Codex login record",
+            "Relaunch the agent; its launch did not record a Codex login.",
+        )
+    }
+
+    #[cfg(windows)]
+    async fn windows_sandbox_selection(
+        &self,
+        request: &HarnessRequest,
+        login: &Path,
+        until: std::time::Instant,
+    ) -> Result<Option<windows_sandbox::Implementation>> {
+        if !matches!(
+            request.policy.writes,
+            se_proc::WritePolicy::Workspace { .. }
+        ) {
+            return Ok(None);
+        }
+        let login = login.to_path_buf();
+        let deadline = crate::Deadline::idle()?
+            .stage(until.saturating_duration_since(std::time::Instant::now()))?;
+        let choice = self
+            .pool
+            .run_owned(&deadline, move || windows_sandbox::user_choice(&login))
+            .await?;
+        Ok(Some(
+            choice.unwrap_or(windows_sandbox::Implementation::DEFAULT),
+        ))
     }
 
     async fn prepare_thread(

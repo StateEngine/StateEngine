@@ -466,7 +466,7 @@ fn regex_anchors_reach_untrigrammed_and_case_folded_tokens() -> TestResult {
         &format!("pub const BLOB: &str = \"{long_hex}\";\n"),
     )?;
     let index = Indexed::build(&repo)?;
-    assert!(index.reader.token_id(&digest)?.is_some());
+    assert!(index.reader.token_id(&digest)?.is_none());
     assert!(index.reader.token_id(&long_run)?.is_some());
 
     // The digest's own pieces are digits or hex letters and never narrow;

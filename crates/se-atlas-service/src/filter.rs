@@ -6,7 +6,15 @@
 use se_atlas_index::policy;
 
 /// Directory names skipped at any depth, as discovery skips them.
-pub const SKIPPED_DIRECTORIES: [&str; 2] = ["target", "node_modules"];
+pub const SKIPPED_DIRECTORIES: [&str; 7] = [
+    "target",
+    "node_modules",
+    ".venv",
+    ".next",
+    "dist",
+    "build",
+    "vendor",
+];
 
 /// The ignore patterns that make discovery agree with [`classify`].
 pub fn global_patterns() -> Vec<String> {

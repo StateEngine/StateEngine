@@ -366,12 +366,15 @@ impl HostedRouter {
                 agent: agent.clone(),
             }])?;
         handle.retire(identity, false, deadline).await?;
-        crate::adoption::metadata::forget(
-            &self.execution.state_directory,
-            self.execution.generation,
-            provider,
-            input,
-        )?;
+        let state_dir = self.execution.state_directory.clone();
+        let (generation, binding, input) =
+            (self.execution.generation, provider.binding(), input.clone());
+        self.execution
+            .blocking
+            .run_owned(deadline, move || {
+                crate::adoption::metadata::forget(&state_dir, generation, &binding, &input)
+            })
+            .await?;
         Ok(())
     }
 }

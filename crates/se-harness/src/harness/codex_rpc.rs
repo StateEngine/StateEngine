@@ -160,7 +160,13 @@ impl CodexHarness {
     /// agent's login after it starts.
     pub fn agent_login(&self, session: &se_types::SessionId) -> Result<Read<PathBuf>> {
         let path = self.directory(session)?.join(LOGIN_RECORD);
-        let Some(mut file) = se_proc::OwnedFile::open(&path).map_err(native_error)? else {
+        Self::read_agent_login(&path, session)
+    }
+    pub(super) fn read_agent_login(
+        path: &Path,
+        session: &se_types::SessionId,
+    ) -> Result<Read<PathBuf>> {
+        let Some(mut file) = se_proc::OwnedFile::open(path).map_err(native_error)? else {
             return Ok(Read::Absent {
                 checked: format!("no Codex login is recorded at {}", path.display()),
             });
