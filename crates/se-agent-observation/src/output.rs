@@ -38,7 +38,7 @@ pub fn observe(
     let observations = plans
         .into_iter()
         .map(|plan| {
-            let plan = plan.with_command_home(home);
+            let plan = plan.with_command_home(home, machine);
             observe_agent(
                 if status {
                     plan.with_status_attention()
@@ -46,7 +46,6 @@ pub fn observe(
                     plan
                 },
                 deadline,
-                machine,
             )
         })
         .collect::<Result<Vec<_>>>()?;

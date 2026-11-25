@@ -214,7 +214,7 @@ pub(super) fn finish(prepared: Prepared, home: &std::path::Path) -> Result<AnyOu
         let plan = observations
             .next()
             .ok_or_else(|| scope::unreadable("agent observation", "prepared row is absent"))?;
-        let plan = plan.with_command_home(home);
+        let plan = plan.with_command_home(home, se_host::state_files::machine_identity_in);
         let observation = se_host::observe_agent(
             if status {
                 plan.with_status_attention()

@@ -67,7 +67,7 @@ fn observe(
     let plan = se_host::prepare_agent_observation(&f.project, &row, &mut read)?;
     read.close()?;
     se_host::observe_agent(
-        plan.with_command_home(home),
+        plan.with_command_home(home, se_host::state_files::machine_identity_in),
         Instant::now() + Duration::from_secs(2),
     )?
     .apply(&mut row)?;

@@ -355,7 +355,7 @@ fn observe(
         recorded_session,
     );
     let plan = if let Some(home) = home {
-        plan.with_command_home(home)
+        plan.with_command_home(home, crate::state_files::machine_identity_in)
     } else {
         plan
     };

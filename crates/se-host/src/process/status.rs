@@ -40,7 +40,7 @@ impl LaunchCoordinator {
                     plans,
                     bound.at(),
                     &home,
-                    crate::agent_observation::machine_identity,
+                    crate::state_files::machine_identity_in,
                 )?;
                 coordinator.observe_repository(&mut output, fresh, watch_only, &bound)?;
                 coordinator.observe_status(&mut output, &observed_admission, &bound)?;

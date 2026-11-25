@@ -9,7 +9,6 @@ fn probe_native_process(
     target: &SessionIdentity,
     identity: &se_store::ProcessIdentityRecord,
     deadline: Instant,
-    machine: MachineIdentity,
 ) -> Result<Option<(se_proc::ProcessRecord, ProcessRead)>> {
     let checkpoint =
         se_proc::decode_checkpoint(identity.custody.format_version, &identity.custody.record)
@@ -32,7 +31,7 @@ fn probe_native_process(
         {
             return Err(invalid("a retained reboot exit witness for this lifecycle"));
         }
-        let home = plan
+        let (home, machine) = plan
             .command_home
             .as_ref()
             .ok_or_else(|| invalid("the local protected machine identity"))?;
@@ -149,11 +148,7 @@ fn classify_observation(
     Ok(Some(result))
 }
 
-pub(super) fn observe(
-    plan: &mut AgentObservationPlan,
-    deadline: Instant,
-    machine: MachineIdentity,
-) -> Result<()> {
+pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Result<()> {
     let target = plan
         .identity
         .as_ref()
@@ -174,8 +169,7 @@ pub(super) fn observe(
             return Ok(());
         }
     };
-    let probe = probe_native_process(plan, target, identity, deadline, machine);
-    let (record, observation) = match probe {
+    let (record, observation) = match probe_native_process(plan, target, identity, deadline) {
         Ok(Some(value)) => value,
         Ok(None) => {
             plan.row.session.state = "stopped".into();

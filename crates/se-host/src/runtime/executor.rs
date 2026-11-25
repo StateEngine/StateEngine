@@ -175,7 +175,7 @@ async fn finish_complete(
                     observations,
                     observe_deadline.at(),
                     &command_home,
-                    crate::agent_observation::machine_identity,
+                    crate::state_files::machine_identity_in,
                 )?;
                 if let Some(native) = native {
                     native.observe_native_output(
