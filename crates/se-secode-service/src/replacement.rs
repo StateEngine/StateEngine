@@ -174,7 +174,7 @@ impl<H: HostPort> Coordinator<'_, H> {
             .as_ref()
             .is_some_and(|release| {
                 !release.completed
-                    && !(service.journal.lost.is_set() && !resuming)
+                    && !(service.journal.lost && !resuming)
                     && (!resuming || release.session != request.identity.session)
             })
         {
@@ -183,7 +183,7 @@ impl<H: HostPort> Coordinator<'_, H> {
                 "the original hold release is still uncertain; retain its exact coordinates before replacing the session",
             ));
         }
-        let lost = service.journal.lost.is_set() && !resuming;
+        let lost = service.journal.lost && !resuming;
         let closed = service
             .journal
             .client_closed
@@ -208,8 +208,8 @@ impl<H: HostPort> Coordinator<'_, H> {
         }
         self.verify_predecessor_terminal(service, work, lost, deadline)
             .await?;
-        let no_service_or_input = service.journal.initial_offered == InitialOffer::Pending
-            && service.journal.session_create_attempted == SessionCreation::NotAttempted;
+        let no_service_or_input = service.journal.initial_offered == InitialInputIntent::Unrecorded
+            && !service.journal.session_create_attempted;
         if resuming
             && (no_service_or_input || service.journal.retired || service.journal.notice.is_some())
         {
@@ -244,7 +244,7 @@ fn reset_journal_for_replacement(
         service.control = None;
         service.failure = None;
         service.journal.retired = false;
-        service.journal.lost = CustodyState::Intact;
+        service.journal.lost = false;
         service.journal.resume_release = None;
         service.journal.input_free_resume = ResumeSupport::Unavailable;
         service.journal.stop_failure = None;
@@ -255,16 +255,12 @@ fn reset_journal_for_replacement(
     service.journal.initial_sha256 = se_types::Sha256::from_bytes(
         Sha256::digest(request.initial_input.as_str().as_bytes()).into(),
     );
-    service.journal.initial_offered = InitialOffer::Pending;
-    service.journal.session_create_attempted = SessionCreation::NotAttempted;
+    service.journal.initial_offered = InitialInputIntent::Unrecorded;
+    service.journal.session_create_attempted = false;
     service.journal.previous_policy_sha256 = service.journal.policy_sha256.take();
     service.journal.client_closed = None;
     service.journal.notice = None;
-    service.journal.restart_key = None;
-    service.journal.restart_effect = None;
-    service.journal.restart_settled = false;
-    service.journal.restart_reply_sent = RestartReply::Pending;
-    service.journal.superseded_by_restart = RestartSupersession::Current;
+    service.journal.restart = None;
     service.restart = None;
     service.journal.capability_repair = None;
     service.live.invalidate()?;

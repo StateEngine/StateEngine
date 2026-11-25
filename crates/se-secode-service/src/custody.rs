@@ -2,56 +2,109 @@
 //! journal is product recovery state, independent of client launch cleanup.
 use super::*;
 use se_proc::{Checkpoint, CheckpointKind, CheckpointPrincipal, RootPublication};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use sha2::{Digest, Sha256};
-use std::io::Write;
+use std::{io::Write, result::Result as StdResult};
 
-macro_rules! bool_state {
-    ($name:ident, $false_var:ident, $true_var:ident) => {
-        #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-        #[serde(from = "bool", into = "bool")]
-        pub enum $name {
-            #[default]
-            $false_var,
-            $true_var,
-        }
-        impl $name {
-            pub fn is_set(self) -> bool {
-                matches!(self, Self::$true_var)
-            }
-        }
-        impl From<bool> for $name {
-            fn from(value: bool) -> Self {
-                if value {
-                    Self::$true_var
-                } else {
-                    Self::$false_var
-                }
-            }
-        }
-        impl From<$name> for bool {
-            fn from(value: $name) -> Self {
-                value.is_set()
-            }
-        }
-    };
+/// Whether initial input intent has been durably recorded before native launch.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(from = "bool", into = "bool")]
+pub enum InitialInputIntent {
+    #[default]
+    Unrecorded,
+    Recorded,
+}
+impl From<bool> for InitialInputIntent {
+    fn from(v: bool) -> Self {
+        if v { Self::Recorded } else { Self::Unrecorded }
+    }
+}
+impl From<InitialInputIntent> for bool {
+    fn from(v: InitialInputIntent) -> Self {
+        v == InitialInputIntent::Recorded
+    }
 }
 
-bool_state!(CustodyState, Intact, Lost);
-bool_state!(InitialOffer, Pending, Offered);
-bool_state!(SessionCreation, NotAttempted, Attempted);
-bool_state!(ResumeSupport, Unavailable, Supported);
-bool_state!(RestartReply, Pending, Sent);
-bool_state!(RestartSupersession, Current, Superseded);
+/// Whether the qualified SE Code server supports input-free resume.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(from = "bool", into = "bool")]
+pub enum ResumeSupport {
+    #[default]
+    Unavailable,
+    Supported,
+}
+impl From<bool> for ResumeSupport {
+    fn from(v: bool) -> Self {
+        if v {
+            Self::Supported
+        } else {
+            Self::Unavailable
+        }
+    }
+}
+impl From<ResumeSupport> for bool {
+    fn from(v: ResumeSupport) -> Self {
+        v == ResumeSupport::Supported
+    }
+}
+/// Durable custody for a service superseded by a credential restart.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RestartJournal {
+    pub key: String,
+    pub effect: Option<se_store::RecordId>,
+    pub reply_sent: bool,
+    pub settled: bool,
+}
+// `deny_unknown_fields` lives here so `#[serde(flatten)]` on `Journal::restart`
+// rejects any unknown field in the entire v1 flat JSON object.
+mod restart_wire {
+    use super::*;
+    type Restart = Option<RestartJournal>;
+    #[derive(Default, Serialize, Deserialize)]
+    #[serde(default, deny_unknown_fields)]
+    struct Wire {
+        restart_key: Option<String>,
+        restart_effect: Option<se_store::RecordId>,
+        restart_settled: bool,
+        restart_reply_sent: bool,
+        superseded_by_restart: bool,
+    }
+    pub fn serialize<S: Serializer>(v: &Restart, s: S) -> StdResult<S::Ok, S::Error> {
+        v.as_ref()
+            .map_or_else(Wire::default, |r| Wire {
+                restart_key: Some(r.key.clone()),
+                restart_effect: r.effect,
+                restart_settled: r.settled,
+                restart_reply_sent: r.reply_sent,
+                superseded_by_restart: true,
+            })
+            .serialize(s)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> StdResult<Restart, D::Error> {
+        let w = Wire::deserialize(d)?;
+        let empty = w.restart_effect.is_none() && !w.restart_settled && !w.restart_reply_sent;
+        match (w.restart_key, w.superseded_by_restart) {
+            (None, false) if empty => Ok(None),
+            (Some(key), true) => Ok(Some(RestartJournal {
+                key,
+                effect: w.restart_effect,
+                reply_sent: w.restart_reply_sent,
+                settled: w.restart_settled,
+            })),
+            _ => Err(D::Error::custom(
+                "inconsistent SE Code restart custody fields",
+            )),
+        }
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Journal {
     pub version: u16,
     #[serde(default)]
     pub retired: bool,
     #[serde(default)]
-    pub lost: CustodyState,
+    pub lost: bool,
     #[serde(default)]
     pub stop_failure: Option<String>,
     pub project: se_types::ProjectId,
@@ -61,8 +114,8 @@ pub struct Journal {
     pub vendor_session: String,
     pub initial_input: String,
     pub initial_sha256: se_types::Sha256,
-    pub initial_offered: InitialOffer,
-    pub session_create_attempted: SessionCreation,
+    pub initial_offered: InitialInputIntent,
+    pub session_create_attempted: bool,
     pub policy_sha256: Option<se_types::Sha256>,
     #[serde(default)]
     pub previous_policy_sha256: Option<se_types::Sha256>,
@@ -73,16 +126,8 @@ pub struct Journal {
     #[serde(default)]
     pub input_free_resume: ResumeSupport,
     pub notice: Option<Notice>,
-    #[serde(default)]
-    pub restart_key: Option<String>,
-    #[serde(default)]
-    pub restart_effect: Option<se_store::RecordId>,
-    #[serde(default)]
-    pub restart_settled: bool,
-    #[serde(default)]
-    pub restart_reply_sent: RestartReply,
-    #[serde(default)]
-    pub superseded_by_restart: RestartSupersession,
+    #[serde(flatten, with = "restart_wire")]
+    pub restart: Option<RestartJournal>,
     pub bootstrap: Option<Checkpoint>,
     pub service: Option<Checkpoint>,
     #[serde(default)]
@@ -120,7 +165,7 @@ pub struct Notice {
 }
 impl Journal {
     pub(crate) fn unprovisioned(&self) -> bool {
-        self.identity.is_none() && self.initial_offered == InitialOffer::Pending
+        self.identity.is_none() && self.initial_offered == InitialInputIntent::Unrecorded
     }
 
     pub(crate) fn require_registration(&self, current: &[u8]) -> Result<()> {

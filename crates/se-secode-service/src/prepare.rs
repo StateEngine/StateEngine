@@ -428,7 +428,7 @@ fn new_secode_service(
     let journal = Journal {
         version: 1,
         retired: false,
-        lost: CustodyState::Intact,
+        lost: false,
         stop_failure: None,
         project: request.identity.project.clone(),
         agent: request.identity.agent.clone(),
@@ -439,19 +439,15 @@ fn new_secode_service(
         initial_sha256: se_types::Sha256::from_bytes(
             Sha256::digest(request.initial_input.as_str().as_bytes()).into(),
         ),
-        initial_offered: InitialOffer::Pending,
-        session_create_attempted: SessionCreation::NotAttempted,
+        initial_offered: InitialInputIntent::Unrecorded,
+        session_create_attempted: false,
         policy_sha256: None,
         previous_policy_sha256: None,
         client_closed: None,
         resume_release: None,
         input_free_resume: ResumeSupport::Unavailable,
         notice: None,
-        restart_key: None,
-        restart_effect: None,
-        restart_settled: false,
-        restart_reply_sent: RestartReply::Pending,
-        superseded_by_restart: RestartSupersession::Current,
+        restart: None,
         bootstrap: None,
         service: None,
         retirement: None,
@@ -461,25 +457,7 @@ fn new_secode_service(
         identity: None,
         capability_repair: None,
     };
-    Ok(Service {
-        restart: None,
-        journal,
-        path,
-        digest: None,
-        pending_save: None,
-        wake: Arc::new(Wake::default()),
-        bootstrap: None,
-        process: None,
-        retirement: None,
-        bootstrap_output: None,
-        service_output: None,
-        retirement_output: None,
-        control: None,
-        failure: None,
-        capability_failure: None,
-        live: Default::default(),
-        capability_check_at: None,
-    })
+    Ok(Service::new(journal, path))
 }
 pub fn ready(profile: &std::path::Path) -> Result<Option<serde_json::Value>> {
     let _files = se_proc::NativeProfileFiles::open(profile)

@@ -29,32 +29,10 @@ impl<H: HostPort> Coordinator<'_, H> {
             if services.contains_key(&key) {
                 continue;
             }
-            services.insert(
-                key.clone(),
-                Arc::new(tokio::sync::Mutex::new(Service {
-                    restart: None,
-                    journal,
-                    path,
-                    digest: Some(digest),
-                    pending_save: None,
-                    wake: Arc::new(Wake::default()),
-                    bootstrap: None,
-                    process: None,
-                    retirement: None,
-                    bootstrap_output: None,
-                    service_output: None,
-                    retirement_output: None,
-                    control: None,
-                    failure: None,
-                    capability_failure: None,
-                    live: Default::default(),
-                    capability_check_at: None,
-                })),
-            );
-            let slot = services
-                .get(&key)
-                .cloned()
-                .ok_or_else(|| error("SE Code service recovery", "retained entry disappeared"))?;
+            let mut service = Service::new(journal, path);
+            service.digest = Some(digest);
+            let slot = Arc::new(tokio::sync::Mutex::new(service));
+            services.insert(key.clone(), slot.clone());
             retained.push((key, slot));
         }
         drop(services);
@@ -185,7 +163,7 @@ impl<H: HostPort> Coordinator<'_, H> {
         if let Some(endpoint) = &service.journal.endpoint {
             return Ok(endpoint.clone());
         }
-        if service.journal.initial_offered == InitialOffer::Offered {
+        if service.journal.initial_offered == InitialInputIntent::Recorded {
             return Err(error(
                 "SE Code service recovery",
                 "input was attempted without a retained endpoint; preserve pending/no-replay",
@@ -230,9 +208,7 @@ impl<H: HostPort> Coordinator<'_, H> {
         service: &mut Service,
         deadline: &Deadline,
     ) -> Result<()> {
-        if service.journal.retired
-            && service.journal.superseded_by_restart == RestartSupersession::Superseded
-        {
+        if service.journal.retired && service.journal.restart.is_some() {
             return Ok(());
         }
         self.0.restore_restart_state(service, deadline).await?;
