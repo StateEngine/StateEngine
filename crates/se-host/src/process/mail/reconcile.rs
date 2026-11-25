@@ -9,31 +9,31 @@ impl LaunchCoordinator {
         target: &core::MailTarget,
         deadline: &Deadline,
     ) -> Result<()> {
-        if let Some(flight) = work.mail.flight.as_mut() {
-            let evidence = flight.evidence.clone().ok_or_else(|| {
-                scope::unreadable("mail transport outcome", "the retained write attempt is unproved; preserve pending mail and stop/relaunch the binding before another offer")
-            })?;
-            if !flight.observed {
-                let request = core::ObserveOffer {
-                    target: target.clone(),
-                    effect: flight.reservation.effect_id,
-                    attempt: flight.attempt,
-                    evidence,
-                };
-                commit::step(
-                    &self.store,
-                    admission(target),
-                    deadline,
-                    move |kernel, cx| core::observe_offer(kernel, cx, request),
-                    core::observation_committed,
-                )
-                .await?;
-                flight.observed = true;
-            }
+        let Some(flight) = work.mail.flight.as_mut() else {
+            return self.reconcile_captured_mail(work, target, deadline).await;
+        };
+        let evidence = flight.evidence.clone().ok_or_else(|| {
+            scope::unreadable("mail transport outcome", "the retained write attempt is unproved; preserve pending mail and stop/relaunch the binding before another offer")
+        })?;
+        if !flight.observed {
+            let req = core::ObserveOffer {
+                target: target.clone(),
+                effect: flight.reservation.effect_id,
+                attempt: flight.attempt,
+                evidence,
+            };
+            commit::step(
+                &self.store,
+                admission(target),
+                deadline,
+                move |k, cx| core::observe_offer(k, cx, req),
+                core::observation_committed,
+            )
+            .await?;
+            flight.observed = true;
         }
         // Preserve the attempted offer before an authenticated read can fail.
-        // A lost response must leave durable unknown delivery, never no offer.
-        if work.secode.is_some() && work.mail.flight.is_some() {
+        if work.secode.is_some() {
             self.reconcile_secode_notice(work, deadline).await?;
         }
         self.reconcile_captured_mail(work, target, deadline).await
@@ -51,7 +51,7 @@ impl LaunchCoordinator {
             .mail
             .flight
             .as_ref()
-            .map(|flight| flight.reservation.notice_id.clone());
+            .map(|f| f.reservation.notice_id.clone());
         if let Some(flight) = work.mail.flight.as_mut() {
             // Only a witnessed zero-byte failure permits a fresh attempt on a
             // later commit/retry wake. Uncertain acceptance retains this flight.
@@ -61,29 +61,22 @@ impl LaunchCoordinator {
                 .is_some_and(|e| matches!(e.report, se_store::mail::OfferReport::Failed { .. }))
             {
                 work.mail.flight = None;
-                self.settle_mail(target, deadline).await?;
+                self.settle_mail(&mut work.mail.flight, target, deadline)
+                    .await?;
                 return Ok(());
             }
-            let recipient = target.agent.clone();
-            let session = target.session.clone();
-            let through = flight.reservation.through.clone();
-            let expected = flight.text_sha256;
+            let (recipient, session) = (target.agent.clone(), target.session.clone());
+            let (through, expected) = (flight.reservation.through.clone(), flight.text_sha256);
             let captured = self
                 .store
                 .read(admission(target), deadline, move |cx| {
-                    let position = cx
+                    let pos = cx
                         .read
                         .cursor_position(&through, PositionPurpose::Checked)
                         .map_err(|e| store_error(&e))?;
                     match cx
                         .read
-                        .mail_input(
-                            recipient,
-                            session,
-                            position,
-                            expected,
-                            Duration::from_secs(1),
-                        )
+                        .mail_input(recipient, session, pos, expected, Duration::from_secs(1))
                         .map_err(|e| store_error(&e))?
                     {
                         Read::Present { value } => match &value.body {
@@ -116,33 +109,25 @@ impl LaunchCoordinator {
             if let Some(event) = captured {
                 self.confirm_captured(target, flight, &event, deadline)
                     .await?;
-                let more = flight.reservation.more_pending;
-                let captured_ids = flight.reservation.ids.clone();
+                let (more, mut ids) = (
+                    flight.reservation.more_pending,
+                    flight.reservation.ids.clone(),
+                );
                 work.mail.flight = None;
                 work.mail.backlog = more;
                 if more {
-                    for id in captured_ids {
-                        if !work.mail.seen.contains(&id) {
-                            work.mail.seen.push(id);
-                        }
-                    }
+                    ids.retain(|id| !work.mail.seen.contains(id));
+                    work.mail.seen.extend(ids);
                 } else {
                     work.mail.seen.clear();
                 }
             }
         }
-        let settled = self.settle_mail(target, deadline).await?;
-        if work
-            .mail
-            .flight
-            .as_ref()
-            .is_some_and(|f| settled.contains(&f.reservation.effect_id))
-        {
-            work.mail.flight = None;
-        }
-        if let Some(notice) = previous
-            && work.mail.flight.is_none()
+        self.settle_mail(&mut work.mail.flight, target, deadline)
+            .await?;
+        if work.mail.flight.is_none()
             && work.secode.is_some()
+            && let Some(notice) = previous
         {
             self.retire_secode_notice(work, &notice, deadline).await?;
         }
@@ -156,43 +141,40 @@ impl LaunchCoordinator {
         event: &se_types::EventId,
         deadline: &Deadline,
     ) -> Result<()> {
-        let expected = flight.text_sha256;
-        let ids = flight.reservation.ids.clone();
+        let (expected, ids) = (flight.text_sha256, flight.reservation.ids.clone());
         let undelivered = self
             .store
             .read(admission(target), deadline, move |cx| {
-                let mut result = Vec::new();
+                let mut out = Vec::new();
                 for id in ids {
-                    let message = scope::require_present(
+                    let msg = scope::require_present(
                         cx.read.message(id.clone()).map_err(|e| store_error(&e))?,
                         "reserved mail",
                         scope::COMMITTED_READ_RECOVERY,
                     )?;
-                    if message.delivered.is_none() {
-                        result.push(id);
+                    if msg.delivered.is_none() {
+                        out.push(id);
                     }
                 }
-                Ok(result)
+                Ok(out)
             })
             .await?;
-        for message in &undelivered {
-            let request = core::InputAccepted {
+        let effect = flight.reservation.effect_id;
+        let hex = se_types::hex_lower(effect.as_bytes());
+        for message in undelivered {
+            let req = core::InputAccepted {
+                key: IdempotencyKey::new(format!("mail.delivered.{hex}.{}", message.as_str()))?,
                 target: target.clone(),
-                effect: flight.reservation.effect_id,
-                message: message.clone(),
+                effect,
+                message,
                 evidence: event.clone(),
                 accepted_text_sha256: expected,
-                key: IdempotencyKey::new(format!(
-                    "mail.delivered.{}.{}",
-                    se_types::hex_lower(flight.reservation.effect_id.as_bytes()),
-                    message.as_str()
-                ))?,
             };
             commit::step(
                 &self.store,
                 admission(target),
                 deadline,
-                move |kernel, cx| core::confirm_delivery(kernel, cx, request),
+                move |k, cx| core::confirm_delivery(k, cx, req),
                 core::observation_committed,
             )
             .await?;
@@ -202,9 +184,10 @@ impl LaunchCoordinator {
 
     async fn settle_mail(
         &self,
+        flight: &mut Option<Flight>,
         target: &core::MailTarget,
         deadline: &Deadline,
-    ) -> Result<Vec<RecordId>> {
+    ) -> Result<()> {
         let recipient = target.agent.clone();
         let resolved = self
             .store
@@ -257,25 +240,43 @@ impl LaunchCoordinator {
                 Ok(resolved)
             })
             .await?;
-        let mut settled = Vec::with_capacity(resolved.len());
+        let (mut step, effect_id) = (Ok(()), flight.as_ref().map(|f| f.reservation.effect_id));
         for (effect, evidence) in resolved {
             let req = core::SettleResolved {
                 target: target.clone(),
                 effect,
                 evidence,
             };
-            commit::step(
+            step = commit::step(
                 &self.store,
                 admission(target),
                 deadline,
-                move |kernel, cx| core::settle_resolved(kernel, cx, req),
-                |_, cx, then, r| {
-                    core::settlement_committed(cx, then, r).map(|v| Read::Present { value: v })
+                move |k, cx| core::settle_resolved(k, cx, req),
+                |_, cx, t, r| {
+                    core::settlement_committed(cx, t, r).map(|v| Read::Present { value: v })
                 },
             )
-            .await?;
-            settled.push(effect);
+            .await
+            .map(|_| ());
+            if step.is_err() {
+                break;
+            }
         }
-        Ok(settled)
+        if let Some(effect) = effect_id
+            && self
+                .store
+                .read(admission(target), deadline, move |cx| {
+                    let rec = scope::require_present(
+                        cx.read.effect(effect).map_err(|e| store_error(&e))?,
+                        "mail flight effect",
+                        scope::COMMITTED_READ_RECOVERY,
+                    )?;
+                    Ok(matches!(rec.current.body, EventBody::EffectSettled { .. }))
+                })
+                .await?
+        {
+            *flight = None;
+        }
+        step
     }
 }

@@ -16,7 +16,6 @@ struct Call {
     id: String,
     fact: Fact,
     fingerprint: [u8; 32],
-    completed: bool,
     result: Option<Option<bool>>,
     conflict: bool,
     bytes: usize,
@@ -51,23 +50,11 @@ impl Tracker {
         let Some((kind, blocks)) = Self::blocks(value) else {
             return Ok(Vec::new());
         };
-        let mut facts = Vec::new();
+        let (mut facts, mut over) = (Vec::new(), false);
         for (index, block) in blocks.iter().enumerate() {
             let Some(phase) = Self::phase(kind, block) else {
                 continue;
             };
-            if facts.len() == MAX_TOOLS_PER_RECORD {
-                facts.pop();
-                facts.push(Fact {
-                    key: "claude/over-budget".into(),
-                    native: NativeIdentity::Unknown(UnknownReason::OverBudget),
-                    phase,
-                    tool: ToolName::Unknown(UnknownReason::OverBudget),
-                    target: Target::Unknown(UnknownReason::OverBudget),
-                    outcome: Outcome::Unknown(UnknownReason::OverBudget),
-                });
-                break;
-            }
             let id = label(
                 block.get(if phase == Phase::Called {
                     "id"
@@ -76,98 +63,111 @@ impl Tracker {
                 }),
                 256,
             );
-            facts.push(self.build_fact(value, index, block, id, phase)?);
-        }
-        Ok(facts)
-    }
-    fn build_fact(
-        &mut self,
-        value: &Value,
-        index: usize,
-        block: &Value,
-        id: Option<String>,
-        phase: Phase,
-    ) -> Result<Fact> {
-        let mut fact = Fact {
-            key: format!("claude/{index}"),
-            native: id.clone().map_or(
-                NativeIdentity::Unknown(UnknownReason::NoNativeIdentity),
-                |tool_use_id| NativeIdentity::ClaudeCall { tool_use_id },
-            ),
-            phase,
-            tool: ToolName::Unknown(UnknownReason::UnmatchedIdentity),
-            target: Target::Unknown(UnknownReason::UnmatchedIdentity),
-            outcome: Outcome::Unknown(UnknownReason::Pending),
-        };
-        if phase == Phase::Called {
-            fact.tool = tool(block.get("name"));
-            fact.target = if matches!(&fact.tool, ToolName::Known(name) if name == "Bash") {
-                super::targets::command(block.pointer("/input/command"))
-            } else {
-                super::targets::arguments(block.get("input"), value.get("cwd"))
+            if !over && facts.len() == MAX_TOOLS_PER_RECORD {
+                let r = UnknownReason::OverBudget;
+                facts.pop();
+                facts.push(Fact {
+                    key: "claude/over-budget".into(),
+                    native: NativeIdentity::Unknown(r),
+                    phase,
+                    tool: ToolName::Unknown(r),
+                    target: Target::Unknown(r),
+                    outcome: Outcome::Unknown(r),
+                });
+                over = true;
+            }
+            if over {
+                if phase == Phase::Completed {
+                    self.complete_call(
+                        id.as_deref(),
+                        block.get("is_error").and_then(Value::as_bool),
+                    );
+                }
+                continue;
+            }
+            let mut fact = Fact {
+                key: format!("claude/{index}"),
+                native: id.clone().map_or(
+                    NativeIdentity::Unknown(UnknownReason::NoNativeIdentity),
+                    |tool_use_id| NativeIdentity::ClaudeCall { tool_use_id },
+                ),
+                phase,
+                tool: ToolName::Unknown(UnknownReason::UnmatchedIdentity),
+                target: Target::Unknown(UnknownReason::UnmatchedIdentity),
+                outcome: Outcome::Unknown(UnknownReason::Pending),
             };
-            if let Some(id) = id {
-                let fingerprint: [u8; 32] =
-                    Sha256::digest(serde_json::to_vec(block).map_err(json_error)?).into();
-                if let Some(prior) = self.calls.iter_mut().find(|call| call.id == id) {
-                    prior.conflict |= prior.fingerprint != fingerprint;
+            if phase == Phase::Called {
+                fact.tool = tool(block.get("name"));
+                fact.target = if matches!(&fact.tool, ToolName::Known(n) if n == "Bash") {
+                    super::targets::command(block.pointer("/input/command"))
+                } else {
+                    super::targets::arguments(block.get("input"), value.get("cwd"))
+                };
+                if let Some(id) = id {
+                    self.record_call(id, block, &mut fact)?;
+                }
+            } else {
+                let outcome = block.get("is_error").and_then(Value::as_bool);
+                fact.outcome = match outcome {
+                    Some(false) => Outcome::Succeeded,
+                    Some(true) => Outcome::Failed,
+                    None => Outcome::Unknown(UnknownReason::NoNativeOutcome),
+                };
+                if let Some(prior) = self.complete_call(id.as_deref(), outcome) {
+                    (fact.tool, fact.target) = (prior.fact.tool.clone(), prior.fact.target.clone());
                     if prior.conflict {
                         conflict(&mut fact);
                     }
-                } else {
-                    let bytes = serde_json::to_vec(&(&fact.native, &fact.tool, &fact.target))
-                        .map_err(json_error)?
-                        .len();
-                    while self.calls.len() >= MAX_CALLS
-                        || self.bytes.saturating_add(bytes) > MAX_STATE
-                    {
-                        let Some(index) = self.calls.iter().position(|call| call.completed) else {
-                            return Err(SeError::invalid(
-                                "pending native tools",
-                                "at most 1024 unresolved calls and 4 MiB; preserve the source cursor",
-                            ));
-                        };
-                        if let Some(old) = self.calls.remove(index) {
-                            self.bytes -= old.bytes;
-                        }
-                    }
-                    self.bytes += bytes;
-                    self.calls.push_back(Call {
-                        id,
-                        fact: fact.clone(),
-                        fingerprint,
-                        completed: false,
-                        result: None,
-                        conflict: false,
-                        bytes,
-                    });
                 }
             }
-        } else {
-            let outcome = block.get("is_error").and_then(Value::as_bool);
-            fact.outcome = match outcome {
-                Some(false) => Outcome::Succeeded,
-                Some(true) => Outcome::Failed,
-                None => Outcome::Unknown(UnknownReason::NoNativeOutcome),
-            };
-            if let Some(id) = id
-                && let Some(prior) = self.calls.iter_mut().find(|call| call.id == id)
-            {
-                prior.conflict |= prior.result.is_some_and(|old| old != outcome);
-                prior.result = Some(outcome);
-                prior.completed = true;
-                fact.tool = prior.fact.tool.clone();
-                fact.target = prior.fact.target.clone();
-                if prior.conflict {
-                    conflict(&mut fact);
-                }
-            }
+            facts.push(fact);
         }
-        Ok(fact)
+        Ok(facts)
+    }
+    fn record_call(&mut self, id: String, block: &Value, fact: &mut Fact) -> Result<()> {
+        let fp: [u8; 32] = Sha256::digest(serde_json::to_vec(block).map_err(json_error)?).into();
+        if let Some(prior) = self.calls.iter_mut().find(|call| call.id == id) {
+            prior.conflict |= prior.fingerprint != fp;
+            if prior.conflict {
+                conflict(fact);
+            }
+            return Ok(());
+        }
+        let bytes = serde_json::to_vec(&(&fact.native, &fact.tool, &fact.target))
+            .map_err(json_error)?
+            .len();
+        while self.calls.len() >= MAX_CALLS || self.bytes.saturating_add(bytes) > MAX_STATE {
+            let Some(at) = self.calls.iter().position(|c| c.result.is_some()) else {
+                return Err(SeError::invalid(
+                    "pending native tools",
+                    "at most 1024 unresolved calls and 4 MiB; preserve the source cursor",
+                ));
+            };
+            self.bytes -= self.calls.remove(at).map_or(0, |old| old.bytes);
+        }
+        self.bytes += bytes;
+        self.calls.push_back(Call {
+            id,
+            fact: fact.clone(),
+            fingerprint: fp,
+            result: None,
+            conflict: false,
+            bytes,
+        });
+        Ok(())
+    }
+    fn complete_call(&mut self, id: Option<&str>, outcome: Option<bool>) -> Option<&Call> {
+        let prior = id.and_then(|id| self.calls.iter_mut().find(|c| c.id == id))?;
+        prior.conflict |= prior.result.is_some_and(|old| old != outcome);
+        prior.result = Some(outcome);
+        Some(prior)
     }
 }
 fn conflict(fact: &mut Fact) {
-    fact.tool = ToolName::Unknown(UnknownReason::ConflictingEvidence);
-    fact.target = Target::Unknown(UnknownReason::ConflictingEvidence);
-    fact.outcome = Outcome::Unknown(UnknownReason::ConflictingEvidence);
+    let r = UnknownReason::ConflictingEvidence;
+    (fact.tool, fact.target, fact.outcome) = (
+        ToolName::Unknown(r),
+        Target::Unknown(r),
+        Outcome::Unknown(r),
+    );
 }

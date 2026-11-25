@@ -117,8 +117,7 @@ impl LaunchCoordinator {
                 .and_then(|b| b.get::<crate::harness::ClaudeBinding>())
                 .is_some_and(|b| b.attended)
         {
-            // The attended mod consumes the same durable unread view. Never
-            // fabricate a console write or record its notification as a read.
+            // Attended mode consumes the same durable unread view.
             return Ok(());
         }
         if (!secode && !work.mail.idle) || work.mail.flight.is_some() {
