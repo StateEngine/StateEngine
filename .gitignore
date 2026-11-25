@@ -1,2 +1,4 @@
 target/
 ci-reports/
+__pycache__/
+*.pyc

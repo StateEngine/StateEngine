@@ -15,6 +15,11 @@ CHECK_ERRORS = (KeyError, OSError, ValueError, urllib.error.URLError,
                 subprocess.SubprocessError)
 # The workflow's push filter: a default-branch change to these starts its own run.
 AGREEMENT_INPUTS = ("docs/cla/", "scripts/cla/", "CONTRIBUTING.md", ".github/workflows/cla.yml")
+# The workflow's own comment: its account and the marker that starts its body.
+INSTRUCTIONS_MARKER = "<!-- stateengine-cla-instructions -->"
+INSTRUCTIONS_AUTHOR = "github-actions[bot]"
+SIGNED_NOTICE = (INSTRUCTIONS_MARKER + "\nEvery author of this pull request has signed the "
+                 "contributor agreement.")
 
 
 class GitHub:
@@ -26,10 +31,11 @@ class GitHub:
         self.run_url = (f"https://github.com/{self.repository}/actions/runs/"
                         + os.environ["GITHUB_RUN_ID"])
 
-    def request(self, path, payload=None):
+    def request(self, path, payload=None, method=None):
         body = None if payload is None else json.dumps(payload).encode()
         request = urllib.request.Request(
             f"https://api.github.com/repos/{self.repository}/{path}".rstrip("/"), data=body,
+            method=method,
             headers={"Authorization": f"Bearer {self.token}",
                      "Accept": "application/vnd.github+json",
                      "Content-Type": "application/json",
@@ -60,6 +66,12 @@ class GitHub:
                 return
         self.request(f"statuses/{head}", {"state": state, "context": CONTEXT,
                      "description": description, "target_url": self.run_url})
+
+    def comment(self, number, body, existing=None):
+        if existing is None:
+            self.request(f"issues/{number}/comments", {"body": body})
+        else:
+            self.request(f"issues/comments/{existing}", {"body": body}, "PATCH")
 
 
 def individual_statement(login, digest):
@@ -96,7 +108,9 @@ def exempt(github, user, association=None):
         raise ValueError("configure the internal App bot's positive numeric account ID")
     if user.get("type") == "Bot" and configured and user["id"] == int(configured):
         return True
-    if association in {"OWNER", "MEMBER", "COLLABORATOR"}:
+    # MEMBER and COLLABORATOR associations do not imply write access, so only
+    # the repository owner skips the role read.
+    if association == "OWNER":
         return True
     # Read each author's current repository role, including organization and
     # team grants. An API failure is not evidence that an author is external.
@@ -108,7 +122,9 @@ def exempt(github, user, association=None):
     permission = role.get("permission")
     if permission not in {"admin", "write", "read", "none"}:
         raise ValueError("repository author permission is unreadable")
-    return permission != "none"
+    # A public repository reports "read" for every account, and triage maps to
+    # "read" too; maintain maps to "write". Only write or admin is exempt.
+    return permission in {"admin", "write"}
 
 
 def verify_trusted(github, branch):
@@ -172,7 +188,50 @@ def validate_pull(github, pull):
             or current["base"]["sha"] != pull["base"]["sha"]):
         raise ValueError("pull request changed; the new revision needs its own check")
     verify_trusted(github, branch)
+    instruct(github, number, comments, missing, digests)
     return not missing
+
+
+def instructions(github, missing, digests):
+    agreements = f"https://github.com/{github.repository}/blob/{github.trusted}/docs/cla"
+    lines = [INSTRUCTIONS_MARKER, "### Contributor agreement needed", "",
+             "Before this pull request can merge, each author below must read the "
+             f"[Individual Contributor License Agreement]({agreements}/individual.md), or "
+             f"the [Entity Contributor License Agreement]({agreements}/entity.md) when "
+             "contributing for an employer or other entity, then post ONE of their "
+             "statements as a new comment, copied exactly. The check reruns on each comment."]
+    for user in missing:
+        lines += ["", f"@{user['login']}, individual:", "```text",
+                  individual_statement(user["login"], digests["individual"]), "```",
+                  f"@{user['login']}, for an entity (replace YOUR LEGAL ENTITY NAME):", "```text",
+                  entity_statement(user["login"], digests["entity"], "YOUR LEGAL ENTITY NAME"),
+                  "```"]
+    return "\n".join(lines)
+
+
+def instruct(github, number, comments, missing, digests):
+    """Keep one workflow comment telling unsigned authors exactly what to post."""
+    mine = next((comment for comment in comments
+                 if (comment.get("user") or {}).get("login") == INSTRUCTIONS_AUTHOR
+                 and (comment.get("user") or {}).get("type") == "Bot"
+                 and (comment.get("body") or "").startswith(INSTRUCTIONS_MARKER)), None)
+    if missing:
+        body = instructions(github, missing, digests)
+    elif mine is None:
+        return
+    else:
+        body = SIGNED_NOTICE
+    if mine is not None and mine.get("body") == body:
+        return
+    try:
+        github.comment(number, body, None if mine is None else mine["id"])
+    except urllib.error.HTTPError as error:
+        # Without issues: write the statements stay in this log and the status
+        # still reports the missing agreement.
+        if error.code != 403:
+            raise
+        print(f"Pull request {number}: the instructions comment needs issues: write; "
+              "the statements to post are printed above")
 
 
 def same_head(github, head, branch):
@@ -186,6 +245,10 @@ def membership(pulls):
         members.setdefault(pull["head"]["sha"], set()).add(
             (pull["number"], pull["base"]["sha"]))
     return members
+
+
+def open_pulls(github, branch):
+    return [pull for pull in github.pages("pulls") if pull["base"]["ref"] == branch]
 
 
 def refuse_head(github, head, members, description):
@@ -235,10 +298,12 @@ def run():
         raise ValueError("event pull request identity is unreadable")
     github = GitHub()
     branch = github.request("")["default_branch"]
-    pulls = [pull for pull in github.pages("pulls") if pull["base"]["ref"] == branch]
+    pulls = open_pulls(github, branch)
     checked_members = membership(pulls)
-    # Every serialized event checks the current open set, including signature
-    # deletions. Pending is published inside each head's error boundary.
+    # Every event checks the whole open set, not only its own request: the
+    # repository-wide concurrency group can drop another request's queued run,
+    # and only a later sweep can then revoke its obsolete result. Pending is
+    # published inside each head's error boundary.
     heads = {pull["head"]["sha"]: pull["number"] for pull in pulls}
     results = {}
     for head, number in heads.items():
@@ -252,8 +317,7 @@ def run():
     # Later status writes can race a synchronization after check_pull's own
     # final read. Approval remains bound to the requests and bases we checked.
     try:
-        current_members = membership(pull for pull in github.pages("pulls")
-                                     if pull["base"]["ref"] == branch)
+        current_members = membership(open_pulls(github, branch))
     except CHECK_ERRORS as error:
         for head in results:
             refuse_head(github, head, checked_members[head],
@@ -265,8 +329,8 @@ def run():
             refuse_head(github, head,
                         checked_members.get(head, set()) | current_members.get(head, set()),
                         "Pull-request membership changed; rerun the check")
-    # Keep validating every head under global serialization, but a pull-request
-    # event's run belongs to that request. Shared-head peers still qualify together.
+    # A pull-request event's run belongs to that request. Shared-head peers still
+    # qualify together.
     if subject is not None:
         current = github.request(f"pulls/{subject}")
         if current["state"] == "closed":

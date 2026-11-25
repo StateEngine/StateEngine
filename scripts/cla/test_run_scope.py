@@ -105,6 +105,21 @@ class RunScope(unittest.TestCase):
         self.assertEqual(self.run_event(NoAPI(), "issue_comment", {
             "action": "created", "issue": {"number": 1}}), 0)
 
+    def test_any_event_revokes_an_unrelated_obsolete_success(self):
+        # The repository-wide concurrency group can drop PR 2's own queued run
+        # after its signature is deleted; PR 1's event must still revoke it.
+        api = OpenPulls()
+        api.latest[(api.pulls[2]["head"]["sha"], checker.CONTEXT)] = "success"
+        self.assertEqual(self.pull_event(api), 0)
+        self.assertEqual(self.state(api, 1), "success")
+        self.assertEqual(self.state(api, 2), "failure")
+
+    def test_sweep_comments_on_every_unsigned_request_once(self):
+        api = OpenPulls()
+        self.assertEqual(self.pull_event(api), 0)
+        self.assertEqual(self.pull_event(api), 0)
+        self.assertEqual(api.comment_writes, [(2, None)])
+
     def test_main_push_keeps_aggregate_refusal_and_success(self):
         api = OpenPulls()
         self.assertEqual(self.run_event(api, "push", {"ref": "refs/heads/main"}), 1)

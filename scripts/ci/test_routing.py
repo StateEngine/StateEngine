@@ -154,9 +154,8 @@ class Routing(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return dict(line.split("=", 1) for line in output.read_text().splitlines())
 
-    def test_windows_skips_only_named_non_windows_sources_or_box_tools(self):
-        for path in ["factory/ci/box/engine.py", "factory/ci/box/Dockerfile",
-                     "crates/se-proc/src/platform/linux/group.rs",
+    def test_windows_skips_only_named_non_windows_sources(self):
+        for path in ["crates/se-proc/src/platform/linux/group.rs",
                      "crates/se-proc/src/birth_time/macos.rs",
                      "crates/se-proc/src/native_ipc/unix/paths.rs",
                      "crates/se-proc/src/state_files/effects/unix.rs",
@@ -178,14 +177,13 @@ class Routing(unittest.TestCase):
                      "crates/se-proc/tests/linux_process_exit.rs",
                      "crates/se-proc/Cargo.toml", "Cargo.lock", "build.rs",
                      ".github/workflows/ci.yml", "scripts/ci/changes.py",
-                     "factory/ci/boxlike/engine.py", "crates/se-proc/src/linuxish.rs",
+                     "tools/ci/engine.py", "crates/se-proc/src/linuxish.rs",
                      "crates/se-proc/src/adapter_unix.rs.backup", "unknown.config"]:
             with self.subTest(path=path):
                 self.assertTrue(changes.windows_affected(self.windows_event(path), "push"))
 
     def test_windows_mixed_changes_do_not_hide_shared_code(self):
-        event = self.windows_event("factory/ci/box/runner.sh",
-                                   "crates/se-proc/src/platform/linux/spawn.rs",
+        event = self.windows_event("crates/se-proc/src/platform/linux/spawn.rs",
                                    "crates/se-proc/src/state_files/mod.rs")
         self.assertTrue(changes.windows_affected(event, "push"))
 
