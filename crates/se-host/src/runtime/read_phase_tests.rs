@@ -3,7 +3,7 @@ use crate::client::{BlockingIpcClient, ClientOptions, lease::ClientCredential, l
 pub(crate) use crate::runtime::test_support::fixture;
 use crate::runtime::test_support::session as session_fixture;
 use crate::runtime::*;
-use crate::{AuthorizedConnection, HandshakeInput, RawOperation};
+use crate::{AuthorizedConnection, EndpointRecord, HandshakeInput, RawOperation};
 use fixture::*;
 use se_core::{admission::read_scope, commit::Cx, ops::CliSelections};
 use se_store::*;
@@ -146,10 +146,6 @@ fn seed(f: &Fixture) -> Check {
 /// before network completion or writer submission. No separate reader budget,
 /// store double or production pause hook can hide a leaked transaction.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn finite_host_phases_return_both_slots_before_network_and_commit() -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;
@@ -168,144 +164,9 @@ fn finite_host_phases_return_both_slots_before_network_and_commit() -> Check {
         full_budget(reader, "before handshake")?;
         for owner in [true, false] {
             let endpoint = listener.endpoint().clone();
-            let client = std::thread::spawn(move || -> Result<(), String> {
-                let secret = Secret::new(vec![if owner { 23 } else { 17 }; 32])
-                    .map_err(|e| e.to_string())?;
-                let authority = if owner {
-                    ClientCredential::Machine(secret)
-                } else {
-                    ClientCredential::Session(secret)
-                };
-                BlockingIpcClient::connect_authenticated(
-                    &endpoint,
-                    authority,
-                    NonZeroU32::new(4096).ok_or("reply cap")?,
-                    &options(),
-                )
-                .map(drop)
-                .map_err(|e| e.to_string())
-            });
-            let mut pending = listener
-                .accept(options().cancelled)
-                .await?
-                .handshake()
-                .await?;
-            let grant = context.handshake(&mut pending)?;
-            full_budget(reader, "after handshake, before network finish")?;
-            let HandshakeInput::Call(hello) = pending.input() else {
-                return Err("operation hello required".into());
-            };
-            let metadata = || -> Result<_, Box<dyn std::error::Error>> {
-                Ok(crate::runtime::admission::OperationMetadata {
-                    selections: Some(serde_json::to_value(CliSelections {
-                        project: Some(f.project.clone()),
-                        agent: owner.then(|| f.a.to_string()),
-                        ..CliSelections::default()
-                    })?),
-                    presence: None,
-                })
-            };
-            assert!(
-                context
-                    .operation(
-                        pending.peer(),
-                        &hello.authority,
-                        None,
-                        &grant,
-                        RawOperation {
-                            name: "unknown.operation".into(),
-                            arguments: serde_json::json!({}),
-                            key: None
-                        },
-                        metadata()?
-                    )
-                    .is_err()
-            );
-            full_budget(reader, "after refused operation")?;
-            let key = IdempotencyKey::new(if owner {
-                "phase-owner"
-            } else {
-                "phase-session"
-            })?;
-            let input = se_core::ops::WorkingStateSet {
-                text: key.to_string(),
-                expect: if owner {
-                    se_core::commit::ExpectedRevision::Absent(
-                        se_core::commit::AbsentRevision::Absent,
-                    )
-                } else {
-                    se_core::commit::ExpectedRevision::Revision(1)
-                },
-                idempotency_key: key.clone(),
-                owner_agent: None,
-            };
-            let call = context.operation(
-                pending.peer(),
-                &hello.authority,
-                None,
-                &grant,
-                RawOperation {
-                    name: "working_state.set".into(),
-                    arguments: serde_json::to_value(input)?,
-                    key: Some(key),
-                },
-                metadata()?,
-            )?;
-            full_budget(reader, "after operation, before network finish")?;
-            let connection = pending
-                .finish(AuthorizedConnection { _private: () }, positive(4096)?)
-                .await?;
-            client.join().map_err(|_| "native client panicked")??;
-            drop(connection);
-
-            let planned = plan(checked_phase(reader, host.generation())?, call, None, None)?;
-            full_budget(reader, "after plan return with owned plan still alive")?;
-            let Step::Commit { batch, then } = planned.step else {
-                return Err("write plan required".into());
-            };
-            full_budget(reader, "pre-commit, before actual writer submission")?;
-            let feed = &host.execution.atlas.records;
-            let feed_scope = crate::atlas_runtime::record_fence::RecordFeedScope {
-                project: f.project.clone(),
-                root: se_types::code::RootId::from_parts(1, [2; 10])?,
-                epoch: se_types::code::CacheEpoch::from_parts(1, [3; 10])?,
-            };
-            let ticket = feed.ticket()?.ok_or("unexpected pending core write")?;
-            assert!(feed.mark_current(feed_scope.clone(), ticket)?);
-            let identity = crate::runtime::WriteIdentity {
-                operation: "working_state.set",
-                natural_key: None,
-                key: batch.request.as_ref().map(|request| request.key.clone()),
-                natural_events: Vec::new(),
-            };
-            let receipt =
-                crate::runtime::submit::measured(&host.execution, batch, &identity, &bound()?)
-                    .await?
-                    .0;
-            assert!(
-                !feed.is_current(&feed_scope, Some(ticket))?,
-                "the actual hosted write must clear record freshness before a later query snapshot"
-            );
-            assert!(
-                !feed.mark_current(feed_scope, ticket)?,
-                "a feed built from the preceding core snapshot cannot restore freshness"
-            );
-            // The real retained writer observer must leave a coalesced event,
-            // even though no Atlas maintenance waiter existed at submission.
-            tokio::time::timeout(Duration::from_secs(1), feed.changed()).await?;
-            assert_eq!(feed.interests()?, vec![f.project.clone()]);
-            let mut read = checked_phase(reader, host.generation())?
-                .into_snapshot(read_scope(&planned.admission))?;
-            let result = planned.kernel.committed(
-                then,
-                receipt,
-                &mut Cx {
-                    read: &mut read,
-                    admission: &planned.admission,
-                },
-            );
-            close_read(result, read.close())?;
-            full_budget(reader, "after committed continuation")?;
+            let client = phase_client(endpoint, owner);
+            let call = admit_and_plan(&mut listener, &context, reader, &f, owner, client).await?;
+            commit_phase(reader, &host, &f, call).await?;
         }
         listener
             .close_transport(&host.blocking_pool(), &bound()?)
@@ -317,5 +178,165 @@ fn finite_host_phases_return_both_slots_before_network_and_commit() -> Check {
         assert!(matches!(report.backup, Read::Present { .. }));
         Ok::<(), Box<dyn std::error::Error>>(())
     })?;
+    Ok(())
+}
+
+fn phase_client(
+    endpoint: EndpointRecord,
+    owner: bool,
+) -> std::thread::JoinHandle<Result<(), String>> {
+    std::thread::spawn(move || -> Result<(), String> {
+        let secret =
+            Secret::new(vec![if owner { 23 } else { 17 }; 32]).map_err(|e| e.to_string())?;
+        let authority = if owner {
+            ClientCredential::Machine(secret)
+        } else {
+            ClientCredential::Session(secret)
+        };
+        BlockingIpcClient::connect_authenticated(
+            &endpoint,
+            authority,
+            NonZeroU32::new(4096).ok_or("reply cap")?,
+            &options(),
+        )
+        .map(drop)
+        .map_err(|e| e.to_string())
+    })
+}
+
+async fn admit_and_plan(
+    listener: &mut HostedListener,
+    context: &AdmissionContext,
+    reader: &SqliteReader,
+    f: &Fixture,
+    owner: bool,
+    client: std::thread::JoinHandle<Result<(), String>>,
+) -> Result<HostedCall, Box<dyn std::error::Error>> {
+    let mut pending = listener
+        .accept(options().cancelled)
+        .await?
+        .handshake()
+        .await?;
+    let grant = context.handshake(&mut pending)?;
+    full_budget(reader, "after handshake, before network finish")?;
+    let HandshakeInput::Call(hello) = pending.input() else {
+        return Err("operation hello required".into());
+    };
+    let metadata = || -> Result<_, Box<dyn std::error::Error>> {
+        Ok(crate::runtime::admission::OperationMetadata {
+            selections: Some(serde_json::to_value(CliSelections {
+                project: Some(f.project.clone()),
+                agent: owner.then(|| f.a.to_string()),
+                ..CliSelections::default()
+            })?),
+            presence: None,
+        })
+    };
+    assert!(
+        context
+            .operation(
+                pending.peer(),
+                &hello.authority,
+                None,
+                &grant,
+                RawOperation {
+                    name: "unknown.operation".into(),
+                    arguments: serde_json::json!({}),
+                    key: None
+                },
+                metadata()?
+            )
+            .is_err()
+    );
+    full_budget(reader, "after refused operation")?;
+    let key = IdempotencyKey::new(if owner {
+        "phase-owner"
+    } else {
+        "phase-session"
+    })?;
+    let input = se_core::ops::WorkingStateSet {
+        text: key.to_string(),
+        expect: if owner {
+            se_core::commit::ExpectedRevision::Absent(se_core::commit::AbsentRevision::Absent)
+        } else {
+            se_core::commit::ExpectedRevision::Revision(1)
+        },
+        idempotency_key: key.clone(),
+        owner_agent: None,
+    };
+    let call = context.operation(
+        pending.peer(),
+        &hello.authority,
+        None,
+        &grant,
+        RawOperation {
+            name: "working_state.set".into(),
+            arguments: serde_json::to_value(input)?,
+            key: Some(key),
+        },
+        metadata()?,
+    )?;
+    full_budget(reader, "after operation, before network finish")?;
+    let connection = pending
+        .finish(AuthorizedConnection { _private: () }, positive(4096)?)
+        .await?;
+    client.join().map_err(|_| "native client panicked")??;
+    drop(connection);
+    Ok(call)
+}
+
+async fn commit_phase(
+    reader: &SqliteReader,
+    host: &HostedRuntime,
+    f: &Fixture,
+    call: HostedCall,
+) -> Check {
+    let planned = plan(checked_phase(reader, host.generation())?, call, None, None)?;
+    full_budget(reader, "after plan return with owned plan still alive")?;
+    let Step::Commit { batch, then } = planned.step else {
+        return Err("write plan required".into());
+    };
+    full_budget(reader, "pre-commit, before actual writer submission")?;
+    let feed = &host.execution.atlas.records;
+    let feed_scope = crate::atlas_runtime::record_fence::RecordFeedScope {
+        project: f.project.clone(),
+        root: se_types::code::RootId::from_parts(1, [2; 10])?,
+        epoch: se_types::code::CacheEpoch::from_parts(1, [3; 10])?,
+    };
+    let ticket = feed.ticket()?.ok_or("unexpected pending core write")?;
+    assert!(feed.mark_current(feed_scope.clone(), ticket)?);
+    let identity = crate::runtime::WriteIdentity {
+        operation: "working_state.set",
+        natural_key: None,
+        key: batch.request.as_ref().map(|request| request.key.clone()),
+        natural_events: Vec::new(),
+    };
+    let receipt = crate::runtime::submit::measured(&host.execution, batch, &identity, &bound()?)
+        .await?
+        .0;
+    assert!(
+        !feed.is_current(&feed_scope, Some(ticket))?,
+        "the actual hosted write must clear record freshness before a later query snapshot"
+    );
+    assert!(
+        !feed.mark_current(feed_scope, ticket)?,
+        "a feed built from the preceding core snapshot cannot restore freshness"
+    );
+    // The real retained writer observer must leave a coalesced event,
+    // even though no Atlas maintenance waiter existed at submission.
+    tokio::time::timeout(Duration::from_secs(1), feed.changed()).await?;
+    assert_eq!(feed.interests()?, vec![f.project.clone()]);
+    let mut read =
+        checked_phase(reader, host.generation())?.into_snapshot(read_scope(&planned.admission))?;
+    let result = planned.kernel.committed(
+        then,
+        receipt,
+        &mut Cx {
+            read: &mut read,
+            admission: &planned.admission,
+        },
+    );
+    close_read(result, read.close())?;
+    full_budget(reader, "after committed continuation")?;
     Ok(())
 }
