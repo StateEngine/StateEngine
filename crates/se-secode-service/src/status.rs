@@ -247,7 +247,7 @@ impl<H: HostPort> Coordinator<'_, H> {
         Ok(ServiceCustodySnapshot {
             qualified: service.current()?,
             initial_sha256: service.journal.initial_sha256,
-            resume_proved: service.journal.input_free_resume
+            resume_proved: service.journal.input_free_resume == ResumeSupport::Supported
                 && service
                     .journal
                     .client_closed

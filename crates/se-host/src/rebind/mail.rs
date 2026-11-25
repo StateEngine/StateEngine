@@ -43,7 +43,12 @@ impl LaunchCoordinator {
         // A previous publication may have succeeded without a readback. Finish
         // that exact write before trusting the in-memory settled marker.
         service.persist_pending(self, deadline).await?;
-        if service.journal().restart_settled {
+        if service
+            .journal()
+            .restart
+            .as_ref()
+            .is_some_and(|r| r.settled)
+        {
             work.pin_hash = Some(session_hash);
             if service.mark_restart_mail_notified() {
                 reoffer_unread(work);
@@ -55,13 +60,18 @@ impl LaunchCoordinator {
             .flight
             .as_ref()
             .map(|flight| flight.reservation.effect_id);
-        let retained = service.journal().restart_effect.or_else(|| {
-            service
-                .journal()
-                .notice
-                .as_ref()
-                .and_then(|notice| notice.effect)
-        });
+        let retained = service
+            .journal()
+            .restart
+            .as_ref()
+            .and_then(|r| r.effect)
+            .or_else(|| {
+                service
+                    .journal()
+                    .notice
+                    .as_ref()
+                    .and_then(|notice| notice.effect)
+            });
         if flight_effect.is_some() && retained.is_some() && flight_effect != retained {
             return Err(error(
                 "SE Code restart notice",

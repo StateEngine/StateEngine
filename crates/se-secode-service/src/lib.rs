@@ -18,6 +18,7 @@ mod retirement;
 mod status;
 mod stop;
 
+pub use native::AuxiliaryLaunch;
 pub use port::{
     HostPort, PortFuture, SecodeWork, Wake, call_context, prepare_error, retain_recovery_artifact,
     wait_wake,
@@ -25,7 +26,7 @@ pub use port::{
 pub use prepare::ready;
 pub use se_harness::secode_process::Managed as Prepared;
 
-use custody::Journal;
+use custody::{InitialInputIntent, Journal, RestartJournal, ResumeSupport};
 use port::error;
 use se_harness::{
     Deadline, Harness, HarnessKind, ProbeRequest, ProviderIoPlatform, ProviderStream,
@@ -188,7 +189,7 @@ impl Service {
     }
 
     pub fn register_image(&mut self, digest: se_types::Sha256, resume_supported: bool) {
-        self.journal.input_free_resume = resume_supported;
+        self.journal.input_free_resume = ResumeSupport::from(resume_supported);
         self.journal.server_sha256 = Some(digest);
         self.journal.retired = false;
     }
@@ -199,12 +200,13 @@ impl Service {
         restart_key: &str,
         deadline: &Deadline,
     ) -> Result<()> {
-        if self.journal.restart_key.as_deref() != Some(restart_key) {
-            self.journal.restart_key = Some(restart_key.to_owned());
-            self.journal.restart_effect = None;
-            self.journal.restart_settled = false;
-            self.journal.restart_reply_sent = false;
-            self.journal.superseded_by_restart = true;
+        if self.journal.restart.as_ref().map(|r| r.key.as_str()) != Some(restart_key) {
+            self.journal.restart = Some(RestartJournal {
+                key: restart_key.to_owned(),
+                effect: None,
+                reply_sent: false,
+                settled: false,
+            });
             self.persist(host, deadline).await?;
         }
         Ok(())
@@ -256,7 +258,7 @@ impl Service {
         self.live.invalidate()?;
         self.restart = Some(RestartControl {
             control: pending.control,
-            reply_sent: self.journal.restart_reply_sent,
+            reply_sent: self.journal.restart.as_ref().is_some_and(|r| r.reply_sent),
             mail_notified: false,
             identity: pending.identity,
             adopted: false,
@@ -281,8 +283,10 @@ impl Service {
             .as_ref()
             .is_some_and(|restart| restart.restart_key == restart_key)
         {
-            if !self.journal.restart_reply_sent {
-                self.journal.restart_reply_sent = true;
+            if let Some(restart) = self.journal.restart.as_mut()
+                && !restart.reply_sent
+            {
+                restart.reply_sent = true;
                 saved = self.persist(host, deadline).await;
             }
             if let Some(restart) = self.restart.as_mut() {
@@ -307,6 +311,13 @@ impl Service {
         Ok(())
     }
 
+    fn active_restart_mut(&mut self) -> Result<&mut RestartJournal> {
+        self.journal
+            .restart
+            .as_mut()
+            .ok_or_else(|| error("SE Code restart custody", "no active restart recorded"))
+    }
+
     /// Persist the in-flight or discovered restart notice effect before settling it.
     pub async fn record_restart_effect<H: HostPort>(
         &mut self,
@@ -314,8 +325,9 @@ impl Service {
         effect: se_store::RecordId,
         deadline: &Deadline,
     ) -> Result<()> {
-        if self.journal.restart_effect != Some(effect) {
-            self.journal.restart_effect = Some(effect);
+        let restart = self.active_restart_mut()?;
+        if restart.effect != Some(effect) {
+            restart.effect = Some(effect);
             self.persist(host, deadline).await?;
         }
         Ok(())
@@ -328,8 +340,8 @@ impl Service {
         host: &H,
         deadline: &Deadline,
     ) -> Result<()> {
+        self.active_restart_mut()?.settled = true;
         self.journal.notice = None;
-        self.journal.restart_settled = true;
         self.persist(host, deadline).await?;
         if let Some(restart) = self.restart.as_mut() {
             restart.mail_notified = true;
@@ -465,13 +477,15 @@ impl<H: HostPort> Coordinator<'_, H> {
             .await?
             .ok_or_else(|| error("SE Code input intent", "original service absent"))?;
         let mut service = lock_service(&slot, deadline).await?;
-        if service.journal.session != identity.session || service.journal.initial_offered {
+        if service.journal.session != identity.session
+            || service.journal.initial_offered == InitialInputIntent::Recorded
+        {
             return Err(error(
                 "SE Code input intent",
                 "original offer is already attempted or belongs to another session; reconcile its key without replay",
             ));
         }
-        service.journal.initial_offered = true;
+        service.journal.initial_offered = InitialInputIntent::Recorded;
         service.persist(self.0, deadline).await
     }
 

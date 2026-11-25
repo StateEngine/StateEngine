@@ -208,8 +208,8 @@ impl<H: HostPort> Coordinator<'_, H> {
         }
         self.verify_predecessor_terminal(service, work, lost, deadline)
             .await?;
-        let no_service_or_input =
-            !service.journal.initial_offered && !service.journal.session_create_attempted;
+        let no_service_or_input = service.journal.initial_offered == InitialInputIntent::Unrecorded
+            && !service.journal.session_create_attempted;
         if resuming
             && (no_service_or_input || service.journal.retired || service.journal.notice.is_some())
         {
@@ -246,7 +246,7 @@ fn reset_journal_for_replacement(
         service.journal.retired = false;
         service.journal.lost = false;
         service.journal.resume_release = None;
-        service.journal.input_free_resume = false;
+        service.journal.input_free_resume = ResumeSupport::Unavailable;
         service.journal.stop_failure = None;
     }
     service.journal.session = request.identity.session.clone();
@@ -255,16 +255,12 @@ fn reset_journal_for_replacement(
     service.journal.initial_sha256 = se_types::Sha256::from_bytes(
         Sha256::digest(request.initial_input.as_str().as_bytes()).into(),
     );
-    service.journal.initial_offered = false;
+    service.journal.initial_offered = InitialInputIntent::Unrecorded;
     service.journal.session_create_attempted = false;
     service.journal.previous_policy_sha256 = service.journal.policy_sha256.take();
     service.journal.client_closed = None;
     service.journal.notice = None;
-    service.journal.restart_key = None;
-    service.journal.restart_effect = None;
-    service.journal.restart_settled = false;
-    service.journal.restart_reply_sent = false;
-    service.journal.superseded_by_restart = false;
+    service.journal.restart = None;
     service.restart = None;
     service.journal.capability_repair = None;
     service.live.invalidate()?;

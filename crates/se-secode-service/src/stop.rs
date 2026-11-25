@@ -124,7 +124,7 @@ impl<H: HostPort> Coordinator<'_, H> {
                 if service.journal.lost && service.restart.is_none() {
                     return self.retire_lost_secode_service(&mut service, deadline).await;
                 }
-                if service.journal.initial_offered
+                if service.journal.initial_offered == InitialInputIntent::Recorded
                     && !service.journal.client_closed.as_ref().is_some_and(|closed| closed.capture_complete)
                 {
                     return Err(error("SE Code service shutdown", "original input or final capture remains unresolved; its authenticated source service is retained"));
