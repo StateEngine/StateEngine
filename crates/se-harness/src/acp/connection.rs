@@ -40,10 +40,6 @@ pub enum Message {
     },
 }
 #[derive(Clone, Default)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub struct Diagnostics {
     pub stdout_terminal: bool,
     pub stdout_complete: bool,
@@ -52,8 +48,13 @@ pub struct Diagnostics {
     pub stderr_prefix: Vec<u8>,
     pub stderr_bytes: u64,
     pub stderr_complete: bool,
-    pub stderr_truncated: bool,
     pub failure: Option<ErrorBody>,
+}
+impl Diagnostics {
+    /// Returns whether stderr output exceeded the retained prefix buffer.
+    pub fn stderr_truncated(&self) -> bool {
+        self.stderr_bytes > self.stderr_prefix.len() as u64
+    }
 }
 struct Pending {
     method: &'static str,
@@ -415,7 +416,6 @@ impl Connection {
                 diagnostics
                     .stderr_prefix
                     .extend_from_slice(&bytes[..bytes.len().min(remaining)]);
-                diagnostics.stderr_truncated |= bytes.len() > remaining;
                 if let Some(terminal) = terminal {
                     diagnostics.stderr_complete = terminal.is_none();
                     drop(diagnostics);

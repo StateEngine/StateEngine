@@ -418,7 +418,7 @@ async fn stderr_preserves_count_prefix_and_failure_completeness() -> Check {
         }
         let diagnostics = f.connection.diagnostics()?;
         assert_eq!(diagnostics.stderr_prefix.len(), 65536);
-        assert!(diagnostics.stderr_truncated);
+        assert!(diagnostics.stderr_truncated());
         assert_eq!(diagnostics.stderr_complete, !failed);
         f.stop().await?;
     }

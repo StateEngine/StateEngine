@@ -51,7 +51,7 @@ impl Channels {
             vec![]
         };
         let chunks = text.and_then(|mut text| {
-            if !descriptor.buttons {
+            if !descriptor.supports(ConnectorCapability::Buttons) {
                 for button in buttons.drain(..) {
                     text.push_str(&format!("\n{}: /confirm {}", button.label, button.data));
                 }
