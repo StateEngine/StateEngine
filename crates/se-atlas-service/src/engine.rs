@@ -114,6 +114,7 @@ struct Engine<'a> {
     /// Files a build could not read, before a reconcile names them.
     unnamed_failed: u64,
     watcher: Option<Watcher>,
+    watched_dirs: Vec<String>,
     head: Option<Vec<u8>>,
     /// When a head change began waiting for Git's index lock.
     head_waiting: Option<Instant>,
@@ -152,6 +153,7 @@ impl<'a> Engine<'a> {
             failed: BTreeSet::new(),
             unnamed_failed: 0,
             watcher: None,
+            watched_dirs: Vec::new(),
             head: None,
             head_waiting: None,
             last_write: Instant::now(),
@@ -187,19 +189,19 @@ impl<'a> Engine<'a> {
     }
 
     fn prepare(&mut self) -> Outcome<()> {
-        let discovery_complete: i64 = self
+        let done: i64 = self
             .store
             .connection()
             .query_row(
                 "SELECT discovery_complete FROM meta WHERE singleton=1",
                 [],
-                |row| row.get(0),
+                |r| r.get(0),
             )
             .map_err(|e| e.to_string())?;
         // Arm before building, so edits made during the build are not lost.
         let dirs = self.directories().map_err(|e| e.to_string())?;
         self.arm(&dirs);
-        if self.rebuild || discovery_complete == 0 {
+        if self.rebuild || done == 0 {
             self.cold(None).map_err(|e| e.to_string())?;
         } else {
             set_phase(self.shared, Phase::Reconciling);
@@ -224,12 +226,15 @@ impl<'a> Engine<'a> {
             watcher.stop();
         }
         let watch = match Watcher::arm(self.shared, directories) {
-            Ok((watcher, directories)) => {
+            Ok((watcher, count)) => {
                 self.watcher = Some(watcher);
+                self.watched_dirs = directories.to_vec();
+                self.watched_dirs.sort();
                 self.watch_backoff = None;
-                Watch::Armed { directories }
+                Watch::Armed { directories: count }
             }
             Err(reason) => {
+                self.watched_dirs.clear();
                 let n = self.watch_backoff.map_or(0, |(_, n)| n).saturating_add(1);
                 let delay = Duration::from_secs(60u64 << n.saturating_sub(1).min(4))
                     .min(Duration::from_secs(600));
@@ -242,8 +247,27 @@ impl<'a> Engine<'a> {
         }
     }
 
-    /// Rebuild the store. Files the build could not read are counted, and a
-    /// reconcile soon after names each one; the build never recurses into it.
+    fn discover_watched(&mut self) -> se_atlas_index::Result<walk::Discovery> {
+        let mut d = walk::discover(&self.source, &walk_options())?;
+        for _ in 0..4 {
+            if !cfg!(target_os = "linux")
+                || self.watcher.is_none()
+                || d.directories
+                    .iter()
+                    .all(|dir| self.watched_dirs.binary_search(dir).is_ok())
+            {
+                return Ok(d);
+            }
+            self.arm(&d.directories);
+            if self.watcher.is_none() {
+                return Ok(d);
+            }
+            d = walk::discover(&self.source, &walk_options())?;
+        }
+        self.lose();
+        Ok(d)
+    }
+
     fn cold(&mut self, discovery: Option<walk::Discovery>) -> se_atlas_index::Result<()> {
         if self.shared.stopping() {
             return Ok(());
@@ -260,12 +284,10 @@ impl<'a> Engine<'a> {
             walk: walk_options(),
             ..BuildOptions::default()
         };
-        let report = match discovery {
-            Some(d) => self
-                .store
-                .cold_build_with_discovery(&self.source, &options, d)?,
-            None => self.store.cold_build(&self.source, &options)?,
-        };
+        let d = discovery.map_or_else(|| self.discover_watched(), Ok)?;
+        let report = self
+            .store
+            .cold_build_with_discovery(&self.source, &options, d)?;
         self.resolver = self.indexed_resolver()?;
         self.failed.clear();
         self.unnamed_failed = report.read_failed as u64;
@@ -301,7 +323,7 @@ impl<'a> Engine<'a> {
             return Ok(());
         }
         self.last_reconcile = Instant::now();
-        let discovery = walk::discover(&self.source, &walk_options())?;
+        let discovery = self.discover_watched()?;
         let delta = reconcile::changed(&self.store, &self.source, &discovery.files)?;
         if delta.changed.len() + delta.gone.len() > 2_000.max(discovery.files.len() / 2) {
             return self.cold(Some(discovery));
@@ -316,16 +338,10 @@ impl<'a> Engine<'a> {
         self.failed
             .retain(|path| discovery.files.binary_search(path).is_ok());
         self.failed.extend(delta.failed);
-        for path in &delta.gone {
-            if self.shared.stopping() {
-                return Ok(());
-            }
+        for path in delta.gone.iter().take_while(|_| !self.shared.stopping()) {
             self.forget(path);
         }
-        for path in &delta.changed {
-            if self.shared.stopping() {
-                return Ok(());
-            }
+        for path in delta.changed.iter().take_while(|_| !self.shared.stopping()) {
             self.index(path);
         }
         Ok(())
@@ -334,21 +350,17 @@ impl<'a> Engine<'a> {
     /// Index one path, retrying once a file that changed while it was read.
     fn index(&mut self, path: &str) {
         self.last_write = Instant::now();
-        for _ in 0..2 {
-            if self
-                .store
+        if (0..2).any(|_| {
+            self.store
                 .index_path(&self.source, &mut self.resolver, path)
                 .is_ok()
-            {
-                self.failed.remove(path);
-                return;
-            }
+        }) {
+            self.failed.remove(path);
+            return;
         }
         if self.source.check().is_err() {
-            set_phase(
-                self.shared,
-                Phase::Failed("the project folder was moved, replaced or removed".into()),
-            );
+            let msg = "the project folder was moved, replaced or removed".into();
+            set_phase(self.shared, Phase::Failed(msg));
         }
         self.failed.insert(path.to_owned());
     }
@@ -374,12 +386,8 @@ impl<'a> Engine<'a> {
             };
             match receiver.recv_timeout(wait) {
                 Ok(Msg::Stop) | Err(RecvTimeoutError::Disconnected) => return,
-                Ok(Msg::Wake) => {
-                    if self.debounce(receiver) {
-                        return;
-                    }
-                    self.flush();
-                }
+                Ok(Msg::Wake) if self.debounce(receiver) => return,
+                Ok(Msg::Wake) => self.flush(),
                 Ok(Msg::Head) => self.record_head(),
                 Ok(Msg::Feed(feed, reply)) => {
                     let _ = reply.send(self.feed(&feed));
@@ -426,9 +434,9 @@ impl<'a> Engine<'a> {
             if self
                 .watch_backoff
                 .is_none_or(|(at, _)| Instant::now() >= at)
-                && let Ok(directories) = self.directories()
+                && let Ok(dirs) = self.directories()
             {
-                self.arm(&directories);
+                self.arm(&dirs);
             }
             self.lose();
             self.flush();
@@ -469,13 +477,11 @@ impl<'a> Engine<'a> {
     /// Commit every dirty path; reconcile first when changes were lost or an
     /// ignore rule file changed.
     fn flush(&mut self) {
-        let Ok((paths, overflowed, token)) = self.shared.dirty().map(|dirty| {
-            (
-                dirty.snapshot(),
-                dirty.overflowed(),
-                dirty.begin_reconcile(),
-            )
-        }) else {
+        let Ok((paths, overflowed, token)) = self
+            .shared
+            .dirty()
+            .map(|d| (d.snapshot(), d.overflowed(), d.begin_reconcile()))
+        else {
             return;
         };
         if let Ok(mut progress) = self.shared.progress() {
@@ -488,16 +494,14 @@ impl<'a> Engine<'a> {
         }
         if rules
             && cfg!(target_os = "linux")
-            && let Ok(directories) = self.directories()
+            && let Ok(dirs) = self.directories()
         {
-            self.arm(&directories);
+            self.arm(&dirs);
         }
         if overflowed || rules {
             match self.reconcile() {
                 Ok(()) if overflowed => {
-                    if let Ok(mut dirty) = self.shared.dirty() {
-                        dirty.end_reconcile(token);
-                    }
+                    let _ = self.shared.dirty().map(|mut d| d.end_reconcile(token));
                 }
                 Ok(()) => {}
                 Err(error) => set_phase(self.shared, Phase::Failed(error.to_string())),
@@ -512,9 +516,8 @@ impl<'a> Engine<'a> {
             done.push(path);
         }
         if let Ok(mut dirty) = self.shared.dirty() {
-            for path in done {
-                dirty.settle(&path.path, path.serial);
-            }
+            done.into_iter()
+                .for_each(|p| dirty.settle(&p.path, p.serial));
         }
         self.compact();
         self.refresh();

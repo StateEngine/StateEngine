@@ -12,12 +12,9 @@ impl Successful {
             "captured tool source",
             "Restore the committed source binding before indexing its activity.",
         )?;
-        let original = record
-            .original
-            .map(|event| *event)
-            .unwrap_or(record.current);
+        let original = record.original.as_deref().unwrap_or(&record.current);
         if original.header.scope != Scope::Project(project.clone())
-            || !matches!(original.body,EventBody::CaptureSource{source,session,..} if source==self.0.source && session==self.0.session)
+            || !matches!(&original.body, EventBody::CaptureSource { source, session, .. } if *source == self.0.source && *session == self.0.session)
         {
             return Err(SeError::invalid(
                 "captured tool source",
@@ -28,12 +25,12 @@ impl Successful {
     }
     pub fn paths(&self) -> &[ObservedPath] {
         match &self.0.target {
-            Target::Paths(paths) => paths,
+            Target::Paths(p) => p,
             _ => &[],
         }
     }
     pub fn key(&self) -> Result<RecordKey> {
-        let identity = (
+        let id = (
             &self.0.session,
             self.0.source,
             self.0.provider,
@@ -41,11 +38,9 @@ impl Successful {
             self.0.phase,
             &self.0.position,
         );
-        let digest = sha2::Sha256::digest(
-            serde_json::to_vec(&identity)
-                .map_err(|e| SeError::invalid("captured tool identity", &e.to_string()))?,
-        );
-        RecordKey::new(format!("tool:{digest:x}"))
+        let raw = serde_json::to_vec(&id)
+            .map_err(|e| SeError::invalid("captured tool identity", &e.to_string()))?;
+        RecordKey::new(format!("tool:{:x}", sha2::Sha256::digest(raw)))
     }
     pub fn actor(&self) -> AtlasActor {
         AtlasActor {
@@ -81,7 +76,11 @@ pub(super) fn successful(event: &StoredEvent) -> Result<Captured> {
         return Ok(Captured::Skip);
     }
     if text.len() > 8192 {
-        return Ok(Captured::Oversized(text.len()));
+        return Ok(if is_oversized_non_tool(text) {
+            Captured::Skip
+        } else {
+            Captured::Oversized(text.len())
+        });
     }
     let metadata = Record::decode(text)?;
     if metadata.kind != "captured-tool" {
@@ -112,4 +111,9 @@ pub(super) fn successful(event: &StoredEvent) -> Result<Captured> {
         return Ok(Captured::Skip);
     }
     Ok(Captured::Match(Box::new(Successful(tool))))
+}
+fn is_oversized_non_tool(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text).is_ok_and(|v| {
+        v["kind"].as_str().is_some_and(|k| k != "captured-tool") && v["captured_tool"].is_null()
+    })
 }
