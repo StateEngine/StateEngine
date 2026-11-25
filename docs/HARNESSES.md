@@ -68,7 +68,8 @@ them. Older readers refuse those profiles rather than drop settings.
 An ACP agent is a separately installed assistant that speaks Agent Client Protocol
 version 1 over standard input and output. Configure its executable and arguments in
 your state home's `config.toml`; StateEngine does not run a shell to interpret those
-arguments. The agent must support authenticated HTTP MCP connections. Resuming also
+arguments. StateEngine gives the agent its tools over authenticated HTTP MCP when the
+agent advertises support, and otherwise attaches `se mcp --stdio`. Resuming also
 requires loading saved sessions; agents without that capability can start fresh by
 omitting `--resume`. Sign in and select a model using that agent's own setup.
 

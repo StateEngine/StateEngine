@@ -29,7 +29,7 @@ se init --provider codex          # or --provider claude
 In PowerShell, for example, use `cd "C:\path\to\your\repo"`. If the folder is not a
 Git repository yet, run `git init` there first. Init registers the folder and creates
 the saved agent named `main`. It writes no files into your working tree and does not
-change Git history; it records the project's Git identity inside `.git` so the
+change Git history; it records the project's identity in `.git/stateengine/` so the
 project can be found again if the folder moves. It ends by printing the exact
 first-launch command for your project and state home. If you chose a custom home with
 `--home` or `SE_HOME`, keep using it, because the default commands select a different

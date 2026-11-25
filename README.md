@@ -79,10 +79,12 @@ se status                            # project, agents, runtime and unread mail
 se history --agent main              # read the conversation as it is saved
 ```
 
-`se init` registers the folder and saves an agent named `main`. It writes no files into
-your working tree and leaves your Git history alone, then prints the exact launch command
-for your setup. A running agent is not a finished task: repeat `se history --agent main`
-until the assistant's reply is saved, then check the result:
+`se init` registers the folder, saves an agent named `main` and registers the MCP server
+for the provider you chose. It records the project's identity in `.git/stateengine/`,
+writes no files into your working tree and leaves your Git history alone, then prints the
+exact launch command for your setup. `se launch` checks that the provider CLI is installed
+and new enough before it starts the agent. A running agent is not a finished task: repeat
+`se history --agent main` until the assistant's reply is saved, then check the result:
 
 ```sh
 cat notes.md                         # PowerShell: Get-Content .\notes.md
@@ -141,19 +143,20 @@ reports delivery and reading separately and never treats "sent" as "read" or "do
 `se watch --target PROJECT_ID/AGENT_ID --once --wait-ms 0` reads one page of an agent's
 live and saved activity. `se agent list` prints each agent's ID (`ag_…`) and the
 `Next:` line of `se status` shows the project ID (`prj_…`), so a target looks like
-`prj_…/ag_…`. and `se delegate` launches a one-shot temporary agent with an optional
+`prj_…/ag_…`. `se delegate` launches a one-shot temporary agent with an optional
 context handoff.
 
 ## Find code with Atlas
 
 Atlas indexes the repository in the background once the runtime is running (`se launch`
-starts it, or run `se up`):
+starts it, or run `se up`). Replace `<symbol>` with a function or type name from your
+code and `<file>` with a path relative to the repository root:
 
 ```sh
-se atlas find greet                  # code, text and project records
-se atlas refs greet                  # references to a symbol
-se atlas impact greet                # dependents, possible tests and linked records
-se atlas outline src/app.py          # declarations in one file
+se atlas find <symbol>               # code, text and project records
+se atlas refs <symbol>               # references to a symbol
+se atlas impact <symbol>             # dependents, possible tests and linked records
+se atlas outline <file>              # declarations in one file
 se atlas changes --since 10m         # what changed recently
 ```
 
@@ -180,9 +183,10 @@ Details: [docs/USING.md](docs/USING.md#adopting-sessions-you-start-yourself).
 se init --harness qwen-code          # or goose, hermes; detected when installed and signed in
 ```
 
-Other agents that speak ACP version 1 over stdio and support authenticated HTTP MCP
-connections can be added as a named harness in `config.toml`, then selected with `se
-agent add NAME --harness HARNESS`. Resuming a saved conversation also requires the agent
+Other agents that speak ACP version 1 over stdio can be added as a named harness in
+`config.toml`, then selected with `se agent add NAME --harness HARNESS`. StateEngine
+gives them its tools over HTTP MCP when the agent supports it, and otherwise through
+`se mcp --stdio`. Resuming a saved conversation also requires the agent
 to support loading sessions. Saved agents can also pin their own model, endpoint and
 reasoning effort. See **[docs/HARNESSES.md](docs/HARNESSES.md)** for permission
 profiles, per-agent models and harness configuration.
