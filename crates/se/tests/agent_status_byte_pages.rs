@@ -6,9 +6,14 @@
 )]
 #[path = "../../test-support/provider_home.rs"]
 mod provider_home;
-use se_core::{commit::Cx, ops::agent_status};
+use se_core::{
+    admission::HumanTerminal,
+    commit::{Cx, OpStep},
+    dispatch::{CallFacts, Kernel},
+    ops::{AgentCreate, AnyOp, agent_status},
+};
 use se_store::*;
-use se_types::{AgentId, HumanId, OmissionReason, ProjectId};
+use se_types::{AgentId, HumanId, IdempotencyKey, OmissionReason, ProjectId};
 use std::{path::Path, process::Command};
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
@@ -144,14 +149,8 @@ fn observed_agent_list_pages_cut_at_their_final_bytes() -> Check {
     // longest names and models bring the saved rows near one page's bytes.
     let home = &f.home.join("observed-state-".repeat(8)).join("state");
     std::fs::create_dir_all(home.parent().ok_or("state parent")?)?;
-    call(home, &root, &["init", "--name", "observed-pages"])?;
-    let model = "m".repeat(128);
-    for index in 0..OBSERVED_AGENTS {
-        let key = format!("observed-page-agent-{index}");
-        let name = format!("observed-{index:03}-{}", "n".repeat(50));
-        let args = ["--key", &key, "agent", "add", &name, "--model", &model];
-        call(home, &root, &args)?;
-    }
+    let initialized = call(home, &root, &["init", "--name", "observed-pages"])?;
+    seed_observed_agents(&f.home, home, &initialized)?;
     let direct = list_every_agent(home, &root)?;
     call(home, &root, &["up"])?;
     let hosted = list_every_agent(home, &root);
@@ -165,6 +164,65 @@ fn observed_agent_list_pages_cut_at_their_final_bytes() -> Check {
         hosted, direct,
         "hosted and direct pages list the same agents"
     );
+    Ok(())
+}
+
+/// Saves the observed agents through the real create operation in this
+/// process: one CLI process per agent outlasts the test timeout on Windows.
+fn seed_observed_agents(root: &Path, home: &Path, initialized: &serde_json::Value) -> Check {
+    let mut seed = Fixture::at(root.to_owned(), home.to_owned())?;
+    seed.owner = initialized["owner"]["human_id"]
+        .as_str()
+        .ok_or("initialized owner")?
+        .parse()?;
+    seed.project = initialized["project"]["id"]
+        .as_str()
+        .ok_or("initialized project")?
+        .parse()?;
+    seed.store = present(SqliteFactory::open_reader(&seed.options)?)?
+        .info()?
+        .id;
+    let configuration: se_config::config_policy::ConfigFile =
+        toml::from_str(&std::fs::read_to_string(home.join("config.toml"))?)?;
+    let lease = Lease::acquire(home, LeaseMode::DirectClient, Some(seed.store.clone()))?;
+    let mut direct = present(SqliteFactory::open_direct(&seed.options, &*lease)?)?;
+    let admission = seed.owner_project();
+    let model = "m".repeat(128);
+    for index in 0..OBSERVED_AGENTS {
+        let micros = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
+        let kernel = Kernel::new(CallFacts {
+            event: event()?,
+            message: message()?,
+            agent: agent()?,
+            profile_event: event()?,
+            notification_event: event()?,
+            notification_message: message()?,
+            occurred_at_us: i64::try_from(micros.as_micros())?,
+            door: Door::Cli,
+        })?
+        .with_configuration(configuration.clone())?;
+        let op = AnyOp::AgentCreate(AgentCreate {
+            provider_settings: Box::default(),
+            harness: None,
+            name: format!("observed-{index:03}-{}", "n".repeat(50)),
+            provider: None,
+            model: Some(model.clone()),
+            profile: None,
+            idempotency_key: IdempotencyKey::new(format!("observed-page-agent-{index}"))?,
+        });
+        let mut snapshot = direct.snapshot(seed.scoped(Visibility::Owner))?;
+        let mut cx = Cx {
+            read: &mut snapshot,
+            admission: &admission,
+        };
+        let step = kernel.plan(op, &mut cx, &HumanTerminal::OutsideAgentTree)?;
+        snapshot.close()?;
+        let OpStep::Commit { batch, .. } = step else {
+            return Err("agent creation must plan a commit".into());
+        };
+        direct.append(batch, &*lease)?;
+    }
+    direct.close()?;
     Ok(())
 }
 
