@@ -82,7 +82,7 @@ impl Queue {
     }
     fn push(&mut self, id: u32, action: u8, directory: bool, name: &[u8]) -> Option<Signal> {
         if self.lost {
-            return None;
+            return self.signal.clone();
         }
         if name.len() > 4084 || self.bytes.saturating_add(12 + name.len()) > MAX_QUEUE {
             return self.loss();
@@ -326,7 +326,7 @@ unsafe extern "C" fn callback(
 ) {
     // SAFETY: the context is held until invalidation and the serial queue barrier.
     let context = unsafe { &*(info.cast::<Context>()) };
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let result = run_no_unwind(|| {
         let Ok(mut queue) = context.queue.lock() else {
             return None;
         };
@@ -352,7 +352,7 @@ unsafe extern "C" fn callback(
                 }
                 // SAFETY: FSEvents supplies each path as a NUL-terminated string.
                 let path = unsafe { CStr::from_ptr(name) };
-                let Some(relative) = std::str::from_utf8(path.to_bytes())
+                let Some(rel) = std::str::from_utf8(path.to_bytes())
                     .ok()
                     .and_then(|p| std::path::Path::new(p).strip_prefix(&context.root).ok())
                     .and_then(|r| r.to_str())
@@ -360,34 +360,39 @@ unsafe extern "C" fn callback(
                     notify = queue.loss();
                     break;
                 };
-                let action = u8::from(flags & REMOVED_OR_RENAMED != 0);
-                let dir = flags & IS_DIRECTORY != 0;
+                let (action, dir) = (
+                    u8::from(flags & REMOVED_OR_RENAMED != 0),
+                    flags & IS_DIRECTORY != 0,
+                );
                 notify = queue
-                    .push(context.id, action, dir, relative.as_bytes())
+                    .push(context.id, action, dir, rel.as_bytes())
                     .or(notify);
             }
             notify
         }
-    }));
+    });
     match result {
-        Ok(Some(signal)) => {
-            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| signal())).is_err() {
-                // Record loss without re-invoking the panicked signal callback.
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let _ = context.queue.lock().map(|mut q| q.loss());
-                }));
-            }
+        Some(Some(signal)) if run_no_unwind(|| signal()).is_none() => {
+            // Record loss without re-invoking the panicked signal; later callbacks re-signal.
+            let _ = run_no_unwind(|| context.queue.lock().ok().map(|mut q| q.loss()));
         }
-        Ok(None) => {}
-        Err(_) => {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let signal = context.queue.lock().ok().and_then(|mut q| q.loss());
-                if let Some(signal) = signal {
-                    signal();
+        None => {
+            let _ = run_no_unwind(|| {
+                if let Some(s) = context.queue.lock().ok().and_then(|mut q| q.loss()) {
+                    s();
                 }
-            }));
+            });
         }
+        _ => {}
     }
+}
+fn run_no_unwind<T>(f: impl FnOnce() -> T) -> Option<T> {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    catch_unwind(AssertUnwindSafe(f))
+        .map_err(|p| {
+            let _ = catch_unwind(AssertUnwindSafe(move || drop(p))).map_err(std::mem::forget);
+        })
+        .ok()
 }
 impl Drop for Watcher {
     fn drop(&mut self) {
@@ -400,9 +405,7 @@ impl Drop for Watcher {
             }
         }
         // SAFETY: callbacks scheduled before invalidation finish before the barrier returns.
-        unsafe {
-            dispatch_sync_f(self.dispatch.0, ptr::null_mut(), barrier);
-        }
+        unsafe { dispatch_sync_f(self.dispatch.0, ptr::null_mut(), barrier) };
         for stream in state.streams.drain(..) {
             // SAFETY: no callback can use these unique stream and context allocations now.
             unsafe {
@@ -411,9 +414,7 @@ impl Drop for Watcher {
             }
         }
         // SAFETY: all streams are retired; this releases the queue's owned reference.
-        unsafe {
-            dispatch_release(self.dispatch.0);
-        }
+        unsafe { dispatch_release(self.dispatch.0) };
     }
 }
 
