@@ -2,7 +2,7 @@
 //! not claim native launch custody, provider execution or host authentication.
 #![cfg(any(target_os = "linux", windows))]
 use se_store::*;
-use se_types::{AgentId, LifecycleId, Read, SessionId};
+use se_types::{AgentId, LifecycleId, MessageId, Read, SessionId};
 #[path = "support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
@@ -22,11 +22,6 @@ mod control_fixture;
 use control_fixture::*;
 /// Protects: a creator controls only its direct child under a current grant; bounded metadata never widens ordinary private readers.
 #[test]
-#[expect(
-    clippy::cognitive_complexity,
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
     let f = Fixture::new()?;
     let (host, lease) = host(&f)?;
@@ -35,6 +30,58 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
     let child = agent()?;
     let grandchild = agent()?;
     let other = agent()?;
+    seed_agents(&f, &client, &child, &grandchild, &other)?;
+    let session = capture::session()?;
+    let admission = f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.a.clone()));
+    let session_receipt = wait(client.submit(f.batch(
+        admission.clone(),
+        Some(request(&format!(
+            "fixture-wave2_control_independent-57-{}",
+            serial()
+        ))?),
+        vec![capture::prepared(&f, &session, &child)],
+    )?)?)??;
+    capture_sources_stay_scoped(&f, &client, &admission, &session)?;
+    let process = start_child_process(&f, &client, &admission, &child, &session, &session_receipt)?;
+    let private_message = seed_child_private_state(&f, &client, &child)?;
+    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+    let mut snapshot = reader.snapshot(f.self_scope(&f.a))?;
+    grant_reads_stay_private(&f, &reader, &mut snapshot)?;
+    control_target_is_bounded(&mut snapshot, &child, &session, &process, private_message)?;
+    non_children_are_refused(&f, &client, &admission, &mut snapshot, &grandchild, &other)?;
+    ungranted_creator_is_refused(&f, &client, &reader, &other)?;
+    human_principal_is_refused(&f, &client, &admission, &child)?;
+    revoked_grant_refuses_new_control(
+        &f,
+        &client,
+        &admission,
+        &reader,
+        &mut snapshot,
+        &session,
+        &child,
+    )?;
+    revoked_creator_cannot_write(
+        &f,
+        &client,
+        admission,
+        &reader,
+        process,
+        session_receipt,
+        child,
+    )?;
+    drop(snapshot);
+    drop(reader);
+    drop(wait_drained(writer.drain(DRAIN_DEADLINE))??);
+    Ok(())
+}
+
+fn seed_agents(
+    f: &Fixture,
+    client: &SqliteClient,
+    child: &AgentId,
+    grandchild: &AgentId,
+    other: &AgentId,
+) -> Check {
     wait(client.submit(f.batch(
         f.owner_project(),
         Some(request(&format!(
@@ -43,9 +90,9 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
         ))?),
         vec![
             grant(&f.a, true, Expected::Absent),
-            helper(&f, &child, Some(&f.a)),
-            helper(&f, &grandchild, Some(&child)),
-            helper(&f, &other, Some(&f.b)),
+            helper(f, child, Some(&f.a)),
+            helper(f, grandchild, Some(child)),
+            helper(f, other, Some(&f.b)),
             EventBody::ProfileSaved {
                 agent: child.clone(),
                 profile: Profile {
@@ -61,26 +108,20 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
             },
         ],
     )?)?)??;
-    let session = capture::session()?;
-    let admission = f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.a.clone()));
-    let session_receipt = wait(client.submit(f.batch(
-        admission.clone(),
-        Some(request(&format!(
-            "fixture-wave2_control_independent-57-{}",
-            serial()
-        ))?),
-        vec![capture::prepared(&f, &session, &child)],
-    )?)?)??;
+    Ok(())
+}
+
+fn capture_sources_stay_scoped(
+    f: &Fixture,
+    client: &SqliteClient,
+    admission: &Admission,
+    session: &SessionId,
+) -> Check {
     let source = capture::record()?;
     wait(client.submit(f.batch(
         admission.clone(),
         Some(request(&format!("creator-capture-source-{}", serial()))?),
-        vec![capture::source(
-            source,
-            &session,
-            b"child",
-            Expected::Absent,
-        )],
+        vec![capture::source(source, session, b"child", Expected::Absent)],
     )?)?)??;
     assert_eq!(
         wait(client.submit(f.batch(
@@ -91,7 +132,7 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
             ))?),
             vec![capture::source(
                 source,
-                &session,
+                session,
                 b"replacement",
                 revision(1)?
             )],
@@ -105,7 +146,7 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
     wait(client.submit(f.batch(
         f.owner_project(),
         Some(request(&format!("foreign-capture-session-{}", serial()))?),
-        vec![capture::prepared(&f, &foreign_session, &f.b)],
+        vec![capture::prepared(f, &foreign_session, &f.b)],
     )?)?)??;
     assert_eq!(
         wait(client.submit(f.batch(
@@ -123,7 +164,18 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
         .code,
         StoreErrorCode::CreatorControlRefused
     );
-    let mut process = identity(&child)?;
+    Ok(())
+}
+
+fn start_child_process(
+    f: &Fixture,
+    client: &SqliteClient,
+    admission: &Admission,
+    child: &AgentId,
+    session: &SessionId,
+    session_receipt: &CommitReceipt,
+) -> Result<ProcessIdentityRecord, Box<dyn std::error::Error>> {
+    let mut process = identity(child)?;
     process.root_identity = RootIdentityState::NoChildCreated;
     process.session = Some(session.clone());
     wait(client.submit(f.batch(
@@ -149,6 +201,14 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
             session_receipt.primary_event.clone(),
         )?],
     )?)?)??;
+    Ok(process)
+}
+
+fn seed_child_private_state(
+    f: &Fixture,
+    client: &SqliteClient,
+    child: &AgentId,
+) -> Result<MessageId, Box<dyn std::error::Error>> {
     let private_message = message()?;
     wait(client.submit(f.send(
         Actor::Human(f.owner.clone()),
@@ -172,8 +232,14 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
             expected: Expected::Absent,
         }],
     )?)?)??;
-    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
-    let mut snapshot = reader.snapshot(f.self_scope(&f.a))?;
+    Ok(private_message)
+}
+
+fn grant_reads_stay_private(
+    f: &Fixture,
+    reader: &SqliteReader,
+    snapshot: &mut SqliteSnapshot,
+) -> Check {
     let own_grant = present(snapshot.grant(
         Actor::Agent(f.a.clone()),
         GrantKey::AgentCanCreate(f.a.clone()),
@@ -202,14 +268,24 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
             .code,
         StoreErrorCode::ScopeMismatch
     );
+    Ok(())
+}
+
+fn control_target_is_bounded(
+    snapshot: &mut SqliteSnapshot,
+    child: &AgentId,
+    session: &SessionId,
+    process: &ProcessIdentityRecord,
+    private_message: MessageId,
+) -> Check {
     let control = present(snapshot.control_target(child.clone())?)?;
     assert!(
-        matches!(control.profile, Read::Present { value } if matches!(&value.current.body, EventBody::ProfileSaved { agent, .. } if agent == &child))
+        matches!(control.profile, Read::Present { value } if matches!(&value.current.body, EventBody::ProfileSaved { agent, .. } if agent == child))
     );
     assert_eq!(control.sessions.len(), 1);
     assert_eq!(control.processes.len(), 1);
     assert!(
-        matches!(&control.sessions[0].current.body, EventBody::SessionPrepared { session: id, .. } if *id == session)
+        matches!(&control.sessions[0].current.body, EventBody::SessionPrepared { session: id, .. } if *id == *session)
     );
     assert!(
         matches!(&control.processes[0].current.body, EventBody::ProcessTransition { identity, to: ProcessState::Starting, .. } if identity.record == process.record)
@@ -224,6 +300,17 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
             .is_err()
     );
     assert!(snapshot.resume_head(Actor::Agent(child.clone())).is_err());
+    Ok(())
+}
+
+fn non_children_are_refused(
+    f: &Fixture,
+    client: &SqliteClient,
+    admission: &Admission,
+    snapshot: &mut SqliteSnapshot,
+    grandchild: &AgentId,
+    other: &AgentId,
+) -> Check {
     for forbidden in [f.b.clone(), grandchild.clone(), other.clone()] {
         assert_eq!(
             snapshot
@@ -241,7 +328,7 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
                     "judge-nested-wave2_control_independent-152-{}",
                     serial()
                 ))?),
-                vec![capture::prepared(&f, &attempted, &forbidden)]
+                vec![capture::prepared(f, &attempted, &forbidden)]
             )?)?)?
             .err()
             .ok_or("non-child session write admitted")?
@@ -264,6 +351,15 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
             StoreErrorCode::CreatorControlRefused
         );
     }
+    Ok(())
+}
+
+fn ungranted_creator_is_refused(
+    f: &Fixture,
+    client: &SqliteClient,
+    reader: &SqliteReader,
+    other: &AgentId,
+) -> Check {
     let missing_grant = f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.b.clone()));
     assert_eq!(
         reader
@@ -282,7 +378,7 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
                 "judge-nested-wave2_control_independent-187-{}",
                 serial()
             ))?),
-            vec![capture::prepared(&f, &ungranted_session, &other)]
+            vec![capture::prepared(f, &ungranted_session, other)]
         )?)?)?
         .err()
         .ok_or("creator without a grant prepared its child")?
@@ -296,14 +392,23 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
                 "judge-nested-wave2_control_independent-198-{}",
                 serial()
             ))?),
-            vec![registration(&identity(&other)?, ProcessState::Starting)]
+            vec![registration(&identity(other)?, ProcessState::Starting)]
         )?)?)?
         .err()
         .ok_or("creator without a grant wrote its child process")?
         .code,
         StoreErrorCode::CreatorControlRefused
     );
-    let mut human = identity(&child)?;
+    Ok(())
+}
+
+fn human_principal_is_refused(
+    f: &Fixture,
+    client: &SqliteClient,
+    admission: &Admission,
+    child: &AgentId,
+) -> Check {
+    let mut human = identity(child)?;
     human.principal = Actor::Human(f.owner.clone());
     assert!(
         wait(client.submit(f.batch(
@@ -317,6 +422,18 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
         .is_err(),
         "creator controlled a human principal"
     );
+    Ok(())
+}
+
+fn revoked_grant_refuses_new_control(
+    f: &Fixture,
+    client: &SqliteClient,
+    admission: &Admission,
+    reader: &SqliteReader,
+    snapshot: &mut SqliteSnapshot,
+    session: &SessionId,
+    child: &AgentId,
+) -> Check {
     wait(client.submit(f.batch(
         f.owner_project(),
         Some(request(&format!(
@@ -331,7 +448,7 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
             Some(request(&format!("revoked-capture-source-{}", serial()))?),
             vec![capture::source(
                 capture::record()?,
-                &session,
+                session,
                 b"revoked",
                 Expected::Absent
             )],
@@ -374,6 +491,18 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
         StoreErrorCode::CreatorControlRefused
     );
     drop(current);
+    Ok(())
+}
+
+fn revoked_creator_cannot_write(
+    f: &Fixture,
+    client: &SqliteClient,
+    admission: Admission,
+    reader: &SqliteReader,
+    mut process: ProcessIdentityRecord,
+    session_receipt: CommitReceipt,
+    child: AgentId,
+) -> Check {
     let new_session = capture::session()?;
     assert_eq!(
         wait(client.submit(f.batch(
@@ -382,7 +511,7 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
                 "judge-nested-wave2_control_independent-244-{}",
                 serial()
             ))?),
-            vec![capture::prepared(&f, &new_session, &child)]
+            vec![capture::prepared(f, &new_session, &child)]
         )?)?)?
         .err()
         .ok_or("revoked creator session write admitted")?
@@ -410,7 +539,7 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
         .code,
         StoreErrorCode::CreatorControlRefused
     );
-    assert_eq!(head(&f, process.record.clone())?.revision.value.get(), 2);
+    assert_eq!(head(f, process.record.clone())?.revision.value.get(), 2);
     assert!(matches!(
         reader
             .snapshot(f.scoped(Visibility::Owner))?
@@ -423,9 +552,6 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
             .control_target(child)?,
         Read::Present { .. }
     ));
-    drop(snapshot);
-    drop(reader);
-    drop(wait_drained(writer.drain(DRAIN_DEADLINE))??);
     Ok(())
 }
 

@@ -164,10 +164,6 @@ fn session_source_and_turn_readers_apply_principal_visibility() -> Check {
 
 /// Protects: E3 — bootstrap hash reads report current credential state, and session end atomically requires revocation first.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn credential_transitions_and_session_end_have_current_revocation_metadata() -> Check {
     let f = Fixture::new()?;
     let (mut d, lease) = f.direct()?;
@@ -202,6 +198,18 @@ fn credential_transitions_and_session_end_have_current_revocation_metadata() -> 
     assert_eq!(value.agent, f.a);
     assert_eq!(value.session, id);
     assert!(matches!(d.credential([18; 32])?, Read::Absent { .. }));
+    activation_requires_an_active_session(&f, &mut d, &lease, &id, credential)?;
+    session_end_requires_revocation_first(&f, &mut d, &lease, id, credential)?;
+    Ok(())
+}
+
+fn activation_requires_an_active_session(
+    f: &Fixture,
+    d: &mut SqliteDirect,
+    lease: &Lease,
+    id: &SessionId,
+    credential: RecordId,
+) -> Check {
     assert!(
         d.append(
             f.batch(
@@ -217,7 +225,7 @@ fn credential_transitions_and_session_end_have_current_revocation_metadata() -> 
                     first_request: Some(record()?)
                 }]
             )?,
-            &*lease
+            lease
         )
         .is_err()
     );
@@ -230,7 +238,7 @@ fn credential_transitions_and_session_end_have_current_revocation_metadata() -> 
             f.owner_project(),
             Some(request(&format!("fixture-store_capture-222-{}", serial()))?),
             vec![
-                activated(&id)?,
+                activated(id)?,
                 EventBody::CredentialActivated {
                     credential,
                     session: id.clone(),
@@ -239,12 +247,22 @@ fn credential_transitions_and_session_end_have_current_revocation_metadata() -> 
                 },
             ],
         )?,
-        &*lease,
+        lease,
     )?;
     assert_eq!(
         present(d.credential([17; 32])?)?.state,
         CredentialState::Active
     );
+    Ok(())
+}
+
+fn session_end_requires_revocation_first(
+    f: &Fixture,
+    d: &mut SqliteDirect,
+    lease: &Lease,
+    id: SessionId,
+    credential: RecordId,
+) -> Check {
     let ended = || -> Result<EventBody<InputText>, Box<dyn std::error::Error>> {
         Ok(EventBody::SessionEnded {
             session: id.clone(),
@@ -264,7 +282,7 @@ fn credential_transitions_and_session_end_have_current_revocation_metadata() -> 
                 ))?),
                 vec![ended()?]
             )?,
-            &*lease
+            lease
         )
         .is_err()
     );
@@ -285,7 +303,7 @@ fn credential_transitions_and_session_end_have_current_revocation_metadata() -> 
                 ended()?,
             ],
         )?,
-        &*lease,
+        lease,
     )?;
     let value = present(d.credential([17; 32])?)?;
     assert_eq!(value.state, CredentialState::Revoked);
@@ -314,10 +332,6 @@ fn legacy_native_capture_metadata_is_readable_but_not_rewritten_on_replay() -> C
     native_capture_metadata(Some("first-delivery"))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn native_capture_metadata(request_key: Option<&str>) -> Check {
     let f = Fixture::new()?;
     let (mut d, lease) = f.direct()?;
@@ -372,6 +386,18 @@ fn native_capture_metadata(request_key: Option<&str>) -> Check {
         same_receipt(&first, &replay);
         assert_eq!(d.info()?.head, head);
     }
+    changed_native_content_is_refused(&mut d, &lease, attempt, request_key, head)?;
+    retained_source_keeps_original_metadata(&f, &mut d, source_id, request_key)?;
+    Ok(())
+}
+
+fn changed_native_content_is_refused(
+    d: &mut SqliteDirect,
+    lease: &Lease,
+    attempt: impl Fn() -> Result<AtomicBatch, Box<dyn std::error::Error>>,
+    request_key: Option<&str>,
+    head: Option<StorePosition>,
+) -> Check {
     for field in [
         "text",
         "role",
@@ -414,7 +440,7 @@ fn native_capture_metadata(request_key: Option<&str>) -> Check {
             _ => panic!("unrecognized capture replay fault"),
         }
         let refused = d
-            .append(changed, &*lease)
+            .append(changed, lease)
             .err()
             .ok_or("changed native content replayed")?;
         assert!(matches!(
@@ -423,6 +449,15 @@ fn native_capture_metadata(request_key: Option<&str>) -> Check {
         ));
         assert_eq!(d.info()?.head, head);
     }
+    Ok(())
+}
+
+fn retained_source_keeps_original_metadata(
+    f: &Fixture,
+    d: &mut SqliteDirect,
+    source_id: RecordId,
+    request_key: Option<&str>,
+) -> Check {
     let mut snap = d.snapshot(f.self_scope(&f.a))?;
     let retained = present(snap.capture_source(source_id)?)?;
     assert_eq!(retained.revision.value.get(), 2);
