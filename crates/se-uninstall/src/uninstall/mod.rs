@@ -28,11 +28,16 @@ pub struct UninstallNativeError {
     pub source: io::Error,
     /// Exact protected artifacts whose cleanup remains unresolved after failure.
     pub pending_paths: Vec<PathBuf>,
+    /// Cleanup attempts that failed after `source`, which is kept unchanged.
+    pub cleanup_failures: Vec<UninstallNativeError>,
 }
 se_state_files::native_error::native_error!(UninstallNativeError, |error, out| {
     write!(out, "{}: {}", error.operation, error.source)?;
     for path in &error.pending_paths {
         write!(out, "; preserve pending artifact {}", path.display())?;
+    }
+    for failure in &error.cleanup_failures {
+        write!(out, "; cleanup failed: {failure}")?;
     }
     Ok(())
 }; source Some(&error.source));
@@ -42,6 +47,7 @@ fn error(operation: &'static str, source: io::Error) -> UninstallNativeError {
         operation,
         source,
         pending_paths: Vec::new(),
+        cleanup_failures: Vec::new(),
     }
 }
 fn refuse(operation: &'static str, reason: &'static str) -> UninstallNativeError {

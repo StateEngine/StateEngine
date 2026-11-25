@@ -146,6 +146,7 @@ fn path_commit_phase_and_uninstall_cleanup_debt_survive_error_formatting() {
         operation: "remove helper",
         source: io::Error::from_raw_os_error(5),
         pending_paths: pending_paths.clone(),
+        cleanup_failures: Vec::new(),
     };
     assert_eq!(
         error.to_string(),
@@ -162,6 +163,7 @@ fn path_commit_phase_and_uninstall_cleanup_debt_survive_error_formatting() {
         operation: error.operation,
         source: error.source,
         pending_paths: Vec::new(),
+        cleanup_failures: Vec::new(),
     };
     assert_eq!(
         cleared.to_string(),
