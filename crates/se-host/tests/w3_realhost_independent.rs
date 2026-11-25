@@ -272,11 +272,13 @@ fn capture_replays_by_natural_key_without_inventing_a_transcript_path() {
             &host,
             &session,
             generation,
-            "conv-capture-1",
-            api::TurnRole::User,
-            "vt-1",
-            user_text,
-            "judge-capture-1",
+            TurnInput {
+                conversation: "conv-capture-1",
+                role: api::TurnRole::User,
+                vendor_turn: "vt-1",
+                text: user_text,
+                key: "judge-capture-1",
+            },
         )
         .required();
     let (user_commit, user_event) = committed_value(user_receipt, "user capture").required();
@@ -285,11 +287,13 @@ fn capture_replays_by_natural_key_without_inventing_a_transcript_path() {
             &host,
             &session,
             generation,
-            "conv-capture-1",
-            api::TurnRole::Assistant,
-            "vt-2",
-            assistant_text,
-            "judge-capture-2",
+            TurnInput {
+                conversation: "conv-capture-1",
+                role: api::TurnRole::Assistant,
+                vendor_turn: "vt-2",
+                text: assistant_text,
+                key: "judge-capture-2",
+            },
         )
         .required();
     let (_assistant_commit, assistant_event) =
@@ -304,11 +308,13 @@ fn capture_replays_by_natural_key_without_inventing_a_transcript_path() {
             &host,
             &session,
             generation,
-            "conv-capture-1",
-            api::TurnRole::User,
-            "vt-1",
-            user_text,
-            "judge-capture-1",
+            TurnInput {
+                conversation: "conv-capture-1",
+                role: api::TurnRole::User,
+                vendor_turn: "vt-1",
+                text: user_text,
+                key: "judge-capture-1",
+            },
         )
         .required();
     let (replay_commit, replay_event) = replayed_value(replay, "capture replay").required();
@@ -326,11 +332,13 @@ fn capture_replays_by_natural_key_without_inventing_a_transcript_path() {
             &host,
             &session,
             generation,
-            "conv-capture-1",
-            api::TurnRole::User,
-            "vt-1",
-            user_text,
-            "judge-capture-distinct-key",
+            TurnInput {
+                conversation: "conv-capture-1",
+                role: api::TurnRole::User,
+                vendor_turn: "vt-1",
+                text: user_text,
+                key: "judge-capture-distinct-key",
+            },
         )
         .required();
     let (natural_commit, natural_event) =
