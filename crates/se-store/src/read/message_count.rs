@@ -94,13 +94,16 @@ impl SqliteSnapshot {
         sender: Option<&[u8]>,
     ) -> StoreResult<u64> {
         let h = self.info.head.as_ref().map_or(0, StorePosition::sequence);
-        let (statement, args) = message::mail_sql(
+        let window = MailWindow {
             project,
-            recipient,
-            sender,
+            to: recipient,
+            from: sender,
             query,
-            h,
-            0,
+            high: h,
+            after: 0,
+        };
+        let (statement, args) = message::mail_sql(
+            window,
             "COUNT(DISTINCT d.sent_seq)",
             self.info.schema_version,
         );

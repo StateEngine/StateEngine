@@ -31,7 +31,7 @@ impl SqliteClient {
             .admission
             .lock()
             .map_err(|_| fail(StoreErrorCode::WriterClosed, "writer admission poisoned"))?;
-        if admission.closed || admission.recovering {
+        if admission.lifecycle != Lifecycle::Open {
             return Err(fail(
                 StoreErrorCode::WriterClosed,
                 "the writer is draining or recovering; nothing was erased",

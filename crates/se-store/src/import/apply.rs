@@ -37,28 +37,7 @@ pub(crate) fn apply(
             code,
             ..
         } => import_unreadable(c, import, evidence, code)?,
-        LegacyRetained {
-            import,
-            family: f,
-            format_version,
-            legacy_id,
-            mapped_id,
-            source,
-            bytes,
-            retained_from,
-        } => legacy_retained(
-            c,
-            h,
-            import,
-            f,
-            format_version,
-            legacy_id,
-            mapped_id,
-            source,
-            bytes,
-            retained_from,
-            seq,
-        )?,
+        b @ LegacyRetained { .. } => legacy_retained(c, h, b, seq)?,
         AliasImported {
             alias,
             principal,
@@ -156,20 +135,25 @@ fn import_unreadable(
     }
     Ok(())
 }
-#[allow(clippy::too_many_arguments)]
 fn legacy_retained(
     c: &Connection,
     h: &EventHeader,
-    import: RecordId,
-    f: ImportFamily,
-    format_version: u32,
-    legacy_id: String,
-    mapped_id: LegacyTarget,
-    source: SourceEvidence,
-    bytes: Option<LegacyBytes>,
-    retained_from: Option<se_types::EventId>,
+    body: EventBody<InputText>,
     seq: i64,
 ) -> StoreResult<()> {
+    let EventBody::LegacyRetained {
+        import,
+        family: f,
+        format_version,
+        legacy_id,
+        mapped_id,
+        source,
+        bytes,
+        retained_from,
+    } = body
+    else {
+        return Err(invalid("import apply dispatch"));
+    };
     require_run(c, import)?;
     if format_version == 0
         || legacy_id.is_empty()

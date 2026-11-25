@@ -191,3 +191,15 @@ where
 
 pub(crate) use crate::codec::event::load_event;
 pub(crate) use cursor::checked_window_end;
+/// One finite mail selection shared by page, count and legacy-schema SQL.
+/// Oldest-first reads `(after, high]`; a newest-first continuation reads
+/// strictly below its prior frontier `after`, from the floor.
+#[derive(Clone, Copy)]
+struct MailWindow<'a> {
+    pub project: &'a [u8],
+    pub to: Option<&'a [u8]>,
+    pub from: Option<&'a [u8]>,
+    pub query: &'a MessageQuery,
+    pub high: u64,
+    pub after: u64,
+}

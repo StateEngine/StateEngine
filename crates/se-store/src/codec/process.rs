@@ -112,16 +112,34 @@ pub(crate) fn identity(
     let instance = identity_instance(db, row, owner_only)?;
     identity_consistent(&root_identity, &instance, owner_only, expected_state)?;
     let containment = containment_fact(db, row, &scope)?;
-    identity_record(
-        db,
-        row,
-        id,
-        &scope,
-        &principal,
+    let version: u16 = row.get("custody_version").map_err(sql)?;
+    let record = blob("custody")?;
+    if version != 1 || record.is_empty() || record.len() > 1024 * 1024 {
+        return Err(fail(
+            StoreErrorCode::Unreadable,
+            "process custody version/bytes missing or unsupported",
+        ));
+    }
+    Ok(ProcessIdentityRecord {
+        record: identity::wire(db, "lifecycle", id, &scope)?
+            .parse()
+            .map_err(invalid)?,
+        principal: identity::actor(db, &principal, &scope)?,
+        session: row
+            .get::<_, Option<Vec<u8>>>("target_session_id")
+            .map_err(sql)?
+            .map(|id| {
+                identity::wire(db, "session", &id, &scope).and_then(|v| v.parse().map_err(invalid))
+            })
+            .transpose()?,
         root_identity,
         instance,
+        custody: NativeCustody {
+            format_version: version,
+            record,
+        },
         containment,
-    )
+    })
 }
 
 fn head_consistent(
@@ -310,46 +328,5 @@ fn containment_fact(
                 .transpose()?,
         },
         _ => return Err(invalid("containment state")),
-    })
-}
-#[allow(clippy::too_many_arguments)]
-fn identity_record(
-    db: &Connection,
-    row: &rusqlite::Row,
-    id: &[u8],
-    scope: &[u8],
-    principal: &[u8],
-    root_identity: RootIdentityState,
-    instance: RecordedIdentity,
-    containment: ContainmentFact,
-) -> StoreResult<ProcessIdentityRecord> {
-    let blob = |name: &str| row.get::<_, Vec<u8>>(name).map_err(sql);
-    let version: u16 = row.get("custody_version").map_err(sql)?;
-    let record = blob("custody")?;
-    if version != 1 || record.is_empty() || record.len() > 1024 * 1024 {
-        return Err(fail(
-            StoreErrorCode::Unreadable,
-            "process custody version/bytes missing or unsupported",
-        ));
-    }
-    Ok(ProcessIdentityRecord {
-        record: identity::wire(db, "lifecycle", id, scope)?
-            .parse()
-            .map_err(invalid)?,
-        principal: identity::actor(db, principal, scope)?,
-        session: row
-            .get::<_, Option<Vec<u8>>>("target_session_id")
-            .map_err(sql)?
-            .map(|id| {
-                identity::wire(db, "session", &id, scope).and_then(|v| v.parse().map_err(invalid))
-            })
-            .transpose()?,
-        root_identity,
-        instance,
-        custody: NativeCustody {
-            format_version: version,
-            record,
-        },
-        containment,
     })
 }

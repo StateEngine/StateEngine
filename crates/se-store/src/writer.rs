@@ -17,16 +17,18 @@ mod append;
 mod atlas;
 mod erase;
 use crate::checkpoint_task;
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+/// Admission gate. Closing is final: recovery never reopens a draining writer.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Lifecycle {
+    Open,
+    Recovering,
+    Closed,
+}
 struct AdmissionState {
     bytes: usize,
     requests: usize,
-    closed: bool,
+    lifecycle: Lifecycle,
     flush: bool,
-    recovering: bool,
     recovery_queued: bool,
 }
 struct Shared {
@@ -84,7 +86,8 @@ impl TextStaging for SqliteClient {
             .admission
             .lock()
             .map_err(|_| fail(StoreErrorCode::WriterClosed, "writer admission poisoned"))?
-            .closed
+            .lifecycle
+            == Lifecycle::Closed
         {
             return Err(fail(
                 StoreErrorCode::WriterClosed,
@@ -123,10 +126,17 @@ impl Shared {
         Ok(())
     }
     fn set_recovering(&self, recovering: bool) -> StoreResult<()> {
-        self.admission
+        let mut s = self
+            .admission
             .lock()
-            .map_err(|_| fail(StoreErrorCode::WriterClosed, "writer admission poisoned"))?
-            .recovering = recovering;
+            .map_err(|_| fail(StoreErrorCode::WriterClosed, "writer admission poisoned"))?;
+        if s.lifecycle != Lifecycle::Closed {
+            s.lifecycle = if recovering {
+                Lifecycle::Recovering
+            } else {
+                Lifecycle::Open
+            };
+        }
         Ok(())
     }
 }
@@ -147,13 +157,13 @@ impl WriterClient for SqliteClient {
             .admission
             .lock()
             .map_err(|_| fail(StoreErrorCode::WriterClosed, "writer admission poisoned"))?;
-        if s.closed {
+        if s.lifecycle == Lifecycle::Closed {
             return Err(fail(
                 StoreErrorCode::WriterClosed,
                 "writer is draining or closed",
             ));
         }
-        if s.recovering {
+        if s.lifecycle == Lifecycle::Recovering {
             if !s.recovery_queued && self.sender.try_send(Command::Recover).is_ok() {
                 s.recovery_queued = true;
             }
@@ -233,9 +243,8 @@ pub(crate) fn start(
         admission: Mutex::new(AdmissionState {
             bytes: 0,
             requests: 0,
-            closed: false,
+            lifecycle: Lifecycle::Open,
             flush: false,
-            recovering: false,
             recovery_queued: false,
         }),
         byte_limit: options.resident_bytes.get() as usize,
@@ -278,13 +287,13 @@ impl SqliteWriter {
             .admission
             .lock()
             .map_err(|_| fail(StoreErrorCode::WriterClosed, "writer admission poisoned"))?;
-        if s.closed {
+        if s.lifecycle == Lifecycle::Closed {
             return Err(fail(
                 StoreErrorCode::WriterClosed,
                 "writer already draining",
             ));
         }
-        s.closed = true;
+        s.lifecycle = Lifecycle::Closed;
         self.client
             .sender
             .try_send(Command::Drain(Instant::now() + deadline))
@@ -321,7 +330,7 @@ impl WriterOwner for SqliteWriter {
             .admission
             .lock()
             .map_err(|_| fail(StoreErrorCode::WriterClosed, "writer admission poisoned"))?;
-        if s.closed || s.flush {
+        if s.lifecycle == Lifecycle::Closed || s.flush {
             return Err(fail(
                 StoreErrorCode::Backpressure,
                 "writer closed or flush already pending",
