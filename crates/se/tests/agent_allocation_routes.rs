@@ -282,11 +282,6 @@ fn hosted_agent_allocations_remain_distinct_and_replay_without_new_events() -> C
     check(true)
 }
 
-#[expect(
-    clippy::cognitive_complexity,
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn check(hosted: bool) -> Check {
     // Public init legitimately shares the native per-user installation claim.
     let _serial = ROUTES
@@ -294,31 +289,9 @@ fn check(hosted: bool) -> Check {
         .map_err(|_| "allocation fixture mutex poisoned")?;
     se_proc::initialize_file_creation_owner()?;
     let f = Fixture::new()?;
-    let home = &f.options.state_directory;
-    let installation = f.home.join("installed image");
-    std::fs::create_dir(&installation)?;
-    let image = installation.join(if cfg!(windows) { "se.exe" } else { "se" });
-    // Cargo hard-links its Windows binary into deps. Exercise the same
-    // single-link image layout as an installed archive on both platforms.
-    std::fs::copy(env!("CARGO_BIN_EXE_se"), &image)?;
-    let root = f.home.join("allocation repository");
-    std::fs::create_dir(&root)?;
-    let initialized = value(
-        command(&image, home, &root)
-            .args(["init", "--name", "allocation-routes"])
-            .output_executable()?,
-    )?;
-    let owner: HumanId = initialized["owner"]["human_id"]
-        .as_str()
-        .ok_or("init owner")?
-        .parse()?;
-    let project: ProjectId = initialized["project"]["id"]
-        .as_str()
-        .ok_or("init project")?
-        .parse()?;
-    let mut host = hosted
-        .then(|| Host::start(&image, home, &root))
-        .transpose()?;
+    let route = Route::init(&f)?;
+    let (image, home, root) = (&route.image, route.home, &route.root);
+    let mut host = hosted.then(|| Host::start(image, home, root)).transpose()?;
     let expected_writer = if hosted {
         WriterKind::Host {
             generation: host
@@ -335,27 +308,13 @@ fn check(hosted: bool) -> Check {
             serde_json::json!({"mode":"host", "host_generation":generation.to_string()})
         }
     };
-    let read_scope = || ReadScope {
-        admission: Admission {
-            scope: Scope::Project(project.clone()),
-            actor: Actor::Human(owner.clone()),
-            session: None,
-            generation: 1,
-        },
-        visibility: Visibility::Owner,
-    };
-    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
     let mut allocated = HashSet::new();
     let mut retained = Vec::new();
     for index in 0..3 {
         let name = format!("independent-{index}");
         let key = format!("route-allocation-{index}");
         let args = ["--key", key.as_str(), "agent", "add", name.as_str()];
-        let first = value(
-            command(&image, home, &root)
-                .args(args)
-                .output_executable()?,
-        )?;
+        let first = value(command(image, home, root).args(args).output_executable()?)?;
         assert_eq!(first["state"], "committed");
         assert_eq!(first["process_started"], false);
         assert_eq!(
@@ -366,15 +325,111 @@ fn check(hosted: bool) -> Check {
             .as_str()
             .ok_or("allocated agent")?
             .parse()?;
-        let head = reader.info()?.head;
-        let mut snapshot = reader.snapshot(read_scope())?;
+        let head = route.reader.info()?.head;
+        let receipt = route.stored(&agent, &key, &first, expected_writer, &mut allocated)?;
+        route.same_route_replay(&args, &key, &first, &receipt, head)?;
+        retained.push((name, key, first, receipt));
+    }
+    assert_eq!(allocated.len(), 9);
+    // Change the actual execution route. A replay must name the original
+    // committer even when the current request uses the other adapter.
+    if hosted {
+        host.as_mut().ok_or("missing native replay host")?.stop()?;
+    } else {
+        host = Some(Host::start(image, home, root)?);
+    }
+    route.opposite_route_replay(retained)?;
+    drop(route);
+    if let Some(host) = host.as_mut() {
+        host.stop()?;
+    }
+    Ok(())
+}
+
+/// One installed single-link image, its initialized project and an outside reader.
+struct Route<'a> {
+    image: PathBuf,
+    home: &'a Path,
+    root: PathBuf,
+    owner: HumanId,
+    project: ProjectId,
+    reader: SqliteReader,
+}
+
+impl<'a> Route<'a> {
+    /// Install the image as an archive would and initialize a project with it.
+    fn init(f: &'a Fixture) -> Result<Self, Box<dyn std::error::Error>> {
+        let home = &f.options.state_directory;
+        let installation = f.home.join("installed image");
+        std::fs::create_dir(&installation)?;
+        let image = installation.join(if cfg!(windows) { "se.exe" } else { "se" });
+        // Cargo hard-links its Windows binary into deps. Exercise the same
+        // single-link image layout as an installed archive on both platforms.
+        std::fs::copy(env!("CARGO_BIN_EXE_se"), &image)?;
+        let root = f.home.join("allocation repository");
+        std::fs::create_dir(&root)?;
+        let initialized = value(
+            command(&image, home, &root)
+                .args(["init", "--name", "allocation-routes"])
+                .output_executable()?,
+        )?;
+        let owner: HumanId = initialized["owner"]["human_id"]
+            .as_str()
+            .ok_or("init owner")?
+            .parse()?;
+        let project: ProjectId = initialized["project"]["id"]
+            .as_str()
+            .ok_or("init project")?
+            .parse()?;
+        let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+        Ok(Self {
+            image,
+            home,
+            root,
+            owner,
+            project,
+            reader,
+        })
+    }
+    fn read_scope(&self) -> ReadScope {
+        ReadScope {
+            admission: Admission {
+                scope: Scope::Project(self.project.clone()),
+                actor: Actor::Human(self.owner.clone()),
+                session: None,
+                generation: 1,
+            },
+            visibility: Visibility::Owner,
+        }
+    }
+    fn receipt(&self, key: &str) -> Result<CommitReceipt, Box<dyn std::error::Error>> {
+        let mut snapshot = self.reader.snapshot(self.read_scope())?;
+        let receipt = present(
+            snapshot
+                .operation_receipt(Actor::Human(self.owner.clone()), IdempotencyKey::new(key)?)?,
+        )?;
+        snapshot.close()?;
+        Ok(receipt)
+    }
+    /// The stored receipt, registration and profile name the expected writer
+    /// and fresh canonical IDs that no other allocation reused.
+    fn stored(
+        &self,
+        agent: &AgentId,
+        key: &str,
+        first: &serde_json::Value,
+        expected_writer: WriterKind,
+        allocated: &mut HashSet<[u8; 16]>,
+    ) -> Result<CommitReceipt, Box<dyn std::error::Error>> {
+        let mut snapshot = self.reader.snapshot(self.read_scope())?;
         let principal = present(snapshot.principal(Actor::Agent(agent.clone()))?)?;
         let profile = present(snapshot.profile(agent.clone())?)?;
         assert!(
-            matches!(&profile.current.body,EventBody::ProfileSaved {agent:target,..} if target==&agent)
+            matches!(&profile.current.body,EventBody::ProfileSaved {agent:target,..} if target==agent)
         );
         let receipt = present(
-            snapshot.operation_receipt(Actor::Human(owner.clone()), IdempotencyKey::new(&key)?)?,
+            snapshot
+                .operation_receipt(Actor::Human(self.owner.clone()), IdempotencyKey::new(key)?)?,
         )?;
         assert_eq!(
             receipt.writer.kind(),
@@ -413,8 +468,20 @@ fn check(hosted: bool) -> Check {
             );
         }
         snapshot.close()?;
+        Ok(receipt)
+    }
+    /// A same-route key replay returns the original public and stored writer
+    /// and allocates no durable records.
+    fn same_route_replay(
+        &self,
+        args: &[&str],
+        key: &str,
+        first: &serde_json::Value,
+        receipt: &CommitReceipt,
+        head: Option<StorePosition>,
+    ) -> Check {
         let replay = value(
-            command(&image, home, &root)
+            command(&self.image, self.home, &self.root)
                 .args(args)
                 .output_executable()?,
         )?;
@@ -425,68 +492,54 @@ fn check(hosted: bool) -> Check {
             replay["writer"], first["writer"],
             "replay changed the original public writer"
         );
-        let mut snapshot = reader.snapshot(read_scope())?;
-        let replayed_receipt = present(
-            snapshot.operation_receipt(Actor::Human(owner.clone()), IdempotencyKey::new(&key)?)?,
-        )?;
+        let replayed_receipt = self.receipt(key)?;
         assert_eq!(
             replayed_receipt.writer.kind(),
             receipt.writer.kind(),
             "replay changed the original stored writer"
         );
         assert_eq!(replayed_receipt.events, receipt.events);
-        snapshot.close()?;
         assert_eq!(
-            reader.info()?.head,
+            self.reader.info()?.head,
             head,
             "key replay allocated durable records"
         );
-        retained.push((name, key, first, receipt));
+        Ok(())
     }
-    assert_eq!(allocated.len(), 9);
-    // Change the actual execution route. A replay must name the original
-    // committer even when the current request uses the other adapter.
-    if hosted {
-        host.as_mut().ok_or("missing native replay host")?.stop()?;
-    } else {
-        host = Some(Host::start(&image, home, &root)?);
+    /// Replays through the other adapter still name the original committer.
+    fn opposite_route_replay(
+        &self,
+        retained: Vec<(String, String, serde_json::Value, CommitReceipt)>,
+    ) -> Check {
+        let head = self.reader.info()?.head;
+        for (name, key, first, original) in retained {
+            let replay = value(
+                command(&self.image, self.home, &self.root)
+                    .args(["--key", key.as_str(), "agent", "add", name.as_str()])
+                    .output_executable()?,
+            )?;
+            assert_eq!(replay["state"], "replayed");
+            assert_eq!(replay["agent"], first["agent"]);
+            assert_eq!(replay["event_id"], first["event_id"]);
+            assert_eq!(
+                replay["writer"], first["writer"],
+                "opposite-route replay changed the original public writer"
+            );
+            let receipt = self.receipt(&key)?;
+            assert_eq!(
+                receipt.writer.kind(),
+                original.writer.kind(),
+                "opposite-route replay changed the original stored writer"
+            );
+            assert_eq!(receipt.events, original.events);
+            assert_eq!(
+                self.reader.info()?.head,
+                head,
+                "opposite-route replay allocated durable records"
+            );
+        }
+        Ok(())
     }
-    let head = reader.info()?.head;
-    for (name, key, first, original) in retained {
-        let replay = value(
-            command(&image, home, &root)
-                .args(["--key", key.as_str(), "agent", "add", name.as_str()])
-                .output_executable()?,
-        )?;
-        assert_eq!(replay["state"], "replayed");
-        assert_eq!(replay["agent"], first["agent"]);
-        assert_eq!(replay["event_id"], first["event_id"]);
-        assert_eq!(
-            replay["writer"], first["writer"],
-            "opposite-route replay changed the original public writer"
-        );
-        let mut snapshot = reader.snapshot(read_scope())?;
-        let receipt = present(
-            snapshot.operation_receipt(Actor::Human(owner.clone()), IdempotencyKey::new(&key)?)?,
-        )?;
-        assert_eq!(
-            receipt.writer.kind(),
-            original.writer.kind(),
-            "opposite-route replay changed the original stored writer"
-        );
-        assert_eq!(receipt.events, original.events);
-        snapshot.close()?;
-        assert_eq!(
-            reader.info()?.head,
-            head,
-            "opposite-route replay allocated durable records"
-        );
-    }
-    drop(reader);
-    if let Some(host) = host.as_mut() {
-        host.stop()?;
-    }
-    Ok(())
 }
 
 #[path = "../../test-support/executable.rs"]

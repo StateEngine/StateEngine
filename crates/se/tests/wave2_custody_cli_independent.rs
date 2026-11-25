@@ -46,146 +46,16 @@ struct Case {
     manifest: Vec<u8>,
 }
 impl Case {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         installation_account::require()?;
         let mut f = Fixture::new_case()?;
-        se_proc::NativeStateFiles::create(&f.home.join("user-home"))?;
-        let repo = f.home.join("repository");
-        std::fs::create_dir(&repo)?;
-        std::fs::write(repo.join("user-work.txt"), b"retained user work")?;
-        let image = f.home.join("installed-se");
-        let source = std::env::var_os("SE_PUBLIC_JUDGE_IMAGE")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| env!("CARGO_BIN_EXE_se").into());
-        assert!(source.is_absolute(), "judge image must be absolute");
-        std::fs::copy(source, &image)?;
-        let initialized = cli::checked(
-            &image,
-            &f,
-            "init",
-            &[
-                "init",
-                "--repo",
-                repo.to_str().ok_or("repo encoding")?,
-                "--name",
-                "Custody review",
-                "--agent",
-                "Judge",
-                "--provider",
-                "claude",
-            ],
-        )?;
-        f.owner = initialized["profile"]["human_id"]
-            .as_str()
-            .ok_or("owner")?
-            .parse()?;
-        f.project = initialized["profile"]["project"]
-            .as_str()
-            .ok_or("project")?
-            .parse()?;
-        f.a = initialized["profile"]["agent_id"]
-            .as_str()
-            .ok_or("agent")?
-            .parse()?;
-        f.store = present(SqliteFactory::open_reader(&f.options)?)?.info()?.id;
+        let image = init_project(&mut f)?;
         let child = native::Child::start()?;
         let session = capture::session()?;
         let (identity, record) = native::identity(&f, &session, &child)?;
-        let mut prior_host = native::Child::start()?;
-        let (prior_identity, _) = native::identity(&f, &session, &prior_host)?;
-        let RecordedIdentity::Present(prior_owner) = prior_identity.instance else {
-            return Err("prior host identity must be present".into());
-        };
-        prior_host.finish()?;
-        let prior_epoch = se_types::HostEpoch {
-            owner: prior_owner,
-            generation: se_types::HostGeneration::new(1)?,
-        };
-        let lease = Lease::acquire(
-            &f.options.state_directory,
-            LeaseMode::Host,
-            Some(f.store.clone()),
-        )?;
-        let mut store = present(SqliteFactory::open_host(&f.options, &*lease)?)?;
-        store.record_runtime_ownership(
-            f.batch(
-                f.admission(Scope::Registry, Actor::Human(f.owner.clone())),
-                Some(fixture::request(&format!(
-                    "fixture-wave2_custody_cli_independent-101-{}",
-                    serial()
-                ))?),
-                vec![EventBody::RuntimeOwnerEstablished {
-                    epoch: prior_epoch,
-                    generation: se_types::Generation::new(1)?,
-                    expected_owner_generation: None,
-                    expected: Expected::Absent,
-                    witnesses: vec![],
-                    recovered: None,
-                }],
-            )?,
-            &*lease,
-        )?;
-        let writer = store.start_writer(host::options(16)?, lease)?;
-        let client = writer.client();
-        std::fs::write(f.home.join("transcript.jsonl"), b"ten bytes!")?;
-        let pin = se_proc::NativeSourcePin::open(&f.home.join("transcript.jsonl"))?
-            .ok_or("source pin")?;
-        let source =
-            se_core::ops::process_commit::session_credential_id(&session, "capture-source")?;
-        let mut source_event = capture::source(source, &session, &pin.identity(), Expected::Absent);
-        if let EventBody::CaptureSource { native_ref, .. } = &mut source_event {
-            *native_ref = format!("provider-{}", f.a.as_str());
-        }
-        let receipt = host::wait(client.submit(f.batch(
-            f.owner_project(),
-            Some(fixture::request(&format!(
-                "fixture-wave2_custody_cli_independent-126-{}",
-                serial()
-            ))?),
-            vec![
-                capture::prepared(&f, &session, &f.a),
-                control::registration(&identity, ProcessState::Running),
-                capture::activated(&session)?,
-                source_event,
-            ],
-        )?)?)??;
-        assert_eq!(receipt.durability, CommitDurability::Full);
-        // Capture uses NORMAL commits; the drain below checkpoints and closes
-        // the actual writer before any CLI consumer is invoked.
-        host::wait(client.submit(capture::capture(
-            &f,
-            &session,
-            source,
-            &pin.identity(),
-            0,
-            1,
-            "public-cli-turn",
-        )?)?)??;
-        let owner = match se_proc::observe_owner_self(&[])?.owner() {
-            se_proc::NativeOwner::Unix {
-                real_uid,
-                effective_uid,
-            } if real_uid == effective_uid => effective_uid.to_string(),
-            _ => return Err("same native Unix owner required".into()),
-        };
-        let manifest = serde_json::to_vec(&serde_json::json!({
-            "schema":"stateengine-install/v1", "owner":owner,
-            "files":[{"path":image,"sha256":format!("{:x}", Sha256::digest(std::fs::read(&image)?))}],
-            "created_directories":[], "path_edits":[],
-        }))?;
-        let files = se_proc::NativeStateFiles::open(&f.options.state_directory)?;
-        let mut stage = files.create_staging(&f.options.state_directory)?;
-        stage.file.write_all(&manifest)?;
-        stage.file.sync_all()?;
-        drop(stage.file);
-        files.publish_no_replace(
-            &stage.path,
-            &f.options.state_directory.join("standalone-install.json"),
-        )?;
+        let writer = prior_owner_writer(&f, &session)?;
+        seed_session(&f, &writer, &session, &identity)?;
+        let manifest = publish_manifest(&f, &image)?;
         Ok(Self {
             f,
             child,
@@ -544,3 +414,162 @@ fn observation_disables_resume_until_exit_cleanup_completes() -> Check {
 
 #[path = "../../test-support/executable.rs"]
 mod executable;
+
+/// Copy the judge image and initialize the project, agent and Owner from it.
+fn init_project(f: &mut Fixture) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    se_proc::NativeStateFiles::create(&f.home.join("user-home"))?;
+    let repo = f.home.join("repository");
+    std::fs::create_dir(&repo)?;
+    std::fs::write(repo.join("user-work.txt"), b"retained user work")?;
+    let image = f.home.join("installed-se");
+    let source = std::env::var_os("SE_PUBLIC_JUDGE_IMAGE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_se").into());
+    assert!(source.is_absolute(), "judge image must be absolute");
+    std::fs::copy(source, &image)?;
+    let initialized = cli::checked(
+        &image,
+        f,
+        "init",
+        &[
+            "init",
+            "--repo",
+            repo.to_str().ok_or("repo encoding")?,
+            "--name",
+            "Custody review",
+            "--agent",
+            "Judge",
+            "--provider",
+            "claude",
+        ],
+    )?;
+    f.owner = initialized["profile"]["human_id"]
+        .as_str()
+        .ok_or("owner")?
+        .parse()?;
+    f.project = initialized["profile"]["project"]
+        .as_str()
+        .ok_or("project")?
+        .parse()?;
+    f.a = initialized["profile"]["agent_id"]
+        .as_str()
+        .ok_or("agent")?
+        .parse()?;
+    f.store = present(SqliteFactory::open_reader(&f.options)?)?.info()?.id;
+    Ok(image)
+}
+
+/// Record a prior host as runtime owner, then start the real writer.
+fn prior_owner_writer(
+    f: &Fixture,
+    session: &SessionId,
+) -> Result<SqliteWriter, Box<dyn std::error::Error>> {
+    let mut prior_host = native::Child::start()?;
+    let (prior_identity, _) = native::identity(f, session, &prior_host)?;
+    let RecordedIdentity::Present(prior_owner) = prior_identity.instance else {
+        return Err("prior host identity must be present".into());
+    };
+    prior_host.finish()?;
+    let prior_epoch = se_types::HostEpoch {
+        owner: prior_owner,
+        generation: se_types::HostGeneration::new(1)?,
+    };
+    let lease = Lease::acquire(
+        &f.options.state_directory,
+        LeaseMode::Host,
+        Some(f.store.clone()),
+    )?;
+    let mut store = present(SqliteFactory::open_host(&f.options, &*lease)?)?;
+    store.record_runtime_ownership(
+        f.batch(
+            f.admission(Scope::Registry, Actor::Human(f.owner.clone())),
+            Some(fixture::request(&format!(
+                "fixture-wave2_custody_cli_independent-101-{}",
+                serial()
+            ))?),
+            vec![EventBody::RuntimeOwnerEstablished {
+                epoch: prior_epoch,
+                generation: se_types::Generation::new(1)?,
+                expected_owner_generation: None,
+                expected: Expected::Absent,
+                witnesses: vec![],
+                recovered: None,
+            }],
+        )?,
+        &*lease,
+    )?;
+    Ok(store.start_writer(host::options(16)?, lease)?)
+}
+
+/// Commit the launched session with its process, capture source and one turn.
+fn seed_session(
+    f: &Fixture,
+    writer: &SqliteWriter,
+    session: &SessionId,
+    identity: &ProcessIdentityRecord,
+) -> Check {
+    let client = writer.client();
+    std::fs::write(f.home.join("transcript.jsonl"), b"ten bytes!")?;
+    let pin =
+        se_proc::NativeSourcePin::open(&f.home.join("transcript.jsonl"))?.ok_or("source pin")?;
+    let source = se_core::ops::process_commit::session_credential_id(session, "capture-source")?;
+    let mut source_event = capture::source(source, session, &pin.identity(), Expected::Absent);
+    if let EventBody::CaptureSource { native_ref, .. } = &mut source_event {
+        *native_ref = format!("provider-{}", f.a.as_str());
+    }
+    let receipt = host::wait(client.submit(f.batch(
+        f.owner_project(),
+        Some(fixture::request(&format!(
+            "fixture-wave2_custody_cli_independent-126-{}",
+            serial()
+        ))?),
+        vec![
+            capture::prepared(f, session, &f.a),
+            control::registration(identity, ProcessState::Running),
+            capture::activated(session)?,
+            source_event,
+        ],
+    )?)?)??;
+    assert_eq!(receipt.durability, CommitDurability::Full);
+    // Capture uses NORMAL commits; the drain below checkpoints and closes
+    // the actual writer before any CLI consumer is invoked.
+    host::wait(client.submit(capture::capture(
+        f,
+        session,
+        source,
+        &pin.identity(),
+        0,
+        1,
+        "public-cli-turn",
+    )?)?)??;
+    Ok(())
+}
+
+/// Publish the standalone install manifest naming the copied image.
+fn publish_manifest(
+    f: &Fixture,
+    image: &std::path::Path,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let owner = match se_proc::observe_owner_self(&[])?.owner() {
+        se_proc::NativeOwner::Unix {
+            real_uid,
+            effective_uid,
+        } if real_uid == effective_uid => effective_uid.to_string(),
+        _ => return Err("same native Unix owner required".into()),
+    };
+    let manifest = serde_json::to_vec(&serde_json::json!({
+        "schema":"stateengine-install/v1", "owner":owner,
+        "files":[{"path":image,"sha256":format!("{:x}", Sha256::digest(std::fs::read(image)?))}],
+        "created_directories":[], "path_edits":[],
+    }))?;
+    let files = se_proc::NativeStateFiles::open(&f.options.state_directory)?;
+    let mut stage = files.create_staging(&f.options.state_directory)?;
+    stage.file.write_all(&manifest)?;
+    stage.file.sync_all()?;
+    drop(stage.file);
+    files.publish_no_replace(
+        &stage.path,
+        &f.options.state_directory.join("standalone-install.json"),
+    )?;
+    Ok(manifest)
+}

@@ -219,10 +219,6 @@ mod runtime_host;
 /// Protects: mismatched stale endpoint recovery reaches the actual se up user, preserves the foreign live socket, and permits restart after moving only the record under the same home lease.
 #[cfg(unix)]
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn stale_address_cli_names_lease_safe_recovery_and_preserves_foreign_socket() -> Check {
     // The roots are independent; a failed case does not invalidate this
     // serialization primitive or prevent the remaining case from running.
@@ -279,52 +275,14 @@ fn stale_address_cli_names_lease_safe_recovery_and_preserves_foreign_socket() ->
             (after.dev(), after.ino(), after.mode()),
             (before.dev(), before.ino(), before.mode())
         );
-        match foreign.listener().accept() {
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => (),
-            Ok((mut stream, _)) => {
-                stream.set_read_timeout(Some(std::time::Duration::from_secs(1)))?;
-                assert_eq!(
-                    std::io::Read::read(&mut stream, &mut [0; 1])?,
-                    0,
-                    "refusal sent application data to the wrong native peer"
-                );
-            }
-            Err(error) => return Err(error.into()),
-        }
+        foreign_peer_received_nothing(&foreign)?;
         assert_eq!(std::fs::read(home.join("machine.json"))?, machine);
         assert_eq!(std::fs::read(home.join("credential"))?, credential);
         if output.status.success() {
             // Safe automatic recovery under the lease is also a legal outcome.
             runtime_host::RunningHost::start(&image, home)?.stop()?;
         } else {
-            assert_eq!(std::fs::read(home.join("endpoint.json"))?, bytes.as_bytes());
-            let printed = format!(
-                "{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert!(
-                printed.contains("move only")
-                    && printed.contains("runtime.lock")
-                    && printed.contains("endpoint.json")
-                    && printed.contains("mismatched address"),
-                "actual se up lost lease-safe endpoint recovery: {printed}"
-            );
-            let lock = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(home.join("runtime.lock"))?;
-            lock.try_lock()?;
-            std::fs::rename(
-                home.join("endpoint.json"),
-                home.join(if json {
-                    "json-endpoint.saved"
-                } else {
-                    "human-endpoint.saved"
-                }),
-            )?;
-            drop(lock);
-            runtime_host::RunningHost::start(&image, home)?.stop()?;
+            recover_refused_endpoint(&image, home, &output, bytes.as_bytes(), json)?;
         }
         assert!(home.join("state.db").try_exists()?);
         assert!(!home.join("endpoint.json").try_exists()?);
@@ -334,6 +292,65 @@ fn stale_address_cli_names_lease_safe_recovery_and_preserves_foreign_socket() ->
         );
     }
     foreign.close()?;
+    Ok(())
+}
+
+/// A refusal never sends application data to the foreign live socket's peer.
+#[cfg(unix)]
+fn foreign_peer_received_nothing(foreign: &se_proc::native_ipc::NativeUnixEndpoint) -> Check {
+    match foreign.listener().accept() {
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => (),
+        Ok((mut stream, _)) => {
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(1)))?;
+            assert_eq!(
+                std::io::Read::read(&mut stream, &mut [0; 1])?,
+                0,
+                "refusal sent application data to the wrong native peer"
+            );
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
+/// A refused `se up` keeps the record, names the lease-safe move, and starts
+/// again after only the record is moved under the held home lease.
+#[cfg(unix)]
+fn recover_refused_endpoint(
+    image: &std::path::Path,
+    home: &std::path::Path,
+    output: &std::process::Output,
+    bytes: &[u8],
+    json: bool,
+) -> Check {
+    assert_eq!(std::fs::read(home.join("endpoint.json"))?, bytes);
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        printed.contains("move only")
+            && printed.contains("runtime.lock")
+            && printed.contains("endpoint.json")
+            && printed.contains("mismatched address"),
+        "actual se up lost lease-safe endpoint recovery: {printed}"
+    );
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(home.join("runtime.lock"))?;
+    lock.try_lock()?;
+    std::fs::rename(
+        home.join("endpoint.json"),
+        home.join(if json {
+            "json-endpoint.saved"
+        } else {
+            "human-endpoint.saved"
+        }),
+    )?;
+    drop(lock);
+    runtime_host::RunningHost::start(image, home)?.stop()?;
     Ok(())
 }
 

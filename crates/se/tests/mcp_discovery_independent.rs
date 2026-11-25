@@ -109,19 +109,83 @@ fn disabled_atlas_is_not_advertised_over_http_or_stdio() -> Check {
     discovery(config)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one real-host scenario shared by the enabled and disabled catalogues"
-)]
 fn discovery(config: se_config::config_policy::ConfigFile) -> Check {
     let atlas_enabled = config.atlas.enabled;
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;
     seed(&f)?;
-    let (mut writer, lease) = direct(&f)?;
     let session = support::session::session()?;
     // Canonical capability shape, entirely synthetic, and never written to output.
     let capability = format!("sec1.{session}.{}", "A".repeat(43));
+    seed_discovery_session(&f, &session, &capability)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(2)
+        .build()?;
+    runtime.block_on(async {
+        let mut host =
+            HostedRuntime::prepare(initialized, start(&f)?, runtime.handle().clone(), &bound()?)
+                .await?;
+        host.configure(config)?;
+        // Every supported target installs the Atlas engine; its complete
+        // catalogue crosses the former stdio cap.
+        host.install_native_atlas()?;
+        let (_coordinator, reconciliation) = LaunchCoordinator::install(
+            &mut host,
+            ProcessOptions {
+                helper_executable: se_types::NativePath::from_local(
+                    Path::new(env!("CARGO_BIN_EXE_se")).to_path_buf(),
+                )?,
+                linux_delegation: se_proc::LinuxDelegation::CurrentScope,
+                maximum_sessions: 2,
+                restore_deadline_ms: ProcessOptions::DEFAULT_RESTORE_DEADLINE_MS,
+                stop_grace_ms: None,
+            },
+            &bound()?,
+        )
+        .await?;
+        require(
+            reconciliation.unproved.is_empty(),
+            "fresh discovery fixture has native reconciliation debt",
+        )?;
+        let listener = host.listen(runtime.handle().clone(), &bound()?).await?;
+        let port = host.http_port().ok_or("HTTP listener absent")?;
+        let stop = host.local_stop();
+        let client = async {
+            let result =
+                compare_catalogues(port, &f.options.state_directory, &capability, atlas_enabled)
+                    .await;
+            stop.request();
+            result
+        };
+        let (exit, result) = join(host.serve(listener), client).await;
+        let report = exit.finish(&bound()?).await;
+        let clean = report.transport_closed
+            && report.endpoint_retired
+            && matches!(report.storage, se_types::Read::Present { .. })
+            && report.pending.is_empty()
+            && report.errors.is_empty();
+        if let Err(error) = result {
+            return Err(format!(
+                "{error}; shutdown complete={clean}, pending={:?}, errors={:?}",
+                report.pending, report.errors
+            )
+            .into());
+        }
+        require(
+            clean,
+            format!(
+                "discovery runtime shutdown incomplete: pending={:?}, errors={:?}",
+                report.pending, report.errors
+            ),
+        )
+    })
+}
+
+/// Save the second agent's profile and launch its session with an active
+/// session capability and HTTP reader credential.
+fn seed_discovery_session(f: &Fixture, session: &se_types::SessionId, capability: &str) -> Check {
+    let (mut writer, lease) = direct(f)?;
     let now = now()?;
     let mut events = vec![
         EventBody::ProfileSaved {
@@ -137,15 +201,15 @@ fn discovery(config: se_config::config_policy::ConfigFile) -> Check {
             },
             expected: Expected::Absent,
         },
-        support::session::prepared(&f, &session, &f.b),
-        support::session::activated(&session)?,
+        support::session::prepared(f, session, &f.b),
+        support::session::activated(session)?,
     ];
     for (purpose, secret) in [
-        ("session", capability.as_str()),
+        ("session", capability),
         ("http", "synthetic-discovery-http-reader"),
     ] {
         let issued = credential(
-            &session,
+            session,
             purpose,
             secret,
             now + 300_000_000,
@@ -173,68 +237,60 @@ fn discovery(config: se_config::config_policy::ConfigFile) -> Check {
     )?;
     writer.close()?;
     drop(lease);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .max_blocking_threads(2)
-        .build()?;
-    runtime.block_on(async {
-        let mut host = HostedRuntime::prepare(initialized, start(&f)?, runtime.handle().clone(), &bound()?).await?;
-        host.configure(config)?;
-        // Every supported target installs the Atlas engine; its complete
-        // catalogue crosses the former stdio cap.
-        host.install_native_atlas()?;
-        let (_coordinator, reconciliation) = LaunchCoordinator::install(
-            &mut host,
-            ProcessOptions {
-                helper_executable: se_types::NativePath::from_local(Path::new(env!("CARGO_BIN_EXE_se")).to_path_buf())?,
-                linux_delegation: se_proc::LinuxDelegation::CurrentScope,
-                maximum_sessions: 2,
-                restore_deadline_ms: ProcessOptions::DEFAULT_RESTORE_DEADLINE_MS,
-                stop_grace_ms: None,
-            },
-            &bound()?,
-        ).await?;
-        require(reconciliation.unproved.is_empty(), "fresh discovery fixture has native reconciliation debt")?;
-        let listener = host.listen(runtime.handle().clone(), &bound()?).await?;
-        let port = host.http_port().ok_or("HTTP listener absent")?;
-        let stop = host.local_stop();
-        let client = async {
-            let result: Check = async {
-                let http = rpc(port, "synthetic-discovery-http-reader", "tools/list", json!({})).await?;
-                let http_names = tool_names(&http)?;
-                let stdio = stdio_list(&f.options.state_directory, &capability).await?;
-                let stdio_names = tool_names(&stdio)?;
-                require(stdio_names == http_names, "stdio and HTTP advertise different tools")?;
-                let atlas_available = atlas_enabled;
-                let expected = se_core::ops::CATALOGUE.iter().filter_map(|meta| {
-                    if !atlas_available && meta.feature == se_core::registry::Feature::Atlas { return None; }
-                    match meta.mcp { se_core::registry::McpExposure::Tool { name, .. } => Some(name.to_owned()), _ => None }
-                }).collect::<BTreeSet<_>>();
-                require(stdio_names == expected, format!("incomplete registered discovery: actual={stdio_names:?}, expected={expected:?}"))?;
-                if !atlas_enabled {
-                    require(
-                        !http_names.iter().any(|name| name.starts_with("stateengine_atlas_")),
-                        format!("disabled Atlas still advertised: {http_names:?}"),
-                    )?;
-                    return Ok(());
-                }
-                let bytes = serde_json::to_vec(&stdio)?.len();
-                catalogue_cost(stdio_names.len(), bytes)?;
-                Ok(())
-            }.await;
-            stop.request();
-            result
-        };
-        let (exit, result) = join(host.serve(listener), client).await;
-        let report = exit.finish(&bound()?).await;
-        let clean = report.transport_closed && report.endpoint_retired
-            && matches!(report.storage, se_types::Read::Present { .. })
-            && report.pending.is_empty() && report.errors.is_empty();
-        if let Err(error) = result {
-            return Err(format!("{error}; shutdown complete={clean}, pending={:?}, errors={:?}", report.pending, report.errors).into());
-        }
-        require(clean, format!("discovery runtime shutdown incomplete: pending={:?}, errors={:?}", report.pending, report.errors))
-    })
+    Ok(())
+}
+
+/// HTTP and stdio advertise the same tools, exactly the registered catalogue
+/// (without Atlas when it is disabled), within the context-cost tripwire.
+async fn compare_catalogues(
+    port: u16,
+    state: &Path,
+    capability: &str,
+    atlas_enabled: bool,
+) -> Check {
+    let http = rpc(
+        port,
+        "synthetic-discovery-http-reader",
+        "tools/list",
+        json!({}),
+    )
+    .await?;
+    let http_names = tool_names(&http)?;
+    let stdio = stdio_list(state, capability).await?;
+    let stdio_names = tool_names(&stdio)?;
+    require(
+        stdio_names == http_names,
+        "stdio and HTTP advertise different tools",
+    )?;
+    let atlas_available = atlas_enabled;
+    let expected = se_core::ops::CATALOGUE
+        .iter()
+        .filter_map(|meta| {
+            if !atlas_available && meta.feature == se_core::registry::Feature::Atlas {
+                return None;
+            }
+            match meta.mcp {
+                se_core::registry::McpExposure::Tool { name, .. } => Some(name.to_owned()),
+                _ => None,
+            }
+        })
+        .collect::<BTreeSet<_>>();
+    require(
+        stdio_names == expected,
+        format!("incomplete registered discovery: actual={stdio_names:?}, expected={expected:?}"),
+    )?;
+    if !atlas_enabled {
+        require(
+            !http_names
+                .iter()
+                .any(|name| name.starts_with("stateengine_atlas_")),
+            format!("disabled Atlas still advertised: {http_names:?}"),
+        )?;
+        return Ok(());
+    }
+    let bytes = serde_json::to_vec(&stdio)?.len();
+    catalogue_cost(stdio_names.len(), bytes)?;
+    Ok(())
 }
 
 #[test]

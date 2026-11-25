@@ -136,10 +136,6 @@ fn uninstall_verifies_live_host_shutdown_before_removing_files() -> Check {
     Ok(())
 }
 #[cfg(any(target_os = "linux", windows))]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn uninstall_live_host(json: bool) -> Check {
     let f = Fixture::new()?;
     let home = &f.options.state_directory;
@@ -168,45 +164,11 @@ fn uninstall_live_host(json: bool) -> Check {
         "installed-se"
     });
     std::fs::copy(binary, &installed)?;
-    let native_owner = se_proc::observe_owner_self(&[])?;
-    let owner = match native_owner.owner() {
-        se_proc::NativeOwner::Unix {
-            real_uid,
-            effective_uid,
-        } => {
-            assert_eq!(real_uid, effective_uid);
-            effective_uid.to_string()
-        }
-        se_proc::NativeOwner::Windows { sid } => sid.clone(),
-    };
-    let manifest = serde_json::to_vec(
-        &serde_json::json!({"schema":"stateengine-install/v1", "owner":owner, "files":[{"path":installed,"sha256":format!("{:x}", Sha256::digest(std::fs::read(&installed)?))}], "created_directories":[], "path_edits":[]}),
-    )?;
-    let files = se_proc::NativeStateFiles::open(home)?;
-    let mut stage = files.create_staging(home)?;
-    stage.file.write_all(&manifest)?;
-    stage.file.sync_all()?;
-    drop(stage.file);
-    let record = home.join("standalone-install.json");
-    files.publish_no_replace(&stage.path, &record)?;
+    let record = publish_install_record(home, &installed)?;
     // Keep an independent CLI image for outside history readback and error cleanup.
     let host = RunningHost::start(binary, home)?;
     assert!(host.live()?);
-    let store = match se_store::SqliteFactory::open_reader(&f.options)? {
-        Read::Present { value } => value,
-        _ => return Err("initialized fixture reader missing".into()),
-    };
-    use se_store::{ReadStore, StoreFactory};
-    let inventory = store.owner_guard(
-        &fixture::Files(se_proc::NativeStateFiles::open(home)?),
-        budget(1000, 2 * 1024 * 1024, None)?,
-    )?;
-    assert!(
-        !inventory.has_process_records,
-        "test must exercise the real empty-inventory gap"
-    );
-    let store_id = store.info()?.id;
-    drop(store);
+    let store_id = store_has_no_process_records(&f.options, home)?;
     let retained = ["machine.json", "credential", "config.toml"]
         .map(|name| std::fs::read(home.join(name)))
         .into_iter()
@@ -238,30 +200,7 @@ fn uninstall_live_host(json: bool) -> Check {
         output.status.code()
     );
     #[cfg(windows)]
-    {
-        assert_eq!(
-            output.status.code(),
-            Some(75),
-            "direct Windows uninstall lost its deferred handoff: {printed}"
-        );
-        let diagnostic = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            diagnostic.contains("Finishing uninstall after this process exits (exit 75)")
-                && diagnostic.contains("Completion is pending")
-                && diagnostic.contains("uninstall.ps1"),
-            "deferred exit lost its meaning or final-verdict alternative: {printed}"
-        );
-        // The system carrier never stages a helper executable. Exit 75 only
-        // delegates; independently observe the exact image and record names.
-        wait_for_absence(
-            &[installed.as_path(), record.as_path()],
-            std::time::Duration::from_secs(45),
-        )?;
-        assert!(
-            !home.join("uninstall-helper-cleanup.json").try_exists()?,
-            "system carrier created obsolete executable-helper cleanup debt"
-        );
-    }
+    windows_uninstall_handed_off(&output, &printed, &installed, &record, home)?;
     assert!(
         !host.live()?,
         "successful uninstall left the exact host live"
@@ -290,6 +229,133 @@ fn uninstall_live_host(json: bool) -> Check {
             .ok_or_else(|| format!("missing actual uninstall JSON: {printed}"))?;
         assert_eq!(outcome["complete"], true, "uninstall incomplete: {outcome}");
     }
+    retained_files_unchanged(home, &repo, retained)?;
+    prior_history_and_store_retained(history, before_items, &f.options, store_id)?;
+    Ok(())
+}
+
+/// Every earlier public history event still reads back through the
+/// independent CLI, and the retained store keeps its identity.
+#[cfg(any(target_os = "linux", windows))]
+fn prior_history_and_store_retained(
+    history: impl Fn() -> Result<serde_json::Value, Box<dyn std::error::Error>>,
+    before_items: &[serde_json::Value],
+    options: &se_store::StoreOptions,
+    store_id: se_types::StoreId,
+) -> Check {
+    use se_store::{ReadStore, StoreFactory};
+    let after = history()?;
+    let after_items = after["items"]
+        .as_array()
+        .ok_or("retained history items missing")?;
+    // Verified shutdown may append events; every pre-existing public event must
+    // still read back unchanged through the independent CLI after removal.
+    for event in before_items {
+        assert!(
+            after_items.contains(event),
+            "uninstall changed prior history: {event}"
+        );
+    }
+    let outside = present(se_store::SqliteFactory::open_reader(options)?)?;
+    assert_eq!(
+        outside.info()?.id,
+        store_id,
+        "uninstall replaced retained store"
+    );
+    drop(outside);
+    Ok(())
+}
+
+/// Publish the standalone install record naming the installed image.
+#[cfg(any(target_os = "linux", windows))]
+fn publish_install_record(
+    home: &Path,
+    installed: &Path,
+) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    let native_owner = se_proc::observe_owner_self(&[])?;
+    let owner = match native_owner.owner() {
+        se_proc::NativeOwner::Unix {
+            real_uid,
+            effective_uid,
+        } => {
+            assert_eq!(real_uid, effective_uid);
+            effective_uid.to_string()
+        }
+        se_proc::NativeOwner::Windows { sid } => sid.clone(),
+    };
+    let manifest = serde_json::to_vec(
+        &serde_json::json!({"schema":"stateengine-install/v1", "owner":owner, "files":[{"path":installed,"sha256":format!("{:x}", Sha256::digest(std::fs::read(installed)?))}], "created_directories":[], "path_edits":[]}),
+    )?;
+    let files = se_proc::NativeStateFiles::open(home)?;
+    let mut stage = files.create_staging(home)?;
+    stage.file.write_all(&manifest)?;
+    stage.file.sync_all()?;
+    drop(stage.file);
+    let record = home.join("standalone-install.json");
+    files.publish_no_replace(&stage.path, &record)?;
+    Ok(record)
+}
+
+/// The initialized store has no process records, so uninstall exercises the
+/// real empty-inventory gap; returns the store identity to compare later.
+#[cfg(any(target_os = "linux", windows))]
+fn store_has_no_process_records(
+    options: &se_store::StoreOptions,
+    home: &Path,
+) -> Result<se_types::StoreId, Box<dyn std::error::Error>> {
+    let store = match se_store::SqliteFactory::open_reader(options)? {
+        Read::Present { value } => value,
+        _ => return Err("initialized fixture reader missing".into()),
+    };
+    use se_store::{ReadStore, StoreFactory};
+    let inventory = store.owner_guard(
+        &fixture::Files(se_proc::NativeStateFiles::open(home)?),
+        budget(1000, 2 * 1024 * 1024, None)?,
+    )?;
+    assert!(
+        !inventory.has_process_records,
+        "test must exercise the real empty-inventory gap"
+    );
+    let store_id = store.info()?.id;
+    drop(store);
+    Ok(store_id)
+}
+
+/// Windows hands uninstall off with exit 75, and the system carrier removes
+/// the exact image and record without executable-helper cleanup debt.
+#[cfg(windows)]
+fn windows_uninstall_handed_off(
+    output: &Output,
+    printed: &str,
+    installed: &Path,
+    record: &Path,
+    home: &Path,
+) -> Check {
+    assert_eq!(
+        output.status.code(),
+        Some(75),
+        "direct Windows uninstall lost its deferred handoff: {printed}"
+    );
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        diagnostic.contains("Finishing uninstall after this process exits (exit 75)")
+            && diagnostic.contains("Completion is pending")
+            && diagnostic.contains("uninstall.ps1"),
+        "deferred exit lost its meaning or final-verdict alternative: {printed}"
+    );
+    // The system carrier never stages a helper executable. Exit 75 only
+    // delegates; independently observe the exact image and record names.
+    wait_for_absence(&[installed, record], std::time::Duration::from_secs(45))?;
+    assert!(
+        !home.join("uninstall-helper-cleanup.json").try_exists()?,
+        "system carrier created obsolete executable-helper cleanup debt"
+    );
+    Ok(())
+}
+
+/// Uninstall leaves the retained state files and the user's work unchanged.
+#[cfg(any(target_os = "linux", windows))]
+fn retained_files_unchanged(home: &Path, repo: &Path, retained: Vec<Vec<u8>>) -> Check {
     for (name, bytes) in ["machine.json", "credential", "config.toml"]
         .into_iter()
         .zip(retained)
@@ -304,25 +370,6 @@ fn uninstall_live_host(json: bool) -> Check {
         std::fs::read(repo.join("user-work.txt"))?,
         b"retained user work"
     );
-    let after = history()?;
-    let after_items = after["items"]
-        .as_array()
-        .ok_or("retained history items missing")?;
-    // Verified shutdown may append events; every pre-existing public event must
-    // still read back unchanged through the independent CLI after removal.
-    for event in before_items {
-        assert!(
-            after_items.contains(event),
-            "uninstall changed prior history: {event}"
-        );
-    }
-    let outside = present(se_store::SqliteFactory::open_reader(&f.options)?)?;
-    assert_eq!(
-        outside.info()?.id,
-        store_id,
-        "uninstall replaced retained store"
-    );
-    drop(outside);
     Ok(())
 }
 
