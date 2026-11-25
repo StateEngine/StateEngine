@@ -38,13 +38,20 @@ case "$(uname -s):$(uname -m)" in
     *) fail 'this archive requires native Linux x86_64 or macOS arm64/x86_64' ;;
 esac
 native_held=0
-recover=0
 if [ "$#" -ge 1 ] && [ "$1" = --native-held ]; then
     native_held=1
     shift
 fi
-if [ "$#" -eq 1 ] && [ "$1" = --recover ]; then recover=1; shift; fi
-[ "$#" -eq 0 ] || fail 'usage: sh ./install.sh [--recover]'
+recover=0
+no_modify_path=0
+while [ "$#" -ge 1 ]; do
+    case "$1" in
+    --recover) recover=1 ;;
+    --no-modify-path) no_modify_path=1 ;;
+    *) fail 'usage: sh ./install.sh [--recover] [--no-modify-path]' ;;
+    esac
+    shift
+done
 bundle=$(CDPATH='' cd -P "$(dirname "$0")" && pwd)
 links=$(find "$bundle" -type l -print)
 [ -z "$links" ] || fail 'extract the archive without symbolic links'
@@ -92,22 +99,45 @@ for destination in "$bin/se" "$assets" "$record"; do
     else [ ! -e "$destination" ] || fail "existing installation path is preserved; run se uninstall before reinstalling: $destination"; fi
 done
 if [ "$recover" -eq 0 ] && command -v se >/dev/null 2>&1; then fail "another se command is already on PATH: $(command -v se)"; fi
-profiles='.profile'
+# PATH wiring is best effort: unsupported shells and symlinked configuration files
+# install the binary cleanly and print manual instructions instead of aborting.
+manual_path=0
+profiles=''
 fish_file=''
-case ${SHELL-} in
+if [ "$no_modify_path" -eq 1 ]; then
+    manual_path=1
+else
+    case ${SHELL-} in
     */fish)
-        profiles=''
         fish_file=${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/stateengine.fish
-        plain_path "$fish_file"
-        [ "$recover" -eq 1 ] || [ ! -e "$fish_file" ] || fail "existing fish configuration is preserved: $fish_file"
+        if [ -L "$fish_file" ]; then
+            fish_file=''
+            manual_path=1
+        else
+            plain_path "$fish_file"
+            [ "$recover" -eq 1 ] || [ ! -e "$fish_file" ] || fail "existing fish configuration is preserved: $fish_file"
+        fi
         ;;
     ''|*/sh|*/bash|*/dash|*/ksh|*/zsh)
+        profiles='.profile'
         if [ -e "$HOME/.bash_profile" ] || [ -L "$HOME/.bash_profile" ]; then profiles="$profiles .bash_profile"
         elif [ -e "$HOME/.bash_login" ] || [ -L "$HOME/.bash_login" ]; then profiles="$profiles .bash_login"; fi
-        case ${SHELL-} in */zsh) profiles="$profiles .zprofile" ;; esac
+        case ${SHELL-} in
+        */bash) profiles="$profiles .bashrc" ;;
+        */zsh) profiles="$profiles .zprofile .zshrc" ;;
+        esac
         ;;
-    *) fail 'supported login shells are sh, bash, dash, ksh, zsh and fish; open one of these shells before installing' ;;
-esac
+    *)
+        manual_path=1
+        ;;
+    esac
+    if [ "$manual_path" -eq 0 ]; then
+        for name in $profiles; do
+            if [ -L "$HOME/$name" ]; then manual_path=1; break; fi
+        done
+    fi
+    if [ "$manual_path" -eq 1 ]; then profiles=''; fish_file=''; fi
+fi
 profile_metadata() {
 profile_digests=''
 for name in $profiles; do
@@ -140,9 +170,10 @@ if [ "$native_held" -eq 0 ]; then
     if [ -n "${XDG_STATE_HOME-}" ]; then set -- "$@" --xdg-state-home "$XDG_STATE_HOME"; fi
     if [ -n "${XDG_CONFIG_HOME-}" ]; then set -- "$@" --xdg-config-home "$XDG_CONFIG_HOME"; fi
     # Retain the public caller while the native holder watches its lifetime.
-    if [ "$recover" -eq 1 ]; then
-        "$bundle/se" "$@" -- /bin/sh "$bundle/install.sh" --native-held --recover
-    else "$bundle/se" "$@" -- /bin/sh "$bundle/install.sh" --native-held; fi
+child_flags=--native-held
+if [ "$recover" -eq 1 ]; then child_flags="$child_flags --recover"; fi
+if [ "$no_modify_path" -eq 1 ]; then child_flags="$child_flags --no-modify-path"; fi
+"$bundle/se" "$@" -- /bin/sh "$bundle/install.sh" $child_flags
     exit "$?"
 fi
 # This reads custody from the native channel only after verifying the inherited
@@ -247,12 +278,26 @@ report_install() {
     printf 'Run this command now in this terminal to verify the installation:\n  '
     # Single-quote the literal path, including homes containing spaces or apostrophes.
     printf "'%s' --version\n" "$(printf '%s' "$bin/se" | sed "s/'/'\"'\"'/g")"
+if [ "$manual_path" -eq 1 ]; then
+    printf 'No shell configuration file was modified. To use se by name, add this exact line to the listed file:\n'
+    case ${SHELL-} in
+    */fish) printf 'File: ~/.config/fish/config.fish\n  set -gx PATH "$HOME/.local/bin" $PATH\n' ;;
+    */zsh) printf 'File: ~/.zshrc\n  export PATH="$HOME/.local/bin:$PATH"\n' ;;
+    */csh|*/tcsh) printf 'File: ~/.tcshrc (or ~/.cshrc)\n  set path = ($HOME/.local/bin $path)\n' ;;
+    */elvish) printf 'File: ~/.config/elvish/rc.elv\n  use builtin; var builtin:paths = ($env:HOME + "/.local/bin" +~ $builtin:paths)\n' ;;
+    */nu) printf 'File: ~/.config/nushell/config.nu\n  let-env PATH = ($env.PATH | prepend $home/.local/bin)\n' ;;
+    */xonsh) printf 'File: ~/.config/xonsh/rc.xsh\n  import os; os.environ["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + os.environ.get("PATH", "")\n' ;;
+    *) printf 'File: ~/.profile (interactive bash: ~/.bashrc)\n  export PATH="$HOME/.local/bin:$PATH"\n' ;;
+    esac
+    printf 'Run the same line now in this terminal to use se by name here.\n'
+else
     printf 'To use se by name here, add its directory to this terminal PATH:\n'
     case ${SHELL-} in
-        */fish) printf '  set -gx PATH "$HOME/.local/bin" $PATH\n' ;;
-        *) printf '  export PATH="$HOME/.local/bin:$PATH"\n' ;;
+    */fish) printf '  set -gx PATH "$HOME/.local/bin" $PATH\n' ;;
+    *) printf '  export PATH="$HOME/.local/bin:$PATH"\n' ;;
     esac
     printf 'New login terminals load the saved PATH change automatically.\n'
+fi
 }
 cleanup() {
     exit_code=$?
@@ -301,7 +346,10 @@ $recovery
 RECOVERY
     [ "$end_marker" = end ] || fail 'native recovery response is incomplete'
     if [ "$mode" = resume ]; then
+        # Resume follows the saved plan; flags on this run never re-select it.
         resume=1; profiles=$saved_profiles; fish_file=$saved_fish
+        if [ -n "$saved_profiles" ] || [ -n "$saved_fish" ]; then manual_path=0
+        else manual_path=1; fi
     elif [ "$mode" = fresh ]; then
         # No payload was published before the interrupted journal was complete.
         find "$stage" -depth -type f -exec rm {} +

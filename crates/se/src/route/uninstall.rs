@@ -17,10 +17,12 @@ pub fn execute(
             .extend(super::adoption::uninstall(context)?);
         return Ok(result);
     }
+    // Capture integration effects before the native uninstall: once the binary
+    // is deleted or the self-delete carrier is armed, a later refusal must not
+    // leave them out of the receipt.
+    let integrations = super::adoption::uninstall(context)?;
     let (plan, mut effects) =
         crate::runtime::uninstall(context, &input.idempotency_key, input.yes, diagnostic)?;
-    effects
-        .integrations
-        .extend(super::adoption::uninstall(context)?);
+    effects.integrations.extend(integrations);
     finish_uninstall(&plan, input.idempotency_key, effects)
 }

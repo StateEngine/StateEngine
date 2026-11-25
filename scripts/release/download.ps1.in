@@ -1,5 +1,6 @@
 # Install the exact checksummed release as the current user, from a file or irm/iex.
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 Set-StrictMode -Version Latest
 $version = '@VERSION@'
 $base = '@BASE@'
@@ -13,7 +14,10 @@ $work = Join-Path ([IO.Path]::GetTempPath()) ('stateengine-download-' + [Guid]::
 $preserveInput = $false
 try {
     $download = Join-Path $work 'archive.zip'
-    Invoke-WebRequest -UseBasicParsing -Uri "$base/$archive" -OutFile $download
+    $releaseUri = [Uri]::new("$base/$archive")
+    if ($releaseUri.Scheme -cne 'https') { throw 'release download URL must use https' }
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -UseBasicParsing -Uri $releaseUri -OutFile $download -TimeoutSec 300
     if ((Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash.ToLowerInvariant() -cne $checksum) {
         throw 'release checksum differs; preserve your installation and retry the published installer'
     }

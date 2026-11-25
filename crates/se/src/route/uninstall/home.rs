@@ -5,7 +5,7 @@ use crate::{bootstrap::Bootstrap, route};
 use se_core::{ops::*, scope, store_error::store_error};
 use se_host::client::lease::Deadline;
 use se_store::{ReadStore, StateFiles};
-use se_types::{Read, Result, SeError};
+use se_types::{Detail, Read, Result, SeError, details};
 use std::{io, path::Path};
 
 pub(super) fn execute(
@@ -112,7 +112,7 @@ fn admit(cx: &Bootstrap, input: &Uninstall) -> Result<Option<se_proc::NativeInst
         .map_err(|e| store_error(&e))?
     {
         Read::Present { .. } => return Ok(None),
-        Read::Absent { .. } => (),
+        Read::Absent { .. } => managed_package_refusal()?,
         other => {
             scope::require_present(
                 other,
@@ -132,6 +132,49 @@ fn admit(cx: &Bootstrap, input: &Uninstall) -> Result<Option<se_proc::NativeInst
     drop(reader);
     drop(files);
     Ok(Some(claim))
+}
+/// An executable owned by npm or Homebrew cannot be retired by the
+/// standalone uninstaller; name the package manager that owns it. Unreadable
+/// self-identity falls back to the ordinary initialized-home cleanup.
+fn managed_package_refusal() -> Result<()> {
+    let Some(executable) = std::env::current_exe()
+        .ok()
+        .and_then(|path| se_proc::canonicalize_path(&path).ok())
+    else {
+        return Ok(());
+    };
+    let components: Vec<&std::ffi::OsStr> = executable
+        .components()
+        .map(std::path::Component::as_os_str)
+        .collect();
+    let npm = components
+        .windows(2)
+        .any(|pair| {
+            pair[0] == "node_modules" && pair[1].to_string_lossy().starts_with("@stateengine")
+        });
+    let brew = components
+        .windows(2)
+        .any(|pair| pair[0] == "Cellar" && pair[1] == "stateengine")
+        || components.iter().any(|component| *component == "homebrew");
+    if npm {
+        return Err(SeError::new(Detail::ListenerUnavailable(
+            details::ListenerUnavailable {
+                subject: "the se command".into(),
+                reason: "is installed by npm as the @stateengine/cli package, so the standalone uninstaller cannot remove it".into(),
+                next_step: "Run `npm uninstall -g @stateengine/cli`; your StateEngine data stays in place.".into(),
+            },
+        )));
+    }
+    if brew {
+        return Err(SeError::new(Detail::ListenerUnavailable(
+            details::ListenerUnavailable {
+                subject: "the se command".into(),
+                reason: "is installed by Homebrew as the stateengine formula, so the standalone uninstaller cannot remove it".into(),
+                next_step: "Run `brew uninstall stateengine`; your StateEngine data stays in place.".into(),
+            },
+        )));
+    }
+    Ok(())
 }
 fn preserved(root: &Path, home: &str) -> Vec<String> {
     [

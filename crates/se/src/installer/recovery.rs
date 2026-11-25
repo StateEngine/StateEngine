@@ -55,6 +55,42 @@ fn plain_tree(root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn remote_image_inventory(
+    sums: &[u8],
+    user: &Path,
+    archive: &Path,
+    expected: &mut BTreeMap<PathBuf, Sha256>,
+) -> Result<()> {
+    // The journal's exact-file comparison remains the binding check; this only
+    // extends the expected set so a full-archive install can resume.
+    let text = std::str::from_utf8(sums)
+        .map_err(|_| args::invalid("the original archive checksum inventory"))?;
+    for line in text.lines() {
+        let (_, name) = line
+            .split_once("  ")
+            .filter(|(digest, name)| {
+                digest.len() == 64
+                    && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    && !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"_./+-".contains(&byte))
+            })
+            .ok_or_else(|| args::invalid("the original archive checksum inventory"))?;
+        if name.starts_with("remote-images/")
+            && name
+                .split('/')
+                .all(|part| !part.is_empty() && part != "." && part != "..")
+        {
+            expected.insert(
+                user.join(".local/bin").join(name),
+                hash(&archive.join(name))?,
+            );
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn check(arguments: &[OsString]) -> Result<i32> {
     if arguments.len() != 3 {
         return Err(args::invalid(
@@ -87,6 +123,10 @@ pub(super) fn check(arguments: &[OsString]) -> Result<i32> {
     ] {
         expected.insert(assets.join(name), hash(&archive.join(name))?);
     }
+    let sums = read(&archive.join("SHA256SUMS"), 1024 * 1024)
+        .map_err(|_| args::invalid("the original archive checksum inventory"))?
+        .ok_or_else(|| args::invalid("the original archive checksum inventory"))?;
+    remote_image_inventory(&sums, &user, archive, &mut expected)?;
     let manifest = read(&stage.join("manifest.sha256"), 128)?;
     let plan = read(&stage.join("install.json"), 1024 * 1024)?;
     if manifest.is_none() || plan.is_none() {
@@ -149,8 +189,9 @@ fn resume_plan(
         return Err(args::invalid("the original native-owned installation plan"));
     }
     let mut fish = String::new();
-    let config =
-        std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| user.join(".config"), Into::into);
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| user.join(".config"), Into::into);
     let fish_path = config.join("fish/conf.d/stateengine.fish");
     if record.files.iter().any(|file| file.path == fish_path) {
         expected.insert(fish_path.clone(), hash(&stage.join("fish-config"))?);
@@ -179,10 +220,15 @@ fn resume_plan(
             .filter(|name| {
                 matches!(
                     *name,
-                    ".profile" | ".bash_profile" | ".bash_login" | ".zprofile"
+                    ".profile"
+                        | ".bash_profile"
+                        | ".bash_login"
+                        | ".zprofile"
+                        | ".bashrc"
+                        | ".zshrc"
                 )
             })
-            .ok_or_else(|| args::invalid("the original login profile paths"))?;
+            .ok_or_else(|| args::invalid("the original profile paths"))?;
         if profiles.iter().any(|prior| prior == name) || edit.block.as_bytes() != block {
             return Err(args::invalid(
                 "unique original login profiles and PATH block",

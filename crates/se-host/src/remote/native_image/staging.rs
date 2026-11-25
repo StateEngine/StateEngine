@@ -61,14 +61,14 @@ pub(in crate::remote) fn prepare(directory: &str, windows: bool, apple: bool) ->
         format!(
             r#"uid=$(id -u) && for p in . .stateengine-runtime {directory}; do
 if ! test -d "$p"; then
-mkdir -m 700 "$p" || test -d "$p" || {{ printf 'image-cache-refused:create-failed:%s\n' "$p"; exit 1; }}
-cm=$({stat} {mode} "$p") || {{ printf 'image-cache-refused:mode-confirm:%s\n' "$p"; exit 1; }}
-if test "$cm" != 700; then chmod 700 "$p" || {{ printf 'image-cache-refused:mode-confirm:%s\n' "$p"; exit 1; }}; fi
+mkdir -m 700 "$p" || test -d "$p" || {{ printf "image-cache-refused:create-failed:%s\n" "$p"; exit 1; }}
+cm=$({stat} {mode} "$p") || {{ printf "image-cache-refused:mode-confirm:%s\n" "$p"; exit 1; }}
+if test "$cm" != 700; then chmod 700 "$p" || {{ printf "image-cache-refused:mode-confirm:%s\n" "$p"; exit 1; }}; fi
 fi
-if test -L "$p"; then printf 'image-cache-refused:symlink:%s\n' "$p"; exit 1; fi
-owner=$({stat} %u "$p") && mode=$({stat} {mode} "$p") || {{ printf 'image-cache-refused:stat-failed:%s\n' "$p"; exit 1; }}
-test "$owner" = "$uid" || {{ printf 'image-cache-refused:foreign-owner:%s:%s\n' "$p" "$owner"; exit 1; }}
-test "$((0$mode & 022))" -eq 0 || {{ printf 'image-cache-refused:group-or-other-writable:%s:%s\n' "$p" "$mode"; exit 1; }}
+if test -L "$p"; then printf "image-cache-refused:symlink:%s\n" "$p"; exit 1; fi
+owner=$({stat} %u "$p") && mode=$({stat} {mode} "$p") || {{ printf "image-cache-refused:stat-failed:%s\n" "$p"; exit 1; }}
+test "$owner" = "$uid" || {{ printf "image-cache-refused:foreign-owner:%s:%s\n" "$p" "$owner"; exit 1; }}
+test "$((0$mode & 022))" -eq 0 || {{ printf "image-cache-refused:group-or-other-writable:%s:%s\n" "$p" "$mode"; exit 1; }}
 done"#
         )
     }
@@ -82,7 +82,7 @@ fn unix_identity(path: &str, apple: bool) -> String {
     let mode = if apple { "%Lp" } else { "%a" };
     format!(
         r#"test ! -L {path} && test -f {path} && owner=$({stat} %u {path}) && mode=$({stat} {mode} {path}) && uid=$(id -u) && test "$owner" = "$uid" || exit 1
-if test "$((0$mode & 022))" -ne 0; then printf 'unsafe-mode:%s\n' "$mode"; exit 1; fi"#
+if test "$((0$mode & 022))" -ne 0; then printf "unsafe-mode:%s\n" "$mode"; exit 1; fi"#
     )
 }
 
@@ -153,7 +153,7 @@ $s=Join-Path $HOME '{upload}'; $d=Join-Path $HOME '{path}';
         // leave a check-then-link race on macOS. `link` is the same tool on both.
         format!(
             "chmod 700 {upload} && link {upload} {path} || \
-{{ printf 'image-publish-refused:link-failed:%s\\n' {path}; exit 1; }}"
+{{ printf \"image-publish-refused:link-failed:%s\\n\" {path}; exit 1; }}"
         )
     }
 }
@@ -165,6 +165,15 @@ pub(in crate::remote) fn remove(upload: &str, windows: bool) -> String {
     } else {
         format!("rm -f {upload}")
     }
+}
+/// Wrap a Unix script for SSH execution: the command line reaches the
+/// destination's login shell, and zsh (OCTAL_ZEROES off), fish, csh and
+/// nushell each misparse the script's octal `$(( ))` arithmetic or quoting,
+/// while /bin/sh always reads the same POSIX script. The wrapper argument
+/// stays literal under every login shell because the script carries no
+/// single quote.
+pub(in crate::remote) fn sh(script: &str) -> String {
+    format!("/bin/sh -c '{script}'")
 }
 pub(in crate::remote) fn powershell(script: &str) -> String {
     use base64::Engine as _;

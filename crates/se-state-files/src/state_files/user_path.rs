@@ -84,8 +84,9 @@ pub struct PathWriteWitness {
     pub before: PathObservation,
     pub after: PathObservation,
     pub changed: bool,
-    /// Offered through WM_SETTINGCHANGE after commit; never an assertion that
-    /// every existing process has adopted a new environment.
+    /// Offered through WM_SETTINGCHANGE after commit; a timed-out or failed
+    /// send records false and never undoes the committed registry write. It is
+    /// never an assertion that every existing process adopted the new value.
     pub broadcast_completed: bool,
 }
 
@@ -254,12 +255,12 @@ impl NativeUserPath {
                 io::Error::other("another change is visible; reread before retrying"),
             ));
         }
-        broadcast()?;
+        let broadcast_completed = broadcast();
         Ok(PathWriteWitness {
             before: observed.clone(),
             after,
             changed: true,
-            broadcast_completed: true,
+            broadcast_completed,
         })
     }
 }
@@ -367,12 +368,14 @@ fn read_value(key: &Key) -> Result<Option<RawValue>> {
         text,
     }))
 }
-fn broadcast() -> Result<()> {
+fn broadcast() -> bool {
     let name: Vec<_> = "Environment".encode_utf16().chain(Some(0)).collect();
     let mut result = 0usize;
-    // SAFETY: synchronous system-message broadcast retains the terminated string
-    // until return; a bounded timeout refuses an unacknowledged notification.
-    if unsafe {
+    // SAFETY: synchronous system-message broadcast retains the terminated
+    // string until return. The bounded timeout only reports delivery; the
+    // registry write is already committed, so a refused notification must
+    // not fail the update.
+    unsafe {
         SendMessageTimeoutW(
             HWND_BROADCAST,
             WM_SETTINGCHANGE,
@@ -381,14 +384,6 @@ fn broadcast() -> Result<()> {
             SMTO_ABORTIFHUNG | SMTO_ERRORONEXIT,
             500,
             &mut result,
-        )
-    } == 0
-    {
-        return Err(error(
-            "broadcast committed PATH change",
-            PathUpdatePhase::Committed,
-            io::Error::last_os_error(),
-        ));
+        ) != 0
     }
-    Ok(())
 }
