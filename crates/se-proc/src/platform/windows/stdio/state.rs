@@ -80,9 +80,15 @@ impl Operation {
         matches!(self.status, Status::Pending)
     }
 }
+#[derive(PartialEq, Eq)]
+pub(super) enum Gates {
+    Open,
+    Write,
+    All,
+}
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    reason = "independent stdio binding, notice, release, and abandonment flags"
 )]
 pub(super) struct State {
     pub identity: StdioIdentity,
@@ -97,8 +103,7 @@ pub(super) struct State {
     pub notices: BTreeSet<u64>,
     pub binding_notice: bool,
     pub close: Option<u64>,
-    pub write_gated: bool,
-    pub all_gated: bool,
+    pub gates: Gates,
     pub released: bool,
     pub abandoned: bool,
     pub failure: Option<ProcError>,
@@ -118,8 +123,7 @@ impl State {
             notices: BTreeSet::new(),
             binding_notice: false,
             close: None,
-            write_gated: false,
-            all_gated: false,
+            gates: Gates::Open,
             released: false,
             abandoned: false,
             failure: None,

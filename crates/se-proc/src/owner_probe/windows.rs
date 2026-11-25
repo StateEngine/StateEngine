@@ -16,8 +16,11 @@ use windows_sys::Win32::{
 fn last(operation: &'static str) -> OwnerProbeError {
     native(operation, io::Error::last_os_error())
 }
-fn handle(raw: HANDLE, operation: &'static str) -> Result<OwnedHandle> {
-    // SAFETY: callers pass only newly created/opened Win32 handles (or null/INVALID_HANDLE_VALUE).
+/// # Safety
+/// `raw` must be null, `INVALID_HANDLE_VALUE`, or a newly created/opened handle
+/// whose sole ownership is transferred to this call.
+unsafe fn handle(raw: HANDLE, operation: &'static str) -> Result<OwnedHandle> {
+    // SAFETY: this function's safety contract guarantees `raw`'s precondition.
     unsafe { crate::windows_native::handle(raw, operation) }
         .map_err(|e| native(e.operation, e.source))
 }
@@ -92,7 +95,8 @@ fn open(pid: ProcessId) -> Result<Option<OwnedHandle>> {
     if raw.is_null() && unsafe { GetLastError() } == ERROR_INVALID_PARAMETER {
         return Ok(None);
     }
-    handle(raw, "open native ancestor").map(Some)
+    // SAFETY: the OpenProcess result is a newly opened handle or null, which `handle` rejects.
+    unsafe { handle(raw, "open native ancestor") }.map(Some)
 }
 fn stamp(pid: ProcessId, parent: ProcessId, process: &OwnedHandle) -> Result<ProcessStamp> {
     // SAFETY: `process` is a retained query-capable process handle.
@@ -362,7 +366,9 @@ fn record_basis(
             None
         } else {
             // Query-only: this never reacquires signal or close authority.
-            let job = handle(raw, "open recorded job for membership query")?;
+            // SAFETY: the OpenJobObjectW result is a newly opened handle or null, which
+            // `handle` rejects.
+            let job = unsafe { handle(raw, "open recorded job for membership query") }?;
             let mut member = 0;
             // SAFETY: retained query-only job/process handles and initialized membership output.
             if unsafe {

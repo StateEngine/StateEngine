@@ -37,8 +37,9 @@ impl Handle {
         Ok(())
     }
     /// # Safety
-    /// `handle` must be null, `INVALID_HANDLE_VALUE`, or a newly created/opened handle
-    /// whose sole ownership is transferred to this call.
+    /// `handle` must be null, `INVALID_HANDLE_VALUE`, or a live CloseHandle-compatible
+    /// handle whose sole ownership is transferred to this call: newly created/opened,
+    /// or an inherited entry the caller sealed before custody.
     pub unsafe fn new(handle: HANDLE, api: &str) -> ProcResult<Self> {
         use std::os::windows::io::IntoRawHandle;
         // SAFETY: this function's safety contract guarantees `handle`'s precondition.

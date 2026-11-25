@@ -9,7 +9,7 @@ mod validate;
 mod window;
 
 use crate::*;
-pub(crate) use arena::{Arena, Reference, Slot, SlotEntry};
+pub(crate) use arena::{Arena, LaunchState, Reference, Slot, SlotEntry};
 
 pub fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<ProcessRead> {
     crate::platform::read_process(machine, pid)

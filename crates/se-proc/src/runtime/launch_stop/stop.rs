@@ -95,7 +95,7 @@ impl NativeProcessRuntime {
                             "native interrupt dispatch is not implemented on macOS",
                         )),
                     },
-                    None if !s.launched => Ok(StopDispatch::NotNeeded),
+                    None if s.launch != LaunchState::Launched => Ok(StopDispatch::NotNeeded),
                     None => Err(input("stop", "native child custody is unresolved")),
                 }
             };
@@ -298,7 +298,7 @@ fn pending_exit_image(cause: &ProcError) -> bool {
     windows || darwin
 }
 fn witness_inner(s: &mut Slot) -> ProcResult<StopObservation> {
-    if s.native.is_none() && !s.launched {
+    if s.native.is_none() && s.launch != LaunchState::Launched {
         return uncreated_witness(s);
     }
     let mut root = match s.native()?.root() {

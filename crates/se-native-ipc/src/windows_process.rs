@@ -33,8 +33,9 @@ fn invalid(operation: &'static str, reason: &'static str) -> Error {
     }
 }
 /// # Safety
-/// `raw` must be null, `INVALID_HANDLE_VALUE`, or a newly created/opened handle
-/// whose sole ownership is transferred to this call.
+/// `raw` must be null, `INVALID_HANDLE_VALUE`, or a handle whose sole ownership is
+/// transferred to this call: newly created/opened, or an inherited entry the
+/// caller sealed.
 pub unsafe fn handle(raw: HANDLE, operation: &'static str) -> Result<OwnedHandle> {
     if raw.is_null() || raw == INVALID_HANDLE_VALUE {
         return Err(last(operation));

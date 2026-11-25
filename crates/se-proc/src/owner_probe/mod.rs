@@ -55,7 +55,7 @@ pub enum AncestryBound {
 #[derive(Debug)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    reason = "independent observed console/session/marker facts, not a state machine"
 )]
 pub struct OwnerObservation {
     owner: NativeOwner,

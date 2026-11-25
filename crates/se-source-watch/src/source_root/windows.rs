@@ -31,7 +31,8 @@ pub(super) fn open_root(path: &Path) -> io::Result<File> {
             ptr::null_mut(),
         )
     };
-    owned(raw)
+    // SAFETY: CreateFileW returned a newly opened handle owned by this process.
+    unsafe { owned(raw) }
 }
 pub(super) fn open_relative(root: &File, path: &str) -> io::Result<(File, Facts)> {
     open_components(root, path, false)
@@ -97,7 +98,8 @@ pub(super) fn open_component(
             unsafe { RtlNtStatusToDosError(code) } as i32,
         ));
     }
-    let child = owned(raw)?;
+    // SAFETY: NtCreateFile returned a newly created handle owned by this process.
+    let child = unsafe { owned(raw) }?;
     let facts = verify_handle(&child, is_directory)?;
     Ok((child, facts))
 }
@@ -111,11 +113,15 @@ fn open_components(root: &File, path: &str, last_directory: bool) -> io::Result<
     }
     held.ok_or_else(|| invalid("bounded slash-separated root-relative source path required"))
 }
-fn owned(raw: HANDLE) -> io::Result<File> {
+/// # Safety
+/// `raw` must be null, `INVALID_HANDLE_VALUE`, or a newly created/opened handle
+/// whose sole ownership is transferred to this call; the sentinel values are
+/// rejected as an error preserving the pending OS error.
+unsafe fn owned(raw: HANDLE) -> io::Result<File> {
     if raw.is_null() || raw == INVALID_HANDLE_VALUE {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: the successful native open transferred one uniquely owned handle.
+    // SAFETY: this function's safety contract guarantees `raw`'s precondition.
     Ok(unsafe { File::from_raw_handle(raw) })
 }
 fn verify_handle(file: &File, directory: bool) -> io::Result<BY_HANDLE_FILE_INFORMATION> {

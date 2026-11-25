@@ -141,7 +141,7 @@ impl NativeStdio {
     pub fn launch_ready(&self) -> ProcResult<()> {
         let state = self.lock();
         state.ready()?;
-        if state.all_gated {
+        if state.gates == Gates::All {
             return Err(transition("stream shutdown began before vendor execution"));
         }
         Ok(())
@@ -196,8 +196,7 @@ impl CompletionTarget for NativeStdio {
         {
             let mut state = self.lock();
             state.abandoned = true;
-            state.all_gated = true;
-            state.write_gated = true;
+            state.gates = Gates::All;
             state.binding.disable();
         }
         self.cancel_all();

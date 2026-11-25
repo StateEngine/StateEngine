@@ -32,8 +32,11 @@ impl NativeStdio {
             state.operations.get(&id).map(|op| op.kind),
             Some(Kind::Close(StdioCloseScope::All))
         );
-        state.write_gated = true;
-        state.all_gated |= all;
+        state.gates = if all || state.gates == Gates::All {
+            Gates::All
+        } else {
+            Gates::Write
+        };
         drop(state);
         if all {
             self.cancel_all();
@@ -214,7 +217,7 @@ impl NativeStdio {
         }
         if !state.operations.is_empty()
             || state.handles.iter().any(Option::is_some)
-            || !state.all_gated
+            || state.gates != Gates::All
         {
             return Err(transition(
                 "all endpoints must close and every operation must release before the port",

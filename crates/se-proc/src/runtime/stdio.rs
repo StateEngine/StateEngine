@@ -67,10 +67,9 @@ impl ProviderStdioApi for NativeProcessRuntime {
         self.inner.apply(&owner.key, false, |slot| {
             let result = (|| {
                 configured(slot, &config)?;
-                if slot.launched
+                if slot.launch != LaunchState::Prepared
                     || slot.phase != LifecycleState::Starting
                     || slot.stdio.is_some()
-                    || slot.stdio_bound
                 {
                     return Err(state(
                         &owner.key.lifecycle,
@@ -102,7 +101,7 @@ impl ProviderStdioApi for NativeProcessRuntime {
                     },
                 })
             })();
-            if !slot.launched
+            if slot.launch != LaunchState::Launched
                 && slot.phase == LifecycleState::Starting
                 && let Err(failure) = &result
             {
