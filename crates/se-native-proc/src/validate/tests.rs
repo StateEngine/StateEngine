@@ -61,7 +61,7 @@ fn verbatim_only_child_is_inside_plain_workspace_but_not_its_plain_alias()
             max_stdio_buffer_bytes: 4096,
         },
     };
-    let mut launch = LaunchSpec {
+    let launch = LaunchSpec {
         executable_custody: None,
         lifecycle,
         generation,
@@ -88,13 +88,14 @@ fn verbatim_only_child_is_inside_plain_workspace_but_not_its_plain_alias()
         deadline: std::time::Instant::now() + Duration::from_secs(10),
         notifications: Arc::new(Notices),
     };
-    spec(&reservation, &launch, &config, &owner)
+    let validated = validate_launch(reservation.clone(), launch, &config, &owner)
         .map_err(|error| format!("verbatim child refused inside workspace: {error:?}"))?;
+    let mut launch = validated.spec;
     launch.policy.writes = WritePolicy::Workspace {
         roots: vec![plain.join("literal")],
         scratch: plain,
     };
-    let refusal = spec(&reservation, &launch, &config, &owner)
+    let refusal = validate_launch(reservation, launch, &config, &owner)
         .err()
         .ok_or("verbatim child was redirected inside its plain alias")?;
     assert_eq!(refusal.code, ProcErrorCode::CwdOutsideWorkspace);

@@ -120,17 +120,6 @@ pub fn validate_launch(
         stdio_bound,
     })
 }
-/// Checks run in this order, so the same input reports the same first refusal.
-pub fn spec(
-    reservation: &LaunchReservation,
-    spec: &LaunchSpec,
-    config: &HostConfig,
-    owner: &ProcessIdentity,
-) -> ProcResult<[u8; 32]> {
-    preconditions(reservation, spec, config, owner)?;
-    working_directory(spec)?;
-    argv_digest(spec)
-}
 /// Reservation binding, deadline, image custody, capacity, hardening and mode.
 fn preconditions(
     reservation: &LaunchReservation,
