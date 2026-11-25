@@ -18,15 +18,19 @@ use std::{path::Path, process::Command};
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
+#[cfg(windows)]
+#[path = "../../test-support/executable.rs"]
+mod executable;
+#[cfg(windows)]
+#[path = "support/foreground_host.rs"]
+mod foreground_host;
+#[cfg(windows)]
+#[path = "../../test-support/home_reaper.rs"]
+mod home_reaper;
 
 const AGENTS: usize = 20;
 
-fn call(
-    image: &Path,
-    home: &Path,
-    root: &Path,
-    args: &[&str],
-) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+fn command(image: &Path, home: &Path, root: &Path, args: &[&str]) -> Command {
     let mut command = Command::new(image);
     command
         .args(["--json", "--home"])
@@ -46,7 +50,16 @@ fn call(
         command.env_remove(name);
     }
     provider_home::for_state(&mut command, home);
-    let output = command.output()?;
+    command
+}
+
+fn call(
+    image: &Path,
+    home: &Path,
+    root: &Path,
+    args: &[&str],
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let output = command(image, home, root, args).output()?;
     assert!(
         output.status.success(),
         "CLI refused: {}; {}",
@@ -158,9 +171,16 @@ fn observed_agent_list_pages_cut_at_their_final_bytes() -> Check {
     let initialized = call(image, home, &root, &["init", "--name", "observed-pages"])?;
     seed_observed_agents(&f.home, home, &initialized)?;
     let direct = list_every_agent(image, home, &root)?;
+    // Hosted Windows runners forbid job breakaway, so there the test owns a
+    // foreground host as its child instead of starting a detached one.
+    #[cfg(windows)]
+    let host = foreground_host::ForegroundHost::start(command(image, home, &root, &[]), home)?;
+    #[cfg(not(windows))]
     call(image, home, &root, &["up"])?;
     let hosted = list_every_agent(image, home, &root);
     call(image, home, &root, &["down"])?;
+    #[cfg(windows)]
+    host.wait()?;
     let hosted = hosted?;
     assert!(
         direct.len() > OBSERVED_AGENTS,
