@@ -1,59 +1,88 @@
 use crate::*;
 
+fn abandoned_message_call(
+    f: &Fixture,
+    session: &SessionId,
+    generation: u64,
+    request: &str,
+    to: &str,
+) -> Result<se_host::RoutedCall, Box<dyn std::error::Error>> {
+    Ok(se_host::RoutedCall::Deferred {
+        admitted: Box::new(se_host::HostedCall {
+            remote_credential: None,
+            input: se_host::HostedInput::Operation(se_core::ops::AnyOp::MessageSend(
+                se_core::ops::MessageSend {
+                    quiet: false,
+                    to: Some(to.into()),
+                    body: format!("actual abandoned wait {request}"),
+                    kind: Default::default(),
+                    refs: vec![],
+                    reply_to: None,
+                    supersedes: None,
+                    work: None,
+                    idempotency_key: key(request)?,
+                },
+            )),
+            kernel: se_core::dispatch::Kernel::new(se_core::dispatch::CallFacts {
+                event: fixture::event()?,
+                message: fixture::message()?,
+                agent: fixture::agent()?,
+                profile_event: fixture::event()?,
+                notification_event: fixture::event()?,
+                notification_message: fixture::message()?,
+                occurred_at_us: i64::try_from(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)?
+                        .as_micros(),
+                )?,
+                door: Door::Cli,
+            })?,
+            admission: Admission {
+                scope: Scope::Project(f.project.clone()),
+                actor: Actor::Agent(f.a.clone()),
+                session: Some(session.clone()),
+                generation,
+            },
+            terminal: se_core::admission::HumanTerminal::Refused {
+                reason: "agent message does not require a human terminal".into(),
+            },
+            selections: None,
+        }),
+        hook: None,
+    })
+}
+
+async fn wait_for_abandoned_receipt(
+    f: &Fixture,
+    reader: &SqliteReader,
+    request: &str,
+    index: usize,
+    deadline: &se_host::client::lease::Deadline,
+) -> Check {
+    loop {
+        let mut snapshot = reader.snapshot(f.self_scope(&f.a))?;
+        let receipt = snapshot.operation_receipt(Actor::Agent(f.a.clone()), key(request)?)?;
+        snapshot.close()?;
+        if let Read::Present { value } = receipt {
+            assert_eq!(
+                value.events.len(),
+                1,
+                "abandoned write duplicated its effect"
+            );
+            return Ok(());
+        }
+        deadline.remaining().map_err(|error| {
+            format!("abandoned request {index} never committed independently: {error}")
+        })?;
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+}
+
 /// Protects: abandoning accepted receipt waits cannot permanently exhaust write admission; outside SQLite receipts prove every abandoned request completed before the next request. The counted pair keeps at most eight sends here because the later listener and cold-capture phases of this binary send two more to the same recipient; the rest are exempt self-notes.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub async fn check(f: &Fixture, session: &SessionId, runtime: &se_host::HostedRuntime) -> Check {
     let router = runtime.router()?;
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
-    let call =
-        |request: &str, to: &str| -> Result<se_host::RoutedCall, Box<dyn std::error::Error>> {
-            Ok(se_host::RoutedCall::Deferred {
-                admitted: Box::new(se_host::HostedCall {
-                    remote_credential: None,
-                    input: se_host::HostedInput::Operation(se_core::ops::AnyOp::MessageSend(
-                        se_core::ops::MessageSend {
-                            quiet: false,
-                            to: Some(to.into()),
-                            body: format!("actual abandoned wait {request}"),
-                            kind: Default::default(),
-                            refs: vec![],
-                            reply_to: None,
-                            supersedes: None,
-                            work: None,
-                            idempotency_key: key(request)?,
-                        },
-                    )),
-                    kernel: se_core::dispatch::Kernel::new(se_core::dispatch::CallFacts {
-                        event: fixture::event()?,
-                        message: fixture::message()?,
-                        agent: fixture::agent()?,
-                        profile_event: fixture::event()?,
-                        notification_event: fixture::event()?,
-                        notification_message: fixture::message()?,
-                        occurred_at_us: i64::try_from(
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)?
-                                .as_micros(),
-                        )?,
-                        door: Door::Cli,
-                    })?,
-                    admission: Admission {
-                        scope: Scope::Project(f.project.clone()),
-                        actor: Actor::Agent(f.a.clone()),
-                        session: Some(session.clone()),
-                        generation: runtime.generation().get(),
-                    },
-                    terminal: se_core::admission::HumanTerminal::Refused {
-                        reason: "agent message does not require a human terminal".into(),
-                    },
-                    selections: None,
-                }),
-                hook: None,
-            })
-        };
+    let generation = runtime.generation().get();
     let slots = runtime.blocking_pool().foreground_admission();
     let idle_capacity = slots.available_permits();
     assert!(idle_capacity > 0, "capture an idle foreground pool");
@@ -78,7 +107,10 @@ pub async fn check(f: &Fixture, session: &SessionId, runtime: &se_host::HostedRu
         let competing = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
         competing.execute_batch("BEGIN IMMEDIATE")?;
         let deadline = bound()?;
-        let mut completion = Box::pin(router.execute_call(call(&request, to)?, &deadline));
+        let mut completion = Box::pin(router.execute_call(
+            abandoned_message_call(f, session, generation, &request, to)?,
+            &deadline,
+        ));
         let mut idle_polls = 0;
         loop {
             let polled = std::future::poll_fn(|cx| {
@@ -109,27 +141,20 @@ pub async fn check(f: &Fixture, session: &SessionId, runtime: &se_host::HostedRu
         drop(completion);
         competing.execute_batch("ROLLBACK")?;
         drop(competing);
-        loop {
-            let mut snapshot = reader.snapshot(f.self_scope(&f.a))?;
-            let receipt = snapshot.operation_receipt(Actor::Agent(f.a.clone()), key(&request)?)?;
-            snapshot.close()?;
-            if let Read::Present { value } = receipt {
-                assert_eq!(
-                    value.events.len(),
-                    1,
-                    "abandoned write duplicated its effect"
-                );
-                completed += 1;
-                break;
-            }
-            deadline.remaining().map_err(|error| {
-                format!("abandoned request {index} never committed independently: {error}")
-            })?;
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
+        wait_for_abandoned_receipt(f, &reader, &request, index, &deadline).await?;
+        completed += 1;
     }
     match router
-        .execute_call(call("after-abandoned-waits", f.a.as_str())?, &bound()?)
+        .execute_call(
+            abandoned_message_call(
+                f,
+                session,
+                generation,
+                "after-abandoned-waits",
+                f.a.as_str(),
+            )?,
+            &bound()?,
+        )
         .await
     {
         Ok(output) => {

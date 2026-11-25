@@ -99,51 +99,7 @@ pub fn private_startup_serves_and_retires() -> Check {
     Ok(())
 }
 
-/// Protects: a caller without TEMP, TMP or TMPDIR still launches a native host that commits its owner message using product-owned temporary storage.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-#[cfg_attr(
-    target_os = "linux",
-    expect(
-        clippy::cognitive_complexity,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )
-)]
-pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
-    for name in ["TEMP", "TMP", "TMPDIR"] {
-        assert!(
-            std::env::var_os(name).is_none(),
-            "unexpected inherited {name}"
-        );
-    }
-    let payload = args
-        .get(2)
-        .and_then(|value| value.to_str())
-        .ok_or("native startup fixture identities")?;
-    let (home, store, owner, project, a, b): (
-        std::path::PathBuf,
-        StoreId,
-        se_types::HumanId,
-        se_types::ProjectId,
-        se_types::AgentId,
-        se_types::AgentId,
-    ) = serde_json::from_str(payload)?;
-    let f = std::mem::ManuallyDrop::new(Fixture {
-        options: StoreOptions {
-            state_directory: home.join("state"),
-            busy_timeout: Duration::from_secs(2),
-        },
-        home,
-        _root: None,
-        store,
-        owner,
-        project,
-        a,
-        b,
-    });
-    println!("CASE private startup fixture {}", f.home.display());
+fn seed_owner_principal(f: &Fixture) -> Check {
     let (mut direct, lease) = f.direct()?;
     direct.append(
         f.batch(
@@ -167,119 +123,105 @@ pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
     )?;
     drop(direct);
     drop(lease);
-    let machine = route::identity::ensure_machine_identity(&f.options.state_directory)?;
-    let before = std::fs::read(f.options.state_directory.join("machine.json"))?;
-    let credential = secret()?;
-    publish(&f, "credential", credential.expose())?;
-    let ready: host::StartedHost = match host::start(
-        &f.options.state_directory,
-        &f.options.state_directory.join("config.toml"),
-        machine.clone(),
-        &bound()?,
-    ) {
-        Ok(value) => value,
-        Err(failure) => {
-            eprintln!(
-                "retained failed startup fixture {} child={:?}",
-                f.home.display(),
-                failure.child.as_ref().and_then(|child| child.identity())
-            );
-            return Err(format!("private startup: {failure:?}").into());
-        }
-    };
-    let _cleanup = crate::reaper_guard::ReaperGuard::arm(&f, &ready, &credential)?;
-    let temporary = f.options.state_directory.join("tmp");
-    drop(se_proc::NativeStateFiles::open(&temporary)?);
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
-        assert_eq!(std::fs::metadata(&temporary)?.mode() & 0o777, 0o700);
-        let environment = std::fs::read(format!("/proc/{}/environ", ready.ready.identity.pid.0))?;
-        // Independent contract list: do not ask the production collector what
-        // it decided to forward. Values are compared without printing secrets.
-        const APPROVED: &[&str] = &[
-            "PATH",
-            "HOME",
-            "USER",
-            "LOGNAME",
-            "SHELL",
-            "LANG",
-            "TZ",
-            "TERM",
-            "XDG_CONFIG_HOME",
-            "XDG_DATA_HOME",
-            "XDG_CACHE_HOME",
-            "XDG_STATE_HOME",
-            "XDG_RUNTIME_DIR",
-            "CODEX_HOME",
-            "OPENAI_API_KEY",
-            "OPENAI_BASE_URL",
-            "CLAUDE_CONFIG_DIR",
-            "ANTHROPIC_API_KEY",
-            "ANTHROPIC_BASE_URL",
-            "ComSpec",
-            "PATHEXT",
-            "USERPROFILE",
-            "APPDATA",
-            "LOCALAPPDATA",
-            "ProgramData",
-            "ProgramFiles",
-            "ProgramW6432",
-            "DISPLAY",
-            "WAYLAND_DISPLAY",
-            "XAUTHORITY",
-        ];
-        let mut expected = std::collections::BTreeMap::new();
-        for (name, value) in std::env::vars_os() {
-            let text = name.to_string_lossy();
-            if APPROVED.iter().any(|key| key.eq_ignore_ascii_case(&text)) || text.starts_with("LC_")
-            {
-                expected.insert(name.as_bytes().to_vec(), value.as_bytes().to_vec());
-            }
-        }
-        expected.insert(
-            b"TMPDIR".to_vec(),
-            temporary.as_os_str().as_bytes().to_vec(),
-        );
-        let mut observed = std::collections::BTreeMap::new();
-        for entry in environment
-            .split(|byte| *byte == 0)
-            .filter(|entry| !entry.is_empty())
-        {
-            let separator = entry
-                .iter()
-                .position(|byte| *byte == b'=')
-                .ok_or("native environment entry has no separator")?;
-            let (name, value) = (&entry[..separator], &entry[separator + 1..]);
-            let upper = name.to_ascii_uppercase();
-            assert!(
-                !upper.starts_with(b"STATEENGINE_")
-                    && upper != b"SE_SESSION"
-                    && (!upper.starts_with(b"CODEX_") || upper == b"CODEX_HOME")
-                    && (!upper.starts_with(b"CLAUDE_") || upper == b"CLAUDE_CONFIG_DIR"),
-                "fleet/session environment leaked through {}",
-                String::from_utf8_lossy(name)
-            );
-            assert!(
-                observed.insert(name.to_vec(), value.to_vec()).is_none(),
-                "duplicate native environment name"
-            );
-        }
-        assert_eq!(
-            observed.keys().collect::<Vec<_>>(),
-            expected.keys().collect::<Vec<_>>(),
-            "native host environment names differ from the approved provider and protected-temp block"
-        );
-        for (name, value) in expected {
-            assert!(
-                observed.get(&name) == Some(&value),
-                "native host changed approved environment value for {}",
-                String::from_utf8_lossy(&name)
-            );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn verify_linux_host_environment(ready: &host::StartedHost, temporary: &std::path::Path) -> Check {
+    use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
+    assert_eq!(std::fs::metadata(temporary)?.mode() & 0o777, 0o700);
+    let environment = std::fs::read(format!("/proc/{}/environ", ready.ready.identity.pid.0))?;
+    // Independent contract list: do not ask the production collector what
+    // it decided to forward. Values are compared without printing secrets.
+    const APPROVED: &[&str] = &[
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "LANG",
+        "TZ",
+        "TERM",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+        "CODEX_HOME",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "CLAUDE_CONFIG_DIR",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "ComSpec",
+        "PATHEXT",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "ProgramData",
+        "ProgramFiles",
+        "ProgramW6432",
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XAUTHORITY",
+    ];
+    let mut expected = std::collections::BTreeMap::new();
+    for (name, value) in std::env::vars_os() {
+        let text = name.to_string_lossy();
+        if APPROVED.iter().any(|key| key.eq_ignore_ascii_case(&text)) || text.starts_with("LC_") {
+            expected.insert(name.as_bytes().to_vec(), value.as_bytes().to_vec());
         }
     }
-    assert_eq!(ready.ready.identity.machine, machine);
-    assert_eq!(ready.endpoint.epoch.owner.fields().machine, machine);
+    expected.insert(
+        b"TMPDIR".to_vec(),
+        temporary.as_os_str().as_bytes().to_vec(),
+    );
+    let mut observed = std::collections::BTreeMap::new();
+    for entry in environment
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
+        let separator = entry
+            .iter()
+            .position(|byte| *byte == b'=')
+            .ok_or("native environment entry has no separator")?;
+        let (name, value) = (&entry[..separator], &entry[separator + 1..]);
+        let upper = name.to_ascii_uppercase();
+        assert!(
+            !upper.starts_with(b"STATEENGINE_")
+                && upper != b"SE_SESSION"
+                && (!upper.starts_with(b"CODEX_") || upper == b"CODEX_HOME")
+                && (!upper.starts_with(b"CLAUDE_") || upper == b"CLAUDE_CONFIG_DIR"),
+            "fleet/session environment leaked through {}",
+            String::from_utf8_lossy(name)
+        );
+        assert!(
+            observed.insert(name.to_vec(), value.to_vec()).is_none(),
+            "duplicate native environment name"
+        );
+    }
+    assert_eq!(
+        observed.keys().collect::<Vec<_>>(),
+        expected.keys().collect::<Vec<_>>(),
+        "native host environment names differ from the approved provider and protected-temp block"
+    );
+    for (name, value) in expected {
+        assert!(
+            observed.get(&name) == Some(&value),
+            "native host changed approved environment value for {}",
+            String::from_utf8_lossy(&name)
+        );
+    }
+    Ok(())
+}
+
+fn verify_detachment_and_identity(
+    f: &Fixture,
+    ready: &host::StartedHost,
+    machine: &MachineId,
+) -> Check {
+    assert_eq!(ready.ready.identity.machine, *machine);
+    assert_eq!(ready.endpoint.epoch.owner.fields().machine, *machine);
     assert_eq!(
         ready.endpoint.epoch.owner.fields().pid.get(),
         ready.ready.identity.pid.0
@@ -320,6 +262,163 @@ pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
     let mut stale = ready.endpoint.clone();
     stale.generation = se_types::Generation::new(ready.endpoint.generation.get() + 1)?;
     assert!(host::read_detachment(&files, &stale, &bound()?).is_err());
+    Ok(())
+}
+
+fn run_unattested_security_checks(
+    f: &Fixture,
+    endpoint: &se_host::EndpointRecord,
+    credential: &Secret,
+    selected: &se_core::ops::CliSelections,
+) -> Vec<Check> {
+    [
+        ("profile", "default"),
+        ("model", "unattested-model"),
+        ("can-create", "true"),
+    ]
+    .into_iter()
+    .map(|(field, value)| {
+        ipc::forward(
+            endpoint,
+            se_host::client::lease::ClientCredential::Machine(copy_secret(credential)?),
+            se_core::ops::AnyOp::ConfigSet(se_core::ops::ConfigSet {
+                key: format!("agent.{}.{}", f.a, field),
+                value: value.into(),
+                idempotency_key: key(&format!("no-presence-{field}"))?,
+            }),
+            selected,
+            None,
+            &options(),
+        )
+        .map(|_| ())
+        .map_err(|error| error.into())
+    })
+    .collect()
+}
+
+fn verify_post_stop_state(f: &Fixture, security_results: Vec<Check>, before: &[u8]) -> Check {
+    for result in security_results {
+        let error = result
+            .err()
+            .ok_or("security-key host write accepted without the native presence pair")?;
+        let error = error
+            .downcast_ref::<se_types::SeError>()
+            .ok_or("security key refused for an unexpected test/setup error")?;
+        assert!(
+            matches!(
+                error.body.detail(),
+                se_types::Detail::HumanTerminalRequired(_)
+            ),
+            "security key refused for the wrong reason: {error}"
+        );
+    }
+    assert_eq!(
+        std::fs::read(f.options.state_directory.join("machine.json"))?,
+        before
+    );
+    assert!(
+        !f.options
+            .state_directory
+            .join("endpoint.json")
+            .try_exists()?
+    );
+    let reader = database_check(
+        f,
+        "private post-stop reader open",
+        SqliteFactory::open_reader(&f.options),
+    )
+    .and_then(present)?;
+    let mut read = database_check(
+        f,
+        "private post-stop message snapshot",
+        reader.snapshot(f.self_scope(&f.b)),
+    )?;
+    let messages = database_check(
+        f,
+        "private post-stop message page",
+        read.messages(query(None, false), budget(10, 65536, None)?),
+    )?;
+    assert_eq!(messages.items().len(), 1);
+    assert!(
+        matches!(messages.items()[0].body, StoredText::Present(ref text) if text == "detached native message")
+    );
+    read.close()?;
+    drop(reader);
+    drop(Lease::acquire(
+        &f.options.state_directory,
+        LeaseMode::Host,
+        Some(f.store.clone()),
+    )?);
+    Ok(())
+}
+
+fn parse_without_temp_fixture(
+    args: &[std::ffi::OsString],
+) -> Result<std::mem::ManuallyDrop<Fixture>, Box<dyn std::error::Error>> {
+    for name in ["TEMP", "TMP", "TMPDIR"] {
+        assert!(
+            std::env::var_os(name).is_none(),
+            "unexpected inherited {name}"
+        );
+    }
+    let payload = args
+        .get(2)
+        .and_then(|value| value.to_str())
+        .ok_or("native startup fixture identities")?;
+    let (home, store, owner, project, a, b): (
+        std::path::PathBuf,
+        StoreId,
+        se_types::HumanId,
+        se_types::ProjectId,
+        se_types::AgentId,
+        se_types::AgentId,
+    ) = serde_json::from_str(payload)?;
+    Ok(std::mem::ManuallyDrop::new(Fixture {
+        options: StoreOptions {
+            state_directory: home.join("state"),
+            busy_timeout: Duration::from_secs(2),
+        },
+        home,
+        _root: None,
+        store,
+        owner,
+        project,
+        a,
+        b,
+    }))
+}
+
+/// Protects: a caller without TEMP, TMP or TMPDIR still launches a native host that commits its owner message using product-owned temporary storage.
+pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
+    let f = parse_without_temp_fixture(args)?;
+    println!("CASE private startup fixture {}", f.home.display());
+    seed_owner_principal(&f)?;
+    let machine = route::identity::ensure_machine_identity(&f.options.state_directory)?;
+    let before = std::fs::read(f.options.state_directory.join("machine.json"))?;
+    let credential = secret()?;
+    publish(&f, "credential", credential.expose())?;
+    let ready: host::StartedHost = match host::start(
+        &f.options.state_directory,
+        &f.options.state_directory.join("config.toml"),
+        machine.clone(),
+        &bound()?,
+    ) {
+        Ok(value) => value,
+        Err(failure) => {
+            eprintln!(
+                "retained failed startup fixture {} child={:?}",
+                f.home.display(),
+                failure.child.as_ref().and_then(|child| child.identity())
+            );
+            return Err(format!("private startup: {failure:?}").into());
+        }
+    };
+    let _cleanup = crate::reaper_guard::ReaperGuard::arm(&f, &ready, &credential)?;
+    let temporary = f.options.state_directory.join("tmp");
+    drop(se_proc::NativeStateFiles::open(&temporary)?);
+    #[cfg(target_os = "linux")]
+    verify_linux_host_environment(&ready, &temporary)?;
+    verify_detachment_and_identity(&f, &ready, &machine)?;
     let selected = se_core::ops::CliSelections {
         project: Some(f.project.clone()),
         ..Default::default()
@@ -351,29 +450,8 @@ pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
     .and_then(present)?;
     let unchanged_head =
         database_check(&f, "private live head before security", reader.info())?.head;
-    let security_results = [
-        ("profile", "default"),
-        ("model", "unattested-model"),
-        ("can-create", "true"),
-    ]
-    .into_iter()
-    .map(|(field, value)| {
-        ipc::forward(
-            &ready.endpoint,
-            se_host::client::lease::ClientCredential::Machine(copy_secret(&credential)?),
-            se_core::ops::AnyOp::ConfigSet(se_core::ops::ConfigSet {
-                key: format!("agent.{}.{}", f.a, field),
-                value: value.into(),
-                idempotency_key: key(&format!("no-presence-{field}"))?,
-            }),
-            &selected,
-            None,
-            &options(),
-        )
-        .map(|_| ())
-        .map_err(|error| error.into())
-    })
-    .collect::<Vec<Check>>();
+    let security_results =
+        run_unattested_security_checks(&f, &ready.endpoint, &credential, &selected);
     let after_security =
         database_check(&f, "private live head after security", reader.info())?.head;
     drop(reader);
@@ -390,58 +468,7 @@ pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
         unchanged_head, after_security,
         "unattested security call wrote an event"
     );
-    for result in security_results {
-        let error = result
-            .err()
-            .ok_or("security-key host write accepted without the native presence pair")?;
-        let error = error
-            .downcast_ref::<se_types::SeError>()
-            .ok_or("security key refused for an unexpected test/setup error")?;
-        assert!(
-            matches!(
-                error.body.detail(),
-                se_types::Detail::HumanTerminalRequired(_)
-            ),
-            "security key refused for the wrong reason: {error}"
-        );
-    }
-    assert_eq!(
-        std::fs::read(f.options.state_directory.join("machine.json"))?,
-        before
-    );
-    assert!(
-        !f.options
-            .state_directory
-            .join("endpoint.json")
-            .try_exists()?
-    );
-    let reader = database_check(
-        &f,
-        "private post-stop reader open",
-        SqliteFactory::open_reader(&f.options),
-    )
-    .and_then(present)?;
-    let mut read = database_check(
-        &f,
-        "private post-stop message snapshot",
-        reader.snapshot(f.self_scope(&f.b)),
-    )?;
-    let messages = database_check(
-        &f,
-        "private post-stop message page",
-        read.messages(query(None, false), budget(10, 65536, None)?),
-    )?;
-    assert_eq!(messages.items().len(), 1);
-    assert!(
-        matches!(messages.items()[0].body,StoredText::Present(ref text) if text=="detached native message")
-    );
-    read.close()?;
-    drop(reader);
-    drop(Lease::acquire(
-        &f.options.state_directory,
-        LeaseMode::Host,
-        Some(f.store.clone()),
-    )?);
+    verify_post_stop_state(&f, security_results, &before)?;
     println!(
         "PASS private_startup_serves_and_retires: no inherited TEMP/TMP/TMPDIR, exact native owner, persisted machine, real message, pending full shutdown, outside exit and lease witnesses"
     );

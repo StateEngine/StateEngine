@@ -1,58 +1,57 @@
 use crate::*;
 
-/// Protects: owned async completion — actual SQLite contention refuses without effects, and cancellation after independently observed durable commit retains the original key for one-effect replay.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-pub async fn uncertain_write(
+fn working_state_call(
     f: &Fixture,
     session: &SessionId,
-    runtime: &se_host::HostedRuntime,
+    generation: u64,
+) -> Result<se_host::RoutedCall, Box<dyn std::error::Error>> {
+    Ok(se_host::RoutedCall::Deferred {
+        admitted: Box::new(se_host::HostedCall {
+            remote_credential: None,
+            input: se_host::HostedInput::Operation(se_core::ops::AnyOp::WorkingStateSet(
+                se_core::ops::WorkingStateSet {
+                    text: "accepted before cancellation".into(),
+                    expect: se_core::commit::ExpectedRevision::Absent(
+                        se_core::commit::AbsentRevision::Absent,
+                    ),
+                    idempotency_key: key("uncertain-working")?,
+                    owner_agent: None,
+                },
+            )),
+            kernel: se_core::dispatch::Kernel::new(se_core::dispatch::CallFacts {
+                event: fixture::event()?,
+                message: fixture::message()?,
+                agent: fixture::agent()?,
+                profile_event: fixture::event()?,
+                notification_event: fixture::event()?,
+                notification_message: fixture::message()?,
+                occurred_at_us: i64::try_from(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)?
+                        .as_micros(),
+                )?,
+                door: Door::Cli,
+            })?,
+            admission: Admission {
+                scope: Scope::Project(f.project.clone()),
+                actor: Actor::Agent(f.a.clone()),
+                session: Some(session.clone()),
+                generation,
+            },
+            terminal: se_core::admission::HumanTerminal::Refused {
+                reason: "agent operation does not require a human terminal".into(),
+            },
+            selections: None,
+        }),
+        hook: None,
+    })
+}
+
+async fn verify_competing_writer_contention(
+    f: &Fixture,
+    router: &se_host::HostedRouter,
+    call: se_host::RoutedCall,
 ) -> Check {
-    let router = runtime.router()?;
-    let call = || -> Result<se_host::RoutedCall, Box<dyn std::error::Error>> {
-        Ok(se_host::RoutedCall::Deferred {
-            admitted: Box::new(se_host::HostedCall {
-                remote_credential: None,
-                input: se_host::HostedInput::Operation(se_core::ops::AnyOp::WorkingStateSet(
-                    se_core::ops::WorkingStateSet {
-                        text: "accepted before cancellation".into(),
-                        expect: se_core::commit::ExpectedRevision::Absent(
-                            se_core::commit::AbsentRevision::Absent,
-                        ),
-                        idempotency_key: key("uncertain-working")?,
-                        owner_agent: None,
-                    },
-                )),
-                kernel: se_core::dispatch::Kernel::new(se_core::dispatch::CallFacts {
-                    event: fixture::event()?,
-                    message: fixture::message()?,
-                    agent: fixture::agent()?,
-                    profile_event: fixture::event()?,
-                    notification_event: fixture::event()?,
-                    notification_message: fixture::message()?,
-                    occurred_at_us: i64::try_from(
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)?
-                            .as_micros(),
-                    )?,
-                    door: Door::Cli,
-                })?,
-                admission: Admission {
-                    scope: Scope::Project(f.project.clone()),
-                    actor: Actor::Agent(f.a.clone()),
-                    session: Some(session.clone()),
-                    generation: runtime.generation().get(),
-                },
-                terminal: se_core::admission::HumanTerminal::Refused {
-                    reason: "agent operation does not require a human terminal".into(),
-                },
-                selections: None,
-            }),
-            hook: None,
-        })
-    };
     // This independent connection is an actual competing SQLite writer, not a
     // writer/VFS/runtime double or a production pause hook.
     let competing = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
@@ -62,7 +61,7 @@ pub async fn uncertain_write(
     // the store's busy timeout bounds the lock wait independently.
     let deadline = bound()?;
     let started = std::time::Instant::now();
-    let outcome = router.execute_call(call()?, &deadline).await;
+    let outcome = router.execute_call(call, &deadline).await;
     competing.execute_batch("ROLLBACK")?;
     drop(competing);
     let error = outcome
@@ -77,12 +76,25 @@ pub async fn uncertain_write(
         matches!(error.body.detail(), se_types::Detail::StoreBusy(_)),
         "wrong contention result: {error}"
     );
+    Ok(())
+}
+
+/// Protects: owned async completion — actual SQLite contention refuses without effects, and cancellation after independently observed durable commit retains the original key for one-effect replay.
+pub async fn uncertain_write(
+    f: &Fixture,
+    session: &SessionId,
+    runtime: &se_host::HostedRuntime,
+) -> Check {
+    let router = runtime.router()?;
+    let generation = runtime.generation().get();
+    verify_competing_writer_contention(f, &router, working_state_call(f, session, generation)?)
+        .await?;
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
     let mut cancelled_options = options();
     cancelled_options.timeout = Duration::from_secs(10);
     let cancel = cancelled_options.cancelled.clone();
     let completion_deadline = se_host::client::lease::Deadline::from_options(&cancelled_options)?;
-    let submitted = call()?;
+    let submitted = working_state_call(f, session, generation)?;
     let mut completion = std::pin::pin!(router.execute_call(submitted, &completion_deadline));
     // A caller may be descheduled at any await. Poll the production future,
     // observing the real receipt between polls; no clock or native fact is
@@ -127,7 +139,9 @@ pub async fn uncertain_write(
     let wire = serde_json::to_value(error.body.detail())?;
     assert_eq!(wire["detail"]["operation"], "working_state.set");
     assert_eq!(wire["detail"]["key"], "uncertain-working");
-    let replay = router.execute_call(call()?, &bound()?).await?;
+    let replay = router
+        .execute_call(working_state_call(f, session, generation)?, &bound()?)
+        .await?;
     let value = serde_json::to_value(replay.output)?;
     assert_eq!(value["state"], "replayed");
     assert_eq!(value["revision"], 1);
@@ -137,11 +151,11 @@ pub async fn uncertain_write(
     let state = present(read.working_state(f.a.clone())?)?;
     assert_eq!(state.revision.value.get(), 1);
     assert!(
-        matches!(state.current.body,EventBody::WorkingStateSet {text:StoredText::Present(ref text),..} if text=="accepted before cancellation")
+        matches!(state.current.body, EventBody::WorkingStateSet { text: StoredText::Present(ref text), .. } if text == "accepted before cancellation")
     );
     read.close()?;
     crate::continuation_judge::check(f, runtime, || {
-        let mut routed = call()?;
+        let mut routed = working_state_call(f, session, generation)?;
         let se_host::RoutedCall::Deferred { admitted, .. } = &mut routed else {
             return Err("expected the deferred working-state fixture".into());
         };

@@ -96,13 +96,158 @@ fn untouched_foreign(
     }
 }
 
+struct RecoveryCx<'a> {
+    image: &'a Path,
+    home: &'a Path,
+    files: &'a se_proc::NativeStateFiles,
+    foreign: &'a se_proc::native_ipc::NativeUnixEndpoint,
+    foreign_path: &'a Path,
+    foreign_metadata: &'a fs::Metadata,
+    bytes: &'a [u8],
+}
+
+fn verify_stale_down_retention(cx: &RecoveryCx<'_>) -> Check {
+    // Down must retire obsolete routing records too, without touching even a
+    // live foreign socket named by the stale record. Both renderers expose it.
+    for json in [true, false] {
+        publish(cx.files, cx.bytes)?;
+        let before = retained(cx.home)?;
+        let output = command(cx.image, cx.home, json)
+            .arg("down")
+            .output_executable()?;
+        assert!(
+            output.status.success(),
+            "stale down refused: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!cx.home.join("endpoint.json").exists());
+        let after = retained(cx.home)?;
+        let added: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
+        assert_eq!(added.len(), 1);
+        assert_eq!(fs::read(added[0])?, cx.bytes);
+        let printed = String::from_utf8(output.stdout)?;
+        assert!(
+            printed.contains("Retained stale endpoint")
+                && printed.contains(&added[0].display().to_string())
+        );
+        if json {
+            let stop: se_core::ops::RuntimeStop = serde_json::from_str(&printed)?;
+            assert!(stop.complete && stop.already_down);
+            assert!(stop.stops.is_empty());
+        }
+        untouched_foreign(cx.foreign, cx.foreign_path, cx.foreign_metadata)?;
+    }
+    Ok(())
+}
+
+fn verify_stale_up_and_busy_lease(cx: &RecoveryCx<'_>, machine: &[u8], credential: &[u8]) -> Check {
+    for json in [true, false] {
+        publish(cx.files, cx.bytes)?;
+        let old = fs::symlink_metadata(cx.home.join("endpoint.json"))?;
+        let before = retained(cx.home)?;
+        let output = command(cx.image, cx.home, json)
+            .arg("up")
+            .output_executable()?;
+        assert!(
+            output.status.success(),
+            "automatic recovery refused: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let host = runtime_host::RunningHost::start(cx.image, cx.home)?;
+        let after = retained(cx.home)?;
+        let added: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
+        assert_eq!(added.len(), 1, "recovery must retain one exact record");
+        let saved = added[0];
+        assert_eq!(fs::read(saved)?, cx.bytes);
+        let metadata = fs::symlink_metadata(saved)?;
+        assert_eq!(
+            (
+                metadata.dev(),
+                metadata.ino(),
+                metadata.uid(),
+                metadata.mode()
+            ),
+            (old.dev(), old.ino(), old.uid(), old.mode())
+        );
+        if json {
+            let start: se_core::ops::RuntimeStart = serde_json::from_slice(&output.stdout)?;
+            let recovery = start
+                .endpoint_recovery
+                .ok_or("JSON omitted achieved endpoint retention")?;
+            assert_eq!(recovery.original.to_local()?, cx.home.join("endpoint.json"));
+            assert_eq!(&recovery.retained.to_local()?, saved);
+        } else {
+            let printed = String::from_utf8(output.stdout)?;
+            assert!(
+                printed.contains("Retained stale endpoint")
+                    && printed.contains(&cx.home.join("endpoint.json").display().to_string())
+                    && printed.contains(&saved.display().to_string()),
+                "human output omitted achieved retention: {printed}"
+            );
+        }
+        untouched_foreign(cx.foreign, cx.foreign_path, cx.foreign_metadata)?;
+        assert_eq!(fs::read(cx.home.join("machine.json"))?, machine);
+        assert_eq!(fs::read(cx.home.join("credential"))?, credential);
+        assert!(host.live()?);
+        let endpoint = cx.home.join("endpoint.json");
+        let backup = cx.home.join("live-endpoint.fixture");
+        fs::rename(&endpoint, &backup)?;
+        publish(cx.files, cx.bytes)?;
+        for mode in [true, false] {
+            let refusal = command(cx.image, cx.home, mode)
+                .arg("up")
+                .output_executable()?;
+            assert!(
+                !refusal.status.success(),
+                "busy lease allowed endpoint recovery"
+            );
+            let printed = format!(
+                "{}{}",
+                String::from_utf8_lossy(&refusal.stdout),
+                String::from_utf8_lossy(&refusal.stderr)
+            );
+            assert!(
+                printed.contains("se down"),
+                "busy refusal lacks legal recovery: {printed}"
+            );
+            assert_eq!(fs::read(&endpoint)?, cx.bytes);
+            assert_eq!(retained(cx.home)?, after);
+            assert!(host.live()?);
+            untouched_foreign(cx.foreign, cx.foreign_path, cx.foreign_metadata)?;
+        }
+        se_proc::OwnedFile::open(&endpoint)?
+            .ok_or("busy test record disappeared")?
+            .remove(sha2::Sha256::digest(cx.bytes).into())?;
+        fs::rename(backup, &endpoint)?;
+        host.stop()?;
+        assert!(!endpoint.try_exists()?);
+    }
+    Ok(())
+}
+
+fn verify_unsafe_permissions_refusal(cx: &RecoveryCx<'_>) -> Check {
+    publish(cx.files, cx.bytes)?;
+    let endpoint = cx.home.join("endpoint.json");
+    fs::set_permissions(&endpoint, fs::Permissions::from_mode(0o644))?;
+    let before = retained(cx.home)?;
+    for json in [true, false] {
+        let output = command(cx.image, cx.home, json)
+            .arg("up")
+            .output_executable()?;
+        assert!(!output.status.success(), "unsafe record was recovered");
+        assert_eq!(fs::read(&endpoint)?, cx.bytes);
+        assert_eq!(fs::symlink_metadata(&endpoint)?.mode() & 0o777, 0o644);
+        assert_eq!(retained(cx.home)?, before);
+        untouched_foreign(cx.foreign, cx.foreign_path, cx.foreign_metadata)?;
+    }
+    fs::set_permissions(endpoint, fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
 /// Protects: automatic CLI recovery reports the exact retained file in JSON/human output, preserves its native identity, never probes a mismatched address, and cannot mutate records under a live lease or bypass unsafe permissions.
 #[test]
-#[expect(
-    clippy::cognitive_complexity,
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn automatic_retention_is_visible_and_live_or_unsafe_records_are_preserved() -> Check {
     se_proc::initialize_file_creation_owner()?;
     let f = Fixture::new()?;
@@ -137,130 +282,20 @@ fn automatic_retention_is_visible_and_live_or_unsafe_records_are_preserved() -> 
         se_host::IpcEndpoint::UnixSocket(se_types::NativePath::from_local(foreign_path.clone())?);
     let bytes = se_host::client::endpoint::encode_endpoint(&stale)?;
     let files = se_proc::NativeStateFiles::open(home)?;
-    // Down must retire obsolete routing records too, without touching even a
-    // live foreign socket named by the stale record. Both renderers expose it.
-    for json in [true, false] {
-        publish(&files, bytes.as_bytes())?;
-        let before = retained(home)?;
-        let output = command(&image, home, json)
-            .arg("down")
-            .output_executable()?;
-        assert!(
-            output.status.success(),
-            "stale down refused: {} {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(!home.join("endpoint.json").exists());
-        let after = retained(home)?;
-        let added: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
-        assert_eq!(added.len(), 1);
-        assert_eq!(fs::read(added[0])?, bytes.as_bytes());
-        let printed = String::from_utf8(output.stdout)?;
-        assert!(
-            printed.contains("Retained stale endpoint")
-                && printed.contains(&added[0].display().to_string())
-        );
-        if json {
-            let stop: se_core::ops::RuntimeStop = serde_json::from_str(&printed)?;
-            assert!(stop.complete && stop.already_down);
-            assert!(stop.stops.is_empty());
-        }
-        untouched_foreign(&foreign, &foreign_path, &foreign_metadata)?;
-    }
+    let cx = RecoveryCx {
+        image: &image,
+        home,
+        files: &files,
+        foreign: &foreign,
+        foreign_path: &foreign_path,
+        foreign_metadata: &foreign_metadata,
+        bytes: bytes.as_bytes(),
+    };
+    verify_stale_down_retention(&cx)?;
     let machine = fs::read(home.join("machine.json"))?;
     let credential = fs::read(home.join("credential"))?;
-    for json in [true, false] {
-        publish(&files, bytes.as_bytes())?;
-        let old = fs::symlink_metadata(home.join("endpoint.json"))?;
-        let before = retained(home)?;
-        let output = command(&image, home, json).arg("up").output_executable()?;
-        assert!(
-            output.status.success(),
-            "automatic recovery refused: {} {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let host = runtime_host::RunningHost::start(&image, home)?;
-        let after = retained(home)?;
-        let added: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
-        assert_eq!(added.len(), 1, "recovery must retain one exact record");
-        let saved = added[0];
-        assert_eq!(fs::read(saved)?, bytes.as_bytes());
-        let metadata = fs::symlink_metadata(saved)?;
-        assert_eq!(
-            (
-                metadata.dev(),
-                metadata.ino(),
-                metadata.uid(),
-                metadata.mode()
-            ),
-            (old.dev(), old.ino(), old.uid(), old.mode())
-        );
-        if json {
-            let start: se_core::ops::RuntimeStart = serde_json::from_slice(&output.stdout)?;
-            let recovery = start
-                .endpoint_recovery
-                .ok_or("JSON omitted achieved endpoint retention")?;
-            assert_eq!(recovery.original.to_local()?, home.join("endpoint.json"));
-            assert_eq!(&recovery.retained.to_local()?, saved);
-        } else {
-            let printed = String::from_utf8(output.stdout)?;
-            assert!(
-                printed.contains("Retained stale endpoint")
-                    && printed.contains(&home.join("endpoint.json").display().to_string())
-                    && printed.contains(&saved.display().to_string()),
-                "human output omitted achieved retention: {printed}"
-            );
-        }
-        untouched_foreign(&foreign, &foreign_path, &foreign_metadata)?;
-        assert_eq!(fs::read(home.join("machine.json"))?, machine);
-        assert_eq!(fs::read(home.join("credential"))?, credential);
-        assert!(host.live()?);
-        let endpoint = home.join("endpoint.json");
-        let backup = home.join("live-endpoint.fixture");
-        fs::rename(&endpoint, &backup)?;
-        publish(&files, bytes.as_bytes())?;
-        for mode in [true, false] {
-            let refusal = command(&image, home, mode).arg("up").output_executable()?;
-            assert!(
-                !refusal.status.success(),
-                "busy lease allowed endpoint recovery"
-            );
-            let printed = format!(
-                "{}{}",
-                String::from_utf8_lossy(&refusal.stdout),
-                String::from_utf8_lossy(&refusal.stderr)
-            );
-            assert!(
-                printed.contains("se down"),
-                "busy refusal lacks legal recovery: {printed}"
-            );
-            assert_eq!(fs::read(&endpoint)?, bytes.as_bytes());
-            assert_eq!(retained(home)?, after);
-            assert!(host.live()?);
-            untouched_foreign(&foreign, &foreign_path, &foreign_metadata)?;
-        }
-        se_proc::OwnedFile::open(&endpoint)?
-            .ok_or("busy test record disappeared")?
-            .remove(sha2::Sha256::digest(bytes.as_bytes()).into())?;
-        fs::rename(backup, &endpoint)?;
-        host.stop()?;
-        assert!(!endpoint.try_exists()?);
-    }
-    publish(&files, bytes.as_bytes())?;
-    let endpoint = home.join("endpoint.json");
-    fs::set_permissions(&endpoint, fs::Permissions::from_mode(0o644))?;
-    let before = retained(home)?;
-    for json in [true, false] {
-        let output = command(&image, home, json).arg("up").output_executable()?;
-        assert!(!output.status.success(), "unsafe record was recovered");
-        assert_eq!(fs::read(&endpoint)?, bytes.as_bytes());
-        assert_eq!(fs::symlink_metadata(&endpoint)?.mode() & 0o777, 0o644);
-        assert_eq!(retained(home)?, before);
-        untouched_foreign(&foreign, &foreign_path, &foreign_metadata)?;
-    }
-    fs::set_permissions(endpoint, fs::Permissions::from_mode(0o600))?;
+    verify_stale_up_and_busy_lease(&cx, &machine, &credential)?;
+    verify_unsafe_permissions_refusal(&cx)?;
     assert_eq!(fs::read(home.join("machine.json"))?, machine);
     assert_eq!(fs::read(home.join("credential"))?, credential);
     foreign.close()?;
