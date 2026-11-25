@@ -423,7 +423,6 @@ pub(super) fn fill_stopped(
     resume_after_stop(row, work);
     Ok(())
 }
-/// The outside exit witness as the stop receipt reports it.
 fn witnessed(witness: &se_proc::StopWitness) -> Result<StopWitness> {
     Ok(StopWitness {
         state: "witnessed".into(),
@@ -492,7 +491,6 @@ fn capture_incomplete(
         }
     }
 }
-/// Resume readiness after a fully captured stop.
 fn resume_after_stop(row: &mut AgentStopResult, work: &super::launch::Work) {
     row.resume.model = work.meta.model.clone();
     if work.meta.provider == se_store::Provider::SeCode {

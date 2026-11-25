@@ -276,7 +276,6 @@ impl ItemCapture {
         }
     }
 }
-/// The writer's readback of the item it just committed.
 fn read_captured<R: Snapshot>(
     kernel: &se_core::dispatch::Kernel,
     cx: &mut se_core::commit::Cx<'_, R>,

@@ -5,7 +5,6 @@ use crate::{HarnessAttach, HarnessRequest, client::lease::Deadline};
 use se_core::ops::{LaunchResult, ResumeCommand, process_commit};
 use se_proc::{CheckpointKind, ProcessRuntime, StopObservation};
 use se_types::{Read, Result};
-/// What activation committed, as the launch receipt reports it.
 struct Activated {
     event_id: se_types::EventId,
     containment_cause: Option<String>,
@@ -96,8 +95,6 @@ impl LaunchCoordinator {
             activated,
         )
     }
-    /// Takes a second owned reference to the exact birth record for the
-    /// provider handshake.
     async fn re_adopt(
         &self,
         record: &se_proc::ProcessRecord,
@@ -174,7 +171,6 @@ impl LaunchCoordinator {
             .store(false, std::sync::atomic::Ordering::Release);
         result?.ok_or_else(|| self.expired_window_error(work))
     }
-    /// Retains the verified binding and arms it for this lifecycle's events.
     fn adopt_binding(
         &self,
         work: &mut Work,
@@ -193,8 +189,6 @@ impl LaunchCoordinator {
             .ok_or_else(|| error("provider readiness", "retained binding absent"))?
             .arm(&work.wake.event)
     }
-    /// Pins and validates the provider's native transcript when capture is
-    /// on, and records it as this lifecycle's capture source.
     async fn pin_transcript(
         &self,
         work: &mut Work,

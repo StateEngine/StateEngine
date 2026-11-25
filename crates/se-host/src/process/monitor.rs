@@ -8,11 +8,9 @@ use std::{sync::atomic::Ordering, time::Duration};
 /// What one monitor pass leaves for the loop, acted on after the agent's lock
 /// is released.
 enum Pass {
-    /// The lifecycle is settled or released; supervision ends.
     Done,
     /// Retain the lifecycle and retry within one second. Never replay input.
     RetrySoon(Arc<events::Wake>),
-    /// Sleep until the next wake event or the earliest due retry.
     Wait {
         wake: Arc<events::Wake>,
         observation_retry_at: Option<tokio::time::Instant>,
@@ -235,7 +233,6 @@ impl LaunchCoordinator {
             }
         }
     }
-    /// Records the witnessed native exit; a failure stays on the lifecycle.
     async fn finish_observed(
         &self,
         job: &Job,

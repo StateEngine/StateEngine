@@ -251,7 +251,6 @@ impl LaunchCoordinator {
         }
         obligation("agent process", &reason, command)
     }
-    /// Keeps or reverses one recorded integration and settles it durably.
     async fn settle_integration(
         &self,
         row: &mut ProjectRemoval,
@@ -435,7 +434,6 @@ impl LaunchCoordinator {
         }
         Ok(())
     }
-    /// Commits the registration tombstone against a current snapshot.
     async fn commit_tombstone(
         &self,
         project: ProjectId,
