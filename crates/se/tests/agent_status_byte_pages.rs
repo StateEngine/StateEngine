@@ -22,11 +22,12 @@ use fixture::*;
 const AGENTS: usize = 20;
 
 fn call(
+    image: &Path,
     home: &Path,
     root: &Path,
     args: &[&str],
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_se"));
+    let mut command = Command::new(image);
     command
         .args(["--json", "--home"])
         .arg(home)
@@ -65,7 +66,8 @@ fn saved_agents_past_one_byte_budget_page_through_every_agent() -> Check {
     let root = f.home.join("repository");
     std::fs::create_dir(&root)?;
     let home = &f.options.state_directory;
-    let initialized = call(home, &root, &["init", "--name", "byte-pages"])?;
+    let image = Path::new(env!("CARGO_BIN_EXE_se"));
+    let initialized = call(image, home, &root, &["init", "--name", "byte-pages"])?;
     let owner: HumanId = initialized["owner"]["human_id"]
         .as_str()
         .ok_or("initialized owner")?
@@ -77,7 +79,7 @@ fn saved_agents_past_one_byte_budget_page_through_every_agent() -> Check {
     for index in 0..AGENTS {
         let key = format!("byte-page-agent-{index}");
         let name = format!("worker-{index:02}");
-        call(home, &root, &["--key", &key, "agent", "add", &name])?;
+        call(image, home, &root, &["--key", &key, "agent", "add", &name])?;
     }
     let admission = Admission {
         scope: Scope::Project(project),
@@ -149,12 +151,16 @@ fn observed_agent_list_pages_cut_at_their_final_bytes() -> Check {
     // longest names and models bring the saved rows near one page's bytes.
     let home = &f.home.join("observed-state-".repeat(8)).join("state");
     std::fs::create_dir_all(home.parent().ok_or("state parent")?)?;
-    let initialized = call(home, &root, &["init", "--name", "observed-pages"])?;
+    // Cargo hard-links its binary; the runtime `se up` starts requires a
+    // single-link image, as an installed archive provides.
+    let image = &f.home.join(format!("se{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(env!("CARGO_BIN_EXE_se"), image)?;
+    let initialized = call(image, home, &root, &["init", "--name", "observed-pages"])?;
     seed_observed_agents(&f.home, home, &initialized)?;
-    let direct = list_every_agent(home, &root)?;
-    call(home, &root, &["up"])?;
-    let hosted = list_every_agent(home, &root);
-    call(home, &root, &["down"])?;
+    let direct = list_every_agent(image, home, &root)?;
+    call(image, home, &root, &["up"])?;
+    let hosted = list_every_agent(image, home, &root);
+    call(image, home, &root, &["down"])?;
     let hosted = hosted?;
     assert!(
         direct.len() > OBSERVED_AGENTS,
@@ -227,14 +233,18 @@ fn seed_observed_agents(root: &Path, home: &Path, initialized: &serde_json::Valu
 }
 
 /// Pages `agent list --limit 100` to its end; each agent appears exactly once.
-fn list_every_agent(home: &Path, root: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+fn list_every_agent(
+    image: &Path,
+    home: &Path,
+    root: &Path,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let (mut seen, mut cursor, mut pages) = (Vec::new(), None::<String>, 0);
     loop {
         let mut args = vec!["agent", "list", "--limit", "100"];
         if let Some(cursor) = &cursor {
             args.extend(["--cursor", cursor]);
         }
-        let page = call(home, root, &args)?;
+        let page = call(image, home, root, &args)?;
         let items = page["items"].as_array().ok_or("agent page items")?;
         pages += 1;
         assert!(!items.is_empty(), "page {pages} made no progress: {page}");
