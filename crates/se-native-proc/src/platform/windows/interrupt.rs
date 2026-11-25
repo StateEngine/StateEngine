@@ -10,7 +10,11 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::*,
-    System::{Console::*, JobObjects::*, Threading::GetCurrentProcess},
+    System::{
+        Console::*,
+        JobObjects::*,
+        Threading::{GetCurrentProcess, GetProcessId},
+    },
 };
 
 pub const CONSOLE_INTERRUPT_ENTRY: &str = "__native-console-interrupt";
@@ -129,7 +133,34 @@ impl Drop for Attached {
     }
 }
 
-fn inherited(selector: u64) -> ProcResult<Handle> {
+enum InheritedKind {
+    Process(u32),
+    Job,
+}
+
+fn verify_inherited_kind(raw: HANDLE, kind: InheritedKind) -> ProcResult<()> {
+    match kind {
+        InheritedKind::Process(pid) => {
+            // SAFETY: `raw` is a validated open handle; `GetProcessId` is a read-only
+            // kernel `PsProcessType` check that rejects sockets/non-processes without mutation.
+            if unsafe { GetProcessId(raw) } != pid {
+                return Err(input(
+                    "console helper",
+                    "the original inherited process capability",
+                ));
+            }
+        }
+        InheritedKind::Job => {
+            // SAFETY: `raw` is a validated open handle; `QueryInformationJobObject` is a
+            // read-only kernel `PsJobType` check that rejects sockets/non-jobs without mutation.
+            unsafe { crate::windows_native::job::query_limits(raw, "verify inherited job") }
+                .map_err(|_| input("console helper", "the original inherited job capability"))?;
+        }
+    }
+    Ok(())
+}
+
+fn inherited(selector: u64, kind: InheritedKind) -> ProcResult<Handle> {
     let selector = usize::try_from(selector)
         .map_err(|_| input("console helper", "a native inherited handle"))?;
     let raw = selector as *mut std::ffi::c_void;
@@ -150,10 +181,11 @@ fn inherited(selector: u64) -> ProcResult<Handle> {
             "a capability inherited from the native creator",
         ));
     }
+    verify_inherited_kind(raw, kind)?;
     let mut dup = ptr::null_mut();
-    // SAFETY: `raw` is a validated open handle; duplicating with `bInheritHandle = 0`
-    // creates a fresh, non-inheritable, exclusively owned handle without mutating or
-    // stealing ownership of `raw` from any in-process owner.
+    // SAFETY: `raw` is a validated Process or Job kernel object (not a Winsock socket);
+    // duplicating with `bInheritHandle = 0` creates a fresh, non-inheritable,
+    // exclusively owned `CloseHandle`-compatible handle without mutating `raw`.
     if unsafe {
         DuplicateHandle(
             GetCurrentProcess(),
@@ -191,11 +223,14 @@ pub fn console_interrupt_entry(request: &OsStr) -> ProcResult<StopDispatch> {
             "distinct inherited process and job capabilities required",
         ));
     }
-    let root = inherited(request.root_handle)?;
-    let job = inherited(request.job_handle)?;
-    // SAFETY: retained inherited process capability; the kernel validates kind.
-    if unsafe { windows_sys::Win32::System::Threading::GetProcessId(root.0) } != request.root.pid.0
-    {
+    let root = inherited(
+        request.root_handle,
+        InheritedKind::Process(request.root.pid.0),
+    )?;
+    let job = inherited(request.job_handle, InheritedKind::Job)?;
+    // Re-verify on the owned duplicate to close any concurrent handle-reuse race.
+    // SAFETY: retained duplicated process capability; the kernel validates kind.
+    if unsafe { GetProcessId(root.0) } != request.root.pid.0 {
         return Err(input(
             "console helper",
             "the original inherited process capability",

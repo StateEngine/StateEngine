@@ -818,4 +818,78 @@ mod windows_stdio_boundary {
         assert_ne!(ok, 0, "non-inheritable caller handle was closed");
         Ok(())
     }
+
+    #[test]
+    fn console_interrupt_entry_refuses_non_job_and_socket_handles_before_duplication() -> Check {
+        use std::os::windows::io::{AsRawHandle, AsRawSocket, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::Foundation::{
+            DUPLICATE_SAME_ACCESS, DuplicateHandle, GetHandleInformation, HANDLE_FLAG_INHERIT,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+        let dup_inheritable = |src: *mut std::ffi::c_void| -> Check<OwnedHandle> {
+            let mut dup = std::ptr::null_mut();
+            // SAFETY: `src` is a live handle; `dup` receives a fresh inheritable duplicate.
+            let ok = unsafe {
+                DuplicateHandle(
+                    GetCurrentProcess(),
+                    src,
+                    GetCurrentProcess(),
+                    &mut dup,
+                    0,
+                    1,
+                    DUPLICATE_SAME_ACCESS,
+                )
+            };
+            if ok == 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            // SAFETY: `DuplicateHandle` transferred sole ownership of `dup`.
+            Ok(unsafe { OwnedHandle::from_raw_handle(dup) })
+        };
+
+        let (_, writer) = std::io::pipe()?;
+        let w_owned = OwnedHandle::from(writer);
+        let pipe_inh = dup_inheritable(w_owned.as_raw_handle())?;
+        // SAFETY: `GetCurrentProcess` returns the constant current-process pseudo-handle.
+        let proc_inh = dup_inheritable(unsafe { GetCurrentProcess() })?;
+
+        let machine = MachineId::new("interrupt-kind-precheck-test")?;
+        let root = current_process_identity(machine)
+            .map_err(|e| format!("current_process_identity: {e:?}"))?;
+
+        // 1. Real inheritable process handle + pipe as job_handle refuses at the Job pre-check.
+        let bad_job_req = serde_json::json!({
+            "root": &root,
+            "root_handle": proc_inh.as_raw_handle() as usize as u64,
+            "job_handle": pipe_inh.as_raw_handle() as usize as u64,
+        })
+        .to_string();
+        let err = se_native_proc::console_interrupt_entry(OsString::from(bad_job_req).as_os_str())
+            .err()
+            .ok_or("pipe handle accepted as job capability")?;
+        assert_eq!(err.code, ProcErrorCode::InvalidInput);
+        for (h, label) in [(&proc_inh, "process"), (&pipe_inh, "pipe")] {
+            let mut flags = 0;
+            // SAFETY: querying flags on a live owned handle.
+            let ok = unsafe { GetHandleInformation(h.as_raw_handle(), &mut flags) };
+            assert_ne!(ok, 0, "{label} handle was closed");
+            assert_ne!(flags & HANDLE_FLAG_INHERIT, 0, "{label} flag was mutated");
+        }
+
+        // 2. Winsock socket handle is refused before DuplicateHandle without harming the listener.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let sock_req = serde_json::json!({
+            "root": &root,
+            "root_handle": listener.as_raw_socket() as usize as u64,
+            "job_handle": pipe_inh.as_raw_handle() as usize as u64,
+        })
+        .to_string();
+        let err = se_native_proc::console_interrupt_entry(OsString::from(sock_req).as_os_str())
+            .err()
+            .ok_or("socket handle accepted as process capability")?;
+        assert_eq!(err.code, ProcErrorCode::InvalidInput);
+        let _ = listener.local_addr()?;
+        Ok(())
+    }
 }
