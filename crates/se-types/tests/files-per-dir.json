@@ -31,7 +31,7 @@
   "crates/se-store/src/remote": 12,
   "crates/se-harness/src/acp": 11,
   "crates/se-host/src/remote/control": 11,
-  "crates/se-proc/src/uninstall": 11,
+  "crates/se-uninstall/src/uninstall": 11,
   "crates/se/src/runtime/host": 10,
   "crates/se-cli-spec/src/cli": 10,
   "crates/se-core/src/ops/continuity": 10,

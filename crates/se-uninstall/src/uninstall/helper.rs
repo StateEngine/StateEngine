@@ -127,7 +127,7 @@ fn rename_stream(file: &File) -> Result<()> {
     }
     const _: () = assert!(offset_of!(StreamRename, name) == offset_of!(FILE_RENAME_INFO, FileName));
     let mut random = [0; 16];
-    crate::fill_entropy(&mut random)
+    se_state_files::fill_entropy(&mut random)
         .map_err(|cause| error("name uninstall helper stream", io::Error::other(cause)))?;
     let stream = format!(":{}", se_types::hex_lower(&random));
     let mut info = StreamRename {

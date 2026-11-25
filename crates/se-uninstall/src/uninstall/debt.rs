@@ -7,12 +7,12 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct UninstallHelperCleanup {
     version: u32,
-    #[serde(with = "crate::checkpoint::native_path")]
+    #[serde(with = "se_custody::checkpoint::native_path")]
     root: PathBuf,
-    #[serde(with = "crate::checkpoint::native_path")]
+    #[serde(with = "se_custody::checkpoint::native_path")]
     path: PathBuf,
     pid: u32,
-    #[serde(with = "crate::checkpoint::decimal::u64")]
+    #[serde(with = "se_custody::checkpoint::decimal::u64")]
     creation_filetime: u64,
     file: FileId,
     digest: [u8; 32],
@@ -110,8 +110,9 @@ impl UninstallHelperCleanup {
             // SAFETY: the successful OpenProcess above transferred unique ownership to `raw`.
             let process = unsafe { native::handle(raw, "pin pending helper process") }?;
             // SAFETY: `process` is a retained query-capable process handle pinned above.
-            let start = unsafe { crate::windows_native::process_start(process.as_raw_handle()) }
-                .map_err(|e| error(e.operation, e.source))?;
+            let start =
+                unsafe { se_native_ipc::windows_process::process_start(process.as_raw_handle()) }
+                    .map_err(|e| error(e.operation, e.source))?;
             if start == self.creation_filetime && !native::exited(&process)? {
                 return Ok(HelperCleanupOutcome::StillRunning);
             }

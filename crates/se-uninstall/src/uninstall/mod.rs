@@ -1,6 +1,6 @@
 //! Core admits the finite uninstall plan; the native carrier receives only
 //! inherited exact objects and output data.
-use crate::NativeStateFiles;
+use se_state_files::NativeStateFiles;
 use std::{
     fs::File,
     io::{self, Read, Seek, Write},
@@ -29,7 +29,7 @@ pub struct UninstallNativeError {
     /// Exact protected artifacts whose cleanup remains unresolved after failure.
     pub pending_paths: Vec<PathBuf>,
 }
-crate::native_error::native_error!(UninstallNativeError, |error, out| {
+se_state_files::native_error::native_error!(UninstallNativeError, |error, out| {
     write!(out, "{}: {}", error.operation, error.source)?;
     for path in &error.pending_paths {
         write!(out, "; preserve pending artifact {}", path.display())?;
@@ -47,13 +47,13 @@ fn error(operation: &'static str, source: io::Error) -> UninstallNativeError {
 fn refuse(operation: &'static str, reason: &'static str) -> UninstallNativeError {
     error(operation, io::Error::other(reason))
 }
-fn custody(e: crate::StateFileError) -> UninstallNativeError {
+fn custody(e: se_state_files::StateFileError) -> UninstallNativeError {
     error("protect uninstall handoff files", io::Error::other(e))
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FileId {
-    #[serde(with = "crate::checkpoint::decimal::u64")]
+    #[serde(with = "se_custody::checkpoint::decimal::u64")]
     volume: u64,
     index: [u8; 16],
 }

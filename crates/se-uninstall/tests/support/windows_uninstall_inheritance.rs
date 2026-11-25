@@ -1,5 +1,38 @@
 use super::*;
 use crate::windows_policy_fixture::*;
+use std::{ffi::OsString, os::windows::ffi::OsStrExt};
+
+fn child_line(args: &[OsString]) -> Check<Vec<u16>> {
+    let mut line = Vec::new();
+    for arg in
+        std::iter::once(std::env::current_exe()?.into_os_string()).chain(args.iter().cloned())
+    {
+        if !line.is_empty() {
+            line.push(32);
+        }
+        line.push(34);
+        let mut slashes = 0;
+        for unit in arg.encode_wide() {
+            if unit == 92 {
+                slashes += 1;
+            } else {
+                line.extend(std::iter::repeat_n(
+                    92,
+                    slashes * if unit == 34 { 2 } else { 1 },
+                ));
+                if unit == 34 {
+                    line.push(92);
+                }
+                line.push(unit);
+                slashes = 0;
+            }
+        }
+        line.extend(std::iter::repeat_n(92, slashes * 2));
+        line.push(34);
+    }
+    line.push(0);
+    Ok(line)
+}
 #[test]
 fn uninstall_spawn_inherits_only_explicit_handles_and_stdio() -> Check {
     let home = Home::new()?;

@@ -59,7 +59,7 @@ fn command_inner(
         native::duplicate_same(diagnostic.unwrap_or(&sink).as_raw_handle(), true)?,
     ];
     let mut handles: Vec<HANDLE> = Vec::new();
-    let mut attributes = crate::windows_native::attributes::Attributes::new(
+    let mut attributes = se_state_files::windows_attributes::Attributes::new(
         1,
         "size uninstall process attributes",
         "initialize uninstall process attributes",

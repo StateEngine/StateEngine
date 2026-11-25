@@ -1878,6 +1878,7 @@ dependencies = [
  "se-source-watch",
  "se-state-files",
  "se-types",
+ "se-uninstall",
  "se-user-manager",
  "serde",
  "serde_json",
@@ -2114,6 +2115,21 @@ dependencies = [
  "url",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "se-uninstall"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-custody",
+ "se-native-ipc",
+ "se-native-path",
+ "se-state-files",
+ "se-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
