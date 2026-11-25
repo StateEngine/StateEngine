@@ -18,10 +18,6 @@ fn identity() -> Result<(se_store::RecordId, se_types::EventId, i64)> {
     Ok((id, facts.event, facts.occurred_at_us))
 }
 impl LaunchCoordinator {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(in crate::process) async fn capture_acp(
         &self,
         work: &mut owned::Work,
@@ -37,19 +33,7 @@ impl LaunchCoordinator {
         let final_capture =
             work.process_retired || work.native_already_reconciled || work.session_retired;
         if final_capture {
-            if work.last_witness.is_none() {
-                return Err(error(
-                    "ACP final capture",
-                    "original native exit witness is absent",
-                ));
-            }
-            binding
-                .session
-                .drain_stream(&super::super::launch_util::call(
-                    self.store.generation,
-                    deadline,
-                )?)
-                .await?;
+            self.drain_final_acp(work, &binding, deadline).await?;
         }
         let observation = binding.session.observe()?;
         let conversation = se_types::ProviderSessionId::new(
@@ -84,125 +68,27 @@ impl LaunchCoordinator {
                     .checked_add(length)
                     .ok_or_else(|| error("ACP capture", "source range overflow"))?;
                 let position = Position { offset, length };
-                let text = item.body(position.clone())?;
-                let digest: [u8; 32] = Sha256::digest(&item.bytes).into();
-                let session = work.meta.session.clone();
-                let native_identity = binding.identity.clone();
-                let conversation = conversation.clone();
-                let expected_incarnation = incarnation.clone();
-                let recovery_owner = (work.process_retired
-                    || work.native_already_reconciled
-                    || work.session_retired)
-                    .then(|| work.meta.owner.clone());
+                let capture = ItemCapture {
+                    text: item.body(position.clone())?,
+                    digest: Sha256::digest(&item.bytes).into(),
+                    session: work.meta.session.clone(),
+                    native_identity: binding.identity.clone(),
+                    conversation: conversation.clone(),
+                    incarnation: incarnation.clone(),
+                    recovery_owner: final_capture.then(|| work.meta.owner.clone()),
+                    source,
+                    position,
+                    end,
+                    vendor: item.vendor,
+                    role: item.role,
+                    facts: item.facts,
+                };
                 let result = super::super::mail::commit::step(
                     &self.store,
                     admission.clone(),
                     deadline,
-                    move |_, cx| {
-                        let row = se_core::scope::require_present(
-                            cx.read.capture_source(source).map_err(store_error)?,
-                            "ACP capture source",
-                            "Preserve the original native binding and cursor.",
-                        )?;
-                        let saved =
-                            bound_cursor(&row, &session, &conversation, &expected_incarnation)?;
-                        let mut metadata = Vec::new();
-                        for fact in &item.facts {
-                            let record = fact.record(
-                                native_identity.session_agent(),
-                                se_store::Provider::Acp,
-                                source,
-                                position.clone(),
-                            )?;
-                            let vendor = fact.vendor(&session);
-                            if end <= saved {
-                                let prior = se_core::scope::require_present(
-                                    cx.read
-                                        .native_turn(
-                                            session.clone(),
-                                            se_store::Provider::Acp,
-                                            &vendor,
-                                        )
-                                        .map_err(store_error)?,
-                                    "ACP captured tool",
-                                    "Restore the original immutable tool fact.",
-                                )?;
-                                verify_tool(&prior, record.body()?.as_str())?;
-                            }
-                            let (turn, event, _) = identity()?;
-                            metadata.push(hook::CaptureMetadata {
-                                record,
-                                vendor_turn: vendor,
-                                turn,
-                                event,
-                            });
-                        }
-                        let evidence = se_store::SourceEvidence {
-                            path: None,
-                            incarnation: expected_incarnation,
-                            offset,
-                            length,
-                            sha256: Some(digest),
-                        };
-                        if end <= saved {
-                            let prior = se_core::scope::require_present(
-                                cx.read
-                                    .native_turn(session, se_store::Provider::Acp, &item.vendor)
-                                    .map_err(store_error)?,
-                                "ACP captured prefix",
-                                "Restore the original immutable item.",
-                            )?;
-                            verify_prefix(&prior, item.role, text.as_str(), &evidence)?;
-                            return Ok(OpStep::Complete(None));
-                        }
-                        if saved != offset {
-                            return Err(error(
-                                "ACP capture",
-                                "original structured source prefix no longer aligns",
-                            ));
-                        }
-                        let (turn, turn_event, occurred_at_us) = identity()?;
-                        let (_, progress_event, _) = identity()?;
-                        let facts = hook::CaptureFacts {
-                            turn,
-                            turn_event,
-                            progress_event,
-                            occurred_at_us,
-                        };
-                        let input = hook::CaptureRequest {
-                            recovery_owner,
-                            source,
-                            expected: row.revision,
-                            conversation,
-                            provider: se_store::Provider::Acp,
-                            vendor_turn: item.vendor,
-                            role: item.role,
-                            text,
-                            evidence,
-                            new_offset: end,
-                            metadata,
-                        };
-                        match hook::plan(input, facts, cx)? {
-                            OpStep::Complete(_) => Ok(OpStep::Complete(None)),
-                            OpStep::Commit { batch, then } => Ok(OpStep::Commit { batch, then }),
-                            OpStep::Custody(never) => match never {},
-                        }
-                    },
-                    |kernel, cx, then, receipt| {
-                        let se_core::ops::AnyOutput::HookClaude(output) =
-                            kernel.committed(then, receipt, cx)?
-                        else {
-                            return Err(error("ACP capture", "unexpected writer result"));
-                        };
-                        match output.value.captured {
-                            Read::Present { value } => Ok(Some(value)),
-                            Read::Absent { .. } => Ok(None),
-                            Read::Unreadable { reason, .. } => {
-                                Err(error("ACP capture readback", reason))
-                            }
-                            Read::Unknown { what } => Err(error("ACP capture readback", what)),
-                        }
-                    },
+                    move |_, cx| capture.plan(cx),
+                    read_captured,
                 )
                 .await?;
                 if let Some(event) = result {
@@ -220,20 +106,190 @@ impl LaunchCoordinator {
             return Err(failure.into());
         }
         if final_capture {
-            if incomplete {
-                return Err(error(
-                    "ACP final capture",
-                    "The native provider exited without completing the original prompt. Observed partial input, replies and tool updates are saved as incomplete diagnostics, not a completed turn or proof of input acceptance. Preserve this history and use se launch <agent> to start a separate conversation without replaying the interrupted input.",
-                ));
-            }
-            if observation.active_input.is_some() || observation.cancelling {
-                return Err(error(
-                    "ACP final capture",
-                    "Original protocol input or cancellation remains unsettled after native exit; no completion is claimed.",
-                ));
-            }
+            require_settled(
+                incomplete,
+                observation.active_input.is_some() || observation.cancelling,
+            )?;
         }
         Ok(())
+    }
+    /// A final capture reads only after the native exit is witnessed and the
+    /// live stream has drained.
+    async fn drain_final_acp(
+        &self,
+        work: &owned::Work,
+        binding: &crate::harness::acp::Binding,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        if work.last_witness.is_none() {
+            return Err(error(
+                "ACP final capture",
+                "original native exit witness is absent",
+            ));
+        }
+        binding
+            .session
+            .drain_stream(&super::super::launch_util::call(
+                self.store.generation,
+                deadline,
+            )?)
+            .await
+    }
+}
+
+/// After native exit, an interrupted prompt or unsettled input is never
+/// reported as a completed turn.
+fn require_settled(incomplete: bool, unsettled: bool) -> Result<()> {
+    if incomplete {
+        return Err(error(
+            "ACP final capture",
+            "The native provider exited without completing the original prompt. Observed partial input, replies and tool updates are saved as incomplete diagnostics, not a completed turn or proof of input acceptance. Preserve this history and use se launch <agent> to start a separate conversation without replaying the interrupted input.",
+        ));
+    }
+    if unsettled {
+        return Err(error(
+            "ACP final capture",
+            "Original protocol input or cancellation remains unsettled after native exit; no completion is claimed.",
+        ));
+    }
+    Ok(())
+}
+
+/// One structured item bound to its exact source range, planned inside the
+/// writer's snapshot against the saved cursor.
+struct ItemCapture {
+    session: se_types::SessionId,
+    native_identity: crate::SessionIdentity,
+    conversation: se_types::ProviderSessionId,
+    incarnation: Vec<u8>,
+    recovery_owner: Option<se_types::HumanId>,
+    source: se_store::RecordId,
+    position: Position,
+    end: u64,
+    vendor: String,
+    role: se_store::Role,
+    facts: Vec<crate::harness::tool_capture::Fact>,
+    text: se_types::Body,
+    digest: [u8; 32],
+}
+impl ItemCapture {
+    fn plan<R: Snapshot>(
+        self,
+        cx: &mut se_core::commit::Cx<'_, R>,
+    ) -> Result<OpStep<Option<se_types::EventId>, se_core::ports::Then>> {
+        let row = se_core::scope::require_present(
+            cx.read.capture_source(self.source).map_err(store_error)?,
+            "ACP capture source",
+            "Preserve the original native binding and cursor.",
+        )?;
+        let saved = bound_cursor(&row, &self.session, &self.conversation, &self.incarnation)?;
+        let metadata = self.metadata(saved, cx)?;
+        let evidence = self.evidence();
+        let offset = self.position.offset;
+        if self.end <= saved {
+            let prior = se_core::scope::require_present(
+                cx.read
+                    .native_turn(self.session, se_store::Provider::Acp, &self.vendor)
+                    .map_err(store_error)?,
+                "ACP captured prefix",
+                "Restore the original immutable item.",
+            )?;
+            verify_prefix(&prior, self.role, self.text.as_str(), &evidence)?;
+            return Ok(OpStep::Complete(None));
+        }
+        if saved != offset {
+            return Err(error(
+                "ACP capture",
+                "original structured source prefix no longer aligns",
+            ));
+        }
+        let (turn, turn_event, occurred_at_us) = identity()?;
+        let (_, progress_event, _) = identity()?;
+        let facts = hook::CaptureFacts {
+            turn,
+            turn_event,
+            progress_event,
+            occurred_at_us,
+        };
+        let input = hook::CaptureRequest {
+            recovery_owner: self.recovery_owner,
+            source: self.source,
+            expected: row.revision,
+            conversation: self.conversation,
+            provider: se_store::Provider::Acp,
+            vendor_turn: self.vendor,
+            role: self.role,
+            text: self.text,
+            evidence,
+            new_offset: self.end,
+            metadata,
+        };
+        match hook::plan(input, facts, cx)? {
+            OpStep::Complete(_) => Ok(OpStep::Complete(None)),
+            OpStep::Commit { batch, then } => Ok(OpStep::Commit { batch, then }),
+            OpStep::Custody(never) => match never {},
+        }
+    }
+    /// Tool facts for this item; one already behind the cursor must match its
+    /// immutable record.
+    fn metadata<R: Snapshot>(
+        &self,
+        saved: u64,
+        cx: &mut se_core::commit::Cx<'_, R>,
+    ) -> Result<Vec<hook::CaptureMetadata>> {
+        let mut metadata = Vec::new();
+        for fact in &self.facts {
+            let record = fact.record(
+                self.native_identity.session_agent(),
+                se_store::Provider::Acp,
+                self.source,
+                self.position.clone(),
+            )?;
+            let vendor = fact.vendor(&self.session);
+            if self.end <= saved {
+                let prior = se_core::scope::require_present(
+                    cx.read
+                        .native_turn(self.session.clone(), se_store::Provider::Acp, &vendor)
+                        .map_err(store_error)?,
+                    "ACP captured tool",
+                    "Restore the original immutable tool fact.",
+                )?;
+                verify_tool(&prior, record.body()?.as_str())?;
+            }
+            let (turn, event, _) = identity()?;
+            metadata.push(hook::CaptureMetadata {
+                record,
+                vendor_turn: vendor,
+                turn,
+                event,
+            });
+        }
+        Ok(metadata)
+    }
+    fn evidence(&self) -> se_store::SourceEvidence {
+        se_store::SourceEvidence {
+            path: None,
+            incarnation: self.incarnation.clone(),
+            offset: self.position.offset,
+            length: self.position.length,
+            sha256: Some(self.digest),
+        }
+    }
+}
+fn read_captured<R: Snapshot>(
+    kernel: &se_core::dispatch::Kernel,
+    cx: &mut se_core::commit::Cx<'_, R>,
+    then: se_core::ports::Then,
+    receipt: se_store::CommitReceipt,
+) -> Result<Option<se_types::EventId>> {
+    let se_core::ops::AnyOutput::HookClaude(output) = kernel.committed(then, receipt, cx)? else {
+        return Err(error("ACP capture", "unexpected writer result"));
+    };
+    match output.value.captured {
+        Read::Present { value } => Ok(Some(value)),
+        Read::Absent { .. } => Ok(None),
+        Read::Unreadable { reason, .. } => Err(error("ACP capture readback", reason)),
+        Read::Unknown { what } => Err(error("ACP capture readback", what)),
     }
 }
 

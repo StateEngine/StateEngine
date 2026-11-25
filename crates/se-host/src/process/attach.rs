@@ -5,12 +5,12 @@ use crate::{HarnessAttach, HarnessRequest, client::lease::Deadline};
 use se_core::ops::{LaunchResult, ResumeCommand, process_commit};
 use se_proc::{CheckpointKind, ProcessRuntime, StopObservation};
 use se_types::{Read, Result};
+struct Activated {
+    event_id: se_types::EventId,
+    containment_cause: Option<String>,
+    secode_binding: Option<se_core::ops::SecodeBindingView>,
+}
 impl LaunchCoordinator {
-    #[expect(
-        clippy::cognitive_complexity,
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) async fn attach(
         &self,
         work: &mut Work,
@@ -36,18 +36,7 @@ impl LaunchCoordinator {
         let owner = work.process.clone().ok_or_else(|| {
             se_core::scope::unreadable("provider attach", "owned process is absent")
         })?;
-        let native = self.native.clone();
-        let copied = record.clone();
-        let generation = self.options.epoch.generation;
-        let attach_owner = self
-            .store
-            .pool
-            .run_owned(deadline, move || {
-                native
-                    .re_adopt(&copied, generation, generation)
-                    .map_err(|e| error("attach process reference", e))
-            })
-            .await?;
+        let attach_owner = self.re_adopt(&record, deadline).await?;
         let outcome = if let Some(witness) = prepared {
             crate::LaunchOutcome {
                 witness,
@@ -57,66 +46,19 @@ impl LaunchCoordinator {
                     .ok_or_else(|| error("Codex console", "prepared backend binding is absent"))?,
             }
         } else {
-            let wake = work.wake.clone();
-            let relaunch = self.window_command(work, true);
             let attached = Arc::new(attach_owner);
-            let proof_owner = attached.clone();
-            let native = self.native.clone();
-            let pool = self.store.pool.clone();
-            let proof_deadline = deadline.clone();
-            let proof =
-                move || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
-                    let attached = proof_owner.clone();
-                    let native = native.clone();
-                    let pool = pool.clone();
-                    let proof_deadline = proof_deadline.clone();
-                    Box::pin(async move {
-                        pool.run_owned(&proof_deadline, move || {
-                            native
-                                .witness_exit(&attached)
-                                .map_err(|e| error("provider exit witness", e))
-                                .map(|obs| matches!(obs, StopObservation::Complete(_)))
-                        })
-                        .await
-                        .unwrap_or(false)
-                    })
-                };
-            let provider_exit = Arc::new(proof);
             let input = HarnessAttach {
                 request,
-                process: attached,
+                process: attached.clone(),
                 record: record.clone(),
                 transport,
                 transcript: Read::Absent {
                     checked: "transcript pin is published after session activation".into(),
                 },
-                provider_exit,
+                provider_exit: self.provider_exit_proof(attached, deadline),
             };
-            let cx = call(self.store.generation, deadline)?;
-            let attach = if let Some(timing) = &mut work.startup_timing {
-                self.codex.attach_timed(input, cx, timing)
-            } else {
-                self.harness_for(plan.profile.provider)?
-                    .attach(input, &mut work.binding, cx)
-            };
-            if let Some(activation_deadline) = work.attended_setup_deadline {
-                wake.awaiting_window
-                    .store(true, std::sync::atomic::Ordering::Release);
-                let result = self
-                    .wait_window(
-                        owner.clone(),
-                        wake.clone(),
-                        activation_deadline,
-                        relaunch,
-                        attach,
-                    )
-                    .await;
-                wake.awaiting_window
-                    .store(false, std::sync::atomic::Ordering::Release);
-                result?.ok_or_else(|| self.expired_window_error(work))?
-            } else {
-                wake.readiness(attach).await?
-            }
+            self.attach_harness(work, plan.profile.provider, input, owner.clone(), deadline)
+                .await?
         };
         // Only the human wait is outside the original short clock. All C3
         // validation, first-use proofs and publication get a bounded call.
@@ -127,28 +69,134 @@ impl LaunchCoordinator {
         } else {
             deadline
         };
-        if outcome.witness.identity.session != plan.session
-            || outcome.witness.identity.project != plan.project.id
-            || outcome.witness.identity.agent != plan.agent.id
-            || outcome.witness.lifecycle != plan.lifecycle
-            || matches!(&plan.conversation, Read::Present { value } if value != &outcome.witness.conversation)
-        {
-            return Err(se_core::scope::unreadable(
-                "provider readiness",
-                "harness witness differs from the reserved session/lifecycle",
-            ));
+        verify_witness(&plan, &outcome.witness)?;
+        let witness = outcome.witness;
+        self.adopt_binding(work, outcome.binding, &witness)?;
+        let native_pin = self
+            .pin_transcript(work, &plan, &witness, &owner, deadline)
+            .await?;
+        let activated = self
+            .activate(work, &plan, &record, &witness, &owner, deadline)
+            .await?;
+        if let Some(native_pin) = native_pin {
+            self.bind_native_capture(work, native_pin, deadline).await?;
         }
-        work.binding = Some(outcome.binding);
+        work.binding
+            .as_ref()
+            .ok_or_else(|| error("provider initial task", "retained binding absent"))?
+            .start_initial(call(self.store.generation, deadline)?)
+            .await?;
+        self.launch_result(
+            work,
+            &plan,
+            &record,
+            attended,
+            witness.conversation,
+            activated,
+        )
+    }
+    async fn re_adopt(
+        &self,
+        record: &se_proc::ProcessRecord,
+        deadline: &Deadline,
+    ) -> Result<se_proc::OwnedProcess> {
+        let native = self.native.clone();
+        let copied = record.clone();
+        let generation = self.options.epoch.generation;
+        self.store
+            .pool
+            .run_owned(deadline, move || {
+                native
+                    .re_adopt(&copied, generation, generation)
+                    .map_err(|e| error("attach process reference", e))
+            })
+            .await
+    }
+    /// Lazy witnessed-exit proof the harness evaluates only when its
+    /// handshake fails.
+    fn provider_exit_proof(
+        &self,
+        attached: Arc<se_proc::OwnedProcess>,
+        deadline: &Deadline,
+    ) -> crate::ProviderExitProof {
+        let native = self.native.clone();
+        let pool = self.store.pool.clone();
+        let proof_deadline = deadline.clone();
+        let proof = move || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+            let attached = attached.clone();
+            let native = native.clone();
+            let pool = pool.clone();
+            let proof_deadline = proof_deadline.clone();
+            Box::pin(async move {
+                pool.run_owned(&proof_deadline, move || {
+                    native
+                        .witness_exit(&attached)
+                        .map_err(|e| error("provider exit witness", e))
+                        .map(|obs| matches!(obs, StopObservation::Complete(_)))
+                })
+                .await
+                .unwrap_or(false)
+            })
+        };
+        Arc::new(proof)
+    }
+    /// Runs the provider handshake; an attended window waits for the human
+    /// under its own activation deadline.
+    async fn attach_harness(
+        &self,
+        work: &mut Work,
+        provider: se_store::Provider,
+        input: HarnessAttach,
+        owner: Arc<se_proc::OwnedProcess>,
+        deadline: &Deadline,
+    ) -> Result<crate::LaunchOutcome> {
+        let wake = work.wake.clone();
+        let relaunch = self.window_command(work, true);
+        let cx = call(self.store.generation, deadline)?;
+        let attach = if let Some(timing) = &mut work.startup_timing {
+            self.codex.attach_timed(input, cx, timing)
+        } else {
+            self.harness_for(provider)?
+                .attach(input, &mut work.binding, cx)
+        };
+        let Some(activation_deadline) = work.attended_setup_deadline else {
+            return wake.readiness(attach).await;
+        };
+        wake.awaiting_window
+            .store(true, std::sync::atomic::Ordering::Release);
+        let result = self
+            .wait_window(owner, wake.clone(), activation_deadline, relaunch, attach)
+            .await;
+        wake.awaiting_window
+            .store(false, std::sync::atomic::Ordering::Release);
+        result?.ok_or_else(|| self.expired_window_error(work))
+    }
+    fn adopt_binding(
+        &self,
+        work: &mut Work,
+        binding: crate::HarnessBinding,
+        witness: &crate::BindingWitness,
+    ) -> Result<()> {
+        work.binding = Some(binding);
         work.pending_transport = None;
         #[cfg(feature = "remote")]
         self.attach_remote_live(work);
         work.meta.conversation = Read::Present {
-            value: outcome.witness.conversation.clone(),
+            value: witness.conversation.clone(),
         };
         work.binding
             .as_ref()
             .ok_or_else(|| error("provider readiness", "retained binding absent"))?
-            .arm(&work.wake.event)?;
+            .arm(&work.wake.event)
+    }
+    async fn pin_transcript(
+        &self,
+        work: &mut Work,
+        plan: &se_core::ops::agent_launch::LaunchPlan,
+        witness: &crate::BindingWitness,
+        owner: &Arc<se_proc::OwnedProcess>,
+        deadline: &Deadline,
+    ) -> Result<Option<se_proc::NativeSourcePin>> {
         let harness = self.harness_for(plan.profile.provider)?;
         let transcript = if plan.capture {
             let binding = work
@@ -159,135 +207,146 @@ impl LaunchCoordinator {
         } else {
             None
         };
-        let native_pin = if let Some(path) = transcript {
-            let binding = work
-                .binding
-                .as_ref()
-                .ok_or_else(|| error("capture readiness", "provider binding absent"))?;
-            let conversation = outcome.witness.conversation.clone();
-            let candidate_path = path.clone();
-            let mut pin = self
+        let Some(path) = transcript else {
+            return Ok(None);
+        };
+        let binding = work
+            .binding
+            .as_ref()
+            .ok_or_else(|| error("capture readiness", "provider binding absent"))?;
+        let conversation = witness.conversation.clone();
+        let mut pin = self.open_transcript_pin(path.clone(), deadline).await?;
+        let mut history_diagnostic = None;
+        // An adapter may announce readiness before publishing its fresh
+        // transcript. Wait only for absence, under the original launch
+        // clock; unreadable or replaced sources still refuse normally.
+        if pin.is_none()
+            && matches!(plan.conversation, Read::Absent { .. })
+            && let Some(wait) = harness.transcript_wait()
+        {
+            // Leave the rest of the launch clock for first-use proofs and
+            // witnessed cleanup if the provider never publishes the file.
+            let readiness = deadline.stage(wait)?;
+            pin = self
+                .await_transcript(owner, &path, &plan.agent.id, &readiness)
+                .await?;
+        }
+        if pin.is_none() && matches!(plan.conversation, Read::Absent { .. }) {
+            history_diagnostic = harness
+                .materialize_transcript(binding, call(self.store.generation, deadline)?)
+                .await?;
+            pin = self.open_transcript_pin(path, deadline).await?;
+        }
+        let mut pin = pin.ok_or_else(|| {
+            refused(
+                &plan.agent.id,
+                "provider transcript readiness",
+                "the provider has not created its transcript",
+            )
+        })?;
+        let validate = harness.transcript_validator();
+        let pin = self
+            .store
+            .pool
+            .run_owned(deadline, move || {
+                validate(&mut pin, &conversation)?;
+                Ok(pin)
+            })
+            .await?;
+        if let Some(diagnostic) = history_diagnostic {
+            eprintln!(
+                "Provider capture: native source verified; optional empty-history read failed: {diagnostic}"
+            );
+        }
+        work.transcript = Some(crate::TranscriptPin {
+            identity: witness.identity.clone(),
+            conversation: witness.conversation.clone(),
+            path: NativePath::from_local(pin.path().into())?,
+            file_identity: se_types::Sha256::from_bytes(pin.identity()),
+        });
+        work.capture_source = Some(process_commit::credential_id(plan, "capture-source")?);
+        Ok(Some(pin))
+    }
+    async fn open_transcript_pin(
+        &self,
+        path: std::path::PathBuf,
+        deadline: &Deadline,
+    ) -> Result<Option<se_proc::NativeSourcePin>> {
+        self.store
+            .pool
+            .run_owned(deadline, move || {
+                se_proc::NativeSourcePin::open(&path)
+                    .map_err(|e| error("provider transcript pin", e))
+            })
+            .await
+    }
+    /// Polls for a transcript the live provider has not yet created, until
+    /// it appears, the provider exits, or `readiness` expires.
+    async fn await_transcript(
+        &self,
+        owner: &Arc<se_proc::OwnedProcess>,
+        path: &std::path::Path,
+        agent: &se_types::AgentId,
+        readiness: &Deadline,
+    ) -> Result<Option<se_proc::NativeSourcePin>> {
+        let mut pin = None;
+        while pin.is_none() {
+            let remaining = readiness
+                .remaining()
+                .map_err(transcript_readiness_expired)?;
+            let native = self.native.clone();
+            let owner = owner.clone();
+            let path = path.to_owned();
+            let agent = agent.clone();
+            let observed_until = readiness.at();
+            pin = self
                 .store
                 .pool
-                .run_owned(deadline, move || {
-                    se_proc::NativeSourcePin::open(&candidate_path)
+                .run_owned(readiness, move || {
+                    let observed = native.observe_until(&owner, observed_until).map_err(|e| {
+                        refused(
+                            &agent,
+                            "provider transcript process witness",
+                            format!("{e:?}"),
+                        )
+                    })?;
+                    if !matches!(observed.root, se_proc::ProcessObservation::Live(_)) {
+                        return Err(refused(
+                            &agent,
+                            "provider transcript readiness",
+                            format!(
+                                "provider exited before creating its transcript: {:?}",
+                                observed.root
+                            ),
+                        ));
+                    }
+                    se_proc::NativeSourcePin::open(&path)
                         .map_err(|e| error("provider transcript pin", e))
                 })
                 .await?;
-            let mut history_diagnostic = None;
-            // An adapter may announce readiness before publishing its fresh
-            // transcript. Wait only for absence, under the original launch
-            // clock; unreadable or replaced sources still refuse normally.
-            if pin.is_none()
-                && matches!(plan.conversation, Read::Absent { .. })
-                && let Some(wait) = harness.transcript_wait()
-            {
-                // Leave the rest of the launch clock for first-use proofs and
-                // witnessed cleanup if the provider never publishes the file.
-                let readiness = deadline.stage(wait)?;
-                while pin.is_none() {
-                    let remaining =
-                        readiness
-                            .remaining()
-                            .map_err(|failure| match failure.body.detail() {
-                                se_types::Detail::DeadlineExceeded(expired) => {
-                                    se_types::SeError::new(se_types::Detail::DeadlineExceeded(
-                                        se_types::details::DeadlineExceeded {
-                                            op: "provider transcript readiness".into(),
-                                            deadline_ms: expired.deadline_ms,
-                                        },
-                                    ))
-                                }
-                                _ => failure,
-                            })?;
-                    let native = self.native.clone();
-                    let owner = owner.clone();
-                    let path = path.clone();
-                    let agent = plan.agent.id.clone();
-                    let observed_until = readiness.at();
-                    pin = self
-                        .store
-                        .pool
-                        .run_owned(&readiness, move || {
-                            let observed =
-                                native.observe_until(&owner, observed_until).map_err(|e| {
-                                    refused(
-                                        &agent,
-                                        "provider transcript process witness",
-                                        format!("{e:?}"),
-                                    )
-                                })?;
-                            if !matches!(observed.root, se_proc::ProcessObservation::Live(_)) {
-                                return Err(refused(
-                                    &agent,
-                                    "provider transcript readiness",
-                                    format!(
-                                        "provider exited before creating its transcript: {:?}",
-                                        observed.root
-                                    ),
-                                ));
-                            }
-                            se_proc::NativeSourcePin::open(&path)
-                                .map_err(|e| error("provider transcript pin", e))
-                        })
-                        .await?;
-                    if pin.is_none() {
-                        tokio::time::sleep(remaining.min(std::time::Duration::from_millis(25)))
-                            .await;
-                    }
-                }
+            if pin.is_none() {
+                tokio::time::sleep(remaining.min(std::time::Duration::from_millis(25))).await;
             }
-            if pin.is_none() && matches!(plan.conversation, Read::Absent { .. }) {
-                history_diagnostic = harness
-                    .materialize_transcript(binding, call(self.store.generation, deadline)?)
-                    .await?;
-                pin = self
-                    .store
-                    .pool
-                    .run_owned(deadline, move || {
-                        se_proc::NativeSourcePin::open(&path)
-                            .map_err(|e| error("provider transcript pin", e))
-                    })
-                    .await?;
-            }
-            let mut pin = pin.ok_or_else(|| {
-                refused(
-                    &plan.agent.id,
-                    "provider transcript readiness",
-                    "the provider has not created its transcript",
-                )
-            })?;
-            let validate = harness.transcript_validator();
-            let pin = self
-                .store
-                .pool
-                .run_owned(deadline, move || {
-                    validate(&mut pin, &conversation)?;
-                    Ok(pin)
-                })
-                .await?;
-            if let Some(diagnostic) = history_diagnostic {
-                eprintln!(
-                    "Provider capture: native source verified; optional empty-history read failed: {diagnostic}"
-                );
-            }
-            work.transcript = Some(crate::TranscriptPin {
-                identity: outcome.witness.identity.clone(),
-                conversation: outcome.witness.conversation.clone(),
-                path: NativePath::from_local(pin.path().into())?,
-                file_identity: se_types::Sha256::from_bytes(pin.identity()),
-            });
-            work.capture_source = Some(process_commit::credential_id(&plan, "capture-source")?);
-            Some(pin)
-        } else {
-            None
-        };
+        }
+        Ok(pin)
+    }
+    /// Proves first use, then commits the running lifecycle with its
+    /// credentials, capture source and any SE Code binding.
+    async fn activate(
+        &self,
+        work: &mut Work,
+        plan: &Arc<se_core::ops::agent_launch::LaunchPlan>,
+        record: &se_proc::ProcessRecord,
+        witness: &crate::BindingWitness,
+        owner: &Arc<se_proc::OwnedProcess>,
+        deadline: &Deadline,
+    ) -> Result<Activated> {
         // Re-read the native pinned instance after the async provider handshake.
         // An already-exited provider cannot be published as running.
-        self.ensure_live(&owner, &plan.agent.id, false, deadline)
+        self.ensure_live(owner, &plan.agent.id, false, deadline)
             .await?;
         let stored = native_record::identity(
-            &plan,
+            plan,
             CheckpointKind::Process(record.clone()),
             Some((&record.root, record.argv_sha256)),
             Some(record.guarantee),
@@ -300,6 +359,51 @@ impl LaunchCoordinator {
             _ => None,
         };
         let previous = self.head(work, deadline).await?;
+        let credentials = self.first_use(work, plan, owner, deadline).await?;
+        let committed_plan = plan.clone();
+        work.wake.require_startup()?;
+        let capture = transcript_capture(work, plan, &witness.conversation)?;
+        let secode_binding = self.secode_binding(work, record)?;
+        let capture = bound_capture(
+            work,
+            plan,
+            &witness.conversation,
+            secode_binding.as_ref(),
+            capture,
+        )?;
+        let receipt = self
+            .store
+            .commit(work.admission.clone(), deadline, None, move |kernel, cx| {
+                process_commit::activate(
+                    kernel,
+                    &committed_plan,
+                    &previous,
+                    stored,
+                    process_commit::Activation {
+                        capture,
+                        credentials,
+                    },
+                    cx,
+                )
+            })
+            .await?;
+        work.active = true;
+        work.activated = true;
+        Ok(Activated {
+            event_id: receipt.primary_event,
+            containment_cause,
+            secode_binding,
+        })
+    }
+    /// The provider's first verified credential use, observed directly for
+    /// ACP and awaited from the proof channel otherwise.
+    async fn first_use(
+        &self,
+        work: &Work,
+        plan: &se_core::ops::agent_launch::LaunchPlan,
+        owner: &Arc<se_proc::OwnedProcess>,
+        deadline: &Deadline,
+    ) -> Result<process_commit::CredentialActivation> {
         let (session_request, http_request) = if plan.profile.provider == se_store::Provider::Acp {
             let observed = self.proofs.observed(&plan.session)?;
             (observed.session_request, observed.http_request)
@@ -309,7 +413,7 @@ impl LaunchCoordinator {
                 tokio::pin!(changed);
                 changed.as_mut().enable();
                 work.wake.require_startup()?;
-                self.ensure_live(&owner, &plan.agent.id, true, deadline)
+                self.ensure_live(owner, &plan.agent.id, true, deadline)
                     .await?;
                 let proof = self.proofs.wait(&plan.session, deadline);
                 tokio::select! {
@@ -320,37 +424,17 @@ impl LaunchCoordinator {
             };
             (Some(first.session_request), Some(first.http_request))
         };
-        let credentials = process_commit::CredentialActivation {
+        Ok(process_commit::CredentialActivation {
             session_request,
             http_request,
-        };
-        let committed_plan = plan.clone();
-        work.wake.require_startup()?;
-        let capture = work
-            .transcript
-            .as_ref()
-            .zip(work.capture_source)
-            .map(|(pin, source)| process_commit::CaptureActivation {
-                source,
-                native_ref: pin.conversation.to_string(),
-                incarnation: pin.file_identity.as_bytes().to_vec(),
-            });
-        let capture = if plan.profile.provider == se_store::Provider::Codex && capture.is_none() {
-            Some(process_commit::CaptureActivation {
-                source: process_commit::credential_id(&plan, "capture-source")?,
-                native_ref: outcome.witness.conversation.as_str().to_owned(),
-                // With capture suppressed this is a logical vendor source,
-                // never a file-incarnation claim or authority to read bytes.
-                incarnation: <sha2::Sha256 as sha2::Digest>::digest(
-                    outcome.witness.conversation.as_str().as_bytes(),
-                )
-                .to_vec(),
-            })
-        } else {
-            capture
-        };
-        let secode_binding = work
-            .secode
+        })
+    }
+    fn secode_binding(
+        &self,
+        work: &Work,
+        record: &se_proc::ProcessRecord,
+    ) -> Result<Option<se_core::ops::SecodeBindingView>> {
+        work.secode
             .as_ref()
             .map(|prepared| {
                 Ok::<_, se_types::SeError>(se_core::ops::SecodeBindingView {
@@ -370,103 +454,35 @@ impl LaunchCoordinator {
                     registration_version: prepared.service.registration_version.clone(),
                 })
             })
-            .transpose()?;
-        let capture = if let Some(binding) = &secode_binding {
-            let source = process_commit::credential_id(&plan, "capture-source")?;
-            work.capture_source = Some(source);
-            Some(process_commit::CaptureActivation {
-                source,
-                native_ref: binding.session_id.clone(),
-                incarnation: serde_json::to_vec(binding)
-                    .map_err(|e| error("SE Code source binding", e))?,
-            })
-        } else {
-            capture
-        };
-        let capture = if plan.profile.provider == se_store::Provider::Acp {
-            let source = process_commit::credential_id(&plan, "capture-source")?;
-            work.capture_source = Some(source);
-            Some(process_commit::CaptureActivation {
-                source,
-                native_ref: outcome.witness.conversation.to_string(),
-                incarnation: crate::harness::acp::bound(
-                    work.binding
-                        .as_ref()
-                        .ok_or_else(|| error("ACP capture", "binding absent"))?,
-                )?
-                .source()?,
-            })
-        } else {
-            capture
-        };
-        let receipt = self
-            .store
-            .commit(work.admission.clone(), deadline, None, move |kernel, cx| {
-                process_commit::activate(
-                    kernel,
-                    &committed_plan,
-                    &previous,
-                    stored,
-                    process_commit::Activation {
-                        capture,
-                        credentials,
-                    },
-                    cx,
-                )
-            })
-            .await?;
-        work.active = true;
-        work.activated = true;
-        if let Some(native_pin) = native_pin {
-            self.capture
-                .bind(
-                    work.transcript
-                        .clone()
-                        .ok_or_else(|| error("capture activation", "pin metadata absent"))?,
-                    work.capture_source
-                        .ok_or_else(|| error("capture activation", "source absent"))?,
-                    native_pin,
-                    deadline,
-                )
-                .await?;
-        }
-        work.binding
-            .as_ref()
-            .ok_or_else(|| error("provider initial task", "retained binding absent"))?
-            .start_initial(call(self.store.generation, deadline)?)
-            .await?;
-        let resume = se_core::ops::AgentCommand::launch_in_home(
-            &plan.agent.id,
-            &self.options.home,
-            &plan.project.id,
-            false,
-        )
-        .filter(|_| plan.profile.provider != se_store::Provider::SeCode)
-        .map(|command| {
-            command
-                .with_resume_session(&plan.session)
-                .with_detach(plan.input.detach)
-        });
-        let forced_notice = if plan.input.override_live
-            && !plan.input.fresh()
-            && matches!(plan.control.resume_session, Read::Present { .. })
-        {
-            match &plan.conversation {
-                Read::Absent { checked } => Some(checked.clone()),
-                _ => None,
-            }
-        } else {
-            None
-        };
-        let policy_notice = work
-            .binding
-            .as_ref()
-            .ok_or_else(|| error("provider launch status", "binding absent"))?
-            .policy_notice()?;
-        let harness_policy_notice = match (policy_notice, forced_notice) {
-            (Some(policy), Some(replacement)) => Some(format!("{policy} {replacement}")),
-            (policy, replacement) => policy.or(replacement),
-        };
+            .transpose()
+    }
+    async fn bind_native_capture(
+        &self,
+        work: &Work,
+        native_pin: se_proc::NativeSourcePin,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        self.capture
+            .bind(
+                work.transcript
+                    .clone()
+                    .ok_or_else(|| error("capture activation", "pin metadata absent"))?,
+                work.capture_source
+                    .ok_or_else(|| error("capture activation", "source absent"))?,
+                native_pin,
+                deadline,
+            )
+            .await
+    }
+    fn launch_result(
+        &self,
+        work: &Work,
+        plan: &se_core::ops::agent_launch::LaunchPlan,
+        record: &se_proc::ProcessRecord,
+        attended: bool,
+        conversation: se_types::ProviderSessionId,
+        activated: Activated,
+    ) -> Result<LaunchResult> {
         Ok(LaunchResult {
             mail_notifications: if attended {
                 self.harness.mail_connected(&plan.session)
@@ -475,11 +491,13 @@ impl LaunchCoordinator {
                     value: work.binding.is_some(),
                 }
             },
-            harness_policy_notice,
-            secode_binding: secode_binding.map(|value| Read::Present { value }),
+            harness_policy_notice: harness_policy_notice(work, plan)?,
+            secode_binding: activated
+                .secode_binding
+                .map(|value| Read::Present { value }),
             takeover: work.takeover.clone(),
             idempotency_key: plan.input.idempotency_key.clone(),
-            event_id: receipt.primary_event,
+            event_id: activated.event_id,
             launch_id: se_proc::session_launch_id(&plan.session)
                 .map_err(|e| error("launch identity", e))?,
             lifecycle_id: plan.lifecycle.clone(),
@@ -493,7 +511,7 @@ impl LaunchCoordinator {
                 .provider(),
             model: work.meta.model.clone(),
             permission_profile: plan.resolved.clone(),
-            conversation_id: outcome.witness.conversation,
+            conversation_id: conversation,
             resumed: matches!(&plan.conversation, Read::Present { .. }),
             saved_conversation_age: plan.saved_conversation_age.clone(),
             state: "running".into(),
@@ -514,27 +532,42 @@ impl LaunchCoordinator {
                 _ => "uncontained",
             }
             .into(),
-            containment_cause,
+            containment_cause: activated.containment_cause,
             replies: se_core::ops::AgentCommand::history_in_home(
                 &plan.agent.id,
                 &self.options.home,
                 &plan.project.id,
             ),
-            resume: ResumeCommand {
-                ready: resume.is_some(),
-                mode: "resume".into(),
-                reason: resume.is_none().then(|| {
-                    if plan.profile.provider == se_store::Provider::SeCode {
-                        se_core::ops::AgentCommand::SECODE_RESUME_UNAVAILABLE
-                    } else {
-                        se_core::ops::AgentCommand::HOME_UNAVAILABLE
-                    }
-                    .into()
-                }),
-                command: resume.as_ref().map(|value| value.command.clone()),
-                argv: resume.map(|value| value.argv),
-            },
+            resume: self.resume_view(plan),
         })
+    }
+    fn resume_view(&self, plan: &se_core::ops::agent_launch::LaunchPlan) -> ResumeCommand {
+        let resume = se_core::ops::AgentCommand::launch_in_home(
+            &plan.agent.id,
+            &self.options.home,
+            &plan.project.id,
+            false,
+        )
+        .filter(|_| plan.profile.provider != se_store::Provider::SeCode)
+        .map(|command| {
+            command
+                .with_resume_session(&plan.session)
+                .with_detach(plan.input.detach)
+        });
+        ResumeCommand {
+            ready: resume.is_some(),
+            mode: "resume".into(),
+            reason: resume.is_none().then(|| {
+                if plan.profile.provider == se_store::Provider::SeCode {
+                    se_core::ops::AgentCommand::SECODE_RESUME_UNAVAILABLE
+                } else {
+                    se_core::ops::AgentCommand::HOME_UNAVAILABLE
+                }
+                .into()
+            }),
+            command: resume.as_ref().map(|value| value.command.clone()),
+            argv: resume.map(|value| value.argv),
+        }
     }
     async fn ensure_live(
         &self,
@@ -580,4 +613,126 @@ impl LaunchCoordinator {
         }
         Ok(())
     }
+}
+
+/// The harness witness must name exactly the reserved session and lifecycle.
+fn verify_witness(
+    plan: &se_core::ops::agent_launch::LaunchPlan,
+    witness: &crate::BindingWitness,
+) -> Result<()> {
+    if witness.identity.session != plan.session
+        || witness.identity.project != plan.project.id
+        || witness.identity.agent != plan.agent.id
+        || witness.lifecycle != plan.lifecycle
+        || matches!(&plan.conversation, Read::Present { value } if value != &witness.conversation)
+    {
+        return Err(se_core::scope::unreadable(
+            "provider readiness",
+            "harness witness differs from the reserved session/lifecycle",
+        ));
+    }
+    Ok(())
+}
+fn transcript_readiness_expired(failure: se_types::SeError) -> se_types::SeError {
+    match failure.body.detail() {
+        se_types::Detail::DeadlineExceeded(expired) => se_types::SeError::new(
+            se_types::Detail::DeadlineExceeded(se_types::details::DeadlineExceeded {
+                op: "provider transcript readiness".into(),
+                deadline_ms: expired.deadline_ms,
+            }),
+        ),
+        _ => failure,
+    }
+}
+/// The capture source from the pinned transcript; a Codex launch with capture
+/// suppressed still records a logical vendor source.
+fn transcript_capture(
+    work: &Work,
+    plan: &se_core::ops::agent_launch::LaunchPlan,
+    conversation: &se_types::ProviderSessionId,
+) -> Result<Option<process_commit::CaptureActivation>> {
+    let capture = work
+        .transcript
+        .as_ref()
+        .zip(work.capture_source)
+        .map(|(pin, source)| process_commit::CaptureActivation {
+            source,
+            native_ref: pin.conversation.to_string(),
+            incarnation: pin.file_identity.as_bytes().to_vec(),
+        });
+    if plan.profile.provider == se_store::Provider::Codex && capture.is_none() {
+        return Ok(Some(process_commit::CaptureActivation {
+            source: process_commit::credential_id(plan, "capture-source")?,
+            native_ref: conversation.as_str().to_owned(),
+            // With capture suppressed this is a logical vendor source,
+            // never a file-incarnation claim or authority to read bytes.
+            incarnation: <sha2::Sha256 as sha2::Digest>::digest(conversation.as_str().as_bytes())
+                .to_vec(),
+        }));
+    }
+    Ok(capture)
+}
+/// An SE Code or ACP launch captures through its live binding instead of a
+/// transcript, and records that source on the lifecycle.
+fn bound_capture(
+    work: &mut Work,
+    plan: &se_core::ops::agent_launch::LaunchPlan,
+    conversation: &se_types::ProviderSessionId,
+    secode_binding: Option<&se_core::ops::SecodeBindingView>,
+    capture: Option<process_commit::CaptureActivation>,
+) -> Result<Option<process_commit::CaptureActivation>> {
+    let capture = if let Some(binding) = secode_binding {
+        let source = process_commit::credential_id(plan, "capture-source")?;
+        work.capture_source = Some(source);
+        Some(process_commit::CaptureActivation {
+            source,
+            native_ref: binding.session_id.clone(),
+            incarnation: serde_json::to_vec(binding)
+                .map_err(|e| error("SE Code source binding", e))?,
+        })
+    } else {
+        capture
+    };
+    if plan.profile.provider != se_store::Provider::Acp {
+        return Ok(capture);
+    }
+    let source = process_commit::credential_id(plan, "capture-source")?;
+    work.capture_source = Some(source);
+    Ok(Some(process_commit::CaptureActivation {
+        source,
+        native_ref: conversation.to_string(),
+        incarnation: crate::harness::acp::bound(
+            work.binding
+                .as_ref()
+                .ok_or_else(|| error("ACP capture", "binding absent"))?,
+        )?
+        .source()?,
+    }))
+}
+/// The harness policy notice, joined with the replacement notice when a
+/// forced live override could not resume the saved conversation.
+fn harness_policy_notice(
+    work: &Work,
+    plan: &se_core::ops::agent_launch::LaunchPlan,
+) -> Result<Option<String>> {
+    let forced_notice = if plan.input.override_live
+        && !plan.input.fresh()
+        && matches!(plan.control.resume_session, Read::Present { .. })
+    {
+        match &plan.conversation {
+            Read::Absent { checked } => Some(checked.clone()),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let policy_notice = work
+        .binding
+        .as_ref()
+        .ok_or_else(|| error("provider launch status", "binding absent"))?
+        .policy_notice()?;
+    Ok(match (policy_notice, forced_notice) {
+        (Some(policy), Some(replacement)) => Some(format!("{policy} {replacement}")),
+        (policy, replacement) => policy.or(replacement),
+    })
 }
