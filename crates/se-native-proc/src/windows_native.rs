@@ -1,6 +1,7 @@
 //! Shared Windows query primitives. Callers retain their handles/token buffers;
 //! typed adapters add their own operation context without copying native walks.
 pub(crate) mod console;
+pub(crate) mod iocp_slot;
 pub(crate) mod job;
 pub(crate) use se_native_ipc::windows_process::{
     Error, acl, allocation, attributes, handle, parent, parents, process_sid, process_start, query,

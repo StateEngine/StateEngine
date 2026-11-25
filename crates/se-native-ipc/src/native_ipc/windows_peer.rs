@@ -91,10 +91,20 @@ pub(super) fn observe(pid: u32, bound: &IpcIoBound) -> IpcNativeResult<NativeIpc
     }
     image.truncate(length as usize);
     let image = PathBuf::from(std::ffi::OsString::from_wide(&image));
-    let image_sha256 = hash_image(
-        File::open(&image).map_err(|e| error("pin IPC peer executable", e))?,
-        bound,
-    )?;
+    let file = File::open(&image).map_err(|e| error("pin IPC peer executable", e))?;
+    // Verify the opened file is actually mapped as the live peer's executable
+    // section to prevent path-swap TOCTOU between QueryFullProcessImageNameW and open.
+    // SAFETY: `process` is a retained query-capable process handle pinned above.
+    if !unsafe { crate::windows_process::maps_executable(process.as_raw_handle(), &file) } {
+        return Err(process_error(
+            &process,
+            refuse(
+                IpcNativeErrorCode::PeerChanged,
+                "IPC peer executable path does not match the live process image mapping",
+            ),
+        ));
+    }
+    let image_sha256 = hash_image(file, bound)?;
     // SAFETY: the query/synchronize process handle is retained above. Native
     // signalled state distinguishes exit code 259 from a live process.
     match unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } {

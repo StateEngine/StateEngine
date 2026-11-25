@@ -1,5 +1,5 @@
 use super::*;
-use windows_sys::Win32::System::IO::OVERLAPPED;
+use crate::windows_native::iocp_slot::IocpSlot;
 
 pub(crate) struct Budget {
     limit: u64,
@@ -56,31 +56,21 @@ pub(super) enum Status {
     Taken,
 }
 pub(super) struct Operation {
-    pub overlapped: OVERLAPPED,
+    pub io: IocpSlot,
     pub kind: Kind,
-    pub bytes: Vec<u8>,
     pub charge: Option<Charge>,
     pub status: Status,
     pub close_error: Option<NativeFailure>,
 }
-// SAFETY: each box has a stable address; its mutex serializes host/kernel
-// submission/completion and the box stays retained until the due IOCP packet.
-unsafe impl Send for Operation {}
 impl Operation {
-    pub fn new(kind: Kind, bytes: Vec<u8>, charge: Option<Charge>) -> Box<Self> {
-        // SAFETY: zero OVERLAPPED uses the completion port, with no event handle.
-        Box::new(Self {
-            // SAFETY: zero initialization selects the IOCP and no event handle.
-            overlapped: unsafe { std::mem::zeroed() },
+    pub fn new(kind: Kind, bytes: Vec<u8>, charge: Option<Charge>) -> Self {
+        Self {
+            io: IocpSlot::new(bytes),
             kind,
-            bytes,
             charge,
             status: Status::Pending,
             close_error: None,
-        })
-    }
-    pub fn address(&mut self) -> usize {
-        (&raw mut self.overlapped) as usize
+        }
     }
     pub fn pending(&self) -> bool {
         matches!(self.status, Status::Pending)
@@ -105,7 +95,7 @@ pub(super) struct State {
     pub bound: bool,
     pub init: InitPhase,
     pub handles: [Option<Handle>; 3],
-    pub operations: BTreeMap<u64, Box<Operation>>,
+    pub operations: BTreeMap<u64, Operation>,
     pub next: u64,
     pub notices: BTreeSet<u64>,
     pub binding_notice: bool,
@@ -173,7 +163,7 @@ impl State {
         Ok(id)
     }
     pub fn retained_bytes(&self) -> usize {
-        self.operations.values().map(|op| op.bytes.capacity()).sum()
+        self.operations.values().map(|op| op.io.capacity()).sum()
     }
     pub fn native_pending(&self) -> bool {
         self.operations
@@ -187,8 +177,8 @@ impl State {
         }
         if self.retained_bytes() > limits.max_buffer_bytes as usize
             || self.operations.values().any(|op| match op.kind {
-                Kind::Read(_) => op.bytes.capacity() > limits.max_read_bytes as usize,
-                Kind::Write => op.bytes.capacity() > limits.max_write_bytes as usize,
+                Kind::Read(_) => op.io.capacity() > limits.max_read_bytes as usize,
+                Kind::Write => op.io.capacity() > limits.max_write_bytes as usize,
                 _ => false,
             })
         {

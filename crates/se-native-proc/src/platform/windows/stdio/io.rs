@@ -106,30 +106,25 @@ impl NativeStdio {
             return;
         };
         let handle = handle.0;
-        let mut operation = Operation::new(kind, bytes, Some(charge));
-        let address = operation.address();
-        let data = operation.bytes.as_mut_ptr();
-        let count = operation.bytes.len() as u32;
-        state.operations.insert(id, operation);
-        // SAFETY: stable boxed OVERLAPPED and Vec allocation were retained before
-        // dispatch. No take/release can reclaim either while its packet is due.
+        let operation = Operation::new(kind, bytes, Some(charge));
+        // SAFETY: `operation` is inserted into its final map slot and no kernel
+        // I/O has been submitted yet; `NativeStdio`'s mutex is held.
+        let (overlapped, data, count) = unsafe {
+            state
+                .operations
+                .entry(id)
+                .or_insert(operation)
+                .io
+                .dispatch_ptrs()
+        };
+        // SAFETY: `overlapped` and `data` point into the raw `UnsafeCell` heap
+        // allocation retained in `state.operations` before dispatch. No `&` or
+        // `&mut` reference to `IoStorage` is formed while the I/O is pending.
         let ok = unsafe {
             if matches!(kind, Kind::Write) {
-                WriteFile(
-                    handle,
-                    data,
-                    count,
-                    ptr::null_mut(),
-                    address as *mut OVERLAPPED,
-                )
+                WriteFile(handle, data, count, ptr::null_mut(), overlapped)
             } else {
-                ReadFile(
-                    handle,
-                    data,
-                    count,
-                    ptr::null_mut(),
-                    address as *mut OVERLAPPED,
-                )
+                ReadFile(handle, data, count, ptr::null_mut(), overlapped)
             }
         };
         // SAFETY: immediately read the dispatch status on this submitting thread.
@@ -149,8 +144,8 @@ impl NativeStdio {
     }
     pub(super) fn complete_native(&self, address: usize, bytes: u32, code: u32) {
         let mut state = self.lock();
-        let found = state.operations.iter_mut().find_map(|(id, operation)| {
-            (operation.address() == address && operation.pending()).then_some(*id)
+        let found = state.operations.iter().find_map(|(id, operation)| {
+            (operation.io.address() == address && operation.pending()).then_some(*id)
         });
         let Some(id) = found else {
             state.failure = Some(input(
@@ -177,10 +172,10 @@ impl NativeStdio {
         }
     }
     pub fn cancel_operation(&self, id: u64) -> ProcResult<StdioCancel> {
-        let mut state = self.lock();
+        let state = self.lock();
         let operation = state
             .operations
-            .get_mut(&id)
+            .get(&id)
             .ok_or_else(|| transition("unknown stream operation"))?;
         if !operation.pending() {
             return Ok(StdioCancel::AlreadyCompleted);
@@ -191,7 +186,7 @@ impl NativeStdio {
             ));
         }
         let index = endpoint(operation.kind);
-        let address = operation.address();
+        let address = operation.io.address();
         let handle = state.handles[index]
             .as_ref()
             .ok_or_else(|| transition("pending request lost its endpoint"))?;
@@ -201,9 +196,9 @@ impl NativeStdio {
         let mut state = self.lock();
         let requests = state
             .operations
-            .values_mut()
+            .values()
             .filter(|op| op.pending() && !matches!(op.kind, Kind::Close(_)))
-            .map(|op| (endpoint(op.kind), op.address()))
+            .map(|op| (endpoint(op.kind), op.io.address()))
             .collect::<Vec<_>>();
         for (index, address) in requests {
             if let Some(handle) = state.handles[index].as_ref()

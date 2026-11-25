@@ -324,10 +324,20 @@ pub(in crate::bootstrap) fn receive() -> ProcResult<(Frame, File, File, File, In
             crate::support::input("runtime deadline", "expired or outside startup bound")
         })?;
     let deadline = Instant::now() + Duration::from_millis(remaining);
-    let parent = inherited(frame.handles[0] as usize as HANDLE)?;
-    let authorize = inherited(frame.handles[1] as usize as HANDLE)?;
-    // SAFETY: static stdout selector; inherited duplicates become noninheritable before any later child.
+    let raw_parent = frame.handles[0] as usize as HANDLE;
+    let raw_authorize = frame.handles[1] as usize as HANDLE;
+    // SAFETY: static stdout/stderr selectors; inherited duplicates become noninheritable before any later child.
     let startup_stdout = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+    // SAFETY: read-only standard handle selector in this private early entry.
+    let stderr = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
+    if raw_parent == raw_authorize
+        || [startup_stdin, startup_stdout, stderr].contains(&raw_parent)
+        || [startup_stdin, startup_stdout, stderr].contains(&raw_authorize)
+    {
+        return Err(input_error());
+    }
+    let parent = inherited(raw_parent)?;
+    let authorize = inherited(raw_authorize)?;
     let events = inherited(startup_stdout)?;
     let actual_parent = crate::windows_native::parents()
         .map_err(|e| fail(e.operation, e.source))?
@@ -363,8 +373,6 @@ pub(in crate::bootstrap) fn receive() -> ProcResult<(Frame, File, File, File, In
     }
     // Standard handles must stop naming the private frame/ACK channels before
     // the host initializes logging or creates another process.
-    // SAFETY: read-only standard handle selector in this private early entry.
-    let stderr = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
     let diagnostics = inherited(stderr)?;
     // SAFETY: constant native null-device spelling and explicit noninheritance.
     let raw_null = unsafe {
@@ -390,12 +398,20 @@ pub(in crate::bootstrap) fn receive() -> ProcResult<(Frame, File, File, File, In
         use std::os::windows::io::IntoRawHandle;
         let _table_reference = stream.into_raw_handle();
     }
-    for original in [startup_stdin, startup_stdout, stderr] {
+    for original in [
+        startup_stdin,
+        startup_stdout,
+        stderr,
+        raw_parent,
+        raw_authorize,
+    ] {
         // SAFETY: each distinct startup handle was duplicated into a retained
-        // private File, cleared of inheritance and replaced in the stdio table.
-        // Closing the old stderr writer is necessary for an honest later EOF.
+        // private File, cleared of inheritance, and standard handles were
+        // replaced in the stdio table. Closing the old stderr writer enables an
+        // honest later EOF, and closing raw_parent/raw_authorize avoids leaking
+        // the parent CLI EPROCESS and auth pipe for the daemon's lifetime.
         if unsafe { CloseHandle(original) } == 0 {
-            return Err(last("close replaced runtime startup standard handle"));
+            return Err(last("close replaced runtime startup handle"));
         }
     }
     Ok((frame, events, authorize, diagnostics, deadline))

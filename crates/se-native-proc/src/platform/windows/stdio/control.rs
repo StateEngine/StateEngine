@@ -124,7 +124,9 @@ impl NativeStdio {
             };
         };
         operation.status = Status::Taken;
-        let mut bytes = std::mem::take(&mut operation.bytes);
+        // SAFETY: `operation.status` was verified to be `Status::Done` above
+        // under `NativeStdio`'s mutex, so kernel I/O is no longer pending.
+        let mut bytes = unsafe { operation.io.take_bytes() };
         operation.charge = None; // The allocation now belongs to the caller.
         let valid_count = count as usize <= bytes.len();
         let bounded = count.min(bytes.len() as u32);
