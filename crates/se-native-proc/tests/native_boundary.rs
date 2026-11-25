@@ -720,4 +720,9 @@ mod windows_stdio_boundary {
         assert_eq!(err.code, ProcErrorCode::IllegalTransition);
         Ok(())
     }
+
+    #[test]
+    fn console_interrupt_entry_is_noop_outside_private_startup() {
+        assert!(se_native_proc::console_interrupt_entry().is_none());
+    }
 }
