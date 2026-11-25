@@ -95,15 +95,15 @@ impl NativeStdio {
     }
     pub fn validate(&self, identity: &StdioIdentity, binding: u64) -> ProcResult<()> {
         let state = self.lock();
-        if &state.identity != identity || state.binding_serial != binding || state.end.released {
+        if &state.identity != identity || state.binding_serial != binding || state.released {
             return Err(transition("stale stream identity or binding"));
         }
         Ok(())
     }
     pub fn attach(&self, config: &StdioConfig) -> ProcResult<()> {
         let mut state = self.lock();
-        if state.end.released
-            || state.end.abandoned
+        if state.released
+            || state.abandoned
             || (state.bound && state.binding_state() == StdioBinding::Draining)
         {
             return Err(transition("port cannot bind while released or draining"));
@@ -147,7 +147,7 @@ impl NativeStdio {
         Ok(())
     }
     pub fn released(&self) -> bool {
-        self.lock().end.released
+        self.lock().released
     }
 }
 impl CompletionTarget for NativeStdio {
@@ -195,7 +195,7 @@ impl CompletionTarget for NativeStdio {
     fn shutdown(&self) {
         {
             let mut state = self.lock();
-            state.end.abandoned = true;
+            state.abandoned = true;
             state.gates = Gates::All;
             state.binding.disable();
         }
@@ -204,6 +204,6 @@ impl CompletionTarget for NativeStdio {
     }
     fn drained(&self) -> bool {
         let state = self.lock();
-        state.end.abandoned && !state.native_pending() && state.handles.iter().all(Option::is_none)
+        state.abandoned && !state.native_pending() && state.handles.iter().all(Option::is_none)
     }
 }

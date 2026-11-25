@@ -42,7 +42,7 @@ impl Handle {
     /// or an inherited entry the caller sealed before custody.
     pub unsafe fn new(handle: HANDLE, api: &str) -> ProcResult<Self> {
         use std::os::windows::io::IntoRawHandle;
-        // SAFETY: callers pass only null/INVALID_HANDLE_VALUE or a live CloseHandle-compatible handle whose sole ownership transfers here: newly created/opened, or an inherited entry this process sealed before custody.
+        // SAFETY: this function's safety contract guarantees `handle`'s precondition.
         unsafe { crate::windows_native::handle(handle, "own process custody handle") }
             .map(|handle| Self(handle.into_raw_handle()))
             .map_err(|e| native(ProcErrorCode::LaunchFailed, api, e.source))

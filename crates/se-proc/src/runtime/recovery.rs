@@ -255,7 +255,7 @@ fn resume_retained(
                 checkpoint: Box::new(checkpoint.clone()),
             });
         }
-        if !matches!(s.launch, LaunchState::Launched) && s.native.is_none() {
+        if s.launch != LaunchState::Launched && s.native.is_none() {
             return Ok(RecoveryOutcome::PendingScope {
                 process: process(),
                 checkpoint: Box::new(uncreated_checkpoint(s)?),

@@ -86,11 +86,10 @@ pub(super) enum Gates {
     Write,
     All,
 }
-#[derive(Default)]
-pub(super) struct EndState {
-    pub released: bool,
-    pub abandoned: bool,
-}
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent stdio binding, notice, release, and abandonment flags"
+)]
 pub(super) struct State {
     pub identity: StdioIdentity,
     pub limits: StdioLimits,
@@ -105,7 +104,8 @@ pub(super) struct State {
     pub binding_notice: bool,
     pub close: Option<u64>,
     pub gates: Gates,
-    pub end: EndState,
+    pub released: bool,
+    pub abandoned: bool,
     pub failure: Option<ProcError>,
 }
 impl State {
@@ -124,7 +124,8 @@ impl State {
             binding_notice: false,
             close: None,
             gates: Gates::Open,
-            end: EndState::default(),
+            released: false,
+            abandoned: false,
             failure: None,
         }
     }
@@ -142,7 +143,7 @@ impl State {
         }
     }
     pub fn ready(&self) -> ProcResult<()> {
-        if self.end.released || self.end.abandoned {
+        if self.released || self.abandoned {
             return Err(transition("port has been released"));
         }
         if let Some(failure) = &self.failure {
