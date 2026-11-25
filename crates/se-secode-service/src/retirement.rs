@@ -266,18 +266,20 @@ impl<H: HostPort> Coordinator<'_, H> {
         };
         self.start_secode_auxiliary(
             service,
-            Auxiliary::Retirement,
-            server,
-            vec![
-                "retire-service".into(),
-                "--service".into(),
-                profile.as_os_str().to_owned(),
-                "--expected-registration".into(),
-                expected.into_os_string(),
-            ],
-            profile.clone(),
-            policy,
-            Some(credential),
+            AuxiliaryLaunch {
+                auxiliary: Auxiliary::Retirement,
+                executable: server,
+                arguments: vec![
+                    "retire-service".into(),
+                    "--service".into(),
+                    profile.as_os_str().to_owned(),
+                    "--expected-registration".into(),
+                    expected.into_os_string(),
+                ],
+                cwd: profile.clone(),
+                policy,
+                input: Some(credential),
+            },
             deadline,
         )
         .await?;

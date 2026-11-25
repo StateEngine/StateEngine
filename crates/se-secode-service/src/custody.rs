@@ -6,18 +6,52 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 
+macro_rules! bool_state {
+    ($name:ident, $false_var:ident, $true_var:ident) => {
+        #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+        #[serde(from = "bool", into = "bool")]
+        pub enum $name {
+            #[default]
+            $false_var,
+            $true_var,
+        }
+        impl $name {
+            pub fn is_set(self) -> bool {
+                matches!(self, Self::$true_var)
+            }
+        }
+        impl From<bool> for $name {
+            fn from(value: bool) -> Self {
+                if value {
+                    Self::$true_var
+                } else {
+                    Self::$false_var
+                }
+            }
+        }
+        impl From<$name> for bool {
+            fn from(value: $name) -> Self {
+                value.is_set()
+            }
+        }
+    };
+}
+
+bool_state!(CustodyState, Intact, Lost);
+bool_state!(InitialOffer, Pending, Offered);
+bool_state!(SessionCreation, NotAttempted, Attempted);
+bool_state!(ResumeSupport, Unavailable, Supported);
+bool_state!(RestartReply, Pending, Sent);
+bool_state!(RestartSupersession, Current, Superseded);
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub struct Journal {
     pub version: u16,
     #[serde(default)]
     pub retired: bool,
     #[serde(default)]
-    pub lost: bool,
+    pub lost: CustodyState,
     #[serde(default)]
     pub stop_failure: Option<String>,
     pub project: se_types::ProjectId,
@@ -27,8 +61,8 @@ pub struct Journal {
     pub vendor_session: String,
     pub initial_input: String,
     pub initial_sha256: se_types::Sha256,
-    pub initial_offered: bool,
-    pub session_create_attempted: bool,
+    pub initial_offered: InitialOffer,
+    pub session_create_attempted: SessionCreation,
     pub policy_sha256: Option<se_types::Sha256>,
     #[serde(default)]
     pub previous_policy_sha256: Option<se_types::Sha256>,
@@ -37,7 +71,7 @@ pub struct Journal {
     #[serde(default)]
     pub resume_release: Option<ResumeRelease>,
     #[serde(default)]
-    pub input_free_resume: bool,
+    pub input_free_resume: ResumeSupport,
     pub notice: Option<Notice>,
     #[serde(default)]
     pub restart_key: Option<String>,
@@ -46,9 +80,9 @@ pub struct Journal {
     #[serde(default)]
     pub restart_settled: bool,
     #[serde(default)]
-    pub restart_reply_sent: bool,
+    pub restart_reply_sent: RestartReply,
     #[serde(default)]
-    pub superseded_by_restart: bool,
+    pub superseded_by_restart: RestartSupersession,
     pub bootstrap: Option<Checkpoint>,
     pub service: Option<Checkpoint>,
     #[serde(default)]
@@ -86,7 +120,7 @@ pub struct Notice {
 }
 impl Journal {
     pub(crate) fn unprovisioned(&self) -> bool {
-        self.identity.is_none() && !self.initial_offered
+        self.identity.is_none() && self.initial_offered == InitialOffer::Pending
     }
 
     pub(crate) fn require_registration(&self, current: &[u8]) -> Result<()> {

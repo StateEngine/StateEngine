@@ -185,7 +185,7 @@ impl<H: HostPort> Coordinator<'_, H> {
         if let Some(endpoint) = &service.journal.endpoint {
             return Ok(endpoint.clone());
         }
-        if service.journal.initial_offered {
+        if service.journal.initial_offered == InitialOffer::Offered {
             return Err(error(
                 "SE Code service recovery",
                 "input was attempted without a retained endpoint; preserve pending/no-replay",
@@ -230,7 +230,9 @@ impl<H: HostPort> Coordinator<'_, H> {
         service: &mut Service,
         deadline: &Deadline,
     ) -> Result<()> {
-        if service.journal.retired && service.journal.superseded_by_restart {
+        if service.journal.retired
+            && service.journal.superseded_by_restart == RestartSupersession::Superseded
+        {
             return Ok(());
         }
         self.0.restore_restart_state(service, deadline).await?;

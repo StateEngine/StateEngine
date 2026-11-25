@@ -8,6 +8,16 @@ use se_proc::{
 use se_types::StartIdentity as StoredStart;
 use std::ffi::OsString;
 
+/// Coordinates and policy for launching one auxiliary SE Code process.
+pub struct AuxiliaryLaunch {
+    pub auxiliary: Auxiliary,
+    pub executable: se_proc::NativeExecutableInvocation,
+    pub arguments: Vec<OsString>,
+    pub cwd: PathBuf,
+    pub policy: se_proc::LaunchPolicy,
+    pub input: Option<se_types::Secret>,
+}
+
 pub(crate) async fn sleep_poll_interval(deadline: &Deadline) -> Result<()> {
     tokio::time::sleep(
         deadline
@@ -126,21 +136,20 @@ impl<H: HostPort> Coordinator<'_, H> {
         })
         .await
     }
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one native launch with distinct custody and policy coordinates"
-    )]
     pub async fn start_secode_auxiliary(
         &self,
         service: &mut Service,
-        auxiliary: Auxiliary,
-        executable: se_proc::NativeExecutableInvocation,
-        arguments: Vec<OsString>,
-        cwd: PathBuf,
-        policy: se_proc::LaunchPolicy,
-        input: Option<se_types::Secret>,
+        launch: AuxiliaryLaunch,
         deadline: &Deadline,
     ) -> Result<se_proc::ProcessRecord> {
+        let AuxiliaryLaunch {
+            auxiliary,
+            executable,
+            arguments,
+            cwd,
+            policy,
+            input,
+        } = launch;
         let reservation = self
             .reserve_secode_auxiliary(service, auxiliary, deadline)
             .await?;

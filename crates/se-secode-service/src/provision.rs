@@ -239,10 +239,10 @@ impl<H: HostPort> Coordinator<'_, H> {
         session: &str,
         deadline: &Deadline,
     ) -> Result<Value> {
-        if !service.journal.session_create_attempted
+        if service.journal.session_create_attempted == SessionCreation::NotAttempted
             && matches!(request.resume, se_types::Read::Absent { .. })
         {
-            service.journal.session_create_attempted = true;
+            service.journal.session_create_attempted = SessionCreation::Attempted;
             service.persist(self.0, deadline).await?;
             let directory = request.cwd.to_local()?;
             let directory = directory.to_str().ok_or_else(|| {

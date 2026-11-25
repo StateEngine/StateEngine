@@ -114,7 +114,7 @@ impl<H: HostPort> Coordinator<'_, H> {
             }
         }
         service.live.invalidate()?;
-        service.journal.lost = true;
+        service.journal.lost = CustodyState::Lost;
         service.failure = None;
         service.control = None;
         service.persist(self.0, deadline).await?;
@@ -133,7 +133,7 @@ impl<H: HostPort> Coordinator<'_, H> {
                 "client closure remains unproved",
             )
         })?;
-        if !service.journal.lost || closed.witness.scope_exit.exit_basis.is_none() {
+        if !service.journal.lost.is_set() || closed.witness.scope_exit.exit_basis.is_none() {
             return Err(error(
                 "SE Code lost service retirement",
                 "original client and service scope exit must both be proved",

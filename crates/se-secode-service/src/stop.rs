@@ -121,10 +121,10 @@ impl<H: HostPort> Coordinator<'_, H> {
                 if self.0.is_job_unsettled(&service.journal.project, &service.journal.agent)? {
                     return Err(error("SE Code service shutdown", "original client or capture cleanup remains pending; service retained"));
                 }
-                if service.journal.lost && service.restart.is_none() {
+                if service.journal.lost.is_set() && service.restart.is_none() {
                     return self.retire_lost_secode_service(&mut service, deadline).await;
                 }
-                if service.journal.initial_offered
+                if service.journal.initial_offered.is_set()
                     && !service.journal.client_closed.as_ref().is_some_and(|closed| closed.capture_complete)
                 {
                     return Err(error("SE Code service shutdown", "original input or final capture remains unresolved; its authenticated source service is retained"));

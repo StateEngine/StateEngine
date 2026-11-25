@@ -220,7 +220,7 @@ impl<H: HostPort> Coordinator<'_, H> {
                 "retained service binding differs",
             ));
         }
-        if service.journal.lost && service.restart.is_none() {
+        if service.journal.lost.is_set() && service.restart.is_none() {
             let next = se_core::ops::AgentCommand::launch_in_home(
                 &row.id,
                 self.0.home(),
@@ -247,7 +247,7 @@ impl<H: HostPort> Coordinator<'_, H> {
         Ok(ServiceCustodySnapshot {
             qualified: service.current()?,
             initial_sha256: service.journal.initial_sha256,
-            resume_proved: service.journal.input_free_resume
+            resume_proved: service.journal.input_free_resume.is_set()
                 && service
                     .journal
                     .client_closed

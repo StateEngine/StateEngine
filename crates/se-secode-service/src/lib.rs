@@ -18,6 +18,7 @@ mod retirement;
 mod status;
 mod stop;
 
+pub use native::AuxiliaryLaunch;
 pub use port::{
     HostPort, PortFuture, SecodeWork, Wake, call_context, prepare_error, retain_recovery_artifact,
     wait_wake,
@@ -25,7 +26,10 @@ pub use port::{
 pub use prepare::ready;
 pub use se_harness::secode_process::Managed as Prepared;
 
-use custody::Journal;
+use custody::{
+    CustodyState, InitialOffer, Journal, RestartReply, RestartSupersession, ResumeSupport,
+    SessionCreation,
+};
 use port::error;
 use se_harness::{
     Deadline, Harness, HarnessKind, ProbeRequest, ProviderIoPlatform, ProviderStream,
@@ -188,7 +192,7 @@ impl Service {
     }
 
     pub fn register_image(&mut self, digest: se_types::Sha256, resume_supported: bool) {
-        self.journal.input_free_resume = resume_supported;
+        self.journal.input_free_resume = ResumeSupport::from(resume_supported);
         self.journal.server_sha256 = Some(digest);
         self.journal.retired = false;
     }
@@ -203,8 +207,8 @@ impl Service {
             self.journal.restart_key = Some(restart_key.to_owned());
             self.journal.restart_effect = None;
             self.journal.restart_settled = false;
-            self.journal.restart_reply_sent = false;
-            self.journal.superseded_by_restart = true;
+            self.journal.restart_reply_sent = RestartReply::Pending;
+            self.journal.superseded_by_restart = RestartSupersession::Superseded;
             self.persist(host, deadline).await?;
         }
         Ok(())
@@ -256,7 +260,7 @@ impl Service {
         self.live.invalidate()?;
         self.restart = Some(RestartControl {
             control: pending.control,
-            reply_sent: self.journal.restart_reply_sent,
+            reply_sent: self.journal.restart_reply_sent.is_set(),
             mail_notified: false,
             identity: pending.identity,
             adopted: false,
@@ -281,8 +285,8 @@ impl Service {
             .as_ref()
             .is_some_and(|restart| restart.restart_key == restart_key)
         {
-            if !self.journal.restart_reply_sent {
-                self.journal.restart_reply_sent = true;
+            if self.journal.restart_reply_sent == RestartReply::Pending {
+                self.journal.restart_reply_sent = RestartReply::Sent;
                 saved = self.persist(host, deadline).await;
             }
             if let Some(restart) = self.restart.as_mut() {
@@ -465,13 +469,15 @@ impl<H: HostPort> Coordinator<'_, H> {
             .await?
             .ok_or_else(|| error("SE Code input intent", "original service absent"))?;
         let mut service = lock_service(&slot, deadline).await?;
-        if service.journal.session != identity.session || service.journal.initial_offered {
+        if service.journal.session != identity.session
+            || service.journal.initial_offered == InitialOffer::Offered
+        {
             return Err(error(
                 "SE Code input intent",
                 "original offer is already attempted or belongs to another session; reconcile its key without replay",
             ));
         }
-        service.journal.initial_offered = true;
+        service.journal.initial_offered = InitialOffer::Offered;
         service.persist(self.0, deadline).await
     }
 

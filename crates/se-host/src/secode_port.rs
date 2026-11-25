@@ -10,7 +10,7 @@ mod restart_mail;
 use super::*;
 use crate::client::lease::Deadline;
 #[cfg(all(test, feature = "listener", any(target_os = "linux", windows)))]
-use se_secode_service::{Auxiliary, custody::Journal};
+use se_secode_service::{Auxiliary, AuxiliaryLaunch, custody::Journal};
 use se_secode_service::{
     Coordinator, HostPort, PendingRestart, PortFuture, SecodeWork, Service, ServiceSlot,
     lock_service,
@@ -18,16 +18,6 @@ use se_secode_service::{
 pub(in crate::process) use se_secode_service::{Prepared, RestartControl, Services, custody, mail};
 use se_types::Result;
 use std::path::{Path, PathBuf};
-
-#[cfg(all(test, feature = "listener", any(target_os = "linux", windows)))]
-pub(super) struct AuxiliaryLaunch {
-    pub auxiliary: Auxiliary,
-    pub executable: se_proc::NativeExecutableInvocation,
-    pub arguments: Vec<std::ffi::OsString>,
-    pub cwd: PathBuf,
-    pub policy: se_proc::LaunchPolicy,
-    pub input: Option<se_types::Secret>,
-}
 
 impl HostPort for LaunchCoordinator {
     fn services(&self) -> &Services {
@@ -500,16 +490,7 @@ impl LaunchCoordinator {
         deadline: &Deadline,
     ) -> Result<se_proc::ProcessRecord> {
         Coordinator(self)
-            .start_secode_auxiliary(
-                service,
-                launch.auxiliary,
-                launch.executable,
-                launch.arguments,
-                launch.cwd,
-                launch.policy,
-                launch.input,
-                deadline,
-            )
+            .start_secode_auxiliary(service, launch, deadline)
             .await
     }
     pub(in crate::process) async fn require_secode_capability_settled(

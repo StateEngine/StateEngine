@@ -191,12 +191,14 @@ impl<H: HostPort> Coordinator<'_, H> {
             }
             self.start_secode_auxiliary(
                 service,
-                Auxiliary::Bootstrap,
-                server,
-                arguments,
-                request.cwd.to_local()?,
-                request.policy.clone(),
-                None,
+                AuxiliaryLaunch {
+                    auxiliary: Auxiliary::Bootstrap,
+                    executable: server,
+                    arguments,
+                    cwd: request.cwd.to_local()?,
+                    policy: request.policy.clone(),
+                    input: None,
+                },
                 deadline,
             )
             .await?;
@@ -285,12 +287,14 @@ impl<H: HostPort> Coordinator<'_, H> {
                 .await?;
             self.start_secode_auxiliary(
                 service,
-                Auxiliary::Service,
-                server,
-                arguments,
-                request.cwd.to_local()?,
-                request.policy.clone(),
-                None,
+                AuxiliaryLaunch {
+                    auxiliary: Auxiliary::Service,
+                    executable: server,
+                    arguments,
+                    cwd: request.cwd.to_local()?,
+                    policy: request.policy.clone(),
+                    input: None,
+                },
                 deadline,
             )
             .await?;
@@ -424,7 +428,7 @@ fn new_secode_service(
     let journal = Journal {
         version: 1,
         retired: false,
-        lost: false,
+        lost: CustodyState::Intact,
         stop_failure: None,
         project: request.identity.project.clone(),
         agent: request.identity.agent.clone(),
@@ -435,19 +439,19 @@ fn new_secode_service(
         initial_sha256: se_types::Sha256::from_bytes(
             Sha256::digest(request.initial_input.as_str().as_bytes()).into(),
         ),
-        initial_offered: false,
-        session_create_attempted: false,
+        initial_offered: InitialOffer::Pending,
+        session_create_attempted: SessionCreation::NotAttempted,
         policy_sha256: None,
         previous_policy_sha256: None,
         client_closed: None,
         resume_release: None,
-        input_free_resume: false,
+        input_free_resume: ResumeSupport::Unavailable,
         notice: None,
         restart_key: None,
         restart_effect: None,
         restart_settled: false,
-        restart_reply_sent: false,
-        superseded_by_restart: false,
+        restart_reply_sent: RestartReply::Pending,
+        superseded_by_restart: RestartSupersession::Current,
         bootstrap: None,
         service: None,
         retirement: None,
