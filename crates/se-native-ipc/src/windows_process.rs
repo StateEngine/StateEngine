@@ -218,6 +218,17 @@ pub unsafe fn open_mapped_executable(process: HANDLE, path: &Path) -> Result<Opt
     Ok(mapped.then_some(file))
 }
 
+/// Open a Windows process handle with `PROCESS_QUERY_INFORMATION | SYNCHRONIZE`.
+pub fn open_query_process(pid: u32, operation: &'static str) -> Result<OwnedHandle> {
+    // SAFETY: query/synchronize-only process pin, no inherited handle or mutation.
+    unsafe {
+        handle(
+            OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, 0, pid),
+            operation,
+        )
+    }
+}
+
 /// Returns `Ok(true)` if the process is live, `Ok(false)` if it has exited.
 ///
 /// # Safety

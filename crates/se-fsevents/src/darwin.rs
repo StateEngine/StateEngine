@@ -324,67 +324,65 @@ unsafe extern "C" fn callback(
     flags: *const u32,
     _: *const u64,
 ) {
-    // SAFETY: the context is held until invalidation and the serial queue barrier.
-    let context = unsafe { &*(info.cast::<Context>()) };
-    let result = run_no_unwind(|| {
-        let Ok(mut queue) = context.queue.lock() else {
-            return None;
-        };
-        if count > 128 || paths.is_null() || flags.is_null() {
-            queue.loss()
-        } else {
-            // SAFETY: FSEvents supplies count valid paths and flags for this callback.
-            let names = unsafe { std::slice::from_raw_parts(paths.cast::<*const c_char>(), count) };
-            // SAFETY: FSEvents supplies count flags for this callback.
-            let flags = unsafe { std::slice::from_raw_parts(flags, count) };
-            let mut notify = None;
-            for (&name, &flags) in names.iter().zip(flags) {
-                if flags & LOST != 0 {
-                    notify = queue.loss();
-                    break;
+    let _ = run_no_unwind(|| {
+        // SAFETY: the context is held until invalidation and the serial queue barrier.
+        let context = unsafe { &*(info.cast::<Context>()) };
+        let result = run_no_unwind(|| {
+            let Ok(mut queue) = context.queue.lock() else {
+                return None;
+            };
+            if count > 128 || paths.is_null() || flags.is_null() {
+                queue.loss()
+            } else {
+                // SAFETY: FSEvents supplies count valid paths and flags for this callback.
+                let names =
+                    unsafe { std::slice::from_raw_parts(paths.cast::<*const c_char>(), count) };
+                // SAFETY: FSEvents supplies count flags for this callback.
+                let flags = unsafe { std::slice::from_raw_parts(flags, count) };
+                let mut notify = None;
+                for (&name, &flags) in names.iter().zip(flags) {
+                    if flags & LOST != 0 {
+                        notify = queue.loss();
+                        break;
+                    }
+                    if flags & 0x10 != 0 {
+                        continue;
+                    }
+                    if flags & ROOT_OR_MOUNT != 0 || name.is_null() {
+                        notify = queue.push(context.id, 4, false, b"").or(notify);
+                        continue;
+                    }
+                    // SAFETY: FSEvents supplies each path as a NUL-terminated string.
+                    let path = unsafe { CStr::from_ptr(name) };
+                    let Some(rel) = std::str::from_utf8(path.to_bytes())
+                        .ok()
+                        .and_then(|p| std::path::Path::new(p).strip_prefix(&context.root).ok())
+                        .and_then(|r| r.to_str())
+                    else {
+                        notify = queue.loss();
+                        break;
+                    };
+                    let a = u8::from(flags & REMOVED_OR_RENAMED != 0);
+                    let d = flags & IS_DIRECTORY != 0;
+                    notify = queue.push(context.id, a, d, rel.as_bytes()).or(notify);
                 }
-                if flags & 0x10 != 0 {
-                    continue;
-                }
-                if flags & ROOT_OR_MOUNT != 0 || name.is_null() {
-                    notify = queue.push(context.id, 4, false, b"").or(notify);
-                    continue;
-                }
-                // SAFETY: FSEvents supplies each path as a NUL-terminated string.
-                let path = unsafe { CStr::from_ptr(name) };
-                let Some(rel) = std::str::from_utf8(path.to_bytes())
-                    .ok()
-                    .and_then(|p| std::path::Path::new(p).strip_prefix(&context.root).ok())
-                    .and_then(|r| r.to_str())
-                else {
-                    notify = queue.loss();
-                    break;
-                };
-                let (action, dir) = (
-                    u8::from(flags & REMOVED_OR_RENAMED != 0),
-                    flags & IS_DIRECTORY != 0,
-                );
-                notify = queue
-                    .push(context.id, action, dir, rel.as_bytes())
-                    .or(notify);
+                notify
             }
-            notify
+        });
+        match result {
+            Some(Some(s)) if run_no_unwind(|| s()).is_none() => {
+                let _ = run_no_unwind(|| context.queue.lock().ok().map(|mut q| q.loss()));
+            }
+            None => {
+                let _ = run_no_unwind(|| {
+                    if let Some(s) = context.queue.lock().ok().and_then(|mut q| q.loss()) {
+                        s();
+                    }
+                });
+            }
+            _ => {}
         }
     });
-    match result {
-        Some(Some(signal)) if run_no_unwind(|| signal()).is_none() => {
-            // Record loss without re-invoking the panicked signal; later callbacks re-signal.
-            let _ = run_no_unwind(|| context.queue.lock().ok().map(|mut q| q.loss()));
-        }
-        None => {
-            let _ = run_no_unwind(|| {
-                if let Some(s) = context.queue.lock().ok().and_then(|mut q| q.loss()) {
-                    s();
-                }
-            });
-        }
-        _ => {}
-    }
 }
 fn run_no_unwind<T>(f: impl FnOnce() -> T) -> Option<T> {
     use std::panic::{AssertUnwindSafe, catch_unwind};
