@@ -54,21 +54,8 @@ struct LaunchMaterial {
 }
 
 impl LaunchCoordinator {
-    pub(super) async fn on_pool<T: Send + 'static>(
-        &self,
-        deadline: &Deadline,
-        work: impl FnOnce() -> Result<T> + Send + 'static,
-    ) -> Result<T> {
-        self.store.pool.run_owned(deadline, work).await
-    }
     pub(super) fn boot(&self) -> &BootId {
         &self.options.epoch.owner.fields().boot
-    }
-    pub(super) fn inc_activity(&self) {
-        self.activity.send_modify(|n| *n = n.saturating_add(1));
-    }
-    pub(super) fn dec_activity(&self) {
-        self.activity.send_modify(|n| *n = n.saturating_sub(1));
     }
     async fn prepare_invocation(
         &self,
@@ -76,13 +63,10 @@ impl LaunchCoordinator {
         harness: &dyn crate::Harness,
         qualified: &mut Qualified,
         request: &HarnessRequest,
+        #[cfg(unix)] alias_parent: bool,
         deadline: &Deadline,
     ) -> Result<(ConfigPlan, ProviderInvocation)> {
         let provider = plan.details().provider;
-        #[cfg(unix)]
-        let alias_parent = self
-            .alias_parent(harness, &qualified.command.executable, deadline)
-            .await?;
         let mut configuration = harness
             .configuration(request, call(self.store.generation, deadline)?)
             .await?;
@@ -432,6 +416,10 @@ impl LaunchCoordinator {
         self.check_resume_source(&plan, &work.admission, deadline)
             .await?;
         let mut qualified = self.qualify(&plan, deadline).await?;
+        #[cfg(unix)]
+        let alias_parent = self
+            .alias_parent(harness, &qualified.command.executable, deadline)
+            .await?;
         let (pin, bearer) = (token(&format!("sec1.{}.", plan.session))?, token("sels-")?);
         let hashes = LaunchHashes {
             session: Sha256::digest(pin.expose()).into(),
@@ -462,7 +450,15 @@ impl LaunchCoordinator {
             sign_in: crate::launch_sign_in::current(),
         };
         let (configuration, invocation) = self
-            .prepare_invocation(&plan, harness, &mut qualified, &request, deadline)
+            .prepare_invocation(
+                &plan,
+                harness,
+                &mut qualified,
+                &request,
+                #[cfg(unix)]
+                alias_parent,
+                deadline,
+            )
             .await?;
         let reservation = self
             .commit_reservation(work, &plan, &hashes, deadline)

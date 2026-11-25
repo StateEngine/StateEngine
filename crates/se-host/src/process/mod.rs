@@ -142,6 +142,20 @@ impl LaunchCoordinator {
         self.proofs.clone()
     }
 
+    async fn on_pool<T: Send + 'static>(
+        &self,
+        deadline: &crate::client::lease::Deadline,
+        work: impl FnOnce() -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        self.store.pool.run_owned(deadline, work).await
+    }
+    fn inc_activity(&self) {
+        self.activity.send_modify(|n| *n = n.saturating_add(1));
+    }
+    fn dec_activity(&self) {
+        self.activity.send_modify(|n| *n = n.saturating_sub(1));
+    }
+
     /// Compose the one startup order: bind, install, take the protected
     /// inventory and reconcile it before the caller publishes readiness.
     pub async fn install(
