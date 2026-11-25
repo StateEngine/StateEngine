@@ -32,7 +32,11 @@ impl NativeStdio {
             state.operations.get(&id).map(|op| op.kind),
             Some(Kind::Close(StdioCloseScope::All))
         );
-        state.gates.gate(all);
+        state.gates = if all || state.gates == Gates::All {
+            Gates::All
+        } else {
+            Gates::Write
+        };
         drop(state);
         if all {
             self.cancel_all();

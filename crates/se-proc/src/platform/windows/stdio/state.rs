@@ -86,15 +86,7 @@ pub(super) enum Gates {
     Write,
     All,
 }
-impl Gates {
-    pub(super) fn gate(&mut self, all: bool) {
-        *self = if all || matches!(self, Self::All) {
-            Self::All
-        } else {
-            Self::Write
-        };
-    }
-}
+#[derive(Default)]
 pub(super) struct EndState {
     pub released: bool,
     pub abandoned: bool,
@@ -132,10 +124,7 @@ impl State {
             binding_notice: false,
             close: None,
             gates: Gates::Open,
-            end: EndState {
-                released: false,
-                abandoned: false,
-            },
+            end: EndState::default(),
             failure: None,
         }
     }
