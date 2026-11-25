@@ -102,11 +102,48 @@ fn native_abi_lists_exact_rust_selections_and_protected_credential_references() 
     })
 }
 /// Protects: 49 — deny native Channels control to a valid agent session over actual IPC.
+fn session_frame_refusals(endpoint: EndpointRecord) -> Check {
+    let mut connection = BlockingIpcClient::connect_authenticated(
+        &endpoint,
+        ClientCredential::Session(se_types::Secret::new(b"channel-agent-fixture".to_vec())?),
+        positive(256 * 1024)?,
+        &options(),
+    )?;
+    for (index, request) in [
+        ChannelRequest::Capabilities,
+        ChannelRequest::CredentialCatalog,
+        ChannelRequest::Inspect(InspectChannels {
+            connection: None,
+            receipt: None,
+            cursor: None,
+            wait_until_us: None,
+        }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let error = connection
+            .exchange(
+                IpcEnvelope {
+                    version: se_types::API_VERSION,
+                    request_id: index as u64 + 1,
+                    generation: endpoint.generation,
+                    authority: None,
+                    presence: None,
+                    cli_selections: None,
+                    request: IpcRequest::Channels(request),
+                },
+                &options(),
+            )
+            .err()
+            .ok_or("session entered native Owner frame")?;
+        assert_eq!(error.code(), se_types::Code::OwnerRequired);
+    }
+    Ok(())
+}
+
+/// Protects: 49 — deny native Channels control to a valid agent session over actual IPC.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn current_agent_session_cannot_enter_native_owner_channel_frames() -> Check {
     let f = Fixture::new()?;
     seed(&f)?;
@@ -161,48 +198,7 @@ fn current_agent_session_cannot_enter_native_owner_channel_frames() -> Check {
         let stop = host.local_stop();
         let client = async move {
             let result = tokio::task::spawn_blocking(move || {
-                let work = || -> Check {
-                    let mut connection = BlockingIpcClient::connect_authenticated(
-                        &endpoint,
-                        ClientCredential::Session(se_types::Secret::new(
-                            b"channel-agent-fixture".to_vec(),
-                        )?),
-                        positive(256 * 1024)?,
-                        &options(),
-                    )?;
-                    for (index, request) in [
-                        ChannelRequest::Capabilities,
-                        ChannelRequest::CredentialCatalog,
-                        ChannelRequest::Inspect(InspectChannels {
-                            connection: None,
-                            receipt: None,
-                            cursor: None,
-                            wait_until_us: None,
-                        }),
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    {
-                        let error = connection
-                            .exchange(
-                                IpcEnvelope {
-                                    version: se_types::API_VERSION,
-                                    request_id: index as u64 + 1,
-                                    generation: endpoint.generation,
-                                    authority: None,
-                                    presence: None,
-                                    cli_selections: None,
-                                    request: IpcRequest::Channels(request),
-                                },
-                                &options(),
-                            )
-                            .err()
-                            .ok_or("session entered native Owner frame")?;
-                        assert_eq!(error.code(), se_types::Code::OwnerRequired);
-                    }
-                    Ok(())
-                };
-                work().map_err(|error| error.to_string())
+                session_frame_refusals(endpoint).map_err(|error| error.to_string())
             })
             .await;
             stop.request();

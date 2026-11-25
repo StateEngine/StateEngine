@@ -45,43 +45,44 @@ fn epoch() -> core::Result<core::HostEpoch> {
     })
 }
 
+macro_rules! persistent {
+    ($($name:ident),+) => {$(
+        let id = core::$name::from_parts(1_700_000_000_000, [3; 10])?;
+        assert_eq!(id.to_linked().0, id.as_str());
+        assert_eq!(core::$name::from_linked(id.to_linked())?, id);
+        for bad in ["", "\0", "selp-unissued-bearer", "prj_invalid-uuid"] {
+            assert!(core::$name::from_linked(api::$name(bad.into())).is_err(), "{} accepted malformed input", stringify!($name));
+        }
+    )+};
+}
+macro_rules! opaque {
+    ($($name:ident),+) => {$(
+        let id = core::$name::new("opaque:exact-marker")?;
+        assert_eq!(id.to_linked().0, id.as_str());
+        assert_eq!(core::$name::from_linked(id.to_linked())?, id);
+        for bad in ["", "bad identity", "\0"] {
+            assert!(core::$name::from_linked(api::$name(bad.into())).is_err(), "{} accepted an invalid opaque value", stringify!($name));
+        }
+    )+};
+}
+fn persistent_ids_round_trip_and_refuse_malformed() -> Check {
+    persistent!(ProjectId, AgentId, SessionId, MessageId, EventId, StoreId);
+    Ok(())
+}
+fn opaque_host_ids_round_trip_and_refuse_malformed() -> Check {
+    opaque!(HostSessionId, HostEventId, HostPendingId, ProviderSessionId);
+    Ok(())
+}
+fn opaque_control_ids_round_trip_and_refuse_malformed() -> Check {
+    opaque!(IdempotencyKey, NoticeId, Cursor);
+    Ok(())
+}
 /// Protects: every exported ID pair validates incoming data and preserves its exact kind and bytes.
 #[test]
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn linked_ids_round_trip_and_refuse_malformed_inputs() -> Check {
-    macro_rules! persistent {
-        ($($name:ident),+) => {$(
-            let id = core::$name::from_parts(1_700_000_000_000, [3; 10])?;
-            assert_eq!(id.to_linked().0, id.as_str());
-            assert_eq!(core::$name::from_linked(id.to_linked())?, id);
-            for bad in ["", "\0", "selp-unissued-bearer", "prj_invalid-uuid"] {
-                assert!(core::$name::from_linked(api::$name(bad.into())).is_err(), "{} accepted malformed input", stringify!($name));
-            }
-        )+};
-    }
-    persistent!(ProjectId, AgentId, SessionId, MessageId, EventId, StoreId);
-    macro_rules! opaque {
-        ($($name:ident),+) => {$(
-            let id = core::$name::new("opaque:exact-marker")?;
-            assert_eq!(id.to_linked().0, id.as_str());
-            assert_eq!(core::$name::from_linked(id.to_linked())?, id);
-            for bad in ["", "bad identity", "\0"] {
-                assert!(core::$name::from_linked(api::$name(bad.into())).is_err(), "{} accepted an invalid opaque value", stringify!($name));
-            }
-        )+};
-    }
-    opaque!(
-        HostSessionId,
-        HostEventId,
-        HostPendingId,
-        ProviderSessionId,
-        IdempotencyKey,
-        NoticeId,
-        Cursor
-    );
+    persistent_ids_round_trip_and_refuse_malformed()?;
+    opaque_host_ids_round_trip_and_refuse_malformed()?;
+    opaque_control_ids_round_trip_and_refuse_malformed()?;
     let historical = core::ProjectId::from_linked(api::ProjectId("imported-project".into()))?;
     assert_eq!(historical.to_linked().0, "imported-project");
     Ok(())
