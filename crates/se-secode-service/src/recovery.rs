@@ -176,10 +176,55 @@ impl<H: HostPort> Coordinator<'_, H> {
         }
         Ok(())
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
+    async fn resolve_recovered_endpoint(
+        &self,
+        service: &mut Service,
+        profile: &std::path::Path,
+        deadline: &Deadline,
+    ) -> Result<String> {
+        if let Some(endpoint) = &service.journal.endpoint {
+            return Ok(endpoint.clone());
+        }
+        if service.journal.initial_offered {
+            return Err(error(
+                "SE Code service recovery",
+                "input was attempted without a retained endpoint; preserve pending/no-replay",
+            ));
+        }
+        let path = profile.to_path_buf();
+        let ready = self
+            .0
+            .run_blocking(deadline, move || prepare::ready(&path))
+            .await?
+            .ok_or_else(|| {
+                error(
+                    "SE Code service recovery",
+                    "original live service has no readiness receipt",
+                )
+            })?;
+        let pid = match service.journal.service.as_ref().map(|c| &c.checkpoint) {
+            Some(CheckpointKind::Process(record)) => record.root.pid.0,
+            _ => {
+                return Err(error(
+                    "SE Code service recovery",
+                    "original service birth is not published",
+                ));
+            }
+        };
+        if ready["pid"].as_u64() != Some(u64::from(pid)) {
+            return Err(error(
+                "SE Code service recovery",
+                "readiness PID differs from the recovered original birth",
+            ));
+        }
+        let endpoint = ready["observed_endpoint"]
+            .as_str()
+            .ok_or_else(|| error("SE Code service recovery", "readiness endpoint absent"))?
+            .to_owned();
+        service.journal.endpoint = Some(endpoint.clone());
+        service.persist(self.0, deadline).await?;
+        Ok(endpoint)
+    }
     async fn recover_secode_service(
         &self,
         service: &mut Service,
@@ -207,10 +252,7 @@ impl<H: HostPort> Coordinator<'_, H> {
                 ));
             }
         }
-        if service.restart.is_some() {
-            return Ok(());
-        }
-        if service.process.is_none() {
+        if service.restart.is_some() || service.process.is_none() {
             return Ok(());
         }
         if service
@@ -222,49 +264,9 @@ impl<H: HostPort> Coordinator<'_, H> {
             return self.restore_secode_capability(service, deadline).await;
         }
         let profile = service.journal.profile.to_local()?;
-        let endpoint = if let Some(endpoint) = &service.journal.endpoint {
-            endpoint.clone()
-        } else {
-            if service.journal.initial_offered {
-                return Err(error(
-                    "SE Code service recovery",
-                    "input was attempted without a retained endpoint; preserve pending/no-replay",
-                ));
-            }
-            let path = profile.clone();
-            let ready = self
-                .0
-                .run_blocking(deadline, move || prepare::ready(&path))
-                .await?
-                .ok_or_else(|| {
-                    error(
-                        "SE Code service recovery",
-                        "original live service has no readiness receipt",
-                    )
-                })?;
-            let pid = match service.journal.service.as_ref().map(|c| &c.checkpoint) {
-                Some(CheckpointKind::Process(record)) => record.root.pid.0,
-                _ => {
-                    return Err(error(
-                        "SE Code service recovery",
-                        "original service birth is not published",
-                    ));
-                }
-            };
-            if ready["pid"].as_u64() != Some(u64::from(pid)) {
-                return Err(error(
-                    "SE Code service recovery",
-                    "readiness PID differs from the recovered original birth",
-                ));
-            }
-            let endpoint = ready["observed_endpoint"]
-                .as_str()
-                .ok_or_else(|| error("SE Code service recovery", "readiness endpoint absent"))?
-                .to_owned();
-            service.journal.endpoint = Some(endpoint.clone());
-            service.persist(self.0, deadline).await?;
-            endpoint
-        };
+        let endpoint = self
+            .resolve_recovered_endpoint(service, &profile, deadline)
+            .await?;
         let control = Arc::new(
             self.0
                 .run_blocking(deadline, move || Control::open(&profile, &endpoint))
@@ -307,10 +309,6 @@ impl<H: HostPort> Coordinator<'_, H> {
         service.control = Some(control);
         Ok(())
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub async fn restore_secode_work(
         &self,
         work: &mut impl SecodeWork,
@@ -352,62 +350,12 @@ impl<H: HostPort> Coordinator<'_, H> {
                 "original service incarnation absent",
             )
         })?;
-        let checkpoint = &service
-            .journal
-            .service
-            .as_ref()
-            .ok_or_else(|| {
-                error(
-                    "SE Code client recovery",
-                    "service native checkpoint absent",
-                )
-            })?
-            .checkpoint;
-        let record = match checkpoint {
-            se_proc::CheckpointKind::Process(record) => record,
-            se_proc::CheckpointKind::Exit { source, .. } if service.restart.is_some() => {
-                match source.as_ref() {
-                    se_proc::CheckpointSource::Process(record) => record,
-                    _ => {
-                        return Err(error(
-                            "SE Code client recovery",
-                            "original service record is unavailable",
-                        ));
-                    }
-                }
-            }
-            _ => {
-                return Err(error(
-                    "SE Code client recovery",
-                    "service process is not live",
-                ));
-            }
-        };
+        let record = recovered_service_record(&service)?;
         current
             .binding(&service.journal.vendor_session, deadline)
             .await?;
-        let accepted = control
-            .acceptance(
-                &current.service,
-                &service.journal.vendor_session,
-                &service.journal.initial_input,
-                deadline,
-            )
+        verify_recovered_acceptance(&control, &current, &service, work.activated(), deadline)
             .await?;
-        match accepted.data {
-            Some(data) => data.require_initial_hash(
-                &service.journal.vendor_session,
-                &service.journal.initial_input,
-                service.journal.initial_sha256,
-            )?,
-            None if work.activated() => {
-                return Err(error(
-                    "SE Code client recovery",
-                    "the activated original input is absent; preserve pending/no-replay",
-                ));
-            }
-            None => (),
-        }
         if !work.activated() {
             work.set_conversation(se_types::Read::Present {
                 value: se_types::ProviderSessionId::new(service.journal.vendor_session.clone())?,
@@ -434,6 +382,63 @@ impl<H: HostPort> Coordinator<'_, H> {
             *work.binding_mut() = Some(self.0.secode_harness().recover(prepared));
         }
         Ok(())
+    }
+}
+fn recovered_service_record(service: &Service) -> Result<&se_proc::ProcessRecord> {
+    let checkpoint = &service
+        .journal
+        .service
+        .as_ref()
+        .ok_or_else(|| {
+            error(
+                "SE Code client recovery",
+                "service native checkpoint absent",
+            )
+        })?
+        .checkpoint;
+    match checkpoint {
+        se_proc::CheckpointKind::Process(record) => Ok(record),
+        se_proc::CheckpointKind::Exit { source, .. } if service.restart.is_some() => {
+            match source.as_ref() {
+                se_proc::CheckpointSource::Process(record) => Ok(record),
+                _ => Err(error(
+                    "SE Code client recovery",
+                    "original service record is unavailable",
+                )),
+            }
+        }
+        _ => Err(error(
+            "SE Code client recovery",
+            "service process is not live",
+        )),
+    }
+}
+async fn verify_recovered_acceptance(
+    control: &Control,
+    current: &se_harness::secode_process::QualifiedControl,
+    service: &Service,
+    activated: bool,
+    deadline: &Deadline,
+) -> Result<()> {
+    let accepted = control
+        .acceptance(
+            &current.service,
+            &service.journal.vendor_session,
+            &service.journal.initial_input,
+            deadline,
+        )
+        .await?;
+    match accepted.data {
+        Some(data) => data.require_initial_hash(
+            &service.journal.vendor_session,
+            &service.journal.initial_input,
+            service.journal.initial_sha256,
+        ),
+        None if activated => Err(error(
+            "SE Code client recovery",
+            "the activated original input is absent; preserve pending/no-replay",
+        )),
+        None => Ok(()),
     }
 }
 pub(crate) fn recovery_source(source: &CheckpointSource) -> se_proc::RecoverySource {

@@ -52,10 +52,105 @@ impl<H: HostPort> Coordinator<'_, H> {
         service.persist(self.0, deadline).await
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
+    async fn verify_predecessor_terminal(
+        &self,
+        service: &Service,
+        work: &impl SecodeWork,
+        lost: bool,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let old = service.journal.session.clone();
+        self.0.store_read(work.cleanup_admission().clone(), deadline, move |cx| {
+            let session = se_core::scope::require_present(cx.read.session(old.clone()).map_err(|e| se_core::store_error::store_error(&e))?, "SE Code predecessor", "Reconcile the original session before replacement.")?;
+            if !matches!(&session.current.body, EventBody::SessionEnded {session,..} | EventBody::SessionRevoked {session,..} if session==&old) {
+                return Err(error("SE Code session replacement", "original engine session is not terminal"));
+            }
+            let original = session.original.as_deref().unwrap_or(&session.current);
+            match &original.body {
+                EventBody::SessionPrepared { provider:se_store::Provider::SeCode, consent:se_store::Consent::Capture, .. }
+                    if !lost && matches!(session.current.body, EventBody::SessionEnded { .. }) => {
+                    let source = se_core::ops::process_commit::session_credential_id(&old, "capture-source")?;
+                    match cx.read.capture_outcome(source, None).map_err(|e| se_core::store_error::store_error(&e))? {
+                        Read::Present { value } if matches!(&value.body, EventBody::CaptureVerified {session,..} if session==&old) => (),
+                        _ => return Err(error("SE Code session replacement", "original final capture is unverified or failed; preserve its service and cursor")),
+                    }
+                }
+                EventBody::SessionPrepared { provider:se_store::Provider::SeCode, .. } => (),
+                _ => return Err(error("SE Code session replacement", "original provider preparation differs")),
+            }
+            Ok(())
+        }).await
+    }
+
+    async fn verify_and_refresh_qualified_service(
+        &self,
+        service: &mut Service,
+        request: &se_harness::HarnessRequest,
+        resuming: bool,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let qualified = service.current()?;
+        let control = qualified.control.clone();
+        let before = qualified
+            .binding(&service.journal.vendor_session, deadline)
+            .await?;
+        if before.status == se_harness::secode_process::NoticeStatus::Ready
+            && !(resuming
+                && service
+                    .journal
+                    .resume_release
+                    .as_ref()
+                    .is_some_and(|release| {
+                        !release.completed && release.session == request.identity.session
+                    }))
+        {
+            return Err(error(
+                "SE Code session replacement",
+                "old native work is not held",
+            ));
+        }
+        let active = control
+            .read(&["api", "session", "active"], deadline)
+            .await?;
+        let active = active["data"].as_object().ok_or_else(|| {
+            error(
+                "SE Code session replacement",
+                "complete execution map absent",
+            )
+        })?;
+        if active.contains_key(&service.journal.vendor_session) {
+            return Err(error(
+                "SE Code session replacement",
+                "old service execution is still active",
+            ));
+        }
+        let after = qualified
+            .binding(&service.journal.vendor_session, deadline)
+            .await?;
+        if resuming {
+            self.release_secode_hold(service, request, after, deadline)
+                .await?;
+        }
+        // The old session is closed and captured. A new session may now
+        // start from the qualified service without rewriting its history.
+        let profile = service.journal.profile.to_local()?;
+        let registration = self
+            .0
+            .run_blocking(deadline, move || retirement::registration(&profile))
+            .await?
+            .ok_or_else(|| {
+                error(
+                    "SE Code session replacement",
+                    "qualified service registration is absent",
+                )
+            })?;
+        service.journal.require_registration(&registration)?;
+        service.journal.endpoint = Some(retirement::fields(&registration)?["endpoint"].to_owned());
+        service.journal.registration = Some(registration);
+        service.journal.identity = Some(qualified.service);
+        Ok(())
+    }
+
     pub(crate) async fn replace_secode_session(
         &self,
         service: &mut Service,
@@ -111,27 +206,8 @@ impl<H: HostPort> Coordinator<'_, H> {
                 "original unpublished client scope cannot establish absence of an uncertain input",
             ));
         }
-        let old = service.journal.session.clone();
-        self.0.store_read(work.cleanup_admission().clone(), deadline, move |cx| {
-            let session = se_core::scope::require_present(cx.read.session(old.clone()).map_err(|e| se_core::store_error::store_error(&e))?, "SE Code predecessor", "Reconcile the original session before replacement.")?;
-            if !matches!(&session.current.body, EventBody::SessionEnded {session,..} | EventBody::SessionRevoked {session,..} if session==&old) {
-                return Err(error("SE Code session replacement", "original engine session is not terminal"));
-            }
-            let original = session.original.as_deref().unwrap_or(&session.current);
-            match &original.body {
-                EventBody::SessionPrepared { provider:se_store::Provider::SeCode, consent:se_store::Consent::Capture, .. }
-                    if !lost && matches!(session.current.body, EventBody::SessionEnded { .. }) => {
-                    let source = se_core::ops::process_commit::session_credential_id(&old, "capture-source")?;
-                    match cx.read.capture_outcome(source, None).map_err(|e| se_core::store_error::store_error(&e))? {
-                        Read::Present { value } if matches!(&value.body, EventBody::CaptureVerified {session,..} if session==&old) => (),
-                        _ => return Err(error("SE Code session replacement", "original final capture is unverified or failed; preserve its service and cursor")),
-                    }
-                }
-                EventBody::SessionPrepared { provider:se_store::Provider::SeCode, .. } => (),
-                _ => return Err(error("SE Code session replacement", "original provider preparation differs")),
-            }
-            Ok(())
-        }).await?;
+        self.verify_predecessor_terminal(service, work, lost, deadline)
+            .await?;
         let no_service_or_input =
             !service.journal.initial_offered && !service.journal.session_create_attempted;
         if resuming
@@ -146,102 +222,52 @@ impl<H: HostPort> Coordinator<'_, H> {
             self.retire_lost_secode_service(service, deadline).await?;
         }
         if !no_service_or_input && !service.journal.retired {
-            let qualified = service.current()?;
-            let control = qualified.control.clone();
-            let before = qualified
-                .binding(&service.journal.vendor_session, deadline)
+            self.verify_and_refresh_qualified_service(service, request, resuming, deadline)
                 .await?;
-            if before.status == se_harness::secode_process::NoticeStatus::Ready
-                && !(resuming
-                    && service
-                        .journal
-                        .resume_release
-                        .as_ref()
-                        .is_some_and(|release| {
-                            !release.completed && release.session == request.identity.session
-                        }))
-            {
-                return Err(error(
-                    "SE Code session replacement",
-                    "old native work is not held",
-                ));
-            }
-            let active = control
-                .read(&["api", "session", "active"], deadline)
-                .await?;
-            let active = active["data"].as_object().ok_or_else(|| {
-                error(
-                    "SE Code session replacement",
-                    "complete execution map absent",
-                )
-            })?;
-            if active.contains_key(&service.journal.vendor_session) {
-                return Err(error(
-                    "SE Code session replacement",
-                    "old service execution is still active",
-                ));
-            }
-            let after = qualified
-                .binding(&service.journal.vendor_session, deadline)
-                .await?;
-            if resuming {
-                self.release_secode_hold(service, request, after, deadline)
-                    .await?;
-            }
-            // The old session is closed and captured. A new session may now
-            // start from the qualified service without rewriting its history.
-            let profile = service.journal.profile.to_local()?;
-            let registration = self
-                .0
-                .run_blocking(deadline, move || retirement::registration(&profile))
-                .await?
-                .ok_or_else(|| {
-                    error(
-                        "SE Code session replacement",
-                        "qualified service registration is absent",
-                    )
-                })?;
-            service.journal.require_registration(&registration)?;
-            service.journal.endpoint =
-                Some(retirement::fields(&registration)?["endpoint"].to_owned());
-            service.journal.registration = Some(registration);
-            service.journal.identity = Some(qualified.service);
         }
-        if service.journal.retired {
-            service.journal.service = None;
-            service.journal.endpoint = None;
-            service.journal.identity = None;
-            service.journal.registration = None;
-            service.journal.server_sha256 = None;
-            service.journal.retirement = None;
-            service.control = None;
-            service.failure = None;
-            service.journal.retired = false;
-            service.journal.lost = false;
-            service.journal.resume_release = None;
-            service.journal.input_free_resume = false;
-            service.journal.stop_failure = None;
-        }
-        service.journal.session = request.identity.session.clone();
-        service.journal.vendor_session = se_harness::secode_process::vendor_session(request)?;
-        service.journal.initial_input = se_harness::secode_process::initial_input(request);
-        service.journal.initial_sha256 = se_types::Sha256::from_bytes(
-            Sha256::digest(request.initial_input.as_str().as_bytes()).into(),
-        );
-        service.journal.initial_offered = false;
-        service.journal.session_create_attempted = false;
-        service.journal.previous_policy_sha256 = service.journal.policy_sha256.take();
-        service.journal.client_closed = None;
-        service.journal.notice = None;
-        service.journal.restart_key = None;
-        service.journal.restart_effect = None;
-        service.journal.restart_settled = false;
-        service.journal.restart_reply_sent = false;
-        service.journal.superseded_by_restart = false;
-        service.restart = None;
-        service.journal.capability_repair = None;
-        service.live.invalidate()?;
-        service.live = Default::default();
+        reset_journal_for_replacement(service, request)?;
         service.persist(self.0, deadline).await
     }
+}
+
+fn reset_journal_for_replacement(
+    service: &mut Service,
+    request: &se_harness::HarnessRequest,
+) -> Result<()> {
+    if service.journal.retired {
+        service.journal.service = None;
+        service.journal.endpoint = None;
+        service.journal.identity = None;
+        service.journal.registration = None;
+        service.journal.server_sha256 = None;
+        service.journal.retirement = None;
+        service.control = None;
+        service.failure = None;
+        service.journal.retired = false;
+        service.journal.lost = false;
+        service.journal.resume_release = None;
+        service.journal.input_free_resume = false;
+        service.journal.stop_failure = None;
+    }
+    service.journal.session = request.identity.session.clone();
+    service.journal.vendor_session = se_harness::secode_process::vendor_session(request)?;
+    service.journal.initial_input = se_harness::secode_process::initial_input(request);
+    service.journal.initial_sha256 = se_types::Sha256::from_bytes(
+        Sha256::digest(request.initial_input.as_str().as_bytes()).into(),
+    );
+    service.journal.initial_offered = false;
+    service.journal.session_create_attempted = false;
+    service.journal.previous_policy_sha256 = service.journal.policy_sha256.take();
+    service.journal.client_closed = None;
+    service.journal.notice = None;
+    service.journal.restart_key = None;
+    service.journal.restart_effect = None;
+    service.journal.restart_settled = false;
+    service.journal.restart_reply_sent = false;
+    service.journal.superseded_by_restart = false;
+    service.restart = None;
+    service.journal.capability_repair = None;
+    service.live.invalidate()?;
+    service.live = Default::default();
+    Ok(())
 }
