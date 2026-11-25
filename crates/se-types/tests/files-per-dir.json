@@ -39,7 +39,6 @@
   "crates/se/src/runtime/uninstall": 9,
   "crates/se-host/src/agent_observation": 9,
   "crates/se-harness/src/harness/claude_harness": 9,
-  "crates/se-harness/src/harness/tool_capture": 9,
   "crates/se-host/src/http": 9,
   "crates/se-harness/src/linked": 9,
   "crates/se-host/src/remote/service": 9,

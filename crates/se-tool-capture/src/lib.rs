@@ -32,15 +32,15 @@ impl Fact {
     }
     pub fn record(
         &self,
-        identity: &crate::SessionIdentity,
+        (session, agent): (&SessionId, &se_types::AgentId),
         provider: Provider,
         source: RecordId,
         position: Position,
     ) -> Result<Record> {
         let mut observation = Observation {
             schema: SCHEMA.into(),
-            session: identity.session.clone(),
-            agent: identity.agent.clone(),
+            session: session.clone(),
+            agent: agent.clone(),
             provider,
             source,
             position: position.clone(),

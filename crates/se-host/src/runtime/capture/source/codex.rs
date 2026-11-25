@@ -36,7 +36,7 @@ pub(super) fn next(
                     role: se_store::Role::System,
                     text: fact
                         .record(
-                            &source.binding.identity,
+                            source.binding.identity.session_agent(),
                             se_store::Provider::Codex,
                             source.source,
                             se_core::ops::transcript::Position {

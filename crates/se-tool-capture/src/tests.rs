@@ -102,15 +102,14 @@ fn codex_preserves_item_call_namespaces_and_real_multi_path_outcomes() -> Check 
     let rpc = json!({"method":"item/completed","params":{"threadId":"native","turnId":"turn-actual","item":rpc_item}});
     let notified = codex::notification(&rpc, &conversation)?.ok_or("no notification")?;
     assert_eq!(fact.key, notified.key);
-    let identity = crate::SessionIdentity {
-        session: SessionId::from_parts(1, [1; 10])?,
-        agent: se_types::AgentId::from_parts(1, [2; 10])?,
-        project: se_types::ProjectId::from_parts(1, [3; 10])?,
-    };
+    let (session, agent) = (
+        SessionId::from_parts(1, [1; 10])?,
+        se_types::AgentId::from_parts(1, [2; 10])?,
+    );
     let source = <RecordId as se_store::RecordIdentity>::from_parts(1, [4; 10])
         .map_err(|error| se_core::store_error::store_error(&error))?;
     let record = fact.record(
-        &identity,
+        (&session, &agent),
         Provider::Codex,
         source,
         Position {
@@ -158,15 +157,14 @@ fn codex_unknowns_are_explicit_and_a_large_target_set_is_never_trimmed() -> Chec
 }
 
 fn observed(fact: &Fact) -> Result<Observation> {
-    let identity = crate::SessionIdentity {
-        session: SessionId::from_parts(1, [1; 10])?,
-        agent: se_types::AgentId::from_parts(1, [2; 10])?,
-        project: se_types::ProjectId::from_parts(1, [3; 10])?,
-    };
+    let (session, agent) = (
+        SessionId::from_parts(1, [1; 10])?,
+        se_types::AgentId::from_parts(1, [2; 10])?,
+    );
     let source = <RecordId as se_store::RecordIdentity>::from_parts(1, [4; 10])
         .map_err(|error| se_core::store_error::store_error(&error))?;
     fact.record(
-        &identity,
+        (&session, &agent),
         Provider::Codex,
         source,
         Position {

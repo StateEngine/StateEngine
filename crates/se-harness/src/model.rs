@@ -59,3 +59,9 @@ pub struct SessionIdentity {
     pub agent: AgentId,
     pub session: SessionId,
 }
+impl SessionIdentity {
+    /// The session and agent a captured tool record is bound to.
+    pub fn session_agent(&self) -> (&SessionId, &AgentId) {
+        (&self.session, &self.agent)
+    }
+}
