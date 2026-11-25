@@ -1,165 +1,92 @@
 use crate::support::*;
 use crate::*;
 use sha2::{Digest, Sha256};
-use std::{collections::HashSet, ffi::OsStr, path::PathBuf, time::Instant};
+use std::{collections::HashSet, ffi::OsStr, time::Instant};
 
 #[cfg(all(test, windows))]
 mod tests;
 
-/// Immutable launch contract bound to a prepared native `Scope`.
-/// Enforces one-shot `Driver::begin` and prevents direct `se-native-proc`
-/// callers from changing policy/paths/argv/env/deadline/custody or bypassing NUL checks.
-#[derive(Clone)]
-pub(crate) struct LaunchBinding {
-    lifecycle: LifecycleId,
-    generation: GenerationId,
-    mode: LaunchMode,
-    window: Option<WindowSpec>,
-    policy: LaunchPolicy,
-    executable: PathBuf,
-    cwd: PathBuf,
-    deadline: Instant,
-    executable_custody: Option<(PathBuf, [u8; 32])>,
-    argv_sha256: [u8; 32],
-    env_sha256: [u8; 32],
-    launched: bool,
-}
-
-/// A validated launch specification whose immutable fields are bound to its
-/// native `LaunchBinding`; only deferred `StandardIo` binding may change.
+/// A validated launch specification owning both its reservation and spec.
+/// Moved into `Driver::prepare` by value and consumed one-shot by `Driver::begin`;
+/// only deferred `StandardIo` binding via `Scope::bind_stdio` may mutate it.
 pub struct ValidatedLaunch {
+    reservation: LaunchReservation,
     spec: LaunchSpec,
-    binding: LaunchBinding,
+    argv_sha256: [u8; 32],
+    stdio_bound: bool,
 }
 
 impl ValidatedLaunch {
-    pub fn argv_sha256(&self) -> [u8; 32] {
-        self.binding.argv_sha256
+    pub fn reservation(&self) -> &LaunchReservation {
+        &self.reservation
     }
     pub fn spec(&self) -> &LaunchSpec {
         &self.spec
     }
-    pub fn bind_stdio(&mut self, stdio: StandardIo) {
-        self.spec.stdio = stdio;
+    pub fn argv_sha256(&self) -> [u8; 32] {
+        self.argv_sha256
     }
-    pub fn into_spec(self) -> LaunchSpec {
-        self.spec
+    pub fn stdio_bound(&self) -> bool {
+        self.stdio_bound
     }
-    pub(crate) fn binding(&self) -> LaunchBinding {
-        self.binding.clone()
-    }
-}
-
-fn custody_pin(spec: &LaunchSpec) -> Option<(PathBuf, [u8; 32])> {
-    spec.executable_custody
-        .as_ref()
-        .map(|image| (image.original_path().to_path_buf(), image.identity()))
-}
-
-impl LaunchBinding {
-    fn from_validated(spec: &LaunchSpec, argv_sha256: [u8; 32], env_sha256: [u8; 32]) -> Self {
-        Self {
-            lifecycle: spec.lifecycle.clone(),
-            generation: spec.generation,
-            mode: spec.mode,
-            window: spec.window.clone(),
-            policy: spec.policy.clone(),
-            executable: spec.executable.clone(),
-            cwd: spec.cwd.clone(),
-            deadline: spec.deadline,
-            executable_custody: custody_pin(spec),
-            argv_sha256,
-            env_sha256,
-            launched: false,
-        }
-    }
-    pub(crate) fn prepare(reservation: &LaunchReservation, spec: &LaunchSpec) -> ProcResult<Self> {
-        if reservation.format_version != 1 {
-            return Err(input("reservation version", "expected 1"));
-        }
-        if reservation.lifecycle != spec.lifecycle || reservation.generation != spec.generation {
-            return Err(input(
-                "launch reservation",
-                "lifecycle and generation must match",
+    pub(crate) fn bind_stdio(&mut self, child: StandardIo) -> ProcResult<()> {
+        if Instant::now() >= self.spec.deadline {
+            return Err(error(
+                ProcErrorCode::LaunchTimedOut,
+                ProcErrorDetail::Input {
+                    field: "deadline".into(),
+                    reason: "launch deadline elapsed before stream binding".into(),
+                },
             ));
         }
-        spec_preconditions(spec)?;
-        working_directory(spec)?;
-        let (argv_sha256, env_sha256) = argv_and_env_digest(spec)?;
-        Ok(Self::from_validated(spec, argv_sha256, env_sha256))
+        if self.stdio_bound {
+            return Err(input(
+                "stdio",
+                "prepared launch already owns stream bindings",
+            ));
+        }
+        if !self.spec.mode.is_headless()
+            && !matches!(
+                self.spec.window,
+                Some(WindowSpec::UnixTerminalWithBackend { .. })
+            )
+        {
+            return Err(input(
+                "stdio",
+                "provider stream binding requires headless mode",
+            ));
+        }
+        self.spec.stdio = child;
+        self.stdio_bound = true;
+        Ok(())
     }
-}
-
-pub(crate) fn begin_bound(
-    binding: &mut Option<LaunchBinding>,
-    spec: &LaunchSpec,
-) -> ProcResult<()> {
-    let Some(bound) = binding.as_mut() else {
-        return Err(error(
-            ProcErrorCode::IllegalTransition,
-            ProcErrorDetail::Input {
-                field: "launch".into(),
-                reason: "recovered scope cannot begin a new launch".into(),
-            },
-        ));
-    };
-    if bound.launched {
-        return Err(error(
-            ProcErrorCode::IllegalTransition,
-            ProcErrorDetail::Input {
-                field: "launch".into(),
-                reason: "prepared scope has already begun launch".into(),
-            },
-        ));
+    pub(crate) fn take_for_begin(launch: &mut Option<Self>) -> ProcResult<LaunchSpec> {
+        let prepared = launch.take().ok_or_else(|| {
+            error(
+                ProcErrorCode::IllegalTransition,
+                ProcErrorDetail::Input {
+                    field: "launch".into(),
+                    reason: "prepared scope has already begun launch or is recovered".into(),
+                },
+            )
+        })?;
+        if Instant::now() >= prepared.spec.deadline {
+            return Err(error(
+                ProcErrorCode::LaunchTimedOut,
+                ProcErrorDetail::Input {
+                    field: "deadline".into(),
+                    reason: "launch deadline elapsed before child creation".into(),
+                },
+            ));
+        }
+        if let Some(image) = &prepared.spec.executable_custody {
+            image
+                .validate()
+                .map_err(|e| input("qualified image", &e.to_string()))?;
+        }
+        working_directory(&prepared.spec)?;
+        Ok(prepared.spec)
     }
-    if spec.deadline != bound.deadline {
-        return Err(input(
-            "launch spec",
-            "launch deadline does not match prepared scope",
-        ));
-    }
-    if spec.deadline <= Instant::now() {
-        return Err(error(
-            ProcErrorCode::LaunchTimedOut,
-            ProcErrorDetail::Input {
-                field: "deadline".into(),
-                reason: "launch deadline elapsed".into(),
-            },
-        ));
-    }
-    if custody_pin(spec) != bound.executable_custody {
-        return Err(input(
-            "launch spec",
-            "executable custody does not match prepared scope",
-        ));
-    }
-    if let Some(image) = &spec.executable_custody {
-        image
-            .validate()
-            .map_err(|e| input("qualified image", &e.to_string()))?;
-    }
-    if spec.lifecycle != bound.lifecycle
-        || spec.generation != bound.generation
-        || spec.mode != bound.mode
-        || spec.window != bound.window
-        || spec.policy != bound.policy
-        || spec.executable != bound.executable
-        || spec.cwd != bound.cwd
-    {
-        return Err(input(
-            "launch spec",
-            "launch spec does not match prepared scope",
-        ));
-    }
-    let (argv_sha256, env_sha256) = argv_and_env_digest(spec)?;
-    if argv_sha256 != bound.argv_sha256 || env_sha256 != bound.env_sha256 {
-        return Err(input(
-            "launch spec",
-            "launch spec does not match prepared scope",
-        ));
-    }
-    bound.launched = true;
-    Ok(())
 }
 
 fn units(value: &OsStr) -> Vec<u8> {
@@ -174,19 +101,24 @@ fn units(value: &OsStr) -> Vec<u8> {
         value.encode_wide().flat_map(u16::to_le_bytes).collect()
     }
 }
-/// Validate once and bind the spec so `Driver::prepare_validated` avoids
-/// repeating path canonicalization and SHA-256 hashing.
+/// Validate once and take ownership of `reservation` and `spec` for `Driver::prepare`.
 pub fn validate_launch(
-    reservation: &LaunchReservation,
+    reservation: LaunchReservation,
     spec: LaunchSpec,
     config: &HostConfig,
     owner: &ProcessIdentity,
 ) -> ProcResult<ValidatedLaunch> {
-    preconditions(reservation, &spec, config, owner)?;
+    preconditions(&reservation, &spec, config, owner)?;
     working_directory(&spec)?;
-    let (argv_sha256, env_sha256) = argv_and_env_digest(&spec)?;
-    let binding = LaunchBinding::from_validated(&spec, argv_sha256, env_sha256);
-    Ok(ValidatedLaunch { spec, binding })
+    let argv_sha256 = argv_digest(&spec)?;
+    let stdio_bound =
+        spec.stdio.stdin.is_some() || spec.stdio.stdout.is_some() || spec.stdio.stderr.is_some();
+    Ok(ValidatedLaunch {
+        reservation,
+        spec,
+        argv_sha256,
+        stdio_bound,
+    })
 }
 /// Checks run in this order, so the same input reports the same first refusal.
 pub fn spec(
@@ -197,7 +129,7 @@ pub fn spec(
 ) -> ProcResult<[u8; 32]> {
     preconditions(reservation, spec, config, owner)?;
     working_directory(spec)?;
-    Ok(argv_and_env_digest(spec)?.0)
+    argv_digest(spec)
 }
 /// Reservation binding, deadline, image custody, capacity, hardening and mode.
 fn preconditions(
@@ -304,8 +236,8 @@ fn working_directory(spec: &LaunchSpec) -> ProcResult<()> {
     }
     Ok(())
 }
-/// Bounded NUL-free native bytes, unique environment keys, and argv/env digests.
-fn argv_and_env_digest(spec: &LaunchSpec) -> ProcResult<([u8; 32], [u8; 32])> {
+/// Bounded NUL-free native bytes, unique environment keys, and the argv digest.
+fn argv_digest(spec: &LaunchSpec) -> ProcResult<[u8; 32]> {
     let mut size = 0usize;
     let mut check = |value: &OsStr, field: &str| -> ProcResult<Vec<u8>> {
         let bytes = units(value);
@@ -334,7 +266,6 @@ fn argv_and_env_digest(spec: &LaunchSpec) -> ProcResult<([u8; 32], [u8; 32])> {
     }
     check(spec.cwd.as_os_str(), "cwd")?;
     let mut keys = HashSet::new();
-    let mut env_digest = Sha256::new();
     for (key, value) in &spec.environment.entries {
         if key.is_empty() || key.to_string_lossy().contains('=') {
             return Err(input(
@@ -342,19 +273,15 @@ fn argv_and_env_digest(spec: &LaunchSpec) -> ProcResult<([u8; 32], [u8; 32])> {
                 "nonempty keys without '=' required",
             ));
         }
-        let key_bytes = check(key, "environment key")?;
+        let _bytes = check(key, "environment key")?;
         #[cfg(not(windows))]
-        let dedup_key = key_bytes.clone();
+        let bytes = _bytes;
         #[cfg(windows)]
-        let dedup_key = key.to_string_lossy().to_uppercase().into_bytes();
-        if !keys.insert(dedup_key) {
+        let bytes = key.to_string_lossy().to_uppercase().into_bytes();
+        if !keys.insert(bytes) {
             return Err(input("environment key", "duplicate key"));
         }
-        let value_bytes = check(value, "environment value")?;
-        env_digest.update((key_bytes.len() as u64).to_le_bytes());
-        env_digest.update(&key_bytes);
-        env_digest.update((value_bytes.len() as u64).to_le_bytes());
-        env_digest.update(&value_bytes);
+        check(value, "environment value")?;
     }
-    Ok((digest.finalize().into(), env_digest.finalize().into()))
+    Ok(digest.finalize().into())
 }

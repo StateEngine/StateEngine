@@ -17,7 +17,7 @@ pub struct Driver {
 pub struct Scope {
     image_custody: Option<NativeExecutableInvocation>,
     child: Option<spawn::Child>,
-    launch: Option<crate::validate::LaunchBinding>,
+    launch: Option<crate::validate::ValidatedLaunch>,
     recovered: Option<ProcessIdentity>,
     tracked: Vec<ProcessIdentity>,
     group: Option<ProcessId>,
@@ -65,37 +65,12 @@ impl Driver {
     }
     pub fn prepare(
         &self,
-        reservation: &LaunchReservation,
-        spec: &LaunchSpec,
-        limits: ResourceLimits,
-        hub: &Arc<Hub>,
-    ) -> ProcResult<Scope> {
-        let launch = crate::validate::LaunchBinding::prepare(reservation, spec)?;
-        self.prepare_with_binding(reservation, spec, launch, limits, hub)
-    }
-    pub fn prepare_validated(
-        &self,
-        reservation: &LaunchReservation,
-        validated: &crate::validate::ValidatedLaunch,
-        limits: ResourceLimits,
-        hub: &Arc<Hub>,
-    ) -> ProcResult<Scope> {
-        self.prepare_with_binding(
-            reservation,
-            validated.spec(),
-            validated.binding(),
-            limits,
-            hub,
-        )
-    }
-    fn prepare_with_binding(
-        &self,
-        reservation: &LaunchReservation,
-        spec: &LaunchSpec,
-        launch: crate::validate::LaunchBinding,
+        validated: crate::validate::ValidatedLaunch,
         limits: ResourceLimits,
         _hub: &Arc<Hub>,
     ) -> ProcResult<Scope> {
+        let reservation = validated.reservation();
+        let spec = validated.spec();
         if !spec.mode.is_headless()
             || spec.policy.containment == ContainmentRequirement::KernelScope
         {
@@ -109,29 +84,29 @@ impl Driver {
                 "native MacOs reservation required",
             ));
         }
+        let scope_nonce = reservation.scope_nonce;
+        let executable = spec.executable.clone();
         Ok(Scope {
             image_custody: None,
             child: None,
-            launch: Some(launch),
+            launch: Some(validated),
             recovered: None,
             tracked: Vec::new(),
             group: None,
             registrations: Vec::new(),
             watch: watch::Watch::new(limits.max_diagnostic_members as usize)?,
-            scope: ScopeIdentity::MacOsPrepared {
-                nonce: reservation.scope_nonce,
-            },
+            scope: ScopeIdentity::MacOsPrepared { nonce: scope_nonce },
             guarantee: guarantee(),
             entry: EntryMethod::MacOsSpawn,
             max_members: limits.max_diagnostic_members as usize,
             max_bytes: limits.max_observation_bytes,
             escaped: false,
             exec_seen: false,
-            executable: spec.executable.clone(),
+            executable,
         })
     }
-    pub fn begin(&self, scope: &mut Scope, mut spec: LaunchSpec, hub: &Arc<Hub>) -> ProcResult<()> {
-        crate::validate::begin_bound(&mut scope.launch, &spec)?;
+    pub fn begin(&self, scope: &mut Scope, hub: &Arc<Hub>) -> ProcResult<()> {
+        let mut spec = crate::validate::ValidatedLaunch::take_for_begin(&mut scope.launch)?;
         scope.image_custody = spec.executable_custody.take();
         scope.child = Some(spawn::begin(spec, &self.helper)?);
         let child = scope
@@ -294,6 +269,20 @@ impl Driver {
 }
 
 impl Scope {
+    pub fn bind_stdio(&mut self, child: StandardIo) -> ProcResult<()> {
+        self.launch
+            .as_mut()
+            .ok_or_else(|| {
+                error(
+                    ProcErrorCode::IllegalTransition,
+                    ProcErrorDetail::Input {
+                        field: "stdio".into(),
+                        reason: "prepared launch spec is unavailable".into(),
+                    },
+                )
+            })?
+            .bind_stdio(child)
+    }
     pub fn retained_obligations(&self) -> TrackedObligations {
         TrackedObligations {
             members: self.tracked.clone(),

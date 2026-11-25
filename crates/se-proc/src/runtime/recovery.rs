@@ -409,7 +409,7 @@ fn adopt_cold_record(
         root_checkpoint: None,
         record: None,
         native: None,
-        spec: None,
+        pending: None,
         launch: LaunchState::Launched,
         #[cfg(windows)]
         stdio: None,

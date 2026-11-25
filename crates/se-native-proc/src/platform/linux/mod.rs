@@ -16,7 +16,7 @@ pub struct Driver {
 }
 pub struct Scope {
     child: Option<spawn::Child>,
-    launch: Option<crate::validate::LaunchBinding>,
+    launch: Option<crate::validate::ValidatedLaunch>,
     recovered: Option<ProcessIdentity>,
     tracked: Vec<ProcessIdentity>,
     registrations: Vec<Box<dyn NativeRegistration>>,
@@ -60,37 +60,12 @@ impl Driver {
     }
     pub fn prepare(
         &self,
-        reservation: &LaunchReservation,
-        spec: &LaunchSpec,
-        limits: ResourceLimits,
-        hub: &Arc<Hub>,
-    ) -> ProcResult<Scope> {
-        let launch = crate::validate::LaunchBinding::prepare(reservation, spec)?;
-        self.prepare_with_binding(reservation, spec, launch, limits, hub)
-    }
-    pub fn prepare_validated(
-        &self,
-        reservation: &LaunchReservation,
-        validated: &crate::validate::ValidatedLaunch,
-        limits: ResourceLimits,
-        hub: &Arc<Hub>,
-    ) -> ProcResult<Scope> {
-        self.prepare_with_binding(
-            reservation,
-            validated.spec(),
-            validated.binding(),
-            limits,
-            hub,
-        )
-    }
-    fn prepare_with_binding(
-        &self,
-        reservation: &LaunchReservation,
-        spec: &LaunchSpec,
-        launch: crate::validate::LaunchBinding,
+        validated: crate::validate::ValidatedLaunch,
         limits: ResourceLimits,
         _hub: &Arc<Hub>,
     ) -> ProcResult<Scope> {
+        let reservation = validated.reservation();
+        let spec = validated.spec();
         if spec.policy.containment == ContainmentRequirement::KernelScope {
             return Err(unsupported(
                 "strict kernel scope requested; Linux scopes join in wave 4",
@@ -123,16 +98,16 @@ impl Driver {
                 "wave 1 requires LinuxTracked or unresolved LinuxUserManager",
             ));
         }
+        let scope_nonce = reservation.scope_nonce;
+        let executable = spec.executable.clone();
         Ok(Scope {
             child: None,
-            launch: Some(launch),
+            launch: Some(validated),
             recovered: None,
             tracked: Vec::new(),
             registrations: Vec::new(),
             group: None,
-            scope: ScopeIdentity::LinuxPrepared {
-                nonce: reservation.scope_nonce,
-            },
+            scope: ScopeIdentity::LinuxPrepared { nonce: scope_nonce },
             // Wave 1 has no trusted delegated-scope creator. This is the
             // NoDelegation classification's unavailable-helper case, not an
             // assertion that this machine has no cgroup hierarchy or manager.
@@ -142,11 +117,11 @@ impl Driver {
             entry: EntryMethod::LinuxProcessGroup,
             max_members: limits.max_diagnostic_members as usize,
             escaped: false,
-            executable: spec.executable.clone(),
+            executable,
         })
     }
-    pub fn begin(&self, scope: &mut Scope, spec: LaunchSpec, hub: &Arc<Hub>) -> ProcResult<()> {
-        crate::validate::begin_bound(&mut scope.launch, &spec)?;
+    pub fn begin(&self, scope: &mut Scope, hub: &Arc<Hub>) -> ProcResult<()> {
+        let spec = crate::validate::ValidatedLaunch::take_for_begin(&mut scope.launch)?;
         scope.child = Some(spawn::begin(spec)?);
         // Creation is already in the arena. No query/registration failure can
         // discard the child or its authorization endpoint.
@@ -304,6 +279,20 @@ impl Driver {
     }
 }
 impl Scope {
+    pub fn bind_stdio(&mut self, child: StandardIo) -> ProcResult<()> {
+        self.launch
+            .as_mut()
+            .ok_or_else(|| {
+                error(
+                    ProcErrorCode::IllegalTransition,
+                    ProcErrorDetail::Input {
+                        field: "stdio".into(),
+                        reason: "prepared launch spec is unavailable".into(),
+                    },
+                )
+            })?
+            .bind_stdio(child)
+    }
     pub fn intended_executable(&self) -> std::path::PathBuf {
         self.executable.clone()
     }

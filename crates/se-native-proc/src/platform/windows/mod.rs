@@ -29,7 +29,7 @@ pub struct Driver {
 pub struct Scope {
     job: Handle,
     child: Option<spawn::Child>,
-    launch: Option<crate::validate::LaunchBinding>,
+    launch: Option<crate::validate::ValidatedLaunch>,
     console_host: Option<console::ConsoleHost>,
     window: bool,
     persistent: bool,
@@ -71,37 +71,12 @@ impl Driver {
     }
     pub fn prepare(
         &self,
-        reservation: &LaunchReservation,
-        spec: &LaunchSpec,
+        validated: crate::validate::ValidatedLaunch,
         limits: ResourceLimits,
         hub: &Arc<Hub>,
     ) -> ProcResult<Scope> {
-        let launch = crate::validate::LaunchBinding::prepare(reservation, spec)?;
-        self.prepare_with_binding(reservation, spec, launch, limits, hub)
-    }
-    pub fn prepare_validated(
-        &self,
-        reservation: &LaunchReservation,
-        validated: &crate::validate::ValidatedLaunch,
-        limits: ResourceLimits,
-        hub: &Arc<Hub>,
-    ) -> ProcResult<Scope> {
-        self.prepare_with_binding(
-            reservation,
-            validated.spec(),
-            validated.binding(),
-            limits,
-            hub,
-        )
-    }
-    fn prepare_with_binding(
-        &self,
-        reservation: &LaunchReservation,
-        spec: &LaunchSpec,
-        launch: crate::validate::LaunchBinding,
-        limits: ResourceLimits,
-        hub: &Arc<Hub>,
-    ) -> ProcResult<Scope> {
+        let reservation = validated.reservation();
+        let spec = validated.spec();
         if !matches!(reservation.parent, ReservationParent::Windows) {
             return Err(input(
                 "reservation.parent",
@@ -142,15 +117,18 @@ impl Driver {
             )
         }
         .map_err(|e| native(ProcErrorCode::ContainmentUnavailable, e.operation, e.source))?;
+        let host = reservation.host;
+        let window = spec.mode == LaunchMode::Window;
+        let console_interrupt = spec.mode == LaunchMode::HeadlessConsole;
         let scope = Scope {
             job,
             child: None,
-            launch: Some(launch),
+            launch: Some(validated),
             console_host: None,
-            window: spec.mode == LaunchMode::Window,
+            window,
             persistent,
             scope: ScopeIdentity::WindowsJob {
-                host: reservation.host,
+                host,
                 name,
                 persistent,
             },
@@ -159,7 +137,7 @@ impl Driver {
             },
             entry: EntryMethod::WindowsJobList,
             max_members: limits.max_diagnostic_members as usize,
-            console_interrupt: spec.mode == LaunchMode::HeadlessConsole,
+            console_interrupt,
             interrupt_helper: None,
             _notification: notification,
         };
@@ -167,14 +145,33 @@ impl Driver {
         scope.verify_limits()?;
         Ok(scope)
     }
-    pub fn begin(&self, scope: &mut Scope, spec: LaunchSpec, _hub: &Arc<Hub>) -> ProcResult<()> {
+    pub fn begin(&self, scope: &mut Scope, _hub: &Arc<Hub>) -> ProcResult<()> {
         scope.verify_limits()?;
-        crate::validate::begin_bound(&mut scope.launch, &spec)?;
+        let spec = crate::validate::ValidatedLaunch::take_for_begin(&mut scope.launch)?;
         scope.child = Some(spawn::create(spec, &scope.job, scope.persistent)?);
         Ok(())
     }
 }
 impl Scope {
+    pub fn bind_stdio(&mut self, child: StandardIo) -> ProcResult<()> {
+        self.launch
+            .as_mut()
+            .ok_or_else(|| {
+                error(
+                    ProcErrorCode::IllegalTransition,
+                    ProcErrorDetail::Input {
+                        field: "stdio".into(),
+                        reason: "prepared launch spec is unavailable".into(),
+                    },
+                )
+            })?
+            .bind_stdio(child)
+    }
+    pub fn is_headless(&self) -> bool {
+        self.launch
+            .as_ref()
+            .is_some_and(|launch| launch.spec().mode.is_headless())
+    }
     fn verify_limits(&self) -> ProcResult<()> {
         let flags = query_limits(
             &self.job,
