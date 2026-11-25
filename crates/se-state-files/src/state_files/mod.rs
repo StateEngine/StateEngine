@@ -209,6 +209,11 @@ impl NativeStateFiles {
     pub fn root(&self) -> &Path {
         &self.root
     }
+    /// Refuses unless `file` is the exact directory object held as this root.
+    #[cfg(windows)]
+    pub fn verify_held_root(&self, file: &File) -> Result<()> {
+        self.directory.verify_root(file, &self.root)
+    }
     /// Space available to this OS user on the retained state-root volume.
     /// Failure is unmeasured, never zero; both sides revalidate root custody.
     pub fn available_bytes(&self) -> Result<u64> {

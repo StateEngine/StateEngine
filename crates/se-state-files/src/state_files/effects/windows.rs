@@ -648,6 +648,7 @@ pub(in crate::state_files) use source::ReadPin;
 
 #[path = "created_windows.rs"]
 mod created;
+pub use created::create_directory_at;
 pub(in crate::state_files) use created::{
     CreatedDirectory, prepare_created_directory, validate_creation_target,
 };

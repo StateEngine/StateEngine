@@ -391,6 +391,9 @@ impl Directory {
     pub fn is_retained(&self) -> bool {
         self.retained.is_some()
     }
+    pub fn verify_root(&self, file: &File, path: &Path) -> Result<()> {
+        self.same_metadata_root(file, path)
+    }
     pub fn check_name(&self, path: &Path) -> Result<()> {
         let Some(retained) = &self.retained else {
             return self.same_metadata_root(&walk_for(path, false, None, self.layout)?, path);

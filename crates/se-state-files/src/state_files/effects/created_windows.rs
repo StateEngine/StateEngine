@@ -144,7 +144,62 @@ pub(in crate::state_files) fn prepare_created_directory(
     let name = path
         .file_name()
         .ok_or_else(|| unsafe_path("directory creation leaf missing", path))?;
-    let mut units: Vec<u16> = name.encode_wide().collect();
+    let descriptor = security::descriptor(path, true)?;
+    let access = GENERIC_READ | GENERIC_WRITE | READ_CONTROL | SYNCHRONIZE;
+    // SAFETY: `descriptor` is the protected security descriptor built above.
+    let file = match unsafe { create_directory_at(parent.file()?, name, path, &descriptor, access) }
+    {
+        Ok(file) => file,
+        Err(error)
+            if error
+                .source
+                .as_ref()
+                .is_some_and(|cause| cause.kind() == io::ErrorKind::AlreadyExists) =>
+        {
+            let file = open(&physical, true, 0, false)?;
+            metadata(&file, path, true, false)?;
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+    let identity = metadata(&file, path, true, false)?;
+    // Retain custody before any later verification can fail, so failed init
+    // still offers exact identity-bound cleanup for everything it created.
+    created.push(CreatedDirectory {
+        path: path.into(),
+        file,
+        identity,
+        parent,
+    });
+    let held = created
+        .last()
+        .ok_or_else(|| changed("created directory custody unavailable", path))?;
+    security::verify(&held.file, path, false)?;
+    let named = open(&physical, true, 0, false)?;
+    if metadata(&named, path, true, false)? != held.identity {
+        return Err(changed("created directory name identity differs", path));
+    }
+    held.file
+        .sync_all()
+        .map_err(|error| io_error("flush created native directory", path, error))?;
+    held.parent.sync(path)
+}
+
+/// Exclusively creates directory `leaf` beneath the held `parent` handle, with
+/// `descriptor` installed at creation, and returns custody of the created object.
+/// An error means this call created nothing, except `SourceChanged`: creation
+/// was reported but its object is not held, so `path` may now exist.
+///
+/// # Safety
+/// `descriptor` must hold a valid security descriptor for the whole call.
+pub unsafe fn create_directory_at(
+    parent: &File,
+    leaf: &std::ffi::OsStr,
+    path: &Path,
+    descriptor: &se_native_path::windows::allocation::Allocation,
+    access: u32,
+) -> Result<File> {
+    let mut units: Vec<u16> = leaf.encode_wide().collect();
     if units.is_empty() || units.len() > u16::MAX as usize / 2 || units.contains(&0) {
         return Err(unsafe_path("bounded literal directory leaf required", path));
     }
@@ -153,10 +208,9 @@ pub(in crate::state_files) fn prepare_created_directory(
         MaximumLength: (units.len() * 2) as u16,
         Buffer: units.as_mut_ptr(),
     };
-    let descriptor = security::descriptor(path, true)?;
     let attributes = OBJECT_ATTRIBUTES {
         Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
-        RootDirectory: parent.file()?.as_raw_handle(),
+        RootDirectory: parent.as_raw_handle(),
         ObjectName: &mut unicode,
         Attributes: 0x40, // OBJ_CASE_INSENSITIVE; no inherited handle or namespace escape.
         SecurityDescriptor: descriptor.as_ptr().cast(),
@@ -165,13 +219,13 @@ pub(in crate::state_files) fn prepare_created_directory(
     let mut raw = ptr::null_mut();
     // SAFETY: native POD completion result, initialized before the synchronous call.
     let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
-    // SAFETY: retained trusted parent handle, one validated relative leaf,
-    // protected descriptor and initialized outputs. FILE_CREATE never opens
-    // an existing directory; its returned handle is the created object's custody.
+    // SAFETY: held parent handle, one validated relative leaf, the caller's valid
+    // descriptor and initialized outputs. FILE_CREATE never opens an existing
+    // directory; its returned handle is the created object's custody.
     let code = unsafe {
         NtCreateFile(
             &mut raw,
-            GENERIC_READ | GENERIC_WRITE | READ_CONTROL | SYNCHRONIZE,
+            access,
             &attributes,
             &mut status,
             ptr::null(),
@@ -186,11 +240,6 @@ pub(in crate::state_files) fn prepare_created_directory(
     if code < 0 {
         // SAFETY: native status translation has no pointer inputs.
         let cause = io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(code) } as i32);
-        if cause.kind() == io::ErrorKind::AlreadyExists {
-            let file = open(&physical, true, 0, false)?;
-            metadata(&file, path, true, false)?;
-            return Ok(());
-        }
         return Err(io_error(
             "create directory with retained native handle",
             path,
@@ -205,30 +254,10 @@ pub(in crate::state_files) fn prepare_created_directory(
     }
     // SAFETY: successful synchronous FILE_CREATE transferred unique ownership.
     let file = unsafe { File::from_raw_handle(raw) };
-    let identity = metadata(&file, path, true, false)?;
-    // Retain custody before any later verification can fail, so failed init
-    // still offers exact identity-bound cleanup for everything it created.
-    created.push(CreatedDirectory {
-        path: path.into(),
-        file,
-        identity,
-        parent,
-    });
-    let held = created
-        .last()
-        .ok_or_else(|| changed("created directory custody unavailable", path))?;
     if status.Information != 2 {
         return Err(changed("native create did not report FILE_CREATED", path));
     }
-    security::verify(&held.file, path, false)?;
-    let named = open(&physical, true, 0, false)?;
-    if metadata(&named, path, true, false)? != held.identity {
-        return Err(changed("created directory name identity differs", path));
-    }
-    held.file
-        .sync_all()
-        .map_err(|error| io_error("flush created native directory", path, error))?;
-    held.parent.sync(path)
+    Ok(file)
 }
 
 pub(in crate::state_files) fn validate_creation_target(path: &Path) -> Result<()> {

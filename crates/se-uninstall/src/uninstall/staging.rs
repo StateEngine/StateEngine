@@ -2,21 +2,8 @@
 //! bytes or names are exposed to a normal-integrity process of the same user.
 use super::*;
 use serde::{Deserialize, Serialize};
-use std::{
-    mem::{size_of, zeroed},
-    ptr,
-};
-use windows_sys::Wdk::{
-    Foundation::OBJECT_ATTRIBUTES,
-    Storage::FileSystem::{
-        FILE_CREATE, FILE_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
-        NtCreateFile,
-    },
-};
+use std::{mem::size_of, ptr};
 use windows_sys::Win32::Security::{Authorization::*, *};
-use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
-/// `IO_STATUS_BLOCK.Information` value reporting that `FILE_CREATE` made a new object.
-const FILE_CREATED: usize = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -182,36 +169,31 @@ impl Staging {
             .map_err(|e| error("create High uninstall staging", io::Error::other(e)))?;
         let leaf = format!(".se-uninstall-{}", se_types::hex_lower(&nonce));
         let path = parent.root().join(&leaf);
-        let _root = NativeStateFiles::open(parent.root()).map_err(custody)?;
-        let pin = create_retained(parent.root(), &leaf, &descriptor)?;
-        // The created handle proves which object is ours. Without its identity
-        // the name is preserved and reported rather than deleted.
-        let id = directory_id(&pin).map_err(|cause| pending(cause, &path))?;
-        let directory = DirectoryCustody { path, id };
-        let opened = verify_high(&pin, true)
-            .and_then(|()| {
-                let named = open_directory(&directory.path, false, true)?;
-                if directory_id(&named)? != id {
-                    return Err(refuse(
-                        "pin High uninstall staging directory",
-                        "directory name was replaced after creation",
-                    ));
-                }
-                Ok(())
-            })
-            .and_then(|()| NativeStateFiles::open(&directory.path).map_err(custody));
-        let files = match opened {
-            Ok(files) => files,
-            Err(cause) => {
-                drop(pin);
-                return Err(retire_created(cause, &directory));
+        let root = NativeStateFiles::open(parent.root()).map_err(custody)?;
+        let created = create_retained(&root, &leaf, &path, &descriptor)?;
+        // The created handle stays held until setup succeeds, so a failure
+        // retires exactly the object this call created, wherever its name is.
+        let setup = (|| {
+            let id = directory_id(&created)?;
+            verify_high(&created, true)?;
+            let pin = open_directory(&path, false, true)?;
+            if directory_id(&pin)? != id {
+                return Err(refuse(
+                    "pin High uninstall staging directory",
+                    "directory name was replaced after creation",
+                ));
             }
-        };
-        Ok(Self {
-            files,
-            directory,
-            _pin: pin,
-        })
+            let files = NativeStateFiles::open(&path).map_err(custody)?;
+            Ok((pin, id, files))
+        })();
+        match setup {
+            Ok((pin, id, files)) => Ok(Self {
+                files,
+                directory: DirectoryCustody { path, id },
+                _pin: pin,
+            }),
+            Err(cause) => Err(retire_created(cause, &created, &path)),
+        }
     }
     pub fn files(&self) -> &NativeStateFiles {
         &self.files
@@ -224,31 +206,40 @@ fn pending(mut cause: UninstallNativeError, path: &Path) -> UninstallNativeError
     cause.pending_paths.push(path.to_owned());
     cause
 }
-/// Retires a staging directory created by this process after a later creation
-/// step fails, returning that step's failure. A directory that cannot be retired
-/// by its identity is preserved and named as pending with the cleanup cause.
+/// Retires the staging directory this call created, through its creation
+/// handle, after a later setup step fails, and returns that step's failure.
+/// If the held object cannot be removed it is named as pending.
 fn retire_created(
     cause: UninstallNativeError,
-    directory: &DirectoryCustody,
+    created: &File,
+    path: &Path,
 ) -> UninstallNativeError {
-    match cleanup_directory(directory) {
+    match se_state_files::state_files::effects::remove_held(created, path) {
         Ok(()) => cause,
-        Err(cleanup) => {
-            let mut cause = pending(cause, &directory.path);
-            cause.cleanup_failures.push(cleanup);
+        Err(failure) => {
+            let mut cause = pending(cause, path);
+            cause.cleanup_failures.push(error(
+                "retire created High uninstall staging directory",
+                io::Error::other(failure),
+            ));
             cause
         }
     }
 }
-/// Exclusively creates `leaf` under a held `parent` with the High descriptor
-/// installed at creation. The returned handle is custody of the created object.
-fn create_retained(parent: &Path, leaf: &str, descriptor: &Allocation) -> Result<File> {
-    // SAFETY: terminated no-follow directory path; the handle only names the
+/// Exclusively creates `leaf` under the held state root with the High descriptor
+/// installed at creation, returning DELETE-capable custody of the created object.
+fn create_retained(
+    root: &NativeStateFiles,
+    leaf: &str,
+    path: &Path,
+    descriptor: &Allocation,
+) -> Result<File> {
+    // SAFETY: terminated no-follow directory path; this handle only names the
     // creation parent and grants the right to add one subdirectory.
     let raw = unsafe {
         CreateFileW(
-            native::wide(parent)?.as_ptr(),
-            GENERIC_READ | FILE_ADD_SUBDIRECTORY,
+            native::wide(root.root())?.as_ptr(),
+            GENERIC_READ | READ_CONTROL | FILE_ADD_SUBDIRECTORY,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             ptr::null(),
             OPEN_EXISTING,
@@ -257,63 +248,25 @@ fn create_retained(parent: &Path, leaf: &str, descriptor: &Allocation) -> Result
         )
     };
     // SAFETY: the successful open above transferred unique ownership to `raw`.
-    let root = File::from(unsafe { native::handle(raw, "pin uninstall staging parent") }?);
-    directory_id(&root)?;
-    let mut units: Vec<u16> = leaf.encode_utf16().collect();
-    let length = u16::try_from(units.len() * 2)
-        .map_err(|_| refuse("create High uninstall staging directory", "leaf too long"))?;
-    let mut name = UNICODE_STRING {
-        Length: length,
-        MaximumLength: length,
-        Buffer: units.as_mut_ptr(),
-    };
-    let attributes = OBJECT_ATTRIBUTES {
-        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
-        RootDirectory: root.as_raw_handle(),
-        ObjectName: &mut name,
-        Attributes: 0x40, // OBJ_CASE_INSENSITIVE; no inherited handle or namespace escape.
-        SecurityDescriptor: descriptor.as_ptr().cast(),
-        SecurityQualityOfService: ptr::null_mut(),
-    };
-    let mut raw = ptr::null_mut();
-    // SAFETY: native POD completion result, initialized before the synchronous call.
-    let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
-    // SAFETY: held parent handle, one literal relative leaf, the High descriptor
-    // and initialized outputs. FILE_CREATE never opens an existing directory, so
-    // the returned handle is the created object and is never first exposed with
-    // a Medium mandatory label.
-    let code = unsafe {
-        NtCreateFile(
-            &mut raw,
-            GENERIC_READ | READ_CONTROL | SYNCHRONIZE,
-            &attributes,
-            &mut status,
-            ptr::null(),
-            FILE_ATTRIBUTE_DIRECTORY,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            FILE_CREATE,
-            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
-            ptr::null(),
-            0,
+    let parent = File::from(unsafe { native::handle(raw, "pin uninstall staging parent") }?);
+    root.verify_held_root(&parent).map_err(custody)?;
+    let access = GENERIC_READ | READ_CONTROL | SYNCHRONIZE | DELETE;
+    // SAFETY: `descriptor` is the High security descriptor converted by the caller.
+    unsafe {
+        se_state_files::state_files::windows::effects::create_directory_at(
+            &parent,
+            std::ffi::OsStr::new(leaf),
+            path,
+            descriptor,
+            access,
         )
-    };
-    if code < 0 {
-        // SAFETY: native status translation has no pointer inputs.
-        let cause = io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(code) } as i32);
-        return Err(error("create High uninstall staging directory", cause));
     }
-    // SAFETY: a successful synchronous FILE_CREATE transferred unique ownership.
-    let file = File::from(unsafe { native::handle(raw, "pin created uninstall staging") }?);
-    if status.Information != FILE_CREATED {
-        return Err(pending(
-            refuse(
-                "create High uninstall staging directory",
-                "native create did not report FILE_CREATED",
-            ),
-            &parent.join(leaf),
-        ));
-    }
-    Ok(file)
+    .map_err(|failure| {
+        // Creation was reported without held custody, so the name may exist.
+        let unheld = failure.code == se_state_files::StateFileErrorCode::SourceChanged;
+        let cause = custody(failure);
+        if unheld { pending(cause, path) } else { cause }
+    })
 }
 pub(super) fn verify_directory(custody: &DirectoryCustody) -> Result<File> {
     let pin = open_directory(&custody.path, false, false)?;
