@@ -146,26 +146,15 @@ impl Driver {
         Ok(scope)
     }
     pub fn begin(&self, scope: &mut Scope, _hub: &Arc<Hub>) -> ProcResult<()> {
-        scope.verify_limits()?;
         let spec = crate::validate::ValidatedLaunch::take_for_begin(&mut scope.launch)?;
+        scope.verify_limits()?;
         scope.child = Some(spawn::create(spec, &scope.job, scope.persistent)?);
         Ok(())
     }
 }
 impl Scope {
     pub fn bind_stdio(&mut self, child: StandardIo) -> ProcResult<()> {
-        self.launch
-            .as_mut()
-            .ok_or_else(|| {
-                error(
-                    ProcErrorCode::IllegalTransition,
-                    ProcErrorDetail::Input {
-                        field: "stdio".into(),
-                        reason: "prepared launch spec is unavailable".into(),
-                    },
-                )
-            })?
-            .bind_stdio(child)
+        crate::validate::ValidatedLaunch::bind_in(&mut self.launch, child)
     }
     pub fn is_headless(&self) -> bool {
         self.launch

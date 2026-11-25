@@ -270,18 +270,7 @@ impl Driver {
 
 impl Scope {
     pub fn bind_stdio(&mut self, child: StandardIo) -> ProcResult<()> {
-        self.launch
-            .as_mut()
-            .ok_or_else(|| {
-                error(
-                    ProcErrorCode::IllegalTransition,
-                    ProcErrorDetail::Input {
-                        field: "stdio".into(),
-                        reason: "prepared launch spec is unavailable".into(),
-                    },
-                )
-            })?
-            .bind_stdio(child)
+        crate::validate::ValidatedLaunch::bind_in(&mut self.launch, child)
     }
     pub fn retained_obligations(&self) -> TrackedObligations {
         TrackedObligations {

@@ -29,6 +29,20 @@ impl ValidatedLaunch {
     pub fn stdio_bound(&self) -> bool {
         self.stdio_bound
     }
+    pub(crate) fn bind_in(launch: &mut Option<Self>, child: StandardIo) -> ProcResult<()> {
+        launch
+            .as_mut()
+            .ok_or_else(|| {
+                error(
+                    ProcErrorCode::IllegalTransition,
+                    ProcErrorDetail::Input {
+                        field: "stdio".into(),
+                        reason: "prepared launch spec is unavailable".into(),
+                    },
+                )
+            })?
+            .bind_stdio(child)
+    }
     pub(crate) fn bind_stdio(&mut self, child: StandardIo) -> ProcResult<()> {
         if Instant::now() >= self.spec.deadline {
             return Err(error(
