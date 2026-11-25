@@ -90,6 +90,19 @@ impl Store {
         }
         self.submit_lifecycle(batch, deadline, None).await
     }
+    pub async fn commit_if_needed(
+        &self,
+        admission: Admission,
+        deadline: &Deadline,
+        work: impl FnOnce(&Kernel, &mut Cx<'_, SqliteSnapshot>) -> Result<Option<AtomicBatch>>
+        + Send
+        + 'static,
+    ) -> Result<Option<CommitReceipt>> {
+        match self.prepare_batch(admission, deadline, None, work).await? {
+            Some(batch) => self.submit_lifecycle(batch, deadline, None).await.map(Some),
+            None => Ok(None),
+        }
+    }
     #[cfg(feature = "remote")]
     pub async fn commit_remote(
         &self,
@@ -102,13 +115,13 @@ impl Store {
         let batch = self.prepare_batch(admission, deadline, seed, work).await?;
         self.submit_lifecycle(batch, deadline, Some(permit)).await
     }
-    async fn prepare_batch(
+    async fn prepare_batch<T: Send + 'static>(
         &self,
         admission: Admission,
         deadline: &Deadline,
         seed: Option<se_types::EventId>,
-        work: impl FnOnce(&Kernel, &mut Cx<'_, SqliteSnapshot>) -> Result<AtomicBatch> + Send + 'static,
-    ) -> Result<AtomicBatch> {
+        work: impl FnOnce(&Kernel, &mut Cx<'_, SqliteSnapshot>) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
         self.read(admission, deadline, move |cx| {
             let mut facts = crate::runtime::start::allocate_facts()?;
             if let Some(seed) = seed {

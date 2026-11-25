@@ -109,9 +109,14 @@ fn observe_one(
             true,
             "SELECT length(p.content),s.value FROM turn_data d JOIN payloads p ON p.payload_id=d.text_payload LEFT JOIN symbols s ON s.id=d.source_path WHERE d.event_seq=?",
         ),
-        "message.sent" | "message.work_sent" => (
+        "message.sent" => (
             false,
             "SELECT length(p.content),NULL FROM message_data d JOIN payloads p ON p.payload_id=d.body_payload WHERE d.event_seq=?",
+        ),
+        // Shared work mail keeps one body payload per event and no message_data row.
+        "message.work_sent" => (
+            false,
+            "SELECT length(p.content),NULL FROM payloads p WHERE p.event_seq=? AND p.field='body'",
         ),
         _ => {
             return Err(fail(
@@ -142,7 +147,7 @@ fn observe_one(
     };
     let mut residuals: Vec<ResidualCopy> = residual(source, turn, home)?.into_iter().collect();
     if !turn {
-        residuals.extend(recipient_transcripts(c, seq)?);
+        residuals.extend(recipient_transcripts(c, seq, kind == "message.work_sent")?);
     }
     Ok((project, body, residuals))
 }
@@ -171,11 +176,18 @@ fn residual(
 /// The recipient agent's recorded provider transcripts written after the message
 /// was sent: the message may have been shown to it there, through its mail
 /// prompt or a read tool result.
-fn recipient_transcripts(c: &Connection, seq: i64) -> StoreResult<Option<ResidualCopy>> {
+fn recipient_transcripts(
+    c: &Connection,
+    seq: i64,
+    work: bool,
+) -> StoreResult<Option<ResidualCopy>> {
+    // Work mail names its recipients only in its delivery rows.
     let mut q = c
-        .prepare(
-            "SELECT DISTINCT s.value FROM message_data m JOIN events e ON e.seq=m.event_seq JOIN turn_data t ON t.project_id=e.project_id AND t.agent_id=m.recipient_id AND t.event_seq>m.event_seq JOIN symbols s ON s.id=t.source_path WHERE m.event_seq=?",
-        )
+        .prepare(if work {
+            "SELECT DISTINCT s.value FROM message_deliveries m JOIN turn_data t ON t.project_id=m.project_id AND t.agent_id=m.recipient_id AND t.event_seq>m.sent_seq JOIN symbols s ON s.id=t.source_path WHERE m.sent_seq=?"
+        } else {
+            "SELECT DISTINCT s.value FROM message_data m JOIN events e ON e.seq=m.event_seq JOIN turn_data t ON t.project_id=e.project_id AND t.agent_id=m.recipient_id AND t.event_seq>m.event_seq JOIN symbols s ON s.id=t.source_path WHERE m.event_seq=?"
+        })
         .map_err(sql)?;
     let mut rows = q.query([seq]).map_err(sql)?;
     let mut paths = Vec::new();
@@ -651,9 +663,9 @@ fn replace_backups(
     lease: &dyn RuntimeLease,
     options: &StoreOptions,
     info: &StoreInfo,
-    plan: &ErasurePlan,
+    owned: &[RecordId],
 ) -> StoreResult<bool> {
-    let mut stale = !plan.owned_generations.is_empty();
+    let mut stale = !owned.is_empty();
     for _ in 0..2 {
         if !stale {
             break;
@@ -667,9 +679,7 @@ fn replace_backups(
             &info.id,
             deadline,
         )?;
-        stale = remaining
-            .iter()
-            .any(|id| plan.owned_generations.contains(id));
+        stale = remaining.iter().any(|id| owned.contains(id));
     }
     Ok(!stale)
 }
@@ -710,8 +720,15 @@ pub(crate) fn erase(
         (None, Err(error)) => return Err(error),
         (None, Ok(observed)) => request(host, &info, &plan, &approval.owner, observed)?,
     }
+    // Read only after the request commits: later-planned backups hold the bodies.
+    let owned = crate::backup::generation_ids(
+        lease.files(),
+        &options.state_directory,
+        &info.id,
+        deadline(options.busy_timeout)?,
+    )?;
     let cleanup_complete =
-        rewrite(host, lease)? && replace_backups(host, lease, &options, &info, &plan)?;
+        rewrite(host, lease)? && replace_backups(host, lease, &options, &info, &owned)?;
     let mut report = ErasureReport {
         erasure: plan.id,
         completed_event: None,

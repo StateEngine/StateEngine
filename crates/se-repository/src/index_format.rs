@@ -192,9 +192,11 @@ fn parse_v4_path(
     v4_arena: &mut Vec<u8>,
     prev_path: &mut Vec<u8>,
 ) -> Option<PathRange> {
+    // The varint and path never extend into the trailing extensions or checksum.
+    let body = bytes.get(..body_end)?;
     let mut strip = 0usize;
     loop {
-        let byte = *bytes.get(*pos)?;
+        let byte = *body.get(*pos)?;
         *pos += 1;
         strip = strip
             .checked_shl(7)?
@@ -204,8 +206,8 @@ fn parse_v4_path(
         }
         strip = strip.checked_add(1)?;
     }
-    let nul = bytes[*pos..body_end].iter().position(|&b| b == 0)?;
-    let suffix = &bytes[*pos..*pos + nul];
+    let nul = body.get(*pos..)?.iter().position(|&b| b == 0)?;
+    let suffix = &body[*pos..*pos + nul];
     *pos += nul + 1;
     let keep = prev_path.len().checked_sub(strip)?;
     prev_path.truncate(keep);

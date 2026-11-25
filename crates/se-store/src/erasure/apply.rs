@@ -93,9 +93,11 @@ pub(crate) fn body(
             "body erasure names no open erasure request",
         ));
     }
+    // Work mail keeps its body payload without a projection column to clear.
     let (table, column) = match (kind, stored_kind.as_str()) {
-        ("turn", "session.turn") => ("turn_data", "text_payload"),
-        ("message", "message.sent" | "message.work_sent") => ("message_data", "body_payload"),
+        ("turn", "session.turn") => ("turn_data", Some("text_payload")),
+        ("message", "message.sent") => ("message_data", Some("body_payload")),
+        ("message", "message.work_sent") => ("payloads", None),
         _ => {
             return Err(fail(
                 StoreErrorCode::InvalidTransition,
@@ -103,14 +105,22 @@ pub(crate) fn body(
             ));
         }
     };
+    let lookup = match column {
+        Some(column) => format!(
+            "SELECT p.payload_id,length(p.content) FROM {table} d JOIN payloads p ON p.payload_id=d.{column} WHERE d.event_seq=?"
+        ),
+        None => {
+            "SELECT payload_id,length(content) FROM payloads WHERE event_seq=? AND field='body'"
+                .into()
+        }
+    };
     let found: Option<(i64, u64)> = c
-        .query_row(
-            &format!(
-                "SELECT p.payload_id,length(p.content) FROM {table} d JOIN payloads p ON p.payload_id=d.{column} WHERE d.event_seq=?"
-            ),
-            [seq],
-            |r| Ok((crate::sql_value::value(r, 0)?, crate::sql_value::value(r, 1)?)),
-        )
+        .query_row(&lookup, [seq], |r| {
+            Ok((
+                crate::sql_value::value(r, 0)?,
+                crate::sql_value::value(r, 1)?,
+            ))
+        })
         .optional()
         .map_err(sql)?;
     let Some((payload_id, bytes)) = found else {
@@ -127,16 +137,18 @@ pub(crate) fn body(
     }
     {
         let _allowed = permit::body(seq, "body");
-        let digest = if table == "turn_data" {
-            ",source_sha256=NULL"
-        } else {
-            ""
-        };
-        c.execute(
-            &format!("UPDATE {table} SET {column}=NULL{digest} WHERE event_seq=?"),
-            [seq],
-        )
-        .map_err(sql)?;
+        if let Some(column) = column {
+            let digest = if table == "turn_data" {
+                ",source_sha256=NULL"
+            } else {
+                ""
+            };
+            c.execute(
+                &format!("UPDATE {table} SET {column}=NULL{digest} WHERE event_seq=?"),
+                [seq],
+            )
+            .map_err(sql)?;
+        }
         c.execute("DELETE FROM payloads WHERE payload_id=?", [payload_id])
             .map_err(sql)?;
     }

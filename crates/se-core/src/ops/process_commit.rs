@@ -94,12 +94,14 @@ pub(crate) fn batch<R: Snapshot>(
     batch.events.extend(events);
     Ok(batch)
 }
-fn credential_revision<R: Snapshot>(
+/// The credential's revocation; `None` when it is already terminal.
+fn revocation<R: Snapshot>(
     cx: &Cx<'_, R>,
     session: &se_types::SessionId,
     purpose: &str,
     active: bool,
-) -> Result<Expected> {
+    reason: &str,
+) -> Result<Option<EventBody<InputText>>> {
     let id = session_credential_id(session, purpose)?;
     let head = scope::require_present(
         cx.read
@@ -123,7 +125,15 @@ fn credential_revision<R: Snapshot>(
             "credential owner, purpose or state differs; preserve the session and reconcile the original grant",
         ));
     }
-    Ok(Expected::Revision(head.record.revision))
+    Ok(
+        (head.record.state != se_store::CredentialState::Revoked).then(|| {
+            EventBody::CredentialRevoked {
+                credential: id,
+                expected: Expected::Revision(head.record.revision),
+                reason: InputText::Inline(reason.into()),
+            }
+        }),
+    )
 }
 
 /// Revocation is committed before the pin is removed or the session is terminal.
@@ -167,11 +177,7 @@ pub fn retire_binding<R: Snapshot>(
 ) -> Result<AtomicBatch> {
     let mut bodies = Vec::with_capacity(3);
     for purpose in ["session", "http"] {
-        bodies.push(EventBody::CredentialRevoked {
-            credential: session_credential_id(&session, purpose)?,
-            expected: credential_revision(cx, &session, purpose, active)?,
-            reason: InputText::Inline(reason.clone()),
-        });
+        bodies.extend(revocation(cx, &session, purpose, active, &reason)?);
     }
     bodies.push(terminal_session(session.clone(), active, reason)?);
     batch(
@@ -184,29 +190,24 @@ pub fn retire_binding<R: Snapshot>(
     )
 }
 
-/// Close external admission before potentially failing final transcript capture.
+/// Close external admission before potentially failing final transcript capture;
+/// `None` when both credentials are already revoked.
 pub fn revoke_binding<R: Snapshot>(
     kernel: &Kernel,
     session: se_types::SessionId,
     active: bool,
     cx: &Cx<'_, R>,
-) -> Result<AtomicBatch> {
+) -> Result<Option<AtomicBatch>> {
     let mut bodies = Vec::with_capacity(2);
+    let reason = "native lifecycle cleanup; external admission closed";
     for purpose in ["session", "http"] {
-        bodies.push(EventBody::CredentialRevoked {
-            credential: session_credential_id(&session, purpose)?,
-            expected: credential_revision(cx, &session, purpose, active)?,
-            reason: InputText::Inline("native lifecycle cleanup; external admission closed".into()),
-        });
+        bodies.extend(revocation(cx, &session, purpose, active, reason)?);
     }
-    batch(
-        kernel,
-        "agent.launch",
-        phase_key(&session.as_str().parse()?, "revoke-credentials")?,
-        serde_json::json!({"session":session,"phase":"revoke-credentials"}),
-        bodies,
-        cx,
-    )
+    let key = phase_key(&session.as_str().parse()?, "revoke-credentials")?;
+    let intent = serde_json::json!({"session":session,"phase":"revoke-credentials"});
+    (!bodies.is_empty())
+        .then(|| batch(kernel, "agent.launch", key, intent, bodies, cx))
+        .transpose()
 }
 /// End the externally revoked session after its final capture completed.
 pub fn end_binding<R: Snapshot>(

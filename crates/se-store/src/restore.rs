@@ -88,11 +88,12 @@ fn verify_backup(
     let integrity: String = c
         .query_row("PRAGMA integrity_check", [], |r| r.get(0))
         .map_err(sql)?;
-    if &info.id != store
-        || info.incarnation != incarnation
-        || info.head.as_ref() != Some(&backup.through)
-        || integrity != "ok"
-    {
+    // A backup of a store without events records through-sequence 0 for its absent head.
+    let same_head = match &info.head {
+        Some(head) => head == &backup.through,
+        None => backup.through.sequence() == 0,
+    };
+    if &info.id != store || info.incarnation != incarnation || !same_head || integrity != "ok" {
         return Err(restore_failed(
             "the backup generation does not open as the store it records",
         ));

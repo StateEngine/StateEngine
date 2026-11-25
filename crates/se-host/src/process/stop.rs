@@ -471,15 +471,12 @@ impl LaunchCoordinator {
     }
     async fn revoke_credentials(&self, work: &mut Work, deadline: &Deadline) -> Result<()> {
         if !work.credentials_revoked {
-            let session = work.meta.session.clone();
-            let active = work.active;
+            let (session, active) = (work.meta.session.clone(), work.active);
+            let admission = work.cleanup_admission.clone();
             self.store
-                .commit(
-                    work.cleanup_admission.clone(),
-                    deadline,
-                    None,
-                    move |kernel, cx| process_commit::revoke_binding(kernel, session, active, cx),
-                )
+                .commit_if_needed(admission, deadline, move |kernel, cx| {
+                    process_commit::revoke_binding(kernel, session, active, cx)
+                })
                 .await?;
             work.credentials_revoked = true;
         }

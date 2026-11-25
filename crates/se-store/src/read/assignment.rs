@@ -80,7 +80,7 @@ impl SqliteSnapshot {
         event: &EventId,
         agent: &AgentId,
     ) -> StoreResult<bool> {
-        if self.info.schema_version < 15 || !self.has_assignment_floor()? {
+        if self.info.schema_version < 16 || !self.has_assignment_floor()? {
             return Ok(false);
         }
         let project = self.project_bytes()?;
