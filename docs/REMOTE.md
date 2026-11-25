@@ -82,22 +82,23 @@ se remote launch --host build --target PROJECT_ID/AGENT_ID --key start-1        
 se remote launch --host build --target PROJECT_ID/AGENT_ID --resume --key start-2   # saved conversation
 ```
 
-The destination starts that agent headlessly with its saved profile. Without
-`--resume` it starts a fresh conversation; `--resume` reopens the latest saved
-conversation, and `--resume SESSION` selects a specific saved session. Launch does not
-create an identity, override its model, send work, or stop existing work. A start receipt confirms the original launch; replaying it does not
-claim the agent is still running. Use its returned session for remote send, which
-refuses a stopped or replaced session. A pending launch retains its key; repeat the
-same launch with that key to observe its result. Revoking launch consent blocks
-future reservations; already admitted launches and running agents continue.
+The destination starts that agent headlessly with its saved profile. Without `--resume`
+it starts a fresh conversation; `--resume` reopens the latest saved conversation, and
+`--resume SESSION` selects a specific saved session. Launch does not create an identity,
+override its model, send work, or stop existing work. A start receipt confirms the
+original launch; replaying it does not claim the agent is still running. Use its
+returned session for remote send, which refuses a stopped or replaced session. A pending
+launch retains its key; repeat the same launch with that key to observe its result.
+Revoking launch consent blocks future reservations; already admitted launches and
+running agents continue.
 
 ## Reading IDs and cursors
 
-Remote commands take exact IDs rather than names. `se remote list --host build`
-prints each allowed agent's project ID, agent ID and current session ID: use
-`PROJECT_ID/AGENT_ID` as `--target`, and the session ID as `--session` for
-`remote send`. `remote watch` returns one bounded page with its cursors; pass them back
-with `--cursors` to continue from where the page ended rather than constructing them. Disconnecting
-or ending a watch never stops remote work.
+Remote commands take exact IDs rather than names. `se remote list --host build` prints
+each allowed agent's project ID, agent ID and current session ID: use
+`PROJECT_ID/AGENT_ID` as `--target`, and the session ID as `--session` for `remote
+send`. `remote watch` returns one bounded page with its cursors; pass them back with
+`--cursors` to continue from where the page ended rather than constructing them.
+Disconnecting or ending a watch never stops remote work.
 
 Linux-to-Linux SSH remote is exercised nightly; Windows remote is not yet qualified.

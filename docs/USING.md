@@ -160,8 +160,9 @@ delivery, reading or task completion.
 Managed Claude and Codex sessions discover the same compact MCP tool catalogue. It
 advertises argument shapes, required fields, enums and defaults; the runtime still
 checks complete value grammars, bounds and permissions. For full input and output
-schemas, run `se schema OP --json`, for example `se schema message.send --json` or
-`se schema atlas.refs --json`; without `--json` it prints only the operation names. The [operation reference](OPS.md) lists operation names.
+schemas, run `se schema OP --json`, for example `se schema message.send --json` or `se
+schema atlas.refs --json`; without `--json` it prints only the operation names. The
+[operation reference](OPS.md) lists operation names.
 
 - Omit `agent_id` and `project_id` in a managed session. If supplied, they must match
   its authenticated caller; they never select another caller. Use `target_agent_id`

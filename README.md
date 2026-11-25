@@ -48,11 +48,12 @@ npm install -g @stateengine/cli      # or try it first: npx @stateengine/cli --v
 ```
 
 The install script prints an absolute `se --version` command: run it, then add the
-printed folder to PATH or open a fresh login terminal before continuing, so plain
-`se --version` prints `stateengine` and a version number. The installer runs as your
-normal user, needs no administrator rights, and starts nothing in the background. Supported platforms: Linux x86_64 (glibc), macOS on Apple silicon and Intel,
-and Windows x86_64. Releases are unsigned; the installer verifies each archive's
-SHA-256 checksum before installing.
+printed folder to PATH or open a fresh login terminal before continuing, so plain `se
+--version` prints `stateengine` and a version number. The installer runs as your normal
+user, needs no administrator rights, and starts nothing in the background. Supported
+platforms: Linux x86_64 (glibc), macOS on Apple silicon and Intel, and Windows x86_64.
+Releases are unsigned; the installer verifies each archive's SHA-256 checksum before
+installing.
 
 A standalone install upgrades by running the installer again and is removed with
 `se uninstall`; an npm install uses `npm update -g @stateengine/cli` and
@@ -61,8 +62,8 @@ verification, pinned versions, upgrades, uninstalling and building from source a
 covered in **[docs/INSTALL.md](docs/INSTALL.md)**.
 
 You also need [Git](https://git-scm.com/downloads) and at least one signed-in agent:
-[Claude Code](https://code.claude.com/docs/en/setup) (`claude auth status`) or
-[Codex CLI](https://developers.openai.com/codex/cli/) 0.152.0 or newer (`codex login status`).
+[Claude Code](https://code.claude.com/docs/en/setup) (`claude auth status`) or [Codex
+CLI](https://developers.openai.com/codex/cli/) 0.152.0 or newer (`codex login status`).
 StateEngine uses your own provider account; it never supplies one.
 
 ## 60-second quickstart
@@ -76,13 +77,18 @@ se init --provider claude            # or: se init --provider codex
 se launch main --task "Create notes.md with one sentence describing this repo." --detach
 se status                            # project, agents, runtime and unread mail
 se history --agent main              # read the conversation as it is saved
-cat notes.md                         # check the result (PowerShell: Get-Content .\notes.md)
 ```
 
 `se init` registers the folder and saves an agent named `main`. It writes no files into
 your working tree and leaves your Git history alone, then prints the exact launch command
-for your setup. A running agent is not a finished task: read `se history --agent main`
-until the reply appears, then check `notes.md`. Stop and come back later:
+for your setup. A running agent is not a finished task: repeat `se history --agent main`
+until the assistant's reply is saved, then check the result:
+
+```sh
+cat notes.md                         # PowerShell: Get-Content .\notes.md
+```
+
+Stop and come back later:
 
 ```sh
 se stop main                         # stop for now; the conversation is saved
@@ -113,8 +119,9 @@ codex mcp add stateengine -- se mcp
 
 Don't repeat these for a provider init already registered: Claude Code refuses a
 duplicate name and a manual Codex entry replaces the one init wrote. For any other MCP
-client, register the command `se` with the argument `mcp`, adding `--home DIR` or
-`--project PROJECT` before `mcp` when you use a custom state home or several projects.
+client, register the command `se` with the argument `mcp` and set the server's working
+directory to your project folder, which selects the project; add `--home DIR` before
+`mcp` when you use a custom state home.
 `stateengine_help` is the index for agents, and `se schema OP --json` prints any
 operation's full input and output schema (for example `se schema message.send --json`).
 
@@ -132,8 +139,9 @@ se status                                              # every agent, its sessio
 Agents use the same mail through MCP. A message is saved when it is sent; StateEngine
 reports delivery and reading separately and never treats "sent" as "read" or "done".
 `se watch --target PROJECT_ID/AGENT_ID --once --wait-ms 0` reads one page of an agent's
-live and saved activity (copy the IDs from the `Next:` line of `se status` and from
-`se agent list`), and `se delegate` launches a one-shot temporary agent with an optional
+live and saved activity. `se agent list` prints each agent's ID (`ag_…`) and the
+`Next:` line of `se status` shows the project ID (`prj_…`), so a target looks like
+`prj_…/ag_…`. and `se delegate` launches a one-shot temporary agent with an optional
 context handoff.
 
 ## Find code with Atlas
@@ -149,9 +157,9 @@ se atlas outline src/app.py          # declarations in one file
 se atlas changes --since 10m         # what changed recently
 ```
 
-Results are compact pointers (file and line range, with size when verified), so agents read only the source they
-need. Agents get the same queries as MCP tools. Atlas is on by default and runs on Linux,
-macOS and Windows.
+Results are compact pointers (file and line range, with size when verified), so agents
+read only the source they need. Agents get the same queries as MCP tools. Atlas is on by
+default and runs on Linux, macOS and Windows.
 
 ## Adopt sessions you already run
 
@@ -173,11 +181,11 @@ se init --harness qwen-code          # or goose, hermes; detected when installed
 ```
 
 Other agents that speak ACP version 1 over stdio and support authenticated HTTP MCP
-connections can be added as a named harness in `config.toml`, then selected with
-`se agent add NAME --harness HARNESS`. Resuming a saved conversation also requires the
-agent to support loading sessions. Saved agents can also pin their own model, endpoint and reasoning
-effort. See **[docs/HARNESSES.md](docs/HARNESSES.md)** for permission profiles,
-per-agent models and harness configuration.
+connections can be added as a named harness in `config.toml`, then selected with `se
+agent add NAME --harness HARNESS`. Resuming a saved conversation also requires the agent
+to support loading sessions. Saved agents can also pin their own model, endpoint and
+reasoning effort. See **[docs/HARNESSES.md](docs/HARNESSES.md)** for permission
+profiles, per-agent models and harness configuration.
 
 ## Work on another machine
 
@@ -210,7 +218,9 @@ on Windows and `~/Library/Application Support/StateEngine` on macOS (`--home DIR
 
 ## Contributing and license
 
-StateEngine is a Rust workspace; see [docs/INSTALL.md](docs/INSTALL.md#build-from-source) to build it.
+StateEngine is a Rust workspace; see [docs/INSTALL.md](docs/INSTALL.md#build-from-source)
+to build it.
+
 The Rust workspace is licensed under the [GNU Affero General Public License, version 3 only](LICENSE).
 Third-party components retain their own licenses.
 
