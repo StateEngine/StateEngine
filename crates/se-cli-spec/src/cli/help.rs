@@ -8,6 +8,8 @@
 pub(super) fn group(name: &str) -> Option<&'static str> {
     Some(match name {
         "captain" => "Set or inspect the project captain",
+        "assignment" => "Open, update and list project assignments",
+        "project" => "Manage registered projects",
         "remote" => "List, watch and message agents through an Owner-configured remote binding",
         "msg" => "Send and read direct or shared project messages",
         "working-state" => "Read or save an agent's working notes",
@@ -31,6 +33,7 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
         "assignment.write" => "Open or update an assignment",
         "assignment.list" => "List open assignments",
         "captain.show" => "Show the project captain",
+        "client.watch" => "Watch live and durable agent activity with bounded waits",
         "remote.list" => "List the agents allowed by a saved remote binding",
         "remote.watch" => "Read one bounded live/durable page; disconnect never stops work",
         "remote.launch" => "Start an existing Owner-approved remote agent with its saved profile",
@@ -43,6 +46,7 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
         "store.restore" => "Restore history from the newest verified automatic backup",
         "store.forget" => "Permanently erase message or captured-turn bodies you name",
         "project.init" => "Register this folder and save your first agent",
+        "project.move" => "Re-attach a project after moving its repository folder",
         "diagnostic.bundle" => "Save a private redacted diagnostic file to share for support",
         "doctor.inspect" => "Check this installation and name exact supported repairs",
         "project.status" => "Show project, agent and unread-message status",
