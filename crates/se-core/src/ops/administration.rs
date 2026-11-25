@@ -161,6 +161,42 @@ impl Validate for HarnessAdd {
                 "at most 128 arguments and 128 environment variable names",
             ));
         }
-        Ok(())
+        self.environment
+            .iter()
+            .try_for_each(|name| environment_name(name))
     }
+}
+
+/// `--env` names a variable the agent may read; its value stays in the
+/// owner's environment and never enters `config.toml`.
+fn environment_name(name: &str) -> Result<()> {
+    if name.contains('=') {
+        return Err(SeError::invalid(
+            "--env",
+            &format!(
+                "a variable name such as OPENAI_API_KEY, not NAME=value; {name:?} includes a value. Values stay in your environment, so pass only the name"
+            ),
+        ));
+    }
+    if name.is_empty()
+        || name.len() > 128
+        || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        return Err(SeError::invalid(
+            "--env",
+            &format!(
+                "a variable name of letters, digits and underscores, at most 128 bytes; {name:?} is not one"
+            ),
+        ));
+    }
+    let upper = name.to_ascii_uppercase();
+    if upper == "SE_SESSION" || upper.starts_with("STATEENGINE_") || upper.starts_with("SECODE_") {
+        return Err(SeError::invalid(
+            "--env",
+            &format!(
+                "{name} is reserved for StateEngine's own session and machine authority and is never passed to an agent; name the agent's own variables instead"
+            ),
+        ));
+    }
+    Ok(())
 }

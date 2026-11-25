@@ -156,29 +156,13 @@ fn resolve(
 
 pub(super) fn add(cx: &Bootstrap, input: HarnessAdd) -> Result<AnyOutput> {
     input.validate()?;
-    authorize(cx, None)?;
-    let lease = exclusive_home(cx)?;
-    authorize(cx, Some(&lease.files))?;
-    let files = &lease.files;
     let path = match &cx.config.origin {
         Origin::File(path) => path.clone(),
         Origin::BuiltIn => cx.home.join("config.toml"),
     };
-    let mut pin = se_proc::OwnedFile::open(&path)
-        .map_err(|e| scope::unreadable("harness configuration", &e.to_string()))?;
-    let (observed, prior) = init_config::load_observed_config(&mut pin)?;
-    init_config::observed_matches_bootstrap(&observed, cx)?;
-    if observed.harnesses.contains_key(&input.name) {
-        return Err(SeError::invalid(
-            "harness name",
-            &format!(
-                "a new name; [harnesses.{}] already exists in {}. Edit that entry there, or choose another name",
-                input.name,
-                path.display()
-            ),
-        ));
-    }
-    let profile = observed.providers.acp.profile.clone();
+    // The locked read below must equal this bootstrap configuration, so a taken
+    // name or a missing command refuses here, before anything is created.
+    let profile = cx.config.value.providers.acp.profile.clone();
     let descriptor = HarnessDescriptor {
         driver: Driver::AcpStdio,
         command: input.command.clone(),
@@ -189,6 +173,29 @@ pub(super) fn add(cx: &Bootstrap, input: HarnessAdd) -> Result<AnyOutput> {
         unadvertised_http_mcp: false,
         permissions: BTreeMap::from([(profile.clone(), PermissionChoice::default())]),
     };
+    if cx.config.value.harnesses.contains_key(&input.name) {
+        return Err(SeError::invalid(
+            "harness name",
+            &format!(
+                "a new name; [harnesses.{}] already exists in {}. Edit that entry there, or choose another name",
+                input.name,
+                path.display()
+            ),
+        ));
+    }
+    let mut proposed = cx.config.value.clone();
+    proposed
+        .harnesses
+        .insert(input.name.clone(), descriptor.clone());
+    resolve_command(&proposed, &input.name)?;
+    authorize(cx, None)?;
+    let lease = exclusive_home(cx)?;
+    authorize(cx, Some(&lease.files))?;
+    let files = &lease.files;
+    let mut pin = se_proc::OwnedFile::open(&path)
+        .map_err(|e| scope::unreadable("harness configuration", &e.to_string()))?;
+    let (observed, prior) = init_config::load_observed_config(&mut pin)?;
+    init_config::observed_matches_bootstrap(&observed, cx)?;
     // Without a file yet, start from the defaults the observed reader applied.
     let text = match &prior {
         Some(bytes) => std::str::from_utf8(bytes)
@@ -198,8 +205,19 @@ pub(super) fn add(cx: &Bootstrap, input: HarnessAdd) -> Result<AnyOutput> {
             .map_err(|e| scope::unreadable("configuration encoding", &e.to_string()))?,
     };
     let bytes = with_harness(&text, &input.name, &descriptor)?;
-    let updated: ConfigFile = toml::from_str(&bytes)
-        .map_err(|e| scope::unreadable("harness configuration", &e.to_string()))?;
+    // The file decoded alone, so a failure here is the appended section
+    // colliding with `harnesses` written another way, such as an inline table.
+    let updated: ConfigFile = toml::from_str(&bytes).map_err(|e| {
+        let mut error = scope::unreadable("harness configuration", &e.to_string());
+        error.body = error.body.with_remedy(se_types::Remedy {
+            text: format!(
+                "{} defines harnesses in a form a new section cannot join, such as harnesses = {{ ... }}. Rewrite each entry as its own [harnesses.NAME] section, then retry; nothing was written.",
+                path.display()
+            ),
+            command: Some(se_types::Cmd::Manual),
+        });
+        error
+    })?;
     updated.validate()?;
     let saved = updated
         .harnesses
@@ -211,7 +229,6 @@ pub(super) fn add(cx: &Bootstrap, input: HarnessAdd) -> Result<AnyOutput> {
             "the edited file decodes to a different descriptor; nothing was written",
         ));
     }
-    resolve_command(&updated, &input.name)?;
     init_config::publish_bytes(&path, pin, files, prior.as_deref(), bytes.as_bytes())?;
     Ok(HarnessAddOutput {
         name: input.name,

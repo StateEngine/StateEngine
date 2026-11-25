@@ -197,8 +197,10 @@ fn prepare_launch(
         arguments
     };
     log.note("Preparing protected runtime temporary storage");
-    let environment = super::environment::prepare(&files, configuration)?;
+    let (environment, selection) = super::environment::prepare(&files, configuration)?;
     log.note("Protected runtime temporary storage ready");
+    let mut arguments = arguments;
+    arguments.push(selection.into());
     let spec = se_proc::RuntimeLaunchSpec {
         machine,
         startup_nonce: nonce,

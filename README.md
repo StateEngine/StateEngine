@@ -367,9 +367,12 @@ se agent add helper --harness my-agent
 `se harness add` appends `[harnesses.my-agent]` to `config.toml`, keeping the
 existing contents, and maps the `[providers.acp].profile` launch profile to the
 agent's native default. A running host keeps the configuration it started
-with, so registration refuses while one runs; it also works before `se init`. `--env` lists variable names only; values stay in your
-environment. The command must already be installed, built-in provider names are
-refused, and an existing entry is never replaced.
+with, so registration refuses while one runs. `se down` stops the host and the
+agents it manages; their saved conversations stay, and `se up` starts it again
+with the new entry. Registration also works before `se init`. `--env` lists
+variable names only; values stay in your environment. The command must already
+be installed, built-in provider names are refused, and an existing entry is
+never replaced.
 
 Several installed protocol agents can share the same adapter. Give each one a
 named entry in `config.toml`, with an explicit mapping for every launch profile
