@@ -92,6 +92,9 @@ pub struct AgentRow {
     pub retired: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by: Option<String>,
+    /// Process-local cursor resuming after this row in its page's read pin.
+    #[serde(skip)]
+    pub resume_after: Option<se_types::Cursor>,
 }
 /// Which Codex login serves an agent. Identifiers only; never a credential.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

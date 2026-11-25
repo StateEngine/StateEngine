@@ -128,3 +128,69 @@ fn saved_agents_past_one_byte_budget_page_through_every_agent() -> Check {
     assert_eq!(seen, expected, "every agent exactly once, in order");
     Ok(())
 }
+
+const OBSERVED_AGENTS: usize = 101;
+
+/// Protects: native observation enlarges saved rows after the store page is
+/// cut, so the direct CLI and the hosted runtime both cut the observed page
+/// again at its final bytes and continue from the last returned agent.
+#[test]
+fn observed_agent_list_pages_cut_at_their_final_bytes() -> Check {
+    se_proc::initialize_file_creation_owner()?;
+    let f = Fixture::new()?;
+    let root = f.home.join("repository");
+    std::fs::create_dir(&root)?;
+    // Observation adds this home to each row's resume command twice, and the
+    // longest names and models bring the saved rows near one page's bytes.
+    let home = &f.home.join("observed-state-".repeat(8)).join("state");
+    std::fs::create_dir_all(home.parent().ok_or("state parent")?)?;
+    call(home, &root, &["init", "--name", "observed-pages"])?;
+    let model = "m".repeat(128);
+    for index in 0..OBSERVED_AGENTS {
+        let key = format!("observed-page-agent-{index}");
+        let name = format!("observed-{index:03}-{}", "n".repeat(50));
+        let args = ["--key", &key, "agent", "add", &name, "--model", &model];
+        call(home, &root, &args)?;
+    }
+    let direct = list_every_agent(home, &root)?;
+    call(home, &root, &["up"])?;
+    let hosted = list_every_agent(home, &root);
+    call(home, &root, &["down"])?;
+    let hosted = hosted?;
+    assert!(
+        direct.len() > OBSERVED_AGENTS,
+        "every added agent is listed"
+    );
+    assert_eq!(
+        hosted, direct,
+        "hosted and direct pages list the same agents"
+    );
+    Ok(())
+}
+
+/// Pages `agent list --limit 100` to its end; each agent appears exactly once.
+fn list_every_agent(home: &Path, root: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let (mut seen, mut cursor, mut pages) = (Vec::new(), None::<String>, 0);
+    loop {
+        let mut args = vec!["agent", "list", "--limit", "100"];
+        if let Some(cursor) = &cursor {
+            args.extend(["--cursor", cursor]);
+        }
+        let page = call(home, root, &args)?;
+        let items = page["items"].as_array().ok_or("agent page items")?;
+        pages += 1;
+        assert!(!items.is_empty(), "page {pages} made no progress: {page}");
+        for item in items {
+            seen.push(item["id"].as_str().ok_or("agent id")?.to_owned());
+        }
+        match page["next"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+        assert!(pages <= OBSERVED_AGENTS + 1, "paging must terminate");
+    }
+    assert!(pages > 1, "the byte budget split the observed list");
+    let unique: std::collections::BTreeSet<_> = seen.iter().collect();
+    assert_eq!(unique.len(), seen.len(), "no agent is listed twice");
+    Ok(seen)
+}

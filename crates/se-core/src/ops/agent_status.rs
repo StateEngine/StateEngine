@@ -17,113 +17,102 @@ pub fn page<R: Snapshot>(
 }
 
 /// Agents in a finite principal page; hides retired ephemeral agents unless `include_temp` is set.
-/// Rows past the byte budget end the page early with a store-minted `next` cursor.
+/// Principals are read in short chunks, each record once. A chunk's last row keeps the store
+/// cursor after the chunk, so this page and its observed rows can be cut at their final bytes.
 pub fn page_with_temp<R: Snapshot>(
     budget: se_store::ReadBudget,
     include_temp: bool,
     cx: &mut Cx<'_, R>,
 ) -> Result<se_types::Page<AgentRow>> {
-    let principals = principals(budget.clone(), include_temp, cx)?;
-    let mut fields = principals.window().fields().cloned().ok_or_else(|| {
-        scope::unreadable(
-            "agent status page",
-            "store window accounting is unavailable",
-        )
-    })?;
-    let mut next = principals.next().cloned();
-    let (mut rows, mut ends) = (Vec::new(), Vec::new());
-    for (index, record) in principals.into_items().into_iter().enumerate() {
-        let agent = match &record.current.body {
-            EventBody::PrincipalRegistered {
-                principal: Actor::Agent(agent),
-                ..
-            }
-            | EventBody::PrincipalRenamed {
-                principal: Actor::Agent(agent),
-                ..
-            } => agent.clone(),
-            _ => continue,
-        };
-        if matches!(&cx.admission.actor,Actor::Agent(bound) if bound!=&agent) {
-            continue;
-        }
-        let saved = if matches!(cx.admission.actor, Actor::Human(_)) {
-            // Enumeration and row expansion share this immutable read pin.
-            from_principal(agent, record, None, cx)?
-        } else {
-            show(
-                AgentShow {
-                    target_agent_id: Some(agent.clone()),
-                },
-                cx,
-            )?
-        };
-        rows.push(scope::require_present(
-            saved.agent,
-            "saved agent page row",
-            "Read the saved agent by its exact ID in this project, then refresh the agent list.",
-        )?);
-        ends.push(index + 1);
-    }
-    let (fit, bytes) = fitting(&rows, fields.max_bytes)?;
-    if fit < rows.len() {
-        let Some(&consumed) = fit.checked_sub(1).and_then(|last| ends.get(last)) else {
-            return Err(scope::unreadable(
+    let (limit, max) = (budget.page.limit, u64::from(budget.page.max_bytes.get()));
+    let (mut request, mut window, mut rows, mut bytes, mut read) =
+        (budget, None::<se_types::WindowFields>, Vec::new(), 1, 0);
+    let next = loop {
+        // Each chunk fills at most half the remaining budget at the mean row size so far.
+        let rest = max.saturating_sub(bytes) * rows.len() as u64 / (2 * bytes);
+        let chunk = u32::try_from(rest).unwrap_or(CHUNK).clamp(1, CHUNK);
+        request.page.limit =
+            std::num::NonZeroU32::new(chunk.min(limit.get() - read)).unwrap_or(limit);
+        let page = principals(request.clone(), include_temp, cx)?;
+        let mut fields = page.window().fields().cloned().ok_or_else(|| {
+            scope::unreadable(
                 "agent status page",
-                "one expanded saved row exceeds the finite response byte budget",
-            ));
-        };
-        (fields, next) = prefix(budget, include_temp, consumed, cx)?;
-        rows.truncate(fit);
-    }
-    (fields.returned, fields.bytes) = (rows.len() as u64, bytes);
+                "store window accounting is unavailable",
+            )
+        })?;
+        let next = page.next().cloned();
+        read += page.items().len() as u32;
+        for record in page.into_items() {
+            let visible =
+                |agent: &AgentId| !matches!(&cx.admission.actor, Actor::Agent(own) if own != agent);
+            let Some(agent) = record_agent(&record).filter(visible) else {
+                continue;
+            };
+            let row = expand(agent, record, cx)?;
+            bytes += se_types::Page::item_bytes(&row)?;
+            rows.push(row);
+        }
+        if let Some(row) = rows.last_mut() {
+            // Principals after this row in its chunk are not listed rows.
+            row.resume_after.clone_from(&next);
+        }
+        if let Some(first) = window.take() {
+            (fields.from, fields.start_cursor) = (first.from, first.start_cursor);
+            (fields.omitted_before, fields.unreadable) =
+                (first.omitted_before, fields.unreadable + first.unreadable);
+        }
+        window = Some(fields);
+        if next.is_none() || read >= limit.get() || bytes > max {
+            break next;
+        }
+        request.page.after = next;
+    };
+    let mut fields =
+        window.ok_or_else(|| scope::unreadable("agent status page", "no principal read"))?;
+    fields.limit = limit;
     // Principal omissions cannot be relabelled as an exact count of agents.
     if next.is_some() {
         let by_bytes = fields.stop_reason == StopReason::ByteLimit;
         let reason = if by_bytes { Budget } else { Limit };
         fields.omitted_after = se_types::Omission::Unknown { reason };
     }
-    se_types::Page::new(rows, se_types::Window::new(fields)?, next)
+    se_types::Page::fit(rows, fields, next, |row| row.resume_after.clone())
 }
 
-/// How many leading rows fit the byte budget as one JSON array, and its size.
-fn fitting(rows: &[AgentRow], max: std::num::NonZeroU32) -> Result<(usize, u64)> {
-    let (mut fit, mut bytes) = (0, 1);
-    for row in rows {
-        // Each row brings its separator or the closing bracket.
-        let size = serde_json::to_vec(row)
-            .map_err(|e| scope::unreadable("agent status page encoding", &e.to_string()))?
-            .len() as u64
-            + 1;
-        if bytes + size > u64::from(max.get()) {
-            break;
-        }
-        (fit, bytes) = (fit + 1, bytes + size);
-    }
-    Ok((fit, bytes.max(2)))
-}
+/// Most principals per chunk; chunks shrink to one as rows near the byte budget, and
+/// a cut inside a chunk returns fewer rows than fit, never a skipped agent.
+const CHUNK: u32 = 32;
 
-/// Re-read the first `consumed` principals from the same read pin, so the
-/// store mints the cursor that resumes after the last row that fit.
-fn prefix<R: Snapshot>(
-    mut budget: se_store::ReadBudget,
-    include_temp: bool,
-    consumed: usize,
+fn expand<R: Snapshot>(
+    agent: AgentId,
+    record: ProjectionRecord,
     cx: &mut Cx<'_, R>,
-) -> Result<(se_types::WindowFields, Option<se_types::Cursor>)> {
-    let requested = budget.page.limit;
-    budget.page.limit = std::num::NonZeroU32::new(consumed as u32).unwrap_or(requested);
-    let page = principals(budget, include_temp, cx)?;
-    match (page.window().fields().cloned(), page.next().cloned()) {
-        (Some(mut fields), Some(next)) if page.items().len() == consumed => {
-            fields.limit = requested;
-            fields.stop_reason = StopReason::ByteLimit;
-            Ok((fields, Some(next)))
+) -> Result<AgentRow> {
+    let saved = if matches!(cx.admission.actor, Actor::Human(_)) {
+        // Enumeration and row expansion share this immutable read pin.
+        from_principal(agent, record, None, cx)?
+    } else {
+        let target_agent_id = Some(agent.clone());
+        show(AgentShow { target_agent_id }, cx)?
+    };
+    scope::require_present(
+        saved.agent,
+        "saved agent page row",
+        "Read the saved agent by its exact ID in this project, then refresh the agent list.",
+    )
+}
+
+fn record_agent(record: &ProjectionRecord) -> Option<AgentId> {
+    match &record.current.body {
+        EventBody::PrincipalRegistered {
+            principal: Actor::Agent(agent),
+            ..
         }
-        _ => Err(scope::unreadable(
-            "agent status page",
-            "the shortened principal page changed within one read pin",
-        )),
+        | EventBody::PrincipalRenamed {
+            principal: Actor::Agent(agent),
+            ..
+        } => Some(agent.clone()),
+        _ => None,
     }
 }
 
@@ -261,6 +250,7 @@ fn from_principal<R: Snapshot>(
                 ephemeral,
                 retired,
                 created_by,
+                resume_after: None,
             },
         },
     })

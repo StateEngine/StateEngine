@@ -399,6 +399,44 @@ impl<T> Page<T> {
         })
     }
 }
+impl<T: Serialize> Page<T> {
+    pub fn item_bytes(item: &T) -> Result<u64> {
+        serde_json::to_vec(item)
+            .map(|bytes| bytes.len() as u64 + 1) // its separator or closing bracket
+            .map_err(|_| SeError::invalid("page item", "a JSON-encodable value"))
+    }
+    /// Cut items at the last fitting one with a resume point, leaving an unknown count.
+    pub fn fit(
+        mut items: Vec<T>,
+        mut fields: WindowFields,
+        mut next: Option<Cursor>,
+        resume: impl Fn(&T) -> Option<Cursor>,
+    ) -> Result<Self> {
+        let (max, mut fit, mut bytes) = (fields.max_bytes.get(), 0, 1);
+        for item in &items {
+            let size = Self::item_bytes(item)?;
+            if bytes + size > u64::from(max) {
+                break;
+            }
+            (fit, bytes) = (fit + 1, bytes + size);
+        }
+        if fit < items.len() {
+            let found = (0..fit).rev().find_map(|i| Some((i, resume(&items[i])?)));
+            let Some((last, cursor)) = found else {
+                let got = (bytes + Self::item_bytes(&items[fit])?) as usize;
+                return Err(SeError::too_large("byte-bounded page", max as usize, got));
+            };
+            items.truncate(last + 1);
+            bytes = 1 + items.iter().map(Self::item_bytes).sum::<Result<u64>>()?;
+            (fields.end_cursor, next) = (Some(cursor.clone()), Some(cursor));
+            fields.stop_reason = StopReason::ByteLimit;
+            let reason = OmissionReason::Budget;
+            fields.omitted_after = Omission::Unknown { reason };
+        }
+        (fields.returned, fields.bytes) = (items.len() as u64, bytes.max(2));
+        Self::new(items, Window::new(fields)?, next)
+    }
+}
 impl<T> Page<T> {
     pub fn items(&self) -> &[T] {
         &self.items
