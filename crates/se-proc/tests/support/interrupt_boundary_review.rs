@@ -1,10 +1,6 @@
 //! Real native groups must keep interrupt separate from force and foreign custody.
 use super::*;
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn interrupt_is_exact_group_sigint_and_rejects_wrong_generation() -> Check {
     let home = Home::new()?;
     let other = Home::new()?;
@@ -30,36 +26,7 @@ fn interrupt_is_exact_group_sigint_and_rejects_wrong_generation() -> Check {
                     parent: ReservationParent::LinuxTracked,
                     created_at_unix_ns: 1,
                 },
-                LaunchSpec {
-                    executable_custody: None,
-                    lifecycle,
-                    generation,
-                    executable: std::env::current_exe()?,
-                    arguments: ["--exact", "stdio_binding_child", "--ignored", "--nocapture"]
-                        .map(Into::into)
-                        .into(),
-                    cwd: home.0.to_path_buf(),
-                    environment: Environment {
-                        entries: vec![(
-                            "STDIO_BINDING_JUDGE_ROOT".into(),
-                            home.0.as_os_str().into(),
-                        )],
-                    },
-                    stdio: empty(),
-                    mode: LaunchMode::HeadlessConsole,
-                    window: None,
-                    policy: LaunchPolicy {
-                        containment: ContainmentRequirement::BestAvailable,
-                        writes: WritePolicy::Workspace {
-                            roots: vec![home.0.to_path_buf()],
-                            scratch: home.0.to_path_buf(),
-                        },
-                        network: NetworkPolicy::Allow,
-                        hardening: OptionalHardening::Off,
-                    },
-                    deadline: until,
-                    notifications: Arc::new(Notices),
-                },
+                interrupt_child_spec(home, lifecycle, generation, until)?,
             )
             .map_err(error)?;
         runtime
@@ -75,25 +42,7 @@ fn interrupt_is_exact_group_sigint_and_rejects_wrong_generation() -> Check {
             LaunchStart::Pending { ticket, .. } => ticket,
             LaunchStart::Failed(f) => return Err(format!("launch failed: {:?}", f.error).into()),
         };
-        loop {
-            match runtime.poll_launch(&ticket).map_err(error)? {
-                LaunchProgress::Started(_) => break,
-                LaunchProgress::AwaitingExecCommit(_) => {
-                    runtime.authorize_exec(&ticket).map_err(error)?
-                }
-                LaunchProgress::Failed(f) => {
-                    return Err(format!("exec failed: {:?}", f.error).into());
-                }
-                _ if Instant::now() < until => std::thread::park_timeout(Duration::from_millis(5)),
-                _ => return Err("launch timed out".into()),
-            }
-        }
-        while !home.0.join("vendor-ran").try_exists()? {
-            if Instant::now() >= until {
-                return Err("fixture exec not witnessed".into());
-            }
-            std::thread::park_timeout(Duration::from_millis(5));
-        }
+        await_vendor_exec(&runtime, &ticket, home, until)?;
         Ok(scope)
     };
     let mut target = launch(&home, 1)?;
@@ -112,8 +61,93 @@ fn interrupt_is_exact_group_sigint_and_rejects_wrong_generation() -> Check {
         .map_err(error)?;
     let attempt = runtime.request_interrupt(token).map_err(error)?;
     assert_eq!(attempt.dispatch.map_err(error)?, StopDispatch::Requested);
+    let witness = interrupt_witness(&runtime, &attempt.ticket, until)?;
+    assert_eq!(witness.scope_exit.remaining.population, Population::Empty);
+    assert!(
+        matches!(
+            runtime.observe(&guard.process).map_err(error)?.root,
+            ProcessObservation::Live(_)
+        ),
+        "foreign native scope was interrupted"
+    );
+    runtime.release(&target.process, &witness).map_err(error)?;
+    target.released = true;
+    fs::write(other.0.join("exec-observed"), b"release exact guard")?;
+    guard.release()?;
+    assert!(runtime.arena_snapshot().map_err(error)?.entries.is_empty());
+    Ok(())
+}
+
+fn interrupt_child_spec(
+    home: &Home,
+    lifecycle: LifecycleId,
+    generation: GenerationId,
+    until: Instant,
+) -> Check<LaunchSpec> {
+    Ok(LaunchSpec {
+        executable_custody: None,
+        lifecycle,
+        generation,
+        executable: std::env::current_exe()?,
+        arguments: ["--exact", "stdio_binding_child", "--ignored", "--nocapture"]
+            .map(Into::into)
+            .into(),
+        cwd: home.0.to_path_buf(),
+        environment: Environment {
+            entries: vec![("STDIO_BINDING_JUDGE_ROOT".into(), home.0.as_os_str().into())],
+        },
+        stdio: empty(),
+        mode: LaunchMode::HeadlessConsole,
+        window: None,
+        policy: LaunchPolicy {
+            containment: ContainmentRequirement::BestAvailable,
+            writes: WritePolicy::Workspace {
+                roots: vec![home.0.to_path_buf()],
+                scratch: home.0.to_path_buf(),
+            },
+            network: NetworkPolicy::Allow,
+            hardening: OptionalHardening::Off,
+        },
+        deadline: until,
+        notifications: Arc::new(Notices),
+    })
+}
+
+fn await_vendor_exec(
+    runtime: &NativeProcessRuntime,
+    ticket: &LaunchTicket,
+    home: &Home,
+    until: Instant,
+) -> Check {
+    loop {
+        match runtime.poll_launch(ticket).map_err(error)? {
+            LaunchProgress::Started(_) => break,
+            LaunchProgress::AwaitingExecCommit(_) => {
+                runtime.authorize_exec(ticket).map_err(error)?
+            }
+            LaunchProgress::Failed(f) => {
+                return Err(format!("exec failed: {:?}", f.error).into());
+            }
+            _ if Instant::now() < until => std::thread::park_timeout(Duration::from_millis(5)),
+            _ => return Err("launch timed out".into()),
+        }
+    }
+    while !home.0.join("vendor-ran").try_exists()? {
+        if Instant::now() >= until {
+            return Err("fixture exec not witnessed".into());
+        }
+        std::thread::park_timeout(Duration::from_millis(5));
+    }
+    Ok(())
+}
+
+fn interrupt_witness(
+    runtime: &NativeProcessRuntime,
+    ticket: &StopTicket,
+    until: Instant,
+) -> Check<Box<StopWitness>> {
     let witness = loop {
-        match runtime.witness_stop(&attempt.ticket).map_err(error)? {
+        match runtime.witness_stop(ticket).map_err(error)? {
             StopObservation::Complete(w) => break w,
             _ if Instant::now() < until => std::thread::park_timeout(Duration::from_millis(5)),
             _ => return Err("interrupt scope remained live".into()),
@@ -130,18 +164,5 @@ fn interrupt_is_exact_group_sigint_and_rejects_wrong_generation() -> Check {
         "interrupt must be SIGINT: {:?}",
         witness.root
     );
-    assert_eq!(witness.scope_exit.remaining.population, Population::Empty);
-    assert!(
-        matches!(
-            runtime.observe(&guard.process).map_err(error)?.root,
-            ProcessObservation::Live(_)
-        ),
-        "foreign native scope was interrupted"
-    );
-    runtime.release(&target.process, &witness).map_err(error)?;
-    target.released = true;
-    fs::write(other.0.join("exec-observed"), b"release exact guard")?;
-    guard.release()?;
-    assert!(runtime.arena_snapshot().map_err(error)?.entries.is_empty());
-    Ok(())
+    Ok(witness)
 }

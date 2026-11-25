@@ -5,7 +5,11 @@ use se_proc::{
 };
 use se_types::{Secret, SessionId};
 use sha2::{Digest, Sha256};
-use std::{fs, path::PathBuf, process::Command};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 type Check = Result<(), Box<dyn std::error::Error>>;
 
 /// Protects: pin publication is consumed in another process, with no secret argv/environment.
@@ -26,10 +30,6 @@ fn session_pin_reader_child() -> Check {
 
 /// Protects: real pin producer/reader/remover, absent versus unsafe, and digest-checked foreign preservation.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn protected_session_pin_custody_refuses_drift_and_never_overwrites() -> Check {
     se_proc::initialize_file_creation_owner()?;
     let session = SessionId::from_parts(1_700_000_000_001, [17; 10])?;
@@ -48,23 +48,7 @@ fn protected_session_pin_custody_refuses_drift_and_never_overwrites() -> Check {
         .join(session_launch_id(&session)?.as_str())
         .join("pin");
     assert_eq!(fs::read(&pin)?, token.expose());
-    let child = Command::new(std::env::current_exe()?)
-        .args([
-            "--exact",
-            "session_pin_reader_child",
-            "--ignored",
-            "--nocapture",
-        ])
-        .env("PIN_JUDGE_ROOT", &root)
-        .env("PIN_JUDGE_HANDLE", session.as_str())
-        .env("PIN_JUDGE_DIGEST", se_types::hex_lower(&expected))
-        .output()?;
-    assert!(
-        child.status.success(),
-        "outside pin reader failed: {} {}",
-        String::from_utf8_lossy(&child.stdout),
-        String::from_utf8_lossy(&child.stderr)
-    );
+    outside_reader_sees_digest(&root, &session, expected)?;
 
     assert!(
         publish_session_pin(&files, &session, &token).is_err(),
@@ -103,34 +87,7 @@ fn protected_session_pin_custody_refuses_drift_and_never_overwrites() -> Check {
     fs::write(&pin, token.expose())?;
 
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::{PermissionsExt, symlink};
-        fs::set_permissions(&pin, fs::Permissions::from_mode(0o644))?;
-        assert!(
-            read_session_pin(&files, session.as_str()).is_err(),
-            "reader accepted an exposed pin"
-        );
-        fs::set_permissions(&pin, fs::Permissions::from_mode(0o600))?;
-        let target = root.join("foreign-target");
-        fs::write(&target, token.expose())?;
-        fs::remove_file(&pin)?;
-        symlink(&target, &pin)?;
-        assert!(
-            read_session_pin(&files, session.as_str()).is_err(),
-            "reader followed a replacement symlink"
-        );
-        assert!(
-            remove_session_pin(&files, &session, expected).is_err(),
-            "remover followed a replacement symlink"
-        );
-        assert_eq!(
-            fs::read(&target)?,
-            token.expose(),
-            "symlink target was changed"
-        );
-        fs::remove_file(&pin)?;
-        publish_session_pin(&files, &session, &token)?;
-    }
+    unsafe_pin_files_are_refused(&root, &files, &session, &token, &pin, expected)?;
     remove_session_pin(&files, &session, expected)?;
     assert!(
         !pin.try_exists()?,
@@ -143,5 +100,64 @@ fn protected_session_pin_custody_refuses_drift_and_never_overwrites() -> Check {
     remove_session_pin(&files, &session, expected)?;
     drop(files);
     fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+fn outside_reader_sees_digest(root: &Path, session: &SessionId, expected: [u8; 32]) -> Check {
+    let child = Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "session_pin_reader_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("PIN_JUDGE_ROOT", root)
+        .env("PIN_JUDGE_HANDLE", session.as_str())
+        .env("PIN_JUDGE_DIGEST", se_types::hex_lower(&expected))
+        .output()?;
+    assert!(
+        child.status.success(),
+        "outside pin reader failed: {} {}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn unsafe_pin_files_are_refused(
+    root: &Path,
+    files: &NativeStateFiles,
+    session: &SessionId,
+    token: &Secret,
+    pin: &Path,
+    expected: [u8; 32],
+) -> Check {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    fs::set_permissions(pin, fs::Permissions::from_mode(0o644))?;
+    assert!(
+        read_session_pin(files, session.as_str()).is_err(),
+        "reader accepted an exposed pin"
+    );
+    fs::set_permissions(pin, fs::Permissions::from_mode(0o600))?;
+    let target = root.join("foreign-target");
+    fs::write(&target, token.expose())?;
+    fs::remove_file(pin)?;
+    symlink(&target, pin)?;
+    assert!(
+        read_session_pin(files, session.as_str()).is_err(),
+        "reader followed a replacement symlink"
+    );
+    assert!(
+        remove_session_pin(files, session, expected).is_err(),
+        "remover followed a replacement symlink"
+    );
+    assert_eq!(
+        fs::read(&target)?,
+        token.expose(),
+        "symlink target was changed"
+    );
+    fs::remove_file(pin)?;
+    publish_session_pin(files, session, token)?;
     Ok(())
 }

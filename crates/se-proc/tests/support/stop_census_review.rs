@@ -97,10 +97,6 @@ fn census_miss_is_recoverable_but_real_escape_remains_unproved() -> Check {
 
 #[test]
 #[ignore = "standalone native observer with one process-local census fault"]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn native_census_observer() -> Check {
     let mode = std::env::var("SE_CENSUS_MODE")?;
     let home = Home::new()?;
@@ -123,41 +119,7 @@ fn native_census_observer() -> Check {
                 parent: ReservationParent::LinuxTracked,
                 created_at_unix_ns: 1,
             },
-            LaunchSpec {
-                executable_custody: None,
-                lifecycle,
-                generation,
-                executable: std::env::current_exe()?,
-                arguments: [
-                    "--exact",
-                    "stop_census_review::native_census_root",
-                    "--ignored",
-                    "--nocapture",
-                ]
-                .map(Into::into)
-                .into(),
-                cwd: home.0.to_path_buf(),
-                environment: Environment {
-                    entries: vec![
-                        ("SE_CENSUS_ROOT".into(), home.0.as_os_str().into()),
-                        ("SE_CENSUS_MODE".into(), mode.clone().into()),
-                    ],
-                },
-                stdio: empty(),
-                mode: LaunchMode::Headless,
-                window: None,
-                policy: LaunchPolicy {
-                    containment: ContainmentRequirement::BestAvailable,
-                    writes: WritePolicy::Workspace {
-                        roots: vec![home.0.to_path_buf()],
-                        scratch: home.0.to_path_buf(),
-                    },
-                    network: NetworkPolicy::Allow,
-                    hardening: OptionalHardening::Off,
-                },
-                deadline: until,
-                notifications: Arc::new(Notices),
-            },
+            census_child_spec(&home, lifecycle, generation, &mode, until)?,
         )
         .map_err(error)?;
     runtime
@@ -169,11 +131,106 @@ fn native_census_observer() -> Check {
         LaunchStart::Pending { ticket, .. } => ticket,
         LaunchStart::Failed(failure) => return Err(format!("launch: {:?}", failure.error).into()),
     };
+    let record = launched_record(&runtime, &ticket, until)?;
+    release.1 = Some(record.root.clone());
+    wait_for(&home.0.join("ready"))?;
+    let before = runtime.observe(&process).map_err(error)?;
+    assert!(
+        matches!(before.scope.remaining.extent, EnumerationExtent::Complete),
+        "{before:?}"
+    );
+    let target = retained_target(&mode, &home, &record, &before)?;
+    let during = runtime.observe(&process).map_err(error)?;
+    assert!(
+        during
+            .scope
+            .remaining
+            .known_live
+            .iter()
+            .any(|p| p.pid == target),
+        "retained live member lost: {during:?}"
+    );
+    omission_never_changes_group(&mode, &machine, target, &record)?;
+    let recovered = runtime.observe(&process).map_err(error)?;
+    drop(release);
+    let closed = loop {
+        let observed = runtime.witness_exit(&process).map_err(error)?;
+        if matches!(
+            observed,
+            StopObservation::Complete(_) | StopObservation::Bounded(_)
+        ) {
+            let root = read_process(machine.clone(), record.root.pid).map_err(error)?;
+            assert!(
+                !matches!(root, ProcessRead::Present(_)),
+                "witness preceded exact root exit"
+            );
+            break observed;
+        }
+        assert!(Instant::now() < until, "owned root did not exit");
+        std::thread::park_timeout(Duration::from_millis(5));
+    };
+    exit_matches_mode(&mode, &runtime, &process, closed, &during, &recovered)?;
+    println!(
+        "{mode}: exact root {} exited; native census and retained identity checked",
+        record.root.pid.0
+    );
+    Ok(())
+}
+
+fn census_child_spec(
+    home: &Home,
+    lifecycle: LifecycleId,
+    generation: GenerationId,
+    mode: &str,
+    until: Instant,
+) -> Check<LaunchSpec> {
+    Ok(LaunchSpec {
+        executable_custody: None,
+        lifecycle,
+        generation,
+        executable: std::env::current_exe()?,
+        arguments: [
+            "--exact",
+            "stop_census_review::native_census_root",
+            "--ignored",
+            "--nocapture",
+        ]
+        .map(Into::into)
+        .into(),
+        cwd: home.0.to_path_buf(),
+        environment: Environment {
+            entries: vec![
+                ("SE_CENSUS_ROOT".into(), home.0.as_os_str().into()),
+                ("SE_CENSUS_MODE".into(), mode.into()),
+            ],
+        },
+        stdio: empty(),
+        mode: LaunchMode::Headless,
+        window: None,
+        policy: LaunchPolicy {
+            containment: ContainmentRequirement::BestAvailable,
+            writes: WritePolicy::Workspace {
+                roots: vec![home.0.to_path_buf()],
+                scratch: home.0.to_path_buf(),
+            },
+            network: NetworkPolicy::Allow,
+            hardening: OptionalHardening::Off,
+        },
+        deadline: until,
+        notifications: Arc::new(Notices),
+    })
+}
+
+fn launched_record(
+    runtime: &NativeProcessRuntime,
+    ticket: &LaunchTicket,
+    until: Instant,
+) -> Check<ProcessRecord> {
     let record = loop {
-        match runtime.poll_launch(&ticket).map_err(error)? {
+        match runtime.poll_launch(ticket).map_err(error)? {
             LaunchProgress::Started(value) => break value.record,
             LaunchProgress::AwaitingExecCommit(_) => {
-                runtime.authorize_exec(&ticket).map_err(error)?
+                runtime.authorize_exec(ticket).map_err(error)?
             }
             LaunchProgress::Pending if Instant::now() < until => {
                 std::thread::park_timeout(Duration::from_millis(5))
@@ -184,13 +241,15 @@ fn native_census_observer() -> Check {
             _ => return Err("launch exceeded the original bound".into()),
         }
     };
-    release.1 = Some(record.root.clone());
-    wait_for(&home.0.join("ready"))?;
-    let before = runtime.observe(&process).map_err(error)?;
-    assert!(
-        matches!(before.scope.remaining.extent, EnumerationExtent::Complete),
-        "{before:?}"
-    );
+    Ok(record)
+}
+
+fn retained_target(
+    mode: &str,
+    home: &Home,
+    record: &ProcessRecord,
+    before: &OwnedObservation,
+) -> Check<ProcessId> {
     let target = if mode == "miss" {
         fs::write(
             std::env::var_os("SE_CENSUS_ARM").ok_or("arm absent")?,
@@ -222,16 +281,15 @@ fn native_census_observer() -> Check {
         }
         child
     };
-    let during = runtime.observe(&process).map_err(error)?;
-    assert!(
-        during
-            .scope
-            .remaining
-            .known_live
-            .iter()
-            .any(|p| p.pid == target),
-        "retained live member lost: {during:?}"
-    );
+    Ok(target)
+}
+
+fn omission_never_changes_group(
+    mode: &str,
+    machine: &MachineId,
+    target: ProcessId,
+    record: &ProcessRecord,
+) -> Check {
     if mode != "escape" {
         assert!(
             PathBuf::from(std::env::var_os("SE_CENSUS_HIT").ok_or("hit absent")?).exists(),
@@ -252,29 +310,22 @@ fn native_census_observer() -> Check {
             );
         }
     }
-    let recovered = runtime.observe(&process).map_err(error)?;
-    drop(release);
-    let closed = loop {
-        let observed = runtime.witness_exit(&process).map_err(error)?;
-        if matches!(
-            observed,
-            StopObservation::Complete(_) | StopObservation::Bounded(_)
-        ) {
-            let root = read_process(machine.clone(), record.root.pid).map_err(error)?;
-            assert!(
-                !matches!(root, ProcessRead::Present(_)),
-                "witness preceded exact root exit"
-            );
-            break observed;
-        }
-        assert!(Instant::now() < until, "owned root did not exit");
-        std::thread::park_timeout(Duration::from_millis(5));
-    };
+    Ok(())
+}
+
+fn exit_matches_mode(
+    mode: &str,
+    runtime: &NativeProcessRuntime,
+    process: &OwnedProcess,
+    closed: StopObservation,
+    during: &OwnedObservation,
+    recovered: &OwnedObservation,
+) -> Check {
     if mode != "escape" {
         let StopObservation::Complete(witness) = closed else {
             return Err(format!("one census omission permanently poisoned exact exit: {closed:?}; during={during:?}; recovered={recovered:?}").into());
         };
-        runtime.release(&process, &witness).map_err(error)?;
+        runtime.release(process, &witness).map_err(error)?;
         assert!(
             matches!(
                 recovered.scope.remaining.extent,
@@ -295,10 +346,6 @@ fn native_census_observer() -> Check {
             "real escape became a complete exit: {closed:?}"
         );
     }
-    println!(
-        "{mode}: exact root {} exited; native census and retained identity checked",
-        record.root.pid.0
-    );
     Ok(())
 }
 
