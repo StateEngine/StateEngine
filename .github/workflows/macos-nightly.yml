@@ -67,14 +67,16 @@ jobs:
             text=True,
         )
         compare = json.loads(compare_raw)
+        behind_by = compare.get('behind_by')
         if (
             compare.get('status') not in ('identical', 'ahead')
-            or compare.get('behind_by') != 0
+            or type(behind_by) is not int
+            or behind_by != 0
             or (compare.get('merge_base_commit') or {}).get('sha') != product_commit
         ):
             raise RuntimeError(
                 f"product_commit {product_commit} is not an ancestor of main "
-                f"(status={compare.get('status')!r}, behind_by={compare.get('behind_by')!r})"
+                f"(status={compare.get('status')!r}, behind_by={behind_by!r})"
             )
         save(root / 'nightly-binding.json', nightly)
         files = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(source.glob('*.py'))}

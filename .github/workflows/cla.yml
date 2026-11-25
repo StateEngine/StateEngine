@@ -11,12 +11,11 @@ on:
 
 permissions:
   contents: read
-  issues: write
   pull-requests: read
   statuses: write
 
 concurrency:
-  group: cla-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  group: cla
   cancel-in-progress: false
 
 jobs:
