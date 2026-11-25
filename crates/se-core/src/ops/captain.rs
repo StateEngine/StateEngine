@@ -73,37 +73,79 @@ pub(crate) fn actor_ref<R: Snapshot>(read: &mut R, actor: &Actor) -> Result<Acto
     }
 }
 
-pub fn show<R: Snapshot>(cx: &mut Cx<'_, R>) -> Result<CaptainShowOutput> {
-    let record = cx.read.project_captain().map_err(|e| store_error(&e))?;
-    let captain = match record {
-        Read::Absent { .. } => None,
+/// Current active project captain (`None` if unset or if the designated agent is retired).
+pub(crate) fn active_captain<R: Snapshot>(
+    cx: &mut Cx<'_, R>,
+    remedy: &str,
+) -> Result<Option<Actor>> {
+    match cx.read.project_captain().map_err(|e| store_error(&e))? {
+        Read::Absent { .. } => Ok(None),
         Read::Present { value } => match value.current.body {
-            EventBody::ProjectCaptainChanged { captain, .. } => captain,
-            _ => {
-                return Err(scope::unreadable(
-                    "captain",
-                    "designation event has the wrong kind",
-                ));
+            EventBody::ProjectCaptainChanged {
+                captain: Some(Actor::Agent(agent)),
+                ..
+            } if cx
+                .read
+                .principal_retired(agent.clone())
+                .map_err(|e| store_error(&e))? =>
+            {
+                Ok(None)
             }
+            EventBody::ProjectCaptainChanged { captain, .. } => Ok(captain),
+            _ => Err(scope::unreadable(
+                "captain",
+                "designation event has the wrong kind",
+            )),
         },
         other => {
-            let remedy = if matches!(other, Read::Unknown { .. }) {
-                "Run se up for this data home, then retry se captain show."
-            } else {
-                "Restore access to the project store, then retry se captain show."
-            };
             scope::require_present(other, "captain", remedy)?;
-            return Err(scope::unreadable(
+            Err(scope::unreadable(
                 "captain read",
                 "unexpected present value",
-            ));
+            ))
         }
-    };
+    }
+}
+
+pub fn show<R: Snapshot>(cx: &mut Cx<'_, R>) -> Result<CaptainShowOutput> {
+    let captain = active_captain(
+        cx,
+        "Run se up or restore access to the project store, then retry se captain show.",
+    )?;
     Ok(CaptainShowOutput {
         captain: captain
             .map(|actor| actor_ref(cx.read, &actor))
             .transpose()?,
     })
+}
+
+fn resolve_captain_selector<R: Snapshot>(
+    selector: Option<&str>,
+    cx: &mut Cx<'_, R>,
+) -> Result<Option<Actor>> {
+    match selector {
+        None => Ok(None),
+        Some("me") => Ok(Some(cx.admission.actor.clone())),
+        Some(value) => match scope::selected_actor(cx, value)? {
+            Actor::Agent(agent) => {
+                if cx
+                    .read
+                    .principal_retired(agent.clone())
+                    .map_err(|e| store_error(&e))?
+                {
+                    return Err(SeError::invalid(
+                        "captain",
+                        "an active (non-retired) project agent or me",
+                    ));
+                }
+                Ok(Some(Actor::Agent(agent)))
+            }
+            _ => Err(SeError::invalid(
+                "captain",
+                "a registered project agent or me",
+            )),
+        },
+    }
 }
 
 pub fn change<R: Snapshot>(
@@ -142,19 +184,7 @@ pub fn change<R: Snapshot>(
                 }
             }
         }
-        Read::Absent { .. } => match selector.as_deref() {
-            None => None,
-            Some("me") => Some(cx.admission.actor.clone()),
-            Some(value) => match scope::selected_actor(cx, value)? {
-                actor @ Actor::Agent(_) => Some(actor),
-                _ => {
-                    return Err(SeError::invalid(
-                        "captain",
-                        "a registered project agent or me",
-                    ));
-                }
-            },
-        },
+        Read::Absent { .. } => resolve_captain_selector(selector.as_deref(), cx)?,
         other => {
             scope::require_present(
                 other,

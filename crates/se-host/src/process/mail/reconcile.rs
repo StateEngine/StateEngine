@@ -61,7 +61,8 @@ impl LaunchCoordinator {
                 .is_some_and(|e| matches!(e.report, se_store::mail::OfferReport::Failed { .. }))
             {
                 work.mail.flight = None;
-                return self.settle_mail(target, deadline).await;
+                self.settle_mail(target, deadline).await?;
+                return Ok(());
             }
             let recipient = target.agent.clone();
             let session = target.session.clone();
@@ -118,18 +119,26 @@ impl LaunchCoordinator {
                 let more = flight.reservation.more_pending;
                 let captured_ids = flight.reservation.ids.clone();
                 work.mail.flight = None;
+                work.mail.backlog = more;
                 if more {
                     for id in captured_ids {
                         if !work.mail.seen.contains(&id) {
                             work.mail.seen.push(id);
                         }
                     }
-                    work.mail.backlog = true;
                 } else {
-                    work.mail.backlog = false;
                     work.mail.seen.clear();
                 }
             }
+        }
+        let settled = self.settle_mail(target, deadline).await?;
+        if work
+            .mail
+            .flight
+            .as_ref()
+            .is_some_and(|f| settled.contains(&f.reservation.effect_id))
+        {
+            work.mail.flight = None;
         }
         if let Some(notice) = previous
             && work.mail.flight.is_none()
@@ -137,7 +146,7 @@ impl LaunchCoordinator {
         {
             self.retire_secode_notice(work, &notice, deadline).await?;
         }
-        self.settle_mail(target, deadline).await
+        Ok(())
     }
 
     async fn confirm_captured(
@@ -191,7 +200,11 @@ impl LaunchCoordinator {
         Ok(())
     }
 
-    async fn settle_mail(&self, target: &core::MailTarget, deadline: &Deadline) -> Result<()> {
+    async fn settle_mail(
+        &self,
+        target: &core::MailTarget,
+        deadline: &Deadline,
+    ) -> Result<Vec<RecordId>> {
         let recipient = target.agent.clone();
         let resolved = self
             .store
@@ -244,8 +257,9 @@ impl LaunchCoordinator {
                 Ok(resolved)
             })
             .await?;
+        let mut settled = Vec::with_capacity(resolved.len());
         for (effect, evidence) in resolved {
-            let request = core::SettleResolved {
+            let req = core::SettleResolved {
                 target: target.clone(),
                 effect,
                 evidence,
@@ -254,14 +268,14 @@ impl LaunchCoordinator {
                 &self.store,
                 admission(target),
                 deadline,
-                move |kernel, cx| core::settle_resolved(kernel, cx, request),
-                |_, cx, then, receipt| {
-                    core::settlement_committed(cx, then, receipt)
-                        .map(|value| Read::Present { value })
+                move |kernel, cx| core::settle_resolved(kernel, cx, req),
+                |_, cx, then, r| {
+                    core::settlement_committed(cx, then, r).map(|v| Read::Present { value: v })
                 },
             )
             .await?;
+            settled.push(effect);
         }
-        Ok(())
+        Ok(settled)
     }
 }

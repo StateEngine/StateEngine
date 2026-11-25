@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 
 const MAX_CALLS: usize = 1024;
 const MAX_STATE: usize = 4 * 1024 * 1024;
+pub const MAX_TOOLS_PER_RECORD: usize = 32;
 #[derive(Clone, Default)]
 pub struct Tracker {
     calls: VecDeque<Call>,
@@ -21,52 +22,51 @@ struct Call {
     bytes: usize,
 }
 impl Tracker {
-    pub fn count(value: &Value) -> usize {
-        if value.get("isSidechain").and_then(Value::as_bool) == Some(true)
-            || value.pointer("/message/model").and_then(Value::as_str) == Some("<synthetic>")
-        {
-            return 0;
-        }
-        let kind = value.get("type").and_then(Value::as_str);
-        value
-            .pointer("/message/content")
-            .and_then(Value::as_array)
-            .map_or(0, |blocks| {
-                blocks
-                    .iter()
-                    .filter(|b| {
-                        matches!(
-                            (kind, b.get("type").and_then(Value::as_str)),
-                            (Some("assistant"), Some("tool_use"))
-                                | (Some("user"), Some("tool_result"))
-                        )
-                    })
-                    .count()
-            })
-    }
-    pub fn observe(&mut self, value: &Value) -> Result<Vec<Fact>> {
-        let kind = value.get("type").and_then(Value::as_str);
-        if !matches!(kind, Some("user" | "assistant"))
+    fn blocks(value: &Value) -> Option<(&str, &[Value])> {
+        let kind = value.get("type").and_then(Value::as_str)?;
+        if !matches!(kind, "user" | "assistant")
             || value.get("isSidechain").and_then(Value::as_bool) == Some(true)
             || value.pointer("/message/model").and_then(Value::as_str) == Some("<synthetic>")
         {
-            return Ok(Vec::new());
+            return None;
         }
-        let Some(blocks) = value.pointer("/message/content").and_then(Value::as_array) else {
+        Some((kind, value.pointer("/message/content")?.as_array()?))
+    }
+    fn phase(kind: &str, block: &Value) -> Option<Phase> {
+        match (kind, block.get("type").and_then(Value::as_str)) {
+            ("assistant", Some("tool_use")) => Some(Phase::Called),
+            ("user", Some("tool_result")) => Some(Phase::Completed),
+            _ => None,
+        }
+    }
+    pub fn count(value: &Value) -> usize {
+        Self::blocks(value).map_or(0, |(k, b)| {
+            b.iter()
+                .filter(|x| Self::phase(k, x).is_some())
+                .count()
+                .min(MAX_TOOLS_PER_RECORD)
+        })
+    }
+    pub fn observe(&mut self, value: &Value) -> Result<Vec<Fact>> {
+        let Some((kind, blocks)) = Self::blocks(value) else {
             return Ok(Vec::new());
         };
         let mut facts = Vec::new();
         for (index, block) in blocks.iter().enumerate() {
-            let phase = match (kind, block.get("type").and_then(Value::as_str)) {
-                (Some("assistant"), Some("tool_use")) => Phase::Called,
-                (Some("user"), Some("tool_result")) => Phase::Completed,
-                _ => continue,
+            let Some(phase) = Self::phase(kind, block) else {
+                continue;
             };
-            if facts.len() == 32 {
-                return Err(SeError::invalid(
-                    "native tools per record",
-                    "at most 32 tool facts; preserve the source cursor",
-                ));
+            if facts.len() == MAX_TOOLS_PER_RECORD {
+                facts.pop();
+                facts.push(Fact {
+                    key: "claude/over-budget".into(),
+                    native: NativeIdentity::Unknown(UnknownReason::OverBudget),
+                    phase,
+                    tool: ToolName::Unknown(UnknownReason::OverBudget),
+                    target: Target::Unknown(UnknownReason::OverBudget),
+                    outcome: Outcome::Unknown(UnknownReason::OverBudget),
+                });
+                break;
             }
             let id = label(
                 block.get(if phase == Phase::Called {
@@ -127,10 +127,9 @@ impl Tracker {
                                 "at most 1024 unresolved calls and 4 MiB; preserve the source cursor",
                             ));
                         };
-                        let old = self.calls.remove(index).ok_or_else(|| {
-                            SeError::invalid("native tool cache", "the selected completed entry")
-                        })?;
-                        self.bytes -= old.bytes;
+                        if let Some(old) = self.calls.remove(index) {
+                            self.bytes -= old.bytes;
+                        }
                     }
                     self.bytes += bytes;
                     self.calls.push_back(Call {

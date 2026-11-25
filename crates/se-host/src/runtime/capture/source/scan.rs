@@ -54,12 +54,6 @@ impl ScanState {
         let tool_count = native
             .as_ref()
             .map_or(0, crate::harness::tool_capture::claude::Tracker::count);
-        if tool_count > 32 {
-            return Err(SeError::invalid(
-                "native tools per record",
-                "at most 32 tool facts; preserve the source cursor",
-            ));
-        }
         if tool_count + self.noise.len() > 32 {
             return Ok(LineDecision::Emit {
                 end: self.complete,

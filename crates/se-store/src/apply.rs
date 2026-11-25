@@ -440,6 +440,7 @@ fn change_captain(x: Ctx<'_>, target: &ProjectId, captain: Option<Actor>) -> Sto
                     "choose a registered project agent",
                 ));
             }
+            principal::refuse_retired(c, p, &principal)?;
         }
         Some(Actor::Human(ref human)) if header.actor == Actor::Human(human.clone()) => {}
         Some(_) => {

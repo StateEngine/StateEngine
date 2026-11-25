@@ -1,7 +1,7 @@
 //! Exercise the production native-pin scanner, including retries and cold joins.
 use super::*;
 use crate::test_directory as cleanup_directory;
-use se_core::ops::transcript::tool::{Outcome, Phase, Target};
+use se_core::ops::transcript::tool::{NativeIdentity, Outcome, Phase, Target, UnknownReason};
 use se_store::RecordIdentity;
 use serde_json::{Value, json};
 type Check = std::result::Result<(), Box<dyn std::error::Error>>;
@@ -143,14 +143,20 @@ fn metadata_bound_flushes_prior_noise_and_never_skips_an_overfull_native_record(
             .all(|m| m.record.captured_tool.is_some())
     );
     drop(source);
-    let (_overfull_owner, mut overfull, _) =
+    let (_overfull_owner, mut overfull, overfull_bytes) =
         self::source(&[assistant((0..33).map(call).collect())])?;
-    assert!(scan(&mut overfull, 0, se_store::Provider::Claude).is_err());
-    assert!(
-        overfull.tools.is_empty(),
-        "refused record retained speculative progress"
-    );
-    assert!(scan(&mut overfull, 0, se_store::Provider::Claude).is_err());
+    let bounded = scan(&mut overfull, 0, se_store::Provider::Claude)?.ok_or("overfull missing")?;
+    assert_eq!(bounded.request.new_offset, overfull_bytes.len() as u64);
+    assert_eq!(bounded.request.metadata.len(), 31);
+    let last = bounded
+        .request
+        .metadata
+        .last()
+        .and_then(|m| m.record.captured_tool.as_ref());
+    assert!(matches!(
+        last.map(|t| &t.native),
+        Some(NativeIdentity::Unknown(UnknownReason::OverBudget))
+    ));
     _root_owner.finish(cleanup(_overfull_owner, overfull))
 }
 #[test]
