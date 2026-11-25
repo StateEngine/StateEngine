@@ -114,10 +114,8 @@ impl Adapter for ClaudeAdoption {
 struct CodexAdoption;
 #[cfg(feature = "listener")]
 static CODEX_ADOPTION: CodexAdoption = CodexAdoption;
-/// Proof that first setup (provider adoption) is asking for a login. Only
-/// this crate can make one, so no agent launch can obtain the setup login.
 #[cfg(feature = "listener")]
-pub struct FirstSetup(());
+pub use codex_adapter::FirstSetup;
 /// Host policy that first setup uses but adoption does not own.
 #[cfg(feature = "listener")]
 pub struct HostSetup {
@@ -129,6 +127,9 @@ pub struct HostSetup {
 #[cfg(feature = "listener")]
 mod codex_adapter {
     use super::*;
+    /// Proof that Codex first setup is asking for a login. Only this module
+    /// can make one, so no other adapter or agent launch obtains that login.
+    pub struct FirstSetup(());
     impl Adapter for CodexAdoption {
         #[cfg(any(target_os = "linux", windows))]
         fn prepare(&self, command: &Path, host: &HostSetup) -> Result<ProviderSetup> {

@@ -4,8 +4,8 @@
  "default_crate_lines": 40000,
  "default_directory_lines": 10000,
  "crates": {
-  "se-host": 55185,
-  "se-adoption": 2562,
+  "se-host": 52590,
+  "se-adoption": 2563,
   "se-agent-observation": 1466,
   "se-channels": 6750,
   "se-proc": 4045,
