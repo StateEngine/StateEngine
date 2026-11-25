@@ -1,5 +1,6 @@
 //! One committed record per chunk bounds transient bodies and preserves source order.
 use super::*;
+use se_core::ops::transcript::tool::ObservedPath;
 use se_store::{
     EventKind, HistoryDirection, HistoryQuery, ReadBudget, StorePosition, TranscriptFilter,
 };
@@ -19,15 +20,11 @@ pub fn next_with_paths<R: Snapshot>(
     read: &mut R,
     admission: &Admission,
     after: Option<se_types::EventId>,
-    resolve: &mut dyn FnMut(
-        &crate::ops::transcript::tool::ObservedPath,
-    ) -> Result<Option<RelativePath>>,
+    resolve: &mut dyn FnMut(&ObservedPath) -> Result<Option<RelativePath>>,
 ) -> Result<Option<RecordFeed>> {
     next_scoped(read, admission, after, Some(resolve))
 }
-type PathResolver<'a> = Option<
-    &'a mut dyn FnMut(&crate::ops::transcript::tool::ObservedPath) -> Result<Option<RelativePath>>,
->;
+type PathResolver<'a> = Option<&'a mut dyn FnMut(&ObservedPath) -> Result<Option<RelativePath>>>;
 fn next_scoped<R: Snapshot>(
     read: &mut R,
     admission: &Admission,

@@ -13,6 +13,7 @@ listener = ["dep:tokio", "tokio/net", "tokio/sync", "tokio/time"]
 se-atlas = { path = "../se-atlas" }
 se-atlas-service = { path = "../se-atlas-service" }
 se-core = { path = "../se-core" }
+se-atlas-records = { path = "../se-atlas-records" }
 se-mcp = { path = "../se-mcp" }
 se-store = { path = "../se-store" }
 se-types = { path = "../se-types" }

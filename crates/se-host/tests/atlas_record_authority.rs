@@ -119,17 +119,14 @@ fn committed_feed_preserves_source_order_and_does_not_replay_old_working_text() 
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
     let scope = f.scoped(Visibility::Owner);
     let mut snapshot = reader.snapshot(scope.clone())?;
-    let first = se_core::atlas_records::feed::next(&mut snapshot, &scope.admission, None)?
+    let first = se_atlas_records::feed::next(&mut snapshot, &scope.admission, None)?
         .ok_or("missing first committed feed")?;
     assert_eq!(first.through, old.primary_event);
     assert!(first.changes.is_empty());
     assert!(!first.complete);
-    let second = se_core::atlas_records::feed::next(
-        &mut snapshot,
-        &scope.admission,
-        Some(first.through.clone()),
-    )?
-    .ok_or("missing current feed")?;
+    let second =
+        se_atlas_records::feed::next(&mut snapshot, &scope.admission, Some(first.through.clone()))?
+            .ok_or("missing current feed")?;
     assert_eq!(second.after, Some(first.through));
     assert_eq!(second.through, new.primary_event);
     assert!(second.complete);
@@ -146,7 +143,7 @@ fn committed_feed_preserves_source_order_and_does_not_replay_old_working_text() 
         }
     );
     assert!(
-        se_core::atlas_records::feed::next(&mut snapshot, &scope.admission, Some(second.through))?
+        se_atlas_records::feed::next(&mut snapshot, &scope.admission, Some(second.through))?
             .is_none()
     );
     snapshot.close()?;
@@ -180,7 +177,7 @@ fn shared_work_mail_enters_the_feed_without_expanding_its_audience() -> Check {
     let store = present(SqliteFactory::open_reader(&f.options)?)?;
     let owner_scope = f.scoped(Visibility::Owner);
     let mut owner = store.snapshot(owner_scope.clone())?;
-    let feed = se_core::atlas_records::feed::next(&mut owner, &owner_scope.admission, None)?
+    let feed = se_atlas_records::feed::next(&mut owner, &owner_scope.admission, None)?
         .ok_or("work mail was omitted from committed record history")?;
     assert_eq!(feed.through, sent.primary_event);
     let RecordFeedChange::Upsert(record) = feed.changes.first().ok_or("work mail omitted")? else {

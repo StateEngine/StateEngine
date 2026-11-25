@@ -1595,6 +1595,7 @@ version = "0.0.1-alpha.1"
 dependencies = [
  "rusqlite",
  "se-atlas",
+ "se-atlas-records",
  "se-atlas-service",
  "se-core",
  "se-mcp",
@@ -1628,6 +1629,17 @@ dependencies = [
  "se-atlas-index",
  "se-atlas-search",
  "serde_json",
+]
+
+[[package]]
+name = "se-atlas-records"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-core",
+ "se-store",
+ "se-types",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -1800,6 +1812,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "se-atlas-host",
+ "se-atlas-records",
  "se-channels",
  "se-cli-spec",
  "se-config",

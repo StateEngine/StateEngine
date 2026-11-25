@@ -2,7 +2,7 @@
 mod captured;
 mod excerpt;
 pub mod feed;
-use crate::{ops::receipt, scope, store_error::store_error};
+use se_core::{ops::receipt, scope, store_error::store_error};
 use se_store::{
     Actor, Admission, EventBody, EventHeader, Scope, Snapshot, StoreErrorCode, StoredEvent,
     StoredText,

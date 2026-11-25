@@ -42,7 +42,7 @@ fn message_with_long_multibyte_first_line_enters_the_feed() -> Check {
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
     let scope = f.scoped(Visibility::Owner);
     let mut snapshot = reader.snapshot(scope.clone())?;
-    let feed = se_core::atlas_records::feed::next(&mut snapshot, &scope.admission, None)?
+    let feed = se_atlas_records::feed::next(&mut snapshot, &scope.admission, None)?
         .ok_or("committed message omitted from the feed")?;
     assert_eq!(feed.through, sent.primary_event);
     feed.validate()?;
@@ -67,7 +67,7 @@ fn working_state_with_long_ascii_first_line_enters_the_feed() -> Check {
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
     let scope = f.scoped(Visibility::Owner);
     let mut snapshot = reader.snapshot(scope.clone())?;
-    let feed = se_core::atlas_records::feed::next(&mut snapshot, &scope.admission, None)?
+    let feed = se_atlas_records::feed::next(&mut snapshot, &scope.admission, None)?
         .ok_or("committed working state omitted from the feed")?;
     assert_eq!(feed.through, written.primary_event);
     let record = only_upsert(&feed)?;
