@@ -38,11 +38,12 @@ pub(crate) struct Reference {
     pub lifecycle: LifecycleId,
     pub generation: GenerationId,
 }
-/// Launch progress observed so far: streams bound, then process launched.
-#[derive(Clone, Copy)]
-pub(crate) struct LaunchFacts {
-    pub stdio_bound: bool,
-    pub launched: bool,
+/// Launch progress observed so far: prepared, optionally bound, then launch begun.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LaunchState {
+    Prepared,
+    Bound,
+    Launched,
 }
 pub(crate) struct Slot {
     pub reservation: LaunchReservation,
@@ -51,7 +52,7 @@ pub(crate) struct Slot {
     pub record: Option<ProcessRecord>,
     pub native: Option<crate::platform::Scope>,
     pub spec: Option<LaunchSpec>,
-    pub launch: LaunchFacts,
+    pub launch: LaunchState,
     #[cfg(windows)]
     pub stdio: Option<Arc<crate::platform::NativeStdio>>,
     pub deadline: std::time::Instant,

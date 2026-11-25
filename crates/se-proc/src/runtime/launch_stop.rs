@@ -1,7 +1,7 @@
 //! ProcessRuntime adapter, arena observation and same-host adoption.
 mod launch;
 mod stop;
-use super::{Arena, LaunchFacts, Slot, SlotEntry, notify::Hub, validate};
+use super::{Arena, LaunchState, Slot, SlotEntry, notify::Hub, validate};
 use crate::platform::Progress;
 use crate::support::*;
 use crate::*;

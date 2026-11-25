@@ -115,7 +115,8 @@ fn open_components(root: &File, path: &str, last_directory: bool) -> io::Result<
 }
 /// # Safety
 /// `raw` must be null, `INVALID_HANDLE_VALUE`, or a newly created/opened handle
-/// whose sole ownership is transferred to this call.
+/// whose sole ownership is transferred to this call; the sentinel values are
+/// rejected as an error preserving the pending OS error.
 unsafe fn owned(raw: HANDLE) -> io::Result<File> {
     if raw.is_null() || raw == INVALID_HANDLE_VALUE {
         return Err(io::Error::last_os_error());

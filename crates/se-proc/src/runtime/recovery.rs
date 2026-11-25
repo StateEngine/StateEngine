@@ -1,4 +1,4 @@
-use super::{LaunchFacts, Slot, SlotEntry, notify::Hub};
+use super::{LaunchState, Slot, SlotEntry, notify::Hub};
 use crate::support::*;
 use crate::*;
 use std::{
@@ -255,7 +255,7 @@ fn resume_retained(
                 checkpoint: Box::new(checkpoint.clone()),
             });
         }
-        if !s.launch.launched && s.native.is_none() {
+        if !matches!(s.launch, LaunchState::Launched) && s.native.is_none() {
             return Ok(RecoveryOutcome::PendingScope {
                 process: process(),
                 checkpoint: Box::new(uncreated_checkpoint(s)?),
@@ -410,10 +410,7 @@ fn adopt_cold_record(
         record: None,
         native: None,
         spec: None,
-        launch: LaunchFacts {
-            stdio_bound: true,
-            launched: true,
-        },
+        launch: LaunchState::Launched,
         #[cfg(windows)]
         stdio: None,
         deadline: Instant::now(),

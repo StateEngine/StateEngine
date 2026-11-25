@@ -16,9 +16,14 @@ impl NativeProcessRuntime {
             spec.notifications.clone(),
         ));
         let deadline = spec.deadline;
-        let stdio_bound = spec.stdio.stdin.is_some()
+        let launch = if spec.stdio.stdin.is_some()
             || spec.stdio.stdout.is_some()
-            || spec.stdio.stderr.is_some();
+            || spec.stdio.stderr.is_some()
+        {
+            LaunchState::Bound
+        } else {
+            LaunchState::Prepared
+        };
         let slot = Arc::new(Mutex::new(Slot {
             reservation: reservation.clone(),
             checkpoint: None,
@@ -26,10 +31,7 @@ impl NativeProcessRuntime {
             record: None,
             native: None,
             spec: Some(spec),
-            launch: LaunchFacts {
-                stdio_bound,
-                launched: false,
-            },
+            launch,
             #[cfg(windows)]
             stdio: None,
             deadline,
@@ -74,7 +76,9 @@ impl NativeProcessRuntime {
     ) -> ProcResult<()> {
         let key = &prepared.key;
         self.inner.apply(key, false, |slot| {
-            if slot.launch.launched || slot.phase != LifecycleState::Starting {
+            if matches!(slot.launch, LaunchState::Launched)
+                || slot.phase != LifecycleState::Starting
+            {
                 return Err(state(&key.lifecycle, slot.phase, "bind_stdio"));
             }
             let result = (|| {
@@ -90,7 +94,7 @@ impl NativeProcessRuntime {
                         },
                     ));
                 }
-                if slot.launch.stdio_bound {
+                if matches!(slot.launch, LaunchState::Launched | LaunchState::Bound) {
                     return Err(input(
                         "stdio",
                         "prepared launch already owns stream bindings",
@@ -112,7 +116,7 @@ impl NativeProcessRuntime {
                     ));
                 }
                 spec.stdio = child;
-                slot.launch.stdio_bound = true;
+                slot.launch = LaunchState::Bound;
                 Ok(())
             })();
             if let Err(failure) = &result {
@@ -124,7 +128,7 @@ impl NativeProcessRuntime {
     pub(super) fn native_begin_launch(&self, prepared: PreparedLaunch) -> LaunchStart {
         let key = prepared.key;
         let result = self.inner.apply(&key, false, |s| {
-            if s.launch.launched || s.phase != LifecycleState::Starting {
+            if matches!(s.launch, LaunchState::Launched) || s.phase != LifecycleState::Starting {
                 return Err(state(&key.lifecycle, s.phase, "begin_launch"));
             }
             if let Some(failure) = &s.failure {
@@ -132,7 +136,7 @@ impl NativeProcessRuntime {
             }
             #[cfg(windows)]
             if let Some(stdio) = &s.stdio {
-                if !s.launch.stdio_bound {
+                if !matches!(s.launch, LaunchState::Launched | LaunchState::Bound) {
                     return Err(input(
                         "stdio",
                         "created provider streams must bind before vendor execution",
@@ -149,7 +153,7 @@ impl NativeProcessRuntime {
                     },
                 ));
             }
-            s.launch.launched = true;
+            s.launch = LaunchState::Launched;
             let spec = s
                 .spec
                 .take()
