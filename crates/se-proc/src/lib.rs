@@ -44,9 +44,7 @@ pub use se_native_ipc as native_ipc;
 pub(crate) use se_state_files::native_error;
 mod owner_probe;
 #[cfg(windows)]
-mod uninstall;
-#[cfg(windows)]
-pub use uninstall::{
+pub use se_uninstall::{
     HelperCleanupOutcome, NativeUninstallCarrier, UNINSTALL_CARRIER_ENTRY, UninstallHelperCleanup,
     UninstallNativeError, uninstall_carrier_entry,
 };
@@ -156,8 +154,11 @@ mod birth_time;
 pub use birth_time::{ProcessBirthTime, observe_process_birth};
 
 #[cfg(all(test, windows))]
-#[path = "../tests/support/windows_policy_fixture.rs"]
+#[path = "../../test-support/windows_policy_common.rs"]
 mod windows_policy_fixture;
+#[cfg(all(test, windows))]
+#[path = "../tests/support/windows_policy_fixture.rs"]
+mod windows_policy_tests;
 
 mod session_pin;
 mod sqlite_path;

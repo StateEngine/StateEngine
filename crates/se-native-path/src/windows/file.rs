@@ -3,9 +3,13 @@ use std::{
     fs::File,
     io,
     mem::{size_of, zeroed},
-    os::windows::io::AsRawHandle,
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    ptr,
 };
-use windows_sys::Win32::Storage::FileSystem::*;
+use windows_sys::Win32::{
+    Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE},
+    Storage::FileSystem::*,
+};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FileId {
     pub volume: u64,
@@ -39,4 +43,39 @@ pub fn file_id(file: &File) -> io::Result<FileId> {
         volume: id.VolumeSerialNumber,
         index: id.FileId.Identifier,
     })
+}
+
+/// Raw image open only: each adapter applies its own retained-file policy.
+pub fn open_image_file(path: &[u16], delete: bool) -> io::Result<File> {
+    let Some((&0, prefix)) = path.split_last() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "wide path must be NUL-terminated",
+        ));
+    };
+    if prefix.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "wide path must not contain interior NULs",
+        ));
+    }
+    // SAFETY: `path` was just verified to end with a single trailing NUL and
+    // contain no interior NULs, so `path.as_ptr()` is a valid LPCWSTR for the
+    // duration of the CreateFileW call.
+    let raw = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            GENERIC_READ | READ_CONTROL | if delete { DELETE } else { 0 },
+            FILE_SHARE_READ | FILE_SHARE_DELETE,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            ptr::null_mut(),
+        )
+    };
+    if raw.is_null() || raw == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful CreateFileW transferred one unique reference.
+    Ok(File::from(unsafe { OwnedHandle::from_raw_handle(raw) }))
 }

@@ -1,5 +1,6 @@
 use super::*;
 use crate::windows_policy_fixture::*;
+use crate::windows_policy_tests::set_dacl;
 use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
 #[test]
 fn job_requires_exact_user_and_system_allow_aces() -> Check {

@@ -1,7 +1,7 @@
 //! A pinned native carrier consumes only inherited, already admitted objects.
 //! Preparation is read-only for the installation; authorization follows effects.
 use super::*;
-use crate::{NativeInstallationClaim, OwnedFile};
+use se_state_files::{NativeInstallationClaim, OwnedFile};
 use std::os::windows::ffi::OsStrExt;
 
 #[derive(serde::Serialize)]
@@ -20,7 +20,7 @@ pub struct NativeUninstallCarrier {
     deadline: u64,
 }
 fn entry(file: &File, path: &Path, kind: &'static str, sha: Option<[u8; 32]>) -> Result<Entry> {
-    let id = crate::windows_native::file_id(file)
+    let id = se_native_path::windows::file::file_id(file)
         .map_err(|cause| error("identify uninstall carrier object", cause))?;
     Ok(Entry {
         handle: file.as_raw_handle() as usize as u64,
@@ -67,7 +67,7 @@ impl NativeUninstallCarrier {
         let (mut entries, mut owned) = build_entries(objects, directories, &staging)?;
         // Keep both original parent directories available for native flushes.
         for path in [image.parent(), record_path.parent()].into_iter().flatten() {
-            let file = crate::state_files::windows::effects::uninstall_directory(path)
+            let file = se_state_files::state_files::windows::effects::uninstall_directory(path)
                 .map_err(custody)?
                 .ok_or_else(|| refuse("prepare uninstall carrier", "original parent absent"))?;
             let copy = native::duplicate_same(file.as_raw_handle(), true)?;
@@ -88,7 +88,7 @@ impl NativeUninstallCarrier {
             control.push(native::duplicate_same(handle, true)?);
         }
         let mut random = [0; 32];
-        crate::fill_entropy(&mut random)
+        se_state_files::fill_entropy(&mut random)
             .map_err(|cause| error("prepare carrier authorization", io::Error::other(cause)))?;
         let nonce = se_types::hex_lower(&random);
         let plan_file = write_plan(script_files, &control, &nonce, deadline, &entries)?;
@@ -210,8 +210,8 @@ fn build_entries(
         owned.push(copy);
     }
     for path in directories.iter().map(Path::new) {
-        if let Some(file) =
-            crate::state_files::windows::effects::uninstall_directory(path).map_err(custody)?
+        if let Some(file) = se_state_files::state_files::windows::effects::uninstall_directory(path)
+            .map_err(custody)?
         {
             let copy = native::duplicate_same(file.as_raw_handle(), true)?;
             let mut observed = entry(&file, path, "directory", None)?;
@@ -404,7 +404,7 @@ fn cleanup_artifacts(
     if let Some(stage) = staging.take() {
         let directory = stage.directory.path.clone();
         drop(stage);
-        if let Err(cause) = crate::remove_empty_directory(&directory) {
+        if let Err(cause) = se_state_files::remove_empty_directory(&directory) {
             cleanup_failure(failure, custody(cause), &directory);
         }
     }

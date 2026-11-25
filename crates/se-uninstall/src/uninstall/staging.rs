@@ -8,7 +8,7 @@ use windows_sys::Win32::Security::{Authorization::*, *};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct DirectoryCustody {
-    #[serde(with = "crate::checkpoint::native_path")]
+    #[serde(with = "se_custody::checkpoint::native_path")]
     pub path: PathBuf,
     pub id: FileId,
 }
@@ -17,7 +17,7 @@ pub(super) struct Staging {
     pub directory: DirectoryCustody,
     _pin: File,
 }
-use crate::windows_native::allocation::Allocation;
+use se_native_path::windows::allocation::Allocation;
 
 pub(super) fn elevated() -> Result<bool> {
     let mut raw = ptr::null_mut();
@@ -69,7 +69,7 @@ pub(super) fn open_directory(path: &Path, delete: bool, share_delete: bool) -> R
     Ok(file)
 }
 pub(super) fn directory_id(file: &File) -> Result<FileId> {
-    let info = crate::windows_native::file_information(file)
+    let info = se_native_path::windows::file::file_information(file)
         .map_err(|e| error("read uninstall directory identity", e))?;
     if info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
         != FILE_ATTRIBUTE_DIRECTORY
@@ -79,7 +79,7 @@ pub(super) fn directory_id(file: &File) -> Result<FileId> {
             "ordinary no-follow directory required",
         ));
     }
-    let id = crate::windows_native::file_id(file)
+    let id = se_native_path::windows::file::file_id(file)
         .map_err(|e| error("read uninstall directory file ID", e))?;
     Ok(FileId {
         volume: id.volume,
@@ -89,7 +89,7 @@ pub(super) fn directory_id(file: &File) -> Result<FileId> {
 pub(super) fn verify_high(file: &File, directory: bool) -> Result<()> {
     // SAFETY: the caller retains the native handle throughout this query.
     let descriptor = unsafe {
-        crate::windows_native::acl::SecurityDescriptor::query(
+        se_native_path::windows::acl::SecurityDescriptor::query(
             file.as_raw_handle(),
             SE_FILE_OBJECT,
             LABEL_SECURITY_INFORMATION,
@@ -127,9 +127,10 @@ pub(super) fn verify_high(file: &File, directory: bool) -> Result<()> {
             )
         })?;
     // SAFETY: `ace` borrows a validated mandatory-label ACE retained in the descriptor buffer.
-    let sid =
-        unsafe { crate::windows_native::sid_text((&raw const ace.SidStart).cast_mut().cast()) }
-            .map_err(|e| error(e.operation, e.source))?;
+    let sid = unsafe {
+        se_native_ipc::windows_process::sid_text((&raw const ace.SidStart).cast_mut().cast())
+    }
+    .map_err(|e| error(e.operation, e.source))?;
     if sid != "S-1-16-12288" || ace.Mask & 1 == 0 {
         return Err(refuse(
             "verify mandatory uninstall label",
@@ -141,7 +142,7 @@ pub(super) fn verify_high(file: &File, directory: bool) -> Result<()> {
 impl Staging {
     pub fn create(parent: &NativeStateFiles) -> Result<Self> {
         // SAFETY: immutable native current-process pseudo handle for token query.
-        let sid = unsafe { crate::windows_native::process_sid(GetCurrentProcess()) }
+        let sid = unsafe { se_native_ipc::windows_process::process_sid(GetCurrentProcess()) }
             .map_err(|e| error(e.operation, e.source))?;
         let descriptor: Vec<_> =
             format!("O:{sid}D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;{sid})S:(ML;OICI;NW;;;HI)")
@@ -169,7 +170,7 @@ impl Staging {
             bInheritHandle: 0,
         };
         let mut nonce = [0; 16];
-        crate::fill_entropy(&mut nonce)
+        se_state_files::fill_entropy(&mut nonce)
             .map_err(|e| error("create High uninstall staging", io::Error::other(e)))?;
         let name: String = se_types::hex_lower(&nonce);
         let path = parent.root().join(format!(".se-uninstall-{name}"));

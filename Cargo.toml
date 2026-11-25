@@ -20,6 +20,7 @@ members = [
     "crates/se-trusted-path",
     "crates/se-native-path",
     "crates/se-custody",
+    "crates/se-uninstall",
     "crates/se-fsevents",
     "crates/se-secode-image",
     "crates/se-secode-service",

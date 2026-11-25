@@ -19,20 +19,20 @@ pub(super) fn last(operation: &'static str) -> UninstallNativeError {
 /// whose sole ownership is transferred to this call.
 pub(super) unsafe fn handle(raw: HANDLE, operation: &'static str) -> Result<OwnedHandle> {
     // SAFETY: this function's safety contract guarantees `raw`'s precondition.
-    unsafe { crate::windows_native::handle(raw, operation) }
+    unsafe { se_native_ipc::windows_process::handle(raw, operation) }
         .map_err(|e| error(e.operation, e.source))
 }
 pub(super) fn wide(path: &Path) -> Result<Vec<u16>> {
-    crate::state_files::windows::wide(path).map_err(custody)
+    se_state_files::state_files::windows::wide(path).map_err(custody)
 }
 pub(super) fn open_image(path: &Path, delete: bool) -> Result<File> {
-    let file = crate::windows_native::open_image_file(&wide(path)?, delete)
+    let file = se_native_path::windows::file::open_image_file(&wide(path)?, delete)
         .map_err(|e| error("pin uninstall image", e))?;
     file_id(&file)?;
     Ok(file)
 }
 pub(super) fn file_id(file: &File) -> Result<FileId> {
-    let info = crate::windows_native::file_information(file)
+    let info = se_native_path::windows::file::file_information(file)
         .map_err(|e| error("read pinned uninstall file identity", e))?;
     // SAFETY: immutable type query on this retained native file handle.
     if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK
@@ -44,7 +44,7 @@ pub(super) fn file_id(file: &File) -> Result<FileId> {
             "regular disk file without reparse points or extra hard links required",
         ));
     }
-    let id = crate::windows_native::file_id(file)
+    let id = se_native_path::windows::file::file_id(file)
         .map_err(|e| error("read 128-bit uninstall file identity", e))?;
     Ok(FileId {
         volume: id.volume,
