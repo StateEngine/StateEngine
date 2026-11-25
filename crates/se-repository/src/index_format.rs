@@ -192,7 +192,7 @@ fn parse_v4_path(
     v4_arena: &mut Vec<u8>,
     prev_path: &mut Vec<u8>,
 ) -> Option<PathRange> {
-    // The varint and path never extend into the trailing extensions or checksum.
+    // The varint and path never extend into the trailing checksum.
     let body = bytes.get(..body_end)?;
     let mut strip = 0usize;
     loop {

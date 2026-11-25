@@ -77,6 +77,14 @@ impl Store {
         work: impl FnOnce(&Kernel, &mut Cx<'_, SqliteSnapshot>) -> Result<AtomicBatch> + Send + 'static,
     ) -> Result<CommitReceipt> {
         let batch = self.prepare_batch(admission, deadline, seed, work).await?;
+        self.submit_unpermitted(batch, deadline).await
+    }
+    /// Every submission without a boundary permit refuses events that require one.
+    async fn submit_unpermitted(
+        &self,
+        batch: AtomicBatch,
+        deadline: &Deadline,
+    ) -> Result<CommitReceipt> {
         if batch.events.iter().any(|event| {
             matches!(
                 event.body,
@@ -99,7 +107,7 @@ impl Store {
         + 'static,
     ) -> Result<Option<CommitReceipt>> {
         match self.prepare_batch(admission, deadline, None, work).await? {
-            Some(batch) => self.submit_lifecycle(batch, deadline, None).await.map(Some),
+            Some(batch) => self.submit_unpermitted(batch, deadline).await.map(Some),
             None => Ok(None),
         }
     }

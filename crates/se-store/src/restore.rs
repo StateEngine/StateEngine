@@ -111,6 +111,11 @@ fn verify_backup(
                 .map_err(invalid)?,
         );
     }
+    if owners.is_empty() && backup.through.sequence() == 0 {
+        return Err(restore_failed(
+            "the backup was taken before any history was saved and holds nothing to restore",
+        ));
+    }
     if owners.is_empty() || owners.len() > 16 {
         return Err(restore_failed(
             "the backup generation has no owner registration",

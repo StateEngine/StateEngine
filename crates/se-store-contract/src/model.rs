@@ -423,6 +423,8 @@ pub struct ErasureReport {
     pub incarnation: u64,
     pub erased_fields: Vec<EraseTarget>,
     pub residuals: Vec<ResidualCopy>,
+    /// Backup generations taken before the erasure that are confirmed replaced.
+    pub backups_replaced: usize,
 }
 /// User history only; no fleet/runtime/configuration repair protocols.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]

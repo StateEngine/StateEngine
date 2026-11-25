@@ -13,6 +13,7 @@ use se_core::{
 use se_store::*;
 use se_types::Result;
 
+/// A plan's receipt, or a completed one with what the erasure actually committed.
 fn receipt(input: &StoreForget, plan: &ErasurePlan, outcome: &str) -> Result<ErasureReceipt> {
     Ok(ErasureReceipt {
         idempotency_key: input.idempotency_key.clone(),
@@ -44,6 +45,13 @@ fn receipt(input: &StoreForget, plan: &ErasurePlan, outcome: &str) -> Result<Era
         next: None,
     })
 }
+async fn fresh_plan(context: &ExecutionContext, input: &StoreForget) -> Result<ErasurePlan> {
+    let planning = context.writer.erasure_plan(input.events.clone());
+    planning
+        .map_err(|e| store_error(&e))?
+        .await
+        .map_err(|e| store_error(&e))
+}
 pub(super) async fn execute(
     context: ExecutionContext,
     input: StoreForget,
@@ -69,11 +77,7 @@ pub(super) async fn execute(
                 .incarnation)
         })
         .await?;
-    let planning = context
-        .writer
-        .erasure_plan(input.events.clone())
-        .map_err(|e| store_error(&e))?;
-    let plan = planning.await.map_err(|e| store_error(&e))?;
+    let plan = fresh_plan(&context, &input).await?;
     if !input.yes {
         let mut planned = receipt(&input, &plan, "planned")?;
         planned.next = Some(confirm(&input));
@@ -91,16 +95,34 @@ pub(super) async fn execute(
         .writer
         .erase(plan.clone(), approval)
         .map_err(|e| store_error(&e))?;
-    let report = erasing.await.map_err(|e| store_error(&e))?;
+    let report = match erasing.await {
+        Ok(report) => report,
+        // Nothing was erased: show the changed copies and ask again.
+        Err(error) if error.code == StoreErrorCode::SourceChanged => {
+            let mut planned = receipt(&input, &fresh_plan(&context, &input).await?, "planned")?;
+            planned.next = Some(ForgetNext {
+                text: "Nothing was erased: the copies StateEngine cannot erase changed since planning. Review them above, then confirm".into(),
+                argv: confirm(&input).argv,
+            });
+            return Ok(planned.into());
+        }
+        Err(error) => return Err(store_error(&error)),
+    };
+    // Report what the erasure committed and observed, not the plan's estimate.
+    let committed = ErasurePlan {
+        residuals: report.residuals.clone(),
+        ..plan
+    };
     let mut done = receipt(
         &input,
-        &plan,
+        &committed,
         if report.cleanup_complete {
             "forgotten"
         } else {
             "incomplete"
         },
     )?;
+    done.backups_replaced = report.backups_replaced;
     done.completed_event = report.completed_event;
     if !report.cleanup_complete {
         done.next = Some(ForgetNext {
