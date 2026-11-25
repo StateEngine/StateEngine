@@ -52,6 +52,8 @@ Read or change a saved value with `se config get agent.AGENT.model_provider` or
 `base_url`, `wire_api` and `context_window`. Use `null` to inherit the provider
 default; clear `base_url` and `wire_api` before clearing their `model_provider`.
 Changes apply on the next launch; they do not reconfigure a running session.
+`se config set` changes owner settings, so it must run in your own interactive terminal
+(TTY): it refuses when stdin or stdout is piped or redirected, or when an agent runs it.
 
 Endpoints must contain no credentials, query or fragment; authentication stays with
 the provider's own setup. MCP agent creation uses the same keys inside
@@ -147,8 +149,8 @@ arguments = ["--acp", "--model", "{model}"]
 environment = []
 
 [harnesses.my-agent.permissions.protocol-work]
-arguments = []
-mode = ""
+arguments = []      # extra native arguments for this profile, if any
+mode = ""           # native mode the agent must report; "" keeps its announced default
 ```
 
 Use `se init --harness my-agent` or `se agent add helper --harness my-agent`.

@@ -59,6 +59,11 @@ works.
 Run the installer as your normal user, without privilege elevation. Installation
 neither starts a service nor configures a provider.
 
+After it finishes, run the absolute `se --version` command the installer prints. Then
+add the printed folder to PATH for the current terminal (see the PATH lines under the
+manual install below) or open a fresh login terminal, which loads the installer's saved
+PATH change, before running plain `se`.
+
 ## npm
 
 ```sh
@@ -163,11 +168,15 @@ separate from your repositories.
 
 ## Upgrade
 
-First run `se --home HOME down` for every running data home. As the same OS owner,
-run the new release's installer: the install script, npm update, or the archive's
-`install.sh` (Linux and macOS) or `install.ps1` (Windows). For a custom installation
-data home, set `SE_HOME` to its original absolute path before running the
-installer.
+Standalone and npm installations upgrade differently; use the route you installed with.
+
+**npm:** run `npm update -g @stateengine/cli`.
+
+**Standalone (install script or archive):** if you have started a runtime, first run
+`se --home HOME down` for every running data home. As the same OS owner, run the new
+release's install script, or the archive's `install.sh` (Linux and macOS) or
+`install.ps1` (Windows). For a custom installation data home, set `SE_HOME` to its
+original absolute path before running the installer.
 
 The installer replaces a stopped installation whose recorded files and native
 ownership still match, preserving history, conversations, identity, credentials,
@@ -187,8 +196,12 @@ its executable until restarted.
 
 ## Uninstall
 
-For one default Linux installation, stop its service and remove the program from a
-terminal you opened yourself:
+**npm:** run `npm uninstall -g @stateengine/cli`. Package removal does not delete
+StateEngine history, configuration or provider login.
+
+**Standalone:** for one default Linux installation, remove the program from a
+terminal you opened yourself. `se down` is only needed if you started a runtime
+(with `se launch` or `se up`):
 
 ```sh
 se down
@@ -196,9 +209,8 @@ se --home "$HOME/.local/state/stateengine" uninstall
 ```
 
 If you set `XDG_STATE_HOME`, use `"$XDG_STATE_HOME/stateengine"` instead. On
-Windows, run `se down`, then the extracted archive's `uninstall.ps1` in PowerShell
-and wait for its final successful completion. npm installations are removed with
-`npm uninstall -g @stateengine/cli`.
+Windows, run `se down` if a runtime is running, then the extracted archive's
+`uninstall.ps1` in PowerShell and wait for its final successful completion.
 
 For unattended removal, add `--yes` to `se uninstall`. This confirms removal
 without a terminal; OS ownership, managed-session and agent ancestry checks still
@@ -214,7 +226,8 @@ provider login and repository files.
 The Rust workspace provides one `se` binary and libraries linked by the SE Code
 application. To build an unsigned archive from a clean, committed source checkout,
 install Git, Python 3.11+, and rustup with the toolchain pinned in
-`rust-toolchain.toml` (currently Rust 1.97.1, including rust-docs). Use a native machine matching the target:
+`rust-toolchain.toml` (currently Rust 1.97.1), plus the `rust-docs` component (added
+below). Use a native machine matching the target:
 
 - Linux needs a C compiler/linker and binutils.
 - Windows needs Visual Studio Build Tools with the MSVC C++ workload and Windows SDK.

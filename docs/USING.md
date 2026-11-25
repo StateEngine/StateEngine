@@ -86,12 +86,8 @@ defaults. `--resume SESSION` selects a specific saved session.
 
 If launch refuses because the old session or its jobs (processes it started) are still
 running, launch shows the sessions and managed jobs it would stop. An interactive owner
-terminal asks for confirmation; scripts and agents must supply `--force`. Force closes
-the selected old scopes before starting one replacement and preserves captured history.
-Repeating the same request key rejoins that replacement. `--override-live` remains an
-alias; neither option is needed for an ordinary stop and reopen. An embedded SE Code
-binding retires only that engine binding and reports that jobs in its externally owned
-service were not stopped.
+terminal asks for confirmation; scripts and agents must supply `--force`, which is not
+needed for an ordinary stop and reopen. See [Reference](#reference) for the details.
 
 ### 5. Inspect saved context
 
@@ -115,9 +111,6 @@ se down
 
 This stops the runtime and its active agents while keeping saved work. The next launch
 starts the runtime again.
-
-Decision-ledger commands are retired. Previously stored events remain readable through
-`se history`; retirement does not delete their recorded payloads.
 
 ## Adopting sessions you start yourself
 
@@ -167,8 +160,8 @@ delivery, reading or task completion.
 Managed Claude and Codex sessions discover the same compact MCP tool catalogue. It
 advertises argument shapes, required fields, enums and defaults; the runtime still
 checks complete value grammars, bounds and permissions. For full input and output
-schemas, run `se schema OP`, for example `se schema message.send` or
-`se schema atlas.refs`. The [operation reference](OPS.md) lists operation names.
+schemas, run `se schema OP --json`, for example `se schema message.send --json` or
+`se schema atlas.refs --json`; without `--json` it prints only the operation names. The [operation reference](OPS.md) lists operation names.
 
 - Omit `agent_id` and `project_id` in a managed session. If supplied, they must match
   its authenticated caller; they never select another caller. Use `target_agent_id`
@@ -201,3 +194,14 @@ host. `se doctor` checks an installation and names exact supported repairs, and
 
 The [operation reference](OPS.md) describes the operation design; some listed paths
 are not shipped.
+
+## Reference
+
+- **Forced relaunch.** `--force` closes the selected old scopes before starting one
+  replacement and preserves captured history. Repeating the same request key rejoins
+  that replacement. `--override-live` remains an alias for `--force`.
+- **SE Code bindings.** Stopping an embedded SE Code binding retires only that engine
+  binding and reports that jobs in its externally owned service were not stopped.
+- **Decision ledger.** Decision-ledger commands are retired. Previously stored events
+  remain readable through `se history`; retirement does not delete their recorded
+  payloads.

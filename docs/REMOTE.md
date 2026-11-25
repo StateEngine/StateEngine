@@ -74,28 +74,30 @@ Choose an existing destination agent and allow or revoke future launches. The re
 shows its saved provider and permission profile. Existing machine grants keep their
 list, watch and send verbs; they do not gain launch permission.
 
-A launched lead can call `stateengine_remote_launch`, and the CLI uses
-`se remote launch --host build --target PROJECT/AGENT --key start-1` with IDs from
-`remote list`. The destination starts that agent headlessly with its saved profile
-and conversation. It does not create an identity, override its model, or stop
-existing work. A start receipt confirms the original launch; replaying it does not
+A launched lead can call `stateengine_remote_launch`; from the CLI, use IDs from
+`remote list`:
+
+```sh
+se remote launch --host build --target PROJECT_ID/AGENT_ID --key start-1            # fresh conversation
+se remote launch --host build --target PROJECT_ID/AGENT_ID --resume --key start-2   # saved conversation
+```
+
+The destination starts that agent headlessly with its saved profile. Without
+`--resume` it starts a fresh conversation; `--resume` reopens the latest saved
+conversation, and `--resume SESSION` selects a specific saved session. Launch does not
+create an identity, override its model, send work, or stop existing work. A start receipt confirms the original launch; replaying it does not
 claim the agent is still running. Use its returned session for remote send, which
 refuses a stopped or replaced session. A pending launch retains its key; repeat the
 same launch with that key to observe its result. Revoking launch consent blocks
 future reservations; already admitted launches and running agents continue.
 
-## How remote is tested
+## Reading IDs and cursors
 
-The Linux nightly includes a separate remote journey over real SSH: connect, launch
-on the destination, observe live assistant output, exchange a message, and reconnect
-to the original session. Its reports retain attach, pending echo, live output and
-reconnect samples with their measurement boundaries. Live output uses an explicitly
-unqualified monotonic clock estimate across the connection; these samples do not
-certify a latency budget or a physical network topology. Windows source and
-destination coverage and hands-on qualification remain separate.
+Remote commands take exact IDs rather than names. `se remote list --host build`
+prints each allowed agent's project ID, agent ID and current session ID: use
+`PROJECT_ID/AGENT_ID` as `--target`, and the session ID as `--session` for
+`remote send`. `remote watch` returns one bounded page with its cursors; pass them back
+with `--cursors` to continue from where the page ended rather than constructing them. Disconnecting
+or ending a watch never stops remote work.
 
-The nightly uses an administrator-registered OS account reserved for scheduled
-journeys; development and review runs use separate accounts. Its remote
-configuration requires `destination_account.identity` (the native UID as a string)
-and `destination_account.profile` (the absolute native profile). The SSH destination
-must match both before any image, token or project is staged.
+Linux-to-Linux SSH remote is exercised nightly; Windows remote is not yet qualified.

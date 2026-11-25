@@ -47,14 +47,18 @@ irm https://github.com/StateEngine/StateEngine/releases/latest/download/install.
 npm install -g @stateengine/cli      # or try it first: npx @stateengine/cli --version
 ```
 
-Then check it: `se --version` prints `stateengine` and a version number. The installer
-runs as your normal user, needs no administrator rights, and starts nothing in the
-background. Supported platforms: Linux x86_64 (glibc), macOS on Apple silicon and Intel,
+The install script prints an absolute `se --version` command: run it, then add the
+printed folder to PATH or open a fresh login terminal before continuing, so plain
+`se --version` prints `stateengine` and a version number. The installer runs as your
+normal user, needs no administrator rights, and starts nothing in the background. Supported platforms: Linux x86_64 (glibc), macOS on Apple silicon and Intel,
 and Windows x86_64. Releases are unsigned; the installer verifies each archive's
 SHA-256 checksum before installing.
 
-Manual archive downloads with checksum verification, pinned versions, upgrades,
-uninstalling and building from source are covered in **[docs/INSTALL.md](docs/INSTALL.md)**.
+A standalone install upgrades by running the installer again and is removed with
+`se uninstall`; an npm install uses `npm update -g @stateengine/cli` and
+`npm uninstall -g @stateengine/cli`. Manual archive downloads with checksum
+verification, pinned versions, upgrades, uninstalling and building from source are
+covered in **[docs/INSTALL.md](docs/INSTALL.md)**.
 
 You also need [Git](https://git-scm.com/downloads) and at least one signed-in agent:
 [Claude Code](https://code.claude.com/docs/en/setup) (`claude auth status`) or
@@ -63,49 +67,56 @@ StateEngine uses your own provider account; it never supplies one.
 
 ## 60-second quickstart
 
+Give a saved agent a real task and check the result. This works anywhere, including
+over SSH and on machines without a desktop:
+
 ```sh
 cd /path/to/your/repo                # any Git repository (run `git init` first if needed)
 se init --provider claude            # or: se init --provider codex
-se launch main                       # opens your first saved agent, named "main"
+se launch main --task "Create notes.md with one sentence describing this repo." --detach
+se status                            # project, agents, runtime and unread mail
+se history --agent main              # read the conversation as it is saved
+cat notes.md                         # check the result (PowerShell: Get-Content .\notes.md)
 ```
 
 `se init` registers the folder and saves an agent named `main`. It writes no files into
 your working tree and leaves your Git history alone, then prints the exact launch command
-for your setup. Work with the agent as usual, then:
+for your setup. A running agent is not a finished task: read `se history --agent main`
+until the reply appears, then check `notes.md`. Stop and come back later:
 
 ```sh
-se status                            # project, agents, runtime and unread mail
 se stop main                         # stop for now; the conversation is saved
-se launch main --resume              # pick up the same conversation later
+se launch main --resume --detach     # continue the same conversation in the background
 se down                              # stop StateEngine's background runtime
 ```
 
-To run a task in the background instead of opening the agent:
+On a desktop, `se launch main` (or `--resume`) opens the agent interactively in a window
+instead; headless and SSH machines refuse that with `window-unavailable`.
 
-```sh
-se launch main --task "Create notes.md with one sentence describing this repo." --detach
-se history --agent main              # read the conversation as it is saved
-```
-
-A running agent is not a finished task: read `se history --agent main` until the reply
-appears. `se resume --preview main` shows an agent's saved context and waiting mail
-without restarting it or marking anything read. Lost? `se guide` lists short topics,
+`se resume --preview main` shows an agent's saved context and waiting mail without
+restarting it or marking anything read. Lost? `se guide` lists short topics,
 `se guide getting-started` walks through this flow, and `se help COMMAND` shows any
 command's options. [docs/USING.md](docs/USING.md) explains what status and launch report.
 
 ## Connect any MCP tool
 
 `se mcp` serves StateEngine's tools over newline-delimited JSON-RPC on stdin/stdout.
-`se init` prints the registration commands for both providers:
+Agents that StateEngine launches get these tools automatically, and when Claude Code or
+Codex is installed, `se init` registers the MCP server for it, so there is nothing more
+to run. If a provider was not installed yet, init prints the exact command to run once
+it is, for example:
 
 ```sh
 claude mcp add --scope local stateengine -- se mcp
 codex mcp add stateengine -- se mcp
 ```
 
-Any other MCP client takes the same command, `se` with the argument `mcp`. Agents that
-StateEngine launches get these tools automatically. `stateengine_help` is the index
-for agents, and `se schema OP` prints any operation's full input and output schema.
+Don't repeat these for a provider init already registered: Claude Code refuses a
+duplicate name and a manual Codex entry replaces the one init wrote. For any other MCP
+client, register the command `se` with the argument `mcp`, adding `--home DIR` or
+`--project PROJECT` before `mcp` when you use a custom state home or several projects.
+`stateengine_help` is the index for agents, and `se schema OP --json` prints any
+operation's full input and output schema (for example `se schema message.send --json`).
 
 ## Run a crew
 
@@ -120,8 +131,10 @@ se status                                              # every agent, its sessio
 
 Agents use the same mail through MCP. A message is saved when it is sent; StateEngine
 reports delivery and reading separately and never treats "sent" as "read" or "done".
-`se watch` follows live activity, and `se delegate` launches a one-shot temporary agent
-with an optional context handoff.
+`se watch --target PROJECT_ID/AGENT_ID --once --wait-ms 0` reads one page of an agent's
+live and saved activity (copy the IDs from the `Next:` line of `se status` and from
+`se agent list`), and `se delegate` launches a one-shot temporary agent with an optional
+context handoff.
 
 ## Find code with Atlas
 
@@ -136,7 +149,7 @@ se atlas outline src/app.py          # declarations in one file
 se atlas changes --since 10m         # what changed recently
 ```
 
-Results are compact pointers (file, line and size), so agents read only the source they
+Results are compact pointers (file and line range, with size when verified), so agents read only the source they
 need. Agents get the same queries as MCP tools. Atlas is on by default and runs on Linux,
 macOS and Windows.
 
@@ -157,11 +170,12 @@ Details: [docs/USING.md](docs/USING.md#adopting-sessions-you-start-yourself).
 
 ```sh
 se init --harness qwen-code          # or goose, hermes; detected when installed and signed in
-se agent add helper --harness my-agent
 ```
 
-Any agent that speaks ACP version 1 over stdio can be added as a named harness in
-`config.toml`. Saved agents can also pin their own model, endpoint and reasoning
+Other agents that speak ACP version 1 over stdio and support authenticated HTTP MCP
+connections can be added as a named harness in `config.toml`, then selected with
+`se agent add NAME --harness HARNESS`. Resuming a saved conversation also requires the
+agent to support loading sessions. Saved agents can also pin their own model, endpoint and reasoning
 effort. See **[docs/HARNESSES.md](docs/HARNESSES.md)** for permission profiles,
 per-agent models and harness configuration.
 
@@ -181,10 +195,8 @@ you disconnect. Sending mail, permissions and remote launch are covered in
 
 StateEngine keeps settings, history and conversations in a **state home**, separate
 from your repository: `~/.local/state/stateengine` on Linux, `%LOCALAPPDATA%\StateEngine`
-on Windows and `~/Library/Application Support/StateEngine` on macOS. `--home DIR` or
-`SE_HOME` selects another one. `se doctor` checks an installation and names exact repairs.
-`se uninstall` removes the program but keeps your history, configuration and
-repository files.
+on Windows and `~/Library/Application Support/StateEngine` on macOS (`--home DIR` or
+`SE_HOME` selects another). `se doctor` checks an installation and names exact repairs.
 
 ## Documentation
 
@@ -198,9 +210,7 @@ repository files.
 
 ## Contributing and license
 
-StateEngine is a Rust workspace; [CONTRIBUTING.md](CONTRIBUTING.md) explains how to
-contribute and [docs/INSTALL.md](docs/INSTALL.md#build-from-source) how to build it.
-
+StateEngine is a Rust workspace; see [docs/INSTALL.md](docs/INSTALL.md#build-from-source) to build it.
 The Rust workspace is licensed under the [GNU Affero General Public License, version 3 only](LICENSE).
 Third-party components retain their own licenses.
 
