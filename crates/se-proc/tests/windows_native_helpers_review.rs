@@ -278,10 +278,6 @@ impl Drop for Scope<'_> {
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn launched_child_has_only_explicit_stdio_and_starts_in_its_exact_job() -> Check {
     let home = Home::new()?;
     let executable = std::env::current_exe()?;
@@ -304,6 +300,55 @@ fn launched_child_has_only_explicit_stdio_and_starts_in_its_exact_job() -> Check
         },
     })
     .map_err(proc_error)?;
+    let excluded = inheritable_reset_event()?;
+    let spec = launch_spec(&home, lifecycle.clone(), generation, executable, &excluded)?;
+    let prepared = runtime
+        .prepare_launch(
+            LaunchReservation {
+                format_version: 1,
+                lifecycle,
+                host,
+                owner,
+                generation,
+                scope_nonce: nonce,
+                parent: ReservationParent::Windows,
+                created_at_unix_ns: 1,
+            },
+            spec,
+        )
+        .map_err(proc_error)?;
+    let ScopeIdentity::WindowsJob { name, .. } = &prepared.checkpoint.scope else {
+        return Err("Windows job checkpoint absent".into());
+    };
+    fs::write(home.0.join("job-name"), name)?;
+    let mut scope = Scope {
+        runtime: &runtime,
+        process: prepared.process,
+        generation,
+        released: false,
+    };
+    let record = await_record(&runtime, prepared.prepared)?;
+    assert_eq!(record.entry, EntryMethod::WindowsJobList);
+    assert_eq!(record.scope, prepared.checkpoint.scope);
+    let witness = scope.wait_exit()?;
+    assert_child_streams(&home, &witness, &record)?;
+    assert_eq!(
+        // SAFETY: the original parent event remains owned until after the child exited.
+        unsafe { WaitForSingleObject(excluded.as_raw_handle(), 0) },
+        WAIT_TIMEOUT,
+        "unlisted inheritable parent event reached the child"
+    );
+    assert!(
+        runtime
+            .arena_snapshot()
+            .map_err(proc_error)?
+            .entries
+            .is_empty()
+    );
+    Ok(())
+}
+/// An inheritable event the child must not receive, proved set-able then reset.
+fn inheritable_reset_event() -> Check<OwnedHandle> {
     let attributes = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: ptr::null_mut(),
@@ -320,10 +365,19 @@ fn launched_child_has_only_explicit_stdio_and_starts_in_its_exact_job() -> Check
     );
     // SAFETY: reset our own event before testing child inheritance.
     assert_ne!(unsafe { ResetEvent(excluded.as_raw_handle()) }, 0);
+    Ok(excluded)
+}
+fn launch_spec(
+    home: &Home,
+    lifecycle: LifecycleId,
+    generation: GenerationId,
+    executable: PathBuf,
+    excluded: &OwnedHandle,
+) -> Check<LaunchSpec> {
     fs::write(home.0.join("stdin"), b"explicit input marker")?;
-    let spec = LaunchSpec {
+    Ok(LaunchSpec {
         executable_custody: None,
-        lifecycle: lifecycle.clone(),
+        lifecycle,
         generation,
         executable,
         arguments: vec![
@@ -364,33 +418,10 @@ fn launched_child_has_only_explicit_stdio_and_starts_in_its_exact_job() -> Check
         },
         deadline: Instant::now() + Duration::from_secs(15),
         notifications: Arc::new(Notices),
-    };
-    let prepared = runtime
-        .prepare_launch(
-            LaunchReservation {
-                format_version: 1,
-                lifecycle,
-                host,
-                owner,
-                generation,
-                scope_nonce: nonce,
-                parent: ReservationParent::Windows,
-                created_at_unix_ns: 1,
-            },
-            spec,
-        )
-        .map_err(proc_error)?;
-    let ScopeIdentity::WindowsJob { name, .. } = &prepared.checkpoint.scope else {
-        return Err("Windows job checkpoint absent".into());
-    };
-    fs::write(home.0.join("job-name"), name)?;
-    let mut scope = Scope {
-        runtime: &runtime,
-        process: prepared.process,
-        generation,
-        released: false,
-    };
-    let ticket = match runtime.begin_launch(prepared.prepared) {
+    })
+}
+fn await_record(runtime: &NativeProcessRuntime, prepared: PreparedLaunch) -> Check<ProcessRecord> {
+    let ticket = match runtime.begin_launch(prepared) {
         LaunchStart::Pending { ticket, .. } => ticket,
         LaunchStart::Failed(failure) => {
             return Err(format!("native creation failed: {:?}", failure.error).into());
@@ -409,9 +440,10 @@ fn launched_child_has_only_explicit_stdio_and_starts_in_its_exact_job() -> Check
             _ => return Err("Windows launch did not publish its exact process record".into()),
         }
     };
-    assert_eq!(record.entry, EntryMethod::WindowsJobList);
-    assert_eq!(record.scope, prepared.checkpoint.scope);
-    let witness = scope.wait_exit()?;
+    Ok(record)
+}
+/// The child exited cleanly and wrote its exact-job stdout and stderr markers.
+fn assert_child_streams(home: &Home, witness: &StopWitness, record: &ProcessRecord) -> Check {
     assert!(
         matches!(
             witness.root,
@@ -431,19 +463,6 @@ fn launched_child_has_only_explicit_stdio_and_starts_in_its_exact_job() -> Check
         ))
     );
     assert!(fs::read_to_string(home.0.join("stderr"))?.contains("native stderr marker"));
-    assert_eq!(
-        // SAFETY: the original parent event remains owned until after the child exited.
-        unsafe { WaitForSingleObject(excluded.as_raw_handle(), 0) },
-        WAIT_TIMEOUT,
-        "unlisted inheritable parent event reached the child"
-    );
-    assert!(
-        runtime
-            .arena_snapshot()
-            .map_err(proc_error)?
-            .entries
-            .is_empty()
-    );
     Ok(())
 }
 
