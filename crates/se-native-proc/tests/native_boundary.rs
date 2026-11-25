@@ -10,7 +10,9 @@ use se_custody::ProcErrorCode;
 #[cfg(not(target_os = "macos"))]
 use se_native_proc::Population;
 use se_native_proc::notify::Hub;
-use se_native_proc::platform::{Driver, Scope};
+use se_native_proc::platform::Driver;
+#[cfg(not(target_os = "macos"))]
+use se_native_proc::platform::Scope;
 use se_native_proc::validate::validate_launch;
 use se_native_proc::{
     ContainmentRequirement, Environment, ExitNotice, ExitSink, GenerationId, HostConfig,
@@ -21,7 +23,7 @@ use se_native_proc::{
 };
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -68,8 +70,9 @@ fn private_root(label: &str) -> Check<(cleanup_directory::PrivateDirectory, Path
     {
         fs::create_dir(&path)?;
     }
-    let owner = cleanup_directory::PrivateDirectory::for_case(path.clone());
-    Ok((owner, path))
+    let owner = cleanup_directory::PrivateDirectory::for_case(path);
+    let canonical = owner.to_path_buf();
+    Ok((owner, canonical))
 }
 
 fn write_exclusive(path: &Path, bytes: &[u8]) -> Check {
@@ -255,7 +258,7 @@ fn assert_stop_and_release(scope: &mut Scope) -> Check {
 
 #[test]
 fn validate_launch_refuses_nul_bad_reservation_policy_and_cwd() -> Check {
-    let (_guard, root) = private_root("val-refuse")?;
+    let (guard, root) = private_root("val-refuse")?;
     let ws = root.join("ws");
     let outside = root.join("outside");
     fs::create_dir(&ws)?;
@@ -307,12 +310,12 @@ fn validate_launch_refuses_nul_bad_reservation_policy_and_cwd() -> Check {
     .err()
     .ok_or("validate_launch accepted cwd outside workspace")?;
     assert_eq!(err.code, ProcErrorCode::CwdOutsideWorkspace);
-    Ok(())
+    guard.finish(Ok(()))
 }
 
 #[test]
 fn scope_bind_stdio_and_begin_enforce_one_shot_and_cleanup() -> Check {
-    let (_guard, root) = private_root("oneshot")?;
+    let (guard, root) = private_root("oneshot")?;
     #[cfg(target_os = "macos")]
     let helper = Some(PathBuf::from("/nonexistent/se-native-boundary-helper"));
     #[cfg(not(target_os = "macos"))]
@@ -401,13 +404,13 @@ fn scope_bind_stdio_and_begin_enforce_one_shot_and_cleanup() -> Check {
             .release(true)
             .map_err(|e| format!("scope.release: {e:?}"))?;
     }
-    Ok(())
+    guard.finish(Ok(()))
 }
 
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn scope_bind_stdio_refuses_window_mode() -> Check {
-    let (_guard, root) = private_root("win-stdio")?;
+    let (guard, root) = private_root("win-stdio")?;
     let fx = Fixture::new("window-stdio-boundary-test", 0x23, None)?;
     let driver = Driver::new(&fx.config).map_err(|e| format!("Driver::new: {e:?}"))?;
     let dl = Instant::now() + Duration::from_secs(30);
@@ -440,12 +443,85 @@ fn scope_bind_stdio_refuses_window_mode() -> Check {
     win_scope
         .release(true)
         .map_err(|e| format!("win_scope.release: {e:?}"))?;
-    Ok(())
+    guard.finish(Ok(()))
+}
+
+#[test]
+fn scope_release_closes_held_stdio_and_blocks_subsequent_bind_or_begin() -> Check {
+    let (guard, root) = private_root("release-eof")?;
+    let fx = Fixture::new("release-eof-boundary-test", 0x24, None)?;
+    let driver = Driver::new(&fx.config).map_err(|e| format!("Driver::new: {e:?}"))?;
+    let dl = Instant::now() + Duration::from_secs(30);
+
+    let validated = fx.validate(12, fx.spec(root.clone(), root, vec![], dl, None))?;
+    let mut scope = driver
+        .prepare(validated, test_limits(), &fx.hub)
+        .map_err(|e| format!("prepare: {e:?}"))?;
+
+    #[cfg(unix)]
+    let (mut peer, held_file) = {
+        use std::os::fd::OwnedFd;
+        use std::os::unix::net::UnixStream;
+        let (peer, child) = UnixStream::pair()?;
+        peer.set_nonblocking(true)?;
+        (peer, fs::File::from(OwnedFd::from(child)))
+    };
+    #[cfg(windows)]
+    let (mut peer, held_file) = {
+        use std::os::windows::io::OwnedHandle;
+        let (reader, writer) = std::io::pipe()?;
+        (reader, fs::File::from(OwnedHandle::from(writer)))
+    };
+
+    scope
+        .bind_stdio(StandardIo {
+            stdin: None,
+            stdout: Some(held_file),
+            stderr: None,
+        })
+        .map_err(|e| format!("bind_stdio: {e:?}"))?;
+
+    #[cfg(unix)]
+    {
+        let mut buf = [0u8; 1];
+        let err = peer
+            .read(&mut buf)
+            .err()
+            .ok_or("peer unexpectedly returned EOF before release")?;
+        assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
+    }
+
+    // Release while still holding `scope`: held stdio must close immediately.
+    scope
+        .release(true)
+        .map_err(|e| format!("scope.release: {e:?}"))?;
+    let mut buf = [0u8; 1];
+    let n = peer.read(&mut buf)?;
+    assert_eq!(n, 0, "expected immediate peer EOF after scope.release");
+
+    // Neither bind_stdio nor begin may succeed on a released scope.
+    let err = scope
+        .bind_stdio(StandardIo {
+            stdin: None,
+            stdout: None,
+            stderr: None,
+        })
+        .err()
+        .ok_or("bind_stdio succeeded on released scope")?;
+    assert_eq!(err.code, ProcErrorCode::IllegalTransition);
+    let err = driver
+        .begin(&mut scope, &fx.hub)
+        .err()
+        .ok_or("begin succeeded on released scope")?;
+    assert_eq!(err.code, ProcErrorCode::IllegalTransition);
+
+    drop(scope);
+    guard.finish(Ok(()))
 }
 
 #[test]
 fn driver_begin_rechecks_deadline_cwd_escape_and_custody_invalidation() -> Check {
-    let (_guard, root) = private_root("recheck")?;
+    let (guard, root) = private_root("recheck")?;
     let ws = root.join("ws");
     let cwd = ws.join("work");
     let outside = root.join("outside");
@@ -524,7 +600,7 @@ fn driver_begin_rechecks_deadline_cwd_escape_and_custody_invalidation() -> Check
     scope
         .release(true)
         .map_err(|e| format!("scope.release custody: {e:?}"))?;
-    Ok(())
+    guard.finish(Ok(()))
 }
 
 #[cfg(windows)]

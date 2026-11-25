@@ -376,6 +376,7 @@ impl Scope {
         }
         self.registrations.clear();
         self.child = None;
+        self.launch = None;
         Ok(())
     }
 }

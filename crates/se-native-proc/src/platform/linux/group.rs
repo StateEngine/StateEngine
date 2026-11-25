@@ -342,6 +342,7 @@ impl Scope {
             child.reap()?;
         }
         self.child = None;
+        self.launch = None;
         Ok(())
     }
 }

@@ -381,6 +381,7 @@ impl Scope {
         }
         self.interrupt_helper = None;
         self.job.close()?;
+        self.launch = None;
         // The slot's final Drop closes this witnessed-empty job. No raw handle
         // is returned to another layer and no provider endpoint is closed here.
         Ok(())
