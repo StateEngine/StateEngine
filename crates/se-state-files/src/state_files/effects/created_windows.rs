@@ -1,5 +1,5 @@
 use super::*;
-use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
+use std::os::windows::io::AsRawHandle;
 use windows_sys::Wdk::{
     Foundation::OBJECT_ATTRIBUTES,
     Storage::FileSystem::{
@@ -44,75 +44,9 @@ impl CreatedDirectory {
             ));
         }
         security::verify(&self.file, &self.path, false)?;
-        // An empty relative name reopens the retained directory itself. Unlike
-        // an open by file ID this preserves the directory-link context needed
-        // by native disposition, without granting custody to a later pathname.
-        let mut name = UNICODE_STRING {
-            Length: 0,
-            MaximumLength: 0,
-            Buffer: ptr::null_mut(),
-        };
-        let attributes = OBJECT_ATTRIBUTES {
-            Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
-            RootDirectory: self.file.as_raw_handle(),
-            ObjectName: &mut name,
-            Attributes: 0x40,
-            SecurityDescriptor: ptr::null_mut(),
-            SecurityQualityOfService: ptr::null_mut(),
-        };
-        let mut raw = ptr::null_mut();
-        // SAFETY: native POD output initialized before the synchronous call.
-        let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
-        // SAFETY: the empty relative name resolves only the retained live root
-        // handle, with cleanup-only access and no final-path lookup.
-        let code = unsafe {
-            NtCreateFile(
-                &mut raw,
-                GENERIC_READ | READ_CONTROL | DELETE | SYNCHRONIZE,
-                &attributes,
-                &mut status,
-                ptr::null(),
-                0,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                FILE_OPEN,
-                FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
-                ptr::null(),
-                0,
-            )
-        };
-        if code < 0 {
-            // SAFETY: native status translation has no pointer inputs.
-            return Err(io_error(
-                "reopen retained created directory for cleanup",
-                &self.path,
-                io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(code) } as i32),
-            ));
+        if dispose_created_directory(&self.file, &self.path)? == DirectoryRemoval::NotEmpty {
+            return Ok(DirectoryRemoval::NotEmpty);
         }
-        if raw.is_null() || raw == INVALID_HANDLE_VALUE {
-            return Err(changed("created cleanup returned no handle", &self.path));
-        }
-        // SAFETY: successful native open transferred a uniquely owned handle.
-        let cleanup = unsafe { File::from_raw_handle(raw) };
-        if metadata(&cleanup, &self.path, true, false)? != self.identity {
-            return Err(changed(
-                "created cleanup handle identity differs",
-                &self.path,
-            ));
-        }
-        if let Err(error) = dispose(&cleanup, &self.path) {
-            return if error
-                .source
-                .as_ref()
-                .is_some_and(|cause| cause.raw_os_error() == Some(ERROR_DIR_NOT_EMPTY as i32))
-            {
-                Ok(DirectoryRemoval::NotEmpty)
-            } else {
-                Err(error)
-            };
-        }
-        // POSIX disposition removes the name when this DELETE-capable handle
-        // closes; the original creation handle remains retained for identity.
-        drop(cleanup);
         self.parent.sync(&self.path)?;
         match open(&physical, true, 0, false) {
             Err(error) if absent(&error) => Ok(DirectoryRemoval::Removed),
@@ -147,21 +81,21 @@ pub(in crate::state_files) fn prepare_created_directory(
     let descriptor = security::descriptor(path, true)?;
     let access = GENERIC_READ | GENERIC_WRITE | READ_CONTROL | SYNCHRONIZE;
     // SAFETY: `descriptor` is the protected security descriptor built above.
-    let file = match unsafe { create_directory_at(parent.file()?, name, path, &descriptor, access) }
-    {
-        Ok(file) => file,
-        Err(error)
-            if error
-                .source
-                .as_ref()
-                .is_some_and(|cause| cause.kind() == io::ErrorKind::AlreadyExists) =>
-        {
-            let file = open(&physical, true, 0, false)?;
-            metadata(&file, path, true, false)?;
-            return Ok(());
-        }
-        Err(error) => return Err(error),
-    };
+    let (file, reported) =
+        match unsafe { create_directory_at(parent.file()?, name, path, &descriptor, access) } {
+            Ok(created) => created,
+            Err(error)
+                if error
+                    .source
+                    .as_ref()
+                    .is_some_and(|cause| cause.kind() == io::ErrorKind::AlreadyExists) =>
+            {
+                let file = open(&physical, true, 0, false)?;
+                metadata(&file, path, true, false)?;
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
     let identity = metadata(&file, path, true, false)?;
     // Retain custody before any later verification can fail, so failed init
     // still offers exact identity-bound cleanup for everything it created.
@@ -174,6 +108,9 @@ pub(in crate::state_files) fn prepare_created_directory(
     let held = created
         .last()
         .ok_or_else(|| changed("created directory custody unavailable", path))?;
+    if !reported {
+        return Err(changed("native create did not report FILE_CREATED", path));
+    }
     security::verify(&held.file, path, false)?;
     let named = open(&physical, true, 0, false)?;
     if metadata(&named, path, true, false)? != held.identity {
@@ -185,10 +122,12 @@ pub(in crate::state_files) fn prepare_created_directory(
     held.parent.sync(path)
 }
 
-/// Exclusively creates directory `leaf` beneath the held `parent` handle, with
-/// `descriptor` installed at creation, and returns custody of the created object.
-/// An error means this call created nothing, except `SourceChanged`: creation
-/// was reported but its object is not held, so `path` may now exist.
+/// Exclusively creates the single literal directory `leaf` beneath the held
+/// `parent` handle, with `descriptor` installed at creation. Returns the new
+/// handle and whether the native create reported `FILE_CREATED`; only then is
+/// the handle proven to be custody of an object this call created. An error
+/// means this call created nothing, except `SourceChanged`: creation was
+/// reported without a handle, so `path` may now exist.
 ///
 /// # Safety
 /// `descriptor` must hold a valid security descriptor for the whole call.
@@ -198,11 +137,8 @@ pub unsafe fn create_directory_at(
     path: &Path,
     descriptor: &se_native_path::windows::allocation::Allocation,
     access: u32,
-) -> Result<File> {
-    let mut units: Vec<u16> = leaf.encode_wide().collect();
-    if units.is_empty() || units.len() > u16::MAX as usize / 2 || units.contains(&0) {
-        return Err(unsafe_path("bounded literal directory leaf required", path));
-    }
+) -> Result<(File, bool)> {
+    let mut units = literal_leaf(leaf, path)?;
     let mut unicode = UNICODE_STRING {
         Length: (units.len() * 2) as u16,
         MaximumLength: (units.len() * 2) as u16,
@@ -254,10 +190,77 @@ pub unsafe fn create_directory_at(
     }
     // SAFETY: successful synchronous FILE_CREATE transferred unique ownership.
     let file = unsafe { File::from_raw_handle(raw) };
-    if status.Information != 2 {
-        return Err(changed("native create did not report FILE_CREATED", path));
+    Ok((file, status.Information == 2))
+}
+/// Removes the directory object behind `held` through an empty relative name,
+/// which reopens that exact object with DELETE access and no pathname lookup.
+/// The DELETE-capable handle exists only for this call, so ordinary handles
+/// that refuse delete sharing remain usable until the directory is retired.
+pub fn dispose_created_directory(held: &File, path: &Path) -> Result<DirectoryRemoval> {
+    let mut name = UNICODE_STRING {
+        Length: 0,
+        MaximumLength: 0,
+        Buffer: ptr::null_mut(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: held.as_raw_handle(),
+        ObjectName: &mut name,
+        Attributes: 0x40,
+        SecurityDescriptor: ptr::null_mut(),
+        SecurityQualityOfService: ptr::null_mut(),
+    };
+    let mut raw = ptr::null_mut();
+    // SAFETY: native POD output initialized before the synchronous call.
+    let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
+    // SAFETY: the empty relative name resolves only the retained live handle,
+    // with cleanup-only access and no final-path lookup.
+    let code = unsafe {
+        NtCreateFile(
+            &mut raw,
+            GENERIC_READ | READ_CONTROL | DELETE | SYNCHRONIZE,
+            &attributes,
+            &mut status,
+            ptr::null(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_OPEN,
+            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            ptr::null(),
+            0,
+        )
+    };
+    if code < 0 {
+        // SAFETY: native status translation has no pointer inputs.
+        let cause = io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(code) } as i32);
+        return Err(io_error(
+            "reopen retained created directory for cleanup",
+            path,
+            cause,
+        ));
     }
-    Ok(file)
+    if raw.is_null() || raw == INVALID_HANDLE_VALUE {
+        return Err(changed("created cleanup returned no handle", path));
+    }
+    // SAFETY: successful native open transferred a uniquely owned handle.
+    let cleanup = unsafe { File::from_raw_handle(raw) };
+    if metadata(&cleanup, path, true, false)? != metadata(held, path, true, false)? {
+        return Err(changed("created cleanup handle identity differs", path));
+    }
+    if let Err(error) = dispose(&cleanup, path) {
+        return if error
+            .source
+            .as_ref()
+            .is_some_and(|cause| cause.raw_os_error() == Some(ERROR_DIR_NOT_EMPTY as i32))
+        {
+            Ok(DirectoryRemoval::NotEmpty)
+        } else {
+            Err(error)
+        };
+    }
+    // POSIX disposition removes the name when this DELETE-capable handle closes.
+    drop(cleanup);
+    Ok(DirectoryRemoval::Removed)
 }
 
 pub(in crate::state_files) fn validate_creation_target(path: &Path) -> Result<()> {
