@@ -165,20 +165,19 @@ async fn admission_controller(
 #[test]
 #[ignore = "native helper: invoke with the stop_admission_deadline Python consumer"]
 fn native_admission_host() -> Check {
-    let fixture = admission_fixture()?;
+    let AdmissionFixture {
+        initialized,
+        root,
+        home,
+        configuration,
+        config,
+        start,
+    } = admission_fixture()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(4)
         .build()?;
-    runtime.block_on(async move {
-        let AdmissionFixture {
-            initialized,
-            root,
-            home,
-            configuration,
-            config,
-            start,
-        } = fixture;
+    runtime.block_on(async {
         let mut host =
             HostedRuntime::prepare(initialized, start, runtime.handle().clone(), &bound()?).await?;
         host.configure_file(config, configuration)?;

@@ -223,11 +223,11 @@ async fn pairing_scope(
     provider.push(1, 42, 42, "First contact claims to be Owner")?;
     provider.handled_through(1).await?;
     assert!(
-        inspect(&channels, &id).await?.receipts.is_empty(),
+        inspect(channels, id).await?.receipts.is_empty(),
         "first contact saved mail"
     );
     provider.push(2, 42, 42, &format!("/start {challenge}"))?;
-    let pending = state(&channels, &id, |p| {
+    let pending = state(channels, id, |p| {
         matches!(
             p.connections[0].pairing,
             PairingPresentation::AwaitingApproval { .. }
@@ -237,7 +237,7 @@ async fn pairing_scope(
     provider.push(3, 42, 42, "A link holder is not yet authorized")?;
     provider.handled_through(3).await?;
     assert!(
-        inspect(&channels, &id).await?.receipts.is_empty(),
+        inspect(channels, id).await?.receipts.is_empty(),
         "link possession granted authority"
     );
     let confirm = ConfirmPairing {
@@ -274,12 +274,12 @@ async fn approved_saved(
     id: &ChannelId,
     port: u16,
     delayed_read: Option<bool>,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<se_types::MessageId, Box<dyn std::error::Error>> {
     provider.push(4, 43, 43, "Owner")?;
     provider.push(5, 42, 43, "Owner in a different destination")?;
     provider.push(6, 42, 42, "Approved phone work")?;
     provider.handled_through(6).await?;
-    let saved = inspect(&channels, &id).await?;
+    let saved = inspect(channels, id).await?;
     assert_eq!(
         saved.receipts.len(),
         1,
@@ -309,22 +309,22 @@ async fn replay_and_delayed(
     provider: &Provider,
     channels: &Channels,
     id: &ChannelId,
-    original: &str,
+    original: &se_types::MessageId,
     delayed_read: Option<bool>,
 ) -> Check {
     provider.push(6, 42, 42, "Approved phone work")?;
     tokio::time::sleep(Duration::from_millis(1200)).await;
     assert_eq!(
-        inspect(&channels, &id).await?.receipts.len(),
+        inspect(channels, id).await?.receipts.len(),
         1,
         "provider replay duplicated mail"
     );
     if let Some(read_first) = delayed_read {
-        let before_delay = inspect(&channels, &id).await?;
+        let before_delay = inspect(channels, id).await?;
         let before_receipt = before_delay
             .receipts
             .iter()
-            .find(|receipt| receipt.message == original)
+            .find(|receipt| receipt.message == *original)
             .ok_or("missing original receipt")?;
         let read_marker = before_receipt.read.clone();
         if read_marker.is_some() != read_first || !before_receipt.replies.is_empty() {
@@ -349,11 +349,11 @@ async fn replay_and_delayed(
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
-        let after_delay = inspect(&channels, &id).await?;
+        let after_delay = inspect(channels, id).await?;
         let after_receipt = after_delay
             .receipts
             .iter()
-            .find(|receipt| receipt.message == original)
+            .find(|receipt| receipt.message == *original)
             .ok_or("missing original receipt after delay")?;
         if after_receipt.read != read_marker || !after_receipt.replies.is_empty() {
             return Err(
@@ -380,55 +380,51 @@ async fn linked_replies(
     id: &ChannelId,
     port: u16,
     f: &Fixture,
-    original: &str,
+    original: &se_types::MessageId,
 ) -> Check {
-    if reply_case {
-        let plain = rpc(
-            port,
-            "independent-channel-reader",
-            "tools/call",
-            json!({
-            "name":"stateengine_msg_send", "arguments":{"to":f.owner,
-            "body":"Unlinked answer stays local", "idempotency_key":"independent-unlinked"}}),
-        )
-        .await?;
-        assert_ne!(plain["result"]["isError"], true, "{plain}");
-        assert!(
-            inspect(&channels, &id).await?.receipts[0]
-                .replies
-                .is_empty(),
-            "unlinked mail was forwarded"
-        );
-        let read = rpc(
-            port,
-            "independent-channel-reader",
-            "tools/call",
-            json!({
-            "name":"stateengine_msg_read", "arguments":{"message_id":original}}),
-        )
-        .await?;
-        let route = &read["result"]["structuredContent"]["message"]["channel_reply"];
-        assert_eq!(route["active"], true, "{read}");
-        assert_eq!(route["reply_to"], original.to_string(), "{read}");
-        assert!(
-            route["instruction"]
-                .as_str()
-                .is_some_and(|t| t.contains("final turn answer alone stays local")),
-            "{read}"
-        );
-        let linked = rpc(
-            port,
-            "independent-channel-reader",
-            "tools/call",
-            json!({
-            "name":"stateengine_msg_send", "arguments":{"to":f.owner,
-            "body":"Private linked answer", "reply_to":original,
-            "idempotency_key":"independent-linked"}}),
-        )
-        .await?;
-        assert_ne!(linked["result"]["isError"], true, "{linked}");
-        state(&channels, &id, |p| p.receipts[0].replies.len() == 1).await?;
-    }
+    let plain = rpc(
+        port,
+        "independent-channel-reader",
+        "tools/call",
+        json!({
+        "name":"stateengine_msg_send", "arguments":{"to":f.owner,
+        "body":"Unlinked answer stays local", "idempotency_key":"independent-unlinked"}}),
+    )
+    .await?;
+    assert_ne!(plain["result"]["isError"], true, "{plain}");
+    assert!(
+        inspect(channels, id).await?.receipts[0].replies.is_empty(),
+        "unlinked mail was forwarded"
+    );
+    let read = rpc(
+        port,
+        "independent-channel-reader",
+        "tools/call",
+        json!({
+        "name":"stateengine_msg_read", "arguments":{"message_id":original}}),
+    )
+    .await?;
+    let route = &read["result"]["structuredContent"]["message"]["channel_reply"];
+    assert_eq!(route["active"], true, "{read}");
+    assert_eq!(route["reply_to"], original.to_string(), "{read}");
+    assert!(
+        route["instruction"]
+            .as_str()
+            .is_some_and(|t| t.contains("final turn answer alone stays local")),
+        "{read}"
+    );
+    let linked = rpc(
+        port,
+        "independent-channel-reader",
+        "tools/call",
+        json!({
+        "name":"stateengine_msg_send", "arguments":{"to":f.owner,
+        "body":"Private linked answer", "reply_to":original,
+        "idempotency_key":"independent-linked"}}),
+    )
+    .await?;
+    assert_ne!(linked["result"]["isError"], true, "{linked}");
+    state(channels, id, |p| p.receipts[0].replies.len() == 1).await?;
     Ok(())
 }
 
@@ -439,9 +435,9 @@ async fn disconnect_fence(
     vault: &NativeChannelCredentials,
     port: u16,
     reply_case: bool,
-    original: &str,
+    original: &se_types::MessageId,
 ) -> Check {
-    let before = inspect(&channels, &id).await?;
+    let before = inspect(channels, id).await?;
     let revoke = ChannelControl {
         connection: id.clone(),
         expected_revision: before.connections[0].revision,
@@ -458,7 +454,7 @@ async fn disconnect_fence(
     provider.blocked.store(false, Ordering::Release);
     provider.push(7, 42, 42, "After revocation")?;
     tokio::time::sleep(Duration::from_millis(1200)).await;
-    let revoked = inspect(&channels, &id).await?;
+    let revoked = inspect(channels, id).await?;
     assert!(matches!(
         revoked.connections[0].pairing,
         PairingPresentation::Revoked { .. }

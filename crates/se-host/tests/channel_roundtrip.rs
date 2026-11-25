@@ -120,7 +120,7 @@ async fn pairing_and_saved(
     challenge: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
     provider.push(1, format!("/start {challenge}"))?;
-    let awaiting = wait_for(&channels, &id, |p| {
+    let awaiting = wait_for(channels, id, |p| {
         matches!(
             p.connections.first().map(|c| &c.pairing),
             Some(PairingPresentation::AwaitingApproval { .. })
@@ -143,14 +143,14 @@ async fn pairing_and_saved(
         )
         .await?;
     provider.push(2, "Please do fixture work and send a linked reply.".into())?;
-    let saved = wait_for(&channels, &id, |p| p.receipts.len() == 1).await?;
+    let saved = wait_for(channels, id, |p| p.receipts.len() == 1).await?;
     let receipt = saved.receipts.first().ok_or("Saved receipt absent")?;
     assert!(receipt.read.is_none() && receipt.replies.is_empty());
     assert!(matches!(receipt.notice, NoticeFact::Pending { .. }));
     let original = receipt.message.clone();
     provider.push(2, "Please do fixture work and send a linked reply.".into())?;
     provider.push(3, "x".repeat(se_store::channel::MAX_TEXT_BYTES + 1))?;
-    let rejected = wait_for(&channels, &id, |p| {
+    let rejected = wait_for(channels, id, |p| {
         p.recent_rejections.as_ref().is_some_and(|r| {
             r.items
                 .first()
@@ -167,12 +167,12 @@ async fn pairing_and_saved(
             .map(|r| r.reason),
         Some(se_store::channel::Rejection::TooLarge)
     );
-    Ok(original)
+    Ok(original.to_string())
 }
 
 async fn outage_recovery(provider: &FaultTransport, channels: &Channels, id: &ChannelId) -> Check {
     provider.interrupt();
-    let outage = wait_for(&channels, &id, |p| {
+    let outage = wait_for(channels, id, |p| {
         p.connections.first().is_some_and(|c| {
             c.receive_coverage.possible_gap.reason == ReceiveGapReason::ReceiverUnavailable
         })
@@ -185,7 +185,7 @@ async fn outage_recovery(provider: &FaultTransport, channels: &Channels, id: &Ch
             .is_some()
     );
     provider.unsupported(4)?;
-    let recovered = wait_for(&channels, &id, |p| {
+    let recovered = wait_for(channels, id, |p| {
         p.connections
             .first()
             .is_some_and(|c| matches!(c.health, ConnectionHealth::Connected { .. }))
@@ -223,7 +223,7 @@ async fn mcp_read(channels: &Channels, id: &ChannelId, port: u16, original: &str
         read["result"]["structuredContent"]["message"]["channel_reply"]["active"] == true,
         format!("trusted phone route absent: {read}"),
     )?;
-    let readback = wait_for(&channels, &id, |p| {
+    let readback = wait_for(channels, id, |p| {
         p.receipts.first().is_some_and(|r| r.read.is_some())
     })
     .await?;
@@ -239,7 +239,7 @@ async fn await_reply_settled(
     mode: Mode,
     lose_response: bool,
 ) -> Result<ChannelPage, Box<dyn std::error::Error>> {
-    let done = wait_for(&channels, &id, |p| {
+    let done = wait_for(channels, id, |p| {
         // Release only after this snapshot was read: the old predicate
         // must see the in-flight first send, not a scheduler-dependent result.
         if let Some(gate) = &gate { gate.release(); }
@@ -258,7 +258,7 @@ async fn await_reply_settled(
     if gate.is_some() {
         // Drain the real provider outcome without replacing the snapshot
         // selected by the predicate under test.
-        wait_for(&channels, &id, |p| {
+        wait_for(channels, id, |p| {
             p.receipts
                 .first()
                 .and_then(|r| r.replies.first())
@@ -269,7 +269,57 @@ async fn await_reply_settled(
         })
         .await?;
     }
-    done
+    Ok(done)
+}
+
+async fn long_reply_delivery(
+    provider: &FaultTransport,
+    mode: Mode,
+    known: usize,
+    full_reply: &str,
+) -> Check {
+    let (attempts, accepted) = provider.observations()?;
+    assert!(
+        attempts
+            .iter()
+            .all(|part| !part.is_empty() && part.encode_utf16().count() <= 4096)
+    );
+    match mode {
+        Mode::Complete | Mode::RateLimitedSecond => {
+            assert_eq!(accepted.len(), 3);
+            assert_eq!(
+                accepted.concat(),
+                full_reply,
+                "Unicode body changed or was truncated"
+            );
+            assert_eq!(known, accepted.len());
+            assert_eq!(attempts.len(), if mode == Mode::Complete { 3 } else { 4 });
+            assert_eq!(
+                attempts
+                    .iter()
+                    .filter(|part| part.starts_with("Reply to "))
+                    .count(),
+                1,
+                "a known accepted first part was resent"
+            );
+        }
+        Mode::FailedSecond | Mode::UnknownSecond => {
+            assert_eq!(attempts.len(), 2);
+            assert_eq!(known, 1, "unknown or refused part was claimed as delivered");
+            assert_eq!(
+                accepted.len(),
+                if mode == Mode::FailedSecond { 1 } else { 2 }
+            );
+            assert!(full_reply.starts_with(&accepted.concat()));
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            assert_eq!(
+                provider.observations()?.0,
+                attempts,
+                "partial/unknown output was retried"
+            );
+        }
+    }
+    Ok(())
 }
 
 async fn final_receipts(
@@ -295,48 +345,8 @@ async fn final_receipts(
         "Save only sent outside the approved chat or offered a lifecycle action"
     );
     if long_reply {
-        let (attempts, accepted) = provider.observations()?;
-        assert!(
-            attempts
-                .iter()
-                .all(|part| !part.is_empty() && part.encode_utf16().count() <= 4096)
-        );
         let known = receipt.replies[0].provider_messages.len();
-        match mode {
-            Mode::Complete | Mode::RateLimitedSecond => {
-                assert_eq!(accepted.len(), 3);
-                assert_eq!(
-                    accepted.concat(),
-                    full_reply,
-                    "Unicode body changed or was truncated"
-                );
-                assert_eq!(known, accepted.len());
-                assert_eq!(attempts.len(), if mode == Mode::Complete { 3 } else { 4 });
-                assert_eq!(
-                    attempts
-                        .iter()
-                        .filter(|part| part.starts_with("Reply to "))
-                        .count(),
-                    1,
-                    "a known accepted first part was resent"
-                );
-            }
-            Mode::FailedSecond | Mode::UnknownSecond => {
-                assert_eq!(attempts.len(), 2);
-                assert_eq!(known, 1, "unknown or refused part was claimed as delivered");
-                assert_eq!(
-                    accepted.len(),
-                    if mode == Mode::FailedSecond { 1 } else { 2 }
-                );
-                assert!(full_reply.starts_with(&accepted.concat()));
-                tokio::time::sleep(Duration::from_secs(3)).await;
-                assert_eq!(
-                    provider.observations()?.0,
-                    attempts,
-                    "partial/unknown output was retried"
-                );
-            }
-        }
+        long_reply_delivery(provider, mode, known, full_reply).await?;
     }
     if lose_response {
         assert!(
@@ -372,13 +382,71 @@ async fn disconnect_forgets(
         CredentialRemoval::Removed
     ));
     assert!(vault.catalog()?.credentials.is_empty());
-    let revoked = inspect(&channels, &id).await?;
+    let revoked = inspect(channels, id).await?;
     assert!(matches!(
         revoked.connections.first().map(|c| &c.pairing),
         Some(PairingPresentation::Revoked { .. })
     ));
     assert_eq!(revoked.receipts.len(), 1);
     Ok(())
+}
+
+async fn send_linked_reply(f: &Fixture, port: u16, reply_body: String, original: String) -> Check {
+    let reply = rpc(
+        port,
+        "channel-http-fixture",
+        "tools/call",
+        json!({
+            "name": "stateengine_msg_send", "arguments": {
+                "to": f.owner, "body": reply_body, "reply_to": original,
+                "idempotency_key": "fixture-linked-phone-reply"
+            }
+        }),
+    )
+    .await?;
+    require(
+        reply["result"]["isError"] != true,
+        format!("MCP reply refused: {reply}"),
+    )?;
+    Ok(())
+}
+
+async fn in_flight_reply_is_unknown(
+    gate: &Arc<FirstReplyGate>,
+    channels: &Channels,
+    id: &ChannelId,
+) -> Check {
+    tokio::time::timeout(Duration::from_secs(10), gate.entered()).await?;
+    let pending = inspect(channels, id).await?;
+    let reply = pending
+        .receipts
+        .first()
+        .and_then(|r| r.replies.first())
+        .ok_or("in-flight reply absent")?;
+    assert!(matches!(&reply.delivery, ProviderOutput::Unknown { code }
+        if code == "attempt_awaiting_reconciliation"));
+    assert!(reply.provider_messages.is_empty());
+    Ok(())
+}
+
+fn arm_reply(
+    provider: &FaultTransport,
+    lose_response: bool,
+    long_reply: bool,
+    mode: Mode,
+    original: &str,
+) -> Result<(String, String), Box<dyn std::error::Error>> {
+    provider.lose_reply.store(lose_response, Ordering::Release);
+    let reply_body = if long_reply {
+        format!("Unicode fixture:{}", "🧪abé".repeat(1700))
+    } else {
+        "Fixture work completed and independently read back.".into()
+    };
+    let full_reply = format!("Reply to {original}:\n{reply_body}");
+    if long_reply {
+        provider.arm(full_reply.clone(), mode)?;
+    }
+    Ok((full_reply, reply_body))
 }
 
 fn roundtrip(lose_response: bool, long_reply: bool, mode: Mode) -> Check {
@@ -437,48 +505,16 @@ fn roundtrip(lose_response: bool, long_reply: bool, mode: Mode) -> Check {
                     outage_recovery(&provider, &channels, &id).await?;
                 }
                 mcp_read(&channels, &id, port, &original).await?;
-                provider.lose_reply.store(lose_response, Ordering::Release);
-                let reply_body = if long_reply {
-                    format!("Unicode fixture:{}", "🧪abé".repeat(1700))
-                } else {
-                    "Fixture work completed and independently read back.".into()
-                };
-                let full_reply = format!("Reply to {original}:\n{reply_body}");
-                if long_reply {
-                    provider.arm(full_reply.clone(), mode)?;
-                }
+                let (full_reply, reply_body) =
+                    arm_reply(&provider, lose_response, long_reply, mode, &original)?;
                 let gate = if lose_response || mode == Mode::UnknownSecond {
                     Some(provider.gate_first_reply()?)
                 } else {
                     None
                 };
-                let reply = rpc(
-                    port,
-                    "channel-http-fixture",
-                    "tools/call",
-                    json!({
-                        "name": "stateengine_msg_send", "arguments": {
-                            "to": f.owner, "body": reply_body, "reply_to": original,
-                            "idempotency_key": "fixture-linked-phone-reply"
-                        }
-                    }),
-                )
-                .await?;
-                require(
-                    reply["result"]["isError"] != true,
-                    format!("MCP reply refused: {reply}"),
-                )?;
+                send_linked_reply(&f, port, reply_body, original).await?;
                 if let Some(gate) = &gate {
-                    tokio::time::timeout(Duration::from_secs(10), gate.entered()).await?;
-                    let pending = inspect(&channels, &id).await?;
-                    let reply = pending
-                        .receipts
-                        .first()
-                        .and_then(|r| r.replies.first())
-                        .ok_or("in-flight reply absent")?;
-                    assert!(matches!(&reply.delivery, ProviderOutput::Unknown { code }
-                        if code == "attempt_awaiting_reconciliation"));
-                    assert!(reply.provider_messages.is_empty());
+                    in_flight_reply_is_unknown(gate, &channels, &id).await?;
                 }
                 let done =
                     await_reply_settled(&channels, &id, &gate, long_reply, mode, lose_response)

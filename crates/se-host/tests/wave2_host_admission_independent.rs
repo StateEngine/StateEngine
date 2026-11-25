@@ -9,7 +9,7 @@ mod support;
 use support::*;
 
 fn seed_refusal_authorities(f: &Fixture, now: i64) -> Check {
-    let (mut d, lease) = direct(&f)?;
+    let (mut d, lease) = direct(f)?;
     let s = session::session()?;
     let current = credential(
         &s,
@@ -34,7 +34,7 @@ fn seed_refusal_authorities(f: &Fixture, now: i64) -> Check {
                 serial()
             ))?),
             vec![
-                session::prepared(&f, &s, &f.a),
+                session::prepared(f, &s, &f.a),
                 current,
                 credential(
                     &s,
@@ -122,7 +122,7 @@ async fn prepared_refusal_checks(
                 serial()
             ))?),
             vec![
-                session::prepared(&f, &successor, &f.a),
+                session::prepared(f, &successor, &f.a),
                 credential(
                     &successor,
                     "http",
