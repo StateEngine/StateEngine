@@ -147,11 +147,9 @@ fn managed_package_refusal() -> Result<()> {
         .components()
         .map(std::path::Component::as_os_str)
         .collect();
-    let npm = components
-        .windows(2)
-        .any(|pair| {
-            pair[0] == "node_modules" && pair[1].to_string_lossy().starts_with("@stateengine")
-        });
+    let npm = components.windows(2).any(|pair| {
+        pair[0] == "node_modules" && pair[1].to_string_lossy().starts_with("@stateengine")
+    });
     let brew = components
         .windows(2)
         .any(|pair| pair[0] == "Cellar" && pair[1] == "stateengine")
