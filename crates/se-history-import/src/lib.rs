@@ -51,6 +51,17 @@ async fn job<T: Send + 'static>(
         .try_recv()
         .map_err(|_| scope::unreadable("import job", "the finished job returned no result"))?
 }
+pub(crate) use se_store::read_budget;
+/// Resolve a `Read<T>` into `Option<T>`, converting `Unreadable`/`Unknown` into
+/// `scope::unreadable` without ever collapsing failures into `None`.
+pub(crate) fn read_optional<T>(read: Read<T>, subject: &str) -> Result<Option<T>> {
+    match read {
+        Read::Present { value } => Ok(Some(value)),
+        Read::Absent { .. } => Ok(None),
+        Read::Unreadable { source, reason, .. } => Err(scope::unreadable(&source, &reason)),
+        Read::Unknown { what } => Err(scope::unreadable(subject, &what)),
+    }
+}
 fn now() -> Result<i64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

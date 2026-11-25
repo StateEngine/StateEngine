@@ -3,7 +3,7 @@ use super::node::NodeContext;
 use super::{Context, batch, read};
 use se_core::{scope, store_error::store_error};
 use se_store::*;
-use se_types::{NativePath, Read, Result};
+use se_types::{NativePath, Result};
 pub(super) struct Progress {
     pub checkpoint: Option<ImportCheckpoint>,
     pub counts: ImportCounts,

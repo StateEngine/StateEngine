@@ -4,7 +4,7 @@
  "default_crate_lines": 40000,
  "default_directory_lines": 10000,
  "crates": {
-  "se-host": 56272,
+  "se-host": 56196,
   "se-channels": 6750,
   "se-proc": 22314,
   "se-native-ipc": 4600,
@@ -26,9 +26,9 @@
   "se-ssh-transport": 1116,
   "se-provider-image": 560,
   "se-secode-service": 6000,
-  "se-history-import": 4907,
+  "se-history-import": 4878,
   "se-repository": 2200,
-  "se-store-contract": 2845,
+  "se-store-contract": 2861,
   "se-store-codec": 1150,
   "se-store-sql": 845,
   "se-core": 25930,
@@ -47,7 +47,7 @@
   "se-state-files": 10500
  },
  "directories": {
-  "crates/se-host/src/runtime": 20209,
+  "crates/se-host/src/runtime": 20253,
   "crates/se-core/src/ops": 21454,
   "crates/se-host/src/process": 15596,
   "crates/se-harness/src/harness": 13328,

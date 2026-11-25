@@ -238,6 +238,22 @@ pub struct ReadBudget {
     pub page: se_types::PageRequest,
     pub deadline: Duration,
 }
+/// One page request; a zero limit or byte cap becomes the smallest valid one.
+pub fn read_budget(
+    after: Option<se_types::Cursor>,
+    limit: u32,
+    max_bytes: u32,
+    deadline: Duration,
+) -> ReadBudget {
+    ReadBudget {
+        page: se_types::PageRequest {
+            after,
+            limit: NonZeroU32::new(limit).unwrap_or(NonZeroU32::MIN),
+            max_bytes: NonZeroU32::new(max_bytes).unwrap_or(NonZeroU32::MIN),
+        },
+        deadline,
+    }
+}
 
 /// Core computes this from the closed admitted operation input, before allocating IDs.
 /// Includes caller-explicit expectations; excludes default head reads and allocated outputs.
