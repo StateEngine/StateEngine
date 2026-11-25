@@ -2,19 +2,53 @@ use super::*;
 
 /// Protects: 49 — a new approved connection has its own update identity while bot ACK progress survives replacement.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn reconnect_scopes_dispositions_and_retains_the_bot_ack_cursor() -> Check {
     let f = Fixture::new()?;
     let (mut writer, lease) = f.direct()?;
     let old = paired(&f, &mut writer, &lease)?;
     let original = message()?;
-    let accepted = writer.append(saved(&f, &old, original.clone(), 100, "old-100")?, &*lease)?;
+    let accepted = append_old_lifecycle(&f, &mut writer, &lease, &old, &original)?;
+    let mut replacement = state(&f)?;
+    replacement.id = ChannelId::new("chn-33333333333333333333333333333333")?;
+    replacement.credential.id = CredentialId::new("ccr-44444444444444444444444444444444")?;
+    let replacement = paired_with(&f, &mut writer, &lease, replacement)?;
+    assert_update_scoped(&mut writer, &f, &old, &replacement)?;
+    let new_message = message()?;
+    let new = writer.append(
+        repeated_saved_batch(&f, &replacement, &new_message)?,
+        &*lease,
+    )?;
+    let replay = writer.append(
+        repeated_saved_batch(&f, &replacement, &new_message)?,
+        &*lease,
+    )?;
+    assert_eq!(new.events, replay.events);
+    assert_eq!(replay.state, CommitState::Replayed);
+    assert_ne!(accepted.events, new.events);
+    append_rejected_paired(
+        &f,
+        &mut writer,
+        &lease,
+        &replacement,
+        Rejection::Unsupported,
+        "new-rejection",
+    )?;
+    assert_lifecycle_divergence(&mut writer, &f, &old, &replacement, &original, &new_message)?;
+    writer.close()?;
+    Ok(())
+}
+
+fn append_old_lifecycle(
+    f: &Fixture,
+    writer: &mut SqliteDirect,
+    lease: &Lease,
+    old: &channel::Connection,
+    original: &MessageId,
+) -> Result<CommitReceipt, Box<dyn std::error::Error>> {
+    let accepted = writer.append(saved(f, old, original.clone(), 100, "old-100")?, lease)?;
     writer.append(
         change(
-            &f,
+            f,
             Change::UpdateHandled {
                 cursor: None,
                 connection: old.id.clone(),
@@ -28,34 +62,90 @@ fn reconnect_scopes_dispositions_and_retains_the_bot_ack_cursor() -> Check {
             },
             "old-rejection",
         )?,
-        &*lease,
+        lease,
     )?;
     writer.append(
         change(
-            &f,
+            f,
             Change::Disconnected {
                 connection: old.id.clone(),
                 expected: old.revision,
             },
             "old-disconnect",
         )?,
-        &*lease,
+        lease,
     )?;
     writer.append(
         change(
-            &f,
+            f,
             Change::CredentialRemoved {
                 connection: old.id.clone(),
                 credential: old.credential.clone(),
             },
             "old-forget",
         )?,
-        &*lease,
+        lease,
     )?;
-    let mut replacement = state(&f)?;
-    replacement.id = ChannelId::new("chn-33333333333333333333333333333333")?;
-    replacement.credential.id = CredentialId::new("ccr-44444444444444444444444444444444")?;
-    let replacement = paired_with(&f, &mut writer, &lease, replacement)?;
+    Ok(accepted)
+}
+
+fn append_rejected_paired(
+    f: &Fixture,
+    writer: &mut SqliteDirect,
+    lease: &Lease,
+    connection: &channel::Connection,
+    reason: Rejection,
+    key: &str,
+) -> Check {
+    writer.append(
+        change(
+            f,
+            Change::UpdateHandled {
+                cursor: None,
+                connection: connection.id.clone(),
+                binding_revision: connection.revision,
+                update: 101.into(),
+                disposition: Disposition::RejectedPaired {
+                    reason,
+                    subject: 42.into(),
+                    private_chat: 42.into(),
+                },
+            },
+            key,
+        )?,
+        lease,
+    )?;
+    Ok(())
+}
+
+fn repeated_saved_batch(
+    f: &Fixture,
+    replacement: &channel::Connection,
+    new_message: &MessageId,
+) -> Result<AtomicBatch, Box<dyn std::error::Error>> {
+    let mut batch = saved(f, replacement, new_message.clone(), 100, "new-100")?;
+    for event in &mut batch.events {
+        if let EventBody::ChannelRecorded {
+            change:
+                Change::UpdateHandled {
+                    cursor: None,
+                    disposition: Disposition::Saved { receipt, .. },
+                    ..
+                },
+        } = &mut event.body
+        {
+            *receipt = ReceiptId::new("chr-55555555555555555555555555555555")?;
+        }
+    }
+    Ok(batch)
+}
+
+fn assert_update_scoped(
+    writer: &mut SqliteDirect,
+    f: &Fixture,
+    old: &channel::Connection,
+    replacement: &channel::Connection,
+) -> Check {
     let mut view = writer.snapshot(f.scoped(Visibility::Owner))?;
     assert!(view.channel_update_handled(&old.id, &100.into())?);
     assert!(!view.channel_update_handled(&replacement.id, &100.into())?);
@@ -64,47 +154,17 @@ fn reconnect_scopes_dispositions_and_retains_the_bot_ack_cursor() -> Check {
         Some(ReceiveCursor::new("101".into())?)
     );
     view.close()?;
-    let new_message = message()?;
-    let repeated_input = || -> Result<AtomicBatch, Box<dyn std::error::Error>> {
-        let mut batch = saved(&f, &replacement, new_message.clone(), 100, "new-100")?;
-        for event in &mut batch.events {
-            if let EventBody::ChannelRecorded {
-                change:
-                    Change::UpdateHandled {
-                        cursor: None,
-                        disposition: Disposition::Saved { receipt, .. },
-                        ..
-                    },
-            } = &mut event.body
-            {
-                *receipt = ReceiptId::new("chr-55555555555555555555555555555555")?;
-            }
-        }
-        Ok(batch)
-    };
-    let new = writer.append(repeated_input()?, &*lease)?;
-    let replay = writer.append(repeated_input()?, &*lease)?;
-    assert_eq!(new.events, replay.events);
-    assert_eq!(replay.state, CommitState::Replayed);
-    assert_ne!(accepted.events, new.events);
-    writer.append(
-        change(
-            &f,
-            Change::UpdateHandled {
-                cursor: None,
-                connection: replacement.id.clone(),
-                binding_revision: replacement.revision,
-                update: 101.into(),
-                disposition: Disposition::RejectedPaired {
-                    reason: Rejection::Unsupported,
-                    subject: 42.into(),
-                    private_chat: 42.into(),
-                },
-            },
-            "new-rejection",
-        )?,
-        &*lease,
-    )?;
+    Ok(())
+}
+
+fn assert_lifecycle_divergence(
+    writer: &mut SqliteDirect,
+    f: &Fixture,
+    old: &channel::Connection,
+    replacement: &channel::Connection,
+    original: &MessageId,
+    new_message: &MessageId,
+) -> Check {
     let mut view = writer.snapshot(f.scoped(Visibility::Owner))?;
     let old_refusal = view.channel_recent_rejections(&old.id)?;
     let new_refusal = view.channel_recent_rejections(&replacement.id)?;
@@ -116,12 +176,11 @@ fn reconnect_scopes_dispositions_and_retains_the_bot_ack_cursor() -> Check {
         view.channel_cursor(&replacement.id)?,
         Some(ReceiveCursor::new("101".into())?)
     );
-    assert_eq!(view.channel_saved(&old.id, 0)?.items[0].message, original);
+    assert_eq!(view.channel_saved(&old.id, 0)?.items[0].message, *original);
     assert_eq!(
         view.channel_saved(&replacement.id, 0)?.items[0].message,
-        new_message
+        *new_message
     );
     view.close()?;
-    writer.close()?;
     Ok(())
 }

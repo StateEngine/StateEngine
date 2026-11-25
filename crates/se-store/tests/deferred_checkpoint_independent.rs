@@ -18,6 +18,7 @@ use native_host::{host, options, wait, wait_until};
 #[path = "support/deferred_checkpoint_crash.rs"]
 mod crash;
 const HARD: u64 = 64 * 1024 * 1024;
+type LoadOutcome = Result<(Vec<(String, CommitReceipt)>, u64, u64), Box<dyn std::error::Error>>;
 
 fn payload(f: &Fixture, key: &str) -> Result<AtomicBatch, Box<dyn std::error::Error>> {
     let bodies = (0..40)
@@ -166,76 +167,15 @@ fn pressure_wait<F: Future>(
     wait_until(future, deadline).map_err(|error| format!("{stage}: {error}").into())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "One sustained WAL cutoff, refusal, and recovery observation sequence."
-)]
 fn observe_pressure(f: &Fixture, writer: &mut SqliteWriter, deadline: Instant) -> Check {
     let client = writer.client();
     let path = f.options.state_directory.join("state.db");
     let pinned = observer(&path)?;
     pin(&pinned)?;
     let outside = observer(&path)?;
-    let mut before = wal(&outside)?.2;
-    let mut largest_group_growth = 0;
-    let mut commits = Vec::new();
-    let mut crossed = false;
-    for n in 0..128 {
-        let key = format!("pressure-{n}");
-        let receipt = pressure_wait(
-            client.submit(payload(f, &key)?)?,
-            deadline,
-            format_args!("pressure load batch {}", n + 1),
-        )??;
-        assert_eq!(receipt.state, CommitState::Committed);
-        let after = wal(&outside)?.2;
-        largest_group_growth = largest_group_growth.max(after.saturating_sub(before));
-        if after >= HARD {
-            assert!(
-                receipt
-                    .write_timings
-                    .as_ref()
-                    .is_some_and(|t| t.checkpoint.is_some()),
-                "hard pressure did not run a foreground checkpoint"
-            );
-            assert!(
-                receipt.maintenance_pending,
-                "blocked pressure lost maintenance debt"
-            );
-            crossed = true;
-        }
-        commits.push((key, receipt));
-        before = after;
-        if crossed {
-            break;
-        }
-    }
-    assert!(crossed, "sustained fixture never reached the hard boundary");
-    assert!(
-        before < HARD + largest_group_growth,
-        "more than one committed group grew past the cutoff"
-    );
-    let head: i64 = outside.query_row("SELECT max(seq) FROM events", [], |r| r.get(0))?;
-    for refusal in 1..=2 {
-        let refused = pressure_wait(
-            client.submit(payload(f, "pressure-retry")?)?,
-            deadline,
-            format_args!("pressure refusal {refusal}"),
-        )?
-        .err()
-        .ok_or("pressure admitted another group")?;
-        assert_eq!(refused.code, StoreErrorCode::Busy);
-        assert!(refused.cause.contains("64 MiB"));
-        assert!(refused.cause.contains("release pinned readers"));
-        // Only the reader held the WAL; the refusal must not also blame a backup.
-        assert!(!refused.cause.contains("backup"), "{}", refused.cause);
-        assert_eq!(wal(&outside)?.2, before, "refused append grew live WAL");
-        assert_eq!(
-            outside.query_row("SELECT max(seq) FROM events", [], |r| r.get::<_, i64>(0))?,
-            head
-        );
-        assert!(member_ids(&outside, "pressure-retry")?.is_empty());
-    }
+    let (commits, before, largest_group_growth) =
+        drive_pressure_load(f, &client, &outside, deadline)?;
+    assert_reader_refusals(f, &client, &outside, before, deadline)?;
     let mutation = se_store::atlas_resume::AtlasResumeMutation::Epoch {
         project: f.project.clone(),
         root: se_types::AtlasRootId::from_parts(1_700_000_001_000, [7; 10])?,
@@ -245,20 +185,7 @@ fn observe_pressure(f: &Fixture, writer: &mut SqliteWriter, deadline: Instant) -
             [8; 10],
         )?),
     };
-    let refused = pressure_wait(
-        client.atlas_resume(mutation.clone())?,
-        deadline,
-        "Atlas cursor refusal at the cutoff",
-    )?
-    .err()
-    .ok_or("auxiliary cursor writer bypassed pressure")?;
-    assert_eq!(refused.code, StoreErrorCode::Busy);
-    assert_eq!(wal(&outside)?.2, before);
-    assert_eq!(
-        outside.query_row("SELECT count(*) FROM atlas_resume_roots", [], |r| r
-            .get::<_, i64>(0))?,
-        0
-    );
+    assert_atlas_refusal(&client, &outside, &mutation, before, deadline)?;
     pinned.execute_batch("ROLLBACK")?;
     // The cutoff may be paid by the retry's own truncation or by the
     // maintenance task's next tick, and a tick that started before the
@@ -269,25 +196,7 @@ fn observe_pressure(f: &Fixture, writer: &mut SqliteWriter, deadline: Instant) -
     // lands; a store that stays past the cutoff after the reader released
     // is a regression, so the deadline fails loudly instead of looping on
     // a stuck store.
-    let mut attempts = 0usize;
-    let retry = loop {
-        if Instant::now() >= deadline {
-            return Err("pressure retry still refused after the reader released".into());
-        }
-        attempts += 1;
-        match pressure_wait(
-            client.submit(payload(f, "pressure-retry")?)?,
-            deadline,
-            format_args!("pressure retry {attempts} after reader release"),
-        )? {
-            Ok(receipt) if receipt.state == CommitState::Committed => break receipt,
-            Ok(_) => return Err("pressure retry returned a non-committed state".into()),
-            Err(error) if error.code == StoreErrorCode::Busy && error.cause.contains("64 MiB") => {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(error) => return Err(error.into()),
-        }
-    };
+    let (retry, attempts) = retry_after_release(f, &client, deadline)?;
     assert!(
         wal(&outside)?.2 < HARD,
         "released pressure did not truncate live WAL"
@@ -316,6 +225,136 @@ fn observe_pressure(f: &Fixture, writer: &mut SqliteWriter, deadline: Instant) -
         "pressure flush",
     )??;
     Ok(())
+}
+
+fn drive_pressure_load(
+    f: &Fixture,
+    client: &SqliteClient,
+    outside: &Connection,
+    deadline: Instant,
+) -> LoadOutcome {
+    let mut before = wal(outside)?.2;
+    let mut largest_group_growth = 0;
+    let mut commits = Vec::new();
+    let mut crossed = false;
+    for n in 0..128 {
+        let key = format!("pressure-{n}");
+        let receipt = pressure_wait(
+            client.submit(payload(f, &key)?)?,
+            deadline,
+            format_args!("pressure load batch {}", n + 1),
+        )??;
+        assert_eq!(receipt.state, CommitState::Committed);
+        let after = wal(outside)?.2;
+        largest_group_growth = largest_group_growth.max(after.saturating_sub(before));
+        if after >= HARD {
+            assert!(
+                receipt
+                    .write_timings
+                    .as_ref()
+                    .is_some_and(|t| t.checkpoint.is_some()),
+                "hard pressure did not run a foreground checkpoint"
+            );
+            assert!(
+                receipt.maintenance_pending,
+                "blocked pressure lost maintenance debt"
+            );
+            crossed = true;
+        }
+        commits.push((key, receipt));
+        before = after;
+        if crossed {
+            break;
+        }
+    }
+    assert!(crossed, "sustained fixture never reached the hard boundary");
+    assert!(
+        before < HARD + largest_group_growth,
+        "more than one committed group grew past the cutoff"
+    );
+    Ok((commits, before, largest_group_growth))
+}
+
+fn assert_reader_refusals(
+    f: &Fixture,
+    client: &SqliteClient,
+    outside: &Connection,
+    before: u64,
+    deadline: Instant,
+) -> Check {
+    let head: i64 = outside.query_row("SELECT max(seq) FROM events", [], |r| r.get(0))?;
+    for refusal in 1..=2 {
+        let refused = pressure_wait(
+            client.submit(payload(f, "pressure-retry")?)?,
+            deadline,
+            format_args!("pressure refusal {refusal}"),
+        )?
+        .err()
+        .ok_or("pressure admitted another group")?;
+        assert_eq!(refused.code, StoreErrorCode::Busy);
+        assert!(refused.cause.contains("64 MiB"));
+        assert!(refused.cause.contains("release pinned readers"));
+        // Only the reader held the WAL; the refusal must not also blame a backup.
+        assert!(!refused.cause.contains("backup"), "{}", refused.cause);
+        assert_eq!(wal(outside)?.2, before, "refused append grew live WAL");
+        assert_eq!(
+            outside.query_row("SELECT max(seq) FROM events", [], |r| r.get::<_, i64>(0))?,
+            head
+        );
+        assert!(member_ids(outside, "pressure-retry")?.is_empty());
+    }
+    Ok(())
+}
+
+fn assert_atlas_refusal(
+    client: &SqliteClient,
+    outside: &Connection,
+    mutation: &se_store::atlas_resume::AtlasResumeMutation,
+    before: u64,
+    deadline: Instant,
+) -> Check {
+    let refused = pressure_wait(
+        client.atlas_resume(mutation.clone())?,
+        deadline,
+        "Atlas cursor refusal at the cutoff",
+    )?
+    .err()
+    .ok_or("auxiliary cursor writer bypassed pressure")?;
+    assert_eq!(refused.code, StoreErrorCode::Busy);
+    assert_eq!(wal(outside)?.2, before);
+    assert_eq!(
+        outside.query_row("SELECT count(*) FROM atlas_resume_roots", [], |r| r
+            .get::<_, i64>(0))?,
+        0
+    );
+    Ok(())
+}
+
+fn retry_after_release(
+    f: &Fixture,
+    client: &SqliteClient,
+    deadline: Instant,
+) -> Result<(CommitReceipt, usize), Box<dyn std::error::Error>> {
+    let mut attempts = 0usize;
+    let retry = loop {
+        if Instant::now() >= deadline {
+            return Err("pressure retry still refused after the reader released".into());
+        }
+        attempts += 1;
+        match pressure_wait(
+            client.submit(payload(f, "pressure-retry")?)?,
+            deadline,
+            format_args!("pressure retry {attempts} after reader release"),
+        )? {
+            Ok(receipt) if receipt.state == CommitState::Committed => break receipt,
+            Ok(_) => return Err("pressure retry returned a non-committed state".into()),
+            Err(error) if error.code == StoreErrorCode::Busy && error.cause.contains("64 MiB") => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
+    Ok((retry, attempts))
 }
 
 /// Protects: a real online backup while checkpoint work is pending contains the
