@@ -81,9 +81,9 @@ impl ProviderStdioApi for NativeProcessRuntime {
                     return Err(failure.clone());
                 }
                 if slot
-                    .spec
+                    .native
                     .as_ref()
-                    .is_none_or(|spec| !spec.mode.is_headless())
+                    .is_none_or(|native| !native.is_headless())
                 {
                     return Err(input("stdio mode", "headless prepared launch required"));
                 }

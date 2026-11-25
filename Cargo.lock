@@ -1895,7 +1895,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "se-proc"
+name = "se-native-proc"
 version = "0.0.1-alpha.1"
 dependencies = [
  "libc",
@@ -1903,15 +1903,34 @@ dependencies = [
  "se-custody",
  "se-native-ipc",
  "se-native-path",
+ "se-proc",
  "se-source-watch",
  "se-state-files",
  "se-types",
- "se-uninstall",
  "se-user-manager",
  "serde",
  "serde_json",
  "sha2",
  "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
+name = "se-proc"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "libc",
+ "se-custody",
+ "se-native-ipc",
+ "se-native-path",
+ "se-native-proc",
+ "se-source-watch",
+ "se-state-files",
+ "se-types",
+ "se-uninstall",
+ "serde",
+ "serde_json",
+ "sha2",
  "zeroize",
 ]
 

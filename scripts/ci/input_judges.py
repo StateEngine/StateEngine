@@ -51,7 +51,7 @@ def detachment_venue(root: Path):
     # Every trial in that harness launches a detached native child, so the
     # whole ordinary set is skipped too, not only the broker case.
     harness_records = [
-        {"judge": f"se-proc::bootstrap_stderr::{case}",
+        {"judge": f"se-native-proc::bootstrap_stderr::{case}",
          "status": "not_run", "reason": reason}
         # The names are the harness's own modes; `refuse` runs twice, which is
         # why the ordinary set is seven trials and not six.

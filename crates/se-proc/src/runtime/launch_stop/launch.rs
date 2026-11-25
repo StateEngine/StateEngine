@@ -7,19 +7,22 @@ impl NativeProcessRuntime {
         reservation: LaunchReservation,
         spec: LaunchSpec,
     ) -> ProcResult<PreparedScope> {
-        let digest = validate::spec(&reservation, &spec, &self.inner.config, &self.inner.owner)?;
+        let validated = validate::validate_launch(
+            reservation.clone(),
+            spec,
+            &self.inner.config,
+            &self.inner.owner,
+        )?;
+        let digest = validated.argv_sha256();
         let lifecycle = reservation.lifecycle.clone();
         let generation = reservation.generation;
         let hub = Arc::new(Hub::new(
             lifecycle.clone(),
             generation,
-            spec.notifications.clone(),
+            validated.spec().notifications.clone(),
         ));
-        let deadline = spec.deadline;
-        let launch = if spec.stdio.stdin.is_some()
-            || spec.stdio.stdout.is_some()
-            || spec.stdio.stderr.is_some()
-        {
+        let deadline = validated.spec().deadline;
+        let launch = if validated.stdio_bound() {
             LaunchState::Bound
         } else {
             LaunchState::Prepared
@@ -30,7 +33,7 @@ impl NativeProcessRuntime {
             root_checkpoint: None,
             record: None,
             native: None,
-            spec: Some(spec),
+            pending: Some(validated),
             launch,
             #[cfg(windows)]
             stdio: None,
@@ -98,22 +101,7 @@ impl NativeProcessRuntime {
                         "prepared launch already owns stream bindings",
                     ));
                 }
-                let spec = slot
-                    .spec
-                    .as_mut()
-                    .ok_or_else(|| input("stdio", "prepared launch spec is unavailable"))?;
-                if !spec.mode.is_headless()
-                    && !matches!(
-                        spec.window,
-                        Some(WindowSpec::UnixTerminalWithBackend { .. })
-                    )
-                {
-                    return Err(input(
-                        "stdio",
-                        "provider stream binding requires headless mode",
-                    ));
-                }
-                spec.stdio = child;
+                slot.native()?.bind_stdio(child)?;
                 slot.launch = LaunchState::Bound;
                 Ok(())
             })();
@@ -152,12 +140,8 @@ impl NativeProcessRuntime {
                 ));
             }
             s.launch = LaunchState::Launched;
-            let spec = s
-                .spec
-                .take()
-                .ok_or_else(|| input("launch spec", "already consumed"))?;
             let hub = s.hub.clone();
-            self.inner.driver.begin(s.native()?, spec, &hub)
+            self.inner.driver.begin(s.native()?, &hub)
         });
         match result {
             Ok(()) => LaunchStart::Pending {
@@ -306,14 +290,14 @@ impl NativeProcessRuntime {
         s: &mut Slot,
         reservation: &LaunchReservation,
     ) -> ProcResult<ScopeCheckpoint> {
-        let spec = s
-            .spec
-            .as_ref()
+        let pending = s
+            .pending
+            .take()
             .ok_or_else(|| input("launch", "missing prepared spec"))?;
-        let native =
-            self.inner
-                .driver
-                .prepare(&s.reservation, spec, self.inner.config.limits, &s.hub)?;
+        let native = self
+            .inner
+            .driver
+            .prepare(pending, self.inner.config.limits, &s.hub)?;
         s.native = Some(native);
         let native = s.native()?;
         let checkpoint = ScopeCheckpoint {
