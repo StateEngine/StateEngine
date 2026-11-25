@@ -9,6 +9,7 @@ use super::{
 };
 use crate::client::lease::Deadline;
 use se_core::ops::process_commit;
+use se_core::scope::{require_present, unreadable};
 use se_proc::{CheckpointKind, ProcessRuntime, RecoveryOutcome};
 use se_store::{Actor, Admission, EventBody, OwnerGuardProcess, ProcessState, Scope, Snapshot};
 use se_types::{Read, Result};
@@ -21,6 +22,13 @@ pub struct Reconciliation {
     pub exited: u32,
     pub unproved: Vec<String>,
 }
+struct RecoveredProcess {
+    previous: se_store::ProjectionRecord,
+    process: se_proc::OwnedProcess,
+    record: Box<se_proc::ProcessRecord>,
+    state: ProcessState,
+}
+
 impl LaunchCoordinator {
     pub(super) async fn restore_cleanup(&self, work: &mut Work, deadline: &Deadline) -> Result<()> {
         let home = self.options.home.clone();
@@ -66,13 +74,281 @@ impl LaunchCoordinator {
         work.cleanup_files_known = true;
         Ok(())
     }
+    fn spawn_monitor(self: &Arc<Self>, job: &Arc<Job>, subject: &'static str) -> Result<()> {
+        let (coordinator, owned) = (self.clone(), job.clone());
+        let task = self.store.pool.handle().spawn(async move {
+            coordinator.monitor_protected(owned).await;
+        });
+        *job.task
+            .lock()
+            .map_err(|_| error(subject, "poisoned task slot"))? = Some(task);
+        Ok(())
+    }
+    fn record_exited_debt(
+        &self,
+        retained: &OwnerGuardProcess,
+        outcome: &Result<RecoveryOutcome>,
+        report: &mut Reconciliation,
+    ) -> Result<()> {
+        let lifecycle = &retained.identity.record;
+        let reason = match outcome {
+            Err(error) => error.to_string(),
+            Ok(RecoveryOutcome::Unproved { error, .. }) => format!("{error:?}"),
+            _ => "native outcome does not confirm the committed exit".into(),
+        };
+        let credential_debt = retained
+            .identity
+            .session
+            .as_ref()
+            .map(|session| {
+                format!("session {session}: session/http credential revocation remains unproved")
+            })
+            .unwrap_or_else(|| {
+                "session binding absent; credential cleanup scope is unknown".into()
+            });
+        self.retain_orphan(lifecycle)?;
+        report.unproved.push(format!(
+            "{lifecycle}: committed exit retained; cleanup unproved: {reason}; {credential_debt}"
+        ));
+        Ok(())
+    }
+    async fn adopt_recovered(
+        self: &Arc<Self>,
+        mut work: Work,
+        recovered: RecoveredProcess,
+        deadline: &Deadline,
+        report: &mut Reconciliation,
+    ) -> Result<()> {
+        let lifecycle = work.meta.lifecycle.clone();
+        let process = Arc::new(recovered.process);
+        let (native, owned, wake) = (self.native.clone(), process.clone(), work.wake.clone());
+        let watch_failure = match self
+            .on_pool(deadline, move || {
+                native
+                    .watch_exit(&owned, wake)
+                    .map_err(|e| error("recovered exit subscription", e))
+            })
+            .await
+        {
+            Ok(watch) => {
+                work.exit_watch = Some(watch);
+                None
+            }
+            Err(error) => Some(error),
+        };
+        work.process = Some(process);
+        work.record = Some((*recovered.record).clone());
+        work.exec_observed = true;
+        let (root, at) = (recovered.record.root.clone(), deadline.at());
+        match self
+            .on_pool(deadline, move || super::launch_util::view(&root, at))
+            .await
+        {
+            Ok(view) => work.process_view = Some(view),
+            Err(error) => work.cleanup_failure = Some(error.body),
+        }
+        let mut failure = watch_failure;
+        if let Err(error) = self.retire_unactivated(&mut work, deadline).await {
+            failure = Some(error);
+        }
+        if let Some(error) = &failure {
+            report.unproved.push(format!("{lifecycle}: {error}"));
+            work.cleanup_failure = Some(error.body.clone());
+        }
+        let stopping = matches!(
+            recovered.state,
+            ProcessState::StopRequested | ProcessState::StopUnproved
+        );
+        let target = if failure.is_some() || stopping {
+            ProcessState::StopUnproved
+        } else {
+            ProcessState::Running
+        };
+        let identity = native_record::identity_meta(
+            &work.meta,
+            CheckpointKind::Process(*recovered.record.clone()),
+            Some((&recovered.record.root, recovered.record.argv_sha256)),
+            Some(recovered.record.guarantee),
+            &self.options.epoch.owner.fields().boot,
+        )?;
+        self.commit_reconcile(
+            recovered.previous,
+            identity,
+            target,
+            "successor host verified and retained native custody".into(),
+            work.admission.clone(),
+            deadline,
+        )
+        .await?;
+        work.recover_provider =
+            failure.is_none() && work.active && !work.session_retired && !stopping;
+        let job = self.retain_recovered(work)?;
+        if failure.is_none() {
+            self.spawn_monitor(&job, "recovered monitor")?;
+        }
+        report.adopted = report.adopted.saturating_add(1);
+        Ok(())
+    }
+    async fn retire_unactivated(&self, work: &mut Work, deadline: &Deadline) -> Result<()> {
+        if !work.active && !work.session_retired {
+            self.retire_session(work, "prepared launch interrupted before C3", deadline)
+                .await?;
+        }
+        Ok(())
+    }
+    async fn restore_work_state(&self, work: &mut Work, deadline: &Deadline) {
+        if let Err(error) = self.restore_capture_status(work, deadline).await {
+            work.capture_failure = Some(error.body);
+        }
+        if let Err(error) = self.restore_cleanup(work, deadline).await {
+            work.cleanup_failure = Some(error.body);
+        }
+        if work.meta.provider == se_store::Provider::SeCode
+            && let Err(error) = self.restore_secode_work(work, deadline).await
+        {
+            work.cleanup_failure = Some(error.body);
+        }
+    }
+    async fn load_retained_process(
+        &self,
+        retained: &OwnerGuardProcess,
+        admission: &Admission,
+        deadline: &Deadline,
+    ) -> Result<(se_store::ProjectionRecord, Result<RecoveryOutcome>)> {
+        let id = retained.identity.record.clone();
+        let previous = self
+            .store
+            .read(admission.clone(), deadline, move |cx| {
+                require_present(
+                    cx.read.process(id).map_err(store_error)?,
+                    "retained process",
+                    "Keep its recorded identity for owner reconciliation.",
+                )
+            })
+            .await?;
+        if previous.revision != retained.revision {
+            return Err(unreadable(
+                "startup custody",
+                "inventory revision changed before reconciliation",
+            ));
+        }
+        let outcome = match se_proc::decode_checkpoint(
+            retained.identity.custody.format_version,
+            &retained.identity.custody.record,
+        )
+        .map_err(|e| error("startup native checkpoint", e))
+        {
+            Ok(checkpoint) => self.observe_recovery(checkpoint, retained, deadline).await,
+            Err(error) => Err(error),
+        };
+        Ok((previous, outcome))
+    }
+    async fn reconcile_one(
+        self: &Arc<Self>,
+        retained: OwnerGuardProcess,
+        deadline: &Deadline,
+        report: &mut Reconciliation,
+    ) -> Result<()> {
+        let admission = Admission {
+            scope: Scope::Project(retained.project.clone()),
+            actor: Actor::Human(self.human.clone()),
+            session: None,
+            generation: self.store.generation.get(),
+        };
+        let lifecycle = retained.identity.record.clone();
+        // Read the exact immutable source under the new owner, rather than
+        // converting the boot inventory itself into authority.
+        let (previous, outcome) = self
+            .load_retained_process(&retained, &admission, deadline)
+            .await?;
+        // A committed exit is terminal. A failed or contradictory new probe
+        // leaves cleanup debt; it cannot resurrect the process through Lost.
+        if retained.state == ProcessState::Exited
+            && !matches!(&outcome, Ok(RecoveryOutcome::Exited(_)))
+        {
+            return self.record_exited_debt(&retained, &outcome, report);
+        }
+        let mut work = match self
+            .recovery_metadata(&retained, admission.clone(), deadline)
+            .await
+        {
+            Ok((meta, active, retired, activated)) => {
+                let mut work = Work::recovered(meta, admission.clone());
+                (work.active, work.activated, work.session_retired) = (active, activated, retired);
+                work
+            }
+            Err(error) => {
+                self.mark_recovery_unproved(
+                    previous,
+                    retained.identity,
+                    error.to_string(),
+                    admission,
+                    deadline,
+                )
+                .await?;
+                self.retain_orphan(&lifecycle)?;
+                report
+                    .unproved
+                    .push(format!("{lifecycle}: metadata unavailable: {error}"));
+                return Ok(());
+            }
+        };
+        self.restore_work_state(&mut work, deadline).await;
+        let mut reason = match outcome {
+            Ok(RecoveryOutcome::Recovered { process, record }) => {
+                let recovered = RecoveredProcess {
+                    previous,
+                    process,
+                    record,
+                    state: retained.state,
+                };
+                return self
+                    .adopt_recovered(work, recovered, deadline, report)
+                    .await;
+            }
+            Ok(RecoveryOutcome::Exited(witness)) => {
+                work.native_already_reconciled = true;
+                work.last_witness = Some((*witness).clone());
+                work.stop_method =
+                    Some(crate::reboot::exit_reason(&witness, "native-reconciliation").into());
+                // Trusted capture opens at listener publication. Keep the
+                // exited lifecycle until its monitor can capture the tail;
+                // startup must not retire it behind the readiness fence.
+                let job = self.retain_recovered(work)?;
+                self.spawn_monitor(&job, "recovered exit monitor")?;
+                report.exited = report.exited.saturating_add(1);
+                return Ok(());
+            }
+            Ok(RecoveryOutcome::Unproved { error, .. }) => format!("StopUnproved: {error:?}"),
+            Ok(RecoveryOutcome::PendingScope { process, .. }) => {
+                work.process = Some(Arc::new(process));
+                "StopUnproved: native scope recovered without a published provider root".into()
+            }
+            Ok(RecoveryOutcome::ReleasedOwnership(_)) => {
+                "StopUnproved: recorded ownership was released; no signal authority was acquired"
+                    .into()
+            }
+            Err(error) => format!("StopUnproved: native observation unavailable: {error}"),
+        };
+        self.mark_recovery_unproved(
+            previous,
+            retained.identity,
+            reason.clone(),
+            admission,
+            deadline,
+        )
+        .await?;
+        if let Err(failure) = self.retire_unactivated(&mut work, deadline).await {
+            reason.push_str(&format!("; prepared credential cleanup remains: {failure}"));
+        }
+        work.cleanup_failure =
+            Some(se_core::scope::unreadable("retained native custody", &reason).body);
+        self.retain_recovered(work)?;
+        report.unproved.push(format!("{lifecycle}: {reason}"));
+        Ok(())
+    }
     /// The caller must pass the inventory taken from HostedRuntime after the
     /// writer and this executor have been installed, and before serving.
-    #[expect(
-        clippy::cognitive_complexity,
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub async fn reconcile(
         self: &Arc<Self>,
         inventory: Vec<OwnerGuardProcess>,
@@ -80,261 +356,7 @@ impl LaunchCoordinator {
     ) -> Result<Reconciliation> {
         let mut report = Reconciliation::default();
         for retained in inventory {
-            let admission = Admission {
-                scope: Scope::Project(retained.project.clone()),
-                actor: Actor::Human(self.human.clone()),
-                session: None,
-                generation: self.store.generation.get(),
-            };
-            let lifecycle = retained.identity.record.clone();
-            // Read the exact immutable source under the new owner, rather than
-            // converting the boot inventory itself into authority.
-            let id = lifecycle.clone();
-            let previous = self
-                .store
-                .read(admission.clone(), deadline, move |cx| {
-                    se_core::scope::require_present(
-                        cx.read.process(id).map_err(store_error)?,
-                        "retained process",
-                        "Keep its recorded identity for owner reconciliation.",
-                    )
-                })
-                .await?;
-            if previous.revision != retained.revision {
-                return Err(se_core::scope::unreadable(
-                    "startup custody",
-                    "inventory revision changed before reconciliation",
-                ));
-            }
-            let decoded = se_proc::decode_checkpoint(
-                retained.identity.custody.format_version,
-                &retained.identity.custody.record,
-            )
-            .map_err(|e| error("startup native checkpoint", e));
-            let outcome = match decoded {
-                Ok(checkpoint) => self.observe_recovery(checkpoint, &retained, deadline).await,
-                Err(error) => Err(error),
-            };
-            // A committed exit is terminal. A failed or contradictory new probe
-            // leaves cleanup debt; it cannot resurrect the process through Lost.
-            if retained.state == ProcessState::Exited
-                && !matches!(&outcome, Ok(RecoveryOutcome::Exited(_)))
-            {
-                let reason = match &outcome {
-                    Err(error) => error.to_string(),
-                    Ok(RecoveryOutcome::Unproved { error, .. }) => format!("{error:?}"),
-                    _ => "native outcome does not confirm the committed exit".into(),
-                };
-                let credential_debt = retained
-                    .identity
-                    .session
-                    .as_ref()
-                    .map(|session| {
-                        format!(
-                            "session {session}: session/http credential revocation remains unproved"
-                        )
-                    })
-                    .unwrap_or_else(|| {
-                        "session binding absent; credential cleanup scope is unknown".into()
-                    });
-                self.retain_orphan(&lifecycle)?;
-                report.unproved.push(format!(
-                    "{lifecycle}: committed exit retained; cleanup unproved: {reason}; {credential_debt}"
-                ));
-                continue;
-            }
-            let metadata = self
-                .recovery_metadata(&retained, admission.clone(), deadline)
-                .await;
-            let mut work = match metadata {
-                Ok((meta, active, retired, activated)) => {
-                    let mut work = Work::recovered(meta, admission.clone());
-                    work.active = active;
-                    work.activated = activated;
-                    work.session_retired = retired;
-                    work
-                }
-                Err(error) => {
-                    self.mark_recovery_unproved(
-                        previous,
-                        retained.identity,
-                        error.to_string(),
-                        admission,
-                        deadline,
-                    )
-                    .await?;
-                    self.retain_orphan(&lifecycle)?;
-                    report
-                        .unproved
-                        .push(format!("{lifecycle}: metadata unavailable: {error}"));
-                    continue;
-                }
-            };
-            if let Err(error) = self.restore_capture_status(&mut work, deadline).await {
-                work.capture_failure = Some(error.body);
-            }
-            if let Err(error) = self.restore_cleanup(&mut work, deadline).await {
-                work.cleanup_failure = Some(error.body);
-            }
-            if work.meta.provider == se_store::Provider::SeCode
-                && let Err(error) = self.restore_secode_work(&mut work, deadline).await
-            {
-                work.cleanup_failure = Some(error.body);
-            }
-            let reason = match outcome {
-                Ok(RecoveryOutcome::Recovered { process, record }) => {
-                    let process = Arc::new(process);
-                    let native = self.native.clone();
-                    let owned = process.clone();
-                    let wake = work.wake.clone();
-                    let watch = self
-                        .store
-                        .pool
-                        .run_owned(deadline, move || {
-                            native
-                                .watch_exit(&owned, wake)
-                                .map_err(|e| error("recovered exit subscription", e))
-                        })
-                        .await;
-                    let watch_failure = match watch {
-                        Ok(watch) => {
-                            work.exit_watch = Some(watch);
-                            None
-                        }
-                        Err(error) => Some(error),
-                    };
-                    work.process = Some(process);
-                    work.record = Some((*record).clone());
-                    work.exec_observed = true;
-                    let root = record.root.clone();
-                    let at = deadline.at();
-                    match self
-                        .store
-                        .pool
-                        .run_owned(deadline, move || super::launch_util::view(&root, at))
-                        .await
-                    {
-                        Ok(view) => work.process_view = Some(view),
-                        Err(error) => work.cleanup_failure = Some(error.body),
-                    }
-
-                    let mut failure = watch_failure;
-                    if !work.active
-                        && !work.session_retired
-                        && let Err(error) = self
-                            .retire_session(
-                                &mut work,
-                                "prepared launch interrupted before C3",
-                                deadline,
-                            )
-                            .await
-                    {
-                        failure = Some(error);
-                    }
-                    if let Some(error) = &failure {
-                        report.unproved.push(format!("{lifecycle}: {error}"));
-                        work.cleanup_failure = Some(error.body.clone());
-                    }
-                    let target = if failure.is_some()
-                        || matches!(
-                            retained.state,
-                            ProcessState::StopRequested | ProcessState::StopUnproved
-                        ) {
-                        ProcessState::StopUnproved
-                    } else {
-                        ProcessState::Running
-                    };
-                    let identity = native_record::identity_meta(
-                        &work.meta,
-                        CheckpointKind::Process(*record.clone()),
-                        Some((&record.root, record.argv_sha256)),
-                        Some(record.guarantee),
-                        &self.options.epoch.owner.fields().boot,
-                    )?;
-                    self.store
-                        .commit(admission, deadline, None, move |kernel, cx| {
-                            process_commit::reconcile(
-                                kernel,
-                                previous,
-                                identity,
-                                target,
-                                "successor host verified and retained native custody".into(),
-                                cx,
-                            )
-                        })
-                        .await?;
-                    work.recover_provider = failure.is_none()
-                        && work.active
-                        && !work.session_retired
-                        && !matches!(
-                            retained.state,
-                            ProcessState::StopRequested | ProcessState::StopUnproved
-                        );
-                    let job = self.retain_recovered(work)?;
-                    if failure.is_none() {
-                        let coordinator = self.clone();
-                        let owned = job.clone();
-                        let task = self.store.pool.handle().spawn(async move {
-                            coordinator.monitor_protected(owned).await;
-                        });
-                        *job.task
-                            .lock()
-                            .map_err(|_| error("recovered monitor", "poisoned task slot"))? =
-                            Some(task);
-                    }
-                    report.adopted = report.adopted.saturating_add(1);
-                    continue;
-                }
-                Ok(RecoveryOutcome::Exited(witness)) => {
-                    work.native_already_reconciled = true;
-                    work.last_witness = Some((*witness).clone());
-                    let reason = crate::reboot::exit_reason(&witness, "native-reconciliation");
-                    work.stop_method = Some(reason.into());
-                    // Trusted capture opens at listener publication. Keep the
-                    // exited lifecycle until its monitor can capture the tail;
-                    // startup must not retire it behind the readiness fence.
-                    let job = self.retain_recovered(work)?;
-                    let coordinator = self.clone();
-                    let owned = job.clone();
-                    let task = self.store.pool.handle().spawn(async move {
-                        coordinator.monitor_protected(owned).await;
-                    });
-                    *job.task
-                        .lock()
-                        .map_err(|_| error("recovered exit monitor", "poisoned task slot"))? =
-                        Some(task);
-                    report.exited = report.exited.saturating_add(1);
-                    continue;
-                }
-                Ok(RecoveryOutcome::Unproved { error, .. }) => format!("StopUnproved: {error:?}"),
-                Ok(RecoveryOutcome::PendingScope { process, .. }) => {
-                    work.process = Some(Arc::new(process));
-                    "StopUnproved: native scope recovered without a published provider root".into()
-                }
-                Ok(RecoveryOutcome::ReleasedOwnership(_)) => "StopUnproved: recorded ownership was released; no signal authority was acquired".into(),
-                Err(error) => format!("StopUnproved: native observation unavailable: {error}"),
-            };
-            self.mark_recovery_unproved(
-                previous,
-                retained.identity,
-                reason.clone(),
-                admission,
-                deadline,
-            )
-            .await?;
-            let mut reason = reason;
-            if !work.active
-                && !work.session_retired
-                && let Err(failure) = self
-                    .retire_session(&mut work, "prepared launch interrupted before C3", deadline)
-                    .await
-            {
-                reason.push_str(&format!("; prepared credential cleanup remains: {failure}"));
-            }
-            work.cleanup_failure =
-                Some(se_core::scope::unreadable("retained native custody", &reason).body);
-            self.retain_recovered(work)?;
-            report.unproved.push(format!("{lifecycle}: {reason}"));
+            self.reconcile_one(retained, deadline, &mut report).await?;
         }
         Ok(report)
     }
@@ -357,9 +379,24 @@ impl LaunchCoordinator {
             .lock()
             .map_err(|_| super::error("orphan custody", "poisoned registry"))?;
         if orphans.insert(lifecycle.clone()) {
-            self.activity
-                .send_modify(|count| *count = count.saturating_add(1));
+            self.inc_activity();
         }
+        Ok(())
+    }
+    async fn commit_reconcile(
+        &self,
+        previous: se_store::ProjectionRecord,
+        identity: se_store::ProcessIdentityRecord,
+        target: ProcessState,
+        reason: String,
+        admission: Admission,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        self.store
+            .commit(admission, deadline, None, move |kernel, cx| {
+                process_commit::reconcile(kernel, previous, identity, target, reason, cx)
+            })
+            .await?;
         Ok(())
     }
     async fn mark_recovery_unproved(
@@ -380,19 +417,15 @@ impl LaunchCoordinator {
         ) {
             return Ok(());
         }
-        self.store
-            .commit(admission, deadline, None, move |kernel, cx| {
-                process_commit::reconcile(
-                    kernel,
-                    previous,
-                    identity,
-                    ProcessState::StopUnproved,
-                    reason,
-                    cx,
-                )
-            })
-            .await?;
-        Ok(())
+        self.commit_reconcile(
+            previous,
+            identity,
+            ProcessState::StopUnproved,
+            reason,
+            admission,
+            deadline,
+        )
+        .await
     }
     pub(super) fn retain_recovered(&self, work: Work) -> Result<Arc<Job>> {
         let key = format!("recovered/{}", work.meta.lifecycle);
@@ -439,8 +472,7 @@ impl LaunchCoordinator {
             .map_err(|_| super::error("orphan custody", "poisoned registry"))?
             .remove(&job.lifecycle);
         if !was_orphan {
-            self.activity
-                .send_modify(|count| *count = count.saturating_add(1));
+            self.inc_activity();
         }
         Ok(job)
     }

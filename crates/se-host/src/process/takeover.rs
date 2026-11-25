@@ -5,9 +5,10 @@ use crate::client::lease::Deadline;
 use se_core::ops::{
     AnyOutput, LaunchReply,
     agent_launch::{LaunchPlan, TakeoverJob, TakeoverReport},
+    process_commit::phase_key,
 };
 use se_store::{Admission, EventBody};
-use se_types::{Result, SeError};
+use se_types::{LifecycleId, Result, SeError, SessionId};
 use sha2::Digest;
 use std::sync::atomic::Ordering;
 mod replacement;
@@ -15,6 +16,29 @@ mod selection;
 type Stopped =
     Arc<tokio::sync::Mutex<std::collections::BTreeMap<se_types::LifecycleId, TakeoverReport>>>;
 use selection::{combine_reports, process_identity};
+
+struct TakeoverStop<'a> {
+    job: &'a Arc<supervisor::Job>,
+    plan: &'a LaunchPlan,
+    admission: &'a Admission,
+    expected: &'a LifecycleId,
+    deadline: &'a Deadline,
+}
+
+fn empty_report(previous_session: SessionId, scope: String, witness: String) -> TakeoverReport {
+    TakeoverReport {
+        previous_session,
+        previous_sessions: Vec::new(),
+        new_conversation: false,
+        scope,
+        inventory_failure: None,
+        external_services: Vec::new(),
+        jobs_stopped: Vec::new(),
+        jobs_remaining: Vec::new(),
+        jobs_unproved: Vec::new(),
+        witness,
+    }
+}
 
 impl LaunchCoordinator {
     pub async fn launch(
@@ -67,17 +91,21 @@ impl LaunchCoordinator {
             .map_err(|e| error("takeover intent", e))?,
         )
         .into();
-        let coordinator = Arc::downgrade(self);
-        // Each original lifecycle has its own retained stop result. A retry
-        // cannot stop a successor or repeat already achieved cleanup.
-        let stopped = Arc::new(tokio::sync::Mutex::new(std::collections::BTreeMap::new()));
+        let (coordinator, stopped) = (
+            Arc::downgrade(self),
+            // Each original lifecycle has its own retained stop result. A retry
+            // cannot stop a successor or repeat already achieved cleanup.
+            Arc::new(tokio::sync::Mutex::new(std::collections::BTreeMap::new())),
+        );
         let output = self
             .supervise_control(key, intent, deadline, move |deadline| {
-                let coordinator = coordinator.clone();
-                let plan = plan.clone();
-                let admission = admission.clone();
-                let stopped = stopped.clone();
-                let fallback = fallback.clone();
+                let (coordinator, plan, admission, stopped, fallback) = (
+                    coordinator.clone(),
+                    plan.clone(),
+                    admission.clone(),
+                    stopped.clone(),
+                    fallback.clone(),
+                );
                 async move {
                     let coordinator = coordinator
                         .upgrade()
@@ -120,26 +148,20 @@ impl LaunchCoordinator {
             work.admission = work.cleanup_admission.clone();
             self.finish(&mut work, witness, deadline).await?;
             if !job.settled.swap(true, Ordering::AcqRel) {
-                self.activity
-                    .send_modify(|count| *count = count.saturating_sub(1));
+                self.dec_activity();
             }
         }
         Ok(true)
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
-    async fn inspect_takeover(
+    async fn resolve_takeover_job(
         self: &Arc<Self>,
         plan: &LaunchPlan,
-        admission: &Admission,
+        expected: &se_types::LifecycleId,
         deadline: &Deadline,
         stop: bool,
-    ) -> Result<TakeoverReport> {
-        let expected = process_identity(&plan.control.processes[0])?.record.clone();
-        let job = match self.find_lifecycle_job(&plan.project.id, &plan.agent.id, &expected)? {
-            Some(job) => job,
+    ) -> Result<Arc<supervisor::Job>> {
+        match self.find_lifecycle_job(&plan.project.id, &plan.agent.id, expected)? {
+            Some(job) => Ok(job),
             None if stop => self
                 .cold_stop_job(&plan.control, &plan.project.id, deadline)
                 .await?
@@ -148,16 +170,104 @@ impl LaunchCoordinator {
                         "takeover custody",
                         "the recorded native lifecycle is unavailable",
                     )
-                })?,
-            None => {
-                return Err(error(
-                    "takeover custody",
-                    "the recorded lifecycle is awaiting native recovery",
-                ));
-            }
+                }),
+            None => Err(error(
+                "takeover custody",
+                "the recorded lifecycle is awaiting native recovery",
+            )),
+        }
+    }
+    async fn stop_takeover_work(
+        &self,
+        ctx: &TakeoverStop<'_>,
+        work: &mut owned::Work,
+        inspected: Vec<InspectedJob>,
+        report: &mut TakeoverReport,
+    ) -> Result<()> {
+        if !ctx.plan.input.override_live && !inspected.is_empty() {
+            return Err(SeError::new(se_types::Detail::LaunchFailed(se_types::details::LaunchFailed {
+                subject: ctx.plan.agent.name.clone(),
+                reason: "Setup expired, but this window has running jobs. No process was stopped.".into(),
+                next_step: "Wait for those jobs to finish, or use --force to explicitly stop this managed scope and reconnect.".into(),
+            })));
+        }
+        work.stop_key = Some(phase_key(
+            &ctx.plan.input.idempotency_key,
+            &format!("takeover-stop/{}", ctx.expected),
+        )?);
+        work.admission = ctx.admission.clone();
+        let witness = self.stop_native(work, ctx.deadline).await.map_err(|failure| error("takeover stop incomplete", format!("selected jobs: {}; their stop outcome is unproved; inspect the original lifecycle before retrying: {failure}", job_names(&report.jobs_remaining))))?;
+        work.last_witness = Some(witness.clone());
+        report.witness =
+            "native root exit and empty owned scope witnessed; capture and lifecycle cleanup pending"
+                .into();
+        work.admission = work.cleanup_admission.clone();
+        self.finish(work, witness, ctx.deadline)
+            .await
+            .map_err(|failure| successor_failure(report, failure))?;
+        if !ctx.job.settled.swap(true, Ordering::AcqRel) {
+            self.dec_activity();
+        }
+        if let Some(failure) = &work.capture_failure
+            && !ctx.plan.input.override_live
+        {
+            return Err(successor_failure(
+                report,
+                error(
+                    "takeover capture",
+                    format!(
+                        "old process stopped but capture failed: {}; original transcript retained; inspect before relaunch",
+                        failure.message()
+                    ),
+                ),
+            ));
+        }
+        let (bound, force) = (ctx.deadline.at(), ctx.plan.input.override_live);
+        let (stopped, remaining, unproved) = self
+            .on_pool(ctx.deadline, move || {
+                let (mut stopped, mut remaining, mut unproved) = (Vec::new(), Vec::new(), Vec::new());
+                for job in inspected {
+                    let read = match se_proc::read_process_until(job.identity.machine.clone(), job.identity.pid, bound) {
+                        Ok(read) => read,
+                        Err(cause) if force => {
+                            let mut view = job.view;
+                            view.command = format!("{} (exit observation unreadable: {cause:?})", view.command);
+                            unproved.push(view);
+                            continue;
+                        }
+                        Err(cause) => return Err(error("takeover job exit unreadable", format!("PID {}: {cause:?}; owned scope already stopped; individual job exit unproved; no successor launched", job.identity.pid.0))),
+                    };
+                    match read {
+                        se_proc::ProcessRead::Present(live) if live.identity.boot == job.identity.boot && live.identity.start == job.identity.start && matches!(live.state, se_proc::NativeState::Running | se_proc::NativeState::Stopped) => remaining.push(job.view),
+                        _ => stopped.push(job.view),
+                    }
+                }
+                Ok((stopped, remaining, unproved))
+            })
+            .await?;
+        report.jobs_stopped = stopped;
+        report.jobs_remaining = remaining;
+        report.jobs_unproved = unproved;
+        report.new_conversation = work.secode_service_lost || work.capture_failure.is_some();
+        report.witness = match &work.capture_failure {
+            Some(failure) => format!("native root exit and empty owned scope witnessed; session cleanup completed; final capture unavailable: {}", failure.message()),
+            None => "native root exit and empty owned scope witnessed; capture and lifecycle cleanup completed".into(),
         };
+        Ok(())
+    }
+    async fn inspect_takeover(
+        self: &Arc<Self>,
+        plan: &LaunchPlan,
+        admission: &Admission,
+        deadline: &Deadline,
+        stop: bool,
+    ) -> Result<TakeoverReport> {
+        let expected = process_identity(&plan.control.processes[0])?.record.clone();
+        let job = self
+            .resolve_takeover_job(plan, &expected, deadline, stop)
+            .await?;
         if stop && plan.input.override_live {
-            let key = se_core::ops::process_commit::phase_key(
+            let key = phase_key(
                 &plan.input.idempotency_key,
                 &format!("takeover-startup/{expected}"),
             )?;
@@ -193,19 +303,13 @@ impl LaunchCoordinator {
             self.finish(&mut work, witness, deadline).await?;
         }
         if work.released && work.last_witness.is_some() {
-            return Ok(TakeoverReport {
-                previous_session: work.meta.session.clone(),
-                previous_sessions: Vec::new(),
-                new_conversation: work.secode_service_lost || work.capture_failure.is_some(),
-                scope: "the original retained native scope".into(),
-                inventory_failure: None,
-                external_services: Vec::new(),
-                jobs_stopped: Vec::new(),
-                jobs_remaining: Vec::new(),
-                jobs_unproved: Vec::new(),
-                witness: "original native scope already closed; retained session cleanup completed"
-                    .into(),
-            });
+            let mut report = empty_report(
+                work.meta.session.clone(),
+                "the original retained native scope".into(),
+                "original native scope already closed; retained session cleanup completed".into(),
+            );
+            report.new_conversation = work.secode_service_lost || work.capture_failure.is_some();
+            return Ok(report);
         }
         let native = self.native.clone();
         let process = work.process.clone().ok_or_else(|| {
@@ -214,12 +318,9 @@ impl LaunchCoordinator {
                 "no retained native process; reconcile its preparation first",
             )
         })?;
-        let bound = deadline.at();
-        let force = stop && plan.input.override_live;
+        let (bound, force) = (deadline.at(), stop && plan.input.override_live);
         let (inspected, scope, inventory_failure) = self
-            .store
-            .pool
-            .run_owned(deadline, move || {
+            .on_pool(deadline, move || {
                 match inventory(&native, &process, bound) {
                     Ok((jobs, scope)) => Ok((jobs, scope, None)),
                     Err(failure) if force => Ok((
@@ -232,87 +333,19 @@ impl LaunchCoordinator {
                 }
             })
             .await?;
-        let mut report = TakeoverReport {
-            previous_session: work.meta.session.clone(),
-            previous_sessions: Vec::new(),
-            new_conversation: false,
-            scope,
-            inventory_failure,
-            external_services: Vec::new(),
-            jobs_stopped: Vec::new(),
-            jobs_remaining: inspected.iter().map(|job| job.view.clone()).collect(),
-            jobs_unproved: Vec::new(),
-            witness: "not stopped".into(),
-        };
+        let mut report = empty_report(work.meta.session.clone(), scope, "not stopped".into());
+        report.inventory_failure = inventory_failure;
+        report.jobs_remaining = inspected.iter().map(|job| job.view.clone()).collect();
         if stop {
-            if !plan.input.override_live && !inspected.is_empty() {
-                return Err(SeError::new(se_types::Detail::LaunchFailed(se_types::details::LaunchFailed {
-                    subject: plan.agent.name.clone(),
-                    reason: "Setup expired, but this window has running jobs. No process was stopped.".into(),
-                    next_step: "Wait for those jobs to finish, or use --force to explicitly stop this managed scope and reconnect.".into(),
-                })));
-            }
-            work.stop_key = Some(se_core::ops::process_commit::phase_key(
-                &plan.input.idempotency_key,
-                &format!("takeover-stop/{expected}"),
-            )?);
-            work.admission = admission.clone();
-            let witness = self.stop_native(&mut work, deadline).await.map_err(|failure| error("takeover stop incomplete", format!("selected jobs: {}; their stop outcome is unproved; inspect the original lifecycle before retrying: {failure}", job_names(&report.jobs_remaining))))?;
-            work.last_witness = Some(witness.clone());
-            report.witness = "native root exit and empty owned scope witnessed; capture and lifecycle cleanup pending".into();
-            work.admission = work.cleanup_admission.clone();
-            self.finish(&mut work, witness, deadline)
-                .await
-                .map_err(|failure| successor_failure(&report, failure))?;
-            if !job.settled.swap(true, Ordering::AcqRel) {
-                self.activity
-                    .send_modify(|count| *count = count.saturating_sub(1));
-            }
-            if let Some(failure) = &work.capture_failure
-                && !plan.input.override_live
-            {
-                return Err(successor_failure(
-                    &report,
-                    error(
-                        "takeover capture",
-                        format!(
-                            "old process stopped but capture failed: {}; original transcript retained; inspect before relaunch",
-                            failure.message()
-                        ),
-                    ),
-                ));
-            }
-            let (stopped, remaining, unproved) = self.store.pool.run_owned(deadline, move || {
-                let mut stopped = Vec::new();
-                let mut remaining = Vec::new();
-                let mut unproved = Vec::new();
-                for job in inspected {
-                    let read = match se_proc::read_process_until(job.identity.machine.clone(), job.identity.pid, bound) {
-                        Ok(read) => read,
-                        Err(cause) if force => {
-                            let mut view = job.view;
-                            view.command = format!("{} (exit observation unreadable: {cause:?})", view.command);
-                            unproved.push(view);
-                            continue;
-                        }
-                        Err(cause) => return Err(error("takeover job exit unreadable", format!("PID {}: {cause:?}; owned scope already stopped; individual job exit unproved; no successor launched", job.identity.pid.0))),
-                    };
-                    match read {
-                        se_proc::ProcessRead::Present(live) if live.identity.boot == job.identity.boot && live.identity.start == job.identity.start
-                            && matches!(live.state, se_proc::NativeState::Running | se_proc::NativeState::Stopped) => remaining.push(job.view),
-                        _ => stopped.push(job.view),
-                    }
-                }
-                Ok((stopped, remaining, unproved))
-            }).await?;
-            report.jobs_stopped = stopped;
-            report.jobs_remaining = remaining;
-            report.jobs_unproved = unproved;
-            report.new_conversation = work.secode_service_lost || work.capture_failure.is_some();
-            report.witness = match &work.capture_failure {
-                Some(failure) => format!("native root exit and empty owned scope witnessed; session cleanup completed; final capture unavailable: {}", failure.message()),
-                None => "native root exit and empty owned scope witnessed; capture and lifecycle cleanup completed".into(),
+            let ctx = TakeoverStop {
+                job: &job,
+                plan,
+                admission,
+                expected: &expected,
+                deadline,
             };
+            self.stop_takeover_work(&ctx, &mut work, inspected, &mut report)
+                .await?;
         }
         Ok(report)
     }

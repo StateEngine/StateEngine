@@ -35,10 +35,94 @@ impl CleanupFile {
 }
 
 impl LaunchCoordinator {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
+    async fn retire_process_state(
+        &self,
+        work: &mut Work,
+        witness: &se_proc::StopWitness,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let previous = self.head(work, deadline).await?;
+        let (retained, from) = match &previous.current.body {
+            EventBody::ProcessRegistered { identity, initial } => (identity, *initial),
+            EventBody::ProcessTransition { identity, to, .. } => (identity, *to),
+            _ => {
+                return Err(se_core::scope::unreadable(
+                    "exit publication",
+                    "wrong retained process event",
+                ));
+            }
+        };
+        let checkpoint =
+            se_proc::decode_checkpoint(retained.custody.format_version, &retained.custody.record)
+                .map_err(|e| error("retained native checkpoint", e))?;
+        let event = if from == ProcessState::Exited {
+            let CheckpointKind::Exit {
+                witness: previous_witness,
+                ..
+            } = checkpoint.checkpoint
+            else {
+                return Err(error(
+                    "exit cleanup retry",
+                    "terminal projection lacks its native witness",
+                ));
+            };
+            if previous_witness.lifecycle != witness.lifecycle
+                || previous_witness.scope != witness.scope
+            {
+                return Err(error(
+                    "exit cleanup retry",
+                    "fresh witness differs from the retained scope",
+                ));
+            }
+            previous.current.header.event.clone()
+        } else {
+            let source = match checkpoint.checkpoint {
+                CheckpointKind::Reservation(v) => CheckpointSource::Reservation(v),
+                CheckpointKind::Scope(v) => CheckpointSource::Scope(v),
+                CheckpointKind::Root(v) => CheckpointSource::Root(v),
+                CheckpointKind::Process(v) => CheckpointSource::Process(v),
+                _ => {
+                    return Err(se_core::scope::unreadable(
+                        "exit publication",
+                        "retained source is already terminal",
+                    ));
+                }
+            };
+            let root = match &witness.root {
+                se_proc::RootWitness::Identified { expected, .. } => Some(expected),
+                _ => None,
+            };
+            let (argv, boot) = match &retained.instance {
+                se_store::RecordedIdentity::Present(value) => {
+                    (*value.fields().argv_sha256.as_bytes(), &value.fields().boot)
+                }
+                _ => ([0; 32], &self.options.epoch.owner.fields().boot),
+            };
+            let identity = native_record::identity_meta(
+                &work.meta,
+                CheckpointKind::Exit {
+                    source: Box::new(source),
+                    witness: witness.clone(),
+                },
+                root.map(|root| (root, argv)),
+                Some(witness.guarantee),
+                boot,
+            )?;
+            self.change(
+                work,
+                crate::reboot::exit_reason(witness, "exited"),
+                identity,
+                (from, ProcessState::Exited),
+                deadline,
+            )
+            .await?
+        };
+        work.last_stop_event = Some(event);
+        work.process_retired = true;
+        work.last_witness = Some(witness.clone());
+        Ok(())
+    }
+
     pub(in crate::process) async fn finish(
         &self,
         work: &mut Work,
@@ -70,90 +154,7 @@ impl LaunchCoordinator {
             })?;
         }
         if !work.process_retired {
-            let previous = self.head(work, deadline).await?;
-            let (retained, from) = match &previous.current.body {
-                EventBody::ProcessRegistered { identity, initial } => (identity, *initial),
-                EventBody::ProcessTransition { identity, to, .. } => (identity, *to),
-                _ => {
-                    return Err(se_core::scope::unreadable(
-                        "exit publication",
-                        "wrong retained process event",
-                    ));
-                }
-            };
-            let checkpoint = se_proc::decode_checkpoint(
-                retained.custody.format_version,
-                &retained.custody.record,
-            )
-            .map_err(|e| error("retained native checkpoint", e))?;
-            if from == ProcessState::Exited {
-                let CheckpointKind::Exit {
-                    witness: previous_witness,
-                    ..
-                } = checkpoint.checkpoint
-                else {
-                    return Err(error(
-                        "exit cleanup retry",
-                        "terminal projection lacks its native witness",
-                    ));
-                };
-                if previous_witness.lifecycle != witness.lifecycle
-                    || previous_witness.scope != witness.scope
-                {
-                    return Err(error(
-                        "exit cleanup retry",
-                        "fresh witness differs from the retained scope",
-                    ));
-                }
-                work.last_stop_event = Some(previous.current.header.event.clone());
-                work.process_retired = true;
-                work.last_witness = Some(witness.clone());
-            } else {
-                let source = match checkpoint.checkpoint {
-                    CheckpointKind::Reservation(v) => CheckpointSource::Reservation(v),
-                    CheckpointKind::Scope(v) => CheckpointSource::Scope(v),
-                    CheckpointKind::Root(v) => CheckpointSource::Root(v),
-                    CheckpointKind::Process(v) => CheckpointSource::Process(v),
-                    _ => {
-                        return Err(se_core::scope::unreadable(
-                            "exit publication",
-                            "retained source is already terminal",
-                        ));
-                    }
-                };
-                let root = match &witness.root {
-                    se_proc::RootWitness::Identified { expected, .. } => Some(expected),
-                    _ => None,
-                };
-                let (argv, boot) = match &retained.instance {
-                    se_store::RecordedIdentity::Present(value) => {
-                        (*value.fields().argv_sha256.as_bytes(), &value.fields().boot)
-                    }
-                    _ => ([0; 32], &self.options.epoch.owner.fields().boot),
-                };
-                let identity = native_record::identity_meta(
-                    &work.meta,
-                    CheckpointKind::Exit {
-                        source: Box::new(source),
-                        witness: witness.clone(),
-                    },
-                    root.map(|root| (root, argv)),
-                    Some(witness.guarantee),
-                    boot,
-                )?;
-                let event = self
-                    .change(
-                        work,
-                        crate::reboot::exit_reason(&witness, "exited"),
-                        identity,
-                        (from, ProcessState::Exited),
-                        deadline,
-                    )
-                    .await?;
-                work.last_stop_event = Some(event);
-                work.process_retired = true;
-                work.last_witness = Some(witness.clone());
-            }
+            self.retire_process_state(work, &witness, deadline).await?;
         }
         if !work.session_retired {
             let reason = crate::reboot::exit_reason(&witness, "native scope exit witnessed");
@@ -173,14 +174,12 @@ impl LaunchCoordinator {
             let process = work.process.clone().ok_or_else(|| {
                 se_core::scope::unreadable("native release", "owned reference is absent")
             })?;
-            self.store
-                .pool
-                .run_owned(deadline, move || {
-                    native
-                        .release(&process, &witness)
-                        .map_err(|e| error("witnessed native release", e))
-                })
-                .await?;
+            self.on_pool(deadline, move || {
+                native
+                    .release(&process, &witness)
+                    .map_err(|e| error("witnessed native release", e))
+            })
+            .await?;
         }
         work.released = true;
         work.active = false;
@@ -233,11 +232,13 @@ impl LaunchCoordinator {
                 .await?;
             work.pending_transport = None;
         }
-        let home = self.options.home.clone();
-        let session = work.meta.session.clone();
-        let pin = work.pin_file_hash;
-        let files = work.files.clone();
-        let codex = self.codex.clone();
+        let (home, session, pin, files, codex) = (
+            self.options.home.clone(),
+            work.meta.session.clone(),
+            work.pin_file_hash,
+            work.files.clone(),
+            self.codex.clone(),
+        );
         let is_codex = work.meta.provider == se_store::Provider::Codex;
         // Retain one absolute cleanup bound across every file, leaving time to
         // deliver a busy refusal before the caller's end-to-end request expires.
@@ -246,9 +247,7 @@ impl LaunchCoordinator {
             .checked_sub(Duration::from_secs(1))
             .unwrap_or(deadline.at());
         let state = self
-            .store
-            .pool
-            .run_owned(deadline, move || {
+            .on_pool(deadline, move || {
                 let state = se_proc::NativeStateFiles::open(&home)
                     .map_err(|e| error("session cleanup state", e))?;
                 if is_codex {
@@ -260,20 +259,13 @@ impl LaunchCoordinator {
         let removals = pin
             .map(|pin| CleanupFile::SessionPin(work.meta.session.clone(), pin))
             .into_iter()
-            .chain(
-                files
-                    .into_iter()
-                    .map(|(path, digest)| CleanupFile::Launch(path, digest)),
-            );
+            .chain(files.into_iter().map(|(p, d)| CleanupFile::Launch(p, d)));
         for removal in removals {
             let mut retry = AcquisitionRetry::new(cleanup_deadline);
             loop {
-                let state = state.clone();
-                let operation = removal.clone();
+                let (state, operation) = (state.clone(), removal.clone());
                 let (next, attempt) = self
-                    .store
-                    .pool
-                    .run_owned(deadline, move || {
+                    .on_pool(deadline, move || {
                         let result = retry.acquire(|| operation.remove(&state));
                         Ok((retry, result))
                     })
