@@ -39,7 +39,7 @@ impl OwnerPresence {
             outside_agent_tree: observed.agent_trees().is_empty(),
         }
     }
-    #[cfg(feature = "runtime")]
+    #[cfg(feature = "listener")]
     pub(crate) fn passes(&self, peer_owner: &str) -> bool {
         !self.os_owner.is_empty()
             && self.os_owner == peer_owner
@@ -49,7 +49,7 @@ impl OwnerPresence {
             && !self.provider_marker_present
             && self.outside_agent_tree
     }
-    #[cfg(feature = "runtime")]
+    #[cfg(feature = "listener")]
     pub(crate) fn refusal_reason(&self, peer_owner: &str) -> String {
         let cause = if !self.stdout_console {
             "stdout is redirected, captured or otherwise not attached to a console/TTY"
