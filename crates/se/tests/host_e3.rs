@@ -84,10 +84,6 @@ fn listener_message_working_and_hook() -> Check {
     }
 }
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn run_listener_case() -> Check {
     let initialized = se_host::initialize_host_process()?;
     let f = std::mem::ManuallyDrop::new(Fixture::new()?);
@@ -133,13 +129,9 @@ fn run_listener_case() -> Check {
     engine.block_on(async {
         let mut start = start_options(&f, epoch(machine)?)?;
         start.writer.maximum_requests = NonZeroU16::new(16).ok_or("request capacity")?;
-        let mut runtime = se_host::HostedRuntime::prepare(
-            initialized,
-            start,
-            engine.handle().clone(),
-            &bound()?,
-        )
-        .await?;
+        let mut runtime =
+            se_host::HostedRuntime::prepare(initialized, start, engine.handle().clone(), &bound()?)
+                .await?;
         runtime.configure(se_config::config_policy::ConfigFile::default())?;
         let path = NativePath::from_local(transcript.clone())?;
         runtime
@@ -169,120 +161,180 @@ fn run_listener_case() -> Check {
         let owner_key = copy_secret(&machine_key)?;
         let session_secret = copy_secret(&session_key)?;
         let client = std::thread::spawn(move || -> Result<(), String> {
-            let outcome = (|| -> Check {
-                let credential=||->Result<se_host::client::lease::ClientCredential,Box<dyn std::error::Error>> {Ok(se_host::client::lease::ClientCredential::Session(copy_secret(&session_secret)?))};
-                let selected = se_core::ops::CliSelections::default();
-                let message = || -> Result<se_core::ops::AnyOp, Box<dyn std::error::Error>> {
-                    Ok(se_core::ops::AnyOp::MessageSend(
-                        se_core::ops::MessageSend {
-                            quiet: false,
-                            to: Some(b.as_str().into()),
-                            body: "real listener message".into(),
-                            kind: Default::default(),
-                            refs: vec![],
-                            reply_to: None,
-                            supersedes: None,
-                            work: None,
-                            idempotency_key: key("listener-message")?,
-                        },
-                    ))
-                };
-                let sent = ipc::forward(
-                    &endpoint,
-                    credential()?,
-                    message()?,
-                    &selected,
-                    None,
-                    &options(),
-                )?;
-                let first = serde_json::to_value(&sent)?;
-                assert_eq!(first["state"], "committed");
-                assert_eq!(first["writer"]["mode"], "host");
-                let replay = serde_json::to_value(ipc::forward(
-                    &endpoint,
-                    credential()?,
-                    message()?,
-                    &selected,
-                    None,
-                    &options(),
-                )?)?;
-                assert_eq!(replay["state"], "replayed");
-                assert_eq!(replay["event_id"], first["event_id"]);
-                let working = ipc::forward(
-                    &endpoint,
-                    credential()?,
-                    se_core::ops::AnyOp::WorkingStateSet(se_core::ops::WorkingStateSet {
-                        text: "fresh committed state".into(),
-                        expect: se_core::commit::ExpectedRevision::Revision(2),
-                        idempotency_key: key("listener-working")?,
-                        owner_agent: None,
-                    }),
-                    &selected,
-                    None,
-                    &options(),
-                )?;
-                let working = serde_json::to_value(working)?;
-                assert_eq!(working["revision"], 3);
-                assert_eq!(working["current_revision"], 3);
-                let hook = || se_host::ClaudeHookInput {
-                    kind: se_host::ClaudeHookKind::Stop,
-                    conversation: client_conversation.clone(),
-                    claimed_transcript: path.clone(),
-                    payload: serde_json::Value::Null,
-                };
-                let captured = ipc::forward_hook(&endpoint, credential()?, hook(), &options())?;
-                assert!(
-                    matches!(captured,se_core::ops::AnyOutput::HookClaude(ref value) if value.value.receipt.is_some())
-                );
-                let duplicate = ipc::forward_hook(&endpoint, credential()?, hook(), &options())?;
-                assert!(
-                    matches!(duplicate,se_core::ops::AnyOutput::HookClaude(ref value) if value.value.receipt.as_ref().is_some_and(|receipt|matches!(receipt.result,se_core::ops::hook::CaptureResult::Duplicate)))
-                );
-                Ok(())
-            })();
-            let stop_result = (|| -> Check {
-                let until = se_types::UnixMicros::new(
-                    (std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)?
-                        .as_micros()
-                        + 10_000_000) as u64,
-                )?;
-                let reply = se_host::client::BlockingIpcClient::stop(
-                    &endpoint,
-                    &owner_key,
-                    key("listener-stop")?,
-                    until,
-                    &options(),
-                )?;
-                assert!(matches!(
-                    reply.outcome,
-                    se_host::client::endpoint::RuntimeStopOutcome::Facts { .. }
-                ));
-                Ok(())
-            })();
+            let outcome =
+                client_requests(&endpoint, &session_secret, &b, &client_conversation, &path);
+            let stop_result = stop_host(&endpoint, &owner_key);
             outcome.and(stop_result).map_err(|error| error.to_string())
         });
-        let exit = tokio::time::timeout(Duration::from_secs(20), runtime.serve(listener))
-            .await
-            .map_err(|_| "real host supervisor did not receive its bounded stop")?;
-        assert!(exit.stop.is_some(), "supervisor lost authenticated stop");
-        // Exercise the exact production sequence used by the CLI child.
-        let outcome = exit.finish(&bound()?).await;
-        let report = match &outcome.storage {
-            Read::Present { value } => value,
-            other => return Err(format!("storage drain report missing: {other:?}").into()),
-        };
-        assert!(report.writer_joined);
-        assert!(report.pending.is_empty(), "storage remained pending: {:?}", report.pending);
-        assert!(matches!(report.backup, Read::Present { .. }));
-        assert!(outcome.transport_closed, "transport remained open: {:?}", outcome.pending);
-        assert!(outcome.endpoint_retired, "endpoint remained published: {:?}", outcome.pending);
-        client.join().map_err(|_| "real IPC client panicked")??;
-        assert!(outcome.errors.is_empty(), "shared finish failed: {:?}", outcome.errors);
-        drop(outcome);
+        serve_until_stopped(runtime, listener, client).await?;
         Ok::<(), Box<dyn std::error::Error>>(())
     })?;
-    verify_capture(&f, source, 1, (line.len() + 1) as u64)?;
+    committed_state_survives(&f, source, &line)?;
+    cold_capture_subcase(
+        &f,
+        &machine_key,
+        &session_key,
+        &conversation,
+        &transcript,
+        &line,
+        source,
+    )?;
+    drop(std::mem::ManuallyDrop::into_inner(f));
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn client_requests(
+    endpoint: &se_host::EndpointRecord,
+    session_secret: &Secret,
+    b: &se_types::AgentId,
+    client_conversation: &ProviderSessionId,
+    path: &NativePath,
+) -> Check {
+    let credential =
+        || -> Result<se_host::client::lease::ClientCredential, Box<dyn std::error::Error>> {
+            Ok(se_host::client::lease::ClientCredential::Session(
+                copy_secret(session_secret)?,
+            ))
+        };
+    let selected = se_core::ops::CliSelections::default();
+    let message = || -> Result<se_core::ops::AnyOp, Box<dyn std::error::Error>> {
+        Ok(se_core::ops::AnyOp::MessageSend(
+            se_core::ops::MessageSend {
+                quiet: false,
+                to: Some(b.as_str().into()),
+                body: "real listener message".into(),
+                kind: Default::default(),
+                refs: vec![],
+                reply_to: None,
+                supersedes: None,
+                work: None,
+                idempotency_key: key("listener-message")?,
+            },
+        ))
+    };
+    let sent = ipc::forward(
+        endpoint,
+        credential()?,
+        message()?,
+        &selected,
+        None,
+        &options(),
+    )?;
+    let first = serde_json::to_value(&sent)?;
+    assert_eq!(first["state"], "committed");
+    assert_eq!(first["writer"]["mode"], "host");
+    let replay = serde_json::to_value(ipc::forward(
+        endpoint,
+        credential()?,
+        message()?,
+        &selected,
+        None,
+        &options(),
+    )?)?;
+    assert_eq!(replay["state"], "replayed");
+    assert_eq!(replay["event_id"], first["event_id"]);
+    let working = ipc::forward(
+        endpoint,
+        credential()?,
+        se_core::ops::AnyOp::WorkingStateSet(se_core::ops::WorkingStateSet {
+            text: "fresh committed state".into(),
+            expect: se_core::commit::ExpectedRevision::Revision(2),
+            idempotency_key: key("listener-working")?,
+            owner_agent: None,
+        }),
+        &selected,
+        None,
+        &options(),
+    )?;
+    let working = serde_json::to_value(working)?;
+    assert_eq!(working["revision"], 3);
+    assert_eq!(working["current_revision"], 3);
+    let hook = || se_host::ClaudeHookInput {
+        kind: se_host::ClaudeHookKind::Stop,
+        conversation: client_conversation.clone(),
+        claimed_transcript: path.clone(),
+        payload: serde_json::Value::Null,
+    };
+    let captured = ipc::forward_hook(endpoint, credential()?, hook(), &options())?;
+    assert!(
+        matches!(captured,se_core::ops::AnyOutput::HookClaude(ref value) if value.value.receipt.is_some())
+    );
+    let duplicate = ipc::forward_hook(endpoint, credential()?, hook(), &options())?;
+    assert!(
+        matches!(duplicate,se_core::ops::AnyOutput::HookClaude(ref value) if value.value.receipt.as_ref().is_some_and(|receipt|matches!(receipt.result,se_core::ops::hook::CaptureResult::Duplicate)))
+    );
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn stop_host(endpoint: &se_host::EndpointRecord, owner_key: &Secret) -> Check {
+    let until = se_types::UnixMicros::new(
+        (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_micros()
+            + 10_000_000) as u64,
+    )?;
+    let reply = se_host::client::BlockingIpcClient::stop(
+        endpoint,
+        owner_key,
+        key("listener-stop")?,
+        until,
+        &options(),
+    )?;
+    assert!(matches!(
+        reply.outcome,
+        se_host::client::endpoint::RuntimeStopOutcome::Facts { .. }
+    ));
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+async fn serve_until_stopped(
+    runtime: se_host::HostedRuntime,
+    listener: se_host::HostedListener,
+    client: std::thread::JoinHandle<Result<(), String>>,
+) -> Check {
+    let exit = tokio::time::timeout(Duration::from_secs(20), runtime.serve(listener))
+        .await
+        .map_err(|_| "real host supervisor did not receive its bounded stop")?;
+    assert!(exit.stop.is_some(), "supervisor lost authenticated stop");
+    // Exercise the exact production sequence used by the CLI child.
+    let outcome = exit.finish(&bound()?).await;
+    let report = match &outcome.storage {
+        Read::Present { value } => value,
+        other => return Err(format!("storage drain report missing: {other:?}").into()),
+    };
+    assert!(report.writer_joined);
+    assert!(
+        report.pending.is_empty(),
+        "storage remained pending: {:?}",
+        report.pending
+    );
+    assert!(matches!(report.backup, Read::Present { .. }));
+    assert!(
+        outcome.transport_closed,
+        "transport remained open: {:?}",
+        outcome.pending
+    );
+    assert!(
+        outcome.endpoint_retired,
+        "endpoint remained published: {:?}",
+        outcome.pending
+    );
+    client.join().map_err(|_| "real IPC client panicked")??;
+    assert!(
+        outcome.errors.is_empty(),
+        "shared finish failed: {:?}",
+        outcome.errors
+    );
+    drop(outcome);
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn committed_state_survives(f: &Fixture, source: RecordId, line: &[u8]) -> Check {
+    verify_capture(f, source, 1, (line.len() + 1) as u64)?;
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
     let mut read = reader.snapshot(f.self_scope(&f.a))?;
     let state = present(read.working_state(f.a.clone())?)?;
@@ -302,16 +354,29 @@ fn run_listener_case() -> Check {
         LeaseMode::Host,
         Some(f.store.clone()),
     )?);
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn cold_capture_subcase(
+    f: &Fixture,
+    machine_key: &Secret,
+    session_key: &Secret,
+    conversation: &ProviderSessionId,
+    transcript: &std::path::Path,
+    line: &[u8],
+    source: RecordId,
+) -> Check {
     // The detached cold-capture subcase is venue-dependent; everything above it
     // already ran on this host and is reported as such either way.
     let cold_capture_ran = cold_capture::check(
-        &f,
+        f,
         cold_capture::Capture {
-            machine_key: &machine_key,
-            session_key: &session_key,
-            conversation: &conversation,
-            transcript: &transcript,
-            first_line: &line,
+            machine_key,
+            session_key,
+            conversation,
+            transcript,
+            first_line: line,
             source,
         },
     )?;
@@ -323,7 +388,6 @@ fn run_listener_case() -> Check {
             "listener_message_working_and_hook: cold_capture subcase not run on this venue; the rest of this case passed"
         );
     }
-    drop(std::mem::ManuallyDrop::into_inner(f));
     Ok(())
 }
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]

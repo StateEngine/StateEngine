@@ -64,16 +64,51 @@ fn commands(value: &Value, out: &mut Vec<(Vec<String>, String)>) -> Check {
     Ok(())
 }
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn preview_succeeds_when_only_turns_are_omitted_for_packet_budget() -> Check {
     let f = Fixture::new()?;
     let (mut store, lease) = f.direct()?;
+    let session = seed_preview_fixture(&f, &mut store, &lease)?;
+    let head = store.info()?.head;
+    // The same budget omission still blocks an actual bound agent resume.
+    bound_resume_still_blocks(&f, &mut store, session)?;
+    store.close()?;
+    drop(lease);
+    let args = [
+        "--home",
+        f.options.state_directory.to_str().ok_or("home")?,
+        "--project",
+        f.project.as_str(),
+        "resume",
+        "--preview",
+        f.a.as_str(),
+    ];
+    preview_modes_succeed(&f, args)?;
+    // A source-page limit is distinct from intentionally fitting the packet.
+    let mut limited = args.map(str::to_owned).to_vec();
+    limited.extend(["--limit", "1", "--budget", "32768", "--json"].map(str::to_owned));
+    let output = run(&f, &limited)?;
+    assert_eq!(output.status.code(), Some(2));
+    let value: Value = serde_json::from_slice(&output.stdout)?;
+    assert!(
+        value["omissions"]
+            .as_array()
+            .ok_or("limit omissions")?
+            .iter()
+            .any(|item| item["reason"] != "packet byte budget")
+    );
+    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+    assert_eq!(reader.info()?.head, head, "preview wrote state");
+    Ok(())
+}
+
+fn seed_preview_fixture(
+    f: &Fixture,
+    store: &mut SqliteDirect,
+    lease: &Lease,
+) -> Result<se_types::SessionId, Box<dyn std::error::Error>> {
     let session = capture::session()?;
     let source = capture::record()?;
-    capture::active(&f, &mut store, &lease, &session, source)?;
+    capture::active(f, store, lease, &session, source)?;
     store.append(
         f.batch(
             f.owner_project(),
@@ -92,11 +127,11 @@ fn preview_succeeds_when_only_turns_are_omitted_for_packet_budget() -> Check {
                 expected: Expected::Absent,
             }],
         )?,
-        &*lease,
+        lease,
     )?;
     for n in 0..6 {
         let mut captured = capture::capture(
-            &f,
+            f,
             &session,
             source,
             b"first",
@@ -107,7 +142,7 @@ fn preview_succeeds_when_only_turns_are_omitted_for_packet_budget() -> Check {
         for event in &mut captured.events {
             event.header.door = Door::Hook;
         }
-        store.append(captured, &*lease)?;
+        store.append(captured, lease)?;
     }
     store.append(
         f.send(
@@ -117,10 +152,16 @@ fn preview_succeeds_when_only_turns_are_omitted_for_packet_budget() -> Check {
             "A fully visible unread message remains unacknowledged.",
             "preview-visible-unread",
         )?,
-        &*lease,
+        lease,
     )?;
-    let head = store.info()?.head;
-    // The same budget omission still blocks an actual bound agent resume.
+    Ok(session)
+}
+
+fn bound_resume_still_blocks(
+    f: &Fixture,
+    store: &mut SqliteDirect,
+    session: se_types::SessionId,
+) -> Check {
     let mut scope = f.self_scope(&f.a);
     scope.admission.session = Some(session);
     let admission = scope.admission.clone();
@@ -142,21 +183,14 @@ fn preview_succeeds_when_only_turns_are_omitted_for_packet_budget() -> Check {
     assert!(!bound.complete && !bound.omissions.is_empty());
     assert_eq!(se_core::ops::AnyOutput::from(bound).exit_code(), 2);
     read.close()?;
-    store.close()?;
-    drop(lease);
-    let args = [
-        "--home",
-        f.options.state_directory.to_str().ok_or("home")?,
-        "--project",
-        f.project.as_str(),
-        "resume",
-        "--preview",
-        f.a.as_str(),
-    ];
+    Ok(())
+}
+
+fn preview_modes_succeed(f: &Fixture, args: [&str; 7]) -> Check {
     for mode in ["--json", "--no-color", "--quiet"] {
         let mut words = args.map(str::to_owned).to_vec();
         words.push(mode.into());
-        let output = run(&f, &words)?;
+        let output = run(f, &words)?;
         assert_eq!(
             output.status.code(),
             Some(0),
@@ -184,98 +218,16 @@ fn preview_succeeds_when_only_turns_are_omitted_for_packet_budget() -> Check {
             assert!(text.contains("complete: false"));
         }
     }
-    // A source-page limit is distinct from intentionally fitting the packet.
-    let mut limited = args.map(str::to_owned).to_vec();
-    limited.extend(["--limit", "1", "--budget", "32768", "--json"].map(str::to_owned));
-    let output = run(&f, &limited)?;
-    assert_eq!(output.status.code(), Some(2));
-    let value: Value = serde_json::from_slice(&output.stdout)?;
-    assert!(
-        value["omissions"]
-            .as_array()
-            .ok_or("limit omissions")?
-            .iter()
-            .any(|item| item["reason"] != "packet byte budget")
-    );
-    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
-    assert_eq!(reader.info()?.head, head, "preview wrote state");
     Ok(())
 }
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-#[cfg_attr(
-    not(windows),
-    expect(
-        clippy::cognitive_complexity,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )
-)]
 fn every_resume_recovery_argv_reaches_the_selected_home_without_writing() -> Check {
     let mut f = Fixture::new()?;
     let renamed = f.home.with_extension("selected home ' 日本語");
     f.move_home(renamed)?;
     fs::create_dir(f.home.join("unrelated default"))?;
     let (mut store, lease) = f.direct()?;
-    let session = capture::session()?;
-    let source = capture::record()?;
-    capture::active(&f, &mut store, &lease, &session, source)?;
-    for n in 0..3 {
-        let mut captured = capture::capture(
-            &f,
-            &session,
-            source,
-            b"first",
-            n * 10,
-            n + 1,
-            &format!("scope turn {n} {}", "long captured content ".repeat(100)),
-        )?;
-        // Public history requires the capture producer's real provenance door.
-        for event in &mut captured.events {
-            event.header.door = Door::Hook;
-        }
-        store.append(captured, &*lease)?;
-    }
-    store.append(
-        f.batch(
-            f.owner_project(),
-            Some(request("scope-profile")?),
-            vec![EventBody::ProfileSaved {
-                agent: f.a.clone(),
-                profile: Profile {
-                    provider_settings: Default::default(),
-                    provider: Provider::Claude,
-                    model: None,
-                    permission: PermissionProfile::WorkspaceWrite,
-                    harness: None,
-                    named_profile: "default".into(),
-                    effort: None,
-                },
-                expected: Expected::Absent,
-            }],
-        )?,
-        &*lease,
-    )?;
-    store.append(
-        f.working(
-            &"saved working note 🦊 ".repeat(600),
-            Expected::Absent,
-            "scope-working",
-        )?,
-        &*lease,
-    )?;
-    store.append(
-        f.send(
-            Actor::Agent(f.b.clone()),
-            Actor::Agent(f.a.clone()),
-            message()?,
-            &"scope unread body ".repeat(80),
-            "scope-unread",
-        )?,
-        &*lease,
-    )?;
+    seed_scoped_fixture(&f, &mut store, &lease)?;
     let head = store.info()?.head;
     store.close()?;
     drop(lease);
@@ -311,82 +263,167 @@ fn every_resume_recovery_argv_reaches_the_selected_home_without_writing() -> Che
             value["budget"]["used_bytes"],
             serde_json::to_vec(&value)?.len()
         );
-        let mut printed = Vec::new();
-        commands(&value, &mut printed)?;
-        assert!(!printed.is_empty(), "fixture produced no recovery commands");
-        for (argv, command) in printed {
-            assert_eq!(
-                &argv[..5],
-                ["se", "--home", home, "--project", f.project.as_str()]
-            );
-            seen.insert(argv[5].clone());
-            let rendered = se_core::ops::AgentCommand::from_argv(argv.clone())
-                .ok_or("unrenderable command")?;
-            assert_eq!(command, rendered.command);
-            let recovered = run(&f, &argv[1..])?;
-            executed += 1;
-            assert!(
-                matches!(recovered.status.code(), Some(0 | 2)),
-                "literal argv {argv:?} failed: {} {}",
-                String::from_utf8_lossy(&recovered.stdout),
-                String::from_utf8_lossy(&recovered.stderr)
-            );
-            let text = String::from_utf8(recovered.stdout)?;
-            let marker = match argv[5].as_str() {
-                "history" => "scope turn",
-                "msg" => "scope unread body",
-                "working-state" => "saved working note",
-                "resume" => "Sable",
-                _ => return Err("unexpected recovery operation".into()),
-            };
-            assert!(
-                text.contains(marker),
-                "recovery missed selected content: {text}"
-            );
-        }
+        printed_commands_recover(&f, home, &value, &mut seen, &mut executed)?;
         #[cfg(unix)]
-        {
-            let plain_args = args[1..].to_vec();
-            let plain = run(&f, &plain_args)?;
-            assert_eq!(plain.status.code(), Some(2));
-            let plain = String::from_utf8(plain.stdout)?;
-            for line in plain.lines() {
-                let command = line
-                    .split_once(": ")
-                    .map(|(_, text)| text)
-                    .filter(|v| v.starts_with("se "));
-                if let Some(command) = command {
-                    // The shell only decodes the emitted quoting into literal words.
-                    let decoded = Command::new("sh")
-                        .args(["-c", &format!("set -- {command}; printf '%s\\0' \"$@\"")])
-                        .output()?;
-                    assert!(decoded.status.success());
-                    let words = decoded
-                        .stdout
-                        .split(|v| *v == 0)
-                        .filter(|v| !v.is_empty())
-                        .map(|v| String::from_utf8(v.to_vec()))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    assert_eq!(
-                        &words[..5],
-                        ["se", "--home", home, "--project", f.project.as_str()]
-                    );
-                    let recovered = run(&f, &words[1..])?;
-                    executed += 1;
-                    assert!(
-                        matches!(recovered.status.code(), Some(0 | 2)),
-                        "plain command failed: {command}"
-                    );
-                }
-            }
-        }
+        plain_commands_recover(&f, home, &args, &mut executed)?;
     }
     assert!(
         seen.contains("history") && seen.contains("msg") && seen.contains("working-state"),
         "unexercised recovery paths: {seen:?}"
     );
+    small_budget_retry_recovers(&f, home)?;
+    executed += 2;
+    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+    assert_eq!(reader.info()?.head, head, "context or recovery wrote state");
+    println!("literal recovery commands executed: {executed}; store writes: 0");
+    Ok(())
+}
+
+fn seed_scoped_fixture(f: &Fixture, store: &mut SqliteDirect, lease: &Lease) -> Check {
+    let session = capture::session()?;
+    let source = capture::record()?;
+    capture::active(f, store, lease, &session, source)?;
+    for n in 0..3 {
+        let mut captured = capture::capture(
+            f,
+            &session,
+            source,
+            b"first",
+            n * 10,
+            n + 1,
+            &format!("scope turn {n} {}", "long captured content ".repeat(100)),
+        )?;
+        // Public history requires the capture producer's real provenance door.
+        for event in &mut captured.events {
+            event.header.door = Door::Hook;
+        }
+        store.append(captured, lease)?;
+    }
+    store.append(
+        f.batch(
+            f.owner_project(),
+            Some(request("scope-profile")?),
+            vec![EventBody::ProfileSaved {
+                agent: f.a.clone(),
+                profile: Profile {
+                    provider_settings: Default::default(),
+                    provider: Provider::Claude,
+                    model: None,
+                    permission: PermissionProfile::WorkspaceWrite,
+                    harness: None,
+                    named_profile: "default".into(),
+                    effort: None,
+                },
+                expected: Expected::Absent,
+            }],
+        )?,
+        lease,
+    )?;
+    store.append(
+        f.working(
+            &"saved working note 🦊 ".repeat(600),
+            Expected::Absent,
+            "scope-working",
+        )?,
+        lease,
+    )?;
+    store.append(
+        f.send(
+            Actor::Agent(f.b.clone()),
+            Actor::Agent(f.a.clone()),
+            message()?,
+            &"scope unread body ".repeat(80),
+            "scope-unread",
+        )?,
+        lease,
+    )?;
+    Ok(())
+}
+
+fn printed_commands_recover(
+    f: &Fixture,
+    home: &str,
+    value: &Value,
+    seen: &mut BTreeSet<String>,
+    executed: &mut i32,
+) -> Check {
+    let mut printed = Vec::new();
+    commands(value, &mut printed)?;
+    assert!(!printed.is_empty(), "fixture produced no recovery commands");
+    for (argv, command) in printed {
+        assert_eq!(
+            &argv[..5],
+            ["se", "--home", home, "--project", f.project.as_str()]
+        );
+        seen.insert(argv[5].clone());
+        let rendered =
+            se_core::ops::AgentCommand::from_argv(argv.clone()).ok_or("unrenderable command")?;
+        assert_eq!(command, rendered.command);
+        let recovered = run(f, &argv[1..])?;
+        *executed += 1;
+        assert!(
+            matches!(recovered.status.code(), Some(0 | 2)),
+            "literal argv {argv:?} failed: {} {}",
+            String::from_utf8_lossy(&recovered.stdout),
+            String::from_utf8_lossy(&recovered.stderr)
+        );
+        let text = String::from_utf8(recovered.stdout)?;
+        let marker = match argv[5].as_str() {
+            "history" => "scope turn",
+            "msg" => "scope unread body",
+            "working-state" => "saved working note",
+            "resume" => "Sable",
+            _ => return Err("unexpected recovery operation".into()),
+        };
+        assert!(
+            text.contains(marker),
+            "recovery missed selected content: {text}"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn plain_commands_recover(f: &Fixture, home: &str, args: &[String], executed: &mut i32) -> Check {
+    let plain_args = args[1..].to_vec();
+    let plain = run(f, &plain_args)?;
+    assert_eq!(plain.status.code(), Some(2));
+    let plain = String::from_utf8(plain.stdout)?;
+    for line in plain.lines() {
+        let command = line
+            .split_once(": ")
+            .map(|(_, text)| text)
+            .filter(|v| v.starts_with("se "));
+        if let Some(command) = command {
+            // The shell only decodes the emitted quoting into literal words.
+            let decoded = Command::new("sh")
+                .args(["-c", &format!("set -- {command}; printf '%s\\0' \"$@\"")])
+                .output()?;
+            assert!(decoded.status.success());
+            let words = decoded
+                .stdout
+                .split(|v| *v == 0)
+                .filter(|v| !v.is_empty())
+                .map(|v| String::from_utf8(v.to_vec()))
+                .collect::<Result<Vec<_>, _>>()?;
+            assert_eq!(
+                &words[..5],
+                ["se", "--home", home, "--project", f.project.as_str()]
+            );
+            let recovered = run(f, &words[1..])?;
+            *executed += 1;
+            assert!(
+                matches!(recovered.status.code(), Some(0 | 2)),
+                "plain command failed: {command}"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn small_budget_retry_recovers(f: &Fixture, home: &str) -> Check {
     let refusal = run(
-        &f,
+        f,
         &[
             "--json",
             "--home",
@@ -412,21 +449,20 @@ fn every_resume_recovery_argv_reaches_the_selected_home_without_writing() -> Che
         &retry[..5],
         ["se", "--home", home, "--project", f.project.as_str()]
     );
-    let recovered = run(&f, &retry[1..])?;
+    let recovered = run(f, &retry[1..])?;
     assert!(
         matches!(recovered.status.code(), Some(0 | 2)),
         "budget retry failed: {}",
         String::from_utf8_lossy(&recovered.stdout)
     );
     let recovered: Value = serde_json::from_slice(
-        &run(&f, &[vec!["--json".into()], retry[1..].to_vec()].concat())?.stdout,
+        &run(f, &[vec!["--json".into()], retry[1..].to_vec()].concat())?.stdout,
     )?;
     assert_eq!(recovered["schema"], "se.resume/v1");
     assert_eq!(
         recovered["budget"]["used_bytes"],
         serde_json::to_vec(&recovered)?.len()
     );
-    executed += 2;
     assert!(
         recovered["budget"]["used_bytes"]
             .as_u64()
@@ -435,9 +471,6 @@ fn every_resume_recovery_argv_reaches_the_selected_home_without_writing() -> Che
                 .as_u64()
                 .ok_or("missing limit")?
     );
-    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
-    assert_eq!(reader.info()?.head, head, "context or recovery wrote state");
-    println!("literal recovery commands executed: {executed}; store writes: 0");
     Ok(())
 }
 
