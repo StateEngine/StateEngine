@@ -234,7 +234,7 @@ jobs:
           if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
             NPMRC="$RUNNER_TEMP/.npmrc"
             umask 077
-            printf '%s\n' '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}' > "$NPMRC"
+            printf "%s\n" "//registry.npmjs.org/:_authToken=\${NODE_AUTH_TOKEN}" > "$NPMRC"
             export NPM_CONFIG_USERCONFIG="$NPMRC"
           else
             # Tokenless npm OIDC Trusted Publishing requires npm >= 11.5.1.
@@ -250,21 +250,33 @@ jobs:
           PLAN_TSV="$RUNNER_TEMP/npm-plan.tsv"
           VERSION="$(python3 - "$ORDER_JSON" "$RUNNER_TEMP/npm-packages" "$PLAN_TSV" <<'PY'
           import json, pathlib, sys
+          sys.path.insert(0, "scripts/release")
+          import npm_release
           doc = json.load(open(sys.argv[1], encoding="utf-8"))
           root = pathlib.Path(sys.argv[2])
           version = doc["version"]
           packages = doc["packages"]
           if not isinstance(version, str) or not version:
               raise SystemExit("publish-order.json missing version")
-          if not isinstance(packages, list) or len(packages) != 5:
-              raise SystemExit(f"expected 5 npm packages in publish-order.json; found {len(packages) if isinstance(packages, list) else type(packages).__name__}")
+          expected = [
+              ("@stateengine/cli-" + platform, platform)
+              for platform in npm_release.PLATFORMS
+          ] + [("@stateengine/cli", "cli")]
+          if not isinstance(packages, list):
+              raise SystemExit("publish-order.json packages must be a list")
+          actual = [(entry.get("name"), entry.get("directory")) for entry in packages]
+          if actual != expected:
+              raise SystemExit(f"publish-order.json mismatch: actual={actual!r} expected={expected!r}")
           lines = []
-          for entry in packages:
-              name = entry["name"]
-              directory = entry["directory"]
-              pkg_dir = root / directory
-              if not (pkg_dir / "package.json").is_file():
-                  raise SystemExit(f"missing package.json in {pkg_dir}")
+          for name, directory in actual:
+              manifest_path = root / directory / "package.json"
+              if not manifest_path.is_file():
+                  raise SystemExit(f"missing package.json in {manifest_path.parent}")
+              manifest = json.load(open(manifest_path, encoding="utf-8"))
+              if manifest.get("name") != name or manifest.get("version") != version:
+                  raise SystemExit(
+                      f"manifest mismatch in {manifest_path}: got ({manifest.get('name')!r}, {manifest.get('version')!r}), expected ({name!r}, {version!r})"
+                  )
               lines.append(f"{name}\t{directory}\n")
           pathlib.Path(sys.argv[3]).write_text("".join(lines), encoding="utf-8")
           print(version)
@@ -296,11 +308,21 @@ jobs:
                   else:
                       raise SystemExit(f"unexpected npm view version {parsed!r} (expected {expected!r})")
           else:
-              combined = stdout + "\n" + stderr
-              if "E404" in combined or "404 Not Found" in combined:
+              err_obj = None
+              for candidate in (stdout, stderr):
+                  if not candidate:
+                      continue
+                  try:
+                      parsed = json.loads(candidate)
+                  except json.JSONDecodeError:
+                      continue
+                  if isinstance(parsed, dict) and isinstance(parsed.get("error"), dict):
+                      err_obj = parsed["error"]
+                      break
+              if err_obj is not None and err_obj.get("code") == "E404":
                   print("absent")
               else:
-                  raise SystemExit(f"npm view failed with exit {rc}: {combined.strip()}")
+                  raise SystemExit(f"npm view failed with exit {rc}: {(stdout or stderr).strip()}")
           PY
           )"
             if [ "$STATE" = "present" ]; then
