@@ -2,7 +2,7 @@
 //! Six fixed slots bound storage across projects; these are observations, not
 //! evidence that another user session should be classified as managed.
 use super::*;
-use crate::state_files::{Acquisition, AcquisitionRetry};
+use se_harness::acquisition::{Acquisition, AcquisitionRetry};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DIRECTORY: &str = "adoption-diagnostics";
@@ -81,7 +81,7 @@ pub fn observations(home: &Path) -> Result<Vec<Observation>> {
         file.take(MAX_BYTES as u64 + 1)
             .read_to_end(&mut bytes)
             .map_err(io)?;
-        let row: Observation = crate::client::wire::decode_json(&bytes, MAX_BYTES)?;
+        let row: Observation = se_mcp::wire::decode_json(&bytes, MAX_BYTES)?;
         if row.schema != 1 || row.action != action || row.observed_at.len() > 64 {
             return Err(invalid("the exact bounded hook suppression observation"));
         }

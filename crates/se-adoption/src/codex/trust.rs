@@ -3,7 +3,7 @@
 use super::*;
 
 fn listed(registration: &Registration, root: &Path) -> Result<(Vec<Value>, [u8; 32])> {
-    let before = super::super::discovery_stamp(registration)?;
+    let before = crate::discovery_stamp(registration)?;
     let result = super::rpc::call(
         registration.provider.to_local()?,
         registration.config_home.to_local()?,
@@ -31,7 +31,7 @@ fn listed(registration: &Registration, root: &Path) -> Result<(Vec<Value>, [u8; 
         .and_then(Value::as_array)
         .cloned()
         .ok_or_else(|| invalid("discovered provider hooks"))?;
-    if before != super::super::discovery_stamp(registration)? {
+    if before != crate::discovery_stamp(registration)? {
         return Err(invalid(
             "unchanged configuration and provider during hook discovery; repeat adoption setup",
         ));
@@ -80,7 +80,7 @@ fn select(registration: &Registration, rows: &[Value]) -> Result<Vec<(String, St
     Ok(selected)
 }
 pub fn install(home: &Path, registration: &mut Registration, root: &Path) -> Result<()> {
-    if registration.discovery == Some(super::super::discovery_stamp(registration)?)
+    if registration.discovery == Some(crate::discovery_stamp(registration)?)
         && registration
             .project(root)?
             .is_some_and(|p| p.discovery == registration.discovery)
@@ -88,8 +88,7 @@ pub fn install(home: &Path, registration: &mut Registration, root: &Path) -> Res
         return Ok(());
     }
     let discovered = select(registration, &listed(registration, root)?.0)?;
-    let missing =
-        super::super::settings::missing_trust(&registration.settings.to_local()?, &discovered)?;
+    let missing = crate::settings::missing_trust(&registration.settings.to_local()?, &discovered)?;
     // Journal before writing trust, so an interrupted installation remains
     // reversible. A pre-existing owner decision is never replaced.
     for entry in &missing {
@@ -97,8 +96,8 @@ pub fn install(home: &Path, registration: &mut Registration, root: &Path) -> Res
             registration.layout.trust.push(entry.clone());
         }
     }
-    super::super::publish_for(home, Kind::Codex, registration)?;
-    super::super::settings::trust(&registration.settings.to_local()?, &discovered)?;
+    crate::publish_for(home, Kind::Codex, registration)?;
+    crate::settings::trust(&registration.settings.to_local()?, &discovered)?;
     let (rows, stamp) = listed(registration, root)?;
     if select(registration, &rows)? != discovered
         || discovered.iter().any(|(key, hash)| {
@@ -118,6 +117,6 @@ pub fn install(home: &Path, registration: &mut Registration, root: &Path) -> Res
     if let Some(project) = registration.projects.iter_mut().find(|p| p.root == root) {
         project.discovery = Some(stamp);
     }
-    super::super::publish_for(home, Kind::Codex, registration)?;
+    crate::publish_for(home, Kind::Codex, registration)?;
     Ok(())
 }

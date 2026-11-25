@@ -28,9 +28,11 @@ fn run<T: Send + 'static>(
 pub fn qualify(command: &Path) -> Result<()> {
     let command = command.to_owned();
     run(async move {
-        let version =
-            crate::harness::codex_rpc::probe::probe(&command, std::time::Duration::from_secs(5))
-                .await?;
+        let version = se_harness::harness::codex_rpc::probe::probe(
+            &command,
+            std::time::Duration::from_secs(5),
+        )
+        .await?;
         let parts = version
             .version
             .split('.')
@@ -49,7 +51,7 @@ pub fn qualify(command: &Path) -> Result<()> {
 /// Constrain the native hook's path to the provider's history directory, then
 /// require the pinned provider header to name this exact conversation and root.
 pub fn transcript(registration: &Registration, input: &Input) -> Result<std::path::PathBuf> {
-    crate::codex_capture::location(
+    se_harness::harness::codex_capture::location(
         &input.transcript.to_local()?,
         &registration.config_home.to_local()?,
     )
@@ -59,17 +61,17 @@ pub fn current(registration: &Registration, input: &Input) -> Result<bool> {
     let Some(mut pin) = se_proc::NativeSourcePin::open(&path).map_err(native)? else {
         return Ok(false);
     };
-    crate::codex_capture::validate_header(&mut pin, &input.conversation)?;
+    se_harness::harness::codex_capture::validate_header(&mut pin, &input.conversation)?;
     let mut bytes = Vec::new();
     let mut offset = 0;
     loop {
-        let remaining = crate::client::wire::MAX_FRAME_BYTES
+        let remaining = se_mcp::wire::MAX_FRAME_BYTES
             .saturating_add(1)
             .saturating_sub(bytes.len());
         let chunk = pin.read_at(offset, remaining.min(65536)).map_err(native)?;
         let end = chunk.bytes.iter().position(|b| *b == b'\n');
         bytes.extend_from_slice(&chunk.bytes[..end.unwrap_or(chunk.bytes.len())]);
-        if bytes.len() > crate::client::wire::MAX_FRAME_BYTES {
+        if bytes.len() > se_mcp::wire::MAX_FRAME_BYTES {
             return Err(invalid("a bounded native Codex session header"));
         }
         if end.is_some() {
@@ -80,8 +82,7 @@ pub fn current(registration: &Registration, input: &Input) -> Result<bool> {
         }
         offset = chunk.next_offset;
     }
-    let row: Value =
-        crate::client::wire::decode_json(&bytes, crate::client::wire::MAX_FRAME_BYTES)?;
+    let row: Value = se_mcp::wire::decode_json(&bytes, se_mcp::wire::MAX_FRAME_BYTES)?;
     let cwd = row
         .get("payload")
         .and_then(|p| p.get("cwd"))
@@ -151,7 +152,7 @@ pub fn native_executable(command: &Path) -> Result<std::path::PathBuf> {
         .take(65537)
         .read_to_end(&mut bytes)
         .map_err(io)?;
-    let manifest: Value = crate::client::wire::decode_json(&bytes, 65536)?;
+    let manifest: Value = se_mcp::wire::decode_json(&bytes, 65536)?;
     if manifest.get("name").and_then(Value::as_str) != Some("@openai/codex") {
         return Err(invalid("the Codex package identity"));
     }

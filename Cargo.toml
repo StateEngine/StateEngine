@@ -30,6 +30,7 @@ members = [
     "crates/se-local-socket",
     "crates/se-channels",
     "crates/se-agent-observation",
+    "crates/se-adoption",
     "crates/se-host",
     "crates/se-mcp",
     "crates/se-remote-cli",

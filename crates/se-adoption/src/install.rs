@@ -15,6 +15,7 @@ pub fn prepare(
     configuration: &se_config::config_policy::ConfigFile,
     file: Option<&Path>,
     selected: Option<se_config::config_policy::Provider>,
+    host: &super::HostSetup,
 ) -> Result<Plan> {
     let kind = match selected.unwrap_or(se_config::config_policy::Provider::Claude) {
         se_config::config_policy::Provider::Claude => Kind::Claude,
@@ -27,11 +28,11 @@ pub fn prepare(
         }
     };
     let adapter = kind.adapter();
-    let provider = super::resolve_provider_for(kind, configuration, file)?;
+    let provider = super::resolve_provider_for(kind, configuration, file, host.resolve)?;
     let super::ProviderSetup {
         executable: provider,
         config_home,
-    } = adapter.prepare(&provider)?;
+    } = adapter.prepare(&provider, host)?;
     if !config_home.is_absolute() {
         return Err(SeError::invalid(
             "provider settings home",
@@ -53,6 +54,7 @@ pub fn prepare(
     _configuration: &se_config::config_policy::ConfigFile,
     _file: Option<&Path>,
     _selected: Option<se_config::config_policy::Provider>,
+    _host: &super::HostSetup,
 ) -> Result<Plan> {
     Err(SeError::invalid(
         "provider adoption",

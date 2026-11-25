@@ -1,6 +1,7 @@
 //! Provider harness adapters, ACP transport, child process I/O, and shared harness contracts.
 #[cfg(feature = "listener")]
 pub mod acp;
+pub mod acquisition;
 #[cfg(feature = "listener")]
 pub mod child_io;
 #[cfg(feature = "listener")]

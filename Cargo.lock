@@ -1582,6 +1582,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "se-adoption"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-config",
+ "se-core",
+ "se-harness",
+ "se-mcp",
+ "se-proc",
+ "se-repository",
+ "se-store",
+ "se-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "similar",
+ "tokio",
+ "toml_edit",
+ "uuid",
+]
+
+[[package]]
 name = "se-agent-observation"
 version = "0.0.1-alpha.1"
 dependencies = [
@@ -1825,6 +1846,7 @@ dependencies = [
  "ignore",
  "reqwest",
  "rusqlite",
+ "se-adoption",
  "se-agent-observation",
  "se-atlas-host",
  "se-atlas-records",
