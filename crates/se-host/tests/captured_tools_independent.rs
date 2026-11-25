@@ -21,17 +21,11 @@ fn trusted_tool_facts_survive_capture_readback_and_retry_for_both_providers() ->
     }
     Ok(())
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-fn capture_case(provider: Provider) -> Check {
-    let initialized = initialize_host_process()?;
-    let f = Fixture::new()?;
-    seed(&f)?;
-    let session = session::session()?;
-    let conversation = ProviderSessionId::new(format!("provider-{}", f.a.as_str()))?;
-    std::fs::write(f.home.join("a.rs"), "fn actual() {}\n")?;
+fn native_tool_rows(
+    provider: Provider,
+    f: &Fixture,
+    conversation: &ProviderSessionId,
+) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
     let rows = match provider {
         Provider::Claude => vec![
             json!({"type":"assistant","uuid":"native-called","sessionId":conversation.as_str(),"cwd":f.home.to_str().ok_or("fixture root is not Unicode")?,
@@ -68,6 +62,141 @@ fn capture_case(provider: Provider) -> Check {
         }
         _ => return Err("unexpected provider".into()),
     };
+    Ok(rows)
+}
+async fn verify_capture_catch_up_and_retry(
+    capture: &CaptureHandle,
+    f: &Fixture,
+    session: &se_types::SessionId,
+    provider: Provider,
+    conversation: ProviderSessionId,
+    native_path: NativePath,
+) -> Check {
+    let mut admitted = f.self_scope(&f.a).admission;
+    admitted.session = Some(session.clone());
+    let first = capture
+        .catch_up(
+            admitted.clone(),
+            conversation.clone(),
+            native_path.clone(),
+            &bound()?,
+        )
+        .await?;
+    require(
+        first.capture_commits.len() == if provider == Provider::Claude { 3 } else { 2 },
+        "tool-only source was not fully committed",
+    )?;
+    let retry = capture
+        .catch_up(admitted, conversation, native_path, &bound()?)
+        .await?;
+    require(
+        retry.capture_commits.len() == 1
+            && first
+                .capture_commits
+                .iter()
+                .any(|old| old.event_id == retry.capture_commits[0].event_id),
+        "tool retry did not reuse the retained event",
+    )?;
+    Ok(())
+}
+async fn verify_snapshot_readback(
+    execution: &ExecutionContext,
+    f: &Fixture,
+    session: &se_types::SessionId,
+    provider: Provider,
+    source: RecordId,
+    bytes: &[u8],
+) -> Check {
+    let mut snapshot = execution.reader.snapshot(f.self_scope(&f.a))?;
+    let page = snapshot.turns(f.a.clone(), budget(10, 100_000, None)?)?;
+    require(
+        page.items().len() == if provider == Provider::Claude { 4 } else { 2 },
+        "native facts lost or duplicated",
+    )?;
+    let mut completed = 0;
+    for event in page.items() {
+        let EventBody::SessionTurn {
+            session: actual_session,
+            agent,
+            provider: actual_provider,
+            role: Role::System,
+            text: StoredText::Present(text),
+            evidence,
+            ..
+        } = &event.body
+        else {
+            return Err("tool fact fabricated chat".into());
+        };
+        require(
+            !text.contains("PRIVATE_OUTPUT") && !text.contains("INTENDED_CONTENT"),
+            "tool payload leaked into metadata",
+        )?;
+        let tool = Record::decode(text)?
+            .captured_tool
+            .ok_or("tool missing on public readback")?;
+        tool.validate_binding(actual_session, agent, *actual_provider, source, evidence)?;
+        require(
+            tool.session == *session && tool.agent == f.a && tool.source == source,
+            "native source binding differs",
+        )?;
+        let from = evidence.offset as usize;
+        let to = from + evidence.length as usize;
+        require(
+            evidence.sha256 == Some(Hasher::digest(&bytes[from..to]).into()),
+            "tool evidence differs from native bytes",
+        )?;
+        require(
+            matches!(tool.target, Target::Paths(ref paths) if paths.len()==1 && paths[0].content_revision.is_none()),
+            "native target was inferred or given intended content as revision",
+        )?;
+        match tool.outcome {
+            Outcome::Succeeded | Outcome::Failed => completed += 1,
+            Outcome::Unknown(_) => {}
+            Outcome::Cancelled => return Err("fabricated cancellation".into()),
+        }
+        require(
+            match tool.native {
+                NativeIdentity::ClaudeCall { ref tool_use_id } => {
+                    provider == Provider::Claude
+                        && ["call-a", "call-b"].contains(&tool_use_id.as_str())
+                }
+                NativeIdentity::CodexItem {
+                    ref item_id,
+                    ref call_id,
+                    ..
+                } => {
+                    provider == Provider::Codex
+                        && (item_id.as_deref() == Some("actual-file-item") && call_id.is_none()
+                            || item_id.as_deref() == Some("actual-mcp-item")
+                                && call_id.as_deref() == Some("actual-call"))
+                }
+                NativeIdentity::AcpCall { .. } | NativeIdentity::Unknown(_) => false,
+            },
+            "actual native identities were relabeled",
+        )?;
+    }
+    require(completed == 2, "actual outcomes missing")?;
+    let progress = present(snapshot.capture_source(source)?)?;
+    require(
+        matches!(progress.current.body, EventBody::CaptureProgress {new_offset,..} if new_offset==bytes.len() as u64),
+        "source cursor stopped before retained facts",
+    )?;
+    snapshot.close()?;
+    Ok(())
+}
+struct NativeToolSeed {
+    path: NativePath,
+    pin: se_proc::NativeSourcePin,
+    source: RecordId,
+    bytes: Vec<u8>,
+}
+fn seed_native_source(
+    f: &Fixture,
+    session: &se_types::SessionId,
+    provider: Provider,
+    conversation: &ProviderSessionId,
+) -> Result<NativeToolSeed, Box<dyn std::error::Error>> {
+    let rows = native_tool_rows(provider, f, conversation)?;
     let mut bytes = Vec::new();
     for row in rows {
         bytes.extend(serde_json::to_vec(&row)?);
@@ -79,8 +208,8 @@ fn capture_case(provider: Provider) -> Check {
     let pin =
         se_proc::NativeSourcePin::open(&native_path.to_local()?)?.ok_or("native source absent")?;
     let source = session::record()?;
-    let (mut direct, lease) = direct(&f)?;
-    let mut prepared = session::prepared(&f, &session, &f.a);
+    let (mut direct, lease) = direct(f)?;
+    let mut prepared = session::prepared(f, session, &f.a);
     if let EventBody::SessionPrepared {
         provider: actual,
         native_ref,
@@ -96,76 +225,93 @@ fn capture_case(provider: Provider) -> Check {
             Some(fixture::request("native-tools-setup")?),
             vec![
                 prepared,
-                session::activated(&session)?,
-                session::source(source, &session, &pin.identity(), Expected::Absent),
+                session::activated(session)?,
+                session::source(source, session, &pin.identity(), Expected::Absent),
             ],
         )?,
         &*lease,
     )?;
     direct.close()?;
     drop(lease);
+    Ok(NativeToolSeed {
+        path: native_path,
+        pin,
+        source,
+        bytes,
+    })
+}
+fn capture_case(provider: Provider) -> Check {
+    let initialized = initialize_host_process()?;
+    let f = Fixture::new()?;
+    seed(&f)?;
+    let session = session::session()?;
+    let conversation = ProviderSessionId::new(format!("provider-{}", f.a.as_str()))?;
+    std::fs::write(f.home.join("a.rs"), "fn actual() {}\n")?;
+    let seed = seed_native_source(&f, &session, provider, &conversation)?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(2)
         .build()?;
     rt.block_on(async {
-        let mut host = HostedRuntime::prepare(initialized, start(&f)?, rt.handle().clone(), &bound()?).await?;
+        let mut host =
+            HostedRuntime::prepare(initialized, start(&f)?, rt.handle().clone(), &bound()?).await?;
         configure_private_listener(&mut host)?;
         let capture = host.capture_handle();
-        capture.bind(TranscriptPin {
-            identity: SessionIdentity { project:f.project.clone(),agent:f.a.clone(),session:session.clone() },
-            conversation:conversation.clone(),path:native_path.clone(),file_identity:Sha256::from_bytes(pin.identity())
-        }, source, pin, &bound()?).await?;
+        capture
+            .bind(
+                TranscriptPin {
+                    identity: SessionIdentity {
+                        project: f.project.clone(),
+                        agent: f.a.clone(),
+                        session: session.clone(),
+                    },
+                    conversation: conversation.clone(),
+                    path: seed.path.clone(),
+                    file_identity: Sha256::from_bytes(seed.pin.identity()),
+                },
+                seed.source,
+                seed.pin,
+                &bound()?,
+            )
+            .await?;
         let execution = host.execution_context();
-        let mut admitted = f.self_scope(&f.a).admission; admitted.session = Some(session.clone());
         let stop = host.local_stop();
         let listener = host.listen(rt.handle().clone(), &bound()?).await?;
         let consumer = async {
-            let result: Check = async {
-                let first = capture.catch_up(admitted.clone(), conversation.clone(), native_path.clone(), &bound()?).await?;
-                require(first.capture_commits.len() == if provider == Provider::Claude {3} else {2}, "tool-only source was not fully committed")?;
-                let retry = capture.catch_up(admitted, conversation, native_path, &bound()?).await?;
-                require(retry.capture_commits.len()==1 && first.capture_commits.iter().any(|old|
-                    old.event_id==retry.capture_commits[0].event_id), "tool retry did not reuse the retained event")?;
-                let mut snapshot = execution.reader.snapshot(f.self_scope(&f.a))?;
-                let page = snapshot.turns(f.a.clone(), budget(10,100_000,None)?)?;
-                require(page.items().len() == if provider == Provider::Claude {4} else {2}, "native facts lost or duplicated")?;
-                let mut completed = 0;
-                for event in page.items() {
-                    let EventBody::SessionTurn {session:actual_session, agent, provider:actual_provider, role:Role::System,
-                        text:StoredText::Present(text), evidence,..} = &event.body else { return Err("tool fact fabricated chat".into()); };
-                    require(!text.contains("PRIVATE_OUTPUT") && !text.contains("INTENDED_CONTENT"), "tool payload leaked into metadata")?;
-                    let tool = Record::decode(text)?.captured_tool.ok_or("tool missing on public readback")?;
-                    tool.validate_binding(actual_session,agent,*actual_provider,source,evidence)?;
-                    require(tool.session == session && tool.agent == f.a && tool.source == source, "native source binding differs")?;
-                    let from = evidence.offset as usize; let to = from + evidence.length as usize;
-                    require(evidence.sha256 == Some(Hasher::digest(&bytes[from..to]).into()), "tool evidence differs from native bytes")?;
-                    require(matches!(tool.target, Target::Paths(ref paths) if paths.len()==1 && paths[0].content_revision.is_none()), "native target was inferred or given intended content as revision")?;
-                    match tool.outcome {
-                        Outcome::Succeeded | Outcome::Failed => completed += 1,
-                        Outcome::Unknown(_) => {},
-                        Outcome::Cancelled => return Err("fabricated cancellation".into()),
-                    }
-                    require(match tool.native {
-                        NativeIdentity::ClaudeCall {ref tool_use_id} => provider==Provider::Claude && ["call-a","call-b"].contains(&tool_use_id.as_str()),
-                        NativeIdentity::CodexItem {ref item_id,ref call_id,..} => provider==Provider::Codex &&
-                            (item_id.as_deref()==Some("actual-file-item") && call_id.is_none() ||
-                             item_id.as_deref()==Some("actual-mcp-item") && call_id.as_deref()==Some("actual-call")),
-                        NativeIdentity::AcpCall { .. } | NativeIdentity::Unknown(_) => false,
-                    }, "actual native identities were relabeled")?;
+            let catch_up = verify_capture_catch_up_and_retry(
+                &capture,
+                &f,
+                &session,
+                provider,
+                conversation,
+                seed.path,
+            )
+            .await;
+            let result: Check = match catch_up {
+                Ok(()) => {
+                    verify_snapshot_readback(
+                        &execution,
+                        &f,
+                        &session,
+                        provider,
+                        seed.source,
+                        &seed.bytes,
+                    )
+                    .await
                 }
-                require(completed == 2, "actual outcomes missing")?;
-                let progress = present(snapshot.capture_source(source)?)?;
-                require(matches!(progress.current.body, EventBody::CaptureProgress {new_offset,..} if new_offset==bytes.len() as u64), "source cursor stopped before retained facts")?;
-                snapshot.close()?;
-                Ok(())
-            }.await;
-            stop.request(); result
+                Err(error) => Err(error),
+            };
+            stop.request();
+            result
         };
-        let (exit,result) = join(host.serve(listener),consumer).await;
-        drop(capture); drop(execution);
+        let (exit, result) = join(host.serve(listener), consumer).await;
+        drop(capture);
+        drop(execution);
         let report = exit.finish(&bound()?).await;
-        require(report.transport_closed && report.endpoint_retired,"tool capture host did not close")?;
+        require(
+            report.transport_closed && report.endpoint_retired,
+            "tool capture host did not close",
+        )?;
         result
     })
 }

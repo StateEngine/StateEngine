@@ -8,11 +8,116 @@ use serde_json::json;
 mod support;
 use support::*;
 
+async fn whoami_tool_schema_is_object(port: u16) -> Check {
+    // Discovery advertises an object input schema carrying the
+    // optional caller assertions; a validating client can register it.
+    let list = rpc(port, "whoami-principal", "tools/list", json!({})).await?;
+    let tools = list["result"]["tools"]
+        .as_array()
+        .ok_or("tools/list returned no tools")?;
+    let whoami_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "stateengine_whoami")
+        .ok_or("stateengine_whoami absent from tools/list")?;
+    require(
+        whoami_tool["inputSchema"]["type"] == json!("object"),
+        format!("whoami input schema is not an object: {whoami_tool}"),
+    )?;
+    let properties = &whoami_tool["inputSchema"]["properties"];
+    require(
+        properties.get("agent_id").is_some() && properties.get("project_id").is_some(),
+        format!("whoami caller properties missing: {whoami_tool}"),
+    )?;
+    Ok(())
+}
+async fn plain_whoami_reports_the_admitted_principal(
+    port: u16,
+    f: &Fixture,
+    session: &se_types::SessionId,
+) -> Check {
+    let plain = rpc(
+        port,
+        "whoami-principal",
+        "tools/call",
+        json!({"name":"stateengine_whoami","arguments":{}}),
+    )
+    .await?;
+    require(
+        plain["result"]["isError"] == false,
+        format!("bound whoami refused: {plain}"),
+    )?;
+    let out = &plain["result"]["structuredContent"];
+    require(
+        out["schema"] == "se.principal/v1",
+        format!("family drift: {plain}"),
+    )?;
+    require(
+        out["project"]["id"] == json!(f.project.as_str())
+            && out["project"]["name"] == json!("Project"),
+        format!("project identity: {out}"),
+    )?;
+    require(
+        out["agent"]["id"] == json!(f.a.as_str()) && out["agent"]["name"] == json!("Sable"),
+        format!("agent identity: {out}"),
+    )?;
+    require(
+        out["session"]["id"] == json!(session.as_str()) && out["session"]["generation"] == json!(1),
+        format!("session identity: {out}"),
+    )?;
+    // The fixture preparation records no surface: honest absence.
+    require(
+        out["session"]["source"]["state"] == "absent",
+        format!("session source: {out}"),
+    )?;
+    require(out["grants"] == json!([]), format!("grants: {out}"))?;
+    require(
+        out["binding"] == json!({"state":"activated","scope":"project","auth":"session"}),
+        format!("binding: {out}"),
+    )?;
+    require(
+        !plain.to_string().contains("whoami-principal"),
+        "credential material leaked into the result",
+    )?;
+    Ok(())
+}
+async fn matching_assertion_keeps_the_admitted_principal(port: u16, f: &Fixture) -> Check {
+    // Matching caller assertions agree with custody and are stripped.
+    let asserted = rpc(
+        port,
+        "whoami-principal",
+        "tools/call",
+        json!({"name":"stateengine_whoami","arguments":{"agent_id":f.a,"project_id":f.project}}),
+    )
+    .await?;
+    require(
+        asserted["result"]["isError"] == false
+            && asserted["result"]["structuredContent"]["agent"]["id"] == json!(f.a.as_str()),
+        format!("matching assertion lost its principal: {asserted}"),
+    )?;
+    Ok(())
+}
+async fn mismatched_assertion_is_refused_with_both_values(port: u16, f: &Fixture) -> Check {
+    // A mismatching caller assertion is refused with both values.
+    let mismatch = rpc(
+        port,
+        "whoami-principal",
+        "tools/call",
+        json!({"name":"stateengine_whoami","arguments":{"agent_id":"another-agent"}}),
+    )
+    .await?;
+    require(
+        mismatch["result"]["isError"] == true,
+        format!("mismatch accepted: {mismatch}"),
+    )?;
+    let text = mismatch.to_string();
+    require(
+        text.contains("another-agent") && text.contains(f.a.as_str()),
+        format!("mismatch omitted a value: {mismatch}"),
+    )?;
+    Ok(())
+}
+
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn whoami_reports_the_admitted_principal_without_credentials() -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;
@@ -56,110 +161,16 @@ fn whoami_reports_the_admitted_principal_without_credentials() -> Check {
         .build()?;
     rt.block_on(async {
         let mut host =
-            HostedRuntime::prepare(initialized, start(&f)?, rt.handle().clone(), &bound()?)
-                .await?;
+            HostedRuntime::prepare(initialized, start(&f)?, rt.handle().clone(), &bound()?).await?;
         let listener = host.listen(rt.handle().clone(), &bound()?).await?;
         let port = host.http_port().ok_or("HTTP port absent")?;
         let stop = host.local_stop();
         let consumer = async {
             let result: Check = async {
-                // Discovery advertises an object input schema carrying the
-                // optional caller assertions; a validating client can register it.
-                let list = rpc(port, "whoami-principal", "tools/list", json!({})).await?;
-                let tools = list["result"]["tools"]
-                    .as_array()
-                    .ok_or("tools/list returned no tools")?;
-                let whoami_tool = tools
-                    .iter()
-                    .find(|tool| tool["name"] == "stateengine_whoami")
-                    .ok_or("stateengine_whoami absent from tools/list")?;
-                require(
-                    whoami_tool["inputSchema"]["type"] == json!("object"),
-                    format!("whoami input schema is not an object: {whoami_tool}"),
-                )?;
-                let properties = &whoami_tool["inputSchema"]["properties"];
-                require(
-                    properties.get("agent_id").is_some()
-                        && properties.get("project_id").is_some(),
-                    format!("whoami caller properties missing: {whoami_tool}"),
-                )?;
-
-                let plain = rpc(
-                    port,
-                    "whoami-principal",
-                    "tools/call",
-                    json!({"name":"stateengine_whoami","arguments":{}}),
-                )
-                .await?;
-                require(
-                    plain["result"]["isError"] == false,
-                    format!("bound whoami refused: {plain}"),
-                )?;
-                let out = &plain["result"]["structuredContent"];
-                require(out["schema"] == "se.principal/v1", format!("family drift: {plain}"))?;
-                require(
-                    out["project"]["id"] == json!(f.project.as_str())
-                        && out["project"]["name"] == json!("Project"),
-                    format!("project identity: {out}"),
-                )?;
-                require(
-                    out["agent"]["id"] == json!(f.a.as_str()) && out["agent"]["name"] == json!("Sable"),
-                    format!("agent identity: {out}"),
-                )?;
-                require(
-                    out["session"]["id"] == json!(session.as_str())
-                        && out["session"]["generation"] == json!(1),
-                    format!("session identity: {out}"),
-                )?;
-                // The fixture preparation records no surface: honest absence.
-                require(
-                    out["session"]["source"]["state"] == "absent",
-                    format!("session source: {out}"),
-                )?;
-                require(out["grants"] == json!([]), format!("grants: {out}"))?;
-                require(
-                    out["binding"]
-                        == json!({"state":"activated","scope":"project","auth":"session"}),
-                    format!("binding: {out}"),
-                )?;
-                require(
-                    !plain.to_string().contains("whoami-principal"),
-                    "credential material leaked into the result",
-                )?;
-
-                // Matching caller assertions agree with custody and are stripped.
-                let asserted = rpc(
-                    port,
-                    "whoami-principal",
-                    "tools/call",
-                    json!({"name":"stateengine_whoami","arguments":{"agent_id":f.a,"project_id":f.project}}),
-                )
-                .await?;
-                require(
-                    asserted["result"]["isError"] == false
-                        && asserted["result"]["structuredContent"]["agent"]["id"]
-                            == json!(f.a.as_str()),
-                    format!("matching assertion lost its principal: {asserted}"),
-                )?;
-
-                // A mismatching caller assertion is refused with both values.
-                let mismatch = rpc(
-                    port,
-                    "whoami-principal",
-                    "tools/call",
-                    json!({"name":"stateengine_whoami","arguments":{"agent_id":"another-agent"}}),
-                )
-                .await?;
-                require(
-                    mismatch["result"]["isError"] == true,
-                    format!("mismatch accepted: {mismatch}"),
-                )?;
-                let text = mismatch.to_string();
-                require(
-                    text.contains("another-agent") && text.contains(f.a.as_str()),
-                    format!("mismatch omitted a value: {mismatch}"),
-                )?;
-                Ok(())
+                whoami_tool_schema_is_object(port).await?;
+                plain_whoami_reports_the_admitted_principal(port, &f, &session).await?;
+                matching_assertion_keeps_the_admitted_principal(port, &f).await?;
+                mismatched_assertion_is_refused_with_both_values(port, &f).await
             }
             .await;
             stop.request();
@@ -167,7 +178,10 @@ fn whoami_reports_the_admitted_principal_without_credentials() -> Check {
         };
         let (exit, result) = join(host.serve(listener), consumer).await;
         let closed = exit.finish(&bound()?).await;
-        require(closed.transport_closed && closed.endpoint_retired, "host cleanup incomplete")?;
+        require(
+            closed.transport_closed && closed.endpoint_retired,
+            "host cleanup incomplete",
+        )?;
         result
     })
 }
