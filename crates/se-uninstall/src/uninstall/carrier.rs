@@ -344,15 +344,11 @@ fn report_preparation_failure(
 ) -> UninstallNativeError {
     match cancel_preparation(process) {
         Ok(()) => {
-            failure.source = io::Error::other(format!(
-                "{}; {}",
-                failure.source,
-                diagnostic_text(diagnostic)
-            ));
+            failure.diagnostic = Some(diagnostic_text(diagnostic));
             cleanup_artifacts(&mut failure, helper, staging);
         }
         Err(cause) => {
-            failure.source = io::Error::other(format!("{}; {}", failure.source, cause));
+            failure.cleanup_failures.push(cause);
             if helper.is_some() {
                 failure.pending_paths.push(helper_path.to_path_buf());
             }
@@ -410,7 +406,7 @@ fn cleanup_artifacts(
     }
 }
 fn cleanup_failure(failure: &mut UninstallNativeError, cause: UninstallNativeError, path: &Path) {
-    failure.source = io::Error::other(format!("{}; {}", failure.source, cause));
+    failure.cleanup_failures.push(cause);
     failure.pending_paths.push(path.to_owned());
 }
 

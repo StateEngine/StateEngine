@@ -30,9 +30,14 @@ pub struct UninstallNativeError {
     pub pending_paths: Vec<PathBuf>,
     /// Cleanup attempts that failed after `source`, which is kept unchanged.
     pub cleanup_failures: Vec<UninstallNativeError>,
+    /// Carrier diagnostic text captured after preparation failed, if any.
+    pub diagnostic: Option<String>,
 }
 se_state_files::native_error::native_error!(UninstallNativeError, |error, out| {
     write!(out, "{}: {}", error.operation, error.source)?;
+    if let Some(diagnostic) = &error.diagnostic {
+        write!(out, "; {diagnostic}")?;
+    }
     for path in &error.pending_paths {
         write!(out, "; preserve pending artifact {}", path.display())?;
     }
@@ -48,6 +53,7 @@ fn error(operation: &'static str, source: io::Error) -> UninstallNativeError {
         source,
         pending_paths: Vec::new(),
         cleanup_failures: Vec::new(),
+        diagnostic: None,
     }
 }
 fn refuse(operation: &'static str, reason: &'static str) -> UninstallNativeError {
