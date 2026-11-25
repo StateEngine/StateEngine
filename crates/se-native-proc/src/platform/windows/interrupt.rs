@@ -3,9 +3,10 @@
 use super::{Scope, identity::*, security};
 use crate::{support::*, *};
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     path::Path,
     ptr,
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
@@ -133,6 +134,13 @@ impl Drop for Attached {
     }
 }
 
+fn helper_input(reason: &str) -> ProcError {
+    input("console helper", reason)
+}
+fn stop_fail(api: &str) -> ProcError {
+    last(ProcErrorCode::StopDispatchFailed, api)
+}
+
 enum InheritedKind {
     Process(u32),
     Job,
@@ -144,47 +152,38 @@ fn verify_inherited_kind(raw: HANDLE, kind: InheritedKind) -> ProcResult<()> {
             // SAFETY: `raw` is a validated open handle; `GetProcessId` returns 0 on non-processes.
             let got = unsafe { GetProcessId(raw) };
             if pid == 0 || got == 0 || got != pid {
-                return Err(input(
-                    "console helper",
-                    "the original inherited process capability",
-                ));
+                return Err(helper_input("the original inherited process capability"));
             }
         }
         InheritedKind::Job => {
             // SAFETY: `raw` is a validated open handle; `query_limits` rejects non-job handles.
             unsafe { crate::windows_native::job::query_limits(raw, "verify inherited job") }
-                .map_err(|_| input("console helper", "the original inherited job capability"))?;
+                .map_err(|_| helper_input("the original inherited job capability"))?;
         }
     }
     Ok(())
 }
 
 fn inherited(selector: u64, kind: InheritedKind) -> ProcResult<Handle> {
-    let selector = usize::try_from(selector)
-        .map_err(|_| input("console helper", "a native inherited handle"))?;
-    let raw = selector as *mut std::ffi::c_void;
+    let raw = usize::try_from(selector).map_err(|_| helper_input("a native inherited handle"))?
+        as *mut std::ffi::c_void;
     if raw.is_null() || raw == INVALID_HANDLE_VALUE {
-        return Err(input("console helper", "a native inherited handle"));
+        return Err(helper_input("a native inherited handle"));
     }
     let mut flags = 0;
     // SAFETY: the kernel validates the untrusted selector; no ownership is claimed.
     if unsafe { GetHandleInformation(raw, &mut flags) } == 0 {
-        return Err(last(
-            ProcErrorCode::StopDispatchFailed,
-            "inspect inherited console capability",
-        ));
+        return Err(stop_fail("inspect inherited console capability"));
     }
     if flags & HANDLE_FLAG_INHERIT == 0 {
-        return Err(input(
-            "console helper",
+        return Err(helper_input(
             "a capability inherited from the native creator",
         ));
     }
     verify_inherited_kind(raw, kind)?;
     let mut dup = ptr::null_mut();
     // SAFETY: `raw` is a validated Process or Job kernel object (not a Winsock socket);
-    // duplicating with `bInheritHandle = 0` creates a fresh, non-inheritable,
-    // exclusively owned `CloseHandle`-compatible handle without mutating `raw`.
+    // duplicating with `bInheritHandle = 0` yields a fresh, exclusively owned handle.
     if unsafe {
         DuplicateHandle(
             GetCurrentProcess(),
@@ -197,28 +196,47 @@ fn inherited(selector: u64, kind: InheritedKind) -> ProcResult<Handle> {
         )
     } == 0
     {
-        return Err(last(
-            ProcErrorCode::StopDispatchFailed,
-            "duplicate inherited console capability",
-        ));
+        return Err(stop_fail("duplicate inherited console capability"));
     }
     // SAFETY: `DuplicateHandle` above transferred sole ownership of the fresh handle `dup`.
     unsafe { Handle::new(dup, "own inherited console capability") }
 }
 
-/// Private subprocess startup entry invoked once from `main()` with capabilities
-/// inherited via `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. Proves nonzero PID, distinct
-/// Process/Job kinds before `DuplicateHandle`, and exact job membership before Ctrl+C.
-pub fn console_interrupt_entry(request: &OsStr) -> ProcResult<StopDispatch> {
+static ENTERED: AtomicBool = AtomicBool::new(false);
+
+/// Private subprocess startup entry invoked once from `main()`.
+/// Reads `std::env::args_os()` directly so no public API accepts caller-supplied
+/// raw handle selectors; returns `None` outside the private helper process.
+pub fn console_interrupt_entry() -> Option<ProcResult<StopDispatch>> {
+    let args: Vec<OsString> = std::env::args_os().collect();
+    dispatch_startup_entry(&args, &ENTERED)
+}
+
+fn dispatch_startup_entry(
+    args: &[OsString],
+    entered: &AtomicBool,
+) -> Option<ProcResult<StopDispatch>> {
+    if args.get(1).and_then(|v| v.to_str()) != Some(CONSOLE_INTERRUPT_ENTRY) {
+        return None;
+    }
+    if entered.swap(true, Ordering::AcqRel) {
+        return Some(Err(helper_input("startup entry may run only once")));
+    }
+    if args.len() != 3 {
+        return Some(Err(input("native console helper", "one original identity")));
+    }
+    Some(run_console_interrupt(&args[2]))
+}
+
+fn run_console_interrupt(request: &OsStr) -> ProcResult<StopDispatch> {
     let request = request
         .to_str()
         .filter(|value| value.len() <= 8192)
-        .ok_or_else(|| input("console helper", "one bounded UTF-8 identity"))?;
+        .ok_or_else(|| helper_input("one bounded UTF-8 identity"))?;
     let request: Request = serde_json::from_str(request)
-        .map_err(|_| input("console helper", "the closed native console request"))?;
+        .map_err(|_| helper_input("the closed native console request"))?;
     if request.root.pid.0 == 0 || request.root_handle == request.job_handle {
-        return Err(input(
-            "console helper",
+        return Err(helper_input(
             "nonzero pid and distinct inherited capabilities required",
         ));
     }
@@ -230,54 +248,34 @@ pub fn console_interrupt_entry(request: &OsStr) -> ProcResult<StopDispatch> {
     // SAFETY: retained duplicated process capability; re-check PID on owned handle.
     let got_pid = unsafe { GetProcessId(root.0) };
     if got_pid == 0 || got_pid != request.root.pid.0 {
-        return Err(input(
-            "console helper",
-            "the original inherited process capability",
-        ));
+        return Err(helper_input("the original inherited process capability"));
     }
     if !matches!(observe(&request.root, &root)?, ProcessObservation::Live(_)) {
         return Ok(StopDispatch::NotNeeded);
     }
     security::verify_job(&job)?;
-    // Only this isolated helper detaches its own console. The runtime and its
-    // target retain their consoles, and the pinned root prevents PID reuse.
     // SAFETY: FreeConsole affects only the calling helper process.
     if unsafe { FreeConsole() } == 0 {
-        return Err(last(
-            ProcErrorCode::StopDispatchFailed,
-            "detach helper console",
-        ));
+        return Err(stop_fail("detach helper console"));
     }
     // SAFETY: original live process object remains pinned against PID reuse.
     if unsafe { AttachConsole(request.root.pid.0) } == 0 {
-        return Err(last(
-            ProcErrorCode::StopDispatchFailed,
-            "attach original private console",
-        ));
+        return Err(stop_fail("attach original private console"));
     }
     let _attached = Attached;
     // SAFETY: affects only this isolated helper; AttachConsole reset its handlers.
     if unsafe { SetConsoleCtrlHandler(None, 1) } == 0 {
-        return Err(last(
-            ProcErrorCode::StopDispatchFailed,
-            "protect console helper from Ctrl+C",
-        ));
+        return Err(stop_fail("protect console helper from Ctrl+C"));
     }
     let mut members = [0u32; 129];
     // SAFETY: writable fixed array and exact element capacity.
     let count = unsafe { GetConsoleProcessList(members.as_mut_ptr(), members.len() as u32) };
     if count == 0 || count as usize > members.len() {
-        return Err(input(
-            "console helper",
-            "a complete bounded console membership read",
-        ));
+        return Err(helper_input("a complete bounded console membership read"));
     }
     let members = &members[..count as usize];
     if !members.contains(&request.root.pid.0) {
-        return Err(input(
-            "console helper",
-            "the original root in its independent console",
-        ));
+        return Err(helper_input("the original root in its independent console"));
     }
     let mut pins = Vec::new();
     for pid in members
@@ -285,34 +283,28 @@ pub fn console_interrupt_entry(request: &OsStr) -> ProcResult<StopDispatch> {
         .copied()
         .filter(|pid| *pid != std::process::id())
     {
-        let pin = lookup(ProcessId(pid))?
-            .ok_or_else(|| input("console helper", "stable console membership"))?;
+        let pin =
+            lookup(ProcessId(pid))?.ok_or_else(|| helper_input("stable console membership"))?;
         let mut member = 0;
         // SAFETY: retained query-only process/job handles and writable BOOL.
         if unsafe { IsProcessInJob(pin.0, job.0, &mut member) } == 0 {
-            return Err(last(
-                ProcErrorCode::StopDispatchFailed,
-                "verify console job membership",
-            ));
+            return Err(stop_fail("verify console job membership"));
         }
         if member == 0 {
-            return Err(input(
-                "console helper",
-                "no foreign processes in the private console",
-            ));
+            return Err(helper_input("no foreign processes in the private console"));
         }
         pins.push(pin);
     }
     if !matches!(observe(&request.root, &root)?, ProcessObservation::Live(_)) {
         return Ok(StopDispatch::NotNeeded);
     }
-    // SAFETY: only the verified private console receives Ctrl+C; this helper
-    // ignores it. Dispatch is not evidence that any target has stopped.
+    // SAFETY: only the verified private console receives Ctrl+C; this helper ignores it.
     if unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) } == 0 {
-        return Err(last(
-            ProcErrorCode::StopDispatchFailed,
-            "dispatch private console Ctrl+C",
-        ));
+        return Err(stop_fail("dispatch private console Ctrl+C"));
     }
     Ok(StopDispatch::Requested)
 }
+
+#[cfg(test)]
+#[path = "../../../tests/support/windows_interrupt_entry.rs"]
+mod entry_tests;

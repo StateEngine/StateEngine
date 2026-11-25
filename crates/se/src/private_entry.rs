@@ -18,29 +18,20 @@ pub fn dispatch_install_hold(args: &[OsString]) -> Option<Result<i32>> {
 }
 
 #[cfg(windows)]
-pub fn dispatch_console_interrupt(args: &[OsString]) -> Option<Result<u8>> {
-    match args.get(1).and_then(|value| value.to_str()) {
-        Some(se_proc::CONSOLE_INTERRUPT_ENTRY) => Some((|| {
-            if args.len() != 3 {
-                return Err(se_types::SeError::invalid(
-                    "native console helper",
-                    "one original identity",
-                ));
-            }
-            se_proc::console_interrupt_entry(&args[2])
-                .map(|dispatch| {
-                    if dispatch == se_proc::StopDispatch::Requested {
-                        0
-                    } else {
-                        2
-                    }
-                })
-                .map_err(|cause| {
-                    se_core::scope::unreadable("native console cancellation", &format!("{cause:?}"))
-                })
-        })()),
-        _ => None,
-    }
+pub fn dispatch_console_interrupt() -> Option<Result<u8>> {
+    se_proc::console_interrupt_entry().map(|result| {
+        result
+            .map(|dispatch| {
+                if dispatch == se_proc::StopDispatch::Requested {
+                    0
+                } else {
+                    2
+                }
+            })
+            .map_err(|cause| {
+                se_core::scope::unreadable("native console cancellation", &format!("{cause:?}"))
+            })
+    })
 }
 
 /// Remove package launch framing only after retaining the actual native creator.

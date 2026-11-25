@@ -443,7 +443,7 @@ fn main() -> std::process::ExitCode {
         });
     }
     #[cfg(windows)]
-    if let Some(result) = private_entry::dispatch_console_interrupt(&args) {
+    if let Some(result) = private_entry::dispatch_console_interrupt() {
         return finish(result, &args);
     }
     if args
