@@ -30,7 +30,7 @@ fn cli(kind: Kind, state: CliState, any_ready: bool, at: &str) -> DiagnosisCheck
     let mut value = super::check(&id, &title, CheckState::Ok, String::new(), at);
     value.expected = Some(format!(
         "Installed, meeting the version StateEngine launches with ({})",
-        minimum(kind)
+        provider_cli::minimum(kind)
     ));
     match state {
         CliState::Ready {
@@ -50,7 +50,7 @@ fn cli(kind: Kind, state: CliState, any_ready: bool, at: &str) -> DiagnosisCheck
             value.fix = Some(text(format!(
                 "Install {} {} or newer, sign in, then rerun se doctor.",
                 kind.label(),
-                minimum(kind)
+                provider_cli::minimum(kind)
             )));
         }
         CliState::Refused(error) => {
@@ -59,7 +59,13 @@ fn cli(kind: Kind, state: CliState, any_ready: bool, at: &str) -> DiagnosisCheck
             value.code = Some(error.code().as_str().into());
             let remedy = error.body.remedy(&RenderCx::default()).ok();
             value.fix = Some(text(remedy.map_or_else(
-                || format!("Install {} {} or newer.", kind.label(), minimum(kind)),
+                || {
+                    format!(
+                        "Install {} {} or newer.",
+                        kind.label(),
+                        provider_cli::minimum(kind)
+                    )
+                },
                 |remedy| remedy.text,
             )));
         }
@@ -123,13 +129,9 @@ fn codex_entries(value: &mut DiagnosisCheck, read: &Transports) {
     if !problems.is_empty() {
         value.state = CheckState::Failed;
         value.fix = Some(text(problems.join(" ")));
-    }
-}
-
-fn minimum(kind: Kind) -> &'static str {
-    match kind {
-        Kind::Claude => "2.1.287",
-        Kind::Codex => "0.152.0",
+    } else if let Some(note) = read.advisory() {
+        value.state = CheckState::Warning;
+        value.fix = Some(text(note));
     }
 }
 

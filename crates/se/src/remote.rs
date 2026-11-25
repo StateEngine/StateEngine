@@ -60,8 +60,13 @@ impl PendingSend {
         result: &Result<T>,
         out: &mut impl Write,
     ) -> io::Result<()> {
+        // An unknown commit outcome may have committed, so it keeps the key like any
+        // other uncertain failure; only refusals that saved nothing drop it.
         let uncertain = result.as_ref().is_err_and(|error| {
-            !matches!(
+            matches!(
+                error.body.detail(),
+                se_types::Detail::CommitOutcomeUnknown(_)
+            ) || !matches!(
                 error.class(),
                 se_types::Class::Usage
                     | se_types::Class::Refused

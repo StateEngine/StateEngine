@@ -1,8 +1,10 @@
-//! Codex merges its user and project configuration files key by key, so a `command` in one
-//! file and a `url` in another leave one `stateengine` server with both transports, which
-//! Codex refuses without naming the files. This reads every file's `stateengine` entry once:
-//! to report that split, to find entries whose `--home` or executable no longer exists, and
-//! to remove a stray `url` from the stdio entry StateEngine itself registers.
+//! Codex merges its user file with project `.codex/config.toml` files of trusted projects, key
+//! by key, so a `command` in one file and a `url` in another leave one `stateengine` server
+//! with both transports, which Codex refuses without naming the files. This reads every
+//! file's `stateengine` entry once: to report that split, to find entries whose `--home` or
+//! executable no longer exists, and to remove a stray `url` from the stdio entry StateEngine
+//! itself registers. A project file Codex ignores, because its project is not trusted in the
+//! user file, is only advised about.
 use se_types::Result;
 use std::path::{Path, PathBuf};
 
@@ -13,6 +15,8 @@ pub struct Entry {
     pub command: Option<String>,
     pub args: Vec<String>,
     pub url: bool,
+    /// Codex loads this file: the user file, or a project file of a trusted project.
+    pub effective: bool,
 }
 
 impl Entry {
@@ -39,14 +43,36 @@ pub enum Transports {
 }
 
 impl Transports {
-    /// The files setting `command` and `url` for the same server, possibly one file.
-    pub fn split(&self) -> Option<(&Path, &Path)> {
-        let Self::Read { entries, .. } = self else {
-            return None;
+    fn entries(&self, effective: bool) -> impl Iterator<Item = &Entry> + Clone {
+        let entries = match self {
+            Self::Read { entries, .. } => entries.as_slice(),
+            Self::Unreadable { .. } => &[],
         };
-        let command = entries.iter().find(|entry| entry.command.is_some())?;
-        let url = entries.iter().find(|entry| entry.url)?;
-        Some((&command.file, &url.file))
+        entries
+            .iter()
+            .filter(move |entry| entry.effective || !effective)
+    }
+
+    /// The files Codex loads that set `command` and `url` for one server, possibly one file.
+    pub fn split(&self) -> Option<(&Path, &Path)> {
+        split(self.entries(true))
+    }
+
+    /// A split that appears only once an untrusted project file counts. Codex ignores that
+    /// file today, but will refuse the server once the project is trusted.
+    pub fn advisory(&self) -> Option<String> {
+        if self.split().is_some() {
+            return None;
+        }
+        let (command, url) = split(self.entries(false))?;
+        Some(format!(
+            "Codex `[mcp_servers.stateengine]` sets `command` in {} and `url` in {}. Codex \
+             ignores the project file while that project is untrusted, but will refuse the \
+             server once it is trusted; delete the `url` line from {} to prevent that.",
+            command.display(),
+            url.display(),
+            url.display()
+        ))
     }
 
     /// The refusal text: both files and a step that removes the conflict.
@@ -67,11 +93,8 @@ impl Transports {
 
     /// Entries whose `--home` directory or executable is gone, each with its repair.
     pub fn stale(&self) -> Vec<String> {
-        let Self::Read { entries, .. } = self else {
-            return Vec::new();
-        };
         let mut problems = Vec::new();
-        for entry in entries {
+        for entry in self.entries(true) {
             let file = entry.file.display();
             let home = entry
                 .args
@@ -110,11 +133,11 @@ pub fn observe(start: &Path) -> Result<Transports> {
 /// files read by `observe`. Other tables, including a user's own HTTP entry, are reported
 /// rather than edited. Returns the files that changed.
 pub fn strip_owned_urls(observed: &Transports) -> Result<Vec<PathBuf>> {
-    let Transports::Read { entries, .. } = observed else {
-        return Ok(Vec::new());
-    };
     let mut changed = Vec::new();
-    for entry in entries.iter().filter(|entry| entry.url && entry.owned()) {
+    for entry in observed
+        .entries(true)
+        .filter(|entry| entry.url && entry.owned())
+    {
         strip_url(&entry.file)?;
         changed.push(entry.file.clone());
     }
@@ -134,7 +157,7 @@ fn strip_url(file: &Path) -> Result<()> {
             "is not a regular file; delete its `url` line by hand".into(),
         ));
     }
-    let text = std::fs::read_to_string(file).map_err(|e| refuse(e.to_string()))?;
+    let text = read(file).map_err(refuse)?.unwrap_or_default();
     let mut document = text
         .parse::<toml_edit::DocumentMut>()
         .map_err(|e| refuse(e.message().to_owned()))?;
@@ -156,6 +179,59 @@ fn strip_url(file: &Path) -> Result<()> {
         return Err(refuse(error.to_string()));
     }
     Ok(())
+}
+
+/// Configuration files are small; a larger one is refused rather than read in part.
+const MAX_CONFIG_BYTES: usize = 1024 * 1024;
+
+/// A bounded read of a regular file that never waits on a FIFO or device; `None` if absent.
+fn read(file: &Path) -> std::result::Result<Option<String>, String> {
+    match se_proc::file_access::read_bounded_regular_file(file, MAX_CONFIG_BYTES) {
+        Ok(bytes) => String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| "is not UTF-8 text".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            Err(format!("is larger than {MAX_CONFIG_BYTES} bytes"))
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn split<'a>(entries: impl Iterator<Item = &'a Entry> + Clone) -> Option<(&'a Path, &'a Path)> {
+    let command = entries.clone().find(|entry| entry.command.is_some())?;
+    let url = entries.clone().find(|entry| entry.url)?;
+    Some((&command.file, &url.file))
+}
+
+/// Project paths the user file marks `trust_level = "trusted"`.
+fn trusted_projects(user: &toml::Table) -> Vec<PathBuf> {
+    let Some(projects) = user.get("projects").and_then(toml::Value::as_table) else {
+        return Vec::new();
+    };
+    projects
+        .iter()
+        .filter(|(_, settings)| {
+            settings.get("trust_level").and_then(toml::Value::as_str) == Some("trusted")
+        })
+        .map(|(path, _)| PathBuf::from(path))
+        .collect()
+}
+
+/// A project file applies when its folder is, or lies inside, a trusted project.
+fn is_trusted(project_file: &Path, trusted: &[PathBuf]) -> bool {
+    let Some(folder) = project_file.parent().and_then(Path::parent) else {
+        return false;
+    };
+    let real = std::fs::canonicalize(folder).ok();
+    trusted.iter().any(|project| {
+        let project_real = std::fs::canonicalize(project).ok();
+        folder.starts_with(project)
+            || real
+                .as_ref()
+                .zip(project_real.as_ref())
+                .is_some_and(|(real, project)| real.starts_with(project))
+    })
 }
 
 fn executable_exists(command: &str) -> bool {
@@ -192,21 +268,25 @@ fn candidates(codex_home: &Path, start: &Path) -> Vec<PathBuf> {
 }
 
 fn observe_files(candidates: &[PathBuf]) -> Transports {
-    let (mut files, mut entries) = (Vec::new(), Vec::new());
-    for file in candidates {
+    let (mut files, mut entries, mut trusted) = (Vec::new(), Vec::new(), Vec::new());
+    // The first candidate is the user file; the rest are project files.
+    for (index, file) in candidates.iter().enumerate() {
         let unreadable = |reason: String| Transports::Unreadable {
             file: file.clone(),
             reason,
         };
-        let text = match std::fs::read_to_string(file) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return unreadable(error.to_string()),
+        let text = match read(file) {
+            Ok(Some(text)) => text,
+            Ok(None) => continue,
+            Err(reason) => return unreadable(reason),
         };
         let table = match text.parse::<toml::Table>() {
             Ok(table) => table,
             Err(error) => return unreadable(error.message().to_owned()),
         };
+        if index == 0 {
+            trusted = trusted_projects(&table);
+        }
         let server = table
             .get("mcp_servers")
             .and_then(|servers| servers.get("stateengine"))
@@ -228,6 +308,7 @@ fn observe_files(candidates: &[PathBuf]) -> Transports {
                     })
                     .unwrap_or_default(),
                 url: server.contains_key("url"),
+                effective: index == 0 || is_trusted(file, &trusted),
             });
         }
         files.push(file.clone());

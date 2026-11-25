@@ -474,13 +474,10 @@ fn plain_status_and_show_explain_the_actual_resume_state() -> Check {
             assert_eq!(resume["mode"], "new");
             let reason = resume["reason"].as_str().ok_or("fresh resume reason")?;
             let launch = resume["command"].as_str().ok_or("fresh launch command")?;
-            // Plain status names the project and agent; JSON and agent show keep exact IDs.
+            // Plain status names the agent; JSON and agent show keep exact IDs.
             let launch = if surface[0] == "status" {
-                let project_name = init["project"]["name"].as_str().ok_or("project name")?;
                 let agent_name = init["agent"]["name"].as_str().ok_or("agent name")?;
-                launch
-                    .replace(project, project_name)
-                    .replace(agent, agent_name)
+                launch.replace(agent, agent_name)
             } else {
                 launch.to_owned()
             };

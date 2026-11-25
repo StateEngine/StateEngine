@@ -47,9 +47,11 @@ pub fn configure(
         if let Some(conflict) = observed.conflict() {
             return Err(failure(&conflict));
         }
-        // Codex has one user-wide MCP list: a custom home written there would serve every
-        // project and break once that home is gone. Leave the choice to the user.
-        if alternate_home.is_some() {
+        changed.extend(observed.advisory().map(|note| format!("note: {note}")));
+        // Codex has one user-wide MCP list: a custom home written to the shared login would
+        // serve every project and break once that home is gone. An explicit CODEX_HOME is a
+        // login chosen for this setup, so it is registered and checked as usual.
+        if alternate_home.is_some() && std::env::var_os("CODEX_HOME").is_none() {
             changed.push(manual(
                 kind,
                 &args,

@@ -58,8 +58,9 @@ pub use claude::{
 pub use claude_harness::Binding as ClaudeBinding;
 #[cfg(feature = "listener")]
 pub use claude_harness::{
-    ClaudeHarness, probe_version as probe_claude_version,
-    qualify_adoption as qualify_claude_adoption, transcript_location as claude_transcript_location,
+    ClaudeHarness, MINIMUM_VERSION as CLAUDE_MINIMUM_VERSION,
+    probe_version as probe_claude_version, qualify_adoption as qualify_claude_adoption,
+    transcript_location as claude_transcript_location,
 };
 #[cfg(feature = "listener")]
 pub mod codex_input;

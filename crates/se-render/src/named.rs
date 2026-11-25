@@ -1,9 +1,8 @@
-//! Status hints read better with names. A name replaces an ID only when it selects the same
-//! row: an agent name must be unique on a complete page, and neither may look like an ID.
-//! JSON keeps the exact IDs; an ambiguous project name is refused by the selector, naming
-//! its matches.
+//! Status hints read better with names. An agent name replaces its ID only when it selects
+//! the same row: unique on a complete page of this project's agents and not shaped like an
+//! ID. Project names are unique only per registration, which status does not prove, so the
+//! project ID stays. JSON keeps the exact IDs.
 use se_core::ops::{AgentCommand, outputs::StatusOutput};
-use se_types::Read;
 use std::collections::BTreeMap;
 
 pub(crate) struct Names(BTreeMap<String, String>);
@@ -11,11 +10,6 @@ pub(crate) struct Names(BTreeMap<String, String>);
 impl Names {
     pub(crate) fn of(value: &StatusOutput) -> Self {
         let mut names = BTreeMap::new();
-        if let Read::Present { value: project } = &value.project
-            && plain(&project.name)
-        {
-            names.insert(project.id.to_string(), project.name.clone());
-        }
         if let Some(page) = value
             .agents
             .as_ref()
@@ -53,7 +47,6 @@ impl Names {
 
 fn plain(name: &str) -> bool {
     !name.is_empty()
-        && !name.starts_with("prj_")
         && !name.starts_with("ag_")
         && !name.starts_with('-')
         && name

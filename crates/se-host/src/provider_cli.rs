@@ -16,6 +16,15 @@ pub enum CliState {
     Refused(SeError),
 }
 
+/// The version floor launch enforces, as `major.minor.patch`.
+pub fn minimum(kind: Kind) -> String {
+    let (major, minor, patch) = match kind {
+        Kind::Claude => se_harness::CLAUDE_MINIMUM_VERSION,
+        Kind::Codex => se_harness::CODEX_MINIMUM_VERSION,
+    };
+    format!("{major}.{minor}.{patch}")
+}
+
 pub fn observe(configuration: &ConfigFile, kind: Kind) -> CliState {
     let executable =
         match crate::resolve_provider_executable(configuration, kind.provider().into(), None, None)

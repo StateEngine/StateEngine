@@ -27,7 +27,8 @@ use std::{
 
 /// The mods-capable floor section 40 §9.3 names; exact features are the
 /// flags this harness passes, which the installed CLI must accept.
-const MINIMUM_VERSION: (u16, u16, u16) = (2, 1, 287);
+/// The oldest Claude Code launch accepts; diagnosis reports the same floor.
+pub const MINIMUM_VERSION: (u16, u16, u16) = (2, 1, 287);
 const READ_CHUNK: NonZeroU32 = NonZeroU32::MIN.saturating_add(64 * 1024 - 1);
 
 pub struct ClaudeHarness {
