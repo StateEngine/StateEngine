@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) type Names = std::sync::Arc<BTreeMap<HumanId, String>>;
 
 pub(super) fn inspect(
-    context: &ExecutionContext,
+    context: &Context,
     admission: &Admission,
     plan: &plan::Plan,
     mappings: &BTreeMap<HumanId, HumanId>,

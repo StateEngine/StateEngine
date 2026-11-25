@@ -1,7 +1,7 @@
 //! Atomic source ownership and deferred-reference replay planning.
 use super::node::{self, NodeContext, NodeKind};
 pub(super) mod rejected;
-use super::{super::ExecutionContext, batch, read};
+use super::{Context, batch, read};
 use se_core::{scope, store_error::store_error};
 use se_store::{import::LegacyTarget, *};
 use se_types::Result;
@@ -306,7 +306,7 @@ pub(super) struct RowState {
     pub replay: Option<ImportCheckpoint>,
 }
 pub(super) fn plan(
-    context: &ExecutionContext,
+    context: &Context,
     cx: &NodeContext,
     row: &super::source::Row,
     mut state: RowState,

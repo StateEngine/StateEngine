@@ -1,7 +1,7 @@
 //! Read-only, retained Node source custody. No store snapshot or writer enters
 //! this module, and decoded source values never execute callbacks or Node code.
-use crate::client::lease::Deadline;
 use se_core::scope;
+use se_harness::Deadline;
 use se_proc::NativeSourcePin;
 use se_store::{ImportCheckpoint, SourceEvidence};
 use se_types::{NativePath, Read, Result, SeError};

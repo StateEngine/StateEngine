@@ -8,7 +8,7 @@ publish.workspace = true
 
 [features]
 default = ["runtime", "listener", "channels"]
-import = ["se-core/import"]
+import = ["se-core/import", "dep:se-history-import", "se-history-import/import"]
 runtime = ["se-harness/runtime", "dep:tokio"]
 listener = ["runtime", "se-harness/listener", "se-remote/listener", "se-atlas-host/listener", "dep:reqwest", "tokio/macros", "tokio/net", "tokio/io-util", "tokio/time", "tokio/sync", "tokio/process", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio-tungstenite", "dep:futures-util", "dep:base64", "dep:se-secode-image", "dep:se-provider-image", "dep:se-secode-service"]
 channels = ["listener", "se-harness/channels", "dep:se-channels"]
@@ -29,6 +29,7 @@ se-core = { path = "../se-core" }
 se-cli-spec = { path = "../se-cli-spec" }
 se-mcp = { path = "../se-mcp" }
 se-store = { path = "../se-store" }
+se-history-import = { path = "../se-history-import", optional = true }
 se-proc = { path = "../se-proc" }
 se-repository = { path = "../se-repository" }
 se-secode-image = { path = "../se-secode-image", optional = true }
