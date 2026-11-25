@@ -2,15 +2,71 @@
 //! The private hook injects only observation results; real owned children,
 //! original references, native exit witnesses and cleanup remain in use.
 use super::*;
-use crate::windows_policy_fixture::{Check, ChildPlan, Home, child_args};
 use std::{
     cell::RefCell,
+    ffi::OsString,
     fs::{self, File},
-    path::Path,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
+
+type Check<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+struct Home(PathBuf);
+impl Home {
+    fn new() -> Check<Self> {
+        se_state_files::initialize_file_creation_owner()?;
+        let parent = std::env::temp_dir();
+        for _ in 0..32 {
+            let mut nonce = [0u8; 4];
+            se_state_files::fill_entropy(&mut nonce)?;
+            let root = parent.join(se_types::hex_lower(&nonce));
+            let mut custody = se_state_files::NativeDirectoryCreation::begin();
+            match custody.create(&root) {
+                Ok(files) => drop(files),
+                Err(error) => {
+                    for _ in custody.rollback() {}
+                    return Err(error.into());
+                }
+            }
+            if custody.paths().contains(&root) {
+                drop(se_state_files::NativeStateFiles::create(&root)?);
+                return Ok(Self(root));
+            }
+        }
+        Err("no fresh private fixture directory was created".into())
+    }
+}
+impl Drop for Home {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ChildPlan {
+    report: PathBuf,
+    excluded: usize,
+    allowed: Option<usize>,
+    input: Option<usize>,
+    claim: Option<(u32, u32, u32)>,
+}
+
+fn child_args(plan: &ChildPlan) -> Check<Vec<OsString>> {
+    Ok(vec![
+        "--exact".into(),
+        "runtime::owned_observation_tests::held_child".into(),
+        "--ignored".into(),
+        "--nocapture".into(),
+        "--test-threads=1".into(),
+        "--skip".into(),
+        serde_json::to_string(plan)?.into(),
+    ])
+}
 
 type Sampler = dyn FnMut(&NativeProcessRuntime, &OwnedProcess) -> ProcResult<OwnedObservation>;
 thread_local! {

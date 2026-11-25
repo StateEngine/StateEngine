@@ -212,7 +212,7 @@ fn stabilize_image(
         "exec changed during identity read; retry observation",
     ))
 }
-pub(crate) fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<ProcessRead> {
+pub fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<ProcessRead> {
     let boot = boot()?;
     let Some(before) = stat(pid)? else {
         return absent_read(pid);
@@ -288,7 +288,7 @@ fn executable_failure(
         cause,
     ))
 }
-pub(crate) fn read_process_until(
+pub fn read_process_until(
     machine: MachineId,
     pid: ProcessId,
     deadline: std::time::Instant,

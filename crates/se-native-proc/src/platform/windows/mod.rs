@@ -6,27 +6,27 @@ pub use interrupt::{
 };
 mod notify;
 mod recovery;
-pub use recovery::observe_prepared_scope_exit;
-pub(crate) use recovery::uncreated_scope;
+pub use recovery::{observe_prepared_scope_exit, uncreated_scope};
 mod security;
 mod spawn;
 mod stdio;
+use crate::notify::Hub;
 use crate::platform::{Progress, empty};
-use crate::runtime::notify::Hub;
 use crate::support::*;
 use crate::windows_native::job;
 use crate::*;
+pub(crate) use identity::verify_live_identity;
 use identity::*;
-pub(crate) use identity::{read_process, read_process_until, verify_live_identity};
+pub use identity::{read_process, read_process_until};
 use std::{ptr, sync::Arc};
-pub(crate) use stdio::NativeStdio;
+pub use stdio::NativeStdio;
 use windows_sys::Win32::{Foundation::*, System::JobObjects::*};
 
-pub(crate) struct Driver {
+pub struct Driver {
     collector: notify::Collector,
     stdio_budget: Arc<stdio::Budget>,
 }
-pub(crate) struct Scope {
+pub struct Scope {
     job: Handle,
     child: Option<spawn::Child>,
     console_host: Option<console::ConsoleHost>,

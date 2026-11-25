@@ -3,17 +3,18 @@ mod group;
 mod identity;
 mod spawn;
 mod terminal;
+use crate::notify::Hub;
 use crate::platform::{Progress, empty};
-use crate::runtime::notify::Hub;
 use crate::support::*;
 use crate::*;
-pub(crate) use identity::{read_process, read_process_until, verify_live_identity};
+pub(crate) use identity::verify_live_identity;
+pub use identity::{read_process, read_process_until};
 use std::{io, os::fd::AsRawFd, sync::Arc};
 
-pub(crate) struct Driver {
+pub struct Driver {
     reactor: Arc<dyn NativeReactor>,
 }
-pub(crate) struct Scope {
+pub struct Scope {
     child: Option<spawn::Child>,
     recovered: Option<ProcessIdentity>,
     tracked: Vec<ProcessIdentity>,
@@ -452,7 +453,7 @@ impl Scope {
     }
 }
 
-pub(crate) fn uncreated_scope(
+pub fn uncreated_scope(
     reservation: &LaunchReservation,
 ) -> ProcResult<(ScopeObservation, ContainmentGuarantee)> {
     Ok((

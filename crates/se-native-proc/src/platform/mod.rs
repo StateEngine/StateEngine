@@ -1,25 +1,28 @@
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
-pub(crate) use crate::macos_process::{read_process, read_process_until};
+pub use crate::macos_process::{read_process, read_process_until};
 #[cfg(target_os = "macos")]
 pub use macos::process_attach_entry;
 #[cfg(target_os = "macos")]
-pub(crate) use macos::{Driver, Scope, uncreated_scope};
+pub use macos::{Driver, Scope, uncreated_scope};
 
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub(crate) use linux::*;
+pub use linux::{Driver, Scope, read_process, read_process_until, uncreated_scope};
+#[cfg(target_os = "linux")]
+pub(crate) use linux::{runtime_boot_id, runtime_cgroup, verify_live_identity};
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
 pub use windows::observe_prepared_scope_exit;
 #[cfg(windows)]
-pub(crate) use windows::*;
+pub(crate) use windows::verify_live_identity;
 #[cfg(windows)]
 pub use windows::{
-    CONSOLE_INTERRUPT_ENTRY, console_interrupt_entry, initialize_host_console_policy,
+    CONSOLE_INTERRUPT_ENTRY, Driver, NativeStdio, Scope, console_interrupt_entry,
+    initialize_host_console_policy, read_process, read_process_until, uncreated_scope,
 };
 
 use crate::{
@@ -27,7 +30,7 @@ use crate::{
     ScopeExitBasis, ScopeIdentity, ScopeObservation,
 };
 
-pub(crate) enum Progress {
+pub enum Progress {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     Pending,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -35,7 +38,7 @@ pub(crate) enum Progress {
     Executed(ProcessIdentity, Box<ProcessObservation>),
 }
 
-pub(crate) fn empty(scope: ScopeIdentity) -> crate::ProcResult<ScopeObservation> {
+pub fn empty(scope: ScopeIdentity) -> crate::ProcResult<ScopeObservation> {
     Ok(ScopeObservation {
         scope,
         remaining: RemainingScope {

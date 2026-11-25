@@ -35,7 +35,7 @@ pub(crate) fn boot() -> Result<BootIdentity> {
         microseconds: time.tv_usec,
     })
 }
-pub(crate) fn boot_session() -> Result<se_types::BootId> {
+pub fn boot_session() -> Result<se_types::BootId> {
     let mut bytes = [0_u8; 37];
     let mut size = bytes.len();
     // SAFETY: static sysctl name, correctly sized output buffer, and no write.
@@ -59,8 +59,8 @@ pub(crate) fn boot_session() -> Result<se_types::BootId> {
     let boot = se_types::BootId::new(format!("macos:{}", id.to_ascii_lowercase()))
         .map_err(|_| refuse("read boot session UUID", "invalid UUID encoding"))?;
     if !matches!(
-        crate::RebootBoot::parse(&boot),
-        Some(crate::RebootBoot::MacOs(_))
+        se_custody::RebootBoot::parse(&boot),
+        Some(se_custody::RebootBoot::MacOs(_))
     ) {
         return Err(refuse("read boot session UUID", "invalid native UUID"));
     }

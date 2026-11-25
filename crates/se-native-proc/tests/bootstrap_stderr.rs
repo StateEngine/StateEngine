@@ -1,5 +1,5 @@
 //! Cold real bootstrap consumers; no host, endpoint or public stdio substitute.
-#[path = "support/detachment_venue.rs"]
+#[path = "../../se-proc/tests/support/detachment_venue.rs"]
 mod detachment_venue;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod judge {

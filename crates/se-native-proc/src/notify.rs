@@ -6,10 +6,10 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-pub(crate) struct Watch {
+pub struct Watch {
     sink: Arc<dyn ExitSink>,
 }
-pub(crate) struct Hub {
+pub struct Hub {
     lifecycle: LifecycleId,
     generation: AtomicU64,
     sequence: AtomicU64,

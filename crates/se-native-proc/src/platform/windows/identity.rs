@@ -184,7 +184,7 @@ pub(crate) fn verify_live_identity(expected: &ProcessIdentity) -> ProcResult<()>
     }
     Ok(())
 }
-pub(crate) fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<ProcessRead> {
+pub fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<ProcessRead> {
     let Some(handle) = lookup(pid)? else {
         return Ok(ProcessRead::Absent {
             pid,
@@ -194,7 +194,7 @@ pub(crate) fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<Pro
     read_pinned_process(machine, pid, &handle)
 }
 
-pub(crate) fn read_process_until(
+pub fn read_process_until(
     machine: MachineId,
     pid: ProcessId,
     deadline: std::time::Instant,

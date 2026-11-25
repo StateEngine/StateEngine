@@ -21,7 +21,7 @@ use windows_sys::Win32::Foundation::*;
 
 /// The arena and collector own this object. Public port/ticket references contain
 /// only a revocable arena key; dropping one never drops native ownership.
-pub(crate) struct NativeStdio {
+pub struct NativeStdio {
     state: Mutex<State>,
     queue: OnceLock<CompletionQueue>,
     budget: Arc<Budget>,

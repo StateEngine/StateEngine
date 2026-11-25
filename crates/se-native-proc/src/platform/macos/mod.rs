@@ -3,18 +3,18 @@ mod group;
 mod spawn;
 mod watch;
 use crate::{
+    notify::Hub,
     platform::{Progress, empty},
-    runtime::notify::Hub,
     support::*,
     *,
 };
 use std::{io, path::PathBuf, sync::Arc};
 
-pub(crate) struct Driver {
+pub struct Driver {
     reactor: Arc<dyn NativeReactor>,
     helper: PathBuf,
 }
-pub(crate) struct Scope {
+pub struct Scope {
     image_custody: Option<NativeExecutableInvocation>,
     child: Option<spawn::Child>,
     recovered: Option<ProcessIdentity>,
@@ -520,7 +520,7 @@ pub(crate) fn observe(expected: &ProcessIdentity) -> ProcResult<ProcessObservati
         observed_at_unix_ns: at,
     })
 }
-pub(crate) fn uncreated_scope(
+pub fn uncreated_scope(
     reservation: &LaunchReservation,
 ) -> ProcResult<(ScopeObservation, ContainmentGuarantee)> {
     Ok((

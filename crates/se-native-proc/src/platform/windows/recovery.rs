@@ -353,7 +353,7 @@ fn reconcile(source: &RecoverySource) -> ProcResult<StopWitness> {
     })
 }
 
-pub(crate) fn uncreated_scope(
+pub fn uncreated_scope(
     reservation: &LaunchReservation,
 ) -> ProcResult<(ScopeObservation, ContainmentGuarantee)> {
     let scope = ScopeIdentity::WindowsJob {

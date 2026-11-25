@@ -72,16 +72,16 @@ impl NativeRuntimeIdentity {
         // this install shares. Windows process identity is the absolute
         // creation clock, which each caller checks next, so the entry alone
         // keeps a host started by an older release reachable after an upgrade.
-        if let Some(entry) = crate::RebootBoot::legacy_windows_entry(recorded) {
-            return if crate::RebootBoot::windows_entry(&self.boot_id) == Some(entry) {
+        if let Some(entry) = se_custody::RebootBoot::legacy_windows_entry(recorded) {
+            return if se_custody::RebootBoot::windows_entry(&self.boot_id) == Some(entry) {
                 RuntimeBootRelation::Same
             } else {
                 RuntimeBootRelation::Unverifiable
             };
         }
         match (
-            crate::RebootBoot::parse(&self.boot_id),
-            crate::RebootBoot::parse(recorded),
+            se_custody::RebootBoot::parse(&self.boot_id),
+            se_custody::RebootBoot::parse(recorded),
         ) {
             (Some(current), Some(previous))
                 if std::mem::discriminant(&current) == std::mem::discriminant(&previous) =>
@@ -97,7 +97,7 @@ pub fn current_runtime_identity(machine: MachineId) -> ProcResult<NativeRuntimeI
     let boot_id = runtime_boot_identity()?;
     Ok(NativeRuntimeIdentity { process, boot_id })
 }
-pub(crate) fn runtime_boot_identity() -> ProcResult<se_types::BootId> {
+pub fn runtime_boot_identity() -> ProcResult<se_types::BootId> {
     os::boot_id()
 }
 fn check(deadline: Instant) -> ProcResult<()> {
@@ -337,156 +337,148 @@ impl RuntimeBootstrap {
         })
     }
 }
-impl NativeProcessApi for NativeProcessRuntime {
-    fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<ProcessRead> {
-        crate::read_process(machine, pid)
-    }
-    fn spawn_runtime(spec: RuntimeLaunchSpec) -> Result<RuntimeLaunch, Box<RuntimeSpawnFailure>> {
-        let frame = launch_frame(&spec).map_err(|error| {
-            Box::new(RuntimeSpawnFailure {
-                error,
-                remaining: None,
-            })
-        })?;
-        let Created {
+pub fn spawn_runtime(spec: RuntimeLaunchSpec) -> Result<RuntimeLaunch, Box<RuntimeSpawnFailure>> {
+    let frame = launch_frame(&spec).map_err(|error| {
+        Box::new(RuntimeSpawnFailure {
+            error,
+            remaining: None,
+        })
+    })?;
+    let Created {
+        native,
+        events,
+        authorization,
+        detachment,
+        plan,
+        encoded,
+        error: creation_error,
+        diagnostics,
+    } = os::spawn(&spec, frame).map_err(|error| {
+        Box::new(RuntimeSpawnFailure {
+            error,
+            remaining: None,
+        })
+    })?;
+    let mut child = RuntimeChild {
+        state: Parent {
             native,
             events,
-            authorization,
+            authorization: Some(authorization),
+            nonce: spec.startup_nonce,
+            deadline: spec.deadline,
+            identity: None,
             detachment,
-            plan,
-            encoded,
-            error: creation_error,
+            lifetime: RuntimeLifetime::default(),
+            endpoint_notified: false,
+            commit_sent: false,
+            released: false,
             diagnostics,
-        } = os::spawn(&spec, frame).map_err(|error| {
-            Box::new(RuntimeSpawnFailure {
-                error,
-                remaining: None,
-            })
-        })?;
-        let mut child = RuntimeChild {
-            state: Parent {
-                native,
-                events,
-                authorization: Some(authorization),
-                nonce: spec.startup_nonce,
-                deadline: spec.deadline,
-                identity: None,
-                detachment,
-                lifetime: RuntimeLifetime::default(),
-                endpoint_notified: false,
-                commit_sent: false,
-                released: false,
-                diagnostics,
-            },
-        };
-        match child.state.admit(&spec, plan, &encoded, creation_error) {
-            Ok(identity) => Ok(RuntimeLaunch {
-                detachment: child.state.detachment,
-                child,
-                identity,
-            }),
-            Err(error) => Err(Box::new(RuntimeSpawnFailure {
-                error,
-                remaining: Some(child),
-            })),
-        }
+        },
+    };
+    match child.state.admit(&spec, plan, &encoded, creation_error) {
+        Ok(identity) => Ok(RuntimeLaunch {
+            detachment: child.state.detachment,
+            child,
+            identity,
+        }),
+        Err(error) => Err(Box::new(RuntimeSpawnFailure {
+            error,
+            remaining: Some(child),
+        })),
     }
-    fn commit_runtime(
-        mut child: RuntimeChild,
-        proof: RuntimeReadyProof,
-    ) -> Result<RuntimeReady, Box<RuntimeCommitFailure>> {
-        let result = (|| {
-            check(child.state.deadline)?;
-            child.wait_endpoint_publication()?;
-            let identity = child
+}
+pub fn commit_runtime(
+    mut child: RuntimeChild,
+    proof: RuntimeReadyProof,
+) -> Result<RuntimeReady, Box<RuntimeCommitFailure>> {
+    let result = (|| {
+        check(child.state.deadline)?;
+        child.wait_endpoint_publication()?;
+        let identity = child
+            .state
+            .identity
+            .as_ref()
+            .ok_or_else(|| input("runtime commit", "native identity not yet proved"))?;
+        if proof.startup_nonce != child.state.nonce
+            || &proof.owner != identity
+            || child.state.commit_sent
+        {
+            return Err(input(
+                "runtime commit",
+                "exact nonce/owner and uncommitted child required",
+            ));
+        }
+        os::alive(&child.state.native, identity)?;
+        endpoint_matches(&proof.endpoint, identity, child.state.deadline)?;
+        let mut command = [0; 33];
+        command[0] = b'C';
+        command[1..17].copy_from_slice(&proof.startup_nonce);
+        command[17..].copy_from_slice(&proof.host.0);
+        child.state.commit_sent = true;
+        os::write(
+            child
                 .state
-                .identity
-                .as_ref()
-                .ok_or_else(|| input("runtime commit", "native identity not yet proved"))?;
-            if proof.startup_nonce != child.state.nonce
-                || &proof.owner != identity
-                || child.state.commit_sent
-            {
-                return Err(input(
-                    "runtime commit",
-                    "exact nonce/owner and uncommitted child required",
-                ));
-            }
-            os::alive(&child.state.native, identity)?;
-            endpoint_matches(&proof.endpoint, identity, child.state.deadline)?;
-            let mut command = [0; 33];
-            command[0] = b'C';
-            command[1..17].copy_from_slice(&proof.startup_nonce);
-            command[17..].copy_from_slice(&proof.host.0);
-            child.state.commit_sent = true;
-            os::write(
-                child
-                    .state
-                    .authorization
-                    .as_mut()
-                    .ok_or_else(|| input("runtime commit", "authorization already closed"))?,
-                &command,
-                child.state.deadline,
-            )?;
-            let mut ack = [0; 33];
-            os::read(&mut child.state.events, &mut ack, child.state.deadline)?;
-            command[0] = b'A';
-            if ack != command {
-                return Err(input(
-                    "runtime commit",
-                    "child acknowledgment mismatch; reconcile ownership",
-                ));
-            }
-            Ok(RuntimeReady {
-                detachment: child.state.detachment,
-                lifetime: child.state.lifetime.clone(),
-                identity: identity.clone(),
-                host: proof.host,
-            })
-        })();
-        match result {
-            Ok(ready) => Ok(ready),
-            Err(error) => Err(Box::new(RuntimeCommitFailure { error, child })),
-        }
-    }
-    fn abort_runtime(child: &mut RuntimeChild) -> ProcResult<()> {
-        if child.state.commit_sent {
+                .authorization
+                .as_mut()
+                .ok_or_else(|| input("runtime commit", "authorization already closed"))?,
+            &command,
+            child.state.deadline,
+        )?;
+        let mut ack = [0; 33];
+        os::read(&mut child.state.events, &mut ack, child.state.deadline)?;
+        command[0] = b'A';
+        if ack != command {
             return Err(input(
-                "runtime abort",
-                "ownership commit may have enabled admission; reconcile the authenticated lease first",
+                "runtime commit",
+                "child acknowledgment mismatch; reconcile ownership",
             ));
         }
-        os::revoke(&child.state.events)?;
-        child.state.authorization = None;
-        os::abort(&mut child.state.native, child.state.identity.as_ref())
+        Ok(RuntimeReady {
+            detachment: child.state.detachment,
+            lifetime: child.state.lifetime.clone(),
+            identity: identity.clone(),
+            host: proof.host,
+        })
+    })();
+    match result {
+        Ok(ready) => Ok(ready),
+        Err(error) => Err(Box::new(RuntimeCommitFailure { error, child })),
     }
-    fn witness_runtime(child: &RuntimeChild) -> ProcResult<RuntimeExitObservation> {
-        let identity = child.state.identity.as_ref().ok_or_else(|| {
-            input(
-                "runtime exit",
-                "child native identity remains unproved; retain pending startup custody",
-            )
-        })?;
-        os::witness(&child.state.native, identity)
+}
+pub fn abort_runtime(child: &mut RuntimeChild) -> ProcResult<()> {
+    if child.state.commit_sent {
+        return Err(input(
+            "runtime abort",
+            "ownership commit may have enabled admission; reconcile the authenticated lease first",
+        ));
     }
-    fn release_runtime(child: &mut RuntimeChild, witness: &RuntimeExitWitness) -> ProcResult<()> {
-        if child.state.released || child.state.identity.as_ref() != Some(&witness.identity) {
-            return Err(input(
-                "runtime release",
-                "matching unreleased child and fresh exit witness required",
-            ));
-        }
-        if !matches!(
-            Self::witness_runtime(child)?,
-            RuntimeExitObservation::Exited(_)
-        ) {
-            return Err(input("runtime release", "exact child still running"));
-        }
-        os::release(&mut child.state.native)?;
-        child.state.released = true;
-        child.state.authorization = None;
-        Ok(())
+    os::revoke(&child.state.events)?;
+    child.state.authorization = None;
+    os::abort(&mut child.state.native, child.state.identity.as_ref())
+}
+pub fn witness_runtime(child: &RuntimeChild) -> ProcResult<RuntimeExitObservation> {
+    let identity = child.state.identity.as_ref().ok_or_else(|| {
+        input(
+            "runtime exit",
+            "child native identity remains unproved; retain pending startup custody",
+        )
+    })?;
+    os::witness(&child.state.native, identity)
+}
+pub fn release_runtime(child: &mut RuntimeChild, witness: &RuntimeExitWitness) -> ProcResult<()> {
+    if child.state.released || child.state.identity.as_ref() != Some(&witness.identity) {
+        return Err(input(
+            "runtime release",
+            "matching unreleased child and fresh exit witness required",
+        ));
     }
+    if !matches!(witness_runtime(child)?, RuntimeExitObservation::Exited(_)) {
+        return Err(input("runtime release", "exact child still running"));
+    }
+    os::release(&mut child.state.native)?;
+    child.state.released = true;
+    child.state.authorization = None;
+    Ok(())
 }
 
 /// Validate the launch request and build the child's startup frame. Nothing is

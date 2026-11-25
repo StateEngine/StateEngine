@@ -1,5 +1,5 @@
 use super::identity::*;
-use crate::runtime::notify::Hub;
+use crate::notify::Hub;
 use crate::support::*;
 use crate::*;
 use std::{

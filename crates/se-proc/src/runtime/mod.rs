@@ -1,6 +1,6 @@
 mod arena;
 mod launch_stop;
-pub(crate) mod notify;
+pub(crate) use se_native_proc::notify;
 mod observation;
 mod reboot;
 mod recovery;
@@ -90,6 +90,30 @@ impl NativeProcessRuntime {
         deadline: std::time::Instant,
     ) -> ProcResult<ProcessRead> {
         read_process_until(machine, pid, deadline)
+    }
+}
+
+impl NativeProcessApi for NativeProcessRuntime {
+    fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<ProcessRead> {
+        se_native_proc::read_process(machine, pid)
+    }
+    fn spawn_runtime(spec: RuntimeLaunchSpec) -> Result<RuntimeLaunch, Box<RuntimeSpawnFailure>> {
+        se_native_proc::bootstrap::spawn_runtime(spec)
+    }
+    fn commit_runtime(
+        child: RuntimeChild,
+        proof: RuntimeReadyProof,
+    ) -> Result<RuntimeReady, Box<RuntimeCommitFailure>> {
+        se_native_proc::bootstrap::commit_runtime(child, proof)
+    }
+    fn abort_runtime(child: &mut RuntimeChild) -> ProcResult<()> {
+        se_native_proc::bootstrap::abort_runtime(child)
+    }
+    fn witness_runtime(child: &RuntimeChild) -> ProcResult<RuntimeExitObservation> {
+        se_native_proc::bootstrap::witness_runtime(child)
+    }
+    fn release_runtime(child: &mut RuntimeChild, witness: &RuntimeExitWitness) -> ProcResult<()> {
+        se_native_proc::bootstrap::release_runtime(child, witness)
     }
 }
 
