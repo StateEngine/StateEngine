@@ -26,6 +26,12 @@ use se_types::API_VERSION;
 const BEGIN: &str = "<!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->";
 const END: &str = "<!-- END GENERATED: ops-inventory -->";
 const UPDATE: &str = "SE_OPS_INVENTORY_UPDATE";
+/// Design rows the CLI ships as transport commands outside the operation
+/// registry. `se mcp` is built directly in `se-cli-spec`'s root command.
+const TRANSPORTS: &[&str] = &["mcp.serve"];
+/// Registered rows compiled only with an optional cargo feature that the
+/// standard release archive (`scripts/release/inputs.json`) does not enable.
+const OPTIONAL_BUILD: &[(&str, &str)] = &[("store.import_node", "import")];
 
 fn docs_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/OPS.md")
@@ -219,6 +225,29 @@ fn effective_catalogue() -> Vec<&'static OpMeta> {
     rows
 }
 
+/// Notes for rows whose shipped surface differs from plain registration:
+/// optional-feature rows and transport commands built outside the registry.
+fn surface_notes(design_ops: &BTreeSet<String>) -> String {
+    let mut out = String::new();
+    for (name, feature) in OPTIONAL_BUILD {
+        out.push_str(&format!(
+            "\n`{name}` needs the optional `{feature}` build feature; the standard release archive does not enable it.\n"
+        ));
+    }
+    let transports: Vec<String> = TRANSPORTS
+        .iter()
+        .filter(|name| design_ops.contains(**name))
+        .map(|name| (*name).to_string())
+        .collect();
+    if !transports.is_empty() {
+        out.push_str(&format!(
+            "\nShipped as CLI transport commands outside the registry: {}\n",
+            join_names(&transports)
+        ));
+    }
+    out
+}
+
 fn render_block(md: &str) -> String {
     let (design_ops, design_tools) = design_tables(md);
     let rows = effective_catalogue();
@@ -230,7 +259,11 @@ fn render_block(md: &str) -> String {
             McpExposure::None { .. } => None,
         })
         .collect();
-    let planned_ops: Vec<String> = design_ops.difference(&registry_ops).cloned().collect();
+    let planned_ops: Vec<String> = design_ops
+        .difference(&registry_ops)
+        .filter(|name| !TRANSPORTS.contains(&name.as_str()))
+        .cloned()
+        .collect();
     let planned_tools: Vec<String> = design_tools.difference(&registry_tools).cloned().collect();
     let unlisted_ops: Vec<&OpMeta> = rows
         .iter()
@@ -271,6 +304,7 @@ fn render_block(md: &str) -> String {
             effect_name(meta.effect)
         ));
     }
+    out.push_str(&surface_notes(&design_ops));
     out.push_str(&format!(
         "\nPlanned operations (design tables, not yet registered): {}\n\n",
         if planned_ops.is_empty() {
