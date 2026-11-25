@@ -2,7 +2,7 @@
 //! journal is product recovery state, independent of client launch cleanup.
 use super::*;
 use se_proc::{Checkpoint, CheckpointKind, CheckpointPrincipal, RootPublication};
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use std::{io::Write, result::Result as StdResult};
 
@@ -55,91 +55,90 @@ pub struct RestartJournal {
     pub reply_sent: bool,
     pub settled: bool,
 }
-// `deny_unknown_fields` lives here so `#[serde(flatten)]` on `Journal::restart`
-// rejects any unknown field in the entire v1 flat JSON object.
-mod restart_wire {
-    use super::*;
-    type Restart = Option<RestartJournal>;
-    #[derive(Default, Serialize, Deserialize)]
-    #[serde(default, deny_unknown_fields)]
-    struct Wire {
-        restart_key: Option<String>,
-        restart_effect: Option<se_store::RecordId>,
-        restart_settled: bool,
-        restart_reply_sent: bool,
-        superseded_by_restart: bool,
-    }
-    pub fn serialize<S: Serializer>(v: &Restart, s: S) -> StdResult<S::Ok, S::Error> {
-        v.as_ref()
-            .map_or_else(Wire::default, |r| Wire {
-                restart_key: Some(r.key.clone()),
-                restart_effect: r.effect,
-                restart_settled: r.settled,
-                restart_reply_sent: r.reply_sent,
-                superseded_by_restart: true,
-            })
-            .serialize(s)
-    }
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> StdResult<Restart, D::Error> {
-        let w = Wire::deserialize(d)?;
-        let empty = w.restart_effect.is_none() && !w.restart_settled && !w.restart_reply_sent;
-        match (w.restart_key, w.superseded_by_restart) {
-            (None, false) if empty => Ok(None),
-            (Some(key), true) => Ok(Some(RestartJournal {
-                key,
-                effect: w.restart_effect,
-                reply_sent: w.restart_reply_sent,
-                settled: w.restart_settled,
-            })),
-            _ => Err(D::Error::custom(
-                "inconsistent SE Code restart custody fields",
-            )),
+fn wire_bool<'de, D: Deserializer<'de>>(d: D) -> StdResult<Option<bool>, D::Error> {
+    bool::deserialize(d).map(Some)
+}
+macro_rules! define_journal {
+    (before { $($(#[$ba:meta])* $bf:ident: $bt:ty,)* } after { $($(#[$aa:meta])* $af:ident: $at:ty,)* }) => {
+        #[derive(Clone, Serialize, Deserialize)]
+        #[serde(try_from = "JournalWire", into = "JournalWire")]
+        pub struct Journal { $(pub $bf: $bt,)* pub restart: Option<RestartJournal>, $(pub $af: $at,)* }
+        #[derive(Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct JournalWire {
+            $($(#[$ba])* $bf: $bt,)*
+            #[serde(default)] restart_key: Option<String>,
+            #[serde(default)] restart_effect: Option<se_store::RecordId>,
+            #[serde(default, deserialize_with = "wire_bool")] restart_settled: Option<bool>,
+            #[serde(default, deserialize_with = "wire_bool")] restart_reply_sent: Option<bool>,
+            #[serde(default, deserialize_with = "wire_bool")] superseded_by_restart: Option<bool>,
+            $($(#[$aa])* $af: $at,)*
         }
-    }
+        impl TryFrom<JournalWire> for Journal {
+            type Error = &'static str;
+            fn try_from(w: JournalWire) -> StdResult<Self, Self::Error> {
+                let (settled, reply_sent, superseded) = (
+                    w.restart_settled.unwrap_or(false),
+                    w.restart_reply_sent.unwrap_or(false),
+                    w.superseded_by_restart.unwrap_or(false),
+                );
+                let restart = match (w.restart_key, superseded) {
+                    (None, false) if w.restart_effect.is_none() && !settled && !reply_sent => None,
+                    (Some(key), true) => Some(RestartJournal { key, effect: w.restart_effect, reply_sent, settled }),
+                    _ => return Err("inconsistent SE Code restart custody fields"),
+                };
+                Ok(Self { $($bf: w.$bf,)* restart, $($af: w.$af,)* })
+            }
+        }
+        impl From<Journal> for JournalWire {
+            fn from(j: Journal) -> Self {
+                let (restart_key, restart_effect, s, r, sup) = match j.restart {
+                    None => (None, None, false, false, false),
+                    Some(v) => (Some(v.key), v.effect, v.settled, v.reply_sent, true),
+                };
+                Self {
+                    $($bf: j.$bf,)*
+                    restart_key, restart_effect,
+                    restart_settled: Some(s), restart_reply_sent: Some(r), superseded_by_restart: Some(sup),
+                    $($af: j.$af,)*
+                }
+            }
+        }
+    };
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Journal {
-    pub version: u16,
-    #[serde(default)]
-    pub retired: bool,
-    #[serde(default)]
-    pub lost: bool,
-    #[serde(default)]
-    pub stop_failure: Option<String>,
-    pub project: se_types::ProjectId,
-    pub agent: se_types::AgentId,
-    pub profile: NativePath,
-    pub session: se_types::SessionId,
-    pub vendor_session: String,
-    pub initial_input: String,
-    pub initial_sha256: se_types::Sha256,
-    pub initial_offered: InitialInputIntent,
-    pub session_create_attempted: bool,
-    pub policy_sha256: Option<se_types::Sha256>,
-    #[serde(default)]
-    pub previous_policy_sha256: Option<se_types::Sha256>,
-    #[serde(default)]
-    pub client_closed: Option<ClientClosed>,
-    #[serde(default)]
-    pub resume_release: Option<ResumeRelease>,
-    #[serde(default)]
-    pub input_free_resume: ResumeSupport,
-    pub notice: Option<Notice>,
-    #[serde(flatten, with = "restart_wire")]
-    pub restart: Option<RestartJournal>,
-    pub bootstrap: Option<Checkpoint>,
-    pub service: Option<Checkpoint>,
-    #[serde(default)]
-    pub retirement: Option<Checkpoint>,
-    #[serde(default)]
-    pub registration: Option<Vec<u8>>,
-    #[serde(default)]
-    pub server_sha256: Option<se_types::Sha256>,
-    pub endpoint: Option<String>,
-    pub identity: Option<se_harness::secode_process::ServiceIdentity>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capability_repair: Option<se_harness::secode_process::CapabilityRepair>,
+define_journal! {
+    before {
+        version: u16,
+        #[serde(default)] retired: bool,
+        #[serde(default)] lost: bool,
+        #[serde(default)] stop_failure: Option<String>,
+        project: se_types::ProjectId,
+        agent: se_types::AgentId,
+        profile: NativePath,
+        session: se_types::SessionId,
+        vendor_session: String,
+        initial_input: String,
+        initial_sha256: se_types::Sha256,
+        initial_offered: InitialInputIntent,
+        session_create_attempted: bool,
+        policy_sha256: Option<se_types::Sha256>,
+        #[serde(default)] previous_policy_sha256: Option<se_types::Sha256>,
+        #[serde(default)] client_closed: Option<ClientClosed>,
+        #[serde(default)] resume_release: Option<ResumeRelease>,
+        #[serde(default)] input_free_resume: ResumeSupport,
+        notice: Option<Notice>,
+    }
+    after {
+        bootstrap: Option<Checkpoint>,
+        service: Option<Checkpoint>,
+        #[serde(default)] retirement: Option<Checkpoint>,
+        #[serde(default)] registration: Option<Vec<u8>>,
+        #[serde(default)] server_sha256: Option<se_types::Sha256>,
+        endpoint: Option<String>,
+        identity: Option<se_harness::secode_process::ServiceIdentity>,
+        #[serde(default, skip_serializing_if = "Option::is_none")] capability_repair: Option<se_harness::secode_process::CapabilityRepair>,
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
