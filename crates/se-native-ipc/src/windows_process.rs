@@ -5,7 +5,7 @@ pub use se_state_files::windows_attributes::{self as attributes, Error};
 mod parent;
 mod process_query;
 pub use parent::parent;
-pub use process_query::{Query, maps_executable, query};
+pub use process_query::{Query, check_mapped_executable, maps_executable, query};
 use std::{
     collections::BTreeMap,
     io,

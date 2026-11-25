@@ -91,18 +91,36 @@ pub(super) fn observe(pid: u32, bound: &IpcIoBound) -> IpcNativeResult<NativeIpc
     }
     image.truncate(length as usize);
     let image = PathBuf::from(std::ffi::OsString::from_wide(&image));
-    let file = File::open(&image).map_err(|e| error("pin IPC peer executable", e))?;
+    let file = OpenOptions::new()
+        .read(true)
+        .access_mode(GENERIC_READ | FILE_EXECUTE | SYNCHRONIZE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+        .open(&image)
+        .map_err(|e| error("pin IPC peer executable", e))?;
     // Verify the opened file is actually mapped as the live peer's executable
     // section to prevent path-swap TOCTOU between QueryFullProcessImageNameW and open.
-    // SAFETY: `process` is a retained query-capable process handle pinned above.
-    if !unsafe { crate::windows_process::maps_executable(process.as_raw_handle(), &file) } {
-        return Err(process_error(
-            &process,
-            refuse(
-                IpcNativeErrorCode::PeerChanged,
-                "IPC peer executable path does not match the live process image mapping",
-            ),
-        ));
+    // SAFETY: `process` is a retained PROCESS_QUERY_INFORMATION handle pinned above.
+    match unsafe { crate::windows_process::check_mapped_executable(process.as_raw_handle(), &file) }
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(process_error(
+                &process,
+                refuse(
+                    IpcNativeErrorCode::PeerChanged,
+                    "IPC peer executable path does not match the live process image mapping",
+                ),
+            ));
+        }
+        Err(status) => {
+            return Err(process_error(
+                &process,
+                error(
+                    "verify IPC peer executable mapping",
+                    std::io::Error::from_raw_os_error(status),
+                ),
+            ));
+        }
     }
     let image_sha256 = hash_image(file, bound)?;
     // SAFETY: the query/synchronize process handle is retained above. Native
@@ -128,8 +146,9 @@ pub(super) fn observe(pid: u32, bound: &IpcIoBound) -> IpcNativeResult<NativeIpc
 }
 
 fn process_identity(pid: u32) -> IpcNativeResult<(OwnedHandle, String, NonZeroU64)> {
-    // SAFETY: query-only process pin, no inherited handle or native mutation.
-    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) };
+    // SAFETY: query-only process pin (PROCESS_QUERY_INFORMATION is required for
+    // ProcessImageFileMapping), no inherited handle or native mutation.
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, 0, pid) };
     if raw.is_null() {
         let mut cause = last("pin IPC peer process");
         // A positive PID supplied by the connected pipe can cease to be
