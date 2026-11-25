@@ -31,23 +31,6 @@ pub fn configure(
     };
     let mut changed = Vec::new();
     if kind == Kind::Codex {
-        let observed = codex_transport::observe(root)?;
-        let stripped = codex_transport::strip_owned_urls(&observed)?;
-        changed.extend(stripped.iter().map(|file| {
-            format!(
-                "removed a conflicting `url` from StateEngine's Codex MCP entry in {}",
-                file.display()
-            )
-        }));
-        let observed = if stripped.is_empty() {
-            observed
-        } else {
-            codex_transport::observe(root)?
-        };
-        if let Some(conflict) = observed.conflict() {
-            return Err(failure(&conflict));
-        }
-        changed.extend(observed.advisory().map(|note| format!("note: {note}")));
         // Codex has one user-wide MCP list: a custom home written to the shared login would
         // serve every project and break once that home is gone. An explicit CODEX_HOME is a
         // login chosen for this setup, so it is registered and checked as usual.
@@ -58,6 +41,19 @@ pub fn configure(
                 "Codex MCP settings apply to every project; to use this home with Codex",
             )?);
             return Ok(changed);
+        }
+        match codex_transport::observe(root)? {
+            codex_transport::Transports::Read(config) => {
+                if let Some(conflict) = config.conflict() {
+                    return Err(failure(&conflict));
+                }
+                changed.extend(config.advisory().map(|note| format!("note: {note}")));
+            }
+            codex_transport::Transports::Unreadable { file, reason } => changed.push(format!(
+                "note: {} could not be read ({reason}), so its Codex MCP entry was not checked \
+                 for a conflict; repair that file, then run `se doctor`",
+                file.display()
+            )),
         }
     }
     let command = configuration.provider_command(kind.provider().into());

@@ -4,7 +4,7 @@ use super::{Bootstrap, CheckFix, CheckState, DiagnosisCheck};
 use se_host::{
     adoption::Kind,
     provider_cli::{self, CliState},
-    provider_mcp::codex_transport::{self, Transports},
+    provider_mcp::codex_transport::{self, Config, Transports},
 };
 use se_types::RenderCx;
 
@@ -89,7 +89,7 @@ fn codex_mcp(at: &str) -> DiagnosisCheck {
         .map_err(|error| error.to_string())
         .and_then(|cwd| codex_transport::observe(&cwd).map_err(|error| error.body.message()));
     match observed {
-        Ok(read @ Transports::Read { .. }) => codex_entries(&mut value, &read),
+        Ok(Transports::Read(config)) => codex_entries(&mut value, &config),
         Ok(Transports::Unreadable { file, reason }) => {
             value.state = CheckState::Unmeasured;
             value.observed = Some(format!("{} could not be read: {reason}", file.display()));
@@ -102,10 +102,8 @@ fn codex_mcp(at: &str) -> DiagnosisCheck {
     value
 }
 
-fn codex_entries(value: &mut DiagnosisCheck, read: &Transports) {
-    let Transports::Read { files, .. } = read else {
-        return;
-    };
+fn codex_entries(value: &mut DiagnosisCheck, read: &Config) {
+    let files = &read.files;
     let mut problems: Vec<String> = read.conflict().into_iter().collect();
     problems.extend(read.stale());
     if let Some((command, url)) = read.split() {
