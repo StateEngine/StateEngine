@@ -824,6 +824,7 @@ mod windows_stdio_boundary {
         use std::os::windows::io::{AsRawHandle, AsRawSocket, FromRawHandle, OwnedHandle};
         use windows_sys::Win32::Foundation::{
             DUPLICATE_SAME_ACCESS, DuplicateHandle, GetHandleInformation, HANDLE_FLAG_INHERIT,
+            SetHandleInformation,
         };
         use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
@@ -869,6 +870,61 @@ mod windows_stdio_boundary {
             .err()
             .ok_or("pipe handle accepted as job capability")?;
         assert_eq!(err.code, ProcErrorCode::InvalidInput);
+        assert!(
+            format!("{:?}", err.detail).contains("the original inherited job capability"),
+            "unexpected detail: {:?}",
+            err.detail
+        );
+
+        // 2. pid == 0 with an inheritable wrong-kind handle is refused before GetProcessId.
+        let mut zero_root = root.clone();
+        zero_root.pid = se_native_proc::ProcessId(0);
+        let zero_req = serde_json::json!({
+            "root": &zero_root,
+            "root_handle": pipe_inh.as_raw_handle() as usize as u64,
+            "job_handle": proc_inh.as_raw_handle() as usize as u64,
+        })
+        .to_string();
+        let err = se_native_proc::console_interrupt_entry(OsString::from(zero_req).as_os_str())
+            .err()
+            .ok_or("pid == 0 request accepted")?;
+        assert_eq!(err.code, ProcErrorCode::InvalidInput);
+        assert!(
+            format!("{:?}", err.detail).contains("nonzero pid"),
+            "unexpected detail: {:?}",
+            err.detail
+        );
+
+        // 3. Explicitly inheritable Winsock socket passes HANDLE_FLAG_INHERIT and is refused
+        //    at the Process kind pre-check before DuplicateHandle without harming the listener.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let raw_sock = listener.as_raw_socket() as *mut std::ffi::c_void;
+        // SAFETY: setting HANDLE_FLAG_INHERIT on our live owned test socket; cleared before drop.
+        let set_ok =
+            unsafe { SetHandleInformation(raw_sock, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+        assert_ne!(set_ok, 0);
+        let sock_req = serde_json::json!({
+            "root": &root,
+            "root_handle": raw_sock as usize as u64,
+            "job_handle": pipe_inh.as_raw_handle() as usize as u64,
+        })
+        .to_string();
+        let sock_res =
+            se_native_proc::console_interrupt_entry(OsString::from(sock_req).as_os_str());
+        // SAFETY: restoring non-inheritable flag on our live owned test socket.
+        let restored = unsafe { SetHandleInformation(raw_sock, HANDLE_FLAG_INHERIT, 0) };
+        assert_ne!(restored, 0, "socket handle was closed or corrupted");
+        let err = sock_res
+            .err()
+            .ok_or("inheritable socket accepted as process capability")?;
+        assert_eq!(err.code, ProcErrorCode::InvalidInput);
+        assert!(
+            format!("{:?}", err.detail).contains("the original inherited process capability"),
+            "socket did not reach Process kind pre-check: {:?}",
+            err.detail
+        );
+        let _ = listener.local_addr()?;
+
         for (h, label) in [(&proc_inh, "process"), (&pipe_inh, "pipe")] {
             let mut flags = 0;
             // SAFETY: querying flags on a live owned handle.
@@ -876,20 +932,6 @@ mod windows_stdio_boundary {
             assert_ne!(ok, 0, "{label} handle was closed");
             assert_ne!(flags & HANDLE_FLAG_INHERIT, 0, "{label} flag was mutated");
         }
-
-        // 2. Winsock socket handle is refused before DuplicateHandle without harming the listener.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-        let sock_req = serde_json::json!({
-            "root": &root,
-            "root_handle": listener.as_raw_socket() as usize as u64,
-            "job_handle": pipe_inh.as_raw_handle() as usize as u64,
-        })
-        .to_string();
-        let err = se_native_proc::console_interrupt_entry(OsString::from(sock_req).as_os_str())
-            .err()
-            .ok_or("socket handle accepted as process capability")?;
-        assert_eq!(err.code, ProcErrorCode::InvalidInput);
-        let _ = listener.local_addr()?;
         Ok(())
     }
 }

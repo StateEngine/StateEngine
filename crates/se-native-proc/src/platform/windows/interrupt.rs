@@ -141,9 +141,9 @@ enum InheritedKind {
 fn verify_inherited_kind(raw: HANDLE, kind: InheritedKind) -> ProcResult<()> {
     match kind {
         InheritedKind::Process(pid) => {
-            // SAFETY: `raw` is a validated open handle; `GetProcessId` is a read-only
-            // kernel `PsProcessType` check that rejects sockets/non-processes without mutation.
-            if unsafe { GetProcessId(raw) } != pid {
+            // SAFETY: `raw` is a validated open handle; `GetProcessId` returns 0 on non-processes.
+            let got = unsafe { GetProcessId(raw) };
+            if pid == 0 || got == 0 || got != pid {
                 return Err(input(
                     "console helper",
                     "the original inherited process capability",
@@ -151,8 +151,7 @@ fn verify_inherited_kind(raw: HANDLE, kind: InheritedKind) -> ProcResult<()> {
             }
         }
         InheritedKind::Job => {
-            // SAFETY: `raw` is a validated open handle; `QueryInformationJobObject` is a
-            // read-only kernel `PsJobType` check that rejects sockets/non-jobs without mutation.
+            // SAFETY: `raw` is a validated open handle; `query_limits` rejects non-job handles.
             unsafe { crate::windows_native::job::query_limits(raw, "verify inherited job") }
                 .map_err(|_| input("console helper", "the original inherited job capability"))?;
         }
@@ -207,9 +206,9 @@ fn inherited(selector: u64, kind: InheritedKind) -> ProcResult<Handle> {
     unsafe { Handle::new(dup, "own inherited console capability") }
 }
 
-/// Private helper entry. Identity text grants no rights: the native creator
-/// passes query-only process/job capabilities through the explicit handle list.
-/// Prove every attached process belongs to that exact job before broadcasting.
+/// Private subprocess startup entry invoked once from `main()` with capabilities
+/// inherited via `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. Proves nonzero PID, distinct
+/// Process/Job kinds before `DuplicateHandle`, and exact job membership before Ctrl+C.
 pub fn console_interrupt_entry(request: &OsStr) -> ProcResult<StopDispatch> {
     let request = request
         .to_str()
@@ -217,10 +216,10 @@ pub fn console_interrupt_entry(request: &OsStr) -> ProcResult<StopDispatch> {
         .ok_or_else(|| input("console helper", "one bounded UTF-8 identity"))?;
     let request: Request = serde_json::from_str(request)
         .map_err(|_| input("console helper", "the closed native console request"))?;
-    if request.root_handle == request.job_handle {
+    if request.root.pid.0 == 0 || request.root_handle == request.job_handle {
         return Err(input(
             "console helper",
-            "distinct inherited process and job capabilities required",
+            "nonzero pid and distinct inherited capabilities required",
         ));
     }
     let root = inherited(
@@ -228,9 +227,9 @@ pub fn console_interrupt_entry(request: &OsStr) -> ProcResult<StopDispatch> {
         InheritedKind::Process(request.root.pid.0),
     )?;
     let job = inherited(request.job_handle, InheritedKind::Job)?;
-    // Re-verify on the owned duplicate to close any concurrent handle-reuse race.
-    // SAFETY: retained duplicated process capability; the kernel validates kind.
-    if unsafe { GetProcessId(root.0) } != request.root.pid.0 {
+    // SAFETY: retained duplicated process capability; re-check PID on owned handle.
+    let got_pid = unsafe { GetProcessId(root.0) };
+    if got_pid == 0 || got_pid != request.root.pid.0 {
         return Err(input(
             "console helper",
             "the original inherited process capability",
