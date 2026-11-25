@@ -8,7 +8,7 @@ mod host_guard;
 #[path = "../../test-support/provider_home.rs"]
 mod provider_home;
 use se_store::*;
-use se_types::{AgentId, LifecycleId};
+use se_types::{AgentId, EventId, LifecycleId, SessionId};
 use sha2::{Digest, Sha256};
 use std::{
     path::Path,
@@ -62,22 +62,11 @@ fn checked(
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 
-/// Protects: invalid hook credentials refuse before reading stdin or starting a
-/// host; current Prepared/Active credentials still reach native payload parsing.
-#[expect(
-    clippy::cognitive_complexity,
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-fn check_case(case: &str) -> Check {
-    se_proc::initialize_file_creation_owner()?;
-    let mut f = std::mem::ManuallyDrop::new(Fixture::new()?);
-    println!(
-        "hook review case={case} retained-on-failure={}",
-        f.home.display()
-    );
-    let root = f.home.join("repository");
-    std::fs::create_dir(&root)?;
+fn init_hook_fixture(
+    f: &mut Fixture,
+    root: &Path,
+) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    std::fs::create_dir(root)?;
     let source = std::env::var_os("SE_HOOK_REVIEW_SE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_se").into());
@@ -93,8 +82,8 @@ fn check_case(case: &str) -> Check {
     let image = source;
     let initialized = checked(
         &image,
-        &f,
-        &root,
+        f,
+        root,
         "init",
         &[
             "init",
@@ -123,19 +112,19 @@ fn check_case(case: &str) -> Check {
         .ok_or("agent id")?
         .parse()?;
     use_ephemeral_listen_port(&f.options.state_directory)?;
-    // Later hook commands can auto-start a runtime again; stop it on any exit.
-    let mut down = command(&image, &f, &root);
-    down.arg("down");
-    let _host_guard = host_guard::HostGuard::arm(down, &f.options.state_directory, false)?;
+    Ok(image)
+}
+
+fn cycle_initial_host(image: &Path, f: &Fixture, root: &Path) -> Check {
     #[cfg(windows)]
     let host_child = foreground_host::ForegroundHost::start(
-        command(&image, &f, &root),
+        command(image, f, root),
         &f.options.state_directory,
     )?;
     #[cfg(windows)]
     let up = host_child.ready().clone();
     #[cfg(not(windows))]
-    let up = checked(&image, &f, &root, "up", &["up"])?;
+    let up = checked(image, f, root, "up", &["up"])?;
     let pid = u32::try_from(up["process"]["pid"].as_u64().ok_or("host PID absent")?)?;
     let native = se_proc::read_process(
         se_types::MachineId::new("hook-review")?,
@@ -145,7 +134,7 @@ fn check_case(case: &str) -> Check {
     let se_proc::ProcessRead::Present(original) = native else {
         return Err("started host is absent".into());
     };
-    let output = command(&image, &f, &root).arg("down").output_executable()?;
+    let output = command(image, f, root).arg("down").output_executable()?;
     std::fs::write(f.home.join("down.stdout"), &output.stdout)?;
     std::fs::write(f.home.join("down.stderr"), &output.stderr)?;
     // Seed sessions only after the public shutdown succeeds and the outside
@@ -194,6 +183,62 @@ fn check_case(case: &str) -> Check {
         .open(f.options.state_directory.join("runtime.lock"))?;
     lock.try_lock()?;
     drop(lock);
+    Ok(())
+}
+
+fn seed_stop_unproved(
+    f: &Fixture,
+    writer: &mut HostAppender,
+    lease: &Lease,
+    id: &SessionId,
+    primary_event: EventId,
+) -> Check {
+    let mut identity = process::identity(&f.a)?;
+    identity.session = Some(id.clone());
+    writer.append(
+        f.batch(
+            f.owner_project(),
+            Some(fixture::request(&format!(
+                "fixture-hook_session_independent-245-{}",
+                serial()
+            ))?),
+            vec![process::registration(&identity, ProcessState::Starting)],
+        )?,
+        lease,
+    )?;
+    writer.append(
+        f.batch(
+            f.owner_project(),
+            Some(fixture::request(&format!(
+                "fixture-hook_session_independent-253-{}",
+                serial()
+            ))?),
+            vec![
+                process::transition(
+                    &identity,
+                    1,
+                    ProcessState::Starting,
+                    ProcessState::StopRequested,
+                    primary_event.clone(),
+                )?,
+                process::transition(
+                    &identity,
+                    2,
+                    ProcessState::StopRequested,
+                    ProcessState::StopUnproved,
+                    primary_event,
+                )?,
+            ],
+        )?,
+        lease,
+    )?;
+    Ok(())
+}
+
+fn seed_session_case(
+    f: &mut Fixture,
+    case: &str,
+) -> Result<(SqliteReader, SessionId), Box<dyn std::error::Error>> {
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
     f.store = reader.info()?.id;
     let lease = Lease::acquire(
@@ -201,23 +246,7 @@ fn check_case(case: &str) -> Check {
         LeaseMode::Host,
         Some(f.store.clone()),
     )?;
-    let host = present(SqliteFactory::open_host(&f.options, &*lease)?)?;
-    let owner = host.start_writer(
-        WriterOptions {
-            maximum_requests: std::num::NonZeroU16::new(4).ok_or("request capacity")?,
-            queue_requests: std::num::NonZeroU16::new(8).ok_or("queue capacity")?,
-            resident_bytes: std::num::NonZeroU32::new(1048576).ok_or("resident capacity")?,
-            group_bytes: std::num::NonZeroU32::new(1048576).ok_or("group capacity")?,
-        },
-        lease.clone(),
-    )?;
-    let mut writer = HostAppender {
-        client: owner.client(),
-        owner,
-        runtime: tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?,
-    };
+    let mut writer = HostAppender::open(f, &lease)?;
     let id = session::session()?;
     let credential = session::record()?;
     let token =
@@ -228,7 +257,7 @@ fn check_case(case: &str) -> Check {
             .as_micros(),
     )?;
     let mut bodies = vec![
-        session::prepared(&f, &id, &f.a),
+        session::prepared(f, &id, &f.a),
         EventBody::CredentialIssued {
             credential,
             session: id.clone(),
@@ -268,7 +297,7 @@ fn check_case(case: &str) -> Check {
         });
     }
     if case == "superseded" {
-        bodies.push(session::prepared(&f, &session::session()?, &f.a));
+        bodies.push(session::prepared(f, &session::session()?, &f.a));
     }
     let receipt = writer.append(
         f.batch(
@@ -282,45 +311,7 @@ fn check_case(case: &str) -> Check {
         &lease,
     )?;
     if case == "stop-unproved" {
-        let mut identity = process::identity(&f.a)?;
-        identity.session = Some(id.clone());
-        writer.append(
-            f.batch(
-                f.owner_project(),
-                Some(fixture::request(&format!(
-                    "fixture-hook_session_independent-245-{}",
-                    serial()
-                ))?),
-                vec![process::registration(&identity, ProcessState::Starting)],
-            )?,
-            &lease,
-        )?;
-        writer.append(
-            f.batch(
-                f.owner_project(),
-                Some(fixture::request(&format!(
-                    "fixture-hook_session_independent-253-{}",
-                    serial()
-                ))?),
-                vec![
-                    process::transition(
-                        &identity,
-                        1,
-                        ProcessState::Starting,
-                        ProcessState::StopRequested,
-                        receipt.primary_event.clone(),
-                    )?,
-                    process::transition(
-                        &identity,
-                        2,
-                        ProcessState::StopRequested,
-                        ProcessState::StopUnproved,
-                        receipt.primary_event,
-                    )?,
-                ],
-            )?,
-            &lease,
-        )?;
+        seed_stop_unproved(f, &mut writer, &lease, &id, receipt.primary_event)?;
     }
     writer.close()?;
     drop(lease);
@@ -332,8 +323,19 @@ fn check_case(case: &str) -> Check {
     if matches!(case, "expired" | "deadline") {
         std::thread::sleep(Duration::from_millis(3200));
     }
+    Ok((reader, id))
+}
+
+fn verify_hook_prefilter(
+    image: &Path,
+    f: &Fixture,
+    root: &Path,
+    case: &str,
+    id: &SessionId,
+    reader: &SqliteReader,
+) -> Check {
     let before = reader.info()?.head;
-    let mut child = command(&image, &f, &root)
+    let mut child = command(image, f, root)
         .args(["hook", "claude", "stop"])
         .env("SE_SESSION", id.as_str())
         .stdin(Stdio::piped())
@@ -390,6 +392,27 @@ fn check_case(case: &str) -> Check {
         before,
         "{case}: read-only prefilter changed durable facts"
     );
+    Ok(())
+}
+
+/// Protects: invalid hook credentials refuse before reading stdin or starting a
+/// host; current Prepared/Active credentials still reach native payload parsing.
+fn check_case(case: &str) -> Check {
+    se_proc::initialize_file_creation_owner()?;
+    let mut f = std::mem::ManuallyDrop::new(Fixture::new()?);
+    println!(
+        "hook review case={case} retained-on-failure={}",
+        f.home.display()
+    );
+    let root = f.home.join("repository");
+    let image = init_hook_fixture(&mut f, &root)?;
+    // Later hook commands can auto-start a runtime again; stop it on any exit.
+    let mut down = command(&image, &f, &root);
+    down.arg("down");
+    let _host_guard = host_guard::HostGuard::arm(down, &f.options.state_directory, false)?;
+    cycle_initial_host(&image, &f, &root)?;
+    let (reader, id) = seed_session_case(&mut f, case)?;
+    verify_hook_prefilter(&image, &f, &root, case, &id, &reader)?;
     drop(reader);
     println!(
         "PASS hook session {case}: stdin ordering, absent endpoint and unchanged durable head"
@@ -417,6 +440,28 @@ struct HostAppender {
     runtime: tokio::runtime::Runtime,
 }
 impl HostAppender {
+    fn open(
+        f: &Fixture,
+        lease: &std::sync::Arc<Lease>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let host = present(SqliteFactory::open_host(&f.options, &**lease)?)?;
+        let owner = host.start_writer(
+            WriterOptions {
+                maximum_requests: std::num::NonZeroU16::new(4).ok_or("request capacity")?,
+                queue_requests: std::num::NonZeroU16::new(8).ok_or("queue capacity")?,
+                resident_bytes: std::num::NonZeroU32::new(1048576).ok_or("resident capacity")?,
+                group_bytes: std::num::NonZeroU32::new(1048576).ok_or("group capacity")?,
+            },
+            lease.clone(),
+        )?;
+        Ok(Self {
+            client: owner.client(),
+            owner,
+            runtime: tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?,
+        })
+    }
     fn append(
         &mut self,
         batch: AtomicBatch,
