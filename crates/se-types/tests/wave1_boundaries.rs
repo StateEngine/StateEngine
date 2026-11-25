@@ -9,28 +9,29 @@ type Check = Result<(), Box<dyn Error>>;
 
 /// Protects: C1 — canonical storage bytes round-trip without minting legacy keys.
 #[test]
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn typed_ids_keep_canonical_bytes_and_legacy_spelling_distinct() -> Check {
+    // Each kind's checks run in their own block-scoped function.
     macro_rules! canonical {
-        ($($kind:ty),+ $(,)?) => {$(
-            let id = <$kind>::from_parts(0x0192_f3b5_0000, [0xab; 10])?;
-            let bytes = id.canonical_bytes()?.ok_or("missing canonical bytes")?;
-            assert_eq!(bytes[6] >> 4, 7);
-            assert_eq!(bytes[8] >> 6, 2);
-            assert_eq!(<$kind>::from_bytes(bytes)?, id);
-            let decoded: $kind = serde_json::from_str(&serde_json::to_string(&id)?)?;
-            assert_eq!(decoded.canonical_bytes()?, Some(bytes));
-            let mut wrong_version = bytes;
-            wrong_version[6] = (wrong_version[6] & 15) | 0x40;
-            assert!(<$kind>::from_bytes(wrong_version).is_err());
-            let mut wrong_variant = bytes;
-            wrong_variant[8] &= 0x3f;
-            assert!(<$kind>::from_bytes(wrong_variant).is_err());
-            assert!(<$kind>::from_parts(1 << 48, [0; 10]).is_err());
-        )+};
+        ($($kind:ty),+ $(,)?) => {$({
+            fn roundtrip() -> Check {
+                let id = <$kind>::from_parts(0x0192_f3b5_0000, [0xab; 10])?;
+                let bytes = id.canonical_bytes()?.ok_or("missing canonical bytes")?;
+                assert_eq!(bytes[6] >> 4, 7);
+                assert_eq!(bytes[8] >> 6, 2);
+                assert_eq!(<$kind>::from_bytes(bytes)?, id);
+                let decoded: $kind = serde_json::from_str(&serde_json::to_string(&id)?)?;
+                assert_eq!(decoded.canonical_bytes()?, Some(bytes));
+                let mut wrong_version = bytes;
+                wrong_version[6] = (wrong_version[6] & 15) | 0x40;
+                assert!(<$kind>::from_bytes(wrong_version).is_err());
+                let mut wrong_variant = bytes;
+                wrong_variant[8] &= 0x3f;
+                assert!(<$kind>::from_bytes(wrong_variant).is_err());
+                assert!(<$kind>::from_parts(1 << 48, [0; 10]).is_err());
+                Ok(())
+            }
+            roundtrip()?;
+        })+};
     }
     canonical!(
         ProjectId,
@@ -68,11 +69,12 @@ fn typed_ids_keep_canonical_bytes_and_legacy_spelling_distinct() -> Check {
 
 /// Protects: C1 — persisted generations and opaque/hash schemas match input limits.
 #[test]
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn persisted_value_limits_agree_with_their_wire_schemas() -> Check {
+    generation_limits_agree()?;
+    opaque_text_limits_agree()?;
+    hash_limits_agree()
+}
+fn generation_limits_agree() -> Check {
     for value in [
         json!(0),
         json!(-1),
@@ -96,6 +98,9 @@ fn persisted_value_limits_agree_with_their_wire_schemas() -> Check {
         assert_eq!(schema["minimum"], 1);
         assert_eq!(schema["maximum"], i64::MAX);
     }
+    Ok(())
+}
+fn opaque_text_limits_agree() -> Check {
     for value in ["", "has space", "line\n", "\u{7f}", "é"] {
         assert!(Cursor::new(value).is_err());
         assert!(serde_json::from_value::<Cursor>(json!(value)).is_err());
@@ -109,6 +114,9 @@ fn persisted_value_limits_agree_with_their_wire_schemas() -> Check {
     assert_eq!(schema["pattern"], "^[!-~]+$");
     let schema = serde_json::to_value(schemars::schema_for!(BootId))?;
     assert_eq!(schema["maxLength"], 256);
+    Ok(())
+}
+fn hash_limits_agree() -> Check {
     let hash = Sha256::parse_hex(&"ab".repeat(32))?;
     assert_eq!(serde_json::to_value(hash)?, "ab".repeat(32));
     assert!(Sha256::parse_hex(&"AB".repeat(32)).is_err());
