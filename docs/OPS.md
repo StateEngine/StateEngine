@@ -4,9 +4,11 @@ This is the shipped Rust product's operation inventory. CLI, MCP, IPC and linked
 
 ## Remote machine connections
 
-The optional remote adapter exposes `remote.list`, `remote.watch` and
-`remote.send` through CLI and MCP. Both use the source host's shared machine
-connection and preserve its admitted calling agent. Narrow remote authority
+The optional remote adapter, included in the standard release archive, exposes
+`remote.list`, `remote.watch`, `remote.send` and `remote.launch` through CLI and
+MCP. They use the source host's shared machine connection and preserve its
+admitted calling agent. Owner-only machine setup, transport removal and session
+administration are CLI commands with no MCP tool. Narrow remote authority
 never becomes a local human or agent principal.
 
 | Operation | CLI | MCP | Authority/effect |
@@ -28,7 +30,8 @@ remain separate from the native CLI and MCP consumers.
 
 Launch agents with ordinary `se launch AGENT` on each host. A lead agent on the
 source uses its admitted remote MCP tools to list, watch and send to the
-destination agents. The machine connection grants no remote launch operation.
+destination agents. A machine grant alone does not include launch: `remote.launch`
+also needs the destination Owner's separate launch consent for that agent.
 
 For a matched terminal comparison, run `se watch --target PROJECT-ID/AGENT-ID`
 on the destination and `se remote watch --host NAME --target PROJECT-ID/AGENT-ID`
@@ -114,7 +117,7 @@ Plain `se init` (including `--repo DIR`) is managed setup and writes nothing ins
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `runtime.up` | `up [--foreground]` | none — starts the service hosting tools, not a tool in that service | owner | custody | foreground/background choice, selected home | `RuntimeStart`: generation, endpoint, exact owner instance and readiness/pending/refusal facts | J2–J4 |
 | `runtime.down` | `down` | none — runtime shutdown is owner administration | owner | custody | current runtime generation/owned instance resolved from protected state | `RuntimeStop`: drain/flush and outside stop witness; every owned agent scope stops on all OSes, achieved facts and original-conversation resume argv are printed; partial stop remains incomplete | J3, J5 |
-| `mcp.serve` | `mcp [--stdio]` | none — transport lifecycle, not a recursively callable tool | owner | custody | stdio transport choice; per-call session credentials arrive through the protocol | `McpStream`: negotiated JSON-RPC connection, catalogue and typed results; explicit push-unavailable state without a host | planned J2–J4 |
+| `mcp.serve` | `mcp [--stdio]` (CLI transport outside the registry) | none — transport lifecycle, not a recursively callable tool | owner | custody | stdio transport choice; per-call session credentials arrive through the protocol | `McpStream`: negotiated JSON-RPC connection, catalogue and typed results; explicit push-unavailable state without a host | J2–J4 |
 | `mcp.token` | `mcp token` | none — native header-helper output must not enter model context | either | write | protected launch/session authority or verified owner credential; no secret argv | `AuthorizationHeaders`: renewable bearer returned only to the authenticated helper, never logged; expiry/scope are recorded privately | planned J2–J4 |
 | `agent.list` | `agent list` | none — owner overview; bound agents use status for their own state | owner | read | project selection, page | `Page<AgentSummary>`: stable IDs, names, provider/session/resume facts | J2–J4 |
 | `agent.create` | `agent add NAME [--provider PROVIDER --model MODEL]` | `stateengine_agent_create` | either | write | new display name, provider/model and saved safe profile; session needs its current `agent.<A>.can-create` grant; creator comes from authority | `AgentReceipt`: new or idempotently existing identity, immutable creator ID and profile; no process-start claim | J2, J4 |
@@ -191,7 +194,7 @@ Library lifecycle methods (`open`, capability verification, tool catalogue/call,
 | `store.restore` | `restore` | none — separate human-only history recovery | owner | write; custody for affected agents | required key; printed newest verified valid automatic backup, exact agents/credentials affected and events lost; human-presence check | `RestoreResult`: preserved corrupt source, independently verified restored store, lost interval/count or explicit unknown/refusal; no salvage | planned, support J3, J5 |
 | `credential.rotate` | `credential rotate` | none — separate human-only credential replacement | owner | write; custody for affected sessions | required key, printed exact credential/session consequences, human-presence check | `CredentialRotation`: revoked sessions and new credential readback; never an implicit config repair | planned, support J3, J5 |
 | `installation.uninstall` | `uninstall` | none — human-only installation removal | owner | custody | required key, printed owned install/integration/PATH plan and affected agents/credentials, human-presence check | `UninstallResult`: exact stops/revocations, removed owned files/integrations and restored managed PATH, independent fresh-shell readback; repositories/history preserved | J5 |
-| `store.import_node` | `import --from-node PATH` | none — explicit owner migration of historical data | owner | write | original Node state root, supported format versions, import identity; no executable callbacks | `ImportReceipt`: source provenance, imported/deduplicated/rejected counts, omissions and resume-binding results; originals retained | support J2–J4 |
+| `store.import_node` | `import --from-node PATH` (optional `import` build feature; not in the standard release archive) | none — explicit owner migration of historical data | owner | write | original Node state root, supported format versions, import identity; no executable callbacks | `ImportReceipt`: source provenance, imported/deduplicated/rejected counts, omissions and resume-binding results; originals retained | support J2–J4 |
 | `store.forget` | `forget --event ID [--event ID...] [--yes]` | none — human-only irreversible secret erasure | owner | write | required key, explicit captured-record IDs/revisions, printed erase plan, which `--yes` confirms, and human-presence check; no typed-ID prompt; no broad text selector | `ErasureReceipt`: erased bodies and derived copies, preserved non-secret audit fact, backup/residual-copy limitations or honest refusal | support J3, J5 |
 | `atlas.find` | `atlas find QUERY` | `stateengine_atlas_find` | either | read | name/text query, scope, limit/budget | `Page<CodeHit>`: path/line/kind pointers, symbol/text method, coverage and index state | optional J2–J4 |
 | `atlas.refs` | `atlas refs SYMBOL` | `stateengine_atlas_refs` | either | read | typed symbol/path selector, page | `Page<Reference>`: import/call/type sites, enclosing symbol, resolved/name-only confidence and omissions | optional J2–J4 |
@@ -255,7 +258,7 @@ This table is compatibility metadata, **not executable aliases**. Recognized old
 | `floor-event` | `history --event ID` |
 | `capture-status`; `context`; `init --status` | `status` |
 | `working-state-show`; `working-state-set` | `working-state`; `working-state set TEXT --expect REV` |
-| MCP `identity_whoami`, `project_status`, `context_packet`, `working_state_get`, `rawlog_search` / `memory_recall`, `floor_event`, `seat_launch`, `seat_stop`, `seat_launch_status`, `atlas_query` (all prefixed `stateengine_`) | corresponding `whoami`, `status`, `resume`, `resume`, `search`, `event_read`, `agent_launch`, `agent_stop`, `agent_status`, `atlas_find` tool; corrected arguments required |
+| MCP `identity_whoami`, `project_status`, `context_packet`, `working_state_get`, `rawlog_search` / `memory_recall`, `floor_event`, `seat_launch`, `seat_stop`, `seat_launch_status`, `atlas_query` (all prefixed `stateengine_`) | corresponding `whoami`, `status`, `resume`, `resume`, `search`, `event_read`, `agent_launch`, `agent_stop`, `status`, `atlas_find` tool (no per-agent status tool is registered yet; owners use CLI `agent show AGENT`); corrected arguments required |
 | MCP `stateengine_agent_rename`; `stateengine_tools` call proxy | owner CLI `agent rename AGENT NAME`; native tools/list and direct allowed tool calls, respectively |
 
 The CLI retains replacement hints only for commands with a supported replacement above. Other obsolete inputs go through the current generated grammar and receive its ordinary unknown-command or unknown-flag refusal with current help, before opening state. No catalog of obsolete operator commands is compiled into the CLI. No old MCP tool is advertised, and no unlisted command/tool, legacy actor/root flag, environment switch or Node module name grants another operation.
@@ -279,7 +282,7 @@ Crew can omit the recipient for a `question`, `blocker`, or `done` message to se
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 62 operations (56 core, 6 Atlas), 32 MCP tools (27 core, 5 Atlas). Planned: 6 operations, 2 MCP tools.
+Registered: 62 operations (56 core, 6 Atlas), 32 MCP tools (27 core, 5 Atlas). Planned: 5 operations, 2 MCP tools.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -346,7 +349,11 @@ Registered: 62 operations (56 core, 6 Atlas), 32 MCP tools (27 core, 5 Atlas). P
 | `config.set` | config set | none | owner | write |
 | `config.list` | config list | none | owner | read |
 
-Planned operations (design tables, not yet registered): `credential.rotate`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`
+`store.import_node` needs the optional `import` build feature; the standard release archive does not enable it.
+
+Shipped as CLI transport commands outside the registry: `mcp.serve`
+
+Planned operations (design tables, not yet registered): `credential.rotate`, `mcp.token`, `session.begin`, `session.end`, `session.turn`
 
 Planned MCP tools: `stateengine_agent_status`, `stateengine_session_turn`
 <!-- END GENERATED: ops-inventory -->
