@@ -5,11 +5,10 @@ from pathlib import Path
 import re
 import subprocess
 
-# Linux-only tools, and sources whose names mark them as compiled out of Windows.
+# Sources whose names mark them as compiled out of Windows.
 # A misnamed ungated file still fails on main, which always runs Windows.
 NOT_WINDOWS = re.compile(
-    r"factory/ci/box/.*"
-    r"|crates/[^/]+/src/(.*/)?(linux|macos|unix)(/.*|\.rs)"
+    r"crates/[^/]+/src/(.*/)?(linux|macos|unix)(/.*|\.rs)"
     r"|crates/[^/]+/src/.*_(linux|macos|unix)\.rs"
 )
 

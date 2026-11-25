@@ -153,7 +153,7 @@ Invoke-ProviderFixture -Words @('init')
     def test_repository_has_no_direct_unchecked_init_spawn(self):
         candidates = [*ROOT.glob("crates/*/tests"), ROOT / "scripts/ci",
                       ROOT / "scripts/harness_matrix", ROOT / "scripts/windows_journeys",
-                      ROOT / "journeys", ROOT / "factory/proof"]
+                      ROOT / "journeys"]
         scanners = {".rs": rust_bypasses, ".py": python_bypasses, ".ps1": powershell_bypasses}
         failures = []
         for directory in candidates:

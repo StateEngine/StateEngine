@@ -53,26 +53,45 @@ class RunScope(unittest.TestCase):
     def state(self, api, number):
         return api.latest[(api.pulls[number]["head"]["sha"], checker.CONTEXT)]
 
-    def test_eligible_own_request_does_not_inherit_unrelated_unsigned_failure(self):
+    def untouched(self, api, number):
+        head = api.pulls[number]["head"]["sha"]
+        self.assertNotIn(head, {written for written, _ in api.statuses})
+
+    def test_eligible_own_request_skips_unrelated_unsigned_request(self):
         api = OpenPulls()
         self.assertEqual(self.pull_event(api), 0)
         self.assertEqual(self.state(api, 1), "success")
-        self.assertEqual(self.state(api, 2), "failure")
-        for pull in api.pulls.values():
-            self.assertIn((pull["head"]["sha"], "pending"), api.statuses)
+        self.untouched(api, 2)
+        self.assertEqual(api.permission_reads, [api.first["login"]])
 
-    def test_unrelated_malformed_author_gets_its_own_terminal_failure(self):
+    def test_unrelated_malformed_author_is_not_read(self):
         api = OpenPulls()
         api.authors[2] = None
         self.assertEqual(self.pull_event(api), 0)
         self.assertEqual(self.state(api, 1), "success")
-        self.assertEqual(self.state(api, 2), "failure")
+        self.untouched(api, 2)
 
-    def test_unsigned_own_request_refuses_even_beside_an_eligible_request(self):
+    def test_unsigned_own_request_refuses_without_touching_an_eligible_request(self):
         api = OpenPulls()
         self.assertEqual(self.pull_event(api, 2), 1)
-        self.assertEqual(self.state(api, 1), "success")
         self.assertEqual(self.state(api, 2), "failure")
+        self.untouched(api, 1)
+
+    def test_any_event_rechecks_unrelated_shared_heads(self):
+        # A queued run for the shared head may have been dropped by concurrency, so a
+        # stale success there must not survive the next event for another request.
+        api = OpenPulls()
+        for number, opener in [(3, api.first), (4, api.second)]:
+            api.pulls[number] = deepcopy(api.pulls[1])
+            api.pulls[number].update(number=number, user=deepcopy(opener))
+            api.pulls[number]["head"]["sha"] = "c" * 40
+            api.authors[number] = opener
+            api.comments[number] = deepcopy(api.comments[1])
+        api.latest[("c" * 40, checker.CONTEXT)] = "success"
+        self.assertEqual(self.pull_event(api), 0)
+        self.assertEqual(self.state(api, 1), "success")
+        self.assertEqual(self.state(api, 3), "failure")
+        self.untouched(api, 2)
 
     def test_shared_head_unsigned_peer_still_refuses_eligible_own_request(self):
         api = OpenPulls()
@@ -80,13 +99,23 @@ class RunScope(unittest.TestCase):
         self.assertEqual(self.pull_event(api), 1)
         self.assertEqual(self.state(api, 1), "failure")
 
-    def test_closed_subject_still_refreshes_other_open_heads_without_borrowing_failure(self):
+    def test_closed_subject_finishes_without_touching_unrelated_heads(self):
         api = OpenPulls()
         api.pulls[1]["state"] = "closed"
         event = {"action": "closed", "pull_request": deepcopy(api.pulls[1])}
         self.assertEqual(self.run_event(api, "pull_request_target", event), 0)
-        self.assertNotIn((api.head, checker.CONTEXT), api.latest)
-        self.assertEqual(self.state(api, 2), "failure")
+        self.assertEqual(api.statuses, [])
+
+    def test_closed_subject_refreshes_its_remaining_shared_head_peer(self):
+        api = OpenPulls()
+        api.pulls[2]["head"]["sha"] = api.head
+        api.comments[2] = [{"user": api.second, "body": checker.individual_statement(
+            api.second["login"], digests()["individual"])}]
+        api.latest[(api.head, checker.CONTEXT)] = "failure"
+        api.pulls[1]["state"] = "closed"
+        event = {"action": "closed", "pull_request": deepcopy(api.pulls[1])}
+        self.assertEqual(self.run_event(api, "pull_request_target", event), 0)
+        self.assertEqual(self.state(api, 2), "success")
 
     def test_pull_comment_uses_that_requests_current_head(self):
         api = OpenPulls()
@@ -94,9 +123,10 @@ class RunScope(unittest.TestCase):
                  "pull_request": {"url": "https://api.example.invalid/pulls/1"}}}
         self.assertEqual(self.run_event(api, "issue_comment", event), 0)
         self.assertEqual(self.state(api, 1), "success")
-        self.assertEqual(self.state(api, 2), "failure")
+        self.untouched(api, 2)
         event["issue"]["number"] = 2
         self.assertEqual(self.run_event(api, "issue_comment", event), 1)
+        self.assertEqual(self.state(api, 2), "failure")
 
     def test_non_pull_issue_comment_performs_no_repository_reads_or_status_writes(self):
         class NoAPI:

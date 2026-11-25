@@ -1,12 +1,15 @@
 """Independent controls for authenticated comments and commit-scoped status storage."""
+from contextlib import redirect_stdout
 from copy import deepcopy
 import hashlib
 import importlib.util
+import io
 import os
 from pathlib import Path
 import re
 import subprocess
 import unittest
+import urllib.error
 from unittest.mock import patch
 from urllib.parse import unquote
 
@@ -50,6 +53,9 @@ class API:
         # The default branch tip, and how it compares with the pinned checkout once it moves.
         self.tip = self.trusted
         self.comparison = {"status": "ahead", "files": []}
+        # Comment writes, and the HTTP status a write refuses with (None accepts it).
+        self.comment_writes = []
+        self.comment_refusal = None
 
     def request(self, path, payload=None):
         if path == "":
@@ -79,6 +85,19 @@ class API:
 
     def status(self, head, state, description):
         self.latest[(head, checker.CONTEXT)] = state
+
+    def comment(self, number, body, existing=None):
+        if self.comment_refusal is not None:
+            raise urllib.error.HTTPError("https://api.example.invalid", self.comment_refusal,
+                                         "refused", None, None)
+        self.comment_writes.append((number, existing))
+        rows = self.comments[number]
+        if existing is None:
+            rows.append({"id": 900 + len(self.comment_writes), "body": body,
+                         "user": {"id": 41898282, "login": checker.INSTRUCTIONS_AUTHOR,
+                                  "type": "Bot"}})
+        else:
+            next(row for row in rows if row.get("id") == existing)["body"] = body
 
 
 class Signatures(unittest.TestCase):
@@ -169,10 +188,24 @@ class Signatures(unittest.TestCase):
         api.permissions[api.second["login"]] = "write"
         self.assertFalse(checker.check_pull(api, 1))
 
-    def test_collaborator_opener_is_exempt(self):
-        api = self.single()
-        api.pulls[1]["author_association"] = "COLLABORATOR"
-        self.assertTrue(checker.check_pull(api, 1))
+    def test_collaborator_with_write_access_is_exempt(self):
+        for permission in ["write", "admin"]:
+            with self.subTest(permission=permission):
+                api = self.single()
+                api.pulls[1]["author_association"] = "COLLABORATOR"
+                api.permissions[api.first["login"]] = permission
+                self.assertTrue(checker.check_pull(api, 1))
+
+    def test_read_access_is_not_exempt(self):
+        # A public repository reports read for every account, and triage reads as read.
+        for association in ["NONE", "CONTRIBUTOR", "COLLABORATOR", "MEMBER"]:
+            with self.subTest(association=association):
+                api = self.single()
+                api.pulls[1]["author_association"] = association
+                api.permissions[api.first["login"]] = "read"
+                self.assertFalse(checker.check_pull(api, 1))
+                self.assertEqual(api.permission_reads, [api.first["login"]])
+                self.assertEqual(api.latest[(api.head, checker.CONTEXT)], "failure")
 
     def test_current_role_is_reread_after_revocation(self):
         api = self.single()
@@ -213,6 +246,75 @@ class Signatures(unittest.TestCase):
         with self.assertRaises(OSError):
             checker.check_pull(api, 1)
         self.assertEqual(api.latest[(api.head, checker.CONTEXT)], "pending")
+
+
+class Instructions(unittest.TestCase):
+    """The single workflow comment telling unsigned authors what to post."""
+
+    def setUp(self):
+        env = patch.dict(os.environ, {"CLA_INTERNAL_APP_BOT_ID": ""})
+        env.start()
+        self.addCleanup(env.stop)
+        self.api = API()
+        del self.api.pulls[2]
+        self.api.comments[1] = []
+
+    def check(self):
+        with redirect_stdout(io.StringIO()) as log:
+            result = checker.check_pull(self.api, 1)
+        return result, log.getvalue()
+
+    def mine(self):
+        return [row for row in self.api.comments[1] if row["user"]["type"] == "Bot"]
+
+    def test_unsigned_pull_gets_one_comment_with_exact_statements(self):
+        self.assertFalse(self.check()[0])
+        self.assertFalse(self.check()[0])
+        self.assertEqual(self.api.comment_writes, [(1, None)])
+        [comment] = self.mine()
+        login, hashes = self.api.first["login"], digests()
+        self.assertIn(checker.individual_statement(login, hashes["individual"]), comment["body"])
+        self.assertIn(checker.entity_statement(login, hashes["entity"], "YOUR LEGAL ENTITY NAME"),
+                      comment["body"])
+        self.assertIn(f"/blob/{self.api.trusted}/docs/cla/individual.md", comment["body"])
+        self.assertEqual(self.api.latest[(self.api.head, checker.CONTEXT)], "failure")
+
+    def test_signing_updates_the_same_comment(self):
+        self.check()
+        self.api.comments[1].append({"user": self.api.first, "body": checker.individual_statement(
+            self.api.first["login"], digests()["individual"])})
+        self.assertTrue(self.check()[0])
+        [comment] = self.mine()
+        self.assertEqual(comment["body"], checker.SIGNED_NOTICE)
+        self.assertEqual(self.api.comment_writes, [(1, None), (1, comment["id"])])
+
+    def test_signed_pull_without_instructions_gets_no_comment(self):
+        self.api.comments[1] = [{"user": self.api.first, "body": checker.individual_statement(
+            self.api.first["login"], digests()["individual"])}]
+        self.assertTrue(self.check()[0])
+        self.assertEqual(self.api.comment_writes, [])
+
+    def test_contributor_marker_comment_is_not_edited(self):
+        self.api.comments[1] = [{"id": 5, "user": self.api.first,
+                                 "body": checker.INSTRUCTIONS_MARKER + " spoof"}]
+        self.check()
+        self.assertEqual(self.api.comment_writes, [(1, None)])
+        self.assertEqual(self.api.comments[1][0]["body"], checker.INSTRUCTIONS_MARKER + " spoof")
+
+    def test_missing_comment_permission_keeps_the_failure_and_log(self):
+        self.api.comment_refusal = 403
+        result, log = self.check()
+        self.assertFalse(result)
+        self.assertIn("needs issues: write", log)
+        self.assertIn(checker.individual_statement(self.api.first["login"],
+                                                   digests()["individual"]), log)
+        self.assertEqual(self.api.latest[(self.api.head, checker.CONTEXT)], "failure")
+
+    def test_other_comment_failures_are_not_hidden(self):
+        self.api.comment_refusal = 500
+        with self.assertRaises(urllib.error.HTTPError):
+            self.check()
+        self.assertEqual(self.api.latest[(self.api.head, checker.CONTEXT)], "pending")
 
 
 class TrustedSource(unittest.TestCase):
