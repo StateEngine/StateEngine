@@ -68,6 +68,32 @@ impl Driver {
         reservation: &LaunchReservation,
         spec: &LaunchSpec,
         limits: ResourceLimits,
+        hub: &Arc<Hub>,
+    ) -> ProcResult<Scope> {
+        let launch = crate::validate::LaunchBinding::prepare(reservation, spec)?;
+        self.prepare_with_binding(reservation, spec, launch, limits, hub)
+    }
+    pub fn prepare_validated(
+        &self,
+        reservation: &LaunchReservation,
+        validated: &crate::validate::ValidatedLaunch,
+        limits: ResourceLimits,
+        hub: &Arc<Hub>,
+    ) -> ProcResult<Scope> {
+        self.prepare_with_binding(
+            reservation,
+            validated.spec(),
+            validated.binding(),
+            limits,
+            hub,
+        )
+    }
+    fn prepare_with_binding(
+        &self,
+        reservation: &LaunchReservation,
+        spec: &LaunchSpec,
+        launch: crate::validate::LaunchBinding,
+        limits: ResourceLimits,
         _hub: &Arc<Hub>,
     ) -> ProcResult<Scope> {
         if !spec.mode.is_headless()
@@ -83,7 +109,6 @@ impl Driver {
                 "native MacOs reservation required",
             ));
         }
-        let launch = crate::validate::LaunchBinding::prepare(reservation, spec)?;
         Ok(Scope {
             image_custody: None,
             child: None,

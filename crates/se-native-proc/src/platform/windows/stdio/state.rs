@@ -150,6 +150,9 @@ impl State {
             StdioBinding::Unbound
         }
     }
+    pub fn is_closed_for_init(&self) -> bool {
+        self.released || self.abandoned || self.gates != Gates::Open || self.close.is_some()
+    }
     pub fn ready(&self) -> ProcResult<()> {
         if self.released || self.abandoned {
             return Err(transition("port has been released"));

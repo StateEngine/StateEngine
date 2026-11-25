@@ -51,7 +51,7 @@ pub(crate) struct Slot {
     pub root_checkpoint: Option<RootCheckpoint>,
     pub record: Option<ProcessRecord>,
     pub native: Option<crate::platform::Scope>,
-    pub spec: Option<LaunchSpec>,
+    pub spec: Option<crate::runtime::validate::ValidatedLaunch>,
     pub launch: LaunchState,
     #[cfg(windows)]
     pub stdio: Option<Arc<crate::platform::NativeStdio>>,

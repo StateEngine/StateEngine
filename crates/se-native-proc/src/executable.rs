@@ -91,6 +91,9 @@ impl NativeExecutableInvocation {
     pub fn original_path(&self) -> &Path {
         &self.original
     }
+    pub(crate) fn identity(&self) -> [u8; 32] {
+        self.identity
+    }
     #[cfg(target_os = "linux")]
     pub(crate) fn descriptor(&self) -> i32 {
         use std::os::fd::AsRawFd;

@@ -4,12 +4,13 @@
 
 use se_custody::ProcErrorCode;
 use se_native_proc::notify::Hub;
-use se_native_proc::platform::Driver;
+use se_native_proc::platform::{Driver, Scope};
 use se_native_proc::{
     ContainmentRequirement, Environment, ExitNotice, ExitSink, GenerationId, HostConfig,
     HostInstanceId, LaunchMode, LaunchPolicy, LaunchReservation, LaunchSpec, LifecycleId,
-    LinuxDelegation, MachineId, NetworkPolicy, OptionalHardening, ReservationParent,
-    ResourceLimits, StandardIo, WritePolicy, current_process_identity,
+    LinuxDelegation, MachineId, NativeExecutableInvocation, NativeExecutablePin, NetworkPolicy,
+    OptionalHardening, Population, ReservationParent, ResourceLimits, StandardIo, WritePolicy,
+    current_process_identity,
 };
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -103,45 +104,196 @@ fn nul_arg() -> OsString {
     }
 }
 
-fn make_spec(
+struct SpecTemplate {
     lifecycle: LifecycleId,
     generation: GenerationId,
     exe: PathBuf,
     cwd: PathBuf,
-    args: Vec<OsString>,
-) -> LaunchSpec {
-    LaunchSpec {
-        executable_custody: None,
-        lifecycle,
-        generation,
-        executable: exe,
-        arguments: args,
-        cwd: cwd.clone(),
-        environment: Environment { entries: vec![] },
-        stdio: StandardIo {
-            stdin: None,
-            stdout: None,
-            stderr: None,
-        },
-        mode: LaunchMode::Headless,
-        window: None,
-        policy: LaunchPolicy {
-            containment: test_containment(),
-            writes: WritePolicy::Workspace {
-                roots: vec![cwd.clone()],
-                scratch: cwd,
+}
+
+impl SpecTemplate {
+    fn build(
+        &self,
+        args: Vec<OsString>,
+        deadline: Instant,
+        env: Vec<(OsString, OsString)>,
+        custody: Option<NativeExecutableInvocation>,
+    ) -> LaunchSpec {
+        LaunchSpec {
+            executable_custody: custody,
+            lifecycle: self.lifecycle.clone(),
+            generation: self.generation,
+            executable: self.exe.clone(),
+            arguments: args,
+            cwd: self.cwd.clone(),
+            environment: Environment { entries: env },
+            stdio: StandardIo {
+                stdin: None,
+                stdout: None,
+                stderr: None,
             },
-            network: NetworkPolicy::Allow,
-            hardening: OptionalHardening::Off,
-        },
-        deadline: Instant::now() + Duration::from_secs(30),
-        notifications: Arc::new(NoopSink),
+            mode: LaunchMode::Headless,
+            window: None,
+            policy: LaunchPolicy {
+                containment: test_containment(),
+                writes: WritePolicy::Workspace {
+                    roots: vec![self.cwd.clone()],
+                    scratch: self.cwd.clone(),
+                },
+                network: NetworkPolicy::Allow,
+                hardening: OptionalHardening::Off,
+            },
+            deadline,
+            notifications: Arc::new(NoopSink),
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn assert_stop_and_release(scope: &mut Scope) -> Result<(), Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    scope
+        .stop(deadline)
+        .map_err(|e| format!("scope.stop: {e:?}"))?;
+    loop {
+        let obs = scope
+            .observe()
+            .map_err(|e| format!("scope.observe: {e:?}"))?;
+        if obs.remaining.population == Population::Empty {
+            break;
+        }
+        assert!(Instant::now() < deadline, "child did not exit before bound");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    scope
+        .release(true)
+        .map_err(|e| format!("scope.release: {e:?}"))?;
+    Ok(())
+}
+
+fn assert_begin_refusals(
+    driver: &Driver,
+    scope: &mut Scope,
+    hub: &Arc<Hub>,
+    template: &SpecTemplate,
+    valid_args: &[OsString],
+    deadline: Instant,
+    base_env: &[(OsString, OsString)],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut policy_drift = template.build(valid_args.to_vec(), deadline, base_env.to_vec(), None);
+    policy_drift.policy.network = NetworkPolicy::Offline;
+    let bad_specs = [
+        (
+            "interior NUL",
+            template.build(vec![nul_arg()], deadline, base_env.to_vec(), None),
+        ),
+        ("policy drift", policy_drift),
+        (
+            "argv drift",
+            template.build(
+                vec![OsString::from("--version")],
+                deadline,
+                base_env.to_vec(),
+                None,
+            ),
+        ),
+        (
+            "deadline extension",
+            template.build(
+                valid_args.to_vec(),
+                deadline + Duration::from_secs(5),
+                base_env.to_vec(),
+                None,
+            ),
+        ),
+        (
+            "environment drift",
+            template.build(
+                valid_args.to_vec(),
+                deadline,
+                vec![(OsString::from("SE_BOUNDARY"), OsString::from("two"))],
+                None,
+            ),
+        ),
+    ];
+    for (label, bad) in bad_specs {
+        let err = driver
+            .begin(scope, bad, hub)
+            .err()
+            .ok_or_else(|| format!("begin accepted {label}"))?;
+        assert_eq!(err.code, ProcErrorCode::InvalidInput, "{label}");
+        assert!(!scope.child_created(), "{label}");
+    }
+    Ok(())
+}
+
+fn assert_one_shot_begin(
+    driver: &Driver,
+    scope: &mut Scope,
+    hub: &Arc<Hub>,
+    template: &SpecTemplate,
+    valid_args: &[OsString],
+    deadline: Instant,
+    base_env: &[(OsString, OsString)],
+) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        driver
+            .begin(
+                scope,
+                template.build(valid_args.to_vec(), deadline, base_env.to_vec(), None),
+                hub,
+            )
+            .map_err(|e| format!("first begin: {e:?}"))?;
+        let err = driver
+            .begin(
+                scope,
+                template.build(valid_args.to_vec(), deadline, base_env.to_vec(), None),
+                hub,
+            )
+            .err()
+            .ok_or("repeated begin succeeded")?;
+        assert_eq!(err.code, ProcErrorCode::IllegalTransition);
+        assert_stop_and_release(scope)?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let err = driver
+            .begin(
+                scope,
+                template.build(valid_args.to_vec(), deadline, base_env.to_vec(), None),
+                hub,
+            )
+            .err()
+            .ok_or("nonexistent macOS helper unexpectedly spawned")?;
+        assert_eq!(err.code, ProcErrorCode::LaunchFailed);
+        assert!(!scope.child_created());
+        let err = driver
+            .begin(
+                scope,
+                template.build(valid_args.to_vec(), deadline, base_env.to_vec(), None),
+                hub,
+            )
+            .err()
+            .ok_or("repeated begin succeeded")?;
+        assert_eq!(err.code, ProcErrorCode::IllegalTransition);
+        scope
+            .release(true)
+            .map_err(|e| format!("scope.release: {e:?}"))?;
+    }
+    Ok(())
+}
+
+struct TempFile(PathBuf);
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
     }
 }
 
 #[test]
-fn driver_prepare_and_begin_refuse_interior_nul_mismatch_and_repeat()
--> Result<(), Box<dyn std::error::Error>> {
+fn driver_prepare_and_begin_refuse_nul_drift_and_repeat() -> Result<(), Box<dyn std::error::Error>>
+{
     let machine = MachineId::new("native-boundary-test")?;
     let owner = current_process_identity(machine.clone())
         .map_err(|e| format!("current_process_identity: {e:?}"))?;
@@ -149,23 +301,26 @@ fn driver_prepare_and_begin_refuse_interior_nul_mismatch_and_repeat()
     let generation = GenerationId::new(1)?;
     let lifecycle = LifecycleId::from_parts(1_700_000_000_001, [2; 10])?;
     let exe = std::env::current_exe()?;
-    let cwd = std::env::temp_dir();
-    let spec = |args: Vec<OsString>| {
-        make_spec(
-            lifecycle.clone(),
-            generation,
-            exe.clone(),
-            cwd.clone(),
-            args,
-        )
+    let template = SpecTemplate {
+        lifecycle: lifecycle.clone(),
+        generation,
+        exe: exe.clone(),
+        cwd: std::env::temp_dir(),
     };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let base_env = vec![(OsString::from("SE_BOUNDARY"), OsString::from("one"))];
 
-    let driver = Driver::new(&test_config(machine, host, exe.clone()))
+    #[cfg(target_os = "macos")]
+    let helper = PathBuf::from("/nonexistent/se-native-boundary-helper");
+    #[cfg(not(target_os = "macos"))]
+    let helper = exe;
+
+    let driver = Driver::new(&test_config(machine, host, helper))
         .map_err(|e| format!("Driver::new: {e:?}"))?;
     let hub = Arc::new(Hub::new(lifecycle.clone(), generation, Arc::new(NoopSink)));
     let reservation = LaunchReservation {
         format_version: 1,
-        lifecycle: lifecycle.clone(),
+        lifecycle,
         host,
         owner,
         generation,
@@ -174,61 +329,123 @@ fn driver_prepare_and_begin_refuse_interior_nul_mismatch_and_repeat()
         created_at_unix_ns: 1,
     };
 
-    // 1. Interior NUL in prepare is refused before any OS scope is created.
     let err = driver
-        .prepare(&reservation, &spec(vec![nul_arg()]), test_limits(), &hub)
+        .prepare(
+            &reservation,
+            &template.build(vec![nul_arg()], deadline, base_env.clone(), None),
+            test_limits(),
+            &hub,
+        )
         .err()
         .ok_or("prepare accepted interior NUL")?;
     assert_eq!(err.code, ProcErrorCode::InvalidInput);
 
-    // 2. Prepare a valid scope.
     let valid_args = vec![OsString::from("--help")];
     let mut scope = driver
-        .prepare(&reservation, &spec(valid_args.clone()), test_limits(), &hub)
+        .prepare(
+            &reservation,
+            &template.build(valid_args.clone(), deadline, base_env.clone(), None),
+            test_limits(),
+            &hub,
+        )
         .map_err(|e| format!("prepare: {e:?}"))?;
 
-    // 3. Direct begin with interior NUL is refused.
+    assert_begin_refusals(
+        &driver,
+        &mut scope,
+        &hub,
+        &template,
+        &valid_args,
+        deadline,
+        &base_env,
+    )?;
+    assert_one_shot_begin(
+        &driver,
+        &mut scope,
+        &hub,
+        &template,
+        &valid_args,
+        deadline,
+        &base_env,
+    )
+}
+
+#[test]
+fn driver_begin_refuses_executable_custody_removal_or_replacement()
+-> Result<(), Box<dyn std::error::Error>> {
+    let machine = MachineId::new("native-custody-boundary-test")?;
+    let owner = current_process_identity(machine.clone())
+        .map_err(|e| format!("current_process_identity: {e:?}"))?;
+    let host = HostInstanceId([0x43; 16]);
+    let generation = GenerationId::new(1)?;
+    let lifecycle = LifecycleId::from_parts(1_700_000_000_003, [4; 10])?;
+    let exe = std::env::current_exe()?;
+    let cwd = std::env::temp_dir();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let template = SpecTemplate {
+        lifecycle: lifecycle.clone(),
+        generation,
+        exe: exe.clone(),
+        cwd: cwd.clone(),
+    };
+
+    let pin =
+        NativeExecutablePin::open(&exe)?.ok_or("current_exe missing for NativeExecutablePin")?;
+    let alt_path = cwd.join(format!("se-alt-custody-{}.bin", std::process::id()));
+    std::fs::write(&alt_path, b"different-image-bytes")?;
+    let _alt_guard = TempFile(alt_path.clone());
+    let alt_pin =
+        NativeExecutablePin::open(&alt_path)?.ok_or("alt image missing for NativeExecutablePin")?;
+
+    let driver =
+        Driver::new(&test_config(machine, host, exe)).map_err(|e| format!("Driver::new: {e:?}"))?;
+    let hub = Arc::new(Hub::new(lifecycle.clone(), generation, Arc::new(NoopSink)));
+    let reservation = LaunchReservation {
+        format_version: 1,
+        lifecycle,
+        host,
+        owner,
+        generation,
+        scope_nonce: [0x56; 16],
+        parent: test_parent(),
+        created_at_unix_ns: 1,
+    };
+
+    let args = vec![OsString::from("--help")];
+    let mut scope = driver
+        .prepare(
+            &reservation,
+            &template.build(args.clone(), deadline, vec![], Some(pin.prepare()?)),
+            test_limits(),
+            &hub,
+        )
+        .map_err(|e| format!("prepare with custody: {e:?}"))?;
+
     let err = driver
-        .begin(&mut scope, spec(vec![nul_arg()]), &hub)
+        .begin(
+            &mut scope,
+            template.build(args.clone(), deadline, vec![], None),
+            &hub,
+        )
         .err()
-        .ok_or("begin accepted interior NUL")?;
+        .ok_or("begin accepted removed executable custody")?;
     assert_eq!(err.code, ProcErrorCode::InvalidInput);
     assert!(!scope.child_created());
 
-    // 4. Direct begin with a mismatched policy is refused.
-    let mut mismatched = spec(valid_args.clone());
-    mismatched.policy.network = NetworkPolicy::Offline;
     let err = driver
-        .begin(&mut scope, mismatched, &hub)
+        .begin(
+            &mut scope,
+            template.build(args, deadline, vec![], Some(alt_pin.prepare()?)),
+            &hub,
+        )
         .err()
-        .ok_or("begin accepted mismatched policy")?;
+        .ok_or("begin accepted replaced executable custody")?;
     assert_eq!(err.code, ProcErrorCode::InvalidInput);
     assert!(!scope.child_created());
 
-    // 5. Direct begin with mismatched argv is refused.
-    let err = driver
-        .begin(&mut scope, spec(vec![OsString::from("--version")]), &hub)
-        .err()
-        .ok_or("begin accepted mismatched argv")?;
-    assert_eq!(err.code, ProcErrorCode::InvalidInput);
-    assert!(!scope.child_created());
-
-    // 6. First valid begin consumes the one-shot binding; second begin is refused.
-    #[cfg(not(target_os = "macos"))]
-    driver
-        .begin(&mut scope, spec(valid_args.clone()), &hub)
-        .map_err(|e| format!("first begin: {e:?}"))?;
-    #[cfg(target_os = "macos")]
-    let _ = driver.begin(&mut scope, spec(valid_args.clone()), &hub);
-
-    let err = driver
-        .begin(&mut scope, spec(valid_args), &hub)
-        .err()
-        .ok_or("repeated begin succeeded")?;
-    assert_eq!(err.code, ProcErrorCode::IllegalTransition);
-
-    let _ = scope.stop(Instant::now() + Duration::from_secs(5));
-    let _ = scope.release(true);
+    scope
+        .release(true)
+        .map_err(|e| format!("scope.release: {e:?}"))?;
     Ok(())
 }
 
@@ -276,7 +493,6 @@ mod windows_stdio_boundary {
         let driver = Driver::new(&test_config(machine, host, exe))
             .map_err(|e| format!("Driver::new: {e:?}"))?;
 
-        // 1. Double initialize is refused without overwriting server handles.
         let port = driver
             .create_stdio(&make_stdio_config(lifecycle.clone(), host, generation))
             .map_err(|e| format!("create_stdio: {e:?}"))?;
@@ -290,7 +506,6 @@ mod windows_stdio_boundary {
         assert_eq!(err.code, ProcErrorCode::IllegalTransition);
         drop(child);
 
-        // Close and release port cleanly, then verify init-after-release refuses.
         let close_id = port
             .close(StdioCloseScope::All)
             .map_err(|e| format!("close: {e:?}"))?;
@@ -322,7 +537,6 @@ mod windows_stdio_boundary {
             .ok_or("initialize after release succeeded")?;
         assert_eq!(err.code, ProcErrorCode::IllegalTransition);
 
-        // 2. Fresh port closed+released before any initialize also refuses initialize.
         let port2 = driver
             .create_stdio(&make_stdio_config(lifecycle, host, generation))
             .map_err(|e| format!("create_stdio 2: {e:?}"))?;
