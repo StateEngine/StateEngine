@@ -214,10 +214,282 @@ fn duration_visible(text: &str) -> bool {
             .is_some_and(|n| n.parse::<u64>().is_ok_and(|n| n > 0))
     })
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
+async fn pairing_scope(
+    provider: &Provider,
+    channels: &Channels,
+    id: &ChannelId,
+    challenge: &str,
+) -> Check {
+    provider.push(1, 42, 42, "First contact claims to be Owner")?;
+    provider.handled_through(1).await?;
+    assert!(
+        inspect(&channels, &id).await?.receipts.is_empty(),
+        "first contact saved mail"
+    );
+    provider.push(2, 42, 42, &format!("/start {challenge}"))?;
+    let pending = state(&channels, &id, |p| {
+        matches!(
+            p.connections[0].pairing,
+            PairingPresentation::AwaitingApproval { .. }
+        )
+    })
+    .await?;
+    provider.push(3, 42, 42, "A link holder is not yet authorized")?;
+    provider.handled_through(3).await?;
+    assert!(
+        inspect(&channels, &id).await?.receipts.is_empty(),
+        "link possession granted authority"
+    );
+    let confirm = ConfirmPairing {
+        connection: id.clone(),
+        expected_pairing_revision: pending.connections[0].revision,
+        key: key("independent-confirm")?,
+    };
+    let receipt = channels.confirm_pairing(confirm.clone(), &bound()?).await?;
+    let replay = channels.confirm_pairing(confirm.clone(), &bound()?).await?;
+    assert_eq!(
+        receipt.events, replay.events,
+        "same-key retry created a second confirmation"
+    );
+    let mut changed = confirm;
+    changed.expected_pairing_revision += 1;
+    let conflict = channels
+        .confirm_pairing(changed, &bound()?)
+        .await
+        .err()
+        .ok_or("changed intent reused a key")?;
+    assert!(
+        matches!(
+            conflict.body.detail(),
+            se_types::Detail::IdempotencyKeyReused(_)
+        ),
+        "wrong conflict: {conflict}"
+    );
+    Ok(())
+}
+
+async fn approved_saved(
+    provider: &Provider,
+    channels: &Channels,
+    id: &ChannelId,
+    port: u16,
+    delayed_read: Option<bool>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    provider.push(4, 43, 43, "Owner")?;
+    provider.push(5, 42, 43, "Owner in a different destination")?;
+    provider.push(6, 42, 42, "Approved phone work")?;
+    provider.handled_through(6).await?;
+    let saved = inspect(&channels, &id).await?;
+    assert_eq!(
+        saved.receipts.len(),
+        1,
+        "foreign identity or destination entered inbox"
+    );
+    assert!(saved.receipts[0].read.is_none() && saved.receipts[0].replies.is_empty());
+    assert!(
+        matches!(saved.receipts[0].notice, NoticeFact::Pending { .. }),
+        "save invented a provider wake"
+    );
+    let original = saved.receipts[0].message.clone();
+    if delayed_read == Some(true) {
+        let read = rpc(
+            port,
+            "independent-channel-reader",
+            "tools/call",
+            json!({
+            "name":"stateengine_msg_read", "arguments":{"message_id":original}}),
+        )
+        .await?;
+        assert_ne!(read["result"]["isError"], true, "{read}");
+    }
+    Ok(original)
+}
+
+async fn replay_and_delayed(
+    provider: &Provider,
+    channels: &Channels,
+    id: &ChannelId,
+    original: &str,
+    delayed_read: Option<bool>,
+) -> Check {
+    provider.push(6, 42, 42, "Approved phone work")?;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(
+        inspect(&channels, &id).await?.receipts.len(),
+        1,
+        "provider replay duplicated mail"
+    );
+    if let Some(read_first) = delayed_read {
+        let before_delay = inspect(&channels, &id).await?;
+        let before_receipt = before_delay
+            .receipts
+            .iter()
+            .find(|receipt| receipt.message == original)
+            .ok_or("missing original receipt")?;
+        let read_marker = before_receipt.read.clone();
+        if read_marker.is_some() != read_first || !before_receipt.replies.is_empty() {
+            return Err("unexpected read or reply before delayed phone status".into());
+        }
+        let until = tokio::time::Instant::now() + Duration::from_secs(75);
+        let delayed = loop {
+            let observed = provider
+                .output
+                .sent
+                .lock()
+                .map_err(|_| "send log poisoned")?
+                .iter()
+                .find(|sent| sent.text.starts_with("Status for "))
+                .map(|sent| sent.text.clone());
+            if let Some(text) = observed {
+                break text;
+            }
+            assert!(
+                tokio::time::Instant::now() < until,
+                "no delayed phone status"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        let after_delay = inspect(&channels, &id).await?;
+        let after_receipt = after_delay
+            .receipts
+            .iter()
+            .find(|receipt| receipt.message == original)
+            .ok_or("missing original receipt after delay")?;
+        if after_receipt.read != read_marker || !after_receipt.replies.is_empty() {
+            return Err(
+                "delayed phone status changed the read marker or invented a linked reply".into(),
+            );
+        }
+        let expected = if read_first {
+            "Read; no reply yet"
+        } else {
+            "Not read yet"
+        };
+        if !delayed.contains(expected) {
+            return Err(format!("missing exact read/no-reply state: {delayed}").into());
+        }
+        if !duration_visible(&delayed) {
+            return Err(format!("missing elapsed time: {delayed}").into());
+        }
+    }
+    Ok(())
+}
+
+async fn linked_replies(
+    channels: &Channels,
+    id: &ChannelId,
+    port: u16,
+    f: &Fixture,
+    original: &str,
+) -> Check {
+    if reply_case {
+        let plain = rpc(
+            port,
+            "independent-channel-reader",
+            "tools/call",
+            json!({
+            "name":"stateengine_msg_send", "arguments":{"to":f.owner,
+            "body":"Unlinked answer stays local", "idempotency_key":"independent-unlinked"}}),
+        )
+        .await?;
+        assert_ne!(plain["result"]["isError"], true, "{plain}");
+        assert!(
+            inspect(&channels, &id).await?.receipts[0]
+                .replies
+                .is_empty(),
+            "unlinked mail was forwarded"
+        );
+        let read = rpc(
+            port,
+            "independent-channel-reader",
+            "tools/call",
+            json!({
+            "name":"stateengine_msg_read", "arguments":{"message_id":original}}),
+        )
+        .await?;
+        let route = &read["result"]["structuredContent"]["message"]["channel_reply"];
+        assert_eq!(route["active"], true, "{read}");
+        assert_eq!(route["reply_to"], original.to_string(), "{read}");
+        assert!(
+            route["instruction"]
+                .as_str()
+                .is_some_and(|t| t.contains("final turn answer alone stays local")),
+            "{read}"
+        );
+        let linked = rpc(
+            port,
+            "independent-channel-reader",
+            "tools/call",
+            json!({
+            "name":"stateengine_msg_send", "arguments":{"to":f.owner,
+            "body":"Private linked answer", "reply_to":original,
+            "idempotency_key":"independent-linked"}}),
+        )
+        .await?;
+        assert_ne!(linked["result"]["isError"], true, "{linked}");
+        state(&channels, &id, |p| p.receipts[0].replies.len() == 1).await?;
+    }
+    Ok(())
+}
+
+async fn disconnect_fence(
+    provider: &Provider,
+    channels: &Channels,
+    id: &ChannelId,
+    vault: &NativeChannelCredentials,
+    port: u16,
+    reply_case: bool,
+    original: &str,
+) -> Check {
+    let before = inspect(&channels, &id).await?;
+    let revoke = ChannelControl {
+        connection: id.clone(),
+        expected_revision: before.connections[0].revision,
+        key: key("independent-disconnect")?,
+    };
+    let first = channels.disconnect(revoke.clone(), &bound()?).await?;
+    let again = channels.disconnect(revoke, &bound()?).await?;
+    assert_eq!(first.receipt.events, again.receipt.events);
+    assert!(matches!(
+        again.credential_removal,
+        CredentialRemoval::Removed
+    ));
+    assert!(vault.catalog()?.credentials.is_empty());
+    provider.blocked.store(false, Ordering::Release);
+    provider.push(7, 42, 42, "After revocation")?;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let revoked = inspect(&channels, &id).await?;
+    assert!(matches!(
+        revoked.connections[0].pairing,
+        PairingPresentation::Revoked { .. }
+    ));
+    assert_eq!(revoked.receipts.len(), 1, "revoke admitted another message");
+    if reply_case {
+        assert!(
+            provider
+                .output
+                .sent
+                .lock()
+                .map_err(|_| "send log poisoned")?
+                .is_empty(),
+            "revoked queued content escaped"
+        );
+        let read = rpc(
+            port,
+            "independent-channel-reader",
+            "tools/call",
+            json!({
+            "name":"stateengine_msg_read", "arguments":{"message_id":original}}),
+        )
+        .await?;
+        assert_eq!(
+            read["result"]["structuredContent"]["message"]["channel_reply"]["active"], false,
+            "{read}"
+        );
+    }
+    Ok(())
+}
+
 fn run_case(reply_case: bool, delayed_read: Option<bool>) -> Check {
     let f = Fixture::new()?;
     setup(&f, reply_case || delayed_read == Some(true))?;
@@ -235,7 +507,8 @@ fn run_case(reply_case: bool, delayed_read: Option<bool>) -> Check {
             Some(false) => start_channel_delay(&f, 3_000_000)?,
             None => start(&f)?,
         };
-        let mut host = HostedRuntime::prepare(initialized, host_start, rt.handle().clone(), &bound()?).await?;
+        let mut host =
+            HostedRuntime::prepare(initialized, host_start, rt.handle().clone(), &bound()?).await?;
         configure_private_listener(&mut host)?;
         let provider = Arc::new(Provider::default());
         provider.blocked.store(reply_case, Ordering::Release);
@@ -243,126 +516,52 @@ fn run_case(reply_case: bool, delayed_read: Option<bool>) -> Check {
         let listener = host.listen(rt.handle().clone(), &bound()?).await?;
         let port = host.http_port().ok_or("missing listener")?;
         let channels = host.channels()?;
-        let vault = NativeChannelCredentials::open(&f.options.state_directory, f.store.clone(), f.owner.clone())?;
-        let credential = vault.provision(&mut &b"123456:dummy_invalid_provider_token_123456"[..])?;
-        let connected = channels.connect_channel(ConnectChannel { connector: Connector::Telegram, credential,
-            target: ChannelTarget { project: f.project.clone(), agent: f.a.clone(), selection_revision: 1 },
-            policy: ChannelPolicy::SaveOnly, key: key("independent-connect")? }, &bound()?).await?;
+        let vault = NativeChannelCredentials::open(
+            &f.options.state_directory,
+            f.store.clone(),
+            f.owner.clone(),
+        )?;
+        let credential =
+            vault.provision(&mut &b"123456:dummy_invalid_provider_token_123456"[..])?;
+        let connected = channels
+            .connect_channel(
+                ConnectChannel {
+                    connector: Connector::Telegram,
+                    credential,
+                    target: ChannelTarget {
+                        project: f.project.clone(),
+                        agent: f.a.clone(),
+                        selection_revision: 1,
+                    },
+                    policy: ChannelPolicy::SaveOnly,
+                    key: key("independent-connect")?,
+                },
+                &bound()?,
+            )
+            .await?;
         let id = connected.connection.id;
         let challenge = std::str::from_utf8(connected.ticket.expose_link())?
-            .split_once("?start=").ok_or("missing challenge")?.1.to_owned();
+            .split_once("?start=")
+            .ok_or("missing challenge")?
+            .1
+            .to_owned();
         let stop = host.local_stop();
         let client = async {
             let result = async {
-                provider.push(1, 42, 42, "First contact claims to be Owner")?;
-                provider.handled_through(1).await?;
-                assert!(inspect(&channels, &id).await?.receipts.is_empty(), "first contact saved mail");
-                provider.push(2, 42, 42, &format!("/start {challenge}"))?;
-                let pending = state(&channels, &id, |p| matches!(p.connections[0].pairing,
-                    PairingPresentation::AwaitingApproval { .. })).await?;
-                provider.push(3, 42, 42, "A link holder is not yet authorized")?;
-                provider.handled_through(3).await?;
-                assert!(inspect(&channels, &id).await?.receipts.is_empty(), "link possession granted authority");
-                let confirm = ConfirmPairing { connection: id.clone(),
-                    expected_pairing_revision: pending.connections[0].revision, key: key("independent-confirm")? };
-                let receipt = channels.confirm_pairing(confirm.clone(), &bound()?).await?;
-                let replay = channels.confirm_pairing(confirm.clone(), &bound()?).await?;
-                assert_eq!(receipt.events, replay.events, "same-key retry created a second confirmation");
-                let mut changed = confirm;
-                changed.expected_pairing_revision += 1;
-                let conflict = channels.confirm_pairing(changed, &bound()?).await.err()
-                    .ok_or("changed intent reused a key")?;
-                assert!(matches!(conflict.body.detail(), se_types::Detail::IdempotencyKeyReused(_)),
-                    "wrong conflict: {conflict}");
-                provider.push(4, 43, 43, "Owner")?;
-                provider.push(5, 42, 43, "Owner in a different destination")?;
-                provider.push(6, 42, 42, "Approved phone work")?;
-                provider.handled_through(6).await?;
-                let saved = inspect(&channels, &id).await?;
-                assert_eq!(saved.receipts.len(), 1, "foreign identity or destination entered inbox");
-                assert!(saved.receipts[0].read.is_none() && saved.receipts[0].replies.is_empty());
-                assert!(matches!(saved.receipts[0].notice, NoticeFact::Pending { .. }), "save invented a provider wake");
-                let original = saved.receipts[0].message.clone();
-                if delayed_read == Some(true) {
-                    let read = rpc(port, "independent-channel-reader", "tools/call", json!({
-                        "name":"stateengine_msg_read", "arguments":{"message_id":original}})).await?;
-                    assert_ne!(read["result"]["isError"], true, "{read}");
-                }
-                provider.push(6, 42, 42, "Approved phone work")?;
-                tokio::time::sleep(Duration::from_millis(1200)).await;
-                assert_eq!(inspect(&channels, &id).await?.receipts.len(), 1, "provider replay duplicated mail");
-                if let Some(read_first) = delayed_read {
-                    let before_delay = inspect(&channels, &id).await?;
-                    let before_receipt = before_delay.receipts.iter()
-                        .find(|receipt| receipt.message == original).ok_or("missing original receipt")?;
-                    let read_marker = before_receipt.read.clone();
-                    if read_marker.is_some() != read_first || !before_receipt.replies.is_empty() {
-                        return Err("unexpected read or reply before delayed phone status".into());
-                    }
-                    let until = tokio::time::Instant::now() + Duration::from_secs(75);
-                    let delayed = loop {
-                        let observed = provider.output.sent.lock().map_err(|_| "send log poisoned")?
-                            .iter().find(|sent| sent.text.starts_with("Status for "))
-                            .map(|sent| sent.text.clone());
-                        if let Some(text) = observed { break text; }
-                        assert!(tokio::time::Instant::now() < until, "no delayed phone status");
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    };
-                    let after_delay = inspect(&channels, &id).await?;
-                    let after_receipt = after_delay.receipts.iter()
-                        .find(|receipt| receipt.message == original).ok_or("missing original receipt after delay")?;
-                    if after_receipt.read != read_marker || !after_receipt.replies.is_empty() {
-                        return Err("delayed phone status changed the read marker or invented a linked reply".into());
-                    }
-                    let expected = if read_first { "Read; no reply yet" } else { "Not read yet" };
-                    if !delayed.contains(expected) {
-                        return Err(format!("missing exact read/no-reply state: {delayed}").into());
-                    }
-                    if !duration_visible(&delayed) {
-                        return Err(format!("missing elapsed time: {delayed}").into());
-                    }
-                }
+                pairing_scope(&provider, &channels, &id, &challenge).await?;
+                let original =
+                    approved_saved(&provider, &channels, &id, port, delayed_read).await?;
+                replay_and_delayed(&provider, &channels, &id, &original, delayed_read).await?;
                 if reply_case {
-                    let plain = rpc(port, "independent-channel-reader", "tools/call", json!({
-                        "name":"stateengine_msg_send", "arguments":{"to":f.owner,
-                        "body":"Unlinked answer stays local", "idempotency_key":"independent-unlinked"}})).await?;
-                    assert_ne!(plain["result"]["isError"], true, "{plain}");
-                    assert!(inspect(&channels, &id).await?.receipts[0].replies.is_empty(), "unlinked mail was forwarded");
-                    let read = rpc(port, "independent-channel-reader", "tools/call", json!({
-                        "name":"stateengine_msg_read", "arguments":{"message_id":original}})).await?;
-                    let route = &read["result"]["structuredContent"]["message"]["channel_reply"];
-                    assert_eq!(route["active"], true, "{read}");
-                    assert_eq!(route["reply_to"], original.to_string(), "{read}");
-                    assert!(route["instruction"].as_str().is_some_and(|t| t.contains("final turn answer alone stays local")), "{read}");
-                    let linked = rpc(port, "independent-channel-reader", "tools/call", json!({
-                        "name":"stateengine_msg_send", "arguments":{"to":f.owner,
-                        "body":"Private linked answer", "reply_to":original,
-                        "idempotency_key":"independent-linked"}})).await?;
-                    assert_ne!(linked["result"]["isError"], true, "{linked}");
-                    state(&channels, &id, |p| p.receipts[0].replies.len()==1).await?;
+                    linked_replies(&channels, &id, port, &f, &original).await?;
                 }
-                let before = inspect(&channels, &id).await?;
-                let revoke = ChannelControl { connection: id.clone(), expected_revision: before.connections[0].revision,
-                    key: key("independent-disconnect")? };
-                let first = channels.disconnect(revoke.clone(), &bound()?).await?;
-                let again = channels.disconnect(revoke, &bound()?).await?;
-                assert_eq!(first.receipt.events, again.receipt.events);
-                assert!(matches!(again.credential_removal, CredentialRemoval::Removed));
-                assert!(vault.catalog()?.credentials.is_empty());
-                provider.blocked.store(false, Ordering::Release);
-                provider.push(7, 42, 42, "After revocation")?;
-                tokio::time::sleep(Duration::from_millis(1200)).await;
-                let revoked = inspect(&channels, &id).await?;
-                assert!(matches!(revoked.connections[0].pairing, PairingPresentation::Revoked { .. }));
-                assert_eq!(revoked.receipts.len(), 1, "revoke admitted another message");
-                if reply_case {
-                    assert!(provider.output.sent.lock().map_err(|_| "send log poisoned")?.is_empty(), "revoked queued content escaped");
-                    let read = rpc(port, "independent-channel-reader", "tools/call", json!({
-                        "name":"stateengine_msg_read", "arguments":{"message_id":original}})).await?;
-                    assert_eq!(read["result"]["structuredContent"]["message"]["channel_reply"]["active"], false, "{read}");
-                }
+                disconnect_fence(
+                    &provider, &channels, &id, &vault, port, reply_case, &original,
+                )
+                .await?;
                 Ok::<_, Box<dyn std::error::Error>>(())
-            }.await;
+            }
+            .await;
             stop.request();
             result
         };

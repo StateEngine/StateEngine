@@ -93,12 +93,67 @@ fn custody_shutdown_error_skips_storage_drain_and_keeps_its_failure() -> Check {
     shutdown_case(true)
 }
 
+fn retained_call(
+    f: &Fixture,
+    session: &se_types::SessionId,
+) -> Result<RoutedCall, Box<dyn std::error::Error>> {
+    let mut admission = f.self_scope(&f.a).admission;
+    admission.session = Some(session.clone());
+    Ok(RoutedCall::Deferred {
+        hook: None,
+        admitted: Box::new(HostedCall {
+            remote_credential: None,
+            input: HostedInput::Operation(se_core::ops::AnyOp::WorkingStateGet(Default::default())),
+            kernel: se_core::dispatch::Kernel::new(se_core::dispatch::CallFacts {
+                event: fixture::event()?,
+                message: fixture::message()?,
+                agent: fixture::agent()?,
+                profile_event: fixture::event()?,
+                notification_event: fixture::event()?,
+                notification_message: fixture::message()?,
+                occurred_at_us: now()?,
+                door: Door::Cli,
+            })?,
+            admission,
+            terminal: se_core::admission::HumanTerminal::Refused {
+                reason: "agent read".into(),
+            },
+            selections: None,
+        }),
+    })
+}
+
+async fn retained_refusals_after_drain(
+    router: &HostedRouter,
+    capture: &CaptureHandle,
+    f: &Fixture,
+    session: &se_types::SessionId,
+    path: &std::path::Path,
+    binding: TranscriptPin,
+    source: se_store::RecordId,
+) -> Check {
+    let pin = se_proc::NativeSourcePin::open(path)?.ok_or("retained transcript disappeared")?;
+    let error = capture
+        .bind(binding, source, pin, &bound()?)
+        .await
+        .err()
+        .ok_or("expired capture handle admitted a new bind")?;
+    require(
+        matches!(error.body.detail(), se_types::Detail::RuntimeNotRunning(_)),
+        format!("expired bind lost its structured reopen refusal: {error}"),
+    )?;
+    require(
+        router
+            .execute_call(retained_call(f, session)?, &bound()?)
+            .await
+            .is_err(),
+        "router reopened after original lease release",
+    )?;
+    Ok(())
+}
+
 /// Retained public coordinators cannot keep native custody or use drained storage.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn retained_router_and_capture_refuse_after_drain_without_retaining_the_lease() -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;
@@ -156,35 +211,9 @@ fn retained_router_and_capture_refuse_after_drain_without_retaining_the_lease() 
             .await?;
         let listener = host.listen(rt.handle().clone(), &bound()?).await?;
         let router = host.router()?;
-        let call = || -> Result<RoutedCall, Box<dyn std::error::Error>> {
-            let mut admission = f.self_scope(&f.a).admission;
-            admission.session = Some(session.clone());
-            Ok(RoutedCall::Deferred {
-                hook: None,
-                admitted: Box::new(HostedCall {
-                    remote_credential: None,
-                    input: HostedInput::Operation(se_core::ops::AnyOp::WorkingStateGet(
-                        Default::default(),
-                    )),
-                    kernel: se_core::dispatch::Kernel::new(se_core::dispatch::CallFacts {
-                        event: fixture::event()?,
-                        message: fixture::message()?,
-                        agent: fixture::agent()?,
-                        profile_event: fixture::event()?,
-                        notification_event: fixture::event()?,
-                        notification_message: fixture::message()?,
-                        occurred_at_us: now()?,
-                        door: Door::Cli,
-                    })?,
-                    admission,
-                    terminal: se_core::admission::HumanTerminal::Refused {
-                        reason: "agent read".into(),
-                    },
-                    selections: None,
-                }),
-            })
-        };
-        router.execute_call(call()?, &bound()?).await?;
+        router
+            .execute_call(retained_call(&f, &session)?, &bound()?)
+            .await?;
         host.local_stop().request();
         let report = host.serve(listener).await.finish(&bound()?).await;
         require(
@@ -192,7 +221,10 @@ fn retained_router_and_capture_refuse_after_drain_without_retaining_the_lease() 
             "clean drain failed",
         )?;
         require(
-            router.execute_call(call()?, &bound()?).await.is_err(),
+            router
+                .execute_call(retained_call(&f, &session)?, &bound()?)
+                .await
+                .is_err(),
             "retained router used drained storage",
         )?;
         drop(report);
@@ -202,21 +234,8 @@ fn retained_router_and_capture_refuse_after_drain_without_retaining_the_lease() 
             .open(f.options.state_directory.join("runtime.lock"))?;
         lock.try_lock()
             .map_err(|e| format!("retained router/capture held the OS lease: {e}"))?;
-        let pin =
-            se_proc::NativeSourcePin::open(&path)?.ok_or("retained transcript disappeared")?;
-        let error = capture
-            .bind(binding, source, pin, &bound()?)
-            .await
-            .err()
-            .ok_or("expired capture handle admitted a new bind")?;
-        require(
-            matches!(error.body.detail(), se_types::Detail::RuntimeNotRunning(_)),
-            format!("expired bind lost its structured reopen refusal: {error}"),
-        )?;
-        require(
-            router.execute_call(call()?, &bound()?).await.is_err(),
-            "router reopened after original lease release",
-        )?;
+        retained_refusals_after_drain(&router, &capture, &f, &session, &path, binding, source)
+            .await?;
         Ok(())
     })
 }
