@@ -5,8 +5,8 @@
 //! job object denies the breakaway required by the native process boundary.
 #![cfg(windows)]
 use se_host::{
-    CallContext, ClaudeHarness, Harness, HarnessAttach, HarnessKind, HarnessRequest, ProbeRequest,
-    ProviderIoPlatform, SessionIdentity, WindowsProviderIo,
+    CallContext, ClaudeHarness, Harness, HarnessAttach, HarnessKind, HarnessRequest, LaunchOutcome,
+    ProbeRequest, ProviderIoPlatform, ProviderTransport, SessionIdentity, WindowsProviderIo,
 };
 use se_proc::*;
 use se_types::{Body, IdempotencyKey, NativePath, Read, Secret};
@@ -207,14 +207,7 @@ fn main(){
     }
     Ok(exe)
 }
-/// Protects: both real quiet reads are retained through task abortion, each
-/// completion is consumed/released, and exact All-close frees this native port.
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Check {
+fn fixture_root() -> Check<(PathBuf, [u8; 16])> {
     let nonce: [u8; 16] = random_secret()?.expose()[..16].try_into()?;
     let root = std::env::temp_dir().join(format!(
         "se-harness-close-{}-{}",
@@ -231,11 +224,17 @@ fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Ch
     ))?;
     let root =
         fs::canonicalize(&root).step(format!("canonicalize fresh fixture {}", root.display()))?;
-    phase("compile helper");
-    let executable = helper(&root)?;
+    Ok((root, nonce))
+}
+
+fn open_native_runtime(
+    nonce: [u8; 16],
+) -> Check<(
+    Arc<NativeProcessRuntime>,
+    Arc<WindowsProviderIo<NativeProcessRuntime>>,
+)> {
     let machine = MachineId::new("independent-harness-close")?;
     let host = HostInstanceId(nonce);
-    let generation = GenerationId::new(1)?;
     let runtime = Arc::new(
         NativeProcessRuntime::open(HostConfig {
             machine: machine.clone(),
@@ -260,24 +259,39 @@ fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Ch
             max_buffer_bytes: 196608,
         },
     ));
-    let identity = SessionIdentity {
+    Ok((runtime, io))
+}
+
+fn fixture_identity(nonce: [u8; 16]) -> Check<SessionIdentity> {
+    Ok(SessionIdentity {
         project: se_types::ProjectId::from_parts(1_700_000_000_000, nonce[..10].try_into()?)?,
-        agent: se_types::AgentId::from_parts(1_700_000_000_000, nonce[..10].try_into()?)?,
-        session: se_types::SessionId::from_parts(1_700_000_000_000, nonce[..10].try_into()?)?,
-    };
-    let policy = LaunchPolicy {
+        agent: se_types::AgentId::from_parts(1_700_000_000, nonce[..10].try_into()?)?,
+        session: se_types::SessionId::from_parts(1_700_000_000, nonce[..10].try_into()?)?,
+    })
+}
+
+fn fixture_policy(root: &std::path::Path) -> LaunchPolicy {
+    LaunchPolicy {
         containment: ContainmentRequirement::BestAvailable,
         writes: WritePolicy::Workspace {
-            roots: vec![root.clone()],
-            scratch: root.clone(),
+            roots: vec![root.to_path_buf()],
+            scratch: root.to_path_buf(),
         },
         network: NetworkPolicy::Allow,
         hardening: OptionalHardening::Off,
-    };
-    let request = HarnessRequest {
+    }
+}
+
+fn build_harness_request(
+    root: &std::path::Path,
+    identity: &SessionIdentity,
+    policy: &LaunchPolicy,
+    executable: &std::path::Path,
+) -> Check<HarnessRequest> {
+    Ok(HarnessRequest {
         identity: identity.clone(),
-        executable: NativePath::from_local(executable.clone())?,
-        cwd: NativePath::from_local(root.clone())?,
+        executable: NativePath::from_local(executable.to_path_buf())?,
+        cwd: NativePath::from_local(root.to_path_buf())?,
         profile: se_store::Profile {
             provider_settings: Default::default(),
             provider: se_store::Provider::Claude,
@@ -299,8 +313,21 @@ fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Ch
         mcp_bearer: Secret::new(vec![19; 32])?,
         key: IdempotencyKey::new("independent-idle-close")?,
         sign_in: None,
-    };
-    let conversation = se_host::claude_conversation(&request)?;
+    })
+}
+
+fn prepare_native_child(
+    root: &std::path::Path,
+    nonce: [u8; 16],
+    runtime: &Arc<NativeProcessRuntime>,
+    request: &HarnessRequest,
+    policy: LaunchPolicy,
+    executable: PathBuf,
+) -> Check<(PreparedLaunch, Scope)> {
+    let machine = MachineId::new("independent-harness-close")?;
+    let host = HostInstanceId(nonce);
+    let generation = GenerationId::new(1)?;
+    let conversation = se_host::claude_conversation(request)?;
     let lifecycle = LifecycleId::from_parts(1_700_000_000_000, nonce[..10].try_into()?)?;
     let prepared = runtime
         .prepare_launch(
@@ -320,7 +347,7 @@ fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Ch
                 generation,
                 executable,
                 arguments: vec![conversation.as_str().into()],
-                cwd: root.clone(),
+                cwd: root.to_path_buf(),
                 environment: Environment { entries: vec![] },
                 stdio: StandardIo {
                     stdin: None,
@@ -335,21 +362,22 @@ fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Ch
             },
         )
         .map_err(native)?;
-    let mut scope = Scope {
-        runtime: runtime.clone(),
-        process: prepared.process,
-        generation,
-        released: false,
-    };
-    phase("open native stdio");
-    let streams = io
-        .open(&scope.process, &identity)
-        .step("open native stdio")?;
-    runtime
-        .bind_stdio(&prepared.prepared, streams.child)
-        .map_err(native)?;
-    phase("begin native child launch");
-    let ticket = match runtime.begin_launch(prepared.prepared) {
+    Ok((
+        prepared.prepared,
+        Scope {
+            runtime: runtime.clone(),
+            process: prepared.process,
+            generation,
+            released: false,
+        },
+    ))
+}
+
+fn begin_native_child(
+    runtime: &Arc<NativeProcessRuntime>,
+    prepared: PreparedLaunch,
+) -> Check<Box<LaunchSuccess>> {
+    let ticket = match runtime.begin_launch(prepared) {
         LaunchStart::Pending { ticket, .. } => ticket,
         LaunchStart::Failed(failure) => {
             return Err(format!(
@@ -369,94 +397,155 @@ fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Ch
             _ => return Err("native provider start pending".into()),
         }
     };
+    Ok(launched)
+}
+
+struct NativeFixture {
+    root: PathBuf,
+    runtime: Arc<NativeProcessRuntime>,
+    io: Arc<WindowsProviderIo<NativeProcessRuntime>>,
+    scope: Scope,
+}
+
+async fn probe_and_attach(
+    fixture: &NativeFixture,
+    request: HarnessRequest,
+    launched: Box<LaunchSuccess>,
+    transport: ProviderTransport,
+) -> Check<(ClaudeHarness, LaunchOutcome)> {
+    phase("probe actual ClaudeHarness");
+    let harness = ClaudeHarness::new(
+        fixture.io.clone(),
+        std::env::current_exe().step("resolve harness hook executable")?,
+        fixture.root.clone(),
+        43210,
+    );
+    harness
+        .probe(
+            ProbeRequest {
+                kind: HarnessKind::ClaudeCode,
+                command: request.executable.to_local()?,
+            },
+            context()?,
+        )
+        .await
+        .step("probe actual ClaudeHarness")?;
+    phase("attach actual ClaudeHarness");
+    let mut retained = None;
+    let outcome = harness
+        .attach(
+            HarnessAttach {
+                request,
+                process: Arc::new(launched.process),
+                record: launched.record,
+                transport,
+                transcript: Read::Absent {
+                    checked: "protocol fixture has no transcript".into(),
+                },
+                provider_exit: Arc::new(
+                    || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+                        Box::pin(async { false })
+                    },
+                ),
+            },
+            &mut retained,
+            context()?,
+        )
+        .await
+        .step("attach actual ClaudeHarness")?;
+    assert!(retained.is_some(), "startup streams have no cleanup owner");
+    Ok((harness, outcome))
+}
+
+async fn abort_drains_and_release(
+    fixture: &mut NativeFixture,
+    harness: &ClaudeHarness,
+    outcome: &LaunchOutcome,
+) -> Check {
+    phase("observe both idle drain tickets");
+    let until = Instant::now() + Duration::from_secs(5);
+    let pending = loop {
+        let state = fixture
+            .runtime
+            .stdio_state(&fixture.scope.process)
+            .map_err(native)?
+            .ok_or("port vanished before close")?;
+        if state.operations.len() == 2 {
+            break state
+                .operations
+                .into_iter()
+                .map(|ticket| ticket.operation)
+                .collect::<Vec<_>>();
+        }
+        if Instant::now() >= until {
+            return Err("both real idle drain operations were not observed".into());
+        }
+        tokio::task::yield_now().await;
+    };
+    // Single-thread runtime: stop/witness the child synchronously without polling
+    // either drain again. Native completion can arrive, but its future still owns
+    // the ticket when the real harness aborts and joins both tasks next.
+    phase("stop exact native child before polling drains");
+    let _witness = fixture.scope.stop().step("stop exact native child")?;
+    phase("abort and join actual harness drains");
+    let closed = harness.close_binding(&outcome.binding, context()?).await;
+    let released = fixture
+        .runtime
+        .stdio_state(&fixture.scope.process)
+        .map_err(native)?
+        .is_none();
+    fixture
+        .scope
+        .cleanup()
+        .step("release exact native fixture custody")?; // even a red result cannot leak kernel operations or a child
+    assert!(
+        closed.is_ok(),
+        "real harness close lost idle operations {pending:?}: {closed:?}"
+    );
+    assert!(
+        released,
+        "harness reported closure but its exact native port remains"
+    );
+    Ok(())
+}
+
+/// Protects: both real quiet reads are retained through task abortion, each
+/// completion is consumed/released, and exact All-close frees this native port.
+#[test]
+fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Check {
+    let (root, nonce) = fixture_root()?;
+    phase("compile helper");
+    let executable = helper(&root)?;
+    let (runtime, io) = open_native_runtime(nonce)?;
+    let identity = fixture_identity(nonce)?;
+    let policy = fixture_policy(&root);
+    let request = build_harness_request(&root, &identity, &policy, &executable)?;
+    let (prepared, scope) =
+        prepare_native_child(&root, nonce, &runtime, &request, policy, executable)?;
+    phase("open native stdio");
+    let streams = io
+        .open(&scope.process, &identity)
+        .step("open native stdio")?;
+    runtime
+        .bind_stdio(&prepared, streams.child)
+        .map_err(native)?;
+    phase("begin native child launch");
+    let launched = begin_native_child(&runtime, prepared)?;
+    let mut fixture = NativeFixture {
+        root: root.clone(),
+        runtime,
+        io,
+        scope,
+    };
     let engine = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(2)
         .build()
         .step("build current-thread Tokio runtime")?;
     engine.block_on(async {
-        phase("probe actual ClaudeHarness");
-        let harness = ClaudeHarness::new(
-            io,
-            std::env::current_exe().step("resolve harness hook executable")?,
-            root.clone(),
-            43210,
-        );
-        harness
-            .probe(
-                ProbeRequest {
-                    kind: HarnessKind::ClaudeCode,
-                    command: request.executable.to_local()?,
-                },
-                context()?,
-            )
-            .await
-            .step("probe actual ClaudeHarness")?;
-        phase("attach actual ClaudeHarness");
-        let mut retained = None;
-        let outcome = harness
-            .attach(
-                HarnessAttach {
-                    request,
-                    process: Arc::new(launched.process),
-                    record: launched.record,
-                    transport: streams.host,
-                    transcript: Read::Absent {
-                        checked: "protocol fixture has no transcript".into(),
-                    },
-                    provider_exit: Arc::new(
-                        || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
-                            Box::pin(async { false })
-                        },
-                    ),
-                },
-                &mut retained,
-                context()?,
-            )
-            .await
-            .step("attach actual ClaudeHarness")?;
-        assert!(retained.is_some(), "startup streams have no cleanup owner");
-        phase("observe both idle drain tickets");
-        let until = Instant::now() + Duration::from_secs(5);
-        let pending = loop {
-            let state = runtime
-                .stdio_state(&scope.process)
-                .map_err(native)?
-                .ok_or("port vanished before close")?;
-            if state.operations.len() == 2 {
-                break state
-                    .operations
-                    .into_iter()
-                    .map(|ticket| ticket.operation)
-                    .collect::<Vec<_>>();
-            }
-            if Instant::now() >= until {
-                return Err("both real idle drain operations were not observed".into());
-            }
-            tokio::task::yield_now().await;
-        };
-        // Single-thread runtime: stop/witness the child synchronously without polling
-        // either drain again. Native completion can arrive, but its future still owns
-        // the ticket when the real harness aborts and joins both tasks next.
-        phase("stop exact native child before polling drains");
-        let _witness = scope.stop().step("stop exact native child")?;
-        phase("abort and join actual harness drains");
-        let closed = harness.close_binding(&outcome.binding, context()?).await;
-        let released = runtime
-            .stdio_state(&scope.process)
-            .map_err(native)?
-            .is_none();
-        scope
-            .cleanup()
-            .step("release exact native fixture custody")?; // even a red result cannot leak kernel operations or a child
-        assert!(
-            closed.is_ok(),
-            "real harness close lost idle operations {pending:?}: {closed:?}"
-        );
-        assert!(
-            released,
-            "harness reported closure but its exact native port remains"
-        );
+        let (harness, outcome) =
+            probe_and_attach(&fixture, request, launched, streams.host).await?;
+        abort_drains_and_release(&mut fixture, &harness, &outcome).await?;
         Ok::<(), Box<dyn std::error::Error>>(())
     })?;
     // Only ordinary files were created here. Preserve the fixture on any failure.

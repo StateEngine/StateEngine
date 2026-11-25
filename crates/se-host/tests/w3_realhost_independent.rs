@@ -126,19 +126,13 @@ fn open_refuses_an_uninitialized_home_by_name() {
 /// original key and intent replay to the original committed identity with a
 /// single prepared/activated store pair; and a second binding for the same
 /// agent is refused by name until the first is revoked.
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-fn bind_commits_once_and_replays_the_original_identity() {
-    let judge = Judge::new("bind").required();
-    let opened = judge.open().required();
-    let generation = judge.activate(&opened).required();
-    let host = opened.host.clone();
-
+fn committed_bind(
+    judge: &Judge,
+    host: &Arc<dyn api::Host>,
+    generation: api::Generation,
+) -> (api::Commit<api::SessionIdentity>, api::SessionIdentity) {
     let issued = judge
-        .bind(&host, generation, "conv-bind-1", "judge-bind-1")
+        .bind(host, generation, "conv-bind-1", "judge-bind-1")
         .required();
     let (commit, identity) = committed_value(issued.receipt.clone(), "bind").required();
     assert_eq!(
@@ -163,21 +157,11 @@ fn bind_commits_once_and_replays_the_original_identity() {
         identity.clone(),
         "the issued grant carries the committed identity"
     );
+    (commit, identity)
+}
 
-    let replay = judge
-        .bind(&host, generation, "conv-bind-1", "judge-bind-1")
-        .required();
-    let (replay_commit, replay_identity) = replayed_value(replay.receipt, "bind replay").required();
-    assert_eq!(
-        replay_identity, identity,
-        "the replay returns the original committed identity"
-    );
-    assert_eq!(
-        replay_commit.event, commit.event,
-        "the replay names the original committed event"
-    );
-
-    let record = session_record(&judge, generation.0, &identity.session.0).required();
+fn bind_store_record(judge: &Judge, generation: api::Generation, identity: &api::SessionIdentity) {
+    let record = session_record(judge, generation.0, &identity.session.0).required();
     match &record.current.body {
         EventBody::SessionActivated { session, .. } => {
             assert_eq!(
@@ -230,6 +214,30 @@ fn bind_commits_once_and_replays_the_original_identity() {
         2,
         "one prepared and one activated event, nothing else"
     );
+}
+
+#[test]
+fn bind_commits_once_and_replays_the_original_identity() {
+    let judge = Judge::new("bind").required();
+    let opened = judge.open().required();
+    let generation = judge.activate(&opened).required();
+    let host = opened.host.clone();
+
+    let (commit, identity) = committed_bind(&judge, &host, generation);
+    let replay = judge
+        .bind(&host, generation, "conv-bind-1", "judge-bind-1")
+        .required();
+    let (replay_commit, replay_identity) = replayed_value(replay.receipt, "bind replay").required();
+    assert_eq!(
+        replay_identity, identity,
+        "the replay returns the original committed identity"
+    );
+    assert_eq!(
+        replay_commit.event, commit.event,
+        "the replay names the original committed event"
+    );
+
+    bind_store_record(&judge, generation, &identity);
 
     let second = judge.bind(&host, generation, "conv-bind-2", "judge-bind-2");
     let second_error = second
@@ -250,27 +258,18 @@ fn bind_commits_once_and_replays_the_original_identity() {
 /// conversation is refused by name; continuity reads the captured turns back
 /// under the bound identity; and the public history shows both turns with the
 /// app-server provenance.
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-fn capture_replays_by_natural_key_without_inventing_a_transcript_path() {
-    let judge = Judge::new("capture").required();
-    let opened = judge.open().required();
-    let generation = judge.activate(&opened).required();
-    let host = opened.host.clone();
-    let issued = judge
-        .bind(&host, generation, "conv-capture-1", "judge-bind-3")
-        .required();
-    let session = issued.session;
-
-    let user_text = "judge user turn: π and café";
-    let assistant_text = "judge assistant turn";
+fn capture_and_replay_turns(
+    judge: &Judge,
+    host: &Arc<dyn api::Host>,
+    session: &api::BoundSession,
+    generation: api::Generation,
+    user_text: &str,
+    assistant_text: &str,
+) -> (api::EventRef, api::EventRef) {
     let user_receipt = judge
         .capture(
-            &host,
-            &session,
+            host,
+            session,
             generation,
             TurnInput {
                 conversation: "conv-capture-1",
@@ -284,8 +283,8 @@ fn capture_replays_by_natural_key_without_inventing_a_transcript_path() {
     let (user_commit, user_event) = committed_value(user_receipt, "user capture").required();
     let assistant_receipt = judge
         .capture(
-            &host,
-            &session,
+            host,
+            session,
             generation,
             TurnInput {
                 conversation: "conv-capture-1",
@@ -305,8 +304,8 @@ fn capture_replays_by_natural_key_without_inventing_a_transcript_path() {
 
     let replay = judge
         .capture(
-            &host,
-            &session,
+            host,
+            session,
             generation,
             TurnInput {
                 conversation: "conv-capture-1",
@@ -329,8 +328,8 @@ fn capture_replays_by_natural_key_without_inventing_a_transcript_path() {
 
     let natural_replay = judge
         .capture(
-            &host,
-            &session,
+            host,
+            session,
             generation,
             TurnInput {
                 conversation: "conv-capture-1",
@@ -351,10 +350,18 @@ fn capture_replays_by_natural_key_without_inventing_a_transcript_path() {
         natural_commit.event, user_commit.event,
         "natural replay preserves the first committed event"
     );
+    (user_event, assistant_event)
+}
 
+fn capture_refusals(
+    judge: &Judge,
+    host: &Arc<dyn api::Host>,
+    session: &api::BoundSession,
+    generation: api::Generation,
+) {
     let bad_digest = judge.capture_with(
-        &host,
-        &session,
+        host,
+        session,
         generation,
         api::CapturedTurn {
             conversation: api::ProviderSessionId("conv-capture-1".into()),
@@ -385,8 +392,8 @@ fn capture_replays_by_natural_key_without_inventing_a_transcript_path() {
     .required();
 
     let foreign = judge.capture_with(
-        &host,
-        &session,
+        host,
+        session,
         generation,
         api::CapturedTurn {
             conversation: api::ProviderSessionId("conv-other".into()),
@@ -417,8 +424,15 @@ fn capture_replays_by_natural_key_without_inventing_a_transcript_path() {
         "original bound generation and provider conversation",
     )
     .required();
+}
 
-    let rows = turn_rows(&judge, generation.0).required();
+fn assert_captured_store_turns(
+    judge: &Judge,
+    generation: api::Generation,
+    user_text: &str,
+    assistant_text: &str,
+) {
+    let rows = turn_rows(judge, generation.0).required();
     let turns: Vec<&StoredEvent> = rows
         .iter()
         .filter(|row| matches!(row.body, EventBody::SessionTurn { .. }))
@@ -497,8 +511,18 @@ fn capture_replays_by_natural_key_without_inventing_a_transcript_path() {
             "the evidence length is the text length"
         );
     }
+}
 
-    let context = judge.continuity(&host, &session, generation).required();
+fn assert_capture_continuity(
+    judge: &Judge,
+    host: &Arc<dyn api::Host>,
+    session: &api::BoundSession,
+    generation: api::Generation,
+    issued: &api::IssuedSession,
+    user_text: &str,
+    assistant_text: &str,
+) {
+    let context = judge.continuity(host, session, generation).required();
     assert_eq!(
         context.identity, issued.identity,
         "continuity returns the bound identity"
@@ -522,7 +546,40 @@ fn capture_replays_by_natural_key_without_inventing_a_transcript_path() {
         }
         other => panic!("the linked W3 binding issues no packet, got {other:?}"),
     }
+}
 
+#[test]
+fn capture_replays_by_natural_key_without_inventing_a_transcript_path() {
+    let judge = Judge::new("capture").required();
+    let opened = judge.open().required();
+    let generation = judge.activate(&opened).required();
+    let host = opened.host.clone();
+    let issued = judge
+        .bind(&host, generation, "conv-capture-1", "judge-bind-3")
+        .required();
+    let session = &issued.session;
+
+    let user_text = "judge user turn: π and café";
+    let assistant_text = "judge assistant turn";
+    let (user_event, assistant_event) = capture_and_replay_turns(
+        &judge,
+        &host,
+        session,
+        generation,
+        user_text,
+        assistant_text,
+    );
+    capture_refusals(&judge, &host, session, generation);
+    assert_captured_store_turns(&judge, generation, user_text, assistant_text);
+    assert_capture_continuity(
+        &judge,
+        &host,
+        session,
+        generation,
+        &issued,
+        user_text,
+        assistant_text,
+    );
     assert_public_turn(
         &judge,
         &user_event.id.0,
