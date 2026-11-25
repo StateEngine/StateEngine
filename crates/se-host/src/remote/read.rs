@@ -288,9 +288,9 @@ fn observe(
     let mut session = session_view(&facts.session, &facts.target.agent)?;
     let recorded_exit = match &facts.process {
         Read::Present { value } => {
-            crate::agent_observation::RecordedExit::from_event(&value.current.body)
+            se_agent_observation::RecordedExit::from_event(&value.current.body)
         }
-        _ => crate::agent_observation::RecordedExit::Other,
+        _ => se_agent_observation::RecordedExit::Other,
     };
     let process = process_state(
         facts.process,
@@ -355,7 +355,7 @@ fn observe(
         recorded_session,
     );
     let plan = if let Some(home) = home {
-        plan.with_command_home(home)
+        plan.with_command_home(home, crate::state_files::machine_identity_in)
     } else {
         plan
     };

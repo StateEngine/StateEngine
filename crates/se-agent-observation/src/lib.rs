@@ -1,28 +1,30 @@
 //! Two-phase status observation shared by CLI and hosted consumers. SQL facts
 //! are copied first; native reads run only after the caller closes its snapshot.
 use se_core::ops::{AgentRow, ConversationView, ResumeCommand, SessionView};
+use se_harness::model::SessionIdentity;
 use se_store::{ProcessIdentityRecord, SourceEvidence};
 use se_types::{ProjectId, Read, Result, SeError};
 use std::time::Instant;
 mod approval;
 mod background;
-pub(crate) use background::{busy, row as background};
+pub use background::{busy, row as background};
 mod capture;
 mod native;
-pub(crate) mod output;
+pub mod output;
 mod plan;
 pub use plan::prepare_agent_observation;
-pub(crate) use plan::resume_source;
+pub use plan::resume_source;
 
-pub(crate) enum RecordedExit {
+pub enum RecordedExit {
     Other,
     Reboot,
 }
 
 pub struct AgentObservationPlan {
     project: ProjectId,
-    command_home: Option<std::path::PathBuf>,
-    identity: Option<crate::SessionIdentity>,
+    /// The command home and the reader for its protected machine identity.
+    command_home: Option<(std::path::PathBuf, MachineIdentity)>,
+    identity: Option<SessionIdentity>,
     row: AgentRow,
     process: Read<ProcessIdentityRecord>,
     recorded_exit: RecordedExit,
@@ -37,20 +39,19 @@ impl AgentObservationPlan {
         self.status_attention = true;
         self
     }
-    /// Scoped remote metadata already passed the grant-filtered read port.
-    #[cfg(feature = "remote")]
-    pub(crate) fn remote(
+    /// Every plan's identity names the row's own recorded session.
+    fn new(
         project: ProjectId,
         row: AgentRow,
         process: Read<ProcessIdentityRecord>,
         recorded_exit: RecordedExit,
-        session: Option<&se_store::ProjectionRecord>,
+        capture: Read<SourceEvidence>,
     ) -> Self {
         let identity = row
             .session
             .session_id
             .clone()
-            .map(|session| crate::SessionIdentity {
+            .map(|session| SessionIdentity {
                 project: project.clone(),
                 agent: row.id.clone(),
                 session,
@@ -62,25 +63,40 @@ impl AgentObservationPlan {
             row,
             process,
             recorded_exit,
-            capture: Read::Absent {
-                checked: "remote list does not request private transcript custody".into(),
-            },
+            capture,
             control_failure: None,
             status_attention: false,
+            setup_expired: false,
+            setup_retryable: false,
+        }
+    }
+    /// Scoped remote metadata already passed the grant-filtered read port.
+    pub fn remote(
+        project: ProjectId,
+        row: AgentRow,
+        process: Read<ProcessIdentityRecord>,
+        recorded_exit: RecordedExit,
+        session: Option<&se_store::ProjectionRecord>,
+    ) -> Self {
+        let capture = Read::Absent {
+            checked: "remote list does not request private transcript custody".into(),
+        };
+        Self {
             setup_expired: session.is_some_and(se_core::ops::agent_launch::expired_attended_setup),
             setup_retryable: session
                 .is_some_and(se_core::ops::agent_launch::retryable_attended_setup),
+            ..Self::new(project, row, process, recorded_exit, capture)
         }
     }
 
-    /// Presentation context only; native observation authority is unchanged.
-    pub fn with_command_home(mut self, home: &std::path::Path) -> Self {
-        self.command_home = Some(home.to_owned());
+    /// Home for printed commands, plus the reader for its protected machine identity.
+    pub fn with_command_home(mut self, home: &std::path::Path, machine: MachineIdentity) -> Self {
+        self.command_home = Some((home.to_owned(), machine));
         self
     }
 }
 pub struct AgentObservation {
-    identity: Option<crate::SessionIdentity>,
+    identity: Option<SessionIdentity>,
     agent: se_types::AgentId,
     session: SessionView,
     conversation: ConversationView,
@@ -110,7 +126,7 @@ impl AgentObservation {
 }
 fn launch_command(plan: &AgentObservationPlan, fresh: bool) -> Option<se_core::ops::AgentCommand> {
     match &plan.command_home {
-        Some(home) => {
+        Some((home, _)) => {
             se_core::ops::AgentCommand::launch_in_home(&plan.row.id, home, &plan.project, fresh)
         }
         None => Some(se_core::ops::AgentCommand::launch(
@@ -129,7 +145,9 @@ fn apply_control_failure(plan: &mut AgentObservationPlan) {
     plan.row.resume.ready = false;
     plan.row.resume.mode = "reconcile".into();
     let stop = match &plan.command_home {
-        Some(home) => se_core::ops::AgentCommand::stop_in_home(&plan.row.id, home, &plan.project),
+        Some((home, _)) => {
+            se_core::ops::AgentCommand::stop_in_home(&plan.row.id, home, &plan.project)
+        }
         None => Some(se_core::ops::AgentCommand::stop(
             &plan.row.id,
             None,
@@ -201,6 +219,10 @@ fn apply_resume_and_setup(plan: &mut AgentObservationPlan) {
         plan.row.resume.mode = "running".into();
     }
 }
+/// Reads the protected machine identity under a command home. The caller owns
+/// the state files, so it resolves the identity for the reboot proof.
+pub type MachineIdentity = fn(&std::path::Path) -> Result<se_types::MachineId>;
+
 pub fn observe_agent(
     mut plan: AgentObservationPlan,
     deadline: Instant,

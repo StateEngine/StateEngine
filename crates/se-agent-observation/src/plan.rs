@@ -4,7 +4,7 @@ use se_core::{ops::process_commit, scope, store_error::store_error};
 use se_store::{Actor, Consent, EventBody, Snapshot, StoredText};
 
 impl RecordedExit {
-    pub(crate) fn from_event(event: &EventBody<StoredText>) -> Self {
+    pub fn from_event(event: &EventBody<StoredText>) -> Self {
         match event {
             EventBody::ProcessTransition {
                 to: se_store::ProcessState::Exited,
@@ -26,27 +26,13 @@ pub fn prepare_agent_observation<S: Snapshot>(
         Err(error) => {
             let mut row = row.clone();
             degrade(&mut row, &error);
-            Ok(AgentObservationPlan {
-                project: project.clone(),
-                command_home: None,
-                identity: row
-                    .session
-                    .session_id
-                    .clone()
-                    .map(|session| crate::SessionIdentity {
-                        project: project.clone(),
-                        agent: row.id.clone(),
-                        session,
-                    }),
+            Ok(AgentObservationPlan::new(
+                project.clone(),
                 row,
-                process: unreadable("agent session preparation", &error),
-                recorded_exit: RecordedExit::Other,
-                capture: unreadable("agent session preparation", &error),
-                control_failure: None,
-                status_attention: false,
-                setup_expired: false,
-                setup_retryable: false,
-            })
+                unreadable("agent session preparation", &error),
+                RecordedExit::Other,
+                unreadable("agent session preparation", &error),
+            ))
         }
     }
 }
@@ -117,23 +103,17 @@ fn prepare<S: Snapshot>(
     read: &mut S,
 ) -> Result<AgentObservationPlan> {
     let Some(session) = row.session.session_id.clone() else {
-        return Ok(AgentObservationPlan {
-            project: project.clone(),
-            command_home: None,
-            identity: None,
-            row: row.clone(),
-            process: Read::Absent {
+        return Ok(AgentObservationPlan::new(
+            project.clone(),
+            row.clone(),
+            Read::Absent {
                 checked: "this saved agent has never launched a session".into(),
             },
-            recorded_exit: RecordedExit::Other,
-            capture: Read::Absent {
+            RecordedExit::Other,
+            Read::Absent {
                 checked: "no launched conversation to verify".into(),
             },
-            control_failure: None,
-            status_attention: false,
-            setup_expired: false,
-            setup_retryable: false,
-        });
+        ));
     };
     let head = scope::require_present(
         read.session(session.clone()).map_err(|e| store_error(&e))?,
@@ -175,21 +155,16 @@ fn prepare<S: Snapshot>(
     )
     .unwrap_or_else(|error| unreadable("committed conversation capture", error));
     Ok(AgentObservationPlan {
-        project: project.clone(),
-        command_home: None,
-        identity: Some(crate::SessionIdentity {
-            project: project.clone(),
-            agent: row.id.clone(),
-            session,
-        }),
-        row: row.clone(),
-        process,
-        recorded_exit,
-        capture,
         control_failure,
-        status_attention: false,
         setup_expired: se_core::ops::agent_launch::expired_attended_setup(&head),
         setup_retryable: se_core::ops::agent_launch::retryable_attended_setup(&head),
+        ..AgentObservationPlan::new(
+            project.clone(),
+            row.clone(),
+            process,
+            recorded_exit,
+            capture,
+        )
     })
 }
 fn check_capture_outcome<S: Snapshot>(
@@ -356,7 +331,7 @@ fn capture_evidence<S: Snapshot>(
 
 /// Copy the same trusted file evidence used by status before a native reopen.
 /// Historical imports and event-only capture do not assert a local file path.
-pub(crate) fn resume_source<S: Snapshot>(
+pub fn resume_source<S: Snapshot>(
     plan: &se_core::ops::agent_launch::LaunchPlan,
     read: &mut S,
 ) -> Result<Option<se_types::NativePath>> {

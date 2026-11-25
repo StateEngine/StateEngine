@@ -99,6 +99,6 @@ impl LaunchCoordinator {
                 error: Some(Box::new(error.body)),
             },
         });
-        row.background = crate::agent_observation::background(row.provider, &self.native, found);
+        row.background = se_agent_observation::background(row.provider, &self.native, found);
     }
 }

@@ -11,8 +11,6 @@ mod acp_session_independent;
 #[path = "../tests/support/acp_transport_independent.rs"]
 mod acp_transport_independent;
 pub mod adoption;
-#[cfg(feature = "runtime")]
-mod agent_observation;
 #[cfg(feature = "channels")]
 pub mod channels;
 #[cfg(feature = "listener")]
@@ -28,7 +26,7 @@ use se_ssh_transport as ssh_transport;
 #[path = "../../test-support/directory.rs"]
 mod test_directory;
 #[cfg(feature = "runtime")]
-pub use agent_observation::{
+pub use se_agent_observation::{
     AgentObservation, AgentObservationPlan, observe_agent, prepare_agent_observation,
 };
 pub(crate) use se_harness::harness;

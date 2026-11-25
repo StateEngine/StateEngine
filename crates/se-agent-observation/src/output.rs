@@ -5,7 +5,7 @@ use se_core::ops::AnyOutput;
 use se_store::{Scope, Snapshot};
 use se_types::Page;
 
-pub(crate) fn prepare<S: Snapshot>(
+pub fn prepare<S: Snapshot>(
     scope: &Scope,
     output: &AnyOutput,
     read: &mut S,
@@ -27,17 +27,18 @@ pub(crate) fn prepare<S: Snapshot>(
         .collect()
 }
 
-pub(crate) fn observe(
+pub fn observe(
     output: &mut AnyOutput,
     plans: Vec<AgentObservationPlan>,
     deadline: Instant,
     home: &std::path::Path,
+    machine: MachineIdentity,
 ) -> Result<()> {
     let status = matches!(output, AnyOutput::ProjectStatus(_));
     let observations = plans
         .into_iter()
         .map(|plan| {
-            let plan = plan.with_command_home(home);
+            let plan = plan.with_command_home(home, machine);
             observe_agent(
                 if status {
                     plan.with_status_attention()
@@ -59,7 +60,7 @@ pub(crate) fn observe(
                 *page = enrich_page(page, &mut observations)?;
             }
             se_core::ops::status::pending_mail(&mut value.value);
-            crate::harness::claude::bell::pending_status(home, &mut value.value);
+            se_harness::harness::claude::bell::pending_status(home, &mut value.value);
             value.value.pending.extend(pending);
         }
         AnyOutput::AgentList(value) => {

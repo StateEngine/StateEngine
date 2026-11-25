@@ -147,7 +147,11 @@ fn count_running(
 ) -> Result<u64> {
     let mut running = 0;
     for (mut row, plan) in rows {
-        se_host::observe_agent(plan.with_command_home(home), deadline)?.apply(&mut row)?;
+        se_host::observe_agent(
+            plan.with_command_home(home, se_host::state_files::machine_identity_in),
+            deadline,
+        )?
+        .apply(&mut row)?;
         match &row.session.liveness {
             Read::Unknown { what } => {
                 return Err(scope::unreadable(

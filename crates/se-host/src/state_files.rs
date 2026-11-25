@@ -401,6 +401,13 @@ pub(crate) fn native_error(error: StateFileError) -> Box<StoreError> {
     },cause:error.to_string(),detail:StoreDetail::None,remedy:Remedy {text:"Preserve the existing file and restore native ownership/protection before retrying the same request identity.".into(),command:None},retry:Retry::Never})
 }
 
+/// The protected machine identity under a command home, for reboot proofs.
+pub fn machine_identity_in(home: &Path) -> se_types::Result<se_types::MachineId> {
+    let files = Files::open(home)
+        .map_err(|e| se_types::SeError::invalid("agent session observation", &e.to_string()))?;
+    machine_identity(&files)
+}
+
 /// Read-only machine identity for a host that never creates one (the embedded
 /// SE Code path): the same bounded, twice-read, byte-compared rule the CLI's
 /// creating port applies, through this root's retained native custody.

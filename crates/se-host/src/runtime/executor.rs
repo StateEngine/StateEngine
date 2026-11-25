@@ -170,11 +170,12 @@ async fn finish_complete(
             .blocking
             .run(BlockingClass::Foreground, &deadline, move || {
                 observe_deadline.remaining()?;
-                crate::agent_observation::output::observe(
+                se_agent_observation::output::observe(
                     &mut output,
                     observations,
                     observe_deadline.at(),
                     &command_home,
+                    crate::state_files::machine_identity_in,
                 )?;
                 if let Some(native) = native {
                     native.observe_native_output(
@@ -388,7 +389,7 @@ pub(super) fn plan(
     let result = result.and_then(|step| {
         let observations = match &step {
             OpStep::Complete(output) => {
-                crate::agent_observation::output::prepare(&admission.scope, output, &mut read)?
+                se_agent_observation::output::prepare(&admission.scope, output, &mut read)?
             }
             _ => Vec::new(),
         };

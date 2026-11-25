@@ -164,7 +164,7 @@ fn public_status_list_and_show_keep_the_selected_installation() -> Check {
         let invalid_home =
             PathBuf::from(std::ffi::OsString::from_vec(b"/private/se-\xff".to_vec()));
         se_host::observe_agent(
-            plan.with_command_home(&invalid_home),
+            plan.with_command_home(&invalid_home, se_host::state_files::machine_identity_in),
             std::time::Instant::now() + std::time::Duration::from_secs(10),
         )?
         .apply(&mut row)?;

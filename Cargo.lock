@@ -1582,6 +1582,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "se-agent-observation"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-config",
+ "se-core",
+ "se-harness",
+ "se-proc",
+ "se-store",
+ "se-types",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "se-atlas"
 version = "0.0.1-alpha.1"
 dependencies = [
@@ -1811,6 +1825,7 @@ dependencies = [
  "ignore",
  "reqwest",
  "rusqlite",
+ "se-agent-observation",
  "se-atlas-host",
  "se-atlas-records",
  "se-channels",

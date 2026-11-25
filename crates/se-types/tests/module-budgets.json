@@ -4,7 +4,8 @@
  "default_crate_lines": 40000,
  "default_directory_lines": 10000,
  "crates": {
-  "se-host": 56196,
+  "se-host": 54730,
+  "se-agent-observation": 1466,
   "se-channels": 6750,
   "se-proc": 4045,
   "se-native-proc": 16100,
@@ -87,7 +88,6 @@
   "crates/se-atlas-host/src/atlas_owner": 1701,
   "crates/se/src/runtime/host": 1630,
   "crates/se-store/src/remote": 1540,
-  "crates/se-host/src/agent_observation": 1529,
   "crates/se-host/src/remote/client": 1459,
   "crates/se-types/src/code": 1441,
   "crates/se-host/src/ipc": 1956,

@@ -6,7 +6,7 @@ use se_store::{Actor, RecordedIdentity};
 
 fn probe_native_process(
     plan: &AgentObservationPlan,
-    target: &crate::SessionIdentity,
+    target: &SessionIdentity,
     identity: &se_store::ProcessIdentityRecord,
     deadline: Instant,
 ) -> Result<Option<(se_proc::ProcessRecord, ProcessRead)>> {
@@ -31,12 +31,11 @@ fn probe_native_process(
         {
             return Err(invalid("a retained reboot exit witness for this lifecycle"));
         }
-        let home = plan
+        let (home, machine) = plan
             .command_home
             .as_ref()
             .ok_or_else(|| invalid("the local protected machine identity"))?;
-        let files = crate::state_files::Files::open(home).map_err(|e| invalid(&e.to_string()))?;
-        let machine = crate::state_files::machine_identity(&files)?;
+        let machine = machine(home)?;
         let current =
             se_proc::observe_reboot_boot(machine).map_err(|e| invalid(&format!("{e:?}")))?;
         let proof = se_proc::prove_reboot(&checkpoint, instance, &current);
