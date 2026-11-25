@@ -27,6 +27,21 @@ fn validate_component(value: &std::ffi::OsStr, path: &Path) -> Result<()> {
     }
     Ok(())
 }
+/// One bounded literal name beneath a held directory: never a path or alias.
+fn literal_leaf(leaf: &std::ffi::OsStr, path: &Path) -> Result<Vec<u16>> {
+    validate_component(leaf, path)?;
+    let units: Vec<u16> = leaf.encode_wide().collect();
+    if units.is_empty()
+        || units.len() > u16::MAX as usize / 2
+        || units.iter().any(|unit| matches!(*unit, 0 | 0x2f | 0x5c))
+    {
+        return Err(unsafe_path(
+            "one bounded literal native name required",
+            path,
+        ));
+    }
+    Ok(units)
+}
 pub fn wide(path: &Path) -> Result<Vec<u16>> {
     use std::path::Prefix;
     for component in path.components() {
@@ -390,6 +405,9 @@ impl Directory {
     }
     pub fn is_retained(&self) -> bool {
         self.retained.is_some()
+    }
+    pub fn verify_root(&self, file: &File, path: &Path) -> Result<()> {
+        self.same_metadata_root(file, path)
     }
     pub fn check_name(&self, path: &Path) -> Result<()> {
         let Some(retained) = &self.retained else {

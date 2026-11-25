@@ -24,11 +24,7 @@ pub(super) fn open(
     path: &Path,
     directory: bool,
 ) -> Result<File> {
-    validate_component(leaf, path)?;
-    let mut units: Vec<u16> = leaf.encode_wide().collect();
-    if units.is_empty() || units.len() > u16::MAX as usize / 2 || units.contains(&0) {
-        return Err(unsafe_path("bounded native path component required", path));
-    }
+    let mut units = literal_leaf(leaf, path)?;
     let mut name = UNICODE_STRING {
         Length: (units.len() * 2) as u16,
         MaximumLength: (units.len() * 2) as u16,

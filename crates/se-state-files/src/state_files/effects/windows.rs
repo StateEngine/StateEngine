@@ -1,4 +1,4 @@
-use super::{Identity, last, metadata, random, security, wide};
+use super::{Identity, last, literal_leaf, metadata, random, security, wide};
 use crate::state_files::effects::{DirectoryRemoval, absent, changed, digest, verify};
 use crate::state_files::{Result, io_error, unsafe_path};
 use sha2::{Digest, Sha256};
@@ -651,3 +651,4 @@ mod created;
 pub(in crate::state_files) use created::{
     CreatedDirectory, prepare_created_directory, validate_creation_target,
 };
+pub use created::{create_directory_at, dispose_created_directory};
