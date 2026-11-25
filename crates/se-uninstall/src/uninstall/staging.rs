@@ -180,13 +180,23 @@ impl Staging {
         if unsafe { CreateDirectoryW(native::wide(&path)?.as_ptr(), &attributes) } == 0 {
             return Err(native::last("create High uninstall staging directory"));
         }
-        let pin = open_directory(&path, false, true)?;
-        verify_high(&pin, true)?;
-        let id = directory_id(&pin)?;
-        let files = NativeStateFiles::open(&path).map_err(custody)?;
+        // The name now exists. A directory that cannot be pinned is not proven to
+        // be this one, so it is named as pending rather than deleted.
+        let pin = open_directory(&path, false, true).map_err(|cause| pending(cause, &path))?;
+        let id = directory_id(&pin).map_err(|cause| pending(cause, &path))?;
+        let directory = DirectoryCustody { path, id };
+        let opened = verify_high(&pin, true)
+            .and_then(|()| NativeStateFiles::open(&directory.path).map_err(custody));
+        let files = match opened {
+            Ok(files) => files,
+            Err(cause) => {
+                drop(pin);
+                return Err(retire_created(cause, &directory));
+            }
+        };
         Ok(Self {
             files,
-            directory: DirectoryCustody { path, id },
+            directory,
             _pin: pin,
         })
     }
@@ -195,6 +205,27 @@ impl Staging {
     }
     pub fn pin(&self) -> &File {
         &self._pin
+    }
+}
+fn pending(mut cause: UninstallNativeError, path: &Path) -> UninstallNativeError {
+    cause.pending_paths.push(path.to_owned());
+    cause
+}
+/// Retires a staging directory created by this process after a later creation
+/// step fails, returning that step's failure. A directory that cannot be retired
+/// by its identity is preserved and named as pending with the cleanup cause.
+fn retire_created(
+    cause: UninstallNativeError,
+    directory: &DirectoryCustody,
+) -> UninstallNativeError {
+    match cleanup_directory(directory) {
+        Ok(()) => cause,
+        Err(cleanup) => {
+            let mut cause = pending(cause, &directory.path);
+            cause.source =
+                io::Error::new(cause.source.kind(), format!("{}; {cleanup}", cause.source));
+            cause
+        }
     }
 }
 pub(super) fn verify_directory(custody: &DirectoryCustody) -> Result<File> {
