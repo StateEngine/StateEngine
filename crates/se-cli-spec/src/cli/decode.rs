@@ -402,6 +402,7 @@ fn decode_store(
                 .map(|v| v.parse())
                 .collect::<Result<Vec<_>>>()?,
             yes: flag(m, "yes"),
+            plan: text(m, "plan"),
             idempotency_key: key()?,
         }),
         _ => return Ok(None),

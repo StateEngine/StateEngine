@@ -202,6 +202,8 @@ pub enum StoreErrorCode {
     ContentErased,
     ErasureIncomplete,
     ErasureExternalCopies,
+    /// The copies outside custody differ from the approved plan; nothing was erased.
+    ErasurePlanChanged,
     ErasurePhysicalGuaranteeUnavailable,
 }
 pub type StoreResult<T> = std::result::Result<T, Box<StoreError>>;

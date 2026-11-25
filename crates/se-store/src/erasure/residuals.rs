@@ -45,7 +45,11 @@ pub(super) fn recipient_transcripts(
             "message.sent" => {
                 "SELECT DISTINCT s.value FROM message_data m JOIN events e ON e.seq=m.event_seq JOIN turn_data t ON t.project_id=e.project_id AND t.agent_id=m.recipient_id AND t.event_seq>m.event_seq JOIN symbols s ON s.id=t.source_path WHERE m.event_seq=?"
             }
-            _ => return Ok(None),
+            _ => {
+                return Err(invalid(format!(
+                    "recipient transcripts are recorded only for messages, not {kind}"
+                )));
+            }
         })
         .map_err(sql)?;
     let mut rows = q.query([seq]).map_err(sql)?;

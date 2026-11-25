@@ -176,7 +176,7 @@ fn run(
     if backup.through.sequence() == 0 {
         return Ok(refused(
             input,
-            "The newest automatic backup was taken before any history was saved, so it holds nothing to restore; nothing was changed. Keep using this home, or run se init to start a new store.",
+            "The newest automatic backup was taken before any history was saved, so it holds nothing to restore; nothing was changed. Keep using this home.",
         ));
     }
     let backup_owners = sorted(

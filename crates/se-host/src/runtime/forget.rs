@@ -5,7 +5,7 @@ use crate::client::lease::Deadline;
 use se_core::{
     ops::{
         AnyOutput, ErasureReceipt, StoreForget,
-        store_forget::{ForgetNext, ForgetResidual, ForgetTarget, confirm},
+        store_forget::{ForgetNext, ForgetResidual, ForgetTarget, confirm, plan_digest},
     },
     scope,
     store_error::store_error,
@@ -15,32 +15,35 @@ use se_types::Result;
 
 /// A plan's receipt, or a completed one with what the erasure actually committed.
 fn receipt(input: &StoreForget, plan: &ErasurePlan, outcome: &str) -> Result<ErasureReceipt> {
+    let targets: Vec<ForgetTarget> = plan
+        .targets
+        .iter()
+        .map(|t| ForgetTarget {
+            event: t.event.clone(),
+            revision: t.expected.value.get(),
+        })
+        .collect();
+    let residuals: Vec<ForgetResidual> = plan
+        .residuals
+        .iter()
+        .map(|r| {
+            Ok(ForgetResidual {
+                custodian: r.custodian.clone(),
+                location: r.location.to_local()?.display().to_string(),
+                reason: r.reason.clone(),
+            })
+        })
+        .collect::<Result<_>>()?;
     Ok(ErasureReceipt {
         idempotency_key: input.idempotency_key.clone(),
         outcome: outcome.into(),
         erasure: se_types::hex_lower(plan.id.as_bytes()),
-        targets: plan
-            .targets
-            .iter()
-            .map(|t| ForgetTarget {
-                event: t.event.clone(),
-                revision: t.expected.value.get(),
-            })
-            .collect(),
+        plan: plan_digest(&targets, &residuals),
+        targets,
         backups_replaced: plan.owned_generations.len(),
         required_bytes: plan.required_bytes,
         unlisted: se_core::ops::store_forget::UNLISTED.into(),
-        residuals: plan
-            .residuals
-            .iter()
-            .map(|r| {
-                Ok(ForgetResidual {
-                    custodian: r.custodian.clone(),
-                    location: r.location.to_local()?.display().to_string(),
-                    reason: r.reason.clone(),
-                })
-            })
-            .collect::<Result<_>>()?,
+        residuals,
         completed_event: None,
         next: None,
     })
@@ -78,9 +81,21 @@ pub(super) async fn execute(
         })
         .await?;
     let plan = fresh_plan(&context, &input).await?;
-    if !input.yes {
-        let mut planned = receipt(&input, &plan, "planned")?;
-        planned.next = Some(confirm(&input));
+    let mut planned = receipt(&input, &plan, "planned")?;
+    // `--yes` confirms the plan the owner saw, by its digest; any other plan is shown instead.
+    if !input.yes || input.plan.as_deref() != Some(planned.plan.as_str()) {
+        let next = confirm(&input, &planned.plan);
+        planned.next = Some(match (input.yes, &input.plan) {
+            (false, _) => next,
+            (true, None) => ForgetNext {
+                text: "Nothing was erased: --yes confirms a printed plan by its digest. Review this plan, then confirm".into(),
+                argv: next.argv,
+            },
+            (true, Some(_)) => ForgetNext {
+                text: "Nothing was erased: the plan changed since the one you confirmed. Review it, then confirm".into(),
+                argv: next.argv,
+            },
+        });
         return Ok(planned.into());
     }
     let approval = ErasureApproval {
@@ -98,11 +113,11 @@ pub(super) async fn execute(
     let report = match erasing.await {
         Ok(report) => report,
         // Nothing was erased: show the changed copies and ask again.
-        Err(error) if error.code == StoreErrorCode::SourceChanged => {
+        Err(error) if error.code == StoreErrorCode::ErasurePlanChanged => {
             let mut planned = receipt(&input, &fresh_plan(&context, &input).await?, "planned")?;
             planned.next = Some(ForgetNext {
                 text: "Nothing was erased: the copies StateEngine cannot erase changed since planning. Review them above, then confirm".into(),
-                argv: confirm(&input).argv,
+                argv: confirm(&input, &planned.plan).argv,
             });
             return Ok(planned.into());
         }
@@ -125,9 +140,14 @@ pub(super) async fn execute(
     done.backups_replaced = report.backups_replaced;
     done.completed_event = report.completed_event;
     if !report.cleanup_complete {
+        let cause = report
+            .cleanup_failure
+            .map_or_else(String::new, |cause| format!(" ({cause})"));
         done.next = Some(ForgetNext {
-            text: "The bodies are erased, but a database or backup copy could not be replaced yet; repeat this command to finish".into(),
-            argv: confirm(&input).argv,
+            text: format!(
+                "The bodies are erased, but a database or backup copy could not be replaced yet{cause}; repeat this command to finish"
+            ),
+            argv: confirm(&input, &done.plan).argv,
         });
     }
     Ok(done.into())

@@ -124,6 +124,7 @@ fn mapped_detail(error: &StoreError, subject: String, reason: String, next_step:
         | C::ContentErased
         | C::ErasureIncomplete
         | C::ErasureExternalCopies
+        | C::ErasurePlanChanged
         | C::ErasurePhysicalGuaranteeUnavailable => {
             Detail::SourceUnreadable(details::SourceUnreadable {
                 subject,

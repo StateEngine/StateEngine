@@ -193,6 +193,19 @@ fn refuse_unindexed(
     }
     Ok(())
 }
+/// Whether a generation's file is natively absent from the backups folder now.
+pub(crate) fn generation_absent(
+    files: &dyn StateFiles,
+    home: &Path,
+    id: RecordId,
+) -> StoreResult<bool> {
+    let path = home.join("backups").join(filename(id));
+    // Only measured absence counts; an unreadable or unknown file is not retired.
+    Ok(matches!(
+        files.inspect_metadata(&path)?,
+        se_types::Read::Absent { .. }
+    ))
+}
 pub(crate) fn remove_if_present(
     files: &dyn StateFiles,
     path: &Path,

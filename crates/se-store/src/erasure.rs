@@ -533,31 +533,36 @@ fn request(
 const BACKUP_WAIT: Duration = Duration::from_secs(60);
 /// Each new backup retires the oldest of at most two, so two fresh copies
 /// replace every generation taken before the erasure. Returns how many of
-/// `owned` are confirmed gone.
+/// `owned` are witnessed gone: removed by these backups, or absent on disk.
 fn replace_backups(
     host: &SqliteHost,
     lease: &dyn RuntimeLease,
     options: &StoreOptions,
-    info: &StoreInfo,
     owned: &[RecordId],
 ) -> StoreResult<usize> {
-    let mut remaining = owned.len();
+    let gone = |removed: &[RecordId]| -> StoreResult<usize> {
+        let mut count = 0;
+        for id in owned {
+            if removed.contains(id)
+                || crate::backup::generation_absent(lease.files(), &options.state_directory, *id)?
+            {
+                count += 1;
+            }
+        }
+        Ok(count)
+    };
+    let mut removed = Vec::new();
+    let mut retired = gone(&removed)?;
     for _ in 0..2 {
-        if remaining == 0 {
+        if retired == owned.len() {
             break;
         }
         let timeout = options.busy_timeout.max(BACKUP_WAIT);
-        crate::backup::run(options, lease, host.context.clone(), timeout)?;
-        let deadline = deadline(options.busy_timeout)?;
-        let listed = crate::backup::generation_ids(
-            lease.files(),
-            &options.state_directory,
-            &info.id,
-            deadline,
-        )?;
-        remaining = owned.iter().filter(|id| listed.contains(id)).count();
+        let report = crate::backup::run(options, lease, host.context.clone(), timeout)?;
+        removed.extend(report.removed);
+        retired = gone(&removed)?;
     }
-    Ok(owned.len() - remaining)
+    Ok(retired)
 }
 pub(crate) fn erase(
     host: &mut SqliteHost,
@@ -582,64 +587,97 @@ pub(crate) fn erase(
         ));
     }
     let options = options(host)?;
-    let observed = observe(&host.engine.db, &plan.targets, &options.state_directory);
-    let manifest = apply::manifest(&plan.id, &plan.targets, &plan.residuals);
-    match (requested(host, &plan.id)?, observed) {
-        (Some(true), _) => {
+    if requested(host, &plan.id)? == Some(true) {
+        return Err(fail(
+            StoreErrorCode::InvalidTransition,
+            "this erasure already completed",
+        ));
+    }
+    // No backup copies or publishes while this is held: one already running finishes
+    // first, and none starts until the bodies are gone. The final residual check and
+    // the list of generations to replace are both read under it.
+    let fence = host
+        .context
+        .fence(deadline(options.busy_timeout.max(BACKUP_WAIT))?)?;
+    // An interrupted erasure resumes its physical cleanup; nothing is re-planned.
+    if requested(host, &plan.id)?.is_none() {
+        let observed = observe(&host.engine.db, &plan.targets, &options.state_directory)?;
+        let residuals = inventory(
+            lease.files(),
+            &options.state_directory,
+            observed.residuals.clone(),
+        )?;
+        if !same_inventory(&residuals, &plan.residuals) {
             return Err(fail(
-                StoreErrorCode::InvalidTransition,
-                "this erasure already completed",
+                StoreErrorCode::ErasurePlanChanged,
+                "copies outside StateEngine's custody changed after planning; nothing was erased",
             ));
         }
-        // An interrupted erasure resumes its physical cleanup; nothing is re-planned.
-        (Some(false), _) => {}
-        (None, Err(error)) => return Err(error),
-        (None, Ok(observed)) => {
-            let residuals = inventory(
-                lease.files(),
-                &options.state_directory,
-                observed.residuals.clone(),
-            )?;
-            if !same_inventory(&residuals, &plan.residuals) {
-                return Err(fail(
-                    StoreErrorCode::SourceChanged,
-                    "copies outside StateEngine's custody changed after planning; review the updated plan, then confirm again",
-                ));
-            }
-            // No backup may copy across the request: wait out one already copying or
-            // publishing, and start none until the bodies are gone. Every copy taken
-            // before the erasure is then in the index read below.
-            let _fence = host
-                .context
-                .fence(deadline(options.busy_timeout.max(BACKUP_WAIT))?)?;
-            request(host, &info, &plan, &approval.owner, observed)?;
-        }
+        request(host, &info, &plan, &approval.owner, observed)?;
     }
-    // Read only after the request commits: later-planned backups hold the bodies.
     let owned = crate::backup::generation_ids(
         lease.files(),
         &options.state_directory,
         &info.id,
         deadline(options.busy_timeout)?,
     )?;
-    let rewritten = rewrite(host, lease)?;
-    let retired = if rewritten {
-        replace_backups(host, lease, &options, &info, &owned)?
-    } else {
-        0
-    };
-    let cleanup_complete = rewritten && retired == owned.len();
+    drop(fence);
     let mut report = ErasureReport {
         erasure: plan.id,
         completed_event: None,
-        cleanup_complete,
+        cleanup_complete: false,
         incarnation: info.incarnation,
         erased_fields: plan.targets.clone(),
         residuals: plan.residuals.clone(),
-        backups_replaced: retired,
+        backups_replaced: 0,
+        cleanup_failure: None,
     };
-    if cleanup_complete {
-        let scope = event_scope(host, &plan)?;
+    // The bodies are gone from here on: a later failure leaves cleanup incomplete and
+    // says why, rather than reading as if nothing happened.
+    let job = Cleanup {
+        lease,
+        options: &options,
+        info: &info,
+        plan: &plan,
+        approval: &approval,
+        owned: &owned,
+    };
+    if let Err(error) = job.run(host, &mut report) {
+        report.cleanup_complete = false;
+        report.completed_event = None;
+        report.cleanup_failure = Some(error.cause);
+    }
+    Ok(report)
+}
+/// Physical cleanup after the request committed: rewrite, replace the pinned backups,
+/// then record completion.
+struct Cleanup<'a> {
+    lease: &'a dyn RuntimeLease,
+    options: &'a StoreOptions,
+    info: &'a StoreInfo,
+    plan: &'a ErasurePlan,
+    approval: &'a ErasureApproval,
+    owned: &'a [RecordId],
+}
+impl Cleanup<'_> {
+    fn run(&self, host: &mut SqliteHost, report: &mut ErasureReport) -> StoreResult<()> {
+        let Self {
+            lease,
+            options,
+            info,
+            plan,
+            approval,
+            owned,
+        } = *self;
+        if !rewrite(host, lease)? {
+            return Ok(());
+        }
+        report.backups_replaced = replace_backups(host, lease, options, owned)?;
+        if report.backups_replaced != owned.len() {
+            return Ok(());
+        }
+        let manifest = apply::manifest(&plan.id, &plan.targets, &plan.residuals);
+        let scope = event_scope(host, plan)?;
         let event = derived_event(&plan.id, "completed", connection::now()?)?;
         let body = EventBody::ErasureCompleted {
             erasure: plan.id,
@@ -651,15 +689,16 @@ pub(crate) fn erase(
             host,
             batch(
                 host,
-                &info,
+                info,
                 &scope,
                 &approval.owner,
                 vec![(event.clone(), body)],
             )?,
         )?;
+        report.cleanup_complete = true;
         report.completed_event = Some(event);
+        Ok(())
     }
-    Ok(report)
 }
 /// The completion is recorded in the project scope its request used.
 fn event_scope(host: &SqliteHost, plan: &ErasurePlan) -> StoreResult<Scope> {
