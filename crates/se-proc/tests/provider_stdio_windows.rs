@@ -7,7 +7,7 @@ use se_proc::*;
 use std::{
     fs,
     io::{Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -171,11 +171,6 @@ fn provider_stdio_child() -> Check {
 }
 /// Protects: no ticket/port drop frees kernel buffers, stale bindings cannot consume, and only exact drained All-close releases.
 #[test]
-#[expect(
-    clippy::cognitive_complexity,
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn windows_provider_streams_keep_real_io_and_cancellation_custody() -> Check {
     let nonce: [u8; 16] = random_secret()?.expose()[..16].try_into()?;
     let root: PathBuf =
@@ -201,39 +196,7 @@ fn windows_provider_streams_keep_real_io_and_cancellation_custody() -> Check {
                 parent: ReservationParent::Windows,
                 created_at_unix_ns: 1,
             },
-            LaunchSpec {
-                executable_custody: None,
-                lifecycle: lifecycle.clone(),
-                generation,
-                executable: std::env::current_exe()?,
-                arguments: vec![
-                    "--exact".into(),
-                    "provider_stdio_child".into(),
-                    "--ignored".into(),
-                    "--nocapture".into(),
-                    "--test-threads=1".into(),
-                ],
-                cwd: root.clone(),
-                environment: Environment { entries: vec![] },
-                stdio: StandardIo {
-                    stdin: None,
-                    stdout: None,
-                    stderr: None,
-                },
-                mode: LaunchMode::Headless,
-                window: None,
-                policy: LaunchPolicy {
-                    containment: ContainmentRequirement::BestAvailable,
-                    writes: WritePolicy::Workspace {
-                        roots: vec![root.clone()],
-                        scratch: root.clone(),
-                    },
-                    network: NetworkPolicy::Allow,
-                    hardening: OptionalHardening::Off,
-                },
-                deadline: Instant::now() + Duration::from_secs(20),
-                notifications: Arc::new(Notices::default()),
-            },
+            provider_spec(&root, lifecycle.clone(), generation)?,
         )
         .map_err(error)?;
     let mut scope = Scope {
@@ -242,45 +205,209 @@ fn windows_provider_streams_keep_real_io_and_cancellation_custody() -> Check {
         generation,
         released: false,
     };
-    assert!(
-        runtime.describe(&scope.process).is_err(),
-        "prepared scope unexpectedly has a published root"
-    );
-    let identity = (&runtime as &dyn ProviderStdioApi)
-        .stdio_identity(&scope.process)
-        .map_err(|e| format!("pre-root stream identity unavailable: {e:?}"))?;
-    assert_eq!(
-        identity,
+    let identity = pre_root_identity(
+        &runtime,
+        &scope.process,
         StdioIdentity {
             lifecycle,
             host,
-            generation
-        }
-    );
+            generation,
+        },
+    )?;
     let old_sink = Arc::new(Notices::default());
     let streams = runtime
         .create_stdio(&scope.process, config(&identity, old_sink.clone()))
         .map_err(error)?;
+    refuse_out_of_bounds_requests(&runtime, &streams.port)?;
+    cancel_dropped_read(&runtime, &scope.process, &streams.port)?;
+    let foreign = refuse_foreign_arena(machine, &scope.process, &streams.port)?;
+    let (stdout, stderr) =
+        bind_and_start(&runtime, prepared.prepared, streams.child, &streams.port)?;
+    let next = GenerationId::new(2)?;
+    re_adopt(&mut scope, next)?;
+    assert_stale_binding_fenced(
+        &runtime,
+        &scope.process,
+        &streams.port,
+        [&stdout, &stderr],
+        config(&identity, old_sink.clone()),
+    );
+    let identity = StdioIdentity {
+        generation: next,
+        ..identity
+    };
+    let sink = Arc::new(Notices::default());
+    let state = attach_drained(&runtime, &scope.process, config(&identity, sink.clone()))?;
+    let old_count = notice_count(&old_sink);
+    let output = rebound(&state, &stdout).ok_or("stdout operation was lost on rebind")?;
+    let errors = rebound(&state, &stderr).ok_or("stderr operation was lost on rebind")?;
+    write_input_then_close_stdin(&runtime, &state.port, &sink)?;
+    drain_output(&runtime, &state.port, output, errors)?;
+    close_all_and_release(&runtime, &state.port, &scope.process)?;
+    assert_eq!(
+        notice_count(&old_sink),
+        old_count,
+        "old sink received post-rebind notices"
+    );
+    assert!(
+        sink.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .all(|notice| notice.identity == identity)
+    );
+    scope.release()?;
+    assert!(
+        runtime.stdio_identity(&scope.process).is_err(),
+        "released scope retained a stream identity"
+    );
+    assert!(runtime.arena_snapshot().map_err(error)?.entries.is_empty());
+    drop(scope);
+    drop(runtime);
+    drop(foreign);
+
+    _root_owner.finish(Ok(()))
+}
+fn pre_root_identity(
+    runtime: &NativeProcessRuntime,
+    process: &OwnedProcess,
+    expected: StdioIdentity,
+) -> Check<StdioIdentity> {
+    assert!(
+        runtime.describe(process).is_err(),
+        "prepared scope unexpectedly has a published root"
+    );
+    let identity = (runtime as &dyn ProviderStdioApi)
+        .stdio_identity(process)
+        .map_err(|e| format!("pre-root stream identity unavailable: {e:?}"))?;
+    assert_eq!(identity, expected);
+    Ok(identity)
+}
+/// Another arena cannot read the stream identity or write through the port.
+fn refuse_foreign_arena(
+    machine: MachineId,
+    process: &OwnedProcess,
+    port: &StdioPort,
+) -> Check<NativeProcessRuntime> {
+    let foreign = runtime_for_other_arena(machine)?;
+    assert!(
+        foreign.stdio_identity(process).is_err(),
+        "foreign arena read stream identity"
+    );
+    let rejected = foreign
+        .begin_write(port, b"foreign bytes".to_vec())
+        .err()
+        .ok_or("foreign arena wrote")?;
+    assert_eq!(rejected.bytes, b"foreign bytes");
+    Ok(foreign)
+}
+fn re_adopt(scope: &mut Scope<'_>, next: GenerationId) -> Check {
+    let runtime = scope.runtime;
+    let record = runtime.describe(&scope.process).map_err(error)?;
+    scope.process = runtime
+        .re_adopt(&record, scope.generation, next)
+        .map_err(error)?;
+    scope.generation = next;
+    Ok(())
+}
+/// After re-adoption the old port, its tickets and its binding are all refused.
+fn assert_stale_binding_fenced(
+    runtime: &NativeProcessRuntime,
+    process: &OwnedProcess,
+    port: &StdioPort,
+    [stdout, stderr]: [&StdioTicket; 2],
+    stale: StdioConfig,
+) {
     assert!(
         runtime
-            .begin_read(&streams.port, StdioReadStream::Stdout, 0)
+            .begin_read(port, StdioReadStream::Stdout, 8)
+            .is_err()
+    );
+    assert!(runtime.take_completion(stdout).is_err());
+    assert!(runtime.cancel(stderr).is_err());
+    assert!(runtime.attach_stdio(process, stale).is_err());
+}
+fn notice_count(sink: &Notices) -> usize {
+    sink.0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .len()
+}
+fn rebound<'a>(state: &'a StdioState, ticket: &StdioTicket) -> Option<&'a StdioTicket> {
+    state
+        .operations
+        .iter()
+        .find(|t| t.operation == ticket.operation)
+}
+fn provider_spec(
+    root: &Path,
+    lifecycle: LifecycleId,
+    generation: GenerationId,
+) -> Check<LaunchSpec> {
+    Ok(LaunchSpec {
+        executable_custody: None,
+        lifecycle,
+        generation,
+        executable: std::env::current_exe()?,
+        arguments: vec![
+            "--exact".into(),
+            "provider_stdio_child".into(),
+            "--ignored".into(),
+            "--nocapture".into(),
+            "--test-threads=1".into(),
+        ],
+        cwd: root.to_path_buf(),
+        environment: Environment { entries: vec![] },
+        stdio: StandardIo {
+            stdin: None,
+            stdout: None,
+            stderr: None,
+        },
+        mode: LaunchMode::Headless,
+        window: None,
+        policy: LaunchPolicy {
+            containment: ContainmentRequirement::BestAvailable,
+            writes: WritePolicy::Workspace {
+                roots: vec![root.to_path_buf()],
+                scratch: root.to_path_buf(),
+            },
+            network: NetworkPolicy::Allow,
+            hardening: OptionalHardening::Off,
+        },
+        deadline: Instant::now() + Duration::from_secs(20),
+        notifications: Arc::new(Notices::default()),
+    })
+}
+/// Zero and over-limit reads, and an over-capacity write, refuse and return their buffer.
+fn refuse_out_of_bounds_requests(runtime: &NativeProcessRuntime, port: &StdioPort) -> Check {
+    assert!(
+        runtime
+            .begin_read(port, StdioReadStream::Stdout, 0)
             .is_err()
     );
     assert!(
         runtime
-            .begin_read(&streams.port, StdioReadStream::Stdout, 65)
+            .begin_read(port, StdioReadStream::Stdout, 65)
             .is_err()
     );
     let mut too_large = Vec::with_capacity(128);
     too_large.push(7);
     let refused = runtime
-        .begin_write(&streams.port, too_large)
+        .begin_write(port, too_large)
         .err()
         .ok_or("over-capacity buffer admitted")?;
     assert_eq!(refused.bytes, [7]);
     assert!(refused.bytes.capacity() >= 128);
+    Ok(())
+}
+/// A dropped pending read stays owned, is recovered from state, and cancels exactly.
+fn cancel_dropped_read(
+    runtime: &NativeProcessRuntime,
+    process: &OwnedProcess,
+    port: &StdioPort,
+) -> Check {
     let abandoned = runtime
-        .begin_read(&streams.port, StdioReadStream::Stdout, 8)
+        .begin_read(port, StdioReadStream::Stdout, 8)
         .map_err(error)?;
     let abandoned_id = abandoned.operation;
     assert!(
@@ -289,12 +416,12 @@ fn windows_provider_streams_keep_real_io_and_cancellation_custody() -> Check {
     );
     assert!(
         runtime
-            .begin_read(&streams.port, StdioReadStream::Stdout, 8)
+            .begin_read(port, StdioReadStream::Stdout, 8)
             .is_err()
     );
     drop(abandoned);
     let recovered = runtime
-        .stdio_state(&scope.process)
+        .stdio_state(process)
         .map_err(error)?
         .ok_or("lost dropped ticket")?;
     let recovered = recovered
@@ -306,7 +433,7 @@ fn windows_provider_streams_keep_real_io_and_cancellation_custody() -> Check {
         runtime.cancel(recovered).map_err(error)?,
         StdioCancel::Requested | StdioCancel::AlreadyCompleted
     ));
-    match completion(&runtime, recovered)? {
+    match completion(runtime, recovered)? {
         StdioCompletion::Read {
             bytes,
             eof,
@@ -318,27 +445,23 @@ fn windows_provider_streams_keep_real_io_and_cancellation_custody() -> Check {
         }
         _ => return Err("cancelled pre-launch read lost its cancellation result".into()),
     }
-    consumed(&runtime, recovered)?;
-    let foreign = runtime_for_other_arena(machine)?;
-    assert!(
-        foreign.stdio_identity(&scope.process).is_err(),
-        "foreign arena read stream identity"
-    );
-    let rejected = foreign
-        .begin_write(&streams.port, b"foreign bytes".to_vec())
-        .err()
-        .ok_or("foreign arena wrote")?;
-    assert_eq!(rejected.bytes, b"foreign bytes");
-    runtime
-        .bind_stdio(&prepared.prepared, streams.child)
-        .map_err(error)?;
+    consumed(runtime, recovered)
+}
+/// Binds the child endpoints, queues one read per output stream, then launches.
+fn bind_and_start(
+    runtime: &NativeProcessRuntime,
+    prepared: PreparedLaunch,
+    child: StandardIo,
+    port: &StdioPort,
+) -> Check<(StdioTicket, StdioTicket)> {
+    runtime.bind_stdio(&prepared, child).map_err(error)?;
     let stdout = runtime
-        .begin_read(&streams.port, StdioReadStream::Stdout, 8)
+        .begin_read(port, StdioReadStream::Stdout, 8)
         .map_err(error)?;
     let stderr = runtime
-        .begin_read(&streams.port, StdioReadStream::Stderr, 8)
+        .begin_read(port, StdioReadStream::Stderr, 8)
         .map_err(error)?;
-    let launch = match runtime.begin_launch(prepared.prepared) {
+    let launch = match runtime.begin_launch(prepared) {
         LaunchStart::Pending { ticket, .. } => ticket,
         LaunchStart::Failed(failure) => {
             return Err(format!("launch refused: {:?}", failure.error).into());
@@ -354,30 +477,15 @@ fn windows_provider_streams_keep_real_io_and_cancellation_custody() -> Check {
             _ => return Err("Windows vendor launch did not become Started".into()),
         }
     }
-    let record = runtime.describe(&scope.process).map_err(error)?;
-    let next = GenerationId::new(2)?;
-    scope.process = runtime.re_adopt(&record, generation, next).map_err(error)?;
-    scope.generation = next;
-    assert!(
-        runtime
-            .begin_read(&streams.port, StdioReadStream::Stdout, 8)
-            .is_err()
-    );
-    assert!(runtime.take_completion(&stdout).is_err());
-    assert!(runtime.cancel(&stderr).is_err());
-    assert!(
-        runtime
-            .attach_stdio(&scope.process, config(&identity, old_sink.clone()))
-            .is_err()
-    );
-    let identity = StdioIdentity {
-        generation: next,
-        ..identity
-    };
-    let sink = Arc::new(Notices::default());
-    let mut state = runtime
-        .attach_stdio(&scope.process, config(&identity, sink.clone()))
-        .map_err(error)?;
+    Ok((stdout, stderr))
+}
+/// Attaches the new binding and waits until the prior callback binding drains.
+fn attach_drained(
+    runtime: &NativeProcessRuntime,
+    process: &OwnedProcess,
+    config: StdioConfig,
+) -> Check<StdioState> {
+    let mut state = runtime.attach_stdio(process, config).map_err(error)?;
     let until = Instant::now() + Duration::from_secs(10);
     while state.binding != StdioBinding::Ready {
         if Instant::now() >= until {
@@ -385,38 +493,31 @@ fn windows_provider_streams_keep_real_io_and_cancellation_custody() -> Check {
         }
         std::thread::park_timeout(Duration::from_millis(2));
         state = runtime
-            .stdio_state(&scope.process)
+            .stdio_state(process)
             .map_err(error)?
             .ok_or("port disappeared")?;
     }
-    let old_count = old_sink
-        .0
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .len();
-    let output = state
-        .operations
-        .iter()
-        .find(|t| t.operation == stdout.operation)
-        .ok_or("stdout operation was lost on rebind")?;
-    let errors = state
-        .operations
-        .iter()
-        .find(|t| t.operation == stderr.operation)
-        .ok_or("stderr operation was lost on rebind")?;
+    Ok(state)
+}
+/// One stdin write completes to the new sink, then a Stdin close cannot release all streams.
+fn write_input_then_close_stdin(
+    runtime: &NativeProcessRuntime,
+    port: &StdioPort,
+    sink: &Notices,
+) -> Check {
     let input = b"owned provider input".to_vec();
     let write = runtime
-        .begin_write(&state.port, input.clone())
+        .begin_write(port, input.clone())
         .map_err(|r| error(r.error))?;
     let refused = runtime
-        .begin_write(&state.port, b"second write".to_vec())
+        .begin_write(port, b"second write".to_vec())
         .err()
         .ok_or("unreleased stdin write duplicated")?;
     assert_eq!(refused.bytes, b"second write");
     let close = runtime
-        .begin_close(&state.port, StdioCloseScope::Stdin)
+        .begin_close(port, StdioCloseScope::Stdin)
         .map_err(error)?;
-    match completion(&runtime, &write)? {
+    match completion(runtime, &write)? {
         StdioCompletion::Write {
             bytes,
             written,
@@ -442,24 +543,29 @@ fn windows_provider_streams_keep_real_io_and_cancellation_custody() -> Check {
         }
         std::thread::park_timeout(Duration::from_millis(2));
     }
-    consumed(&runtime, &write)?;
-    let stdin_witness = match completion(&runtime, &close)? {
+    consumed(runtime, &write)?;
+    let stdin_witness = match completion(runtime, &close)? {
         StdioCompletion::Close {
             scope: StdioCloseScope::Stdin,
             result: Ok(witness),
         } => witness,
         _ => return Err("stdin close failed".into()),
     };
-    consumed(&runtime, &close)?;
+    consumed(runtime, &close)?;
     assert!(
-        runtime.release_stdio(&state.port, &stdin_witness).is_err(),
+        runtime.release_stdio(port, &stdin_witness).is_err(),
         "Stdin witness released all streams"
     );
-    assert!(
-        runtime
-            .begin_write(&state.port, b"after EOF".to_vec())
-            .is_err()
-    );
+    assert!(runtime.begin_write(port, b"after EOF".to_vec()).is_err());
+    Ok(())
+}
+/// Reads each stream in bounded chunks until real EOF and finds the child's marker.
+fn drain_output(
+    runtime: &NativeProcessRuntime,
+    port: &StdioPort,
+    output: &StdioTicket,
+    errors: &StdioTicket,
+) -> Check {
     for (stream, first, marker) in [
         (
             StdioReadStream::Stdout,
@@ -476,7 +582,7 @@ fn windows_provider_streams_keep_real_io_and_cancellation_custody() -> Check {
         let mut ticket = None;
         loop {
             let current = ticket.as_ref().unwrap_or(first);
-            let eof = match completion(&runtime, current)? {
+            let eof = match completion(runtime, current)? {
                 StdioCompletion::Read {
                     stream: actual,
                     bytes,
@@ -490,7 +596,7 @@ fn windows_provider_streams_keep_real_io_and_cancellation_custody() -> Check {
                 }
                 _ => return Err("real output read failed or pretended EOF".into()),
             };
-            consumed(&runtime, current)?;
+            consumed(runtime, current)?;
             if eof {
                 break;
             }
@@ -498,17 +604,25 @@ fn windows_provider_streams_keep_real_io_and_cancellation_custody() -> Check {
                 collected.len() < 8192,
                 "child output exceeded fixture bound"
             );
-            ticket = Some(runtime.begin_read(&state.port, stream, 8).map_err(error)?);
+            ticket = Some(runtime.begin_read(port, stream, 8).map_err(error)?);
         }
         assert!(
             collected.windows(marker.len()).any(|part| part == marker),
             "real child output marker missing"
         );
     }
+    Ok(())
+}
+/// Only the consumed All-close witness releases the port, and nothing reads after it.
+fn close_all_and_release(
+    runtime: &NativeProcessRuntime,
+    port: &StdioPort,
+    process: &OwnedProcess,
+) -> Check {
     let close = runtime
-        .begin_close(&state.port, StdioCloseScope::All)
+        .begin_close(port, StdioCloseScope::All)
         .map_err(error)?;
-    let witness = match completion(&runtime, &close)? {
+    let witness = match completion(runtime, &close)? {
         StdioCompletion::Close {
             scope: StdioCloseScope::All,
             result: Ok(witness),
@@ -516,51 +630,18 @@ fn windows_provider_streams_keep_real_io_and_cancellation_custody() -> Check {
         _ => return Err("All close failed".into()),
     };
     assert!(
-        runtime.release_stdio(&state.port, &witness).is_err(),
+        runtime.release_stdio(port, &witness).is_err(),
         "port released before close operation"
     );
-    consumed(&runtime, &close)?;
-    runtime
-        .release_stdio(&state.port, &witness)
-        .map_err(error)?;
+    consumed(runtime, &close)?;
+    runtime.release_stdio(port, &witness).map_err(error)?;
+    assert!(runtime.stdio_state(process).map_err(error)?.is_none());
     assert!(
         runtime
-            .stdio_state(&scope.process)
-            .map_err(error)?
-            .is_none()
-    );
-    assert!(
-        runtime
-            .begin_read(&state.port, StdioReadStream::Stdout, 8)
+            .begin_read(port, StdioReadStream::Stdout, 8)
             .is_err()
     );
-    assert_eq!(
-        old_sink
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len(),
-        old_count,
-        "old sink received post-rebind notices"
-    );
-    assert!(
-        sink.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .all(|notice| notice.identity == identity)
-    );
-    scope.release()?;
-    assert!(
-        runtime.stdio_identity(&scope.process).is_err(),
-        "released scope retained a stream identity"
-    );
-    assert!(runtime.arena_snapshot().map_err(error)?.entries.is_empty());
-    drop(scope);
-    drop(runtime);
-    drop(foreign);
-
-    _root_owner.finish(Ok(()))
+    Ok(())
 }
 fn runtime_for_other_arena(machine: MachineId) -> Check<NativeProcessRuntime> {
     runtime(machine, HostInstanceId([99; 16]))

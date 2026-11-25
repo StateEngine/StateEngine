@@ -164,88 +164,17 @@ fn window_console_child() -> Check {
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires a logged-in X desktop and xterm"]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn native_window_owns_provider_pty_and_viewer_until_exact_stop() -> Check {
-    let home = Home::new()?;
-    let machine = MachineId::new("window-console-smoke")?;
-    let nonce: [u8; 16] = random_secret()?.expose()[..16].try_into()?;
-    let host = HostInstanceId(nonce);
-    let generation = GenerationId::new(1)?;
-    let lifecycle = LifecycleId::from_parts(1_700_000_000_000, nonce[..10].try_into()?)?;
-    let runtime = open_runtime(machine.clone(), host)?;
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let mut entries: Vec<_> = std::env::vars_os()
-        .filter(|(name, _)| {
-            matches!(
-                name.to_str(),
-                Some("DISPLAY" | "XAUTHORITY" | "HOME" | "PATH")
-            )
-        })
-        .collect();
-    entries.push(("STDIO_BINDING_JUDGE_ROOT".into(), home.0.as_os_str().into()));
-    let prepared = runtime
-        .prepare_launch(
-            LaunchReservation {
-                format_version: 1,
-                lifecycle: lifecycle.clone(),
-                host,
-                owner: current_process_identity(machine).map_err(error)?,
-                generation,
-                scope_nonce: nonce,
-                parent: ReservationParent::LinuxTracked,
-                created_at_unix_ns: 1,
-            },
-            LaunchSpec {
-                executable_custody: None,
-                lifecycle,
-                generation,
-                executable: std::env::current_exe()?,
-                arguments: [
-                    "--exact",
-                    "window_console_child",
-                    "--ignored",
-                    "--nocapture",
-                    "--test-threads=1",
-                ]
-                .map(Into::into)
-                .into(),
-                cwd: home.0.clone(),
-                environment: Environment { entries },
-                stdio: empty(),
-                mode: LaunchMode::Window,
-                window: Some(WindowSpec::UnixTerminal {
-                    executable: "/usr/bin/xterm".into(),
-                    adapter: TerminalAdapter::Xterm,
-                }),
-                policy: LaunchPolicy {
-                    containment: ContainmentRequirement::BestAvailable,
-                    writes: WritePolicy::Workspace {
-                        roots: vec![home.0.clone()],
-                        scratch: home.0.clone(),
-                    },
-                    network: NetworkPolicy::Allow,
-                    hardening: OptionalHardening::Off,
-                },
-                deadline,
-                notifications: Arc::new(Notices),
-            },
-        )
-        .map_err(error)?;
-    let mut scope = Scope {
-        runtime: &runtime,
-        process: prepared.process,
-        generation,
-        released: false,
-    };
-    let ticket = match runtime.begin_launch(prepared.prepared) {
-        LaunchStart::Pending { ticket, .. } => ticket,
-        LaunchStart::Failed(failure) => {
-            return Err(format!("window start: {:?}", failure.error).into());
-        }
-    };
+    let (smoke, prepared) = WindowSmoke::prepare(
+        "window_console_child",
+        WindowSpec::UnixTerminal {
+            executable: "/usr/bin/xterm".into(),
+            adapter: TerminalAdapter::Xterm,
+        },
+    )?;
+    let (runtime, home, deadline) = (&smoke.runtime, &smoke.home, smoke.deadline);
+    let mut scope = smoke.scope(prepared.process);
+    let ticket = smoke.start(prepared.prepared)?;
     loop {
         match runtime.poll_launch(&ticket).map_err(error)? {
             LaunchProgress::Started(_) => break,
@@ -261,12 +190,7 @@ fn native_window_owns_provider_pty_and_viewer_until_exact_stop() -> Check {
             _ => return Err("window launch exceeded deadline".into()),
         }
     }
-    while !home.0.join("console-ready").try_exists()? {
-        if Instant::now() >= deadline {
-            return Err("provider console witness absent".into());
-        }
-        std::thread::park_timeout(Duration::from_millis(5));
-    }
+    smoke.await_console()?;
     let observed = runtime.observe(&scope.process).map_err(error)?;
     println!("window native witness: {observed:?}");
     fs::write(home.0.join("console-done"), b"done")?;
@@ -299,125 +223,25 @@ fn window_backend_child() -> Check {
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires a logged-in X desktop and xterm"]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 fn native_window_backend_and_console_share_custody() -> Check {
-    let home = Home::new()?;
-    let machine = MachineId::new("window-console-smoke")?;
-    let nonce: [u8; 16] = random_secret()?.expose()[..16].try_into()?;
-    let host = HostInstanceId(nonce);
-    let generation = GenerationId::new(1)?;
-    let lifecycle = LifecycleId::from_parts(1_700_000_000_000, nonce[..10].try_into()?)?;
-    let runtime = open_runtime(machine.clone(), host)?;
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let mut entries: Vec<_> = std::env::vars_os()
-        .filter(|(name, _)| {
-            matches!(
-                name.to_str(),
-                Some("DISPLAY" | "XAUTHORITY" | "HOME" | "PATH")
-            )
-        })
-        .collect();
-    entries.push(("STDIO_BINDING_JUDGE_ROOT".into(), home.0.as_os_str().into()));
-    let prepared = runtime
-        .prepare_launch(
-            LaunchReservation {
-                format_version: 1,
-                lifecycle: lifecycle.clone(),
-                host,
-                owner: current_process_identity(machine).map_err(error)?,
-                generation,
-                scope_nonce: nonce,
-                parent: ReservationParent::LinuxTracked,
-                created_at_unix_ns: 1,
-            },
-            LaunchSpec {
-                executable_custody: None,
-                lifecycle,
-                generation,
-                executable: std::env::current_exe()?,
-                arguments: [
-                    "--exact",
-                    "window_backend_child",
-                    "--ignored",
-                    "--nocapture",
-                    "--test-threads=1",
-                ]
-                .map(Into::into)
-                .into(),
-                cwd: home.0.clone(),
-                environment: Environment { entries },
-                stdio: empty(),
-                mode: LaunchMode::Window,
-                window: Some(WindowSpec::UnixTerminalWithBackend {
-                    executable: "/usr/bin/xterm".into(),
-                    adapter: TerminalAdapter::Xterm,
-                }),
-                policy: LaunchPolicy {
-                    containment: ContainmentRequirement::BestAvailable,
-                    writes: WritePolicy::Workspace {
-                        roots: vec![home.0.clone()],
-                        scratch: home.0.clone(),
-                    },
-                    network: NetworkPolicy::Allow,
-                    hardening: OptionalHardening::Off,
-                },
-                deadline,
-                notifications: Arc::new(Notices),
-            },
-        )
-        .map_err(error)?;
+    let (smoke, prepared) = WindowSmoke::prepare(
+        "window_backend_child",
+        WindowSpec::UnixTerminalWithBackend {
+            executable: "/usr/bin/xterm".into(),
+            adapter: TerminalAdapter::Xterm,
+        },
+    )?;
+    let (runtime, home, deadline) = (&smoke.runtime, &smoke.home, smoke.deadline);
     runtime
         .bind_stdio(&prepared.prepared, home.endpoints("backend")?)
         .map_err(error)?;
-    let mut scope = Scope {
-        runtime: &runtime,
-        process: prepared.process,
-        generation,
-        released: false,
-    };
-    let ticket = match runtime.begin_launch(prepared.prepared) {
-        LaunchStart::Pending { ticket, .. } => ticket,
-        LaunchStart::Failed(failure) => {
-            return Err(format!("window start: {:?}", failure.error).into());
-        }
-    };
+    let mut scope = smoke.scope(prepared.process);
+    let ticket = smoke.start(prepared.prepared)?;
     loop {
         match runtime.poll_launch(&ticket).map_err(error)? {
             LaunchProgress::Started(_) => break,
             LaunchProgress::AwaitingExecCommit(_) => {
-                runtime.authorize_exec(&ticket).map_err(error)?;
-                while !home.0.join("backend-ready").try_exists()? {
-                    if Instant::now() >= deadline {
-                        return Err("backend did not start".into());
-                    }
-                    std::thread::park_timeout(Duration::from_millis(5));
-                }
-                assert!(!home.0.join("console-ready").try_exists()?);
-                assert!(matches!(
-                    runtime.poll_launch(&ticket).map_err(error)?,
-                    LaunchProgress::Pending
-                ));
-                let (_, digest) = runtime
-                    .prepare_window_exec(
-                        &scope.process,
-                        [
-                            "--exact",
-                            "window_console_child",
-                            "--ignored",
-                            "--nocapture",
-                            "--test-threads=1",
-                        ]
-                        .map(Into::into)
-                        .into(),
-                    )
-                    .map_err(error)?;
-                assert_ne!(digest, prepared.argv_sha256);
-                runtime
-                    .authorize_window_exec(&scope.process)
-                    .map_err(error)?;
+                smoke.hand_off_to_console(&scope, &ticket, prepared.argv_sha256)?;
             }
             LaunchProgress::Failed(failure) => {
                 return Err(format!("window exec: {:?}", failure.error).into());
@@ -428,12 +252,7 @@ fn native_window_backend_and_console_share_custody() -> Check {
             _ => return Err("window launch exceeded deadline".into()),
         }
     }
-    while !home.0.join("console-ready").try_exists()? {
-        if Instant::now() >= deadline {
-            return Err("provider console witness absent".into());
-        }
-        std::thread::park_timeout(Duration::from_millis(5));
-    }
+    smoke.await_console()?;
     let observed = runtime.observe(&scope.process).map_err(error)?;
     assert!(fs::read_to_string(home.0.join("output-backend"))?.contains("backend-pipe-ready"));
     assert!(
@@ -445,6 +264,154 @@ fn native_window_backend_and_console_share_custody() -> Check {
     scope.release()?;
     assert!(runtime.arena_snapshot().map_err(error)?.entries.is_empty());
     Ok(())
+}
+/// One desktop-window launch: its runtime, fixture home and shared deadline.
+/// The runtime is declared first so it drops before the home is removed.
+#[cfg(target_os = "linux")]
+struct WindowSmoke {
+    runtime: NativeProcessRuntime,
+    home: Home,
+    generation: GenerationId,
+    deadline: Instant,
+}
+#[cfg(target_os = "linux")]
+impl WindowSmoke {
+    fn prepare(child: &str, window: WindowSpec) -> Check<(Self, PreparedScope)> {
+        let home = Home::new()?;
+        let machine = MachineId::new("window-console-smoke")?;
+        let nonce: [u8; 16] = random_secret()?.expose()[..16].try_into()?;
+        let host = HostInstanceId(nonce);
+        let generation = GenerationId::new(1)?;
+        let lifecycle = LifecycleId::from_parts(1_700_000_000_000, nonce[..10].try_into()?)?;
+        let runtime = open_runtime(machine.clone(), host)?;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut entries: Vec<_> = std::env::vars_os()
+            .filter(|(name, _)| {
+                matches!(
+                    name.to_str(),
+                    Some("DISPLAY" | "XAUTHORITY" | "HOME" | "PATH")
+                )
+            })
+            .collect();
+        entries.push(("STDIO_BINDING_JUDGE_ROOT".into(), home.0.as_os_str().into()));
+        let prepared = runtime
+            .prepare_launch(
+                LaunchReservation {
+                    format_version: 1,
+                    lifecycle: lifecycle.clone(),
+                    host,
+                    owner: current_process_identity(machine).map_err(error)?,
+                    generation,
+                    scope_nonce: nonce,
+                    parent: ReservationParent::LinuxTracked,
+                    created_at_unix_ns: 1,
+                },
+                LaunchSpec {
+                    executable_custody: None,
+                    lifecycle,
+                    generation,
+                    executable: std::env::current_exe()?,
+                    arguments: [
+                        "--exact",
+                        child,
+                        "--ignored",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ]
+                    .map(Into::into)
+                    .into(),
+                    cwd: home.0.clone(),
+                    environment: Environment { entries },
+                    stdio: empty(),
+                    mode: LaunchMode::Window,
+                    window: Some(window),
+                    policy: LaunchPolicy {
+                        containment: ContainmentRequirement::BestAvailable,
+                        writes: WritePolicy::Workspace {
+                            roots: vec![home.0.clone()],
+                            scratch: home.0.clone(),
+                        },
+                        network: NetworkPolicy::Allow,
+                        hardening: OptionalHardening::Off,
+                    },
+                    deadline,
+                    notifications: Arc::new(Notices),
+                },
+            )
+            .map_err(error)?;
+        let smoke = Self {
+            runtime,
+            home,
+            generation,
+            deadline,
+        };
+        Ok((smoke, prepared))
+    }
+    fn scope(&self, process: OwnedProcess) -> Scope<'_> {
+        Scope {
+            runtime: &self.runtime,
+            process,
+            generation: self.generation,
+            released: false,
+        }
+    }
+    fn start(&self, prepared: PreparedLaunch) -> Check<LaunchTicket> {
+        match self.runtime.begin_launch(prepared) {
+            LaunchStart::Pending { ticket, .. } => Ok(ticket),
+            LaunchStart::Failed(failure) => {
+                Err(format!("window start: {:?}", failure.error).into())
+            }
+        }
+    }
+    /// Authorizes the backend, waits for it alone, then hands the window to the console.
+    fn hand_off_to_console(
+        &self,
+        scope: &Scope<'_>,
+        ticket: &LaunchTicket,
+        backend_digest: [u8; 32],
+    ) -> Check {
+        let (runtime, home) = (&self.runtime, &self.home);
+        runtime.authorize_exec(ticket).map_err(error)?;
+        while !home.0.join("backend-ready").try_exists()? {
+            if Instant::now() >= self.deadline {
+                return Err("backend did not start".into());
+            }
+            std::thread::park_timeout(Duration::from_millis(5));
+        }
+        assert!(!home.0.join("console-ready").try_exists()?);
+        assert!(matches!(
+            runtime.poll_launch(ticket).map_err(error)?,
+            LaunchProgress::Pending
+        ));
+        let (_, digest) = runtime
+            .prepare_window_exec(
+                &scope.process,
+                [
+                    "--exact",
+                    "window_console_child",
+                    "--ignored",
+                    "--nocapture",
+                    "--test-threads=1",
+                ]
+                .map(Into::into)
+                .into(),
+            )
+            .map_err(error)?;
+        assert_ne!(digest, backend_digest);
+        runtime
+            .authorize_window_exec(&scope.process)
+            .map_err(error)?;
+        Ok(())
+    }
+    fn await_console(&self) -> Check {
+        while !self.home.0.join("console-ready").try_exists()? {
+            if Instant::now() >= self.deadline {
+                return Err("provider console witness absent".into());
+            }
+            std::thread::park_timeout(Duration::from_millis(5));
+        }
+        Ok(())
+    }
 }
 fn open_runtime(machine: MachineId, instance: HostInstanceId) -> Check<NativeProcessRuntime> {
     Ok(NativeProcessRuntime::open(HostConfig {
@@ -554,17 +521,6 @@ fn stdio_binding_child() -> Check {
 
 /// Protects: bind_stdio once-only admission, foreign arena refusal, deadline and failed-bind execution fences.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-#[cfg_attr(
-    windows,
-    expect(
-        clippy::cognitive_complexity,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )
-)]
 fn native_prepared_stream_bindings_keep_custody_through_success_and_refusal() -> Check {
     for case in [
         "roundtrip",
@@ -602,44 +558,7 @@ fn native_prepared_stream_bindings_keep_custody_through_success_and_refusal() ->
                     parent: ReservationParent::LinuxTracked,
                     created_at_unix_ns: 1,
                 },
-                LaunchSpec {
-                    executable_custody: None,
-                    lifecycle: lifecycle.clone(),
-                    generation,
-                    executable: std::env::current_exe()?,
-                    arguments: vec![
-                        "--exact".into(),
-                        "stdio_binding_child".into(),
-                        "--ignored".into(),
-                        "--nocapture".into(),
-                        "--test-threads=1".into(),
-                    ],
-                    cwd: home.0.clone(),
-                    environment: Environment {
-                        entries: vec![(
-                            "STDIO_BINDING_JUDGE_ROOT".into(),
-                            home.0.as_os_str().to_owned(),
-                        )],
-                    },
-                    stdio: if case == "prebound" {
-                        home.endpoints("original")?
-                    } else {
-                        empty()
-                    },
-                    mode: LaunchMode::Headless,
-                    window: None,
-                    policy: LaunchPolicy {
-                        containment: ContainmentRequirement::BestAvailable,
-                        writes: WritePolicy::Workspace {
-                            roots: vec![home.0.clone()],
-                            scratch: home.0.clone(),
-                        },
-                        network: NetworkPolicy::Allow,
-                        hardening: OptionalHardening::Off,
-                    },
-                    deadline,
-                    notifications: Arc::new(Notices),
-                },
+                binding_spec(case, &home, lifecycle.clone(), generation, deadline)?,
             )
             .map_err(error)?;
         let mut scope = Scope {
@@ -649,24 +568,15 @@ fn native_prepared_stream_bindings_keep_custody_through_success_and_refusal() ->
             released: false,
         };
         #[cfg(windows)]
-        {
-            assert!(
-                runtime.describe(&scope.process).is_err(),
-                "prepared scope unexpectedly has a published root"
-            );
-            let identity = (&runtime as &dyn ProviderStdioApi)
-                .stdio_identity(&scope.process)
-                .map_err(|e| format!("pre-root stream identity unavailable: {e:?}"))?;
-            assert_eq!(
-                identity,
-                StdioIdentity {
-                    lifecycle,
-                    host,
-                    generation
-                },
-                "pre-root stream identity differs from retained custody"
-            );
-        }
+        assert_pre_root_identity(
+            &runtime,
+            &scope.process,
+            StdioIdentity {
+                lifecycle,
+                host,
+                generation,
+            },
+        )?;
         if case == "foreign-arena" {
             let foreign = open_runtime(machine, HostInstanceId([99; 16]))?;
             #[cfg(windows)]
@@ -685,77 +595,159 @@ fn native_prepared_stream_bindings_keep_custody_through_success_and_refusal() ->
                 deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(5),
             );
         }
-        let binding = runtime.bind_stdio(&prepared.prepared, home.endpoints("bound")?);
-        let rejected = matches!(case, "prebound" | "expired" | "duplicate");
-        if matches!(case, "prebound" | "expired") {
-            assert!(binding.is_err(), "{case} binding was admitted");
-        } else {
-            binding.map_err(error)?;
-        }
-        if case == "duplicate" {
-            assert!(
-                runtime.bind_stdio(&prepared.prepared, empty()).is_err(),
-                "duplicate binding was admitted"
-            );
-        }
-        match runtime.begin_launch(prepared.prepared) {
-            LaunchStart::Failed(failure) => {
-                assert!(rejected, "positive launch failed: {:?}", failure.error);
-            }
-            LaunchStart::Pending { ticket, .. } => {
-                assert!(!rejected, "rejected binding still allowed native execution");
-                let until = Instant::now() + Duration::from_secs(15);
-                loop {
-                    match runtime.poll_launch(&ticket).map_err(error)? {
-                        LaunchProgress::Started(_) => {
-                            fs::write(home.0.join("exec-observed"), b"observed")?;
-                            break;
-                        }
-                        LaunchProgress::AwaitingExecCommit(_) => {
-                            runtime.authorize_exec(&ticket).map_err(error)?
-                        }
-                        LaunchProgress::Failed(failure) => {
-                            return Err(format!(
-                                "native binding launch failed: {:?}",
-                                failure.error
-                            )
-                            .into());
-                        }
-                        LaunchProgress::Pending if Instant::now() < until => {
-                            std::thread::park_timeout(Duration::from_millis(5))
-                        }
-                        _ => return Err("native binding launch timed out".into()),
-                    }
-                }
-            }
-        }
+        let rejected = bind_case(case, &runtime, &prepared.prepared, &home)?;
+        launch_bound(&runtime, prepared.prepared, rejected, &home)?;
         scope.release()?;
         #[cfg(windows)]
         assert!(
             runtime.stdio_identity(&scope.process).is_err(),
             "released scope retained a stream identity"
         );
-        assert_eq!(
-            home.0.join("vendor-ran").try_exists()?,
-            !rejected,
-            "vendor execution fence differs from binding result"
-        );
-        if !rejected {
-            assert!(
-                fs::read_to_string(home.0.join("output-bound"))?.contains("owned stdout marker")
-            );
-            assert!(
-                fs::read_to_string(home.0.join("error-bound"))?.contains("owned stderr marker")
-            );
-            assert_eq!(fs::read(home.0.join("vendor-ran"))?, b"owned input marker");
-        }
-        assert!(
-            runtime.arena_snapshot().map_err(error)?.entries.is_empty(),
-            "released binding still owns an arena entry"
-        );
+        assert_bound_outcome(&runtime, &home, rejected)?;
         drop(scope);
         drop(runtime);
         drop(std::mem::ManuallyDrop::into_inner(home));
     }
+    Ok(())
+}
+fn binding_spec(
+    case: &str,
+    home: &Home,
+    lifecycle: LifecycleId,
+    generation: GenerationId,
+    deadline: Instant,
+) -> Check<LaunchSpec> {
+    Ok(LaunchSpec {
+        executable_custody: None,
+        lifecycle,
+        generation,
+        executable: std::env::current_exe()?,
+        arguments: vec![
+            "--exact".into(),
+            "stdio_binding_child".into(),
+            "--ignored".into(),
+            "--nocapture".into(),
+            "--test-threads=1".into(),
+        ],
+        cwd: home.0.clone(),
+        environment: Environment {
+            entries: vec![(
+                "STDIO_BINDING_JUDGE_ROOT".into(),
+                home.0.as_os_str().to_owned(),
+            )],
+        },
+        stdio: if case == "prebound" {
+            home.endpoints("original")?
+        } else {
+            empty()
+        },
+        mode: LaunchMode::Headless,
+        window: None,
+        policy: LaunchPolicy {
+            containment: ContainmentRequirement::BestAvailable,
+            writes: WritePolicy::Workspace {
+                roots: vec![home.0.clone()],
+                scratch: home.0.clone(),
+            },
+            network: NetworkPolicy::Allow,
+            hardening: OptionalHardening::Off,
+        },
+        deadline,
+        notifications: Arc::new(Notices),
+    })
+}
+#[cfg(windows)]
+fn assert_pre_root_identity(
+    runtime: &NativeProcessRuntime,
+    process: &OwnedProcess,
+    expected: StdioIdentity,
+) -> Check {
+    assert!(
+        runtime.describe(process).is_err(),
+        "prepared scope unexpectedly has a published root"
+    );
+    let identity = (runtime as &dyn ProviderStdioApi)
+        .stdio_identity(process)
+        .map_err(|e| format!("pre-root stream identity unavailable: {e:?}"))?;
+    assert_eq!(
+        identity, expected,
+        "pre-root stream identity differs from retained custody"
+    );
+    Ok(())
+}
+/// Binds the case's endpoints and reports whether the case expects refusal.
+fn bind_case(
+    case: &str,
+    runtime: &NativeProcessRuntime,
+    prepared: &PreparedLaunch,
+    home: &Home,
+) -> Check<bool> {
+    let binding = runtime.bind_stdio(prepared, home.endpoints("bound")?);
+    let rejected = matches!(case, "prebound" | "expired" | "duplicate");
+    if matches!(case, "prebound" | "expired") {
+        assert!(binding.is_err(), "{case} binding was admitted");
+    } else {
+        binding.map_err(error)?;
+    }
+    if case == "duplicate" {
+        assert!(
+            runtime.bind_stdio(prepared, empty()).is_err(),
+            "duplicate binding was admitted"
+        );
+    }
+    Ok(rejected)
+}
+fn launch_bound(
+    runtime: &NativeProcessRuntime,
+    prepared: PreparedLaunch,
+    rejected: bool,
+    home: &Home,
+) -> Check {
+    match runtime.begin_launch(prepared) {
+        LaunchStart::Failed(failure) => {
+            assert!(rejected, "positive launch failed: {:?}", failure.error);
+        }
+        LaunchStart::Pending { ticket, .. } => {
+            assert!(!rejected, "rejected binding still allowed native execution");
+            let until = Instant::now() + Duration::from_secs(15);
+            loop {
+                match runtime.poll_launch(&ticket).map_err(error)? {
+                    LaunchProgress::Started(_) => {
+                        fs::write(home.0.join("exec-observed"), b"observed")?;
+                        break;
+                    }
+                    LaunchProgress::AwaitingExecCommit(_) => {
+                        runtime.authorize_exec(&ticket).map_err(error)?
+                    }
+                    LaunchProgress::Failed(failure) => {
+                        return Err(
+                            format!("native binding launch failed: {:?}", failure.error).into()
+                        );
+                    }
+                    LaunchProgress::Pending if Instant::now() < until => {
+                        std::thread::park_timeout(Duration::from_millis(5))
+                    }
+                    _ => return Err("native binding launch timed out".into()),
+                }
+            }
+        }
+    }
+    Ok(())
+}
+fn assert_bound_outcome(runtime: &NativeProcessRuntime, home: &Home, rejected: bool) -> Check {
+    assert_eq!(
+        home.0.join("vendor-ran").try_exists()?,
+        !rejected,
+        "vendor execution fence differs from binding result"
+    );
+    if !rejected {
+        assert!(fs::read_to_string(home.0.join("output-bound"))?.contains("owned stdout marker"));
+        assert!(fs::read_to_string(home.0.join("error-bound"))?.contains("owned stderr marker"));
+        assert_eq!(fs::read(home.0.join("vendor-ran"))?, b"owned input marker");
+    }
+    assert!(
+        runtime.arena_snapshot().map_err(error)?.entries.is_empty(),
+        "released binding still owns an arena entry"
+    );
     Ok(())
 }
