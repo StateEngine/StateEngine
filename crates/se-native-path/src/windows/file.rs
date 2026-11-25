@@ -47,8 +47,21 @@ pub fn file_id(file: &File) -> io::Result<FileId> {
 
 /// Raw image open only: each adapter applies its own retained-file policy.
 pub fn open_image_file(path: &[u16], delete: bool) -> io::Result<File> {
-    // SAFETY: callers retain a validated terminated path; these are the shared
-    // read/delete rights, sharing mode and no-follow flags of both image callers.
+    let Some((&0, prefix)) = path.split_last() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "wide path must be NUL-terminated",
+        ));
+    };
+    if prefix.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "wide path must not contain interior NULs",
+        ));
+    }
+    // SAFETY: `path` was just verified to end with a single trailing NUL and
+    // contain no interior NULs, so `path.as_ptr()` is a valid LPCWSTR for the
+    // duration of the CreateFileW call.
     let raw = unsafe {
         CreateFileW(
             path.as_ptr(),
