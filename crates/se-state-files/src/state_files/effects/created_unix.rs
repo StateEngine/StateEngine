@@ -505,10 +505,10 @@ pub(in crate::state_files) fn create_new_file(path: &Path, bytes: &[u8]) -> Resu
     #[cfg(target_os = "macos")]
     {
         use std::io::Write;
-        return private_stage::create_exclusive(path, |file| {
+        private_stage::create_exclusive(path, |file| {
             file.write_all(bytes)
                 .map_err(|e| io_error("write staged user file", path, e))
-        });
+        })
     }
     #[cfg(target_os = "linux")]
     {
