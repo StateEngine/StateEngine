@@ -130,17 +130,16 @@ impl Control {
             Some(owner) => keys::CursorCipher::initialize(owner, files.clone(), root.clone())?,
             None => keys::CursorCipher::load(files.clone(), root.clone())?,
         });
-        let mut session = super::session::SecurityStore::new(
-            context.reader.as_ref().clone(),
-            context.writer.clone(),
-            context.generation.get(),
-            owner,
-        )?;
-        session.home = Some(root.clone());
         let store = Arc::new(
-            session
-                .with_reads(context.reads.clone())
-                .with_owner_fault(context.ownership_fault.clone()),
+            super::session::SecurityStore::new(
+                context.reader.as_ref().clone(),
+                context.writer.clone(),
+                context.generation.get(),
+                owner,
+            )?
+            .with_command_home(root.clone(), crate::state_files::machine_identity_in)
+            .with_reads(context.reads.clone())
+            .with_owner_fault(context.ownership_fault.clone()),
         );
         let security = Arc::new(auth::Security::new(
             store,

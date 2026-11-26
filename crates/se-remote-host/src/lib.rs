@@ -2,11 +2,11 @@
 //! custody, live observation publishing, and cursor/view-request codecs.
 pub mod auth;
 pub mod bindings;
-pub mod channel;
 pub mod client;
 pub mod cursor;
 pub mod keys;
 pub mod listener;
+mod native_channel;
 pub mod native_image;
 pub mod ports;
 pub mod publish;
@@ -22,7 +22,7 @@ pub use ports::{
 };
 pub use se_remote::{
     ClientConnectionId, CredentialSource, RemoteCallContext, RemoteClient, RemoteConnector,
-    RemoteFuture, RemoteRoute, RemoteWatchStream, entropy, transport_io, wire,
+    RemoteFuture, RemoteRoute, RemoteWatchStream, channel, entropy, transport_io, wire,
 };
 pub use se_types::Result;
 pub use se_types::remote::*;

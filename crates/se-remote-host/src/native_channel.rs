@@ -10,7 +10,7 @@ use std::{sync::Arc, time::Duration};
 use tokio::{net::TcpStream, time::timeout};
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
-pub use se_remote::channel::{Socket, busy, unavailable};
+use se_remote::channel::{Socket, unavailable};
 pub(super) async fn open(
     route: &RemoteRoute,
     device: &MachineSession,

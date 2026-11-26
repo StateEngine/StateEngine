@@ -62,7 +62,7 @@ impl se_remote::channel::PeerIo for NativePeer {
                     .ensure(config.clone(), signer.clone(), self.blocking.as_ref())
                     .await?;
             }
-            super::channel::open(
+            super::native_channel::open(
                 &route,
                 device,
                 signer,

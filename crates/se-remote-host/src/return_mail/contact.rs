@@ -6,7 +6,8 @@ use sha2::{Digest, Sha256};
 impl Mailboxes {
     pub async fn prepare_contact(
         self: &Arc<Self>,
-        host: &Arc<dyn ReturnMailHost>,
+        host: &dyn ReturnMailHost,
+        courier_host: &Arc<dyn ReturnMailHost>,
         source: &VerifiedSourceSession,
         input: &mut RemoteSendCall,
         terminal: &HumanTerminal,
@@ -45,10 +46,10 @@ impl Mailboxes {
             original_grant: binding.device().grant.clone(),
             local_reply: None,
         };
-        self.persist_pending(host.as_ref(), source, record).await?;
+        self.persist_pending(host, source, record).await?;
         // Existing route failures stay visible on resume and do not block this
         // independent send. The durable pending receipt will also be retried.
-        let _retained_status = self.start_mail(host, source.clone()).await?;
+        let _retained_status = self.start_mail(courier_host, source.clone()).await?;
         Ok(())
     }
 

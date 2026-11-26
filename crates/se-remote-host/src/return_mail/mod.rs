@@ -25,7 +25,7 @@ struct MailTask {
 }
 #[derive(Default)]
 pub struct Mailboxes {
-    pub writes: tokio::sync::Mutex<()>,
+    writes: tokio::sync::Mutex<()>,
     tasks: Mutex<HashMap<String, MailTask>>,
 }
 impl Mailboxes {

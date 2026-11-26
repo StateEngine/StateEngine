@@ -84,13 +84,18 @@ impl RemoteBroker {
         terminal: &HumanTerminal,
         deadline: &Deadline,
     ) -> Result<()> {
-        let host: Arc<dyn se_remote_host::ReturnMailHost> = Arc::new(HostReturnMail {
+        let request_host = HostReturnMail {
             broker: self.clone(),
             context: context.clone(),
             deadline: Some(deadline.clone()),
+        };
+        let courier_host: Arc<dyn se_remote_host::ReturnMailHost> = Arc::new(HostReturnMail {
+            broker: self.clone(),
+            context: context.clone(),
+            deadline: None,
         });
         self.mailbox
-            .prepare_contact(&host, source, input, terminal)
+            .prepare_contact(&request_host, &courier_host, source, input, terminal)
             .await
     }
     #[cfg(feature = "remote")]

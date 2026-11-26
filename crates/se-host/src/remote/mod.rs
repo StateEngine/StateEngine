@@ -1,8 +1,6 @@
 //! Shared optional remote-client seams. Declaring these values starts no task,
 //! listener, timer or allocation. Design 45 §§3–6 and 47 §§5/9 govern consumers.
 #[cfg(feature = "remote")]
-pub use se_remote_host::channel;
-#[cfg(feature = "remote")]
 use se_types::Result;
 #[cfg(feature = "remote")]
 use std::sync::Arc;
