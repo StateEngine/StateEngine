@@ -60,10 +60,6 @@ struct InitReport {
     error: Option<serde_json::Value>,
     #[serde(skip_serializing)]
     remedy: Option<String>,
-    #[serde(skip_serializing)]
-    requested_agent: Option<String>,
-    #[serde(skip_serializing)]
-    requested_allow_launch: bool,
 }
 
 struct InitArgs {
@@ -267,8 +263,6 @@ fn execute<H: OwnerCommands + Presentation + 'static>(
         phases: Vec::new(),
         error: None,
         remedy: None,
-        requested_agent: args.agent.clone(),
-        requested_allow_launch: args.allow_launch,
     };
 
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -741,44 +735,10 @@ fn write_human(report: &InitReport, out: &mut impl Write) -> io::Result<()> {
         }
         writeln!(
             out,
-            "Next: resolve the reported error, then rerun `{}` to continue.",
-            format_rerun_command(report)
+            "Next: resolve the reported error, then rerun your original `se remote init` command to continue from the completed phases."
         )?;
     }
     Ok(())
-}
-
-fn quote_rerun_arg(value: &str) -> String {
-    let safe = !value.is_empty()
-        && value.bytes().all(|b| {
-            b.is_ascii_alphanumeric()
-                || matches!(b, b'_' | b'-' | b'.' | b'/' | b':' | b'@' | b'\\')
-        });
-    if safe {
-        value.to_owned()
-    } else {
-        se_host::remote::ssh::posix_single_quote(value)
-    }
-}
-
-fn format_rerun_command(report: &InitReport) -> String {
-    let target = format!(
-        "{}:{}",
-        sanitize_terminal_text(&report.destination),
-        sanitize_terminal_text(&report.remote_path)
-    );
-    let mut cmd = format!(
-        "se remote init {} --alias {}",
-        quote_rerun_arg(&target),
-        sanitize_terminal_text(&report.alias)
-    );
-    if let Some(agent) = report.requested_agent.as_deref() {
-        cmd.push_str(&format!(" --agent {}", sanitize_terminal_text(agent)));
-    }
-    if report.requested_allow_launch {
-        cmd.push_str(" --allow-launch");
-    }
-    cmd
 }
 
 #[cfg(test)]

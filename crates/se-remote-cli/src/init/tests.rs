@@ -27,8 +27,6 @@ fn exit_code_is_two_on_partial_progress_and_one_without_progress() {
         }],
         error: None,
         remedy: Some("fix it".into()),
-        requested_agent: None,
-        requested_allow_launch: false,
     };
     assert_eq!(exit_code_for(&report), 1);
     report.phases.insert(
@@ -67,8 +65,6 @@ fn human_output_escapes_control_chars_and_includes_remedy_and_rerun() -> io::Res
         ],
         error: None,
         remedy: Some("fix \u{1b}[1mnow".into()),
-        requested_agent: None,
-        requested_allow_launch: false,
     };
     let mut out = Vec::new();
     write_human(&report, &mut out)?;
@@ -79,19 +75,21 @@ fn human_output_escapes_control_chars_and_includes_remedy_and_rerun() -> io::Res
     );
     assert!(rendered.contains("Remedy:"), "remedy missing: {rendered}");
     assert!(
-        rendered.contains("rerun `se remote init"),
+        rendered.contains(
+            "Next: resolve the reported error, then rerun your original `se remote init` command to continue from the completed phases."
+        ),
         "rerun next step missing: {rendered}"
     );
     Ok(())
 }
 
 #[test]
-fn human_output_rerun_quotes_spaces_and_preserves_agent_and_allow_launch() -> io::Result<()> {
+fn human_output_rerun_uses_shell_safe_plain_instruction_for_windows_paths() -> io::Result<()> {
     let report = InitReport {
         complete: false,
         alias: "build".into(),
         destination: "dev@build-box".into(),
-        remote_path: "/srv/my repo".into(),
+        remote_path: r"C:\work\my repo".into(),
         host: None,
         project: None,
         agent: None,
@@ -110,17 +108,15 @@ fn human_output_rerun_quotes_spaces_and_preserves_agent_and_allow_launch() -> io
         ],
         error: None,
         remedy: Some("retry when reachable".into()),
-        requested_agent: Some("worker1".into()),
-        requested_allow_launch: true,
     };
     let mut out = Vec::new();
     write_human(&report, &mut out)?;
     let rendered = String::from_utf8_lossy(&out);
-    assert!(
-        rendered.contains(
-            "se remote init 'dev@build-box:/srv/my repo' --alias build --agent worker1 --allow-launch"
-        ),
-        "rerun command must quote spaces and preserve --agent and --allow-launch: {rendered}"
+    assert_eq!(
+        rendered.lines().find(|line| line.starts_with("Next:")),
+        Some(
+            "Next: resolve the reported error, then rerun your original `se remote init` command to continue from the completed phases."
+        )
     );
     Ok(())
 }
