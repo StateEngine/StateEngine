@@ -52,9 +52,12 @@ impl Context {
         if frame.session_id.as_deref() != Some(conversation) {
             return;
         }
+        // A subagent's frames describe its own context, never this one.
+        if frame.parent_tool_use_id.is_some() {
+            return;
+        }
         match frame.kind.as_str() {
-            // A subagent's replies run in their own context, not this one.
-            "assistant" if frame.parent_tool_use_id.is_none() => {
+            "assistant" => {
                 let Some(message) = frame.message else { return };
                 let Some(usage) = message.usage else { return };
                 let used = usage
@@ -68,16 +71,15 @@ impl Context {
                 self.model = message.model;
                 self.usage = Some(ContextUsage::now(used, window));
             }
+            // Only the reply's own model names its window; another model's
+            // total, even the only one listed, says nothing about this context.
             "result" => {
-                let (Some(totals), Some(usage)) = (frame.model_usage, self.usage.as_mut()) else {
+                let (Some(totals), Some(model), Some(usage)) =
+                    (frame.model_usage, self.model.as_ref(), self.usage.as_mut())
+                else {
                     return;
                 };
-                let entry = match &self.model {
-                    Some(model) if totals.contains_key(model) => totals.get(model),
-                    _ if totals.len() == 1 => totals.values().next(),
-                    _ => None,
-                };
-                if let Some(window) = entry.and_then(|entry| entry.context_window) {
+                if let Some(window) = totals.get(model).and_then(|entry| entry.context_window) {
                     usage.window = Some(window).filter(|size| *size > 0);
                 }
             }

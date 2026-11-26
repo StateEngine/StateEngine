@@ -210,7 +210,12 @@ fn from_principal<R: Snapshot>(
             value: AgentRow {
                 provider_settings: profile.provider_settings.clone(),
                 harness: profile.harness.clone(),
-                context: None,
+                // The owning runtime replaces this with its live reading.
+                context: (provider != se_types::Provider::SeCode).then(|| if never_launched {
+                    Read::Absent { checked: "This agent has no launched provider session".into() }
+                } else {
+                    Read::Unknown { what: "Token usage is read by the owning runtime from a live session".into() }
+                }),
                 provider_activity: matches!(provider, se_types::Provider::Claude | se_types::Provider::Codex).then(|| if never_launched {
                     Read::Absent { checked: "This agent has no launched provider session".into() }
                 } else {

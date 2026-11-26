@@ -317,7 +317,9 @@ fn observe(
         provider_settings: profile.provider_settings.clone(),
         harness: None,
         provider_activity: None,
-        context: None,
+        context: (provider != se_types::Provider::SeCode).then(|| Read::Unknown {
+            what: "Token usage is not reported for an agent on another machine".into(),
+        }),
         id: facts.target.agent.clone(),
         name: name.clone(),
         role: None,
