@@ -88,34 +88,79 @@ fn pin_root_no_delete(root: &File, root_path: &Path) -> Result<File, WorkspaceWr
     Ok(pin)
 }
 
-fn sibling_exists(parent: &File, name: &str) -> bool {
+pub(super) enum SiblingState {
+    Present,
+    Absent,
+    Unreadable(io::Error),
+}
+
+pub(super) fn probe_sibling(parent: &File, name: &str) -> SiblingState {
     let Ok(mut units) = utf16_component(name) else {
-        return false;
+        return SiblingState::Unreadable(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid sibling component name",
+        ));
     };
-    nt_open_relative(
+    match nt_open_relative(
         parent,
         &mut units,
         FILE_READ_ATTRIBUTES | SYNCHRONIZE,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         FILE_OPEN,
         0,
-    )
-    .is_ok()
+    ) {
+        Ok(_) => SiblingState::Present,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => SiblingState::Absent,
+        Err(err) => SiblingState::Unreadable(err),
+    }
 }
 
-fn matches_staged(file: &File, stage_key: NativeObjectKey, stage_baseline: TargetBaseline) -> bool {
-    let Ok(key) = se_state_files::observe_object_key(file) else {
-        return false;
-    };
-    let Ok(rev) = se_state_files::observe_file_revision(file) else {
-        return false;
-    };
-    key == stage_key && TargetBaseline::from_revision(rev) == stage_baseline
+pub(super) fn describe_siblings(parent: &File, candidates: &[(&str, &Path)]) -> String {
+    let mut notes = Vec::new();
+    for (name, path) in candidates {
+        match probe_sibling(parent, name) {
+            SiblingState::Present => notes.push(format!("{} (present)", path.display())),
+            SiblingState::Absent => {}
+            SiblingState::Unreadable(err) => {
+                notes.push(format!("{} (unreadable: {err})", path.display()))
+            }
+        }
+    }
+    if notes.is_empty() {
+        "no recovery siblings observed on disk".into()
+    } else {
+        format!("recovery sibling status: {}", notes.join(", "))
+    }
+}
+
+fn is_reserved_dos_name(part: &str) -> bool {
+    let stem = part.split('.').next().unwrap_or(part);
+    stem.eq_ignore_ascii_case("CON")
+        || stem.eq_ignore_ascii_case("PRN")
+        || stem.eq_ignore_ascii_case("AUX")
+        || stem.eq_ignore_ascii_case("NUL")
+        || matches!(
+            stem.as_bytes(),
+            [b'C' | b'c', b'O' | b'o', b'M' | b'm', b'1'..=b'9']
+                | [b'L' | b'l', b'P' | b'p', b'T' | b't', b'1'..=b'9']
+        )
+}
+
+fn matches_revision(
+    file: &File,
+    expected_key: NativeObjectKey,
+    expected_baseline: TargetBaseline,
+) -> Result<bool, io::Error> {
+    let key = se_state_files::observe_object_key(file)?;
+    let rev = se_state_files::observe_file_revision(file)?;
+    Ok(key == expected_key && TargetBaseline::from_revision(rev) == expected_baseline)
 }
 
 fn utf16_component(part: &str) -> Result<Vec<u16>, WorkspaceWriteError> {
-    if part.is_empty() || part.ends_with(['.', ' ']) {
-        return Err(invalid("ambiguous or empty Windows path component"));
+    if part.is_empty() || part.ends_with(['.', ' ']) || is_reserved_dos_name(part) {
+        return Err(invalid(
+            "ambiguous, reserved, or empty Windows path component",
+        ));
     }
     let units: Vec<u16> = part.encode_utf16().collect();
     if units.is_empty() || units.len() > u16::MAX as usize / 2 {

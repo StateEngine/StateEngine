@@ -487,8 +487,8 @@ fn stage_file(
     stage_cstr: &CString,
     bytes: &[u8],
     baseline: Option<TargetBaseline>,
-) -> Result<(u64, u64), WorkspaceWriteError> {
-    let mode: libc::c_uint = baseline.map_or(0o600, |b| {
+) -> Result<TargetBaseline, WorkspaceWriteError> {
+    let mode: libc::c_uint = baseline.map_or(0o666, |b| {
         #[cfg(target_os = "macos")]
         {
             u32::from(b.mode)
@@ -509,7 +509,7 @@ fn stage_file(
         )
     };
     let mut stage = owned(raw).map_err(io_before)?;
-    let prepare = (|| -> Result<(u64, u64), WorkspaceWriteError> {
+    let prepare = (|| -> Result<TargetBaseline, WorkspaceWriteError> {
         if let Some(baseline) = baseline {
             // Preserve the replaced file's exact mode without umask masking.
             // SAFETY: uniquely owned staging file descriptor and masked mode bits.
@@ -520,11 +520,11 @@ fn stage_file(
         stage.write_all(bytes).map_err(io_before)?;
         stage.sync_all().map_err(io_before)?;
         let meta = stat_fd(&stage).map_err(io_before)?;
-        Ok((meta.dev, meta.ino))
+        Ok(TargetBaseline::from_meta(meta))
     })();
     drop(stage);
     match prepare {
-        Ok(id) => Ok(id),
+        Ok(staged) => Ok(staged),
         Err(error) => {
             cleanup_stage(parent, stage_cstr);
             Err(error)
@@ -538,7 +538,7 @@ struct ReplaceCtx<'a> {
     parent: &'a File,
     stage: &'a CString,
     leaf: &'a CString,
-    stage_id: (u64, u64),
+    stage_baseline: TargetBaseline,
     expected: TargetBaseline,
     root_mount: MountIdentity,
     dot_git: Option<(u64, u64)>,
@@ -565,13 +565,20 @@ fn publish_replace(ctx: &ReplaceCtx<'_>) -> Result<(), WorkspaceWriteError> {
         Ok(())
     })();
     if let Err(reason) = custody {
-        // Only swap back if `leaf` still points to our exact staged inode.
-        let current = stat_entry_at(ctx.parent, ctx.leaf, libc::AT_SYMLINK_NOFOLLOW);
-        let can_rollback = matches!(current, Ok(Some(m)) if (m.dev, m.ino) == ctx.stage_id);
-        if !can_rollback {
-            return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                "target raced with exchange ({reason}); both versions retained"
-            )));
+        // Only swap back if `leaf` still matches our exact staged revision
+        // (inode, size, mtime, mode), so a later in-place edit is never lost.
+        match stat_entry_at(ctx.parent, ctx.leaf, libc::AT_SYMLINK_NOFOLLOW) {
+            Ok(Some(m)) if TargetBaseline::from_meta(m) == ctx.stage_baseline => {}
+            Ok(_) => {
+                return Err(WorkspaceWriteError::PublishedUncertain(format!(
+                    "target changed after exchange ({reason}); both versions retained"
+                )));
+            }
+            Err(stat_err) => {
+                return Err(WorkspaceWriteError::PublishedUncertain(format!(
+                    "rollback inspection after exchange conflict ({reason}) failed: {stat_err}; both versions retained"
+                )));
+            }
         }
         if let Err(rollback_err) = exchange_at(ctx.parent, ctx.stage, ctx.leaf) {
             return Err(WorkspaceWriteError::PublishedUncertain(format!(
@@ -583,7 +590,22 @@ fn publish_replace(ctx: &ReplaceCtx<'_>) -> Result<(), WorkspaceWriteError> {
                 "original restored after exchange conflict ({reason}), but rollback directory sync failed: {sync_err}"
             )));
         }
-        // SAFETY: retained parent directory fd and our restored unique staging name.
+        // Verify the restored staging sibling still matches our staged revision
+        // before unlinking it.
+        match stat_entry_at(ctx.parent, ctx.stage, libc::AT_SYMLINK_NOFOLLOW) {
+            Ok(Some(m)) if TargetBaseline::from_meta(m) == ctx.stage_baseline => {}
+            Ok(_) => {
+                return Err(WorkspaceWriteError::PublishedUncertain(format!(
+                    "original restored after exchange conflict ({reason}), but staging sibling changed before cleanup and was retained"
+                )));
+            }
+            Err(stat_err) => {
+                return Err(WorkspaceWriteError::PublishedUncertain(format!(
+                    "original restored after exchange conflict ({reason}), but staging verification failed: {stat_err}"
+                )));
+            }
+        }
+        // SAFETY: retained parent directory fd and verified staged sibling.
         if unsafe { libc::unlinkat(ctx.parent.as_raw_fd(), ctx.stage.as_ptr(), 0) } < 0 {
             return Err(WorkspaceWriteError::PublishedUncertain(format!(
                 "original restored after exchange conflict ({reason}), but staging cleanup failed: {}",
@@ -651,7 +673,7 @@ pub(super) fn write_relative(
 
     let stage_str = stage_name()?;
     let stage_cstr = cstr(&stage_str)?;
-    let stage_id = stage_file(parent, &stage_cstr, bytes, baseline)?;
+    let stage_baseline = stage_file(parent, &stage_cstr, bytes, baseline)?;
 
     let pre_publish = (|| -> Result<(), WorkspaceWriteError> {
         root_check().map_err(|error| {
@@ -672,7 +694,7 @@ pub(super) fn write_relative(
             parent,
             stage: &stage_cstr,
             leaf: &leaf,
-            stage_id,
+            stage_baseline,
             expected,
             root_mount,
             dot_git,
@@ -694,8 +716,8 @@ pub(super) fn write_relative(
     if let Err(reason) = post_custody {
         return Err(
             match stat_entry_at(parent, &leaf, libc::AT_SYMLINK_NOFOLLOW) {
-                Ok(Some(m)) if (m.dev, m.ino) == stage_id => {
-                    // SAFETY: verified our exact newly-created inode in the displaced parent.
+                Ok(Some(m)) if TargetBaseline::from_meta(m) == stage_baseline => {
+                    // SAFETY: verified our exact newly-created revision in the displaced parent.
                     if unsafe { libc::unlinkat(parent.as_raw_fd(), leaf.as_ptr(), 0) } == 0 {
                         match parent.sync_all() {
                             Ok(()) => WorkspaceWriteError::Restored(format!(
@@ -713,7 +735,7 @@ pub(super) fn write_relative(
                     }
                 }
                 Ok(_) => WorkspaceWriteError::PublishedUncertain(format!(
-                    "parent displaced during create ({reason}); created target changed before rollback"
+                    "parent displaced during create ({reason}); created target changed before rollback and was retained"
                 )),
                 Err(stat_err) => WorkspaceWriteError::PublishedUncertain(format!(
                     "parent displaced during create ({reason}); rollback inspection failed: {stat_err}"

@@ -2,12 +2,14 @@
 //! `NativeSourceRoot`.
 //!
 //! Contract:
-//! - Every directory traversal, directory creation, staging file, and atomic
-//!   publication runs strictly relative to the retained root directory handle,
-//!   never restarting from an absolute pathname.
+//! - Every directory traversal, directory creation, staging file, and exclusive
+//!   creation runs strictly relative to retained native directory handles; on
+//!   Windows, existing-file replacement uses `ReplaceFileW` on verified physical
+//!   paths beneath pinned root and ancestor directory handles opened without
+//!   `FILE_SHARE_DELETE`.
 //! - Symbolic links, reparse points, non-regular targets, mount crossings
-//!   (Unix), and `.git` metadata (by spelling and by native object identity)
-//!   are refused before any target mutation.
+//!   (Unix), reserved DOS device names (Windows), and `.git` metadata (by
+//!   spelling and by native object identity) are refused before mutation.
 //! - Replacement carries an O(1) native identity/revision check (no unbounded
 //!   read or hash of the replaced file); absent-destination writes publish
 //!   exclusively so a concurrent creator's file is never overwritten.

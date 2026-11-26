@@ -94,7 +94,7 @@ fn publish_replace_rolls_back_and_preserves_concurrent_editor_save() -> Check {
     std::fs::write(dir.0.join("note.txt"), b"v1")?;
     let expected =
         inspect_target_leaf(&root, &leaf, root_mount, None)?.ok_or("missing initial baseline")?;
-    let stage_id = stage_file(&root, &stage, b"agent-write", Some(expected))?;
+    let stage_baseline = stage_file(&root, &stage, b"agent-write", Some(expected))?;
 
     // Simulate a concurrent editor saving a new version right before exchange.
     std::fs::write(dir.0.join("note.txt"), b"concurrent-editor-save")?;
@@ -105,7 +105,7 @@ fn publish_replace_rolls_back_and_preserves_concurrent_editor_save() -> Check {
         parent: &root,
         stage: &stage,
         leaf: &leaf,
-        stage_id,
+        stage_baseline,
         expected,
         root_mount,
         dot_git: None,
@@ -152,7 +152,7 @@ fn publish_replace_rolls_back_when_parent_displaced() -> Check {
     std::fs::write(ws.join("sub").join("note.txt"), b"original")?;
     let expected = inspect_target_leaf(&sub_dir, &leaf, root_mount, None)?
         .ok_or("missing initial baseline")?;
-    let stage_id = stage_file(&sub_dir, &stage, b"agent-write", Some(expected))?;
+    let stage_baseline = stage_file(&sub_dir, &stage, b"agent-write", Some(expected))?;
 
     // Displace `ws/sub` outside `ws` right before exchange.
     std::fs::rename(ws.join("sub"), outer.0.join("escaped"))?;
@@ -165,7 +165,7 @@ fn publish_replace_rolls_back_when_parent_displaced() -> Check {
         parent,
         stage: &stage,
         leaf: &leaf,
-        stage_id,
+        stage_baseline,
         expected,
         root_mount,
         dot_git: None,
