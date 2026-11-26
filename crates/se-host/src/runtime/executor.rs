@@ -212,11 +212,12 @@ fn enrich_external_seats(
     let se_store::Scope::Project(project) = &admission.scope else {
         return;
     };
+    let now_us = super::start::now_unix_micros().unwrap_or(0);
     let update = |row: &mut se_core::ops::AgentRow| {
         let Some(view) = row.external_seat.as_mut() else {
             return;
         };
-        if let Ok(Some(lease)) = context.external.active_lease(project, &row.id) {
+        if let Ok(Some(lease)) = context.external.active_lease(project, &row.id, now_us) {
             view.state = "active".into();
             view.session_id = Some(lease.session_id);
             view.lease_generation = Some(lease.lease_generation);
@@ -225,6 +226,8 @@ fn enrich_external_seats(
         } else if view.state == "active" {
             // Host restarted or lease expired without an active connection in this generation.
             view.state = "expired".into();
+            view.lease_generation = None;
+            view.expires_at = None;
         }
     };
     match output {

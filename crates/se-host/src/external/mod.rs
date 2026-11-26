@@ -5,6 +5,8 @@ use se_types::{AgentId, Generation, MessageId, NativePath, ProjectId, Result, Se
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "listener")]
+pub(crate) mod commit;
+#[cfg(feature = "listener")]
 pub(crate) mod dispatch;
 #[cfg(feature = "listener")]
 pub(crate) mod lifecycle;

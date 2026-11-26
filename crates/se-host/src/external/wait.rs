@@ -18,8 +18,14 @@ pub(crate) enum WaitPrincipal {
         secret: Arc<Secret>,
         purpose: &'static str,
     },
-    /// Authenticated by OwnerProof targeting an active external seat by `(project, agent)`.
-    OwnerForExternal { project: ProjectId, agent: AgentId },
+    /// Authenticated by OwnerProof pinned to one exact external seat lease.
+    OwnerForExternal {
+        project: ProjectId,
+        agent: AgentId,
+        session_id: SessionId,
+        credential_id: se_store::RecordId,
+        lease_generation: u64,
+    },
 }
 
 pub(crate) async fn wait_mail(
@@ -36,12 +42,15 @@ pub(crate) async fn wait_mail(
     let until = tokio::time::Instant::now() + Duration::from_millis(bounded_ms);
 
     let first = read_page(router, &principal, &deadline).await?;
+    let pinned_session = first.session.clone();
+    let pinned_recipient = first.recipient.clone();
+    let pinned_credential = first.credential;
     // Register BEFORE the deciding read so no commit can fall between snapshot
     // and waiter installation.
     let wait = router.execution.mail_waits.register(
-        first.session.clone(),
-        first.recipient.clone(),
-        first.credential,
+        pinned_session.clone(),
+        pinned_recipient.clone(),
+        pinned_credential,
     )?;
 
     loop {
@@ -52,6 +61,7 @@ pub(crate) async fn wait_mail(
             ));
         }
         let page = read_page(router, &principal, &deadline).await?;
+        verify_same_binding(&page, &pinned_session, &pinned_recipient, pinned_credential)?;
         if !page.ids.is_empty() && after.as_deref() != Some(page.cursor.as_str()) {
             return Ok(ExternalMailWaitOutput {
                 status: "messages".into(),
@@ -72,6 +82,12 @@ pub(crate) async fn wait_mail(
             _ = tokio::time::sleep_until(until) => {
                 // Recheck authority and final inbox state on timeout; never mark read.
                 let final_page = read_page(router, &principal, &deadline).await?;
+                verify_same_binding(
+                    &final_page,
+                    &pinned_session,
+                    &pinned_recipient,
+                    pinned_credential,
+                )?;
                 let status = if !final_page.ids.is_empty()
                     && after.as_deref() != Some(final_page.cursor.as_str())
                 {
@@ -89,6 +105,21 @@ pub(crate) async fn wait_mail(
             }
         }
     }
+}
+
+fn verify_same_binding(
+    page: &crate::http::mail::Page,
+    session: &SessionId,
+    recipient: &crate::runtime::MailRecipient,
+    credential: se_store::RecordId,
+) -> Result<()> {
+    if page.session != *session || page.recipient != *recipient || page.credential != credential {
+        return Err(SeError::invalid(
+            "mail wait",
+            "this seat's active session was revoked, replaced, or disconnected",
+        ));
+    }
+    Ok(())
 }
 
 async fn read_page(
@@ -110,21 +141,30 @@ async fn read_page(
                 })
                 .await
         }
-        WaitPrincipal::OwnerForExternal { project, agent } => {
-            let lease = router
+        WaitPrincipal::OwnerForExternal {
+            project,
+            agent,
+            session_id,
+            credential_id,
+            lease_generation,
+        } => {
+            let now_us = crate::runtime::start::now_unix_micros()?;
+            if router
                 .execution
                 .external
-                .active_lease(project, agent)?
-                .ok_or_else(|| {
-                    SeError::invalid(
-                        "external mail wait",
-                        "an active external seat for this agent; it was revoked or disconnected",
-                    )
-                })?;
+                .matching_active_lease(project, agent, session_id, *lease_generation, now_us)?
+                .is_none()
+            {
+                let _ = lifecycle::reconcile_expired_leases(router, Some(project)).await;
+                return Err(SeError::invalid(
+                    "external mail wait",
+                    "this seat's active session was revoked, replaced, expired, or disconnected",
+                ));
+            }
             let project = project.clone();
             let agent = agent.clone();
-            let session_id = lease.session_id;
-            let credential_id = lease.credential_id;
+            let session_id = session_id.clone();
+            let credential_id = *credential_id;
             router
                 .execution
                 .blocking

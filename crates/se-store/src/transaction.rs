@@ -588,7 +588,7 @@ impl Engine {
             };
             self.db.execute("INSERT INTO operation_events(operation_id,ordinal,event_seq,newly_appended) VALUES(?,?,?,?)",crate::sql_value::sql_params![op,ordinal,seq,prior.is_none()]).map_err(sql)?;
         }
-        apply::session::verify_exclusivity(&self.db, &session_agents)?;
+        apply::session::verify_exclusivity(&self.db, &session_agents, recorded)?;
         receipt(&self.db, &op, info, batch.request.map(|r| r.key))
     }
     fn rollback(&mut self) {

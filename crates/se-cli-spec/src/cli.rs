@@ -223,9 +223,58 @@ pub fn cli_command() -> Command {
             root = insert(root, path, meta.name, hidden);
         }
     }
-    // MCP is a streaming transport for the registered operations, not another
-    // store operation with a fabricated product output family.
+    // MCP, external-seat lifecycle, and blocking mail wait are dedicated host
+    // transports rather than store catalogue operations.
+    let root = root.mut_subcommand("msg", |msg| {
+        msg.subcommand(
+            Command::new("wait")
+                .about("Block on the host's recipient-scoped mail registry until mail arrives or the seat closes")
+                .disable_help_flag(true)
+                .disable_version_flag(true)
+                .disable_help_subcommand(true)
+                .arg(value("as").long("as").help("External seat agent name or ID to wait on"))
+                .arg(value("after").help("Cursor returned by a previous wait"))
+                .arg(value("timeout").help("Wait timeout in seconds (1..=300; default 25)")),
+        )
+    });
     root.subcommand(
+        Command::new("external")
+            .about("Manage owner-approved external seats (Owner terminal only)")
+            .disable_help_flag(true)
+            .disable_version_flag(true)
+            .disable_help_subcommand(true)
+            .subcommand(
+                Command::new("list")
+                    .about("List pending external seat claims and active external leases")
+                    .disable_help_flag(true)
+                    .disable_version_flag(true)
+                    .disable_help_subcommand(true),
+            )
+            .subcommand(
+                Command::new("approve")
+                    .about("Approve a pending external seat claim once")
+                    .disable_help_flag(true)
+                    .disable_version_flag(true)
+                    .disable_help_subcommand(true)
+                    .arg(
+                        positional("claim_id", 1, true).help(
+                            "Pending claim ID from `se external list` or the bridge's stderr",
+                        ),
+                    ),
+            )
+            .subcommand(
+                Command::new("revoke")
+                    .about("Revoke an active external seat")
+                    .disable_help_flag(true)
+                    .disable_version_flag(true)
+                    .disable_help_subcommand(true)
+                    .arg(
+                        positional("agent", 1, true)
+                            .help("Agent name or ID whose active external seat to revoke"),
+                    ),
+            ),
+    )
+    .subcommand(
         Command::new("mcp")
             .about("Serve session tools over newline-delimited JSON-RPC on stdin/stdout")
             .disable_help_flag(true)

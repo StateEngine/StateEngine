@@ -363,6 +363,16 @@ impl AdmissionContext {
         after: Option<String>,
         timeout_ms: Option<u64>,
     ) -> Result<ExternalCall> {
+        if matches!(
+            connection,
+            PresentedAuthority::ExternalSession(_) | PresentedAuthority::ExternalClaim(_)
+        ) && override_authority.is_some()
+        {
+            return Err(SeError::invalid(
+                "external seat connection",
+                "one immutable seat per connection without in-band identity switching",
+            ));
+        }
         let timeout_ms = timeout_ms.unwrap_or(crate::external::DEFAULT_WAIT_TIMEOUT_MS);
         let effective = override_authority.unwrap_or(connection);
         match effective {
@@ -420,10 +430,23 @@ impl AdmissionContext {
                     &selector,
                     false,
                 )?;
+                let now_us = super::super::start::now_unix_micros()?;
+                let lease = self
+                    .external
+                    .active_lease(&project, &agent_id, now_us)?
+                    .ok_or_else(|| {
+                        SeError::invalid(
+                            "external mail wait",
+                            "an active unexpired external seat for this agent; it was revoked, expired, or disconnected",
+                        )
+                    })?;
                 Ok(ExternalCall::MailWait {
                     principal: WaitPrincipal::OwnerForExternal {
                         project,
                         agent: agent_id,
+                        session_id: lease.session_id,
+                        credential_id: lease.credential_id,
+                        lease_generation: lease.lease_generation,
                     },
                     after,
                     timeout_ms,

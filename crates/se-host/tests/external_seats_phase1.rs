@@ -555,14 +555,24 @@ fn simultaneous_external_claims_and_managed_launch_exclusivity() -> Check {
         .map_err(|e| format!("w1 failed: {e}"))?;
     assert_eq!(delivered1.session_id, approve1.session_id);
 
-    // Second claim must be refused atomically at host-writer commit time!
-    let second = h.approve_with_bridge(conn2, claim2.claim_id);
+    // Second claim must be refused with a typed remedy naming `se external revoke`
+    // (never a raw SQLite UNIQUE error) and must NOT consume claim2!
+    let second_err = h
+        .owner_external(ExternalRequest::Approve {
+            claim_id: claim2.claim_id.clone(),
+        })
+        .expect_err("second simultaneous external claim must be refused");
+    let err_msg = second_err.to_string();
     assert!(
-        second.is_err(),
-        "second simultaneous external claim must be refused by atomic exclusivity"
+        err_msg.contains("se external revoke"),
+        "second approval refusal must name `se external revoke`: {err_msg}"
+    );
+    assert!(
+        !err_msg.contains("UNIQUE constraint"),
+        "second approval refusal must not leak raw SQLite UNIQUE error: {err_msg}"
     );
 
-    // Revoke external seat, then verify managed SessionPrepared + ProcessRegistered blocks external join.
+    // Revoke external seat 1, then verify claim2 was NOT consumed and can now be approved!
     let rev: ExternalRevokeOutput = serde_json::from_value(
         h.owner_external(ExternalRequest::Revoke {
             project: Some(h.home.project.clone()),
@@ -571,6 +581,14 @@ fn simultaneous_external_claims_and_managed_launch_exclusivity() -> Check {
         .value,
     )?;
     assert!(rev.revoked);
+
+    let (w2, approve2) = h.approve_with_bridge(conn2, claim2.claim_id)?;
+    let (held2, delivered2) = w2
+        .join()
+        .map_err(|_| "w2 panicked")?
+        .map_err(|e| format!("w2 failed: {e}"))?;
+    assert_eq!(delivered2.session_id, approve2.session_id);
+    drop(held2);
 
     h.shutdown()?;
     verify_store_exclusivity()

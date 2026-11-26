@@ -88,6 +88,14 @@ impl ExternalBackend {
         let opened: ExternalClaimOpenOutput = serde_json::from_value(open_out.value)
             .map_err(|e| se_core::scope::unreadable("external claim open", &e.to_string()))?;
 
+        let claim_id = opened.claim_id.clone();
+        let state = Arc::new(Mutex::new(ClaimState::Pending {
+            claim_id: claim_id.clone(),
+        }));
+        // Start the ClaimWait waiter before printing the actionable claim ID so
+        // an immediate Owner approval can be delivered without a race.
+        let watcher = spawn_claim_watcher(conn, endpoint.generation, claim_id, Arc::clone(&state));
+
         // Stderr only — stdout is strictly reserved for MCP JSON-RPC frames.
         let mut stderr = std::io::stderr().lock();
         let _ = writeln!(
@@ -97,12 +105,6 @@ impl ExternalBackend {
         );
         let _ = stderr.flush();
         drop(stderr);
-
-        let claim_id = opened.claim_id.clone();
-        let state = Arc::new(Mutex::new(ClaimState::Pending {
-            claim_id: claim_id.clone(),
-        }));
-        let watcher = spawn_claim_watcher(conn, endpoint.generation, claim_id, Arc::clone(&state));
 
         Ok(Self {
             endpoint,

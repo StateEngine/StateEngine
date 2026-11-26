@@ -132,6 +132,18 @@ fn apply_activated(
             "session activation requires the current prepared generation",
         ));
     }
+    let active_other: bool = c
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=? AND agent_id=? AND state='active' AND session_id<>?)",
+            rusqlite::params![p, data.agent, id],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    if active_other {
+        return Err(invalid_transition(
+            "agent already has an active session; revoke or stop it (`se external revoke <agent>` or `se stop <agent>`) before activating another",
+        ));
+    }
     let mut extras = TransitionExtras::default();
     if let Some((old, r)) = old {
         let old = key(c, "session", old.as_str(), scope, false)?;
@@ -400,9 +412,12 @@ fn prepared_surface(
 /// Atomic per-agent seat exclusivity enforced inside the writer savepoint before
 /// COMMIT. Both managed `se launch` and external seat joins are arbitrated
 /// against this single predicate so concurrent starts cannot race past a read.
+/// External sessions whose `external_session` credential has already expired
+/// (`expires_at_us <= now_us`) do not retain writer exclusivity.
 pub(crate) fn verify_exclusivity(
     c: &Connection,
     touched: &[(Scope, se_types::AgentId)],
+    now_us: i64,
 ) -> StoreResult<()> {
     for (scope, agent) in touched {
         let s = scope_key(c, scope, false)?;
@@ -418,19 +433,31 @@ pub(crate) fn verify_exclusivity(
             .map_err(sql)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(sql)?;
-        let mut has_external = false;
+        let mut live_count = 0usize;
+        let mut has_live_external = false;
         for session_id in &live_ids {
             if prepared_surface(c, &p, session_id)? == Some(SessionSurface::External) {
-                has_external = true;
-                break;
+                let unexpired: bool = c
+                    .query_row(
+                        "SELECT NOT EXISTS(SELECT 1 FROM credentials WHERE project_id=? AND session_id=? AND purpose='external_session') OR EXISTS(SELECT 1 FROM credentials WHERE project_id=? AND session_id=? AND purpose='external_session' AND state IN ('prepared','active') AND expires_at_us>?)",
+                        rusqlite::params![p, session_id, p, session_id, now_us],
+                        |r| r.get(0),
+                    )
+                    .map_err(sql)?;
+                if unexpired {
+                    has_live_external = true;
+                    live_count += 1;
+                }
+            } else {
+                live_count += 1;
             }
         }
-        if has_external && live_ids.len() > 1 {
+        if has_live_external && live_count > 1 {
             return Err(invalid_transition(
                 "agent already has a live session; stop or revoke it before starting another",
             ));
         }
-        if has_external {
+        if has_live_external {
             let has_process: bool = c
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM processes h JOIN process_data d ON d.event_seq=h.last_seq WHERE h.project_id=? AND d.principal_id=? AND h.ownership_released=0 AND h.state NOT IN ('exited','historical'))",

@@ -84,7 +84,9 @@ pub(crate) async fn execute(
             )
         }
         ExternalCall::List { project } => {
-            let output = router.execution.external.list(project.as_ref())?;
+            let _ = lifecycle::reconcile_expired_leases(router, project.as_ref()).await;
+            let now_us = crate::runtime::start::now_unix_micros()?;
+            let output = router.execution.external.list(project.as_ref(), now_us)?;
             encode("se.external-list/v1", &output)
         }
         ExternalCall::Approve { claim_id } => {
@@ -119,15 +121,25 @@ pub(crate) async fn release_connection(
     claim: Option<PendingClaimHandle>,
     active_binding: &Arc<Mutex<ActiveConnectionBinding>>,
 ) {
-    if let Some(handle) = claim {
-        router
+    if let Some(handle) = claim
+        && let Some(undelivered) = router
             .execution
             .external
-            .cancel_pending_claim(&handle.claim_id);
+            .cancel_pending_claim(&handle.claim_id)
+    {
+        let _ = lifecycle::fenced_disconnect_with_retry(
+            router,
+            &undelivered.project_id,
+            &undelivered.agent_id,
+            &undelivered.session_id,
+            undelivered.lease_generation,
+            "external bridge disconnected before capability delivery",
+        )
+        .await;
     }
     let active = active_binding.lock().ok().and_then(|mut g| g.take());
     if let Some((project_id, agent_id, session_id, lease_generation)) = active {
-        let _ = lifecycle::fenced_disconnect(
+        let _ = lifecycle::fenced_disconnect_with_retry(
             router,
             &project_id,
             &agent_id,

@@ -356,19 +356,50 @@ async fn serve_external_exchange(
     shutdown: &mut watch::Receiver<Option<Deadline>>,
 ) -> Result<Option<HostedConnection>> {
     let active_binding = Arc::clone(&exchange.connection.grant.external_active);
-    let result = tokio::select! {
-        biased;
-        closed = exchange.wait_for_peer_close() => {
-            closed?;
-            return Ok(None);
+    let result = match call {
+        // Mutating Owner lifecycle calls must survive an Owner client disconnect
+        // once admitted so lease registration + bridge delivery (or rollback)
+        // always runs to completion on the host.
+        super::admission::external::ExternalCall::Approve { .. }
+        | super::admission::external::ExternalCall::Revoke { .. } => {
+            let task_router = router.clone();
+            let task_deadline = deadline.clone();
+            let mut task_shutdown = shutdown.clone();
+            let handle = tokio::spawn(async move {
+                crate::external::dispatch::execute(
+                    &task_router,
+                    call,
+                    &active_binding,
+                    &task_deadline,
+                    &mut task_shutdown,
+                )
+                .await
+            });
+            tokio::select! {
+                biased;
+                closed = exchange.wait_for_peer_close() => {
+                    closed?;
+                    return Ok(None);
+                }
+                joined = handle => joined.map_err(|e| {
+                    se_core::scope::unreadable("external lifecycle task", &e.to_string())
+                })?,
+            }
         }
-        result = crate::external::dispatch::execute(
-            router,
-            call,
-            &active_binding,
-            deadline,
-            shutdown,
-        ) => result,
+        other => tokio::select! {
+            biased;
+            closed = exchange.wait_for_peer_close() => {
+                closed?;
+                return Ok(None);
+            }
+            result = crate::external::dispatch::execute(
+                router,
+                other,
+                &active_binding,
+                deadline,
+                shutdown,
+            ) => result,
+        },
     };
     let reply_deadline = options(CALL_TIMEOUT)?;
     exchange

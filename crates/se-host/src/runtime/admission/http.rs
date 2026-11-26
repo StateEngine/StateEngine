@@ -20,7 +20,11 @@ impl AdmissionContext {
         let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let admitted = (|| {
             self.check_generation(&phase)?;
-            let admission = self.credential(&phase, secret, purpose)?;
+            let admission = if purpose == crate::external::EXTERNAL_SESSION_CAPABILITY {
+                self.external_session(&phase, secret)?
+            } else {
+                self.credential(&phase, secret, purpose)?
+            };
             let hash: [u8; 32] = Hasher::digest(secret.expose()).into();
             let credential = se_core::scope::require_present(
                 phase.credential(hash).map_err(|e| store_error(&e))?,
@@ -51,6 +55,30 @@ impl AdmissionContext {
             generation: self.generation.get(),
         };
         if let Err(error) = self.check_generation(&phase) {
+            return super::super::executor::close_read(Err(error), phase.close());
+        }
+        let verify_phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
+        let mut snap = verify_phase
+            .into_snapshot(se_core::admission::read_scope(&admission))
+            .map_err(|e| store_error(&e))?;
+        let checked = (|| {
+            let rec = se_core::scope::require_present(
+                snap.session(session.clone()).map_err(|e| store_error(&e))?,
+                "external seat session",
+                "Reconnect your external bridge and re-approve with `se external approve`.",
+            )?;
+            if !matches!(
+                rec.current.body,
+                se_store::EventBody::SessionActivated { .. }
+            ) {
+                return Err(SeError::invalid(
+                    "external mail wait",
+                    "this seat's active session was revoked, replaced, expired, or disconnected",
+                ));
+            }
+            Ok(())
+        })();
+        if let Err(error) = super::super::executor::close_read(checked, snap.close()) {
             return super::super::executor::close_read(Err(error), phase.close());
         }
         read_mail_page(phase, admission, credential)

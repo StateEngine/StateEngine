@@ -221,3 +221,12 @@ are not shipped.
 - **Decision ledger.** Decision-ledger commands are retired. Previously stored events
   remain readable through `se history`; retirement does not delete their recorded
   payloads.
+- **External seats.** To let an external MCP client join a project without StateEngine
+  launching its process, register the agent with `se agent add NAME --external`, connect
+  the client through `se mcp --as NAME`, and approve the printed claim out of band from an
+  Owner terminal with `se external list` and `se external approve CLAIM_ID`. Revoke at any
+  time with `se external revoke NAME`. External seats enforce per-agent exclusivity against
+  managed launches, expire after 8 hours or on bridge disconnect/host restart, and use
+  `se msg wait [--as NAME] [--after CURSOR] [--timeout SECS]` for zero-polling blocking
+  mail waits on a separate CLI channel (keeping MCP stdio pipes non-blocking). Run
+  `se guide external-seats` for the full walkthrough.

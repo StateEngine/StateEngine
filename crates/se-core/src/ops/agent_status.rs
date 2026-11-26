@@ -286,6 +286,11 @@ fn external_seat_view(
         } else {
             match session.recorded_state.as_deref() {
                 Some("activated") => "active",
+                Some("revoked")
+                    if session.end_reason.as_deref() == Some("external seat lease expired") =>
+                {
+                    "expired"
+                }
                 Some("revoked") => "revoked",
                 Some("ended") => "ended",
                 Some("prepared") => "pending",
@@ -300,7 +305,7 @@ fn external_seat_view(
                 .flatten(),
             lease_generation: None,
             expires_at: None,
-            revocation_reason: (state == "revoked")
+            revocation_reason: matches!(state, "revoked" | "expired")
                 .then(|| session.end_reason.clone())
                 .flatten(),
         }
