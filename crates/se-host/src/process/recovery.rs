@@ -446,6 +446,7 @@ impl LaunchCoordinator {
             session: work.meta.session.clone(),
             lifecycle: work.meta.lifecycle.clone(),
             provider: work.meta.provider,
+            codex_login: Mutex::new(None),
             plan: None,
             takeover: None,
             state: AsyncMutex::new(work),

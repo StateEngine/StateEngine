@@ -66,7 +66,11 @@ pub(crate) async fn after_reboot(
     if plan.input.force_selection.is_some() || !finish_launch(coordinator, &plan, deadline).await? {
         return Ok(plan);
     }
-    coordinator.replan_launch(&plan, admission, deadline).await
+    let mut next = coordinator
+        .replan_launch(&plan, admission, deadline)
+        .await?;
+    next.prepare_replacement(&plan, None, false)?;
+    Ok(next)
 }
 
 /// Close each of this launch target's lifecycles that a reboot already ended.

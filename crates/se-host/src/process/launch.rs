@@ -384,7 +384,12 @@ impl LaunchCoordinator {
         Ok((request, ticket, transport, argv))
     }
 
-    pub(super) async fn start(&self, work: &mut Work, deadline: &Deadline) -> Result<LaunchResult> {
+    pub(super) async fn start(
+        &self,
+        work: &mut Work,
+        launch_guard: &mut Option<tokio::sync::OwnedMutexGuard<()>>,
+        deadline: &Deadline,
+    ) -> Result<LaunchResult> {
         work.startup_timing = (work.meta.provider == se_store::Provider::Codex)
             .then(|| crate::startup_timing::Timing::new(&work.meta.conversation));
         let plan = work.plan.clone().ok_or_else(|| {
@@ -461,16 +466,12 @@ impl LaunchCoordinator {
                 deadline,
             )
             .await?;
-        if work.launch_guard.is_none() {
-            work.launch_guard = Some(
-                self.lock_agent_launch(&plan.project.id, &plan.agent.id, deadline)
-                    .await?,
-            );
-        }
         let reservation = self
             .commit_reservation(work, &plan, &hashes, deadline)
             .await;
-        work.launch_guard = None;
+        // Release the per-agent launch serialization guard immediately after C1
+        // so provider readiness waits remain interruptible.
+        drop(launch_guard.take());
         let reservation = reservation?;
         let scope = self
             .prepare_native_scope(work, &plan, invocation, qualified, reservation, deadline)

@@ -18,12 +18,15 @@ use se_proc::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{ffi::OsString, path::Path, time::Duration};
+use std::{path::Path, time::Duration};
 
 mod record;
 mod socket;
+mod spec;
 use record::{Record, checkpoint_source, refusal, remove_record};
-use socket::{served, socket_fits, wait_served};
+use socket::{probe_served, socket_fits, verify_peer_pid, wait_served};
+pub(super) use spec::ServerLaunch;
+use spec::codex_server_spec;
 
 const RECORD_VERSION: u16 = 1;
 const RECORD_BYTES: usize = 1024 * 1024;
@@ -31,7 +34,7 @@ const RECORD_BYTES: usize = 1024 * 1024;
 const READY: Duration = Duration::from_secs(60);
 
 enum Recovered {
-    Started(Arc<se_proc::OwnedProcess>),
+    Started(Arc<se_proc::OwnedProcess>, u32),
     /// Its scope exists but the server was never allowed to start.
     Unstarted(Arc<se_proc::OwnedProcess>),
     Exited,
@@ -39,8 +42,9 @@ enum Recovered {
 
 #[derive(Default)]
 pub(super) struct CodexServer {
-    /// Servers this host holds native custody of, by the login they serve.
-    slot: tokio::sync::Mutex<std::collections::BTreeMap<PathBuf, Arc<se_proc::OwnedProcess>>>,
+    /// Servers this host holds native custody of, with their verified PID, by login.
+    slot:
+        tokio::sync::Mutex<std::collections::BTreeMap<PathBuf, (Arc<se_proc::OwnedProcess>, u32)>>,
 }
 
 /// The only read of the host environment on the Codex path. It is private to
@@ -95,16 +99,34 @@ fn settled(unresolved: Vec<String>) -> Result<()> {
     ))
 }
 
-/// What the server needs from the launch that first asks for it.
-pub(super) struct ServerLaunch {
-    pub executable: PathBuf,
-    /// Arguments before the server's own, such as an alias supervisor's.
-    pub prefix: Vec<OsString>,
-    pub environment: Vec<(OsString, OsString)>,
-    pub windows_sandbox: Option<&'static str>,
-}
-
 impl LaunchCoordinator {
+    fn check_sandbox_restart(
+        &self,
+        login: &Path,
+        record: &Record,
+        launch: &ServerLaunch,
+        requester: &se_types::LifecycleId,
+        state: &str,
+    ) -> Result<bool> {
+        let mismatch = launch.windows_sandbox.is_some()
+            && record.windows_sandbox.as_deref() != launch.windows_sandbox;
+        if !mismatch {
+            return Ok(false);
+        }
+        if self.other_live_codex_agents(login, Some(requester))? {
+            return Err(crate::codex_rpc::incompatible(
+                &format!(
+                    "the shared Codex app-server for {} is {state} with Windows sandbox {:?}, not {:?}",
+                    login.display(),
+                    record.windows_sandbox.as_deref().unwrap_or("none"),
+                    launch.windows_sandbox.unwrap_or("none"),
+                ),
+                "Stop running Codex agents on this login before switching windows.sandbox, then retry.",
+            ));
+        }
+        Ok(true)
+    }
+
     /// Make sure the login's shared server is serving before an agent starts.
     pub(super) async fn ensure_codex_server(
         &self,
@@ -113,90 +135,79 @@ impl LaunchCoordinator {
         requester: &se_types::LifecycleId,
         deadline: &Deadline,
     ) -> Result<()> {
+        self.set_codex_login(requester, &login)?;
+        let require_verified = launch.windows_sandbox.is_some();
         let control = crate::harness::codex_input::control_socket(&login);
         socket_fits(&control)?;
         let path = self.codex_record(&login);
         let mut slot =
             crate::runtime::pool::within(deadline, self.codex_server.slot.lock()).await?;
-        // Starting the shared server is not bounded by the one launch that asked
-        // for it: a first start on a fresh login can outlast that launch's
-        // deadline, and the server must still finish starting for the next one.
         let deadline = &Deadline::idle()?.stage(READY)?;
         let mut record = self.read_codex_record(&path, deadline).await?;
-        if served(&control).await? {
-            match record.take() {
-                // Someone else's server on this login: never stop it; on Windows
-                // where sandbox isolation is required, refuse unknown external mode.
+        if let Some(peer_pid) = probe_served(&control).await? {
+            let Some(record) = record.take() else {
+                if let Some(wanted) = launch.windows_sandbox {
+                    return Err(crate::codex_rpc::incompatible(
+                        &format!(
+                            "an external Codex app-server is already serving {} with an unknown Windows sandbox mode (launch requires {:?})",
+                            login.display(),
+                            wanted,
+                        ),
+                        "Stop that external Codex app-server and retry so StateEngine can start one with the configured windows.sandbox.",
+                    ));
+                }
+                return Ok(());
+            };
+            let (owner, verified_pid) = match slot.remove(&login) {
+                Some(held) => held,
                 None => {
-                    if let Some(wanted) = launch.windows_sandbox {
-                        return Err(crate::codex_rpc::incompatible(
-                            &format!(
-                                "an external Codex app-server is already serving {} with an unknown Windows sandbox mode (launch requires {:?})",
-                                login.display(),
-                                wanted,
-                            ),
-                            "Stop that external Codex app-server and retry so StateEngine can start one with the configured windows.sandbox.",
-                        ));
-                    }
+                    self.adopt_codex_server(&path, record.clone(), deadline)
+                        .await?
+                }
+            };
+            if let Err(err) = verify_peer_pid(&login, peer_pid, verified_pid, require_verified) {
+                slot.insert(login.clone(), (owner, verified_pid));
+                return Err(err);
+            }
+            match self.check_sandbox_restart(&login, &record, &launch, requester, "running") {
+                Ok(true) => self.stop_and_remove_codex(owner, &path, deadline).await?,
+                Ok(false) => {
+                    slot.insert(login.clone(), (owner, verified_pid));
                     return Ok(());
                 }
-                Some(record) => {
-                    let mismatch = launch.windows_sandbox.is_some()
-                        && record.windows_sandbox.as_deref() != launch.windows_sandbox;
-                    if mismatch {
-                        if self.other_live_codex_agents(Some(requester))? {
-                            return Err(crate::codex_rpc::incompatible(
-                                &format!(
-                                    "the shared Codex app-server for {} is running with Windows sandbox {:?}, not {:?}",
-                                    login.display(),
-                                    record.windows_sandbox.as_deref().unwrap_or("none"),
-                                    launch.windows_sandbox.unwrap_or("none"),
-                                ),
-                                "Stop running Codex agents on this login before switching windows.sandbox, then retry.",
-                            ));
-                        }
-                        let owner = match slot.remove(&login) {
-                            Some(owner) => owner,
-                            None => self.adopt_codex_server(&path, record, deadline).await?,
-                        };
-                        self.stop_and_remove_codex(owner, &path, deadline).await?;
-                    } else {
-                        if !slot.contains_key(&login) {
-                            let owner = self.adopt_codex_server(&path, record, deadline).await?;
-                            slot.insert(login.clone(), owner);
-                        }
-                        return Ok(());
-                    }
+                Err(err) => {
+                    slot.insert(login.clone(), (owner, verified_pid));
+                    return Err(err);
                 }
             }
         }
         if let Some(record) = record {
-            // Recorded but not serving: still starting, or gone.
             match self.recover_codex_server(&path, &record, deadline).await? {
-                Recovered::Started(owner) => {
-                    let mismatch = launch.windows_sandbox.is_some()
-                        && record.windows_sandbox.as_deref() != launch.windows_sandbox;
-                    if mismatch {
-                        if self.other_live_codex_agents(Some(requester))? {
-                            slot.insert(login.clone(), owner);
-                            return Err(crate::codex_rpc::incompatible(
-                                &format!(
-                                    "the shared Codex app-server for {} is starting with Windows sandbox {:?}, not {:?}",
-                                    login.display(),
-                                    record.windows_sandbox.as_deref().unwrap_or("none"),
-                                    launch.windows_sandbox.unwrap_or("none"),
-                                ),
-                                "Stop running Codex agents on this login before switching windows.sandbox, then retry.",
-                            ));
+                Recovered::Started(owner, verified_pid) => {
+                    match self
+                        .check_sandbox_restart(&login, &record, &launch, requester, "starting")
+                    {
+                        Ok(true) => {
+                            self.stop_and_remove_codex(owner, &path, deadline).await?;
+                            slot.remove(&login);
                         }
-                        self.stop_and_remove_codex(owner, &path, deadline).await?;
-                        slot.remove(&login);
-                    } else {
-                        slot.insert(login.clone(), owner);
-                        return wait_served(&control, deadline).await;
+                        Ok(false) => {
+                            slot.insert(login.clone(), (owner, verified_pid));
+                            return wait_served(
+                                &login,
+                                &control,
+                                verified_pid,
+                                require_verified,
+                                deadline,
+                            )
+                            .await;
+                        }
+                        Err(err) => {
+                            slot.insert(login.clone(), (owner, verified_pid));
+                            return Err(err);
+                        }
                     }
                 }
-                // A start that never reached exec will never serve: end it.
                 Recovered::Unstarted(owner) => {
                     self.stop_and_remove_codex(owner, &path, deadline).await?;
                     slot.remove(&login);
@@ -204,16 +215,14 @@ impl LaunchCoordinator {
                 Recovered::Exited => self.remove_codex_record(&path, deadline).await?,
             }
         }
-        // A server this host started that has since ended: witness its exit and
-        // release its scope before starting another.
-        if let Some(previous) = slot.remove(&login) {
+        if let Some((previous, _)) = slot.remove(&login) {
             self.release_ended_codex_server(previous, deadline).await?;
         }
-        let owner = self
+        let (owner, verified_pid) = self
             .start_codex_server(&login, &path, launch, deadline)
             .await?;
-        slot.insert(login.clone(), owner);
-        wait_served(&control, deadline).await
+        slot.insert(login.clone(), (owner, verified_pid));
+        wait_served(&login, &control, verified_pid, require_verified, deadline).await
     }
 
     /// After restart, take back custody of every server a previous host
@@ -224,8 +233,8 @@ impl LaunchCoordinator {
         let mut unresolved = Vec::new();
         for path in self.codex_records(deadline).await? {
             match self.adopt_recorded(&path, deadline).await {
-                Ok(Some((login, owner))) => {
-                    slot.insert(login, owner);
+                Ok(Some((login, owner, pid))) => {
+                    slot.insert(login, (owner, pid));
                 }
                 Ok(None) => {}
                 Err(failure) => unresolved.push(failure.body.to_string()),
@@ -239,14 +248,14 @@ impl LaunchCoordinator {
         &self,
         path: &Path,
         deadline: &Deadline,
-    ) -> Result<Option<(PathBuf, Arc<se_proc::OwnedProcess>)>> {
+    ) -> Result<Option<(PathBuf, Arc<se_proc::OwnedProcess>, u32)>> {
         let Some(record) = self.read_codex_record(path, deadline).await? else {
             return Ok(None);
         };
         let login = record.login.to_local()?;
         let settled = async {
             match self.recover_codex_server(path, &record, deadline).await? {
-                Recovered::Started(owner) => Ok(Some((login.clone(), owner))),
+                Recovered::Started(owner, pid) => Ok(Some((login.clone(), owner, pid))),
                 Recovered::Unstarted(owner) => self
                     .stop_and_remove_codex(owner, path, deadline)
                     .await
@@ -296,7 +305,7 @@ impl LaunchCoordinator {
         }
         let mut unresolved = Vec::new();
         // Servers held by native custody are ours whatever their records say.
-        for (login, owner) in std::mem::take(&mut *slot) {
+        for (login, (owner, _)) in std::mem::take(&mut *slot) {
             if let Err(failure) = self.retire_held(&login, owner, deadline).await {
                 unresolved.push(for_login(failure, &login).body.to_string());
             }
@@ -352,7 +361,7 @@ impl LaunchCoordinator {
         let settled = async {
             match self.recover_codex_server(path, &record, deadline).await? {
                 Recovered::Exited => self.remove_codex_record(path, deadline).await,
-                Recovered::Started(owner) | Recovered::Unstarted(owner) => {
+                Recovered::Started(owner, _) | Recovered::Unstarted(owner) => {
                     self.stop_and_remove_codex(owner, path, deadline).await
                 }
             }
@@ -422,11 +431,21 @@ impl LaunchCoordinator {
             .await
     }
 
-    fn live_codex_agents(&self) -> Result<bool> {
-        self.other_live_codex_agents(None)
+    fn set_codex_login(&self, lifecycle: &se_types::LifecycleId, login: &Path) -> Result<()> {
+        let jobs = self
+            .jobs
+            .0
+            .lock()
+            .map_err(|_| error("Codex shared server", "poisoned job registry"))?;
+        if let Some(job) = jobs.values().find(|job| &job.lifecycle == lifecycle)
+            && let Ok(mut bound) = job.codex_login.lock()
+        {
+            *bound = Some(se_proc::canonicalize_path(login).unwrap_or_else(|_| login.to_owned()));
+        }
+        Ok(())
     }
 
-    fn other_live_codex_agents(&self, exclude: Option<&se_types::LifecycleId>) -> Result<bool> {
+    fn live_codex_agents(&self) -> Result<bool> {
         let jobs = self
             .jobs
             .0
@@ -434,8 +453,35 @@ impl LaunchCoordinator {
             .map_err(|_| error("Codex shared server", "poisoned job registry"))?;
         Ok(jobs.values().any(|job| {
             job.provider == se_store::Provider::Codex
-                && exclude.is_none_or(|lifecycle| &job.lifecycle != lifecycle)
                 && !job.settled.load(std::sync::atomic::Ordering::Acquire)
+        }))
+    }
+
+    fn other_live_codex_agents(
+        &self,
+        login: &Path,
+        exclude: Option<&se_types::LifecycleId>,
+    ) -> Result<bool> {
+        let target = se_proc::canonicalize_path(login).unwrap_or_else(|_| login.to_owned());
+        let jobs = self
+            .jobs
+            .0
+            .lock()
+            .map_err(|_| error("Codex shared server", "poisoned job registry"))?;
+        Ok(jobs.values().any(|job| {
+            if job.provider != se_store::Provider::Codex
+                || exclude.is_some_and(|lifecycle| &job.lifecycle == lifecycle)
+                || job.settled.load(std::sync::atomic::Ordering::Acquire)
+            {
+                return false;
+            }
+            // Jobs bound to a different login do not share this login's server;
+            // an unbound/recovered job with unknown login stays conservative.
+            job.codex_login
+                .lock()
+                .ok()
+                .and_then(|guard| guard.clone())
+                .is_none_or(|bound| bound == target)
         }))
     }
 
@@ -444,9 +490,9 @@ impl LaunchCoordinator {
         path: &Path,
         record: Record,
         deadline: &Deadline,
-    ) -> Result<Arc<se_proc::OwnedProcess>> {
+    ) -> Result<(Arc<se_proc::OwnedProcess>, u32)> {
         match self.recover_codex_server(path, &record, deadline).await? {
-            Recovered::Started(owner) => Ok(owner),
+            Recovered::Started(owner, pid) => Ok((owner, pid)),
             _ => Err(refusal(
                 path,
                 "the recorded server is not the one serving its socket",
@@ -487,6 +533,7 @@ impl LaunchCoordinator {
                 process,
                 record: native_record,
             } => {
+                let pid = native_record.root.pid.0;
                 self.save_codex_record(
                     path,
                     &Record {
@@ -497,7 +544,7 @@ impl LaunchCoordinator {
                     deadline,
                 )
                 .await?;
-                Ok(Recovered::Started(Arc::new(process)))
+                Ok(Recovered::Started(Arc::new(process), pid))
             }
             RecoveryOutcome::PendingScope { process, .. } => {
                 Ok(Recovered::Unstarted(Arc::new(process)))
@@ -516,7 +563,7 @@ impl LaunchCoordinator {
         path: &Path,
         launch: ServerLaunch,
         deadline: &Deadline,
-    ) -> Result<Arc<se_proc::OwnedProcess>> {
+    ) -> Result<(Arc<se_proc::OwnedProcess>, u32)> {
         let reservation = self.codex_reservation()?;
         let lifecycle = reservation.lifecycle.clone();
         let mut record = Record {
@@ -563,9 +610,10 @@ impl LaunchCoordinator {
                 }
             })
             .await?;
-        self.finish_codex_launch(path, record, ticket, deadline)
+        let pid = self
+            .finish_codex_launch(path, record, ticket, deadline)
             .await?;
-        Ok(owner)
+        Ok((owner, pid))
     }
 
     fn codex_reservation(&self) -> Result<se_proc::LaunchReservation> {
@@ -603,7 +651,7 @@ impl LaunchCoordinator {
         mut record: Record,
         mut ticket: se_proc::LaunchTicket,
         deadline: &Deadline,
-    ) -> Result<()> {
+    ) -> Result<u32> {
         loop {
             let native = self.native.clone();
             let (returned, progress) = self
@@ -634,9 +682,11 @@ impl LaunchCoordinator {
                         .await?;
                 }
                 LaunchProgress::Started(success) => {
+                    let pid = success.record.root.pid.0;
                     record.checkpoint =
                         self.codex_checkpoint(CheckpointKind::Process(success.record))?;
-                    return self.save_codex_record(path, &record, deadline).await;
+                    self.save_codex_record(path, &record, deadline).await?;
+                    return Ok(pid);
                 }
                 LaunchProgress::Failed(failure) => {
                     return Err(error("Codex shared server launch", failure.error));
@@ -705,61 +755,5 @@ impl LaunchCoordinator {
             };
             tokio::time::sleep(deadline.remaining()?.min(Duration::from_millis(25))).await;
         }
-    }
-}
-
-/// The stock server on the login's default control socket, in its own scope.
-fn codex_server_spec(
-    lifecycle: se_types::LifecycleId,
-    generation: se_proc::GenerationId,
-    login: &Path,
-    launch: ServerLaunch,
-    scratch: &Path,
-    deadline: &Deadline,
-) -> se_proc::LaunchSpec {
-    let mut environment = launch.environment;
-    environment.retain(|(key, _)| {
-        !["TMPDIR", "TMP", "TEMP"]
-            .iter()
-            .any(|name| key.to_string_lossy().eq_ignore_ascii_case(name))
-    });
-    for name in ["TMPDIR", "TMP", "TEMP"] {
-        environment.push((name.into(), scratch.as_os_str().to_owned()));
-    }
-    let mut arguments = launch.prefix;
-    if let Some(name) = launch.windows_sandbox {
-        arguments.push("-c".into());
-        arguments.push(format!("windows.sandbox={}", serde_json::json!(name)).into());
-    }
-    arguments.extend(["app-server".into(), "--listen".into(), "unix://".into()]);
-    se_proc::LaunchSpec {
-        executable_custody: None,
-        lifecycle,
-        generation,
-        executable: launch.executable,
-        arguments,
-        cwd: login.to_owned(),
-        environment: se_proc::Environment {
-            entries: environment,
-        },
-        stdio: se_proc::StandardIo {
-            stdin: None,
-            stdout: None,
-            stderr: None,
-        },
-        mode: se_proc::LaunchMode::HeadlessPersistent,
-        window: None,
-        // Each agent's sandbox is set on its own thread; the server's scope
-        // only routes its temporary files.
-        policy: se_proc::LaunchPolicy {
-            containment: se_proc::ContainmentRequirement::BestAvailable,
-            writes: se_proc::WritePolicy::ReadOnly {
-                scratch: scratch.to_owned(),
-            },
-            network: se_proc::NetworkPolicy::Allow,
-            hardening: se_proc::OptionalHardening::Off,
-        },
-        deadline: deadline.at(),
-        notifications: Arc::new(events::Wake::default()),
     }
 }

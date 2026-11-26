@@ -27,3 +27,27 @@ pub(crate) fn socket_ready(
     // Hang-up and error count as ready, so the next read or write reports them.
     Ok(ready > 0 && entry.revents != 0)
 }
+
+/// Query the OS-verified peer process ID on a connected Windows AF_UNIX socket.
+pub(crate) fn peer_pid(socket: std::os::windows::io::RawSocket) -> Option<u32> {
+    use std::{mem::size_of, ptr};
+    use windows_sys::Win32::Networking::WinSock::WSAIoctl;
+    const SIO_AF_UNIX_GETPEERPID: u32 = 0x5800_0100;
+    let mut pid = 0u32;
+    let mut bytes = 0u32;
+    // SAFETY: live AF_UNIX socket handle and writable u32 output buffers.
+    let rc = unsafe {
+        WSAIoctl(
+            socket as usize,
+            SIO_AF_UNIX_GETPEERPID,
+            ptr::null(),
+            0,
+            (&mut pid as *mut u32).cast(),
+            size_of::<u32>() as u32,
+            &mut bytes,
+            ptr::null_mut(),
+            None,
+        )
+    };
+    (rc == 0 && bytes == size_of::<u32>() as u32 && pid != 0).then_some(pid)
+}

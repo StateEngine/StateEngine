@@ -1,4 +1,5 @@
-//! Control-socket path limits and readiness probing for the shared Codex server.
+//! Control-socket path limits, peer-PID binding, and readiness probing for the
+//! shared Codex server.
 use super::READY;
 use crate::client::lease::Deadline;
 use se_types::Result;
@@ -21,10 +22,12 @@ pub(super) fn socket_fits(control: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Whether the login's control socket accepts a connection right now.
-pub(super) async fn served(control: &Path) -> Result<bool> {
+/// Probe whether the login's control socket accepts a connection right now.
+/// Returns `Ok(None)` when not listening, or `Ok(Some(peer_pid))` where
+/// `peer_pid` is the OS-reported PID of the accepting process when available.
+pub(super) async fn probe_served(control: &Path) -> Result<Option<Option<u32>>> {
     match std::fs::symlink_metadata(control) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
             return Err(se_core::scope::unreadable(
                 "Codex control socket",
@@ -33,36 +36,50 @@ pub(super) async fn served(control: &Path) -> Result<bool> {
         }
         Ok(_) => {}
     }
-    #[cfg(unix)]
-    let attempt = tokio::net::UnixStream::connect(control).await.map(drop);
-    #[cfg(windows)]
-    let attempt = {
-        let control = control.to_owned();
-        tokio::task::spawn_blocking(move || uds_windows::UnixStream::connect(control).map(drop))
-            .await
-            .map_err(|e| crate::process::error("Codex control socket", e))?
-    };
-    match attempt {
-        Ok(()) => Ok(true),
-        // A socket file nobody listens on: refused, or on Windows WSAENETDOWN.
-        Err(e)
-            if matches!(
-                e.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-            ) || (cfg!(windows) && e.raw_os_error() == Some(10050)) =>
-        {
-            Ok(false)
-        }
-        Err(e) => Err(se_core::scope::unreadable(
-            "Codex control socket",
-            &e.to_string(),
+    se_harness::probe_local_socket_peer_pid(control)
+        .await
+        .map_err(|e| se_core::scope::unreadable("Codex control socket", &e.to_string()))
+}
+
+/// Prove that the accepting socket peer matches our verified server PID.
+pub(super) fn verify_peer_pid(
+    login: &Path,
+    peer_pid: Option<u32>,
+    expected_pid: u32,
+    require_verified: bool,
+) -> Result<()> {
+    match peer_pid {
+        Some(actual) if actual == expected_pid => Ok(()),
+        Some(actual) => Err(crate::codex_rpc::incompatible(
+            &format!(
+                "the Codex control socket for {} is served by PID {actual}, not StateEngine's verified server PID {expected_pid}",
+                login.display()
+            ),
+            "Stop the other Codex app-server listening on that socket and retry.",
         )),
+        None if require_verified => Err(crate::codex_rpc::incompatible(
+            &format!(
+                "could not verify that the Codex control socket for {} is served by StateEngine's server PID {expected_pid}",
+                login.display()
+            ),
+            "Restart the Codex app-server for this login or run without windows.sandbox, then retry.",
+        )),
+        None => Ok(()),
     }
 }
 
-pub(super) async fn wait_served(control: &Path, deadline: &Deadline) -> Result<()> {
+pub(super) async fn wait_served(
+    login: &Path,
+    control: &Path,
+    expected_pid: u32,
+    require_verified: bool,
+    deadline: &Deadline,
+) -> Result<()> {
     let until = tokio::time::Instant::now() + READY.min(deadline.remaining()?);
-    while !served(control).await? {
+    loop {
+        if let Some(peer_pid) = probe_served(control).await? {
+            return verify_peer_pid(login, peer_pid, expected_pid, require_verified);
+        }
         if tokio::time::Instant::now() >= until {
             return Err(crate::codex_rpc::incompatible(
                 &format!("the login's app-server did not open {}", control.display()),
@@ -71,5 +88,4 @@ pub(super) async fn wait_served(control: &Path, deadline: &Deadline) -> Result<(
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    Ok(())
 }
