@@ -7,6 +7,12 @@ use super::*;
 pub(super) fn create_claim(path: &Path) -> Result<()> {
     create(path, None, true, |_| Ok(())).map(drop)
 }
+pub(super) fn create_exclusive(
+    path: &Path,
+    write: impl FnOnce(&mut File) -> Result<()>,
+) -> Result<()> {
+    create(path, None, false, write).map(drop)
+}
 pub(super) fn create_profile(
     path: &Path,
     source: &File,

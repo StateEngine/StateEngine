@@ -367,6 +367,32 @@ fn try_create_tmpfile_and_publish(
     Ok(true)
 }
 
+#[cfg(target_os = "linux")]
+fn truncate_and_report(
+    file: &File,
+    tmp_path: &Path,
+    dest: &Path,
+    op: &'static str,
+    err: crate::state_files::StateFileError,
+) -> crate::state_files::StateFileError {
+    let kind = err
+        .source
+        .as_ref()
+        .map_or(io::ErrorKind::Other, io::Error::kind);
+    let detail = match file.set_len(0) {
+        Ok(()) => format!(
+            "{err}; destination untouched; empty temp file left at {}",
+            tmp_path.display()
+        ),
+        Err(trunc_err) => format!(
+            "{err}; destination untouched; failed to truncate temp file at {} ({trunc_err}); partial contents may remain",
+            tmp_path.display()
+        ),
+    };
+    io_error(op, dest, io::Error::new(kind, detail))
+}
+
+#[cfg(target_os = "linux")]
 fn create_staged_exclusive(
     parent_dir: &File,
     leaf: &CString,
@@ -379,7 +405,8 @@ fn create_staged_exclusive(
     let tmp_path = dir.join(tmp_name.to_string_lossy().as_ref());
     // Create a private CSPRNG sibling temp file (0o600 & ~umask is never
     // group/world accessible, and openat returns a writable fd even under
-    // umask 0777). Never touch the destination name until all bytes are synced.
+    // umask 0777). Publish the exact held fd via /proc/self/fd/<fd> so a
+    // concurrent swap of `tmp_name` cannot publish a different inode.
     let mut file = owned(
         // SAFETY: held verified parent_dir fd and unpredictable literal temp name.
         unsafe {
@@ -393,73 +420,102 @@ fn create_staged_exclusive(
         "create staged user file",
         &tmp_path,
     )?;
-    let prepare = (|| -> Result<()> {
-        let _ = id(&file, &tmp_path, false, true)?;
+    let prepare = (|| -> Result<(u64, u64)> {
+        let held_id = id(&file, &tmp_path, false, true)?;
         file.set_permissions(std::fs::Permissions::from_mode(0o600))
             .map_err(|e| io_error("protect staged user file", &tmp_path, e))?;
-        #[cfg(target_os = "macos")]
-        super::super::clear_created_acl(&file, &tmp_path, false)?;
         file.write_all(bytes)
             .and_then(|()| file.sync_all())
-            .map_err(|e| io_error("write staged user file", &tmp_path, e))
+            .map_err(|e| io_error("write staged user file", &tmp_path, e))?;
+        Ok(held_id)
     })();
-    if let Err(err) = prepare {
-        let _ = file.set_len(0);
-        let kind = err
-            .source
-            .as_ref()
-            .map_or(io::ErrorKind::Other, io::Error::kind);
-        return Err(io_error(
-            "stage new user file",
+    let held_id = match prepare {
+        Ok(held_id) => held_id,
+        Err(err) => {
+            return Err(truncate_and_report(
+                &file,
+                &tmp_path,
+                path,
+                "stage new user file",
+                err,
+            ));
+        }
+    };
+    let proc_fd = std::ffi::CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
+        .map_err(|_| unsafe_path("invalid proc fd path", path))?;
+    // SAFETY: links the exact held open inode into (parent_dir, leaf) without
+    // replacement (fails with EEXIST if leaf exists). Never falls back to an
+    // unbound pathname rename in a mutable external parent.
+    let linked = unsafe {
+        libc::linkat(
+            libc::AT_FDCWD,
+            proc_fd.as_ptr(),
+            parent_dir.as_raw_fd(),
+            leaf.as_ptr(),
+            libc::AT_SYMLINK_FOLLOW,
+        )
+    };
+    if linked < 0 {
+        let err = io_error("publish new user file", path, io::Error::last_os_error());
+        return Err(truncate_and_report(
+            &file,
+            &tmp_path,
             path,
-            io::Error::new(
-                kind,
-                format!(
-                    "{err}; destination untouched; empty temp file left at {}",
-                    tmp_path.display()
-                ),
-            ),
-        ));
-    }
-    if let Err(err) = move_no_replace(parent_dir, &tmp_name, leaf, path) {
-        let _ = file.set_len(0);
-        let kind = err
-            .source
-            .as_ref()
-            .map_or(io::ErrorKind::Other, io::Error::kind);
-        return Err(io_error(
             "publish new user file",
-            path,
-            io::Error::new(
-                kind,
-                format!(
-                    "{err}; destination untouched; empty temp file left at {}",
-                    tmp_path.display()
-                ),
-            ),
+            err,
         ));
     }
     drop(file);
     parent_dir
         .sync_all()
-        .map_err(|e| io_error("sync user file parent after publish", dir, e))
+        .map_err(|e| io_error("sync user file parent after publish", dir, e))?;
+    // Only unlink `tmp_name` if a no-follow check still proves it is our held inode.
+    if let Ok(named) = super::leaf(parent_dir, &tmp_name, &tmp_path, false)
+        && id(&named, &tmp_path, false, true).ok() == Some(held_id)
+    {
+        // SAFETY: held parent_dir fd and verified temp link matching `held_id`.
+        if unsafe { libc::unlinkat(parent_dir.as_raw_fd(), tmp_name.as_ptr(), 0) } < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() != io::ErrorKind::NotFound {
+                return Err(io_error(
+                    "new user file published, but removing temp link failed",
+                    &tmp_path,
+                    err,
+                ));
+            }
+        } else {
+            parent_dir
+                .sync_all()
+                .map_err(|e| io_error("sync user file parent after temp cleanup", dir, e))?;
+        }
+    }
+    Ok(())
 }
 
 /// Exclusively create a new regular file in a user-owned external directory
 /// without requiring `0700` on the parent directory. Validates the destination
-/// before creating, uses `O_TMPFILE` + `linkat` on Linux when supported and
-/// a CSPRNG sibling temp file + atomic no-replace rename otherwise (zero
-/// partial destination, zero staging dirs, zero by-name `unlinkat`), and
-/// always syncs the parent.
+/// before creating, uses `O_TMPFILE` + `linkat` on Linux (falling back to a
+/// CSPRNG sibling temp file published by held fd via `/proc/self/fd/<fd>`),
+/// and uses `private_stage::create_exclusive` on macOS.
 pub(in crate::state_files) fn create_new_file(path: &Path, bytes: &[u8]) -> Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| unsafe_path("cannot create file at filesystem root", path))?;
     ensure_user_directory(dir)?;
-    let (parent_dir, leaf) = parent(path)?;
-    #[cfg(target_os = "linux")]
-    if try_create_tmpfile_and_publish(&parent_dir, &leaf, path, dir, bytes)? {
-        return Ok(());
+    #[cfg(target_os = "macos")]
+    {
+        use std::io::Write;
+        return private_stage::create_exclusive(path, |file| {
+            file.write_all(bytes)
+                .map_err(|e| io_error("write staged user file", path, e))
+        });
     }
-    create_staged_exclusive(&parent_dir, &leaf, path, dir, bytes)
+    #[cfg(target_os = "linux")]
+    {
+        let (parent_dir, leaf) = parent(path)?;
+        if try_create_tmpfile_and_publish(&parent_dir, &leaf, path, dir, bytes)? {
+            return Ok(());
+        }
+        create_staged_exclusive(&parent_dir, &leaf, path, dir, bytes)
+    }
 }
