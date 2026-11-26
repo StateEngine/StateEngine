@@ -87,6 +87,27 @@ pub fn private_startup_serves_and_retires() -> Check {
     ] {
         command.env(name, "detached-host-provider-canary");
     }
+    // Proxy and TLS trust settings cross to the detached host for protocol
+    // agents. Synthetic values: no request in this check follows them.
+    for (name, value) in [
+        ("HTTPS_PROXY", "http://127.0.0.1:9"),
+        ("HTTP_PROXY", "http://127.0.0.1:9"),
+        ("ALL_PROXY", "http://127.0.0.1:9"),
+        ("NO_PROXY", "detached-host-network-canary"),
+        ("SSL_CERT_FILE", "/nonexistent/detached-host-canary.pem"),
+        ("SSL_CERT_DIR", "/nonexistent/detached-host-canary"),
+        (
+            "NODE_EXTRA_CA_CERTS",
+            "/nonexistent/detached-host-canary.pem",
+        ),
+    ] {
+        command.env(name, value);
+        // Proxy names also have distinct lower-case spellings outside Windows.
+        #[cfg(not(windows))]
+        if name.ends_with("_PROXY") {
+            command.env(name.to_ascii_lowercase(), value);
+        }
+    }
     let output = command.output()?;
     print!("{}", String::from_utf8_lossy(&output.stdout));
     eprint!("{}", String::from_utf8_lossy(&output.stderr));
@@ -164,6 +185,15 @@ fn verify_linux_host_environment(ready: &host::StartedHost, temporary: &std::pat
         "DISPLAY",
         "WAYLAND_DISPLAY",
         "XAUTHORITY",
+        // Network context for protocol agents; matched case-insensitively,
+        // so the lower-case proxy spellings are covered as well.
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "NODE_EXTRA_CA_CERTS",
     ];
     let mut expected = std::collections::BTreeMap::new();
     for (name, value) in std::env::vars_os() {

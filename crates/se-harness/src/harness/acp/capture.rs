@@ -22,8 +22,8 @@ enum Content {
     /// A session update this client does not interpret, kept by variant name.
     Unrecognized { variant: String, message: String },
 }
-/// The largest unrecognised update copied into history; its source range always
-/// holds the whole update.
+/// The largest unrecognised update copied into history. A larger one records
+/// only its size and digest.
 const UNRECOGNIZED_HISTORY_BYTES: usize = 65536;
 impl Item {
     pub fn body(&self, position: Position) -> Result<Body> {
@@ -170,11 +170,17 @@ impl Binding {
                         .unwrap_or("unnamed")
                         .to_owned();
                     let bytes = serde_json::to_vec(update).map_err(error)?;
-                    // Bounded for history; a larger update says so and keeps its size.
+                    // Bounded for history. A larger update is not kept anywhere once
+                    // the turn ends, so the record says so and keeps its size and digest.
                     let message = if bytes.len() <= UNRECOGNIZED_HISTORY_BYTES {
                         json!({"interpreted": false, "update": update})
                     } else {
-                        json!({"interpreted": false, "update_bytes": bytes.len(), "update_omitted": format!("larger than {UNRECOGNIZED_HISTORY_BYTES} bytes; its source range holds it whole")})
+                        json!({
+                            "interpreted": false,
+                            "update_bytes": bytes.len(),
+                            "update_sha256": se_types::hex_lower(&Sha256::digest(&bytes)),
+                            "update_omitted": format!("larger than {UNRECOGNIZED_HISTORY_BYTES} bytes; its content was not saved and cannot be recovered"),
+                        })
                     };
                     items.push(Item {
                         vendor: format!(

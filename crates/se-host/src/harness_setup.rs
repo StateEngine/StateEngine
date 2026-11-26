@@ -111,15 +111,16 @@ fn installed_root(package: &NodePackage, executable: &Path) -> Result<PathBuf> {
     }
 }
 
-/// The first absolute PATH entry holding the package's command (on Windows,
-/// also its `.cmd`, `.ps1` or `.exe` shim). Like a shell, an entry that cannot
-/// be read is passed over.
+/// The first absolute PATH entry holding a runnable copy of the package's
+/// command, as a shell chooses: a regular file (through any symlink) that is
+/// executable outside Windows, or on Windows its `.exe`, `.cmd`, `.bat` or
+/// `.ps1` shim. A directory, broken link or non-executable file of that name,
+/// and an entry that cannot be read, are passed over.
 fn command_on_path(bin: &str) -> Option<PathBuf> {
     let names: Vec<String> = if cfg!(windows) {
-        ["cmd", "ps1", "exe"]
+        ["exe", "cmd", "bat", "ps1"]
             .iter()
             .map(|extension| format!("{bin}.{extension}"))
-            .chain([bin.to_owned()])
             .collect()
     } else {
         vec![bin.to_owned()]
@@ -130,8 +131,23 @@ fn command_on_path(bin: &str) -> Option<PathBuf> {
             names
                 .iter()
                 .map(|name| directory.join(name))
-                .find(|candidate| std::fs::symlink_metadata(candidate).is_ok())
+                .find(|candidate| runnable(candidate))
         })
+}
+
+fn runnable(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.is_file() && meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        meta.is_file()
+    }
 }
 
 /// Whether a candidate package directory has a manifest. A missing path is

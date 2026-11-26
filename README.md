@@ -334,18 +334,18 @@ completed turn appears in saved history. Resume loads the same conversation and,
 before offering new input, checks that it ends with the latest captured exchange
 (the last user message and every reply after it). Earlier messages, such as a
 banner or a compaction summary, are not compared; a missing, changed, erased or
-oversized latest exchange refuses resume instead of silently starting over. If capture was disabled, omit `--resume` for a fresh conversation.
+oversized latest exchange refuses resume instead of silently starting over. If
+capture was disabled, omit `--resume` for a fresh conversation.
 
 ### Named harness descriptors
 
 `se init --harness NAME` selects `claude`, `codex` or `secode` without a
 configuration edit. For an installed, logged-in `qwen-code`, `goose`, `hermes`,
-`opencode`, `gemini`, `kimi`, `auggie` or `cline`, init detects the installed executable and any package entrypoint,
-then saves the shared protocol descriptor automatically. Missing or
-unreadable installations refuse with their actual cause and a native setup
-link. Init does not install software or
-log into a provider, and saving the descriptor does not establish a successful
-launch. The normal launch still verifies native capabilities and readiness.
+`opencode`, `gemini`, `kimi`, `auggie` or `cline`, init detects the installed
+executable and any package entrypoint, then saves the shared protocol descriptor
+automatically. Missing or unreadable installations refuse with their actual
+cause and a native setup link. Init does not install software or log into a
+provider, and saving the descriptor does not establish a successful launch. The normal launch still verifies native capabilities and readiness.
 Existing named entries take precedence over catalogue names and keep their
 original command and permission choices. A catalogue descriptor's `environment`
 lists only that agent's own documented variable names (for example
