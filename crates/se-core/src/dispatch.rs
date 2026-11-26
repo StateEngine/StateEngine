@@ -213,7 +213,8 @@ impl Kernel {
             | AnyOp::RemoteList(_)
             | AnyOp::RemoteWatch(_)
             | AnyOp::RemoteSend(_)
-            | AnyOp::RemoteLaunch(_) => Err(remote_refused()),
+            | AnyOp::RemoteLaunch(_)
+            | AnyOp::RemoteStop(_) => Err(remote_refused()),
             AnyOp::Resume(input) => plan_resume(self, input, cx),
             AnyOp::HandoffExport(input) => {
                 complete_step(crate::ops::continuity::handoff::export(input, cx))

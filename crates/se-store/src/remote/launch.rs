@@ -144,3 +144,48 @@ pub(crate) fn target_owned(
     c.query_row("SELECT EXISTS(SELECT 1 FROM remote_launch_attribution WHERE grant_id=? AND project_id=? AND agent_id=?)",
         rusqlite::params![key(grant.as_str())?,p,a],|r|r.get(0)).map_err(sql)
 }
+
+impl ReadPhase {
+    /// A paired principal's own launch of one session: the only authority for
+    /// remote stop, or why none exists. Uses the same principal join as the store's continuation check.
+    pub fn remote_launched_session(
+        &self,
+        principal: &se_types::RemotePrincipalId,
+        target: &se_types::remote::RemoteTarget,
+        session: &se_types::SessionId,
+    ) -> StoreResult<se_types::Read<LaunchAttribution>> {
+        ready(&self.info)?;
+        if self.info.schema_version < 11 {
+            return Ok(se_types::Read::Absent {
+                checked: "this store predates recorded remote launches".into(),
+            });
+        }
+        let Some(session_key) = crate::identity::canonical(session.as_str()) else {
+            return Ok(se_types::Read::Absent {
+                checked: "remote launches record only canonical session IDs".into(),
+            });
+        };
+        let project =
+            crate::identity::key(&self.db, "project", target.project.as_str(), &[0], false)?;
+        let scope =
+            crate::identity::scope_key(&self.db, &Scope::Project(target.project.clone()), false)?;
+        let agent = crate::identity::key(&self.db, "agent", target.agent.as_str(), &scope, false)?;
+        let facts: Option<String> = self
+            .db
+            .query_row(
+                "SELECT a.facts FROM remote_launch_attribution a JOIN remote_grants g ON g.grant_id=a.grant_id WHERE g.principal_id=? AND a.project_id=? AND a.agent_id=? AND a.session_id=?",
+                rusqlite::params![key(principal.as_str())?, project, agent, session_key],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(sql)?;
+        Ok(match facts {
+            Some(facts) => se_types::Read::Present {
+                value: decode(facts)?,
+            },
+            None => se_types::Read::Absent {
+                checked: "this paired machine did not launch that session of that agent".into(),
+            },
+        })
+    }
+}

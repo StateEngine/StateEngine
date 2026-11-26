@@ -171,7 +171,10 @@ Agents may start an existing destination agent with MCP
 `stateengine_remote_launch` or CLI `se remote launch --host NAME --target
 PROJECT-ID/AGENT-ID`, using the destination agent's saved profile and the
 destination Owner's separate launch consent. It sends no work; send work
-through `remote send` after it runs. Disconnecting or forgetting a connection
+through `remote send` after it runs. MCP `stateengine_remote_stop` or CLI
+`se remote stop --host NAME --target PROJECT-ID/AGENT-ID --session SESSION-ID`
+stops only a session your own remote launch started; for any other work, the
+destination Owner runs se stop AGENT on that machine. Disconnecting or forgetting a connection
 closes its source transport, not the destination host or its agents. Remote
 administration is owner-only.
 "#,

@@ -99,6 +99,7 @@ impl Client {
         let invocation = call.invocation(&self.device, request)?;
         let (verb, targets) = match &invocation.request {
             RemoteRequest::Launch(r) => (RemoteVerb::Launch, std::slice::from_ref(&r.target)),
+            RemoteRequest::Stop(r) => (RemoteVerb::Stop, std::slice::from_ref(&r.target)),
             RemoteRequest::List(r) => (RemoteVerb::List, r.targets.as_slice()),
             RemoteRequest::Watch(r) => (RemoteVerb::Watch, r.targets.as_slice()),
             RemoteRequest::Send(r) => (RemoteVerb::Send, std::slice::from_ref(&r.target)),
@@ -106,9 +107,9 @@ impl Client {
             RemoteRequest::Replies(r) => (RemoteVerb::Send, std::slice::from_ref(&r.target)),
             RemoteRequest::ResolveContact(r) => (RemoteVerb::Send, std::slice::from_ref(&r.target)),
         };
-        // Launch consent lives on the destination, separately from the legacy
-        // saved scope. Asking for consent never grants it.
-        if verb != RemoteVerb::Launch
+        // Launch consent and stop authority live on the destination, separately
+        // from the legacy saved scope. Asking never grants either.
+        if !matches!(verb, RemoteVerb::Launch | RemoteVerb::Stop)
             && (!self.device.scope.verbs.contains(&verb)
                 || targets.iter().any(|t| {
                     !self.device.scope.targets.is_empty() && !self.device.scope.targets.contains(t)
@@ -192,6 +193,22 @@ impl RemoteClient for Client {
                     Ok(*value)
                 }
                 Ok(_) => Err(unknown_mutation("remote.launch", key)),
+                Err(error) => Err(error),
+            }
+        })
+    }
+    fn stop(
+        &self,
+        call: RemoteCallContext,
+        request: RemoteStop,
+    ) -> RemoteFuture<'_, RemoteStopResult> {
+        Box::pin(async move {
+            let key = request.idempotency_key.to_string();
+            let invocation = self.invocation(&call, RemoteRequest::Stop(request))?;
+            let connection = self.connection().await?;
+            match connection.once(Arc::new(call), invocation).await {
+                Ok(Reply::Stop(value)) if value.schema == RemoteStopResult::SCHEMA => Ok(*value),
+                Ok(_) => Err(unknown_mutation("remote.stop", key)),
                 Err(error) => Err(error),
             }
         })

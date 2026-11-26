@@ -84,6 +84,32 @@ impl RemoteLaunchResult {
     pub const SCHEMA: &str = "stateengine.remote-launch/v1";
 }
 
+/// The destination's own stop receipt for one launched session. `result` and
+/// `witness` carry its native stop words; only `complete` proves closure.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteStopBody {
+    pub target: RemoteTarget,
+    pub session: SessionId,
+    pub idempotency_key: crate::IdempotencyKey,
+    pub result: String,
+    pub complete: bool,
+    pub event_id: Option<crate::EventId>,
+    pub witness: RemoteStopWitness,
+    pub attribution: RemoteAttribution,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteStopWitness {
+    pub state: String,
+    pub method: Option<String>,
+    pub detail: Option<String>,
+}
+pub type RemoteStopResult = RemoteResponse<RemoteStopBody>;
+impl RemoteStopResult {
+    pub const SCHEMA: &str = "stateengine.remote-stop/v1";
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteReplyMessage {

@@ -70,6 +70,7 @@ pub enum HumanKind {
     RemoteWatch,
     RemoteSend,
     RemoteLaunch,
+    RemoteStop,
     Version,
     Help,
     Guide,

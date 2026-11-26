@@ -1,6 +1,6 @@
 # Working with agents on another machine
 
-StateEngine can list, watch, message and launch agents on another machine over SSH.
+StateEngine can list, watch, message, launch and stop agents on another machine over SSH.
 `se guide remote` gives the same overview from the installed binary.
 
 ## Connect
@@ -105,6 +105,23 @@ returned session for remote send, which refuses a stopped or replaced session. A
 launch retains its key; repeat the same launch with that key to observe its result.
 Revoking launch consent blocks future reservations; already admitted launches and
 running agents continue.
+
+## Remote stop
+
+A paired machine can stop a session that its own remote launch started. Pass the
+target and the session from the launch receipt:
+
+```sh
+se remote stop --host build --target PROJECT_ID/AGENT_ID --session SESSION_ID --key stop-1
+```
+
+Agents use `stateengine_remote_stop` with the same fields. The destination refuses any
+other session, including a later session of the same agent started by its Owner or by
+another machine. To stop that work, the destination Owner runs `se stop AGENT` in a
+terminal on that machine. Stop needs no extra permission: the recorded launch is the
+authority, so it still works after launch consent is revoked. The destination's own stop
+path ends the session and reports its witness. If closure is not proved, the command
+exits 2; repeat it with the same key.
 
 ## Reading IDs and cursors
 

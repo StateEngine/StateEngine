@@ -19,7 +19,8 @@ pub use client::ClientWatchCall;
 pub mod remote;
 pub use remote::{
     RemoteLaunchCall, RemoteLaunchOutput, RemoteListCall, RemoteListOutput, RemotePrepareSendCall,
-    RemoteSendCall, RemoteSendOutput, RemoteSendPreparation, RemoteWatchCall, RemoteWatchOutput,
+    RemoteSendCall, RemoteSendOutput, RemoteSendPreparation, RemoteStopCall, RemoteStopOutput,
+    RemoteWatchCall, RemoteWatchOutput,
 };
 pub mod continuity;
 pub use continuity::{
@@ -231,6 +232,7 @@ ops! {
     RemoteList => RemoteListCall, RemoteListOutput, ("remote.list",leaf(&["remote","list"]),tool("stateengine_remote_list","List remote agents","List allowed remote agents; empty request.targets discovers all."),Either,false,Never,Read,Home,Host,"stateengine.remote-list",RemoteList,&[]);
     RemoteWatch => RemoteWatchCall, RemoteWatchOutput, ("remote.watch",leaf(&["remote","watch"]),tool("stateengine_remote_watch","Watch remote agents","Read a retained subscription; continue with returned cursors. Live items are provisional; wait_ms <= 30000."),Either,false,Never,Read,Home,Host,"stateengine.remote-watch",RemoteWatch,&[]);
     RemoteLaunch => RemoteLaunchCall, RemoteLaunchOutput, ("remote.launch",leaf(&["remote","launch"]),tool("stateengine_remote_launch","Launch a remote agent","Start an existing destination agent with its saved profile and explicit Owner consent. Send work through remote send after it runs. Retry pending or uncertain launches with the original key."),Either,false,Never,Write,Home,Host,"stateengine.remote-launch",RemoteLaunch,&[]);
+    RemoteStop => RemoteStopCall, RemoteStopOutput, ("remote.stop",leaf(&["remote","stop"]),tool("stateengine_remote_stop","Stop a remote agent","Stop one remote session your own remote launch started. Other work is refused; its Owner stops it on that machine. Retry an uncertain stop with the original key."),Either,false,Never,Write,Home,Host,"stateengine.remote-stop",RemoteStop,&[]);
     RemoteSend => RemoteSendCall, RemoteSendOutput, ("remote.send",leaf(&["remote","send"]),tool("stateengine_remote_send","Send remote direct mail","Send exact target/session mail. Retry uncertainty with identical key/body/target/session; commit is not delivery."),Either,false,Never,Write,Home,Host,"stateengine.remote-send",RemoteSend,&[]);
     MetaVersion => MetaVersion, VersionOutput, ("meta.version",CliExposure::RootFlag { flag:"version" },no_mcp("Installed CLI metadata is not an agent task."),Either,true,Never,Read,None,None,"se.version",Version,&["J1"]);
     MetaHelp => MetaHelp, HelpOutput, ("meta.help",leaf(&["help"]),no_mcp("MCP descriptions derive from the same catalogue."),Either,true,Never,Read,None,None,"se.help",Help,&["J1"]);
@@ -295,6 +297,7 @@ impl AnyOp {
                 | Self::RemoteWatch(_)
                 | Self::RemoteSend(_)
                 | Self::RemoteLaunch(_)
+                | Self::RemoteStop(_)
         )
     }
     pub fn is_client(&self) -> bool {
@@ -329,6 +332,7 @@ impl AnyOp {
             Self::ImportNode(v) => Some(&v.idempotency_key),
             Self::RemoteSend(v) => Some(&v.request.idempotency_key),
             Self::RemoteLaunch(v) => Some(&v.request.idempotency_key),
+            Self::RemoteStop(v) => Some(&v.request.idempotency_key),
             Self::MessageSend(v) => Some(&v.idempotency_key),
             Self::WorkingStateSet(v) => Some(&v.idempotency_key),
             Self::RuntimeUp(v) => Some(&v.idempotency_key),
@@ -390,6 +394,7 @@ impl AnyOutput {
                     0
                 }
             }
+            Self::RemoteStop(v) if !v.value.complete => 2,
             Self::RemoteSend(v) => match v.value.receipt {
                 se_types::Receipt::Committed { .. } | se_types::Receipt::Replayed { .. } => 0,
                 se_types::Receipt::Refused { .. } => 1,

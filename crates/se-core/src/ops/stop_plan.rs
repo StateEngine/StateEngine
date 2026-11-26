@@ -4,12 +4,54 @@
 use super::{AgentStop, agent_stop::StopTarget, inputs::Validate, process_plan};
 use crate::{commit::Cx, scope, store_error::store_error};
 use se_store::{Actor, ControlTarget, EventBody, ReadBudget, Scope, Snapshot};
-use se_types::{AgentId, Named, PageRequest, ProjectId, Result, SeError};
+use se_types::{AgentId, LifecycleId, Named, PageRequest, ProjectId, Result, SeError, SessionId};
 use std::{num::NonZeroU32, time::Duration};
 #[derive(Clone)]
 pub struct ControlAgent {
     pub target: StopTarget,
     pub control: ControlTarget,
+    /// Set by remote stop: only this lifecycle may stop; other live work refuses.
+    pub expected: Option<ExpectedLifecycle>,
+}
+/// One recorded launch. A stop scoped to it never touches later or foreign work.
+#[derive(Clone, Debug)]
+pub struct ExpectedLifecycle {
+    pub session: SessionId,
+    pub lifecycle: LifecycleId,
+}
+impl ExpectedLifecycle {
+    /// Refuse when any live session or unreleased process is not this launch.
+    pub fn check(&self, control: &ControlTarget) -> Result<()> {
+        let foreign_session = control
+            .sessions
+            .iter()
+            .any(|head| match &head.current.body {
+                EventBody::SessionPrepared { session, .. }
+                | EventBody::SessionActivated { session, .. } => session != &self.session,
+                _ => true,
+            });
+        let foreign_process = control
+            .processes
+            .iter()
+            .any(|head| match &head.current.body {
+                EventBody::ProcessRegistered { identity, .. }
+                | EventBody::ProcessTransition { identity, .. } => {
+                    identity.record != self.lifecycle
+                        || identity.session.as_ref() != Some(&self.session)
+                }
+                _ => true,
+            });
+        if foreign_session || foreign_process {
+            return Err(SeError::new(se_types::Detail::StateConflict(
+                se_types::details::StateConflict {
+                    subject: "remote stop".into(),
+                    reason: "the agent now runs work this paired machine did not launch".into(),
+                    next_step: "Ask the destination Owner to run se stop AGENT in a terminal on that machine.".into(),
+                },
+            )));
+        }
+        Ok(())
+    }
 }
 #[derive(Clone)]
 pub struct StopPlan {
@@ -167,6 +209,7 @@ pub fn control<R: Snapshot>(
             process: None,
         },
         control,
+        expected: None,
     })
 }
 pub fn plan<R: Snapshot>(input: AgentStop, cx: &mut Cx<'_, R>) -> Result<StopPlan> {

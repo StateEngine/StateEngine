@@ -24,6 +24,8 @@ pub enum RemoteVerb {
     Watch,
     Send,
     Launch,
+    /// Stop a session this principal launched; never a grantable scope verb.
+    Stop,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, JsonSchema)]
@@ -45,6 +47,7 @@ impl RemoteScope {
         if self.verbs.is_empty()
             || self.verbs.len() > 3
             || self.verbs.contains(&RemoteVerb::Launch)
+            || self.verbs.contains(&RemoteVerb::Stop)
             || self.verbs.iter().collect::<BTreeSet<_>>().len() != self.verbs.len()
         {
             return Err(SeError::invalid(

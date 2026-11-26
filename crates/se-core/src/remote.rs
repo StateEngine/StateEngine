@@ -2,6 +2,7 @@
 use crate::scope;
 mod launch;
 mod launch_receipt;
+mod stop;
 pub use launch::{launch_key, plan_launch};
 pub use launch_receipt::{launch_activated, read_launch_receipt};
 use se_store::{
@@ -14,6 +15,7 @@ use se_types::{
     remote::{RemoteAttribution, RemoteSend, RemoteTarget, RemoteVerb},
 };
 use sha2::{Digest, Sha256};
+pub use stop::{authorize_stop, plan_stop, stop_key};
 
 /// Produced after fresh machine-session authorization; not a wire capability.
 /// One request consumes this value. A later request needs current grant facts again.
@@ -21,6 +23,8 @@ pub struct RemoteAdmission {
     grant: GrantRecord,
     verb: RemoteVerb,
     targets: Vec<RemoteTarget>,
+    /// Stop only: the principal's own recorded launch of the requested session.
+    launched: Option<se_store::remote::LaunchAttribution>,
 }
 impl RemoteAdmission {
     pub fn grant(&self) -> &GrantRecord {
@@ -67,6 +71,7 @@ pub fn authorize(
         grant,
         verb,
         targets,
+        launched: None,
     })
 }
 
@@ -94,6 +99,7 @@ pub fn authorize_launch(
         grant,
         verb: RemoteVerb::Launch,
         targets: vec![target.clone()],
+        launched: None,
     })
 }
 

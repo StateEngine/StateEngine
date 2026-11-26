@@ -114,6 +114,18 @@ pub trait RemoteClient: Send + Sync {
             ))
         })
     }
+    fn stop(
+        &self,
+        _call: RemoteCallContext,
+        _request: RemoteStop,
+    ) -> RemoteFuture<'_, RemoteStopResult> {
+        Box::pin(async {
+            Err(se_types::SeError::invalid(
+                "remote stop",
+                "a destination supporting stops of its recorded remote launches; update both installations",
+            ))
+        })
+    }
     /// Join this connector's network tasks during owning-host shutdown. A
     /// transport adapter must provide its own closure witness, never a no-op.
     fn close(&self) -> RemoteFuture<'_, ()> {

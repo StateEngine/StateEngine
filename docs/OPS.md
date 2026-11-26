@@ -5,7 +5,7 @@ This is the shipped Rust product's operation inventory. CLI, MCP, IPC and linked
 ## Remote machine connections
 
 The optional remote adapter, included in the standard release archive, exposes
-`remote.list`, `remote.watch`, `remote.send` and `remote.launch` through CLI and
+`remote.list`, `remote.watch`, `remote.send`, `remote.launch` and `remote.stop` through CLI and
 MCP. They use the source host's shared machine connection and preserve its
 admitted calling agent. Owner-only machine setup, transport removal and session
 administration are CLI commands with no MCP tool. Narrow remote authority
@@ -18,6 +18,7 @@ never becomes a local human or agent principal.
 | `client.watch` | `watch --target PROJECT-ID/AGENT-ID` | None | Native human authority; same selected view, bounded replay and renderer |
 | `remote.send` | `remote send --host NAME` | `stateengine_remote_send` | Exact target/session, stable origin and original request key; ordinary native mail |
 | `remote.launch` | `remote launch --host NAME --target PROJECT-ID/AGENT-ID` | `stateengine_remote_launch` | Same authority; starts the destination agent with its saved profile and explicit owner consent, optional saved-conversation resume; sends no work |
+| `remote.stop` | `remote stop --host NAME --target PROJECT-ID/AGENT-ID --session SESSION-ID` | `stateengine_remote_stop` | Current machine session; stops only a session this machine's remote launch recorded, through the destination's native stop path; other work is refused |
 | `remote.prepare_send` | none — internal protected source IPC | None | source session only; read — nonsecret binding facts for the CLI's pending send; no public tool |
 | Machine setup | `remote add DESTINATION --name NAME` | None | Native owner IPC; system SSH discovers, stages, authorizes and verifies the destination |
 | Transport removal | `remote disconnect/forget --name NAME` | None | Native owner IPC; closes only source transport, preserving destination hosts and agents |
@@ -32,6 +33,7 @@ Launch agents with ordinary `se launch AGENT` on each host. A lead agent on the
 source uses its admitted remote MCP tools to list, watch and send to the
 destination agents. A machine grant alone does not include launch: `remote.launch`
 also needs the destination Owner's separate launch consent for that agent.
+`remote.stop` needs no extra consent: the recorded launch is its authority.
 
 For a matched terminal comparison, run `se watch --target PROJECT-ID/AGENT-ID`
 on the destination and `se remote watch --host NAME --target PROJECT-ID/AGENT-ID`
@@ -282,7 +284,7 @@ Crew can omit the recipient for a `question`, `blocker`, or `done` message to se
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 64 operations (58 core, 6 Atlas), 32 MCP tools (27 core, 5 Atlas). Planned: 5 operations, 1 MCP tool.
+Registered: 64 operations (58 core, 6 Atlas), 33 MCP tools (28 core, 5 Atlas). Planned: 5 operations, 1 MCP tool.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -297,6 +299,7 @@ Registered: 64 operations (58 core, 6 Atlas), 32 MCP tools (27 core, 5 Atlas). P
 | `remote.list` | remote list | `stateengine_remote_list` | either | read |
 | `remote.watch` | remote watch | `stateengine_remote_watch` | either | read |
 | `remote.launch` | remote launch | `stateengine_remote_launch` | either | write |
+| `remote.stop` | remote stop | `stateengine_remote_stop` | either | write |
 | `remote.send` | remote send | `stateengine_remote_send` | either | write |
 | `meta.version` | --version | none | either | read |
 | `meta.help` | help | none | either | read |

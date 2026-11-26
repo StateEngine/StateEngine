@@ -2,7 +2,6 @@
 use super::*;
 use se_core::{dispatch::Kernel, ops::LaunchReply};
 use se_store::{Actor, Admission, Scope};
-mod failure;
 mod result;
 
 impl Service {
@@ -97,7 +96,7 @@ impl Service {
         let reply = custody
             .launch_remote(plan, admission.clone(), permit, &deadline)
             .await
-            .map_err(|error| failure::original_key(error, &key))?;
+            .map_err(|error| super::failure::original_key(error, "remote.launch", &key))?;
         result::finish(self, &store, completion, reply, &deadline).await
     }
 }

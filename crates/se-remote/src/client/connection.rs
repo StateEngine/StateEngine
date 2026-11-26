@@ -353,6 +353,7 @@ impl Connection {
             RemoteRequest::Send(r) => Some(("remote.send", r.idempotency_key.to_string())),
             RemoteRequest::Reply(r) => Some(("remote.reply", r.idempotency_key.to_string())),
             RemoteRequest::Launch(r) => Some(("remote.launch", r.idempotency_key.to_string())),
+            RemoteRequest::Stop(r) => Some(("remote.stop", r.idempotency_key.to_string())),
             _ => None,
         };
         let mutation = key.is_some();

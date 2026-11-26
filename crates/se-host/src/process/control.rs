@@ -160,7 +160,8 @@ impl LaunchCoordinator {
         admission: Admission,
         deadline: &Deadline,
     ) -> AgentStopResult {
-        let retained = self.find_job(&target.target.project.id, &target.target.agent.id);
+        let expected = target.expected.clone();
+        let retained = self.stop_job(&target);
         let mut row = empty_row(target, &self.options.home);
         let mut external = Vec::new();
         let result=async{
@@ -168,6 +169,7 @@ impl LaunchCoordinator {
             // independent targets selected by --all.
             let agent=row.target.agent.id.clone();
             let current=self.store.read(admission.clone(),deadline,move |cx| se_core::scope::require_present(cx.read.control_target(agent).map_err(|e|se_core::store_error::store_error(&e))?,"current stop control","Restore the current create grant or use the owner's terminal.")).await?;
+            if let Some(expected) = &expected { expected.check(&current)?; }
             external = self.retire_embedded_bindings(&current, &row.target.agent.id, key, &admission, deadline).await?;
             if !external.is_empty() && current.processes.is_empty() {
                 let changed = external.iter().any(|binding| binding.changed);
@@ -190,6 +192,9 @@ impl LaunchCoordinator {
                 }
                 return Err(se_core::scope::unreadable("cold stop custody","this host has no retained native reference; protected-record recovery is required before claiming an exit"));
             };
+            if expected.as_ref().is_some_and(|expected| expected.lifecycle != job.lifecycle) {
+                return Err(error("remote stop lifecycle", "the retained job is not the recorded remote launch"));
+            }
             if !release { self.interrupt_startup(&job,key,admission.clone(),deadline).await?; }
             let mut work=if release {
                 job.control_state(deadline).await?
@@ -253,6 +258,14 @@ impl LaunchCoordinator {
             row.population_reason = Some(detail);
         }
         row
+    }
+    /// A remote stop selects its recorded lifecycle, never the agent's newest job.
+    fn stop_job(&self, target: &ControlAgent) -> Result<Option<Arc<Job>>> {
+        let (project, agent) = (&target.target.project.id, &target.target.agent.id);
+        match &target.expected {
+            Some(expected) => self.find_lifecycle_job(project, agent, &expected.lifecycle),
+            None => self.find_job(project, agent),
+        }
     }
     pub(super) fn find_lifecycle_job(
         &self,

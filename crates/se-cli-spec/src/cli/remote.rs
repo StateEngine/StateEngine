@@ -13,6 +13,17 @@ pub(super) fn command(name: &str, c: Command) -> Command {
         c.arg(value("target").required(true).help(
             "Exact Owner-approved destination project-ID/agent-ID; uses its saved launch profile",
         )).arg(value("resume").num_args(0..=1).default_missing_value("latest").value_name("SESSION").help("Reopen the destination's latest saved conversation, or the one identified by SESSION"))
+    } else if name == "remote.stop" {
+        c.arg(
+            value("target")
+                .required(true)
+                .help("Exact remote project-ID/agent-ID your remote launch started"),
+        )
+        .arg(
+            value("session")
+                .required(true)
+                .help("Session ID returned by that remote launch; other sessions are refused"),
+        )
     } else if name == "remote.send" {
         c.arg(
             value("expected_host")
@@ -96,11 +107,7 @@ pub(super) fn decode(
     } else {
         String::new()
     };
-    let number = |id| {
-        required(m, id)?
-            .parse::<u32>()
-            .map_err(|_| SeError::invalid(id, "a bounded unsigned integer"))
-    };
+    let number = |id| unsigned(m, id);
     Ok(match name {
         "remote.list" => AnyOp::RemoteList(RemoteListCall {
             host,
@@ -114,51 +121,20 @@ pub(super) fn decode(
                 budget: number("budget")?,
             },
         }),
-        "remote.watch" | "client.watch" => {
-            let input = RemoteWatchCall {
-                host,
-                reader_id: None,
-                request: RemoteWatch {
-                    measure: flag(m, "measure"),
-                    targets: many(m, "target")
-                        .iter()
-                        .map(|s| parse_remote_target(s))
-                        .collect::<Result<_>>()?,
-                    cursors: text(m, "cursors")
-                        .map(|s| {
-                            serde_json::from_str(&s).map_err(|_| {
-                                SeError::invalid(
-                                    "remote cursors",
-                                    "the preceding typed watch cursor set",
-                                )
-                            })
-                        })
-                        .transpose()?
-                        .unwrap_or_default(),
-                    visible: text(m, "visible")
-                        .map(|s| parse_remote_target(&s))
-                        .transpose()?,
-                    budget: number("budget")?,
-                },
-                follow: !flag(m, "once"),
-                wait_ms: number("wait_ms")?,
-            };
-            if name == "client.watch" {
-                AnyOp::ClientWatch(ClientWatchCall {
-                    request: input.request,
-                    reader_id: input.reader_id,
-                    wait_ms: input.wait_ms,
-                    follow: input.follow,
-                })
-            } else {
-                AnyOp::RemoteWatch(input)
-            }
-        }
+        "remote.watch" | "client.watch" => watch(name, host, m)?,
         "remote.launch" => AnyOp::RemoteLaunch(RemoteLaunchCall {
             host,
             request: RemoteLaunch {
                 target: parse_remote_target(&required(m, "target")?)?,
                 resume: se_types::ResumeSelection::from_cli(text(m, "resume"))?,
+                idempotency_key: key()?,
+            },
+        }),
+        "remote.stop" => AnyOp::RemoteStop(RemoteStopCall {
+            host,
+            request: RemoteStop {
+                target: parse_remote_target(&required(m, "target")?)?,
+                session: se_types::SessionId::from_legacy(required(m, "session")?)?,
                 idempotency_key: key()?,
             },
         }),
@@ -182,8 +158,54 @@ pub(super) fn decode(
         _ => {
             return Err(SeError::invalid(
                 "remote command",
-                "list, watch, send or launch",
+                "list, watch, send, launch or stop",
             ));
         }
     })
+}
+
+/// Watch pages share one decoder for the source CLI and the destination viewer.
+fn watch(name: &str, host: String, m: &ArgMatches) -> Result<AnyOp> {
+    let number = |id| unsigned(m, id);
+    let input = RemoteWatchCall {
+        host,
+        reader_id: None,
+        request: RemoteWatch {
+            measure: flag(m, "measure"),
+            targets: many(m, "target")
+                .iter()
+                .map(|s| parse_remote_target(s))
+                .collect::<Result<_>>()?,
+            cursors: text(m, "cursors")
+                .map(|s| {
+                    serde_json::from_str(&s).map_err(|_| {
+                        SeError::invalid("remote cursors", "the preceding typed watch cursor set")
+                    })
+                })
+                .transpose()?
+                .unwrap_or_default(),
+            visible: text(m, "visible")
+                .map(|s| parse_remote_target(&s))
+                .transpose()?,
+            budget: number("budget")?,
+        },
+        follow: !flag(m, "once"),
+        wait_ms: number("wait_ms")?,
+    };
+    Ok(if name == "client.watch" {
+        AnyOp::ClientWatch(ClientWatchCall {
+            request: input.request,
+            reader_id: input.reader_id,
+            wait_ms: input.wait_ms,
+            follow: input.follow,
+        })
+    } else {
+        AnyOp::RemoteWatch(input)
+    })
+}
+
+fn unsigned(m: &ArgMatches, id: &str) -> Result<u32> {
+    required(m, id)?
+        .parse::<u32>()
+        .map_err(|_| SeError::invalid(id, "a bounded unsigned integer"))
 }

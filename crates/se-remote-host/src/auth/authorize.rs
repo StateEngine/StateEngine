@@ -50,6 +50,7 @@ impl Security {
             RemoteRequest::Watch(v) => (RemoteVerb::Watch, v.targets.as_slice()),
             RemoteRequest::Send(v) => (RemoteVerb::Send, std::slice::from_ref(&v.target)),
             RemoteRequest::Launch(v) => (RemoteVerb::Launch, std::slice::from_ref(&v.target)),
+            RemoteRequest::Stop(v) => (RemoteVerb::Stop, std::slice::from_ref(&v.target)),
             RemoteRequest::Reply(v) => {
                 if invocation.source.is_none() {
                     return Err(refused(
@@ -92,6 +93,11 @@ impl Security {
                 "Ask the destination Owner to allow this saved agent with se remote permissions --name <saved-alias> --launch in a terminal.",
             )?;
             se_core::remote::authorize_launch(grant, &input.target, permission, now()?)?
+        } else if let RemoteRequest::Stop(input) = &invocation.request {
+            let launched = self.store.read(|phase| {
+                phase.remote_launched_session(&grant.principal, &input.target, &input.session)
+            })?;
+            se_core::remote::authorize_stop(grant, input, launched, now()?)?
         } else {
             se_core::remote::authorize(grant, verb, targets, now()?)?
         };

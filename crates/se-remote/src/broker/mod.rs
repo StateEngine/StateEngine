@@ -4,6 +4,7 @@
 mod bindings;
 mod call;
 mod launch;
+mod stop;
 use bindings::Connections;
 pub use bindings::SourceHost;
 pub mod watch;
