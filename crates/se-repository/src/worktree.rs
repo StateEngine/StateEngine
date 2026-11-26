@@ -1,7 +1,7 @@
 //! Safe linked Git worktree removal with a non-following link/junction/mount guard.
 pub use crate::worktree_guard::parse_linux_mountinfo;
 use crate::worktree_guard::{prune_verified_admin_dir, remove_tree_no_follow, scan_tree_for_links};
-use crate::worktree_types::{VerifiedWorktree, format_dir_op_err};
+use crate::worktree_types::{VerifiedWorktree, format_dir_op_err, late_prune_err};
 pub use crate::worktree_types::{WorktreeRemoveError, WorktreeRemoveReport};
 use git2::{Repository, RepositoryOpenFlags, StatusOptions, WorktreeLockStatus};
 use se_native_path::dir_ops::{ChildKind, DirHandle, DirOpError, NodeId};
@@ -28,7 +28,8 @@ pub fn remove_worktree(
     let dir_identities = scan_tree_for_links(&verified)?;
     remove_tree_no_follow(&verified, &dir_identities)?;
     verify_gone(&verified)?;
-    prune_verified_admin_dir(&verified)?;
+    prune_verified_admin_dir(&verified)
+        .map_err(|err| late_prune_err(&verified.worktree_name, err))?;
     Ok(WorktreeRemoveReport {
         path: verified.canonical_root,
         worktree_name: verified.worktree_name,

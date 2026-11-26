@@ -19,6 +19,10 @@ const MAX_DOT_GIT_BYTES: usize = 64 * 1024;
 /// Anchored parent-to-child binding verified along the full active ancestor
 /// chain across mutation boundaries so a concurrent move/rename of the root or
 /// any descendant stops deletion immediately.
+/// On Windows, open directory handles deny `FILE_SHARE_DELETE`; on POSIX, a
+/// microsecond same-UID `rename()` between `verify_ancestors` and `unlinkat`
+/// is an accepted kernel boundary because POSIX cannot lock a directory
+/// against same-UID renames across `unlinkat`.
 #[derive(Clone, Copy)]
 struct AncestorLink<'a> {
     parent: &'a DirHandle,
@@ -355,7 +359,8 @@ pub(crate) fn remove_tree_no_follow(
         &ctx,
         true,
         &mut removed_any,
-    )?;
+    )
+    .map_err(|err| late_guard_err(err, removed_any))?;
 
     verify_ancestors(&root_anchor, removed_any)?;
     let dot_git_path = verified.canonical_root.join(".git");

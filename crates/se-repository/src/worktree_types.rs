@@ -213,14 +213,16 @@ pub(crate) fn map_delete_err(
 }
 
 /// Once any file or directory has been removed (`removed_any == true`), convert
-/// in-walk guard/link/nested-repo/custody refusals into `DeleteFailed` carrying
-/// `partial: true` and `dot_git_preserved: true` so callers never mistake a
-/// post-mutation refusal for a clean preflight refusal.
+/// any non-`DeleteFailed`/`PruneFailed` refusal or unreadable error into
+/// `DeleteFailed` carrying `partial: true` and `dot_git_preserved: true` so
+/// callers never mistake a post-mutation failure for a clean preflight refusal.
 pub(crate) fn late_guard_err(err: WorktreeRemoveError, removed_any: bool) -> WorktreeRemoveError {
     if !removed_any {
         return err;
     }
     match err {
+        err @ (WorktreeRemoveError::DeleteFailed { .. }
+        | WorktreeRemoveError::PruneFailed { .. }) => err,
         WorktreeRemoveError::LinksDetected { links, .. } => {
             let (path, kind) = links
                 .into_iter()
@@ -245,12 +247,92 @@ pub(crate) fn late_guard_err(err: WorktreeRemoveError, removed_any: bool) -> Wor
                 dot_git_preserved: true,
             }
         }
-        WorktreeRemoveError::CustodyChanged { path, reason } => WorktreeRemoveError::DeleteFailed {
+        WorktreeRemoveError::Unreadable { entries, .. } => {
+            let (path, reason) = entries.into_iter().next().unwrap_or_else(|| {
+                (
+                    PathBuf::new(),
+                    "unreadable entry during deletion".to_owned(),
+                )
+            });
+            WorktreeRemoveError::DeleteFailed {
+                path,
+                reason,
+                partial: true,
+                dot_git_preserved: true,
+            }
+        }
+        WorktreeRemoveError::CustodyChanged { path, reason }
+        | WorktreeRemoveError::NotLinkedWorktree { path, reason } => {
+            WorktreeRemoveError::DeleteFailed {
+                path,
+                reason,
+                partial: true,
+                dot_git_preserved: true,
+            }
+        }
+        WorktreeRemoveError::Absent { path } => WorktreeRemoveError::DeleteFailed {
             path,
-            reason,
+            reason: "target vanished during deletion".to_owned(),
             partial: true,
             dot_git_preserved: true,
         },
-        other => other,
+        WorktreeRemoveError::Locked { path, reason } => WorktreeRemoveError::DeleteFailed {
+            path,
+            reason: reason.unwrap_or_else(|| "worktree became locked during deletion".to_owned()),
+            partial: true,
+            dot_git_preserved: true,
+        },
+        WorktreeRemoveError::Dirty { path, count, .. } => WorktreeRemoveError::DeleteFailed {
+            path,
+            reason: format!("worktree became dirty ({count} change(s)) during deletion"),
+            partial: true,
+            dot_git_preserved: true,
+        },
+    }
+}
+
+/// Once the worktree directory itself has been removed, every error during the
+/// post-delete metadata prune phase must surface as `PruneFailed` so callers
+/// know the directory is already gone and only Git metadata prune failed.
+pub(crate) fn late_prune_err(worktree_name: &str, err: WorktreeRemoveError) -> WorktreeRemoveError {
+    match err {
+        err @ WorktreeRemoveError::PruneFailed { .. } => err,
+        WorktreeRemoveError::CustodyChanged { reason, .. }
+        | WorktreeRemoveError::NotLinkedWorktree { reason, .. }
+        | WorktreeRemoveError::DeleteFailed { reason, .. } => WorktreeRemoveError::PruneFailed {
+            worktree_name: worktree_name.to_owned(),
+            reason,
+        },
+        WorktreeRemoveError::Locked { reason, .. } => WorktreeRemoveError::PruneFailed {
+            worktree_name: worktree_name.to_owned(),
+            reason: reason
+                .unwrap_or_else(|| "worktree was locked before metadata prune".to_owned()),
+        },
+        WorktreeRemoveError::Unreadable { entries, .. } => {
+            let reason = entries
+                .into_iter()
+                .next()
+                .map(|(p, r)| format!("{}: {r}", p.display()))
+                .unwrap_or_else(|| "unreadable metadata entry".to_owned());
+            WorktreeRemoveError::PruneFailed {
+                worktree_name: worktree_name.to_owned(),
+                reason,
+            }
+        }
+        WorktreeRemoveError::LinksDetected { links, .. } => {
+            let reason = links
+                .into_iter()
+                .next()
+                .map(|(p, k)| format!("detected {k} at {}", p.display()))
+                .unwrap_or_else(|| "detected link/mount in metadata directory".to_owned());
+            WorktreeRemoveError::PruneFailed {
+                worktree_name: worktree_name.to_owned(),
+                reason,
+            }
+        }
+        other => WorktreeRemoveError::PruneFailed {
+            worktree_name: worktree_name.to_owned(),
+            reason: format!("{other:?}"),
+        },
     }
 }
