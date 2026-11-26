@@ -66,8 +66,8 @@ fn assert_no_stage_residue(dir: &Path) -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[cfg(target_os = "linux")]
-fn supports_o_tmpfile(dir: &Path) -> Result<bool, Box<dyn std::error::Error>> {
-    use std::os::fd::AsRawFd;
+fn supports_anonymous_tmpfile_publish(dir: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     let dir_file = std::fs::File::open(dir)?;
     let dot = c".";
     // SAFETY: held open directory fd and literal "." probing O_TMPFILE support.
@@ -79,19 +79,43 @@ fn supports_o_tmpfile(dir: &Path) -> Result<bool, Box<dyn std::error::Error>> {
             0o600,
         )
     };
-    if raw >= 0 {
-        // SAFETY: close the temporary probe fd returned by openat.
-        unsafe { libc::close(raw) };
-        return Ok(true);
+    if raw < 0 {
+        let err = std::io::Error::last_os_error();
+        if matches!(
+            err.raw_os_error(),
+            Some(libc::EOPNOTSUPP | libc::EISDIR | libc::EINVAL | libc::ENOSYS | libc::EACCES)
+        ) {
+            return Ok(false);
+        }
+        return Err(err.into());
     }
-    let err = std::io::Error::last_os_error();
-    if matches!(
-        err.raw_os_error(),
-        Some(libc::EOPNOTSUPP | libc::EISDIR | libc::EINVAL | libc::ENOSYS | libc::EACCES)
-    ) {
-        return Ok(false);
+    // SAFETY: successful openat transferred sole ownership of `raw`.
+    let tmp = unsafe { OwnedFd::from_raw_fd(raw) };
+    let proc_fd = std::ffi::CString::new(format!("/proc/self/fd/{}", tmp.as_raw_fd()))?;
+    let probe_name = c"probe-o-tmpfile";
+    // SAFETY: held directory fd and /proc/self/fd path probing exact linkat publication.
+    let linked = unsafe {
+        libc::linkat(
+            libc::AT_FDCWD,
+            proc_fd.as_ptr(),
+            dir_file.as_raw_fd(),
+            probe_name.as_ptr(),
+            libc::AT_SYMLINK_FOLLOW,
+        )
+    };
+    drop(tmp);
+    if linked < 0 {
+        let err = std::io::Error::last_os_error();
+        if matches!(
+            err.raw_os_error(),
+            Some(libc::ENOENT | libc::EXDEV | libc::EOPNOTSUPP | libc::ENOSYS | libc::EINVAL)
+        ) {
+            return Ok(false);
+        }
+        return Err(err.into());
     }
-    Err(err.into())
+    std::fs::remove_file(dir.join("probe-o-tmpfile"))?;
+    Ok(true)
 }
 
 #[test]
@@ -152,7 +176,7 @@ fn create_new_under_umask_0777_matches_fs_support() -> Result<(), Box<dyn std::e
     let _lock = UMASK_LOCK.lock().map_err(|_| "umask lock poisoned")?;
     let root = ScratchDir::new("umask-0777-file")?;
     #[cfg(target_os = "linux")]
-    let expect_success = supports_o_tmpfile(root.path())?;
+    let expect_success = supports_anonymous_tmpfile_publish(root.path())?;
     #[cfg(not(target_os = "linux"))]
     let expect_success = true;
     let _mask = UmaskGuard::set(0o777);
