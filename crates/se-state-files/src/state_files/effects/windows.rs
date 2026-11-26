@@ -143,6 +143,9 @@ impl Pin {
         pin.check()?;
         Ok(Some(pin))
     }
+    pub(in crate::state_files) fn open_staging(path: &Path) -> Result<Option<Self>> {
+        Self::open(path)
+    }
     pub(in crate::state_files) fn open_profile(path: &Path) -> Result<Option<Self>> {
         let Some(mut pin) = Self::open(path)? else {
             return Ok(None);

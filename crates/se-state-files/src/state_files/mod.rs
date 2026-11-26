@@ -266,7 +266,7 @@ impl NativeStateFiles {
         #[cfg(unix)]
         {
             use sha2::Digest;
-            let owned = effects::OwnedFile::open(&staged.path)?
+            let owned = effects::OwnedFile::open_staging(&staged.path)?
                 .ok_or_else(|| unsafe_path("empty staging disappeared", &staged.path))?;
             owned.remove(sha2::Sha256::digest([]).into())?;
         }

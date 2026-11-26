@@ -40,6 +40,21 @@ impl OwnedFile {
     pub fn open(path: &Path) -> Result<Option<Self>> {
         os::Pin::open(path).map(|pin| pin.map(Self))
     }
+    /// Open a uniquely named `.se-stage-*` file for digest-checked retirement
+    /// without serializing disjoint staging cleanups on a parent directory lock.
+    pub fn open_staging(path: &Path) -> Result<Option<Self>> {
+        if !path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(".se-stage-"))
+        {
+            return Err(super::unsafe_path(
+                "staging pin requires a native unique staging name",
+                path,
+            ));
+        }
+        os::Pin::open_staging(path).map(|pin| pin.map(Self))
+    }
     /// Ensure a user-owned external directory (such as a provider config home)
     /// exists without requiring StateEngine's private `0700`/owner-only DACL
     /// policy on existing directories. Still refuses symlinks/reparse points

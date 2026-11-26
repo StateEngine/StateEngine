@@ -237,12 +237,22 @@ pub(in crate::state_files) struct Pin {
 }
 impl Pin {
     pub(in crate::state_files) fn open(path: &Path) -> Result<Option<Self>> {
+        Self::open_with_parent_lock(path, true)
+    }
+    pub(in crate::state_files) fn open_staging(path: &Path) -> Result<Option<Self>> {
+        Self::open_with_parent_lock(path, false)
+    }
+    fn open_with_parent_lock(path: &Path, lock_parent: bool) -> Result<Option<Self>> {
         let (parent, name) = match parent(path) {
             Ok(v) => v,
             Err(e) if absent(&e) => return Ok(None),
             Err(e) => return Err(e),
         };
-        let parent_lock = lock(&parent, path)?;
+        let parent_lock = if lock_parent {
+            Some(lock(&parent, path)?)
+        } else {
+            None
+        };
         let file = match leaf(&parent, &name, path, false) {
             Ok(v) => v,
             Err(e) if absent(&e) => return Ok(None),
@@ -257,7 +267,7 @@ impl Pin {
             file,
             identity,
             private: false,
-            parent_lock: Some(parent_lock),
+            parent_lock,
             file_lock,
         };
         pin.check()?;
