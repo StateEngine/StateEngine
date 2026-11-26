@@ -402,9 +402,7 @@ fn no_eligible_broker_uses_reported_foreground_until_public_down() -> Result {
         assert_eq!(exit, "0", "enclosing-job startup/down failed: {stderr}");
         assert!(
             stderr.contains("KILL_ON_JOB_CLOSE")
-                && stderr.contains(
-                    "closing the launching application or terminal will stop this runtime"
-                )
+                && stderr.contains("closing the last handle to that enclosing job")
                 && stderr.contains("up --foreground"),
             "KILL_ON_JOB_CLOSE lifetime notice was hidden: {stderr}"
         );
@@ -418,9 +416,7 @@ fn no_eligible_broker_uses_reported_foreground_until_public_down() -> Result {
         assert!(
             observed["detachment_notice"].as_str().is_some_and(|text| {
                 text.contains("KILL_ON_JOB_CLOSE")
-                    && text.contains(
-                        "closing the launching application or terminal will stop this runtime",
-                    )
+                    && text.contains("closing the last handle to that enclosing job")
             }),
             "missing KILL_ON_JOB_CLOSE status notice: {observed}"
         );

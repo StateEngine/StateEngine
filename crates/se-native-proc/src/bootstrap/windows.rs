@@ -12,7 +12,7 @@ use windows_sys::Win32::{
 };
 mod broker;
 mod launch;
-pub(super) use broker::enclosing_kill_on_close;
+pub(super) use broker::{EnclosingJobClose, enclosing_job_close};
 pub(super) use launch::{receive, spawn};
 
 pub(super) struct Child {

@@ -365,14 +365,22 @@ pub fn spawn_runtime(spec: RuntimeLaunchSpec) -> Result<RuntimeLaunch, Box<Runti
         RuntimeDetachment::SessionOnly {
             inherited_cgroup: true
         }
-    ) && windows::enclosing_kill_on_close()
-    {
-        RuntimeLifetime {
-            user_scope: None,
-            session_reason: Some(
-                "This host is running inside an enclosing Windows job configured with KILL_ON_JOB_CLOSE; closing the launching application or terminal will stop this runtime and all running agents immediately."
-                    .into(),
-            ),
+    ) {
+        match windows::enclosing_job_close() {
+            windows::EnclosingJobClose::KillOnClose => RuntimeLifetime {
+                user_scope: None,
+                session_reason: Some(
+                    "This host stayed inside an enclosing Windows job where KILL_ON_JOB_CLOSE is observed; closing the last handle to that enclosing job (for example when its owning application or terminal exits) can stop this runtime and its agents."
+                        .into(),
+                ),
+            },
+            windows::EnclosingJobClose::Unknown(code) => RuntimeLifetime {
+                user_scope: None,
+                session_reason: Some(format!(
+                    "This host stayed inside an enclosing Windows job whose close limit could not be queried (Windows error {code}); if an enclosing job has KILL_ON_JOB_CLOSE, closing its last handle can stop this runtime and its agents."
+                )),
+            },
+            windows::EnclosingJobClose::NoKillOnClose => RuntimeLifetime::default(),
         }
     } else {
         RuntimeLifetime::default()

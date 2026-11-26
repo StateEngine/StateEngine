@@ -40,26 +40,56 @@ impl Parent {
     pub(super) fn open_external(path: &Path, writable: bool, create_missing: bool) -> Result<Self> {
         Self::walk(path, writable, true, false, create_missing)
     }
+    fn open_root(prefix: &Path, access: u32) -> Result<File> {
+        let name = wide(prefix)?;
+        // SAFETY: validated NUL-terminated UTF-16 volume root path; denies
+        // delete sharing and does not follow reparse points.
+        let raw = unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                READ_CONTROL | FILE_READ_ATTRIBUTES | access,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                ptr::null_mut(),
+            )
+        };
+        if raw.is_null() || raw == INVALID_HANDLE_VALUE {
+            return Err(last("pin volume root", prefix));
+        }
+        // SAFETY: successful CreateFileW transferred unique ownership of `raw`.
+        Ok(unsafe { File::from_raw_handle(raw) })
+    }
     fn open_component(
         pins: &[File],
         prefix: &Path,
         normal_leaf: Option<&std::ffi::OsStr>,
         create_missing: bool,
     ) -> Result<File> {
-        match open(prefix, true, 0, false) {
+        let Some(leaf) = normal_leaf else {
+            return Self::open_root(prefix, 0);
+        };
+        let parent_handle = pins
+            .last()
+            .ok_or_else(|| unsafe_path("ancestor pin missing", prefix))?;
+        let read_access = FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE;
+        let share = FILE_SHARE_READ | FILE_SHARE_WRITE;
+        match created::open_directory_at(parent_handle, leaf, prefix, read_access, share, true) {
             Ok(file) => Ok(file),
             Err(err) if create_missing && absent(&err) => {
-                let Some(leaf) = normal_leaf else {
-                    return Err(err);
-                };
-                let parent_handle = pins
-                    .last()
-                    .ok_or_else(|| unsafe_path("external ancestor pin missing", prefix))?;
-                let access = GENERIC_READ | GENERIC_WRITE | READ_CONTROL | SYNCHRONIZE;
+                let create_access = GENERIC_READ | GENERIC_WRITE | READ_CONTROL | SYNCHRONIZE;
                 // SAFETY: `None` security descriptor inherits the verified
                 // parent user directory's normal DACL under `parent_handle`.
                 match unsafe {
-                    created::create_directory_at_optional(parent_handle, leaf, prefix, None, access)
+                    created::create_directory_at_optional(
+                        parent_handle,
+                        leaf,
+                        prefix,
+                        None,
+                        create_access,
+                        share,
+                    )
                 } {
                     Ok(created_dir) => {
                         created_dir
@@ -73,13 +103,55 @@ impl Parent {
                             .as_ref()
                             .is_some_and(|cause| cause.kind() == io::ErrorKind::AlreadyExists) =>
                     {
-                        open(prefix, true, 0, false)
+                        created::open_directory_at(
+                            parent_handle,
+                            leaf,
+                            prefix,
+                            read_access,
+                            share,
+                            true,
+                        )
                     }
                     Err(mk_err) => Err(mk_err),
                 }
             }
             Err(err) => Err(err),
         }
+    }
+    fn follow_reparse(
+        pins: &[File],
+        prefix: &Path,
+        normal_leaf: Option<&std::ffi::OsStr>,
+        prev_idx: Option<usize>,
+    ) -> Result<File> {
+        if let (Some(leaf), Some(p_idx)) = (normal_leaf, prev_idx) {
+            return created::open_directory_at(
+                &pins[p_idx],
+                leaf,
+                prefix,
+                FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                false,
+            );
+        }
+        let raw_name = wide(prefix)?;
+        // SAFETY: retained volume root pathname; explicit open follows trusted reparse.
+        let raw = unsafe {
+            CreateFileW(
+                raw_name.as_ptr(),
+                FILE_READ_ATTRIBUTES | READ_CONTROL,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                ptr::null_mut(),
+            )
+        };
+        if raw.is_null() || raw == INVALID_HANDLE_VALUE {
+            return Err(last("resolve trusted installation ancestor", prefix));
+        }
+        // SAFETY: successful open transfers one uniquely owned handle.
+        Ok(unsafe { File::from_raw_handle(raw) })
     }
     fn walk(
         path: &Path,
@@ -92,6 +164,7 @@ impl Parent {
         let components: Vec<_> = path.components().collect();
         let mut prefix = PathBuf::new();
         let mut pins = Vec::new();
+        let mut last_normal: Option<(&std::ffi::OsStr, usize)> = None;
         for (index, component) in components.iter().enumerate() {
             let final_component = index + 1 == components.len();
             let normal_leaf = match component {
@@ -109,6 +182,7 @@ impl Parent {
                 }
                 _ => return Err(unsafe_path("normalized installation parent required", path)),
             };
+            let prev_idx = pins.len().checked_sub(1);
             let file = Self::open_component(&pins, &prefix, normal_leaf, create_missing)?;
             // SAFETY: native POD output and retained file handle.
             let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
@@ -124,32 +198,18 @@ impl Parent {
                     ));
                 }
                 security::verify_system_ancestor(&file, &prefix)?;
-                // Resolve a trusted ancestor once, then use its held target's final
-                // physical path. Later operations never traverse the junction again.
-                let raw_name = wide(&prefix)?;
-                // SAFETY: retained pathname; this explicit open alone follows the
-                // trusted ancestor. All resulting operations use final_path instead.
-                let raw = unsafe {
-                    CreateFileW(
-                        raw_name.as_ptr(),
-                        FILE_READ_ATTRIBUTES | READ_CONTROL,
-                        FILE_SHARE_READ | FILE_SHARE_WRITE,
-                        ptr::null(),
-                        OPEN_EXISTING,
-                        FILE_FLAG_BACKUP_SEMANTICS,
-                        ptr::null_mut(),
-                    )
-                };
-                if raw.is_null() || raw == INVALID_HANDLE_VALUE {
-                    return Err(last("resolve trusted installation ancestor", &prefix));
-                }
-                // SAFETY: successful open transfers one uniquely owned handle.
-                let target = unsafe { File::from_raw_handle(raw) };
+                let target = Self::follow_reparse(&pins, &prefix, normal_leaf, prev_idx)?;
                 metadata(&target, &prefix, true, false)?;
                 pins.push(file);
                 prefix = final_path(&target, &prefix)?;
+                last_normal = None;
                 target
             } else {
+                if let (Some(leaf), Some(p_idx)) = (normal_leaf, prev_idx) {
+                    last_normal = Some((leaf, p_idx));
+                } else {
+                    last_normal = None;
+                }
                 file
             };
             metadata(&file, &prefix, true, false)?;
@@ -161,32 +221,22 @@ impl Parent {
         let physical = final_path(held, path)?;
         let identity = metadata(held, path, true, false)?;
         // A separate write-capable pin is used only for the actual final parent,
-        // never for drive/system ancestors. It retains native directory flushing.
+        // never for drive/system ancestors. Reopen relative to its verified
+        // predecessor handle without FILE_SHARE_DELETE when available.
         if writable {
-            let writable = if allow_final_reparse {
-                open(&physical, true, GENERIC_READ | GENERIC_WRITE, false)?
+            let write_access = GENERIC_READ | GENERIC_WRITE | READ_CONTROL | SYNCHRONIZE;
+            let share = FILE_SHARE_READ | FILE_SHARE_WRITE;
+            let writable = if let Some((leaf, p_idx)) = last_normal {
+                created::open_directory_at(
+                    &pins[p_idx],
+                    leaf,
+                    &physical,
+                    write_access,
+                    share,
+                    true,
+                )?
             } else {
-                // Deny delete/rename sharing on the pinned external parent so
-                // handle-relative file staging and publication cannot race a
-                // directory swap.
-                let wide_phys = wide(&physical)?;
-                // SAFETY: validated NUL-terminated UTF-16 path of the verified parent.
-                let raw = unsafe {
-                    CreateFileW(
-                        wide_phys.as_ptr(),
-                        GENERIC_READ | GENERIC_WRITE,
-                        FILE_SHARE_READ | FILE_SHARE_WRITE,
-                        ptr::null(),
-                        OPEN_EXISTING,
-                        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-                        ptr::null_mut(),
-                    )
-                };
-                if raw.is_null() || raw == INVALID_HANDLE_VALUE {
-                    return Err(last("pin external parent directory", path));
-                }
-                // SAFETY: successful CreateFileW transferred unique ownership of `raw`.
-                unsafe { File::from_raw_handle(raw) }
+                Self::open_root(&physical, GENERIC_READ | GENERIC_WRITE)?
             };
             if metadata(&writable, path, true, false)? != identity {
                 return Err(changed("installation parent changed during open", path));

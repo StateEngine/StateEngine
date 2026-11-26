@@ -224,3 +224,280 @@ pub(in crate::state_files) fn validate_creation_target(path: &Path) -> Result<()
     id(&file, path, true, true)?;
     trusted_directory(&file, path, true)
 }
+
+/// Ensure a user-owned external directory hierarchy exists without forcing
+/// `0700` on shared user directories (such as provider config homes).
+/// Walks from `/` by directory fd and verifies ownership/trust on intermediate
+/// and final directories.
+pub(in crate::state_files) fn ensure_user_directory(path: &Path) -> Result<()> {
+    let parts = components(path)?;
+    let mut current = owned(
+        // SAFETY: literal root pathname with O_RDONLY | O_DIRECTORY | O_CLOEXEC.
+        unsafe {
+            libc::open(
+                c"/".as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        },
+        "open filesystem root",
+        Path::new("/"),
+    )?;
+    let mut traversed = PathBuf::from("/");
+    for (index, part) in parts.iter().enumerate() {
+        traversed.push(part);
+        let leaf = name(part, &traversed)?;
+        let final_component = index + 1 == parts.len();
+        let mut flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
+        if final_component {
+            flags |= libc::O_NOFOLLOW;
+        }
+        // SAFETY: held parent directory fd and literal NUL-terminated component.
+        let raw = unsafe { libc::openat(current.as_raw_fd(), leaf.as_ptr(), flags) };
+        let next = if raw < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() != io::ErrorKind::NotFound {
+                return Err(io_error("open user directory component", &traversed, err));
+            }
+            // SAFETY: held parent directory fd and literal NUL-terminated component.
+            if unsafe { libc::mkdirat(current.as_raw_fd(), leaf.as_ptr(), 0o755) } < 0 {
+                let mk_err = io::Error::last_os_error();
+                if mk_err.kind() != io::ErrorKind::AlreadyExists {
+                    return Err(io_error("create user directory", &traversed, mk_err));
+                }
+            }
+            owned(
+                // SAFETY: reopen newly created component without following symlinks.
+                unsafe {
+                    libc::openat(
+                        current.as_raw_fd(),
+                        leaf.as_ptr(),
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    )
+                },
+                "open created user directory",
+                &traversed,
+            )?
+        } else {
+            // SAFETY: successful openat transferred unique ownership of `raw`.
+            owned(raw, "open user directory component", &traversed)?
+        };
+        trusted_directory(&next, &traversed, final_component)?;
+        current = next;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn try_create_tmpfile_and_publish(
+    parent_dir: &File,
+    leaf: &std::ffi::CStr,
+    path: &Path,
+    dir: &Path,
+    bytes: &[u8],
+) -> Result<bool> {
+    use std::io::Write;
+    let dot = c".";
+    // SAFETY: held parent directory fd and literal "." with O_TMPFILE creates
+    // an unlinked anonymous regular file that no other writer can swap by name.
+    let raw = unsafe {
+        libc::openat(
+            parent_dir.as_raw_fd(),
+            dot.as_ptr(),
+            libc::O_WRONLY | libc::O_TMPFILE | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if raw < 0 {
+        let err = io::Error::last_os_error();
+        if matches!(
+            err.raw_os_error(),
+            Some(libc::EOPNOTSUPP | libc::EISDIR | libc::EINVAL | libc::ENOSYS | libc::EACCES)
+        ) {
+            return Ok(false);
+        }
+        return Err(io_error("create anonymous staged user file", path, err));
+    }
+    let mut file = owned(raw, "create anonymous staged user file", path)?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| io_error("write new user file", path, e))?;
+    let proc_fd = std::ffi::CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
+        .map_err(|_| unsafe_path("invalid proc fd path", path))?;
+    // SAFETY: links the exact held open inode into (parent_dir, leaf) without
+    // replacement (fails with EEXIST if leaf exists).
+    let linked = unsafe {
+        libc::linkat(
+            libc::AT_FDCWD,
+            proc_fd.as_ptr(),
+            parent_dir.as_raw_fd(),
+            leaf.as_ptr(),
+            libc::AT_SYMLINK_FOLLOW,
+        )
+    };
+    if linked < 0 {
+        let err = io::Error::last_os_error();
+        if matches!(err.raw_os_error(), Some(libc::ENOENT | libc::EXDEV)) {
+            return Ok(false);
+        }
+        return Err(io_error("publish new user file", path, err));
+    }
+    drop(file);
+    parent_dir
+        .sync_all()
+        .map_err(|e| io_error("sync user file parent", dir, e))?;
+    Ok(true)
+}
+
+fn cleanup_private_stage(
+    parent_fd: i32,
+    stage_dir: &File,
+    stage_name: &std::ffi::CStr,
+) -> std::result::Result<(), io::Error> {
+    let data = c"data";
+    // SAFETY: held private 0700 stage_dir fd and literal entry name "data".
+    if unsafe { libc::unlinkat(stage_dir.as_raw_fd(), data.as_ptr(), 0) } < 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::NotFound {
+            return Err(err);
+        }
+    }
+    // SAFETY: held parent_fd and literal staging directory name.
+    if unsafe { libc::unlinkat(parent_fd, stage_name.as_ptr(), libc::AT_REMOVEDIR) } < 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::NotFound {
+            return Err(err);
+        }
+    }
+    Ok(())
+}
+
+fn create_via_private_staging_dir(
+    parent_dir: &File,
+    leaf: &std::ffi::CStr,
+    path: &Path,
+    dir: &Path,
+    bytes: &[u8],
+) -> Result<()> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let stage_name = std::ffi::CString::new(format!(
+        ".se-stage-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ))
+    .map_err(|_| unsafe_path("invalid staging directory name", path))?;
+    // SAFETY: held parent_dir fd and literal NUL-terminated private dir name.
+    if unsafe { libc::mkdirat(parent_dir.as_raw_fd(), stage_name.as_ptr(), 0o700) } < 0 {
+        return Err(io_error(
+            "create private staging directory",
+            path,
+            io::Error::last_os_error(),
+        ));
+    }
+    let stage_dir = owned(
+        // SAFETY: held parent_dir fd, literal name, O_DIRECTORY | O_NOFOLLOW.
+        unsafe {
+            libc::openat(
+                parent_dir.as_raw_fd(),
+                stage_name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        },
+        "open private staging directory",
+        path,
+    )?;
+    // Verify mode 0700 and owner == euid so no other user can swap entries inside.
+    let _ = id(&stage_dir, path, true, true)?;
+    let data = c"data";
+    let mut file = owned(
+        // SAFETY: held verified private 0700 stage_dir fd and literal "data".
+        unsafe {
+            libc::openat(
+                stage_dir.as_raw_fd(),
+                data.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o600,
+            )
+        },
+        "create staged user file",
+        path,
+    )?;
+    if let Err(error) = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| io_error("write new user file", path, e))
+    {
+        drop(file);
+        if let Err(cleanup) = cleanup_private_stage(parent_dir.as_raw_fd(), &stage_dir, &stage_name)
+        {
+            return Err(io_error(
+                "write new user file (staging cleanup also failed)",
+                path,
+                io::Error::other(format!("{error}; staging cleanup failed: {cleanup}")),
+            ));
+        }
+        return Err(error);
+    }
+    // SAFETY: held private 0700 stage_dir fd and held parent_dir fd; linkat
+    // publishes atomically without replacement (fails with EEXIST if leaf exists).
+    let linked = unsafe {
+        libc::linkat(
+            stage_dir.as_raw_fd(),
+            data.as_ptr(),
+            parent_dir.as_raw_fd(),
+            leaf.as_ptr(),
+            0,
+        )
+    };
+    let link_err = (linked < 0).then(io::Error::last_os_error);
+    drop(file);
+    let sync_err = if link_err.is_none() {
+        parent_dir.sync_all().err()
+    } else {
+        None
+    };
+    let cleanup_res = cleanup_private_stage(parent_dir.as_raw_fd(), &stage_dir, &stage_name);
+    match (link_err, sync_err, cleanup_res) {
+        (Some(err), _, Ok(())) => Err(io_error("publish new user file", path, err)),
+        (Some(err), _, Err(cleanup)) => Err(io_error(
+            "publish new user file (staging cleanup also failed)",
+            path,
+            io::Error::other(format!("{err}; staging cleanup failed: {cleanup}")),
+        )),
+        (None, Some(sync), Ok(())) => {
+            Err(io_error("sync user file parent after publish", dir, sync))
+        }
+        (None, Some(sync), Err(cleanup)) => Err(io_error(
+            "sync user file parent after publish (staging cleanup also failed)",
+            dir,
+            io::Error::other(format!("{sync}; staging cleanup failed: {cleanup}")),
+        )),
+        (None, None, Err(cleanup)) => Err(io_error(
+            "new user file published and synced, but staging cleanup failed",
+            path,
+            cleanup,
+        )),
+        (None, None, Ok(())) => Ok(()),
+    }
+}
+
+/// Exclusively create a new regular file in a user-owned external directory
+/// without requiring `0700` on the parent directory. Validates the destination
+/// before staging, maintains handle custody through atomic no-replace
+/// publication (`O_TMPFILE` on Linux, private `0700` staging dir otherwise),
+/// always syncs the parent after publication, and reports publication, sync,
+/// and cleanup failures distinctly.
+pub(in crate::state_files) fn create_new_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| unsafe_path("cannot create file at filesystem root", path))?;
+    ensure_user_directory(dir)?;
+    let (parent_dir, leaf) = parent(path)?;
+    #[cfg(target_os = "linux")]
+    if try_create_tmpfile_and_publish(&parent_dir, &leaf, path, dir, bytes)? {
+        return Ok(());
+    }
+    create_via_private_staging_dir(&parent_dir, &leaf, path, dir, bytes)
+}

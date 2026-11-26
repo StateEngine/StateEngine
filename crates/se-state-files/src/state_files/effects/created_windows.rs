@@ -136,7 +136,83 @@ pub unsafe fn create_directory_at(
     access: u32,
 ) -> Result<File> {
     // SAFETY: caller guarantees `descriptor` is valid for the duration of the call.
-    unsafe { create_directory_at_optional(parent, leaf, path, Some(descriptor), access) }
+    unsafe {
+        create_directory_at_optional(
+            parent,
+            leaf,
+            path,
+            Some(descriptor),
+            access,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        )
+    }
+}
+
+/// Opens an existing directory `leaf` relative to the held `parent` handle
+/// using `NtCreateFile` (`FILE_OPEN`), without re-traversing any absolute path.
+pub(in crate::state_files) fn open_directory_at(
+    parent: &File,
+    leaf: &std::ffi::OsStr,
+    path: &Path,
+    access: u32,
+    share: u32,
+    open_reparse_point: bool,
+) -> Result<File> {
+    let mut units = literal_leaf(leaf, path)?;
+    let mut unicode = UNICODE_STRING {
+        Length: (units.len() * 2) as u16,
+        MaximumLength: (units.len() * 2) as u16,
+        Buffer: units.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: parent.as_raw_handle(),
+        ObjectName: &mut unicode,
+        Attributes: 0x40,
+        SecurityDescriptor: ptr::null_mut(),
+        SecurityQualityOfService: ptr::null_mut(),
+    };
+    let mut raw = ptr::null_mut();
+    // SAFETY: native POD completion output initialized to zero.
+    let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
+    let options = FILE_DIRECTORY_FILE
+        | FILE_SYNCHRONOUS_IO_NONALERT
+        | if open_reparse_point {
+            FILE_OPEN_REPARSE_POINT
+        } else {
+            0
+        };
+    // SAFETY: held verified predecessor handle, one validated relative leaf,
+    // initialized outputs; FILE_OPEN never creates.
+    let code = unsafe {
+        NtCreateFile(
+            &mut raw,
+            access,
+            &attributes,
+            &mut status,
+            ptr::null(),
+            0,
+            share,
+            FILE_OPEN,
+            options,
+            ptr::null(),
+            0,
+        )
+    };
+    if code < 0 {
+        // SAFETY: native NTSTATUS-to-Win32 translation has no pointer inputs.
+        let cause = io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(code) } as i32);
+        return Err(io_error(
+            "pin directory relative to verified parent",
+            path,
+            cause,
+        ));
+    }
+    if raw.is_null() || raw == INVALID_HANDLE_VALUE {
+        return Err(changed("relative directory open returned no handle", path));
+    }
+    // SAFETY: successful NtCreateFile transferred unique ownership of `raw`.
+    Ok(unsafe { File::from_raw_handle(raw) })
 }
 
 /// Exclusively creates `leaf` beneath the held `parent` handle, optionally
@@ -151,6 +227,7 @@ pub(in crate::state_files) unsafe fn create_directory_at_optional(
     path: &Path,
     descriptor: Option<&se_native_path::windows::allocation::Allocation>,
     access: u32,
+    share: u32,
 ) -> Result<File> {
     let mut units = literal_leaf(leaf, path)?;
     let mut unicode = UNICODE_STRING {
@@ -180,7 +257,7 @@ pub(in crate::state_files) unsafe fn create_directory_at_optional(
             &mut status,
             ptr::null(),
             FILE_ATTRIBUTE_DIRECTORY,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            share,
             FILE_CREATE,
             FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
             ptr::null(),
