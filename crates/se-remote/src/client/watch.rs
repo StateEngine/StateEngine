@@ -161,7 +161,7 @@ impl Watch {
         }
         self.check_initial_retry_budget()?;
         if wait > Duration::from_secs(30) {
-            return Err(SeError::invalid("remote watch wait", "at most30000ms"));
+            return Err(SeError::invalid("remote watch wait", "at most 30000 ms"));
         }
         if self.attached.as_ref().is_some_and(|(c, _, _)| c.closed()) {
             // Drop queued private records before reconnect, never release stale output.

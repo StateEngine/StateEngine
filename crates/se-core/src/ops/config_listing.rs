@@ -173,12 +173,16 @@ mod list_tests {
         "providers.codex.command",
         "providers.codex.model",
         "providers.codex.profile",
+        #[cfg(feature = "secode")]
         "providers.secode.command",
+        #[cfg(feature = "secode")]
         "providers.secode.model",
+        #[cfg(feature = "secode")]
         "providers.secode.profile",
         "providers.acp.command",
         "providers.acp.model",
         "providers.acp.profile",
+        #[cfg(feature = "secode")]
         "providers.secode.seed_profile",
         "acp.arguments",
         "acp.environment",
@@ -304,6 +308,7 @@ mod list_tests {
                 checked: "not set in the effective configuration".into()
             }
         );
+        #[cfg(feature = "secode")]
         assert_eq!(
             value(&page, "providers.secode.seed_profile"),
             &Read::Present {

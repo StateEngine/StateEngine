@@ -231,7 +231,7 @@ class Journey:
             self.require(self.se_step(provider + '-stop', ['stop', 'main']))
             self.require(self.se_step(provider + '-resume-preview', ['resume', '--preview', 'main']))
             followup = 'Use our prior conversation to create resumed.md with the same sentence you wrote in notes.md. Reply FIRST_HOUR_RESUMED after writing it.'
-            self.require(self.se_step(provider + '-reopen', ['launch', 'main', '--task', followup]))
+            self.require(self.se_step(provider + '-reopen', ['launch', 'main', '--resume', '--task', followup]))
             after = self.read_json(self.se_step(provider + '-agent-reopened', ['--json', 'agent', 'show', 'main']))
             old = before['agent']['value']['conversation']['id']
             new = after['agent']['value']['conversation']['id']

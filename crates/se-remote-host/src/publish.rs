@@ -178,7 +178,7 @@ impl LivePublisher {
         if !state.sources.contains_key(&target) && state.sources.len() >= REMOTE_MAX_TARGETS {
             return Err(SeError::invalid(
                 "live producer capacity",
-                "at most64 attributed agent streams",
+                "at most 64 attributed agent streams",
             ));
         }
         let source = Arc::new(Source {

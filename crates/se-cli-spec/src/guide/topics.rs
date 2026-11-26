@@ -46,7 +46,7 @@ instance and reports its scoped work. Read se help launch before replacing it.
 --force (MCP: force) explicitly consents to stopping existing sessions and their
 scoped jobs before relaunching. A terminal asks for confirmation. Conversation
 selection is separate: omit --resume for fresh, or request --resume explicitly.
-se agent stop AGENT stops one managed agent; se down stops this data home's
+se stop AGENT stops one managed agent; se down stops this data home's
 owned runtime and agent scope. Stopping work does not erase its saved history.
 
 Sessions can control themselves. An agent with a current can-create grant can
@@ -109,10 +109,10 @@ it to reach the current captain; replies still need their verified route. Floor
 mail requires work.action and work.addressees. quiet suppresses notifications
 while leaving the message unread.
 
-Use assignment.write to open work or record accept, done, block and hand_back;
+Use assignment.write to open work or record accept, done, block and hand-back;
 assignment.list shows open and blocked work. Each change records a floor message.
-Use its assignment ID with event.read to inspect the opening floor event. A blocked
-assignee can accept again when ready to continue.
+Use its assignment ID with history.event_read to inspect the opening floor event.
+A blocked assignee can accept again when ready to continue.
 "#,
     },
     Topic {
@@ -165,9 +165,13 @@ prove delivery, reading or action.
 The optional measure output estimates producer age at release, not a guaranteed
 delivery-latency bound, and does not measure interface paint.
 
-Launch agents normally on each machine; a remote connection grants no remote
-launch. Disconnecting or forgetting a connection closes its source transport,
-not the destination host or its agents. Remote administration is owner-only.
+Agents may start an existing destination agent with MCP
+`stateengine_remote_launch` or CLI `se remote launch --host NAME --target
+PROJECT-ID/AGENT-ID`, using the destination agent's saved profile and the
+destination Owner's separate launch consent. It sends no work; send work
+through `remote send` after it runs. Disconnecting or forgetting a connection
+closes its source transport, not the destination host or its agents. Remote
+administration is owner-only.
 "#,
     },
     Topic {
@@ -247,7 +251,7 @@ does not prove a process is absent, capture complete or a task finished.
         name: "removal",
         title: "Stop or remove an installation",
         summary: "Distinguish stopping, project removal and uninstall while preserving work.",
-        body: r#"se agent stop AGENT stops one managed agent. se down stops the owned runtime
+        body: r#"se stop AGENT stops one managed agent. se down stops the owned runtime
 scope for the selected data home. Neither command erases the saved conversation.
 
 se --project PROJECT remove unregisters a project; --all explicitly selects every

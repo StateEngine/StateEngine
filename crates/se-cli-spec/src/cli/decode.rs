@@ -227,7 +227,7 @@ fn decode_agent(
             provider: text(m, "provider")
                 .map(|value| {
                     serde_json::from_value(serde_json::Value::String(value))
-                        .map_err(|_| SeError::invalid("provider", "claude, codex, secode or acp"))
+                        .map_err(|_| SeError::invalid("provider", provider_list()))
                 })
                 .transpose()?,
             model: text(m, "model"),
@@ -281,7 +281,7 @@ fn decode_delegate_start(
         provider: text(m, "provider")
             .map(|value| {
                 serde_json::from_value(serde_json::Value::String(value))
-                    .map_err(|_| SeError::invalid("provider", "claude, codex, secode or acp"))
+                    .map_err(|_| SeError::invalid("provider", provider_list()))
             })
             .transpose()?,
         harness: text(m, "harness"),
@@ -348,7 +348,7 @@ fn decode_project(
             provider: text(m, "provider")
                 .map(|v| {
                     serde_json::from_value(serde_json::Value::String(v))
-                        .map_err(|_| SeError::invalid("provider", "claude, codex, secode or acp"))
+                        .map_err(|_| SeError::invalid("provider", provider_list()))
                 })
                 .transpose()?,
             model: text(m, "model"),

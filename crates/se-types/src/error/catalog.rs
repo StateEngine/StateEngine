@@ -1,4 +1,4 @@
-// Canonical typed error declarations for section 50; like-class failures share a code while preserving cause and legal remedy in detail.
+// Canonical typed error declarations; like-class failures share a code while preserving cause and legal remedy in detail.
 codes! {
     MessagingChannelRefused => ("messaging-channel-refused", Refused) {reason: MessagingChannelError, next_step:String} => "Messaging channel: {reason}", "{next_step}";
     AtlasSymbolAmbiguous => ("atlas-symbol-ambiguous", Usage) { symbol: String, candidates: Vec<String> } => "`{symbol}` names {candidates.len} symbols", "narrow with `--path FILE`, `--kind KIND`, or `--path FILE --line N`; the candidates list the kind";
@@ -31,7 +31,7 @@ codes! {
     AtlasPathOutsideRoot => ("atlas-path-outside-root", Refused) { path: String, root: String } => "{path} is outside {root}", "use a project-relative path";
     BackupFailed => ("backup-failed", Refused) { path: String, step: String, reason: String } => "Backup {path} failed at {step}: {reason}", "Run `se doctor`; automatic backup or restore must verify before proceeding";
     BypassNotOptedIn => ("bypass-not-opted-in", Refused) { profile: String } => "full bypass is only allowed through a saved, named profile", "add `bypass = true` under `[profiles.NAME]`, then → `se config set agent.A.profile NAME`";
-    CaptureConsentMissing => ("capture-consent-missing", Refused) { session: SessionId } => "capture is off for this session", "relaunch without `--incognito`";
+    CaptureConsentMissing => ("capture-consent-missing", Refused) { session: SessionId } => "capture is off for this session", "the owner sets `capture.enabled = true` in the selected config.toml and relaunches";
     ConfigurationInvalid => ("configuration-invalid", Refused) { subject: String, reason: String, next_step: String } => "Configuration {subject}: {reason}", "{next_step}";
     FeatureUnavailable => ("feature-unavailable", Refused) { subject: String, reason: String, next_step: String } => "Feature {subject}: {reason}", "{next_step}";
     ForgetNotCapturedRecord => ("forget-not-captured-record", Refused) { event: EventId, kind: String } => "only captured turns and messages can be erased; {event} is a {kind}", "pick a captured record";
@@ -89,12 +89,12 @@ codes! {
     LaunchReadinessTimeout => ("launch-readiness-timeout", Incomplete) { agent: AgentId, waited_ms: u64, last_observed: String } => "{agent} is not connected to StateEngine yet after {waited_ms} ms: {last_observed}", "Use `se agent show {agent}`";
     RemoveIncomplete => ("remove-incomplete", Incomplete) { stopped: Vec<String>, unwitnessed: Vec<String>, remaining: Vec<String> } => "removal partly done: {remaining}", "Use `se remove -p P` (idempotent)";
     RuntimeStartPending => ("runtime-start-pending", Incomplete) { waited_ms: u64 } => "This machine was slow to start StateEngine; startup is incomplete after {waited_ms} ms. Your request was not submitted and nothing was lost", "The bounded startup attempt may still be settling; preserve runtime.lock and retry the same request key";
-    StopUnwitnessed => ("stop-unwitnessed", Incomplete) { scope: String, reason: String, remaining: Vec<String> } => "Stop of {scope} is unconfirmed: {reason}; named remaining {remaining}", "Read `se status` and retry the same keyed stop; for an uncontained group after a stop that could not be proved (StopUnproved only), owner-human `se stop AGENT --release` relinquishes ownership without signalling or proving exit";
+    StopUnwitnessed => ("stop-unwitnessed", Incomplete) { scope: String, reason: String, remaining: Vec<String> } => "Stop of {scope} is unconfirmed: {reason}; named remaining {remaining}", "Read `se status` and retry the same keyed stop; for an uncontained group after a stop that could not be proved, owner-human `se stop AGENT --release` relinquishes ownership without signalling or proving exit";
     TranscriptTruncated => ("transcript-truncated", Incomplete) { path: String, offset: u64, size: u64 } => "{path} shrank below the read offset", "captured turns stay; → `se status`";
     AtlasResourceBudget => ("atlas-resource-budget", Unavailable) { resource: String, requested: u64, available: u64 } => "Atlas can't index right now: {resource} needs {requested}, {available} available", "Wait for memory pressure to ease, or search the repository text directly.";
     DeadlineExceeded => ("deadline-exceeded", Unavailable) { op: String, deadline_ms: u64 } => "`{op}` didn't finish in {deadline_ms} ms", "retry";
     IpcUnavailable => ("ipc-unavailable", Unavailable) { endpoint: String, reason: String } => "can't reach the runtime: {reason}", "Use `se status`";
-    RuntimeHandoverInProgress => ("runtime-handover-in-progress", Unavailable) { generation: String } => "the runtime is changing hosts", "retry (`WhenRuntimeReady`)";
+    RuntimeHandoverInProgress => ("runtime-handover-in-progress", Unavailable) { generation: String } => "the runtime is changing hosts", "retry once the runtime handover settles";
     RuntimeNotRunning => ("runtime-not-running", Unavailable) { op: String, reason: String } => "`{op}` needs a ready runtime writer: {reason}", "Reopen the current runtime generation and retry with the original request identity; use `se up` if no runtime is running";
     RuntimeStartFailed => ("runtime-start-failed", Unavailable) { reason: String, log: String } => "the runtime didn't start: {reason}", "see {log}; → `se doctor`";
     SessionNotActive => ("session-not-active", Unavailable) { subject: String } => "Session {subject} is not active yet", "Retry after the session activates";
