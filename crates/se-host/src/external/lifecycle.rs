@@ -381,7 +381,7 @@ pub(crate) async fn approve_claim(
         natural_events: Vec::new(),
     };
     match submit::submit_retained(&router.execution, batch, &identity, deadline).await? {
-        submit::RetainedCommit::Committed(_) => {}
+        submit::RetainedCommit::Committed => {}
         submit::RetainedCommit::OutcomeUnknown(err) => {
             let check_deadline =
                 crate::runtime::serve::options(std::time::Duration::from_secs(10))?;

@@ -33,64 +33,15 @@ pub(crate) async fn execute(
             peer_binding,
             connection_nonce,
         } => {
-            let (rx, expires_at) = router.execution.external.attach_waiter(
-                &claim_id,
-                &peer_binding,
-                &connection_nonce,
-                router.context.generation,
-            )?;
-            let until = tokio::time::Instant::from_std(expires_at);
-            let delivery = tokio::select! {
-                biased;
-                _ = shutdown.changed() => {
-                    close_bridge_and_revoke(router, Some(&claim_id), active_binding, "host is shutting down").await;
-                    return Err(SeError::invalid("external claim wait", "host is shutting down"));
-                }
-                _ = tokio::time::sleep_until(until) => {
-                    close_bridge_and_revoke(
-                        router,
-                        Some(&claim_id),
-                        active_binding,
-                        "external claim expired before bridge received capability",
-                    )
-                    .await;
-                    return Err(SeError::invalid(
-                        "external claim wait",
-                        "approval before claim expiry; reconnect to open a fresh claim",
-                    ));
-                }
-                res = rx => match res {
-                    Ok(delivery) => delivery,
-                    Err(_) => {
-                        close_bridge_and_revoke(
-                            router,
-                            Some(&claim_id),
-                            active_binding,
-                            "external claim closed before capability delivery",
-                        )
-                        .await;
-                        return Err(SeError::invalid(
-                            "external claim wait",
-                            "owner approval before the claim closed",
-                        ));
-                    }
-                },
-            };
-            let capability = std::str::from_utf8(delivery.secret.expose())
-                .map_err(|_| SeError::invalid("external capability", "UTF-8 token"))?
-                .to_owned();
-            encode(
-                "se.external-claim-approved/v1",
-                &ExternalClaimApproved {
-                    project_id: delivery.project_id,
-                    agent_id: delivery.agent_id,
-                    agent_name: delivery.agent_name,
-                    session_id: delivery.session_id,
-                    lease_generation: delivery.lease_generation,
-                    expires_at_us: delivery.expires_at_us,
-                    capability,
-                },
+            execute_claim_wait(
+                router,
+                claim_id,
+                peer_binding,
+                connection_nonce,
+                active_binding,
+                shutdown,
             )
+            .await
         }
         ExternalCall::List { project } => {
             lifecycle::reconcile_expired_leases(router, project.as_ref()).await?;
@@ -122,6 +73,74 @@ pub(crate) async fn execute(
             encode("se.external-mail-wait/v1", &output)
         }
     }
+}
+
+async fn execute_claim_wait(
+    router: &HostedRouter,
+    claim_id: String,
+    peer_binding: Vec<u8>,
+    connection_nonce: [u8; 32],
+    active_binding: &Arc<Mutex<ActiveConnectionBinding>>,
+    shutdown: &mut watch::Receiver<Option<Deadline>>,
+) -> Result<OperationOutput> {
+    let (rx, expires_at) = router.execution.external.attach_waiter(
+        &claim_id,
+        &peer_binding,
+        &connection_nonce,
+        router.context.generation,
+    )?;
+    let until = tokio::time::Instant::from_std(expires_at);
+    let delivery = tokio::select! {
+        biased;
+        _ = shutdown.changed() => {
+            close_bridge_and_revoke(router, Some(&claim_id), active_binding, "host is shutting down").await;
+            return Err(SeError::invalid("external claim wait", "host is shutting down"));
+        }
+        _ = tokio::time::sleep_until(until) => {
+            close_bridge_and_revoke(
+                router,
+                Some(&claim_id),
+                active_binding,
+                "external claim expired before bridge received capability",
+            )
+            .await;
+            return Err(SeError::invalid(
+                "external claim wait",
+                "approval before claim expiry; reconnect to open a fresh claim",
+            ));
+        }
+        res = rx => match res {
+            Ok(delivery) => delivery,
+            Err(_) => {
+                close_bridge_and_revoke(
+                    router,
+                    Some(&claim_id),
+                    active_binding,
+                    "external claim closed before capability delivery",
+                )
+                .await;
+                return Err(SeError::invalid(
+                    "external claim wait",
+                    "owner approval before the claim closed",
+                ));
+            }
+        },
+    };
+    let capability = std::str::from_utf8(delivery.secret.expose())
+        .map_err(|_| SeError::invalid("external capability", "UTF-8 token"))?
+        .to_owned();
+    encode(
+        "se.external-claim-approved/v1",
+        &ExternalClaimApproved {
+            project_id: delivery.project_id,
+            agent_id: delivery.agent_id,
+            agent_name: delivery.agent_name,
+            session_id: delivery.session_id,
+            lease_generation: delivery.lease_generation,
+            expires_at_us: delivery.expires_at_us,
+            capability,
+        },
+    )
 }
 
 /// Atomically mark the bridge closed, take any bound active seat, cancel any

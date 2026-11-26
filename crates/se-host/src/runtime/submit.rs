@@ -8,7 +8,7 @@ use std::{sync::Arc, time::Instant};
 
 pub(crate) enum RetainedCommit {
     /// The writer durably committed the batch (even if a secondary observer step warned).
-    Committed(CommitReceipt),
+    Committed,
     /// The writer reported an indeterminate commit outcome; caller must reconcile.
     OutcomeUnknown(se_types::SeError),
 }
@@ -76,7 +76,7 @@ pub(crate) async fn submit_retained(
         ))
     })?;
     match receipt {
-        Ok(receipt) => Ok(RetainedCommit::Committed(receipt)),
+        Ok(_receipt) => Ok(RetainedCommit::Committed),
         Err(error) if error.code == se_store::StoreErrorCode::CommitOutcomeUnknown => {
             Ok(RetainedCommit::OutcomeUnknown(identity.store_error(&error)))
         }
