@@ -277,9 +277,18 @@ try {
     $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
     $owner = $ownerSid.Value
     if ([IO.Directory]::Exists($data)) { Assert-ProtectedDataHome $data $ownerSid }
-    # Read any durable replacement custody BEFORE invoking __install-replace so a
-    # crash between persisting replace.json and removing the old record preserves
-    # NoModifyPath and inherited PATH custody on -Recover.
+    # Current native code reads the retained schema and validates the exact old
+    # installation. It refuses a live runtime and retains both claims through
+    # this script's normal fresh-install journal; no old executable is invoked.
+    # Pass only the caller's explicit -NoModifyPath flag; __install-replace reads
+    # any durable replace.json authoritatively under the held native claim.
+    if (-not $Recover -and (Test-Path -LiteralPath $record)) {
+        $replaceArgs = @('__install-replace', $data)
+        if ($origSkipPathEdits) { $replaceArgs += '--no-modify-path' }
+        & (Join-Path $bundle 'se.exe') @replaceArgs
+        if ($LASTEXITCODE -ne 0) { throw 'current-archive replacement did not complete; preserve the reported paths and resolve its refusal before retrying' }
+        exit 0
+    }
     $inheritedEdits = @()
     if ([IO.File]::Exists($replaceState)) {
         if ((Get-Acl -LiteralPath $replaceState).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $owner) { throw "replacement custody at '$replaceState' has a different native owner; remove '$replaceState' if no replacement is in progress, then retry" }
@@ -303,16 +312,6 @@ try {
             }
             if ($inheritedEdits.Count -gt 1) { throw "replacement custody at '$replaceState' has multiple registry targets; remove '$replaceState' if no replacement is in progress, then retry" }
         }
-    }
-    # Current native code reads the retained schema and validates the exact old
-    # installation. It refuses a live runtime and retains both claims through
-    # this script's normal fresh-install journal; no old executable is invoked.
-    if (-not $Recover -and (Test-Path -LiteralPath $record)) {
-        $replaceArgs = @('__install-replace', $data)
-        if ($skipPathEdits) { $replaceArgs += '--no-modify-path' }
-        & (Join-Path $bundle 'se.exe') @replaceArgs
-        if ($LASTEXITCODE -ne 0) { throw 'current-archive replacement did not complete; preserve the reported paths and resolve its refusal before retrying' }
-        exit 0
     }
     foreach ($path in @($binary, $assets, $record)) {
         if (-not $Recover -and (Test-Path -LiteralPath $path)) { throw "existing installation path is preserved; run se uninstall before reinstalling: $path" }

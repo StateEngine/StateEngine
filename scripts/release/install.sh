@@ -127,9 +127,18 @@ if [ "$recover" -eq 1 ]; then
         fi
     fi
 else [ ! -e "$partial" ] || fail "partial installation at $partial; resume with: sh \"$bundle/install.sh\" --recover"; fi
-# Read any durable replacement custody BEFORE invoking __install-replace so a
-# crash between persisting replace.json and removing the old record preserves
-# no_modify_path and inherited file/directory custody on --recover.
+# A current archive can remove a proved older installation without asking the
+# old image to read newer data. Native owner, file custody and quiet-runtime
+# checks precede effects; the claims span removal and this fresh installer.
+# Pass only the caller's explicit --no-modify-path flag; __install-replace reads
+# any durable replace.json authoritatively under the held native claim.
+plain_path "$record"
+if [ "$recover" -eq 0 ] && [ "$native_held" -eq 0 ] && [ -e "$record" ]; then
+    replace_flags=''
+    if [ "$orig_no_modify" -eq 1 ]; then replace_flags=' --no-modify-path'; fi
+    "$bundle/se" __install-replace "$data"$replace_flags || fail 'current-archive replacement did not complete; preserve the reported paths and resolve its refusal before retrying'
+    exit 0
+fi
 inherited_fish_path=''
 inherited_fish_sha256=''
 inherited_dirs=''
@@ -159,16 +168,6 @@ CUSTODY
             printf 'Note: preserving --no-modify-path from prior interrupted replacement (%s)\n' "$replace_state" >&2
         fi
     fi
-fi
-# A current archive can remove a proved older installation without asking the
-# old image to read newer data. Native owner, file custody and quiet-runtime
-# checks precede effects; the claims span removal and this fresh installer.
-plain_path "$record"
-if [ "$recover" -eq 0 ] && [ "$native_held" -eq 0 ] && [ -e "$record" ]; then
-    replace_flags=''
-    if [ "$no_modify_path" -eq 1 ]; then replace_flags=' --no-modify-path'; fi
-    "$bundle/se" __install-replace "$data"$replace_flags || fail 'current-archive replacement did not complete; preserve the reported paths and resolve its refusal before retrying'
-    exit 0
 fi
 for destination in "$bin/se" "$assets" "$record"; do
     plain_path "$destination"
