@@ -367,62 +367,90 @@ fn try_create_tmpfile_and_publish(
     Ok(true)
 }
 
-fn create_direct_exclusive(
+fn create_staged_exclusive(
     parent_dir: &File,
-    leaf: &std::ffi::CStr,
+    leaf: &CString,
     path: &Path,
     dir: &Path,
     bytes: &[u8],
 ) -> Result<()> {
     use std::{io::Write, os::unix::fs::PermissionsExt};
-    // Exclusively create the target directly without staging directories or
-    // name-based AT_REMOVEDIR cleanup in a potentially shared parent folder.
-    // O_CREAT|O_EXCL|O_NOFOLLOW atomically refuses existing files and symlinks,
-    // and returns a writable fd even under a restrictive umask (e.g. 0777).
+    let tmp_name = random_name(path, ".se-tmp-")?;
+    let tmp_path = dir.join(tmp_name.to_string_lossy().as_ref());
+    // Create a private CSPRNG sibling temp file (0o600 & ~umask is never
+    // group/world accessible, and openat returns a writable fd even under
+    // umask 0777). Never touch the destination name until all bytes are synced.
     let mut file = owned(
-        // SAFETY: held verified parent_dir fd and literal NUL-terminated leaf.
+        // SAFETY: held verified parent_dir fd and unpredictable literal temp name.
         unsafe {
             libc::openat(
                 parent_dir.as_raw_fd(),
-                leaf.as_ptr(),
+                tmp_name.as_ptr(),
                 libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
                 0o600,
             )
         },
-        "create new user file",
-        path,
+        "create staged user file",
+        &tmp_path,
     )?;
-    let _ = id(&file, path, false, true)?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| {
-            io_error(
-                "protect new user file (newly created file was left in place)",
-                path,
-                e,
-            )
-        })?;
-    #[cfg(target_os = "macos")]
-    super::super::clear_created_acl(&file, path, false)?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|e| {
-            io_error(
-                "write new user file (newly created file may be incomplete and was left in place)",
-                path,
-                e,
-            )
-        })?;
+    let prepare = (|| -> Result<()> {
+        let _ = id(&file, &tmp_path, false, true)?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| io_error("protect staged user file", &tmp_path, e))?;
+        #[cfg(target_os = "macos")]
+        super::super::clear_created_acl(&file, &tmp_path, false)?;
+        file.write_all(bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|e| io_error("write staged user file", &tmp_path, e))
+    })();
+    if let Err(err) = prepare {
+        let _ = file.set_len(0);
+        let kind = err
+            .source
+            .as_ref()
+            .map_or(io::ErrorKind::Other, io::Error::kind);
+        return Err(io_error(
+            "stage new user file",
+            path,
+            io::Error::new(
+                kind,
+                format!(
+                    "{err}; destination untouched; empty temp file left at {}",
+                    tmp_path.display()
+                ),
+            ),
+        ));
+    }
+    if let Err(err) = move_no_replace(parent_dir, &tmp_name, leaf, path) {
+        let _ = file.set_len(0);
+        let kind = err
+            .source
+            .as_ref()
+            .map_or(io::ErrorKind::Other, io::Error::kind);
+        return Err(io_error(
+            "publish new user file",
+            path,
+            io::Error::new(
+                kind,
+                format!(
+                    "{err}; destination untouched; empty temp file left at {}",
+                    tmp_path.display()
+                ),
+            ),
+        ));
+    }
     drop(file);
     parent_dir
         .sync_all()
-        .map_err(|e| io_error("sync user file parent after create", dir, e))
+        .map_err(|e| io_error("sync user file parent after publish", dir, e))
 }
 
 /// Exclusively create a new regular file in a user-owned external directory
 /// without requiring `0700` on the parent directory. Validates the destination
 /// before creating, uses `O_TMPFILE` + `linkat` on Linux when supported and
-/// direct `O_CREAT|O_EXCL|O_NOFOLLOW` otherwise (avoiding staging directories
-/// or name-based `AT_REMOVEDIR` in a shared parent), and always syncs the parent.
+/// a CSPRNG sibling temp file + atomic no-replace rename otherwise (zero
+/// partial destination, zero staging dirs, zero by-name `unlinkat`), and
+/// always syncs the parent.
 pub(in crate::state_files) fn create_new_file(path: &Path, bytes: &[u8]) -> Result<()> {
     let dir = path
         .parent()
@@ -433,5 +461,5 @@ pub(in crate::state_files) fn create_new_file(path: &Path, bytes: &[u8]) -> Resu
     if try_create_tmpfile_and_publish(&parent_dir, &leaf, path, dir, bytes)? {
         return Ok(());
     }
-    create_direct_exclusive(&parent_dir, &leaf, path, dir, bytes)
+    create_staged_exclusive(&parent_dir, &leaf, path, dir, bytes)
 }
