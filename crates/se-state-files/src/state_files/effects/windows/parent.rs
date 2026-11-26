@@ -163,7 +163,31 @@ impl Parent {
         // A separate write-capable pin is used only for the actual final parent,
         // never for drive/system ancestors. It retains native directory flushing.
         if writable {
-            let writable = open(&physical, true, GENERIC_READ | GENERIC_WRITE, false)?;
+            let writable = if allow_final_reparse {
+                open(&physical, true, GENERIC_READ | GENERIC_WRITE, false)?
+            } else {
+                // Deny delete/rename sharing on the pinned external parent so
+                // handle-relative file staging and publication cannot race a
+                // directory swap.
+                let wide_phys = wide(&physical)?;
+                // SAFETY: validated NUL-terminated UTF-16 path of the verified parent.
+                let raw = unsafe {
+                    CreateFileW(
+                        wide_phys.as_ptr(),
+                        GENERIC_READ | GENERIC_WRITE,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        ptr::null(),
+                        OPEN_EXISTING,
+                        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                        ptr::null_mut(),
+                    )
+                };
+                if raw.is_null() || raw == INVALID_HANDLE_VALUE {
+                    return Err(last("pin external parent directory", path));
+                }
+                // SAFETY: successful CreateFileW transferred unique ownership of `raw`.
+                unsafe { File::from_raw_handle(raw) }
+            };
             if metadata(&writable, path, true, false)? != identity {
                 return Err(changed("installation parent changed during open", path));
             }

@@ -178,7 +178,9 @@ impl Fixture {
         }
         let output = command.output_executable()?;
         // This outside reader runs only after the strict-job shell has exited.
-        self.host = self.read_host()?;
+        if !refuse {
+            self.host = self.read_host()?;
+        }
         assert!(
             output.status.success(),
             "strict-job fixture failed; retained {}: {output:?}",
@@ -229,6 +231,42 @@ impl Fixture {
                 Ok(live.state == se_proc::NativeState::ExitedAwaitingReap)
             }
             _ => Err("runtime identity changed; refusing another process".into()),
+        }
+    }
+    fn assert_killed_on_job_close(&self, expected_pid: u32, expected_birth: u64) -> Result {
+        let path = self.home.join("endpoint.json");
+        let endpoint = se_host::client::endpoint::decode_endpoint(&fs::read(&path)?)?;
+        let fields = endpoint.epoch.owner.fields();
+        assert_eq!(fields.pid.get(), expected_pid);
+        let se_types::StartIdentity::Windows { creation_filetime } = &fields.started else {
+            return Err("endpoint does not carry a Windows process birth".into());
+        };
+        assert_eq!(creation_filetime.get(), expected_birth);
+        let pid = se_proc::ProcessId(fields.pid.get());
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            match se_proc::NativeProcessRuntime::read_process(fields.machine.clone(), pid)
+                .map_err(|e| format!("outside KILL_ON_JOB_CLOSE read: {e:?}"))?
+            {
+                se_proc::ProcessRead::Absent { .. } | se_proc::ProcessRead::ExitedRecord { .. } => {
+                    return Ok(());
+                }
+                se_proc::ProcessRead::Present(live)
+                    if live.state == se_proc::NativeState::ExitedAwaitingReap =>
+                {
+                    return Ok(());
+                }
+                se_proc::ProcessRead::Present(_) => {
+                    if Instant::now() >= until {
+                        return Err(format!(
+                            "KILL_ON_JOB_CLOSE host pid {} survived job closure",
+                            pid.0
+                        )
+                        .into());
+                    }
+                    std::thread::park_timeout(Duration::from_millis(10));
+                }
+            }
         }
     }
     fn stop(&mut self) -> Result {
@@ -354,10 +392,6 @@ fn eligible_broker_runtime_outlives_strict_job_and_public_down_closes_it() -> Re
 fn no_eligible_broker_uses_reported_foreground_until_public_down() -> Result {
     let mut f = Fixture::new("enclosing-job")?;
     f.run_strict(true)?;
-    assert!(
-        f.host.is_none(),
-        "enclosing-job host survived its public down"
-    );
     let witness: serde_json::Value = serde_json::from_slice(&fs::read(f.root.join("job.json"))?)?;
     let cases = witness["enclosing_job_cases"]
         .as_array()
@@ -390,12 +424,25 @@ fn no_eligible_broker_uses_reported_foreground_until_public_down() -> Result {
             }),
             "missing KILL_ON_JOB_CLOSE status notice: {observed}"
         );
-        assert_eq!(observed["down_exit"], 0);
         if mode == "json" {
+            assert_eq!(observed["down_exit"], 0);
+            assert_eq!(observed["left_for_job_close"], false);
             let value: serde_json::Value = serde_json::from_slice(&stdout)?;
             assert_eq!(value["state"], "running");
             assert_eq!(value["process"]["pid"], observed["pid"]);
         } else {
+            assert!(observed["down_exit"].is_null());
+            assert_eq!(observed["left_for_job_close"], true);
+            let pid = u32::try_from(
+                observed["pid"]
+                    .as_u64()
+                    .ok_or("missing plain enclosing-job pid")?,
+            )?;
+            let birth = observed["creation_filetime"]
+                .as_str()
+                .ok_or("missing plain enclosing-job birth")?
+                .parse::<u64>()?;
+            f.assert_killed_on_job_close(pid, birth)?;
             let text = String::from_utf8(stdout)?;
             assert!(
                 text.contains("Runtime running")

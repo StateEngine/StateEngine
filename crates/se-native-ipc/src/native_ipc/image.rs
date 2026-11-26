@@ -32,9 +32,10 @@ impl ImageKey {
     pub(super) fn reusable(&self) -> bool {
         #[cfg(windows)]
         {
-            // Journal IDs are opaque bits; reserve both earlier unqualified tags.
+            // Journal IDs are opaque bits; reserve earlier unqualified tags:
+            // 0 (restorable clock), 1 (no journal instance), 2 (mutable ChangeTime).
             matches!(self.changed, Some((revision, journal))
-                if revision > 0 && !matches!(journal, 0 | 1))
+                if revision > 0 && !matches!(journal, 0..=2))
         }
         #[cfg(not(windows))]
         {

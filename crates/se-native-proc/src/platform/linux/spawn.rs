@@ -112,7 +112,6 @@ struct ChildPlan<'a> {
     stream_fds: [i32; 3],
     console_fds: [i32; 3],
     kept: &'a [i32],
-    fd_limit: i32,
     error_fd: i32,
     authorization_fd: i32,
     deferred: bool,
@@ -135,7 +134,7 @@ pub(super) unsafe fn die_in_child(error_fd: i32, number: i32) -> ! {
     }
 }
 /// Close every descriptor >= 3 outside `kept` using close_range with fallback.
-unsafe fn close_unkept_fds(kept: &[i32], _fd_limit: i32, error_fd: i32) {
+unsafe fn close_unkept_fds(kept: &[i32], error_fd: i32) {
     // SAFETY: fork child uses only async-signal-safe syscalls on prepared slice.
     unsafe {
         let mut low = 3;
@@ -208,8 +207,12 @@ unsafe fn close_unkept_from_proc(kept: &[i32], error_fd: i32) {
                         break;
                     }
                 }
-                if valid && fd >= 3 && fd != dir_fd && !kept.contains(&fd) {
-                    libc::close(fd);
+                if valid && fd >= 3 && fd != dir_fd && !kept.contains(&fd) && libc::close(fd) < 0 {
+                    let err = *libc::__errno_location();
+                    if err != libc::EBADF {
+                        libc::close(dir_fd);
+                        die_in_child(error_fd, err);
+                    }
                 }
                 pos += reclen;
             }
@@ -254,7 +257,7 @@ unsafe fn run_fork_child(plan: &ChildPlan<'_>) -> ! {
                 die(*libc::__errno_location());
             }
         }
-        close_unkept_fds(plan.kept, plan.fd_limit, plan.error_fd);
+        close_unkept_fds(plan.kept, plan.error_fd);
         reset_signals(plan.error_fd);
         if libc::chdir(plan.cwd.as_ptr()) < 0 {
             die(*libc::__errno_location());
@@ -346,15 +349,6 @@ fn prepare_exec_strings(spec: &LaunchSpec) -> ProcResult<ExecStrings> {
         env,
     })
 }
-fn nofile_limit() -> ProcResult<i32> {
-    // SAFETY: rlimit is native POD and getrlimit fills both initialized scalar fields.
-    let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
-    // SAFETY: valid output pointer, read-only process query before fork.
-    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } < 0 {
-        return Err(launch_err("getrlimit"));
-    }
-    Ok(limit.rlim_cur.min(i32::MAX as u64) as i32)
-}
 fn prepare_streams(
     stdio: [Option<File>; 3],
     terminal: Option<&super::terminal::Terminal>,
@@ -424,7 +418,6 @@ pub(super) fn begin(spec: LaunchSpec) -> ProcResult<Child> {
         kept.push(window.master.as_raw_fd());
     }
     kept.sort_unstable();
-    let fd_limit = nofile_limit()?;
     let plan = ChildPlan {
         executable: &exec.executable,
         execution_path: &exec.execution_path,
@@ -435,7 +428,6 @@ pub(super) fn begin(spec: LaunchSpec) -> ProcResult<Child> {
         stream_fds,
         console_fds,
         kept: &kept,
-        fd_limit,
         error_fd,
         authorization_fd,
         deferred,

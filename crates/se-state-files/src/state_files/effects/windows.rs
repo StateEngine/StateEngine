@@ -663,71 +663,18 @@ pub(in crate::state_files) fn ensure_user_directory(path: &Path) -> Result<()> {
 }
 
 /// Exclusively create a new regular file in a user-owned external directory
-/// using default inherited user security, staging and flushing under the
-/// verified parent before atomic no-replace publication so mid-write failure
-/// never leaves a partial final file behind.
+/// using default inherited user security, staging and flushing handle-relatively
+/// under the verified parent before atomic no-replace publication by handle.
 pub(in crate::state_files) fn create_new_file(path: &Path, bytes: &[u8]) -> Result<()> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-
     let dir = path
         .parent()
         .ok_or_else(|| unsafe_path("user file parent missing", path))?;
-    let parent = Parent::open_external(dir, true, true)?;
     let leaf = path
         .file_name()
         .ok_or_else(|| unsafe_path("user file name missing", path))?;
     literal_leaf(leaf, path)?;
-    let staged_name = format!(
-        ".se-new-{}-{}.tmp",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    );
-    let staged_path = parent.path.join(&staged_name);
-    let staged_wide = wide(&staged_path)?;
-    // SAFETY: validated NUL-terminated UTF-16 path under the verified parent;
-    // CREATE_NEW refuses collisions, FILE_FLAG_OPEN_REPARSE_POINT refuses
-    // reparse traversal, null SD inherits the provider directory's user DACL.
-    let raw = unsafe {
-        CreateFileW(
-            staged_wide.as_ptr(),
-            GENERIC_READ | GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_DELETE,
-            ptr::null(),
-            CREATE_NEW,
-            FILE_FLAG_OPEN_REPARSE_POINT | FILE_ATTRIBUTE_NORMAL,
-            ptr::null_mut(),
-        )
-    };
-    if raw.is_null() || raw == INVALID_HANDLE_VALUE {
-        return Err(last("create staged user file", path));
-    }
-    // SAFETY: successful CreateFileW transferred unique ownership of `raw`.
-    let mut file = unsafe { File::from_raw_handle(raw) };
-    let write_res = file
-        .write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|e| io_error("write new user file", path, e));
-    drop(file);
-    if let Err(error) = write_res {
-        // SAFETY: remove the incomplete staging file we created under `parent.path`.
-        unsafe {
-            DeleteFileW(staged_wide.as_ptr());
-        }
-        return Err(error);
-    }
-    let physical = parent.path.join(leaf);
-    let target_wide = wide(&physical)?;
-    // SAFETY: validated NUL-terminated UTF-16 paths in the same verified parent
-    // directory; flags=0 omits MOVEFILE_REPLACE_EXISTING so existing files fail.
-    if unsafe { MoveFileExW(staged_wide.as_ptr(), target_wide.as_ptr(), 0) } == 0 {
-        let err = last("publish new user file", path);
-        // SAFETY: clean up the unlinked staging file on publish refusal.
-        unsafe {
-            DeleteFileW(staged_wide.as_ptr());
-        }
-        return Err(err);
-    }
+    let parent = Parent::open_external(dir, true, true)?;
+    created::create_and_publish_file_at(parent.file()?, leaf, path, bytes)?;
     parent.sync(path)?;
     Ok(())
 }

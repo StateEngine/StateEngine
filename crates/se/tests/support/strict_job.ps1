@@ -152,9 +152,13 @@ try {
         $member = [StrictJobFixture]::InJob($runtime.Handle,[IntPtr]::Zero)
         $creationFiletime = $runtime.StartTime.ToFileTimeUtc().ToString()
       } finally { $runtime.Dispose() }
-      $stopped = Invoke-OwnedCli 'down'
-      if ($stopped.exit -ne 0) { throw "public enclosing-job down failed: $($stopped.stderr)" }
-      $witness.enclosing_job_cases += @{mode=$mode; cli_pid=$child.Id; pid=$runtimePid; creation_filetime=$creationFiletime; in_job=$member; detachment=$view.runtime.detachment; detachment_notice=$view.runtime.detachment_notice; down_exit=$stopped.exit}
+      $downExit = $null
+      if ($mode -eq 'json') {
+        $stopped = Invoke-OwnedCli 'down'
+        if ($stopped.exit -ne 0) { throw "public enclosing-job down failed: $($stopped.stderr)" }
+        $downExit = $stopped.exit
+      }
+      $witness.enclosing_job_cases += @{mode=$mode; cli_pid=$child.Id; pid=$runtimePid; creation_filetime=$creationFiletime; in_job=$member; detachment=$view.runtime.detachment; detachment_notice=$view.runtime.detachment_notice; down_exit=$downExit; left_for_job_close=($mode -eq 'plain')}
     } elseif (!$NoEligibleBroker -and $mode -eq 'json' -and $child.ExitCode -eq 0) {
       $started = $stdout.Result | ConvertFrom-Json
       $runtime = [Diagnostics.Process]::GetProcessById([int]$started.process.pid)
@@ -168,4 +172,8 @@ try {
   }
   $witness.caller_in_job_after = [StrictJobFixture]::CallerInJob($job)
   [IO.File]::WriteAllText((Join-Path $Out 'job.json'),($witness | ConvertTo-Json -Compress))
-} finally { [void][StrictJobFixture]::CloseHandle($job) }
+} finally {
+  # When KILL_ON_JOB_CLOSE is set, let process teardown close the last job handle
+  # after this shell exits cleanly with status 0 so the host dies on job closure.
+  if (!$NoEligibleBroker) { [void][StrictJobFixture]::CloseHandle($job) }
+}

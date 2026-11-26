@@ -371,10 +371,57 @@ pub(in crate::state_files) fn ensure_user_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::unnecessary_cast)] // dev_t/ino_t width differs between Linux (u64) and macOS (i32/u64)
+fn staged_id_at(
+    parent_fd: i32,
+    staging_name: &std::ffi::CStr,
+) -> std::result::Result<(u64, u64), io::Error> {
+    // SAFETY: `libc::stat` is a plain C struct where all-zero bytes are valid.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: held parent fd, literal NUL-terminated staging name, valid stat buffer.
+    if unsafe {
+        libc::fstatat(
+            parent_fd,
+            staging_name.as_ptr(),
+            &mut st,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } < 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((st.st_dev as u64, st.st_ino as u64))
+}
+
+fn unlink_staged_if_same(
+    parent_fd: i32,
+    staging_name: &std::ffi::CStr,
+    staged_id: (u64, u64),
+) -> std::result::Result<(), io::Error> {
+    let observed = match staged_id_at(parent_fd, staging_name) {
+        Ok(id) => id,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    if observed != staged_id {
+        return Err(io::Error::other(
+            "staged file identity changed before cleanup",
+        ));
+    }
+    // SAFETY: verified staged entry matches the held open inode.
+    if unsafe { libc::unlinkat(parent_fd, staging_name.as_ptr(), 0) } < 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::NotFound {
+            return Err(err);
+        }
+    }
+    Ok(())
+}
+
 /// Exclusively create a new regular file in a user-owned external directory
-/// without requiring `0700` on the parent directory. Stages and syncs under
-/// the pinned parent before publishing atomically without replacement so a
-/// mid-write failure never leaves an incomplete final file behind.
+/// without requiring `0700` on the parent directory. Validates the destination
+/// before staging, retains staged-inode custody through atomic no-replace
+/// publication, and preserves any staging cleanup failure as a separate fact.
 pub(in crate::state_files) fn create_new_file(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -405,20 +452,30 @@ pub(in crate::state_files) fn create_new_file(path: &Path, bytes: &[u8]) -> Resu
         "create staged user file",
         path,
     )?;
-    let write_res = file
+    let staged_id = id(&file, path, false, false)?;
+    if let Err(error) = file
         .write_all(bytes)
         .and_then(|()| file.sync_all())
-        .map_err(|e| io_error("write new user file", path, e));
-    drop(file);
-    if let Err(error) = write_res {
-        // SAFETY: held parent directory fd and literal staging name we created.
-        unsafe {
-            libc::unlinkat(parent_dir.as_raw_fd(), staging_name.as_ptr(), 0);
+        .map_err(|e| io_error("write new user file", path, e))
+    {
+        if let Err(cleanup) =
+            unlink_staged_if_same(parent_dir.as_raw_fd(), &staging_name, staged_id)
+        {
+            return Err(io_error(
+                "write new user file (staging cleanup also failed)",
+                path,
+                io::Error::other(format!("{error}; staging cleanup failed: {cleanup}")),
+            ));
         }
         return Err(error);
     }
+    let observed = staged_id_at(parent_dir.as_raw_fd(), &staging_name)
+        .map_err(|_| changed("staged user file changed before publication", path))?;
+    if observed != staged_id {
+        return Err(changed("staged user file changed before publication", path));
+    }
     // SAFETY: held parent directory fd and literal staging/leaf names; linkat
-    // publishes atomically and fails with EEXIST if leaf already exists.
+    // publishes atomically while `file` remains open and fails with EEXIST if leaf exists.
     let linked = unsafe {
         libc::linkat(
             parent_dir.as_raw_fd(),
@@ -428,17 +485,20 @@ pub(in crate::state_files) fn create_new_file(path: &Path, bytes: &[u8]) -> Resu
             0,
         )
     };
-    let link_err = if linked < 0 {
-        Some(io::Error::last_os_error())
-    } else {
-        None
-    };
-    // SAFETY: remove the temporary staging link regardless of linkat outcome.
-    unsafe {
-        libc::unlinkat(parent_dir.as_raw_fd(), staging_name.as_ptr(), 0);
-    }
-    if let Some(err) = link_err {
-        return Err(io_error("publish new user file", path, err));
+    let link_err = (linked < 0).then(io::Error::last_os_error);
+    let cleanup_res = unlink_staged_if_same(parent_dir.as_raw_fd(), &staging_name, staged_id);
+    drop(file);
+    match (link_err, cleanup_res) {
+        (Some(err), Ok(())) => return Err(io_error("publish new user file", path, err)),
+        (Some(err), Err(cleanup)) => {
+            return Err(io_error(
+                "publish new user file (staging cleanup also failed)",
+                path,
+                io::Error::other(format!("{err}; staging cleanup failed: {cleanup}")),
+            ));
+        }
+        (None, Err(cleanup)) => return Err(io_error("cleanup staged user file", path, cleanup)),
+        (None, Ok(())) => {}
     }
     parent_dir
         .sync_all()

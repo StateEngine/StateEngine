@@ -516,7 +516,7 @@ mod judge {
         // Only the executed subset is claimed; a skipped case is not a pass.
         if ran_broker {
             println!(
-                "bootstrap broker: 1 passed, 0 failed; caller remains in strict job; child outside all jobs and exited"
+                "bootstrap enclosing-job: 1 passed, 0 failed; caller remains in strict job; child stayed in enclosing job as session-only and exited"
             );
         } else {
             println!(
