@@ -1,18 +1,16 @@
 //! One owner-installed read port. No root activation, worker or authoritative
 //! snapshot is created by this handoff. Explicit queries may notify the
 //! existing background owner of project interest.
-use super::{
-    read_slot::{Bounded, ReadSlot},
-    record_fence::*,
-};
+#[cfg(feature = "listener")]
+use super::read_slot::{Bounded, ReadSlot};
+use super::record_fence::*;
 use se_types::{
     ProjectId, Result, SeError,
     code::{IndexSummary, RootId},
 };
-use std::{
-    sync::{Arc, OnceLock},
-    time::Instant,
-};
+use std::sync::{Arc, OnceLock};
+#[cfg(feature = "listener")]
+use std::time::Instant;
 
 /// Object-safe owner-loop handoff: summaries and the v5 engine for admitted
 /// queries. No cache connection is lent across this boundary.
@@ -56,6 +54,7 @@ pub struct AtlasOwnerPort {
     reader: OnceLock<Arc<dyn AtlasReadPort>>,
     pub records: Arc<RecordFeedFence>,
     /// Optional enrichment reads, so a resume never waits past its deadline.
+    #[cfg(feature = "listener")]
     enrichment: ReadSlot,
 }
 impl AtlasOwnerPort {
@@ -114,6 +113,7 @@ impl AtlasOwnerPort {
     }
     /// Run an optional read on this port's one background slot, waiting for
     /// it no later than `deadline`.
+    #[cfg(feature = "listener")]
     pub(crate) fn within<T: Send + 'static>(
         &self,
         deadline: Instant,
