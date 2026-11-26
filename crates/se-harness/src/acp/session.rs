@@ -97,6 +97,16 @@ impl Session {
         access: WorkspaceAccess,
         provider_exit: crate::harness::ProviderExitProof,
     ) -> Arc<Self> {
+        Self::retain_with_capabilities(connection, receiver, policy, false, provider_exit).await
+    }
+
+    pub async fn retain_with_capabilities(
+        connection: Arc<Connection>,
+        receiver: mpsc::Receiver<Incoming>,
+        policy: PermissionPolicy,
+        allow_terminal: bool,
+        provider_exit: crate::harness::ProviderExitProof,
+    ) -> Arc<Self> {
         let session = Arc::new(Self {
             connection,
             state: Mutex::new(State::default()),

@@ -311,7 +311,12 @@ impl Harness for AcpHarness {
             let resolved = self.resolved(&request)?;
             let (connection, incoming) =
                 Connection::open(self.io.clone(), attach.transport, cx.generation).await;
-            let session = Session::retain(
+            let allow_terminal = matches!(
+                resolved.sandbox,
+                se_config::config_policy::EffectiveSandbox::WorkspaceWrite
+                    | se_config::config_policy::EffectiveSandbox::Bypass
+            );
+            let session = Session::retain_with_capabilities(
                 connection,
                 incoming,
                 PermissionPolicy::from_saved_approval(resolved.approval),

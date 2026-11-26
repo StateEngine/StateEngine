@@ -63,6 +63,8 @@ pub(super) struct Client {
     access: WorkspaceAccess,
     /// The workspace held since the conversation opened, or why it could not be.
     workspace: Mutex<Option<Result<Arc<fs::Workspace>, String>>>,
+    /// Owned contained terminals for this conversation.
+    terminals: terminal::Terminals,
     /// One permit per running call.
     calls: Arc<Semaphore>,
     /// Set once the conversation closes; no call is admitted and no queued
