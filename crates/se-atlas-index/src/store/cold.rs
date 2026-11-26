@@ -7,8 +7,8 @@
 //!
 //! Files are numbered by sorted path before reading, so import targets get
 //! ids at once. Postings accumulate in memory as compact varints and are
-//! written once, sorted, when the build ends; until then readers find
-//! committed files through `file_tok` (see [`super::read`]).
+//! written once, sorted, in chunked transactions when the build ends; until
+//! then readers find committed files through `file_tok` (see [`super::read`]).
 use super::{
     Store, history, varint,
     write::{self, FileRecord},
@@ -39,6 +39,7 @@ use std::{
 
 const CLAIM: usize = 16;
 const MAX_WORKERS: usize = 8;
+const FINISH_CHUNK: usize = 4_096;
 
 #[derive(Clone, Debug)]
 pub struct BuildOptions {
@@ -103,8 +104,18 @@ impl Store {
         root: &IndexSourceRoot,
         options: &BuildOptions,
     ) -> Result<BuildReport> {
-        let started = Instant::now();
         let discovery = walk::discover(root, &options.walk)?;
+        self.cold_build_with_discovery(root, options, discovery)
+    }
+
+    /// Replace the code index with a fresh build using an already-completed discovery.
+    pub fn cold_build_with_discovery(
+        &mut self,
+        root: &IndexSourceRoot,
+        options: &BuildOptions,
+        discovery: walk::Discovery,
+    ) -> Result<BuildReport> {
+        let started = Instant::now();
         let paths = &discovery.files;
         let resolver = Resolver::new(paths.iter().map(String::as_str));
         let ids: HashMap<&str, i64> = paths
@@ -138,21 +149,21 @@ impl Store {
             clear_index(self.connection_mut())?;
             return Err(IndexError::Io(error));
         }
-        let complete = discovery.complete;
-        writer.finish(complete)?;
-        let mut report = std::mem::take(&mut writer.report);
-        report.discovered = paths.len();
-        report.walk_denied = discovery.denied;
-        report.ignored = discovery.ignored;
-        report.links = discovery.links;
-        report.unnameable = discovery.unnameable;
-        report.unreadable_ignore_files = discovery.unreadable_ignore_files;
-        report.vanished_dirs = discovery.vanished_dirs;
-        report.unreadable_dirs = discovery.unreadable_dirs;
-        report.refused_dirs = discovery.refused_dirs;
-        report.discovery_complete = complete;
-        report.elapsed = started.elapsed();
-        Ok(report)
+        writer.finish(discovery.complete)?;
+        Ok(BuildReport {
+            discovered: paths.len(),
+            walk_denied: discovery.denied,
+            ignored: discovery.ignored,
+            links: discovery.links,
+            unnameable: discovery.unnameable,
+            unreadable_ignore_files: discovery.unreadable_ignore_files,
+            vanished_dirs: discovery.vanished_dirs,
+            unreadable_dirs: discovery.unreadable_dirs,
+            refused_dirs: discovery.refused_dirs,
+            discovery_complete: discovery.complete,
+            elapsed: started.elapsed(),
+            ..std::mem::take(&mut writer.report)
+        })
     }
 }
 
@@ -215,16 +226,12 @@ fn read_one(
         Ok(GuardedRead::Source(source)) => {
             let extracted = extract::extract(path, &source.bytes, source.prefix_only);
             let mut record = FileRecord::new(path, &source, extracted);
-            record.targets = record
-                .extracted
-                .imports
-                .iter()
-                .map(|spec| {
-                    resolver
-                        .resolve(path, spec)
-                        .and_then(|t| ids.get(t.as_str()).copied())
-                })
-                .collect();
+            let resolve = |s: &_| {
+                resolver
+                    .resolve(path, s)
+                    .and_then(|t| ids.get(t.as_str()).copied())
+            };
+            record.targets = record.extracted.imports.iter().map(resolve).collect();
             Outcome::Indexed(id, Box::new(record))
         }
         Ok(GuardedRead::Absent) => Outcome::Absent,
@@ -278,8 +285,9 @@ impl<'c> ColdWriter<'c> {
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
-            let due = batch.len() >= self.batch_files || opened.elapsed() >= self.batch_time;
-            if !batch.is_empty() && due {
+            if !batch.is_empty()
+                && (batch.len() >= self.batch_files || opened.elapsed() >= self.batch_time)
+            {
                 self.flush(&mut batch)?;
                 opened = Instant::now();
             }
@@ -311,19 +319,22 @@ impl<'c> ColdWriter<'c> {
         Ok(())
     }
 
-    /// Publish postings, df, trigrams and covering tests in one transaction,
-    /// and retire the cold watermark.
+    /// Publish postings, df, trigrams and covering tests in bounded
+    /// transactions, then retire the cold watermark.
     fn finish(&mut self, complete: bool) -> Result<()> {
-        let tx = self.conn.transaction()?;
-        write_postings(&tx, &mut self.vocab.postings)?;
-        write_grams(&tx, &self.vocab.ids)?;
+        write_postings_chunked(self.conn, &mut self.vocab.postings)?;
+        write_grams_chunked(self.conn, &self.vocab.ids)?;
         let graph = MemoryGraph::new(&self.covers);
-        for file in &self.covers {
-            write::insert_covers(&tx, &covers::covers_for(file, &graph)?)?;
+        for chunk in self.covers.chunks(FINISH_CHUNK) {
+            let tx = self.conn.transaction()?;
+            for file in chunk {
+                write::insert_covers(&tx, &covers::covers_for(file, &graph)?)?;
+            }
+            tx.commit()?;
         }
+        let tx = self.conn.transaction()?;
         tx.execute(
-            "UPDATE imp SET target_file=NULL WHERE target_file IS NOT NULL
-               AND target_file NOT IN (SELECT id FROM files)",
+            "UPDATE imp SET target_file=NULL WHERE target_file IS NOT NULL AND target_file NOT IN (SELECT id FROM files)",
             [],
         )?;
         tx.execute(
@@ -405,35 +416,36 @@ impl Vocab {
     }
 }
 
-fn write_postings(tx: &Transaction<'_>, postings: &mut [Vec<u8>]) -> Result<()> {
-    let mut insert = tx.prepare_cached("INSERT INTO vocab_post(tok, postings) VALUES (?1, ?2)")?;
-    let mut df = tx.prepare_cached("UPDATE vocab SET df=?2 WHERE id=?1")?;
-    for (tok, raw) in (1i64..).zip(postings.iter_mut()) {
-        let mut pairs = Vec::new();
-        let mut pos = 0;
-        while pos < raw.len() {
-            let file = varint::get(raw, &mut pos)? as i64;
-            let tf = u32::try_from(varint::get(raw, &mut pos)?).unwrap_or(u32::MAX);
-            pairs.push((file, tf));
+fn write_postings_chunked(conn: &mut Connection, postings: &mut [Vec<u8>]) -> Result<()> {
+    for (i, chunk) in postings.chunks_mut(FINISH_CHUNK).enumerate() {
+        let tx = conn.transaction()?;
+        let mut ins = tx.prepare_cached("INSERT INTO vocab_post(tok, postings) VALUES (?1, ?2)")?;
+        let mut df = tx.prepare_cached("UPDATE vocab SET df=?2 WHERE id=?1")?;
+        for (off, raw) in chunk.iter_mut().enumerate() {
+            let (mut pairs, mut pos) = (Vec::new(), 0);
+            while pos < raw.len() {
+                let file = varint::get(raw, &mut pos)? as i64;
+                let tf = u32::try_from(varint::get(raw, &mut pos)?).unwrap_or(u32::MAX);
+                pairs.push((file, tf));
+            }
+            *raw = Vec::new();
+            pairs.sort_unstable();
+            pairs.dedup_by_key(|pair| pair.0);
+            if !pairs.is_empty() {
+                let tok = (i * FINISH_CHUNK + off) as i64 + 1;
+                ins.execute(params![tok, varint::encode_pairs(&pairs)?])?;
+                df.execute(params![tok, pairs.len() as i64])?;
+            }
         }
-        *raw = Vec::new();
-        pairs.sort_unstable();
-        pairs.dedup_by_key(|pair| pair.0);
-        if pairs.is_empty() {
-            continue;
-        }
-        insert.execute(params![tok, varint::encode_pairs(&pairs)?])?;
-        df.execute(params![tok, pairs.len() as i64])?;
+        drop((ins, df));
+        tx.commit()?;
     }
     Ok(())
 }
 
-fn write_grams(tx: &Transaction<'_>, vocab: &HashMap<String, i64>) -> Result<()> {
+fn write_grams_chunked(conn: &mut Connection, vocab: &HashMap<String, i64>) -> Result<()> {
     let mut grams: HashMap<u32, Vec<i64>> = HashMap::new();
-    for (token, id) in vocab
-        .iter()
-        .filter(|(token, _)| tokens::is_gram_token(token))
-    {
+    for (token, id) in vocab.iter().filter(|(t, _)| tokens::is_gram_token(t)) {
         for gram in tokens::trigrams(token) {
             grams.entry(gram).or_default().push(*id);
         }
@@ -441,11 +453,17 @@ fn write_grams(tx: &Transaction<'_>, vocab: &HashMap<String, i64>) -> Result<()>
     // Key order fills the WITHOUT ROWID pages densely.
     let mut grams: Vec<_> = grams.into_iter().collect();
     grams.sort_unstable_by_key(|(gram, _)| *gram);
-    let mut insert = tx.prepare_cached("INSERT INTO gram(g, toks) VALUES (?1, ?2)")?;
-    for (gram, mut ids) in grams {
-        ids.sort_unstable();
-        ids.dedup();
-        insert.execute(params![gram, varint::encode_ids(&ids)?])?;
+    for chunk in grams.chunks_mut(FINISH_CHUNK) {
+        let tx = conn.transaction()?;
+        let mut ins = tx.prepare_cached("INSERT INTO gram(g, toks) VALUES (?1, ?2)")?;
+        for (gram, ids) in chunk.iter_mut() {
+            ids.sort_unstable();
+            ids.dedup();
+            ins.execute(params![*gram, varint::encode_ids(ids)?])?;
+            *ids = Vec::new();
+        }
+        drop(ins);
+        tx.commit()?;
     }
     Ok(())
 }

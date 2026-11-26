@@ -12,12 +12,9 @@ impl Successful {
             "captured tool source",
             "Restore the committed source binding before indexing its activity.",
         )?;
-        let original = record
-            .original
-            .map(|event| *event)
-            .unwrap_or(record.current);
+        let original = record.original.as_deref().unwrap_or(&record.current);
         if original.header.scope != Scope::Project(project.clone())
-            || !matches!(original.body,EventBody::CaptureSource{source,session,..} if source==self.0.source && session==self.0.session)
+            || !matches!(&original.body, EventBody::CaptureSource { source, session, .. } if *source == self.0.source && *session == self.0.session)
         {
             return Err(SeError::invalid(
                 "captured tool source",
@@ -28,12 +25,12 @@ impl Successful {
     }
     pub fn paths(&self) -> &[ObservedPath] {
         match &self.0.target {
-            Target::Paths(paths) => paths,
+            Target::Paths(p) => p,
             _ => &[],
         }
     }
     pub fn key(&self) -> Result<RecordKey> {
-        let identity = (
+        let id = (
             &self.0.session,
             self.0.source,
             self.0.provider,
@@ -41,11 +38,9 @@ impl Successful {
             self.0.phase,
             &self.0.position,
         );
-        let digest = sha2::Sha256::digest(
-            serde_json::to_vec(&identity)
-                .map_err(|e| SeError::invalid("captured tool identity", &e.to_string()))?,
-        );
-        RecordKey::new(format!("tool:{digest:x}"))
+        let raw = serde_json::to_vec(&id)
+            .map_err(|e| SeError::invalid("captured tool identity", &e.to_string()))?;
+        RecordKey::new(format!("tool:{:x}", sha2::Sha256::digest(raw)))
     }
     pub fn actor(&self) -> AtlasActor {
         AtlasActor {
@@ -57,7 +52,13 @@ impl Successful {
         "Captured native file edit succeeded; current-content author unknown".into()
     }
 }
-pub(super) fn successful(event: &StoredEvent) -> Result<Option<Successful>> {
+pub(super) enum Captured {
+    Match(Box<Successful>),
+    Skip,
+    Oversized(usize),
+}
+
+pub(super) fn successful(event: &StoredEvent) -> Result<Captured> {
     let EventBody::SessionTurn {
         session,
         agent,
@@ -69,19 +70,25 @@ pub(super) fn successful(event: &StoredEvent) -> Result<Option<Successful>> {
         ..
     } = &event.body
     else {
-        return Ok(None);
+        return Ok(Captured::Skip);
     };
     if !vendor_ref.starts_with(se_store::TRANSCRIPT_EVENT_PREFIX) {
-        return Ok(None);
+        return Ok(Captured::Skip);
     }
     // Native metadata is already bounded by capture. Avoid parsing arbitrary
-    // chat or scanning bodies for tool-looking strings.
+    // chat or scanning bodies for tool-looking strings. Known non-tool system
+    // envelopes over 8 KiB are skipped cleanly; oversized tool-edit candidates
+    // are reported as unreadable so feed coverage degrades honestly.
     if text.len() > 8192 {
-        return Err(SeError::too_large("captured metadata", 8192, text.len()));
+        return Ok(if is_oversized_non_tool(text) {
+            Captured::Skip
+        } else {
+            Captured::Oversized(text.len())
+        });
     }
     let metadata = Record::decode(text)?;
     if metadata.kind != "captured-tool" {
-        return Ok(None);
+        return Ok(Captured::Skip);
     }
     if metadata.kind_truncated || metadata.subtype_truncated {
         return Err(SeError::invalid(
@@ -94,29 +101,32 @@ pub(super) fn successful(event: &StoredEvent) -> Result<Option<Successful>> {
         SeError::invalid("captured metadata", "the retained native tool observation")
     })?;
     tool.validate_binding(session, agent, *provider, tool.source, evidence)?;
+    let ToolName::Known(name) = &tool.tool else {
+        return Ok(Captured::Skip);
+    };
     if !matches!(tool.phase, Phase::Completed)
         || !matches!(tool.outcome, Outcome::Succeeded)
         || matches!(tool.native, NativeIdentity::Unknown(_))
         || !matches!(tool.target, Target::Paths(_))
+        || !matches!(
+            name.as_str(),
+            "Edit"
+                | "Write"
+                | "MultiEdit"
+                | "apply_patch"
+                | "FileChange"
+                | "fileChange"
+                | "file_change"
+                | "write_file"
+                | "edit_file"
+        )
     {
-        return Ok(None);
+        return Ok(Captured::Skip);
     }
-    let ToolName::Known(name) = &tool.tool else {
-        return Ok(None);
-    };
-    if !matches!(
-        name.as_str(),
-        "Edit"
-            | "Write"
-            | "MultiEdit"
-            | "apply_patch"
-            | "FileChange"
-            | "fileChange"
-            | "file_change"
-            | "write_file"
-            | "edit_file"
-    ) {
-        return Ok(None);
-    }
-    Ok(Some(Successful(tool)))
+    Ok(Captured::Match(Box::new(Successful(tool))))
+}
+fn is_oversized_non_tool(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text).is_ok_and(|v| {
+        v["kind"].as_str().is_some_and(|k| k != "captured-tool") && v["captured_tool"].is_null()
+    })
 }

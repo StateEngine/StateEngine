@@ -137,13 +137,10 @@ impl LaunchCoordinator {
                 }
                 // A start that never reached exec will never serve: end it.
                 Recovered::Unstarted(owner) => {
-                    let witness = self.stop_codex_server(&owner, deadline).await?;
-                    self.release_witnessed_codex_server(owner, witness, deadline)
-                        .await?;
-                    remove_record(&path)?;
+                    self.stop_and_remove_codex(owner, &path, deadline).await?;
                     slot.remove(&login);
                 }
-                Recovered::Exited => remove_record(&path)?,
+                Recovered::Exited => self.remove_codex_record(&path, deadline).await?,
             }
         }
         // A server this host started that has since ended: witness its exit and
@@ -189,13 +186,14 @@ impl LaunchCoordinator {
         let settled = async {
             match self.recover_codex_server(path, &record, deadline).await? {
                 Recovered::Started(owner) => Ok(Some((login.clone(), owner))),
-                Recovered::Unstarted(owner) => {
-                    let witness = self.stop_codex_server(&owner, deadline).await?;
-                    self.release_witnessed_codex_server(owner, witness, deadline)
-                        .await?;
-                    remove_record(path).map(|()| None)
-                }
-                Recovered::Exited => remove_record(path).map(|()| None),
+                Recovered::Unstarted(owner) => self
+                    .stop_and_remove_codex(owner, path, deadline)
+                    .await
+                    .map(|()| None),
+                Recovered::Exited => self
+                    .remove_codex_record(path, deadline)
+                    .await
+                    .map(|()| None),
             }
         };
         settled.await.map_err(|failure| for_login(failure, &login))
@@ -282,7 +280,7 @@ impl LaunchCoordinator {
             deadline,
         )
         .await?;
-        remove_record(&path)
+        self.remove_codex_record(&path, deadline).await
     }
 
     async fn retire_recorded(&self, path: &Path, deadline: &Deadline) -> Result<()> {
@@ -292,16 +290,33 @@ impl LaunchCoordinator {
         let login = record.login.to_local()?;
         let settled = async {
             match self.recover_codex_server(path, &record, deadline).await? {
-                Recovered::Exited => remove_record(path),
+                Recovered::Exited => self.remove_codex_record(path, deadline).await,
                 Recovered::Started(owner) | Recovered::Unstarted(owner) => {
-                    let witness = self.stop_codex_server(&owner, deadline).await?;
-                    self.release_witnessed_codex_server(owner, witness, deadline)
-                        .await?;
-                    remove_record(path)
+                    self.stop_and_remove_codex(owner, path, deadline).await
                 }
             }
         };
         settled.await.map_err(|failure| for_login(failure, &login))
+    }
+
+    async fn stop_and_remove_codex(
+        &self,
+        owner: Arc<se_proc::OwnedProcess>,
+        path: &Path,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let witness = self.stop_codex_server(&owner, deadline).await?;
+        self.release_witnessed_codex_server(owner, witness, deadline)
+            .await?;
+        self.remove_codex_record(path, deadline).await
+    }
+
+    async fn remove_codex_record(&self, path: &Path, deadline: &Deadline) -> Result<()> {
+        let path = path.to_path_buf();
+        self.store
+            .pool
+            .run_owned(deadline, move || remove_record(&path))
+            .await
     }
 
     async fn release_witnessed_codex_server(

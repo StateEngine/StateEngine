@@ -20,7 +20,7 @@ mod decode;
 mod events;
 pub use events::NativeWatchEvents;
 
-const BUFFER: usize = 4096;
+const BUFFER: usize = 64 * 1024;
 const MAX_WATCHES: usize = 128;
 const MAX_QUEUE: usize = 16384;
 const COMMAND: usize = usize::MAX;
@@ -364,7 +364,10 @@ fn open_async(path: &std::path::Path) -> io::Result<File> {
 }
 impl Drop for NativeSourceWatch {
     fn drop(&mut self) {
-        if !self.stopping && self.worker.is_some() && self.post(Command::Stop).is_err() {
+        if !self.stopping
+            && self.worker.is_some()
+            && self.shutdown(std::time::Duration::from_secs(2)).is_err()
+        {
             eprintln!("source watch worker could not be stopped");
         }
     }

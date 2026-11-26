@@ -19,6 +19,11 @@ struct GitDir {
     path: PathBuf,
 }
 
+fn common_dir(git: &GitDir) -> Option<NativeSourceRoot> {
+    let text = read(&git.root, "commondir", MAX_FILE)?;
+    NativeSourceRoot::open(&resolve(&git.path, text.trim())?).ok()
+}
+
 /// The worktree's own `.git` directory, or the one a linked worktree's
 /// `.git` file names.
 fn git_dir(source: &Path) -> Option<GitDir> {
@@ -35,6 +40,14 @@ fn git_dir(source: &Path) -> Option<GitDir> {
         root: NativeSourceRoot::open(&path).ok()?,
         path,
     })
+}
+
+/// Linked worktree gitdir and optional commondir for head/branch watches.
+#[cfg(target_os = "linux")]
+pub(crate) fn linked_roots(source: &Path) -> Option<(NativeSourceRoot, Option<NativeSourceRoot>)> {
+    let git = git_dir(source)?;
+    let common = common_dir(&git);
+    (git.path != source.join(".git")).then_some((git.root, common))
 }
 
 /// Whether Git holds its index lock: a checkout or commit is under way, so
@@ -54,9 +67,7 @@ pub(crate) fn head(source: &Path) -> Option<Vec<u8>> {
     if !reference.starts_with("refs/") || reference.split('/').any(|part| part == "..") {
         return None;
     }
-    let common = read(&git.root, "commondir", MAX_FILE)
-        .and_then(|text| resolve(&git.path, text.trim()))
-        .and_then(|dir| NativeSourceRoot::open(&dir).ok());
+    let common = common_dir(&git);
     let stores = std::iter::once(&git.root).chain(common.as_ref());
     for store in stores {
         if let Some(text) = read(store, reference, MAX_FILE) {
@@ -78,21 +89,12 @@ pub(crate) fn head(source: &Path) -> Option<Vec<u8>> {
 /// A Git-written path, absolute or relative to `base`, with `.` and `..`
 /// resolved by name: custody opens only absolute, normalized roots.
 fn resolve(base: &Path, spelling: &str) -> Option<PathBuf> {
-    let path = Path::new(spelling);
-    let joined = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        base.join(path)
-    };
     let mut out = PathBuf::new();
-    for component in joined.components() {
+    for component in base.join(spelling).components() {
         match component {
             Component::CurDir => {}
-            Component::ParentDir => {
-                if !out.pop() {
-                    return None;
-                }
-            }
+            Component::ParentDir if !out.pop() => return None,
+            Component::ParentDir => {}
             other => out.push(other),
         }
     }

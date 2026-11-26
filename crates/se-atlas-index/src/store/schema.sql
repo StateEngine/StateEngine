@@ -115,7 +115,7 @@ CREATE TABLE activity (
 CREATE INDEX activity_recent ON activity(last_touch_unix_ms DESC);
 CREATE TABLE record_feed (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), last_event TEXT, last_oid BLOB,
- history_bound TEXT
+ history_bound TEXT, degraded INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE VIRTUAL TABLE record_fts USING fts5(title, kind, content='', contentless_delete=1);
 CREATE VIRTUAL TABLE record_text_fts USING fts5(body, content='', contentless_delete=1);

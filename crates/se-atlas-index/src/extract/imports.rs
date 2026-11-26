@@ -8,10 +8,15 @@ const MAX_IMPORTS: usize = 512;
 const MAX_STATEMENT: usize = 4096;
 const MAX_TREE_LEAVES: usize = 64;
 
-pub(crate) fn extract_imports(grammar: Grammar, text: &str, masked: &str) -> Vec<ImportSpec> {
+pub(crate) fn extract_imports(
+    grammar: Grammar,
+    text: &str,
+    masked: &str,
+) -> (Vec<ImportSpec>, bool) {
     let mut out = Vec::new();
+    let mut truncated = false;
     match grammar {
-        Grammar::Rust => rust_imports(masked, &mut out),
+        Grammar::Rust => rust_imports(masked, &mut out, &mut truncated),
         Grammar::TypeScript | Grammar::JavaScript => js_imports(text, masked, &mut out),
         Grammar::Python => python_imports(masked, &mut out),
         Grammar::Go => go_imports(text, masked, &mut out),
@@ -35,7 +40,7 @@ pub(crate) fn extract_imports(grammar: Grammar, text: &str, masked: &str) -> Vec
         }
     }
     merged.truncate(MAX_IMPORTS);
-    merged
+    (merged, truncated)
 }
 
 fn push(out: &mut Vec<ImportSpec>, spelling: String, kind: ImportKind, reexport: bool) {
@@ -61,7 +66,7 @@ fn word_sites<'t>(text: &'t str, word: &'t str) -> impl Iterator<Item = usize> +
         })
 }
 
-fn rust_imports(masked: &str, out: &mut Vec<ImportSpec>) {
+fn rust_imports(masked: &str, out: &mut Vec<ImportSpec>, truncated: &mut bool) {
     for at in word_sites(masked, "use") {
         let Some(reexport) = rust_item_prefix(&masked[..at]) else {
             continue;
@@ -71,7 +76,7 @@ fn rust_imports(masked: &str, out: &mut Vec<ImportSpec>) {
             continue;
         };
         let mut leaves = Vec::new();
-        expand_tree("", &normalize_tree(&rest[..end]), &mut leaves);
+        expand_tree("", &normalize_tree(&rest[..end]), 0, &mut leaves, truncated);
         for leaf in leaves {
             push(
                 out,
@@ -137,8 +142,17 @@ fn normalize_tree(tree: &str) -> String {
     out
 }
 
-fn expand_tree(prefix: &str, tree: &str, out: &mut Vec<String>) {
-    if out.len() >= MAX_TREE_LEAVES {
+const MAX_TREE_DEPTH: usize = 32;
+
+fn expand_tree(
+    prefix: &str,
+    tree: &str,
+    depth: usize,
+    out: &mut Vec<String>,
+    truncated: &mut bool,
+) {
+    if out.len() >= MAX_TREE_LEAVES || depth >= MAX_TREE_DEPTH {
+        *truncated = true;
         return;
     }
     let join = |head: &str| match (prefix.is_empty(), head.is_empty()) {
@@ -153,7 +167,7 @@ fn expand_tree(prefix: &str, tree: &str, out: &mut Vec<String>) {
                 match part {
                     "" => {}
                     "self" => out.push(base.clone()),
-                    part => expand_tree(&base, part, out),
+                    part => expand_tree(&base, part, depth + 1, out, truncated),
                 }
             }
         }
@@ -491,10 +505,7 @@ impl Resolver {
             "self" => (module_dir(from), &segments[1..], true),
             "super" => {
                 let supers = segments.iter().take_while(|s| **s == "super").count();
-                let mut dir = module_dir(from);
-                for _ in 0..supers {
-                    dir = parent_dir(&dir);
-                }
+                let dir = (0..supers).fold(module_dir(from), |d, _| parent_dir(&d));
                 (dir, &segments[supers..], true)
             }
             name => match self.crates.get(name) {
@@ -565,19 +576,18 @@ impl Resolver {
     }
 
     fn go(&self, spelling: &str) -> Option<String> {
-        let dir = self
-            .dirs
-            .keys()
-            .filter(|dir| {
-                let dir = dir.trim_end_matches('/');
-                !dir.is_empty() && (spelling == dir || spelling.ends_with(&format!("/{dir}")))
-            })
-            .max_by_key(|dir| dir.len())?;
-        self.dirs
-            .get(dir)?
-            .iter()
-            .find(|file| file.ends_with(".go") && !file.ends_with("_test.go"))
-            .cloned()
+        let mut suffix = spelling;
+        loop {
+            if !suffix.is_empty()
+                && let Some(entries) = self.dirs.get(&format!("{suffix}/"))
+            {
+                return entries
+                    .iter()
+                    .find(|f| f.ends_with(".go") && !f.ends_with("_test.go"))
+                    .cloned();
+            }
+            suffix = suffix.split_once('/')?.1;
+        }
     }
 
     fn include(&self, from: &str, spelling: &str) -> Option<String> {

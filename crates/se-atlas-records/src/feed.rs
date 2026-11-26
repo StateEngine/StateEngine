@@ -156,38 +156,44 @@ fn feed_edit_change<R: Snapshot>(
     mut resolve: PathResolver<'_>,
     changes: &mut Vec<RecordFeedChange>,
 ) -> Result<()> {
-    if let Some(tool) = super::captured::successful(event)? {
-        tool.validate_source(read, project)?;
-        let mut mentions = Vec::new();
-        if let Some(resolve) = &mut resolve {
-            for path in tool.paths() {
-                if let Some(path) = resolve(path)? {
-                    let target = MentionTarget::File(path);
-                    if !mentions.contains(&target) {
-                        mentions.push(target);
-                    }
+    let tool = match super::captured::successful(event)? {
+        super::captured::Captured::Match(tool) => tool,
+        super::captured::Captured::Skip => return Ok(()),
+        super::captured::Captured::Oversized(_) => {
+            changes.push(RecordFeedChange::Skipped(project.clone()));
+            return Ok(());
+        }
+    };
+    tool.validate_source(read, project)?;
+    let mut mentions = Vec::new();
+    if let Some(resolve) = &mut resolve {
+        for path in tool.paths() {
+            if let Some(path) = resolve(path)? {
+                let target = MentionTarget::File(path);
+                if !mentions.contains(&target) {
+                    mentions.push(target);
                 }
             }
         }
-        if !mentions.is_empty() {
-            let record = FeedRecord {
-                pointer: RecordPointer {
-                    key: tool.key()?,
-                    kind: RecordKind::Edit,
-                    source_event: through.clone(),
-                },
-                project: project.clone(),
-                actor: Some(tool.actor()),
-                occurred_unix_ms: receipt::event_time(event) / 1000,
-                title: tool.description(),
-                body: tool.description(),
-                body_truncated: false,
-                visibility: audience(event),
-                mentions: bound_mentions(mentions),
-            };
-            record.validate()?;
-            changes.push(RecordFeedChange::Upsert(record));
-        }
+    }
+    if !mentions.is_empty() {
+        let record = FeedRecord {
+            pointer: RecordPointer {
+                key: tool.key()?,
+                kind: RecordKind::Edit,
+                source_event: through.clone(),
+            },
+            project: project.clone(),
+            actor: Some(tool.actor()),
+            occurred_unix_ms: receipt::event_time(event) / 1000,
+            title: tool.description(),
+            body: tool.description(),
+            body_truncated: false,
+            visibility: audience(event),
+            mentions: bound_mentions(mentions),
+        };
+        record.validate()?;
+        changes.push(RecordFeedChange::Upsert(record));
     }
     Ok(())
 }

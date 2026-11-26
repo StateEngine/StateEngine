@@ -35,7 +35,7 @@ pub mod flags {
 }
 
 /// Raised whenever extraction changes its output, so stored indexes rebuild.
-pub const EXTRACTOR_VERSION: i64 = 3;
+pub const EXTRACTOR_VERSION: i64 = 4;
 const BINARY_SNIFF: usize = 8 * 1024;
 const MAX_LINE: usize = 4 * 1024;
 const MINIFIED_AVERAGE_LINE: usize = 300;
@@ -289,14 +289,14 @@ fn extract_text(path: &str, text: &str, grammar: Grammar) -> FullText {
     let masked = lex::mask_for(grammar, text);
     let (mut symbols, truncated) = outline::outline(grammar, text, &masked);
     outline::assign_keys(path, &mut symbols);
-    let imports = imports::extract_imports(grammar, text, &masked);
+    let (imports, imports_truncated) = imports::extract_imports(grammar, text, &masked);
     for symbol in &symbols {
         if !symbol.name.is_empty() {
             *tokens.entry(symbol.name.to_lowercase()).or_insert(0) += 1;
         }
     }
     let mut flags = covers::test_flags(path, &masked);
-    if truncated {
+    if truncated || imports_truncated {
         flags |= self::flags::TRUNCATED;
     }
     if generated(path, text) {

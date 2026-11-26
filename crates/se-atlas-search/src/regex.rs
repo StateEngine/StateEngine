@@ -46,8 +46,9 @@ pub(crate) fn search(
     if cold_build_publishing(conn)? {
         return Ok(Err(ScanReason::TrigramsPending));
     }
-    let Some(holders) = regex_files(snapshot, pieces)? else {
-        return Ok(Err(ScanReason::NoLiteralAnchor));
+    let holders = match regex_files(snapshot, pieces, budget)? {
+        Ok(holders) => holders,
+        Err(reason) => return Ok(Err(reason)),
     };
     let scope = Scope::new(request);
     let mut rows = FileRows::new(conn);
@@ -99,7 +100,8 @@ fn cold_build_publishing(conn: &Connection) -> Result<bool> {
 fn regex_files(
     snapshot: &ReadSnapshot<'_>,
     pieces: &[String],
-) -> Result<Option<HashMap<i64, u32>>> {
+    budget: &Budget,
+) -> Result<std::result::Result<HashMap<i64, u32>, ScanReason>> {
     let mut narrowing: Vec<(&str, Vec<i64>)> = Vec::new();
     for piece in pieces {
         if piece.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -112,11 +114,16 @@ fn regex_files(
         }
     }
     if narrowing.is_empty() {
-        return Ok(None);
+        return Ok(Err(ScanReason::NoLiteralAnchor));
     }
     narrowing.sort_by_key(|(_, ids)| ids.len());
     narrowing.truncate(PIECES_USED);
-    add_untrigrammed(snapshot, &mut narrowing)?;
+    if let Err(reason) = add_untrigrammed(snapshot, &mut narrowing, budget)? {
+        return Ok(Err(reason));
+    }
+    if narrowing.is_empty() {
+        return Ok(Err(ScanReason::NoLiteralAnchor));
+    }
     let mut holders: Option<HashMap<i64, u32>> = None;
     for (_, ids) in narrowing {
         let mut files: HashMap<i64, u32> = HashMap::new();
@@ -134,34 +141,77 @@ fn regex_files(
                 .collect(),
         });
     }
-    Ok(holders)
+    Ok(holders.ok_or(ScanReason::NoLiteralAnchor))
 }
 
+/// Maximum matching vocabulary rows returned per piece when supplementing
+/// trigram hits with untrigrammed tokens. A piece exceeding this cap is
+/// dropped individually so rarer pieces still narrow the query.
+const UNTRIGRAMMED_PIECE_CAP: usize = PIECE_TOKEN_CAP * 4;
+/// Keyset window of `vocab(id)` rows inspected per SQLite step so the shared
+/// deadline is checked frequently even when a rare piece matches few rows.
+const VOCAB_SCAN_CHUNK: i64 = 4_096;
+
 /// Add to each piece the indexed tokens holding it that the trigram index
-/// leaves out, found in one scan of the vocabulary.
-fn add_untrigrammed(snapshot: &ReadSnapshot<'_>, narrowing: &mut [(&str, Vec<i64>)]) -> Result<()> {
-    let tests: Vec<String> = (1..=narrowing.len())
-        .map(|n| format!("instr(tok, ?{n}) > 0"))
-        .collect();
-    let sql = format!("SELECT id, tok FROM vocab WHERE {}", tests.join(" OR "));
-    let mut select = snapshot.connection().prepare_cached(&sql)?;
-    let pieces: Vec<&str> = narrowing.iter().map(|(piece, _)| *piece).collect();
-    let rows = select.query_map(rusqlite::params_from_iter(pieces), |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-    })?;
-    for row in rows {
-        let (id, token) = row?;
-        // Trigram tokens were found already; the sets never overlap.
-        if tokens::is_gram_token(&token) {
-            continue;
-        }
-        for (piece, ids) in narrowing.iter_mut() {
-            if token.contains(*piece) {
+/// leaves out, scanning `vocab` in bounded primary-key chunks so the shared
+/// budget is enforced on large vocabularies. Drops only an overflowing piece
+/// rather than discarding all narrowing.
+fn add_untrigrammed(
+    snapshot: &ReadSnapshot<'_>,
+    narrowing: &mut Vec<(&str, Vec<i64>)>,
+    budget: &Budget,
+) -> Result<std::result::Result<(), ScanReason>> {
+    let conn = snapshot.connection();
+    let max_id: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) FROM vocab", [], |r| r.get(0))?;
+    let mut select = conn.prepare_cached(
+        "SELECT id, tok FROM vocab WHERE id > ?1 AND id <= ?2 AND instr(tok, ?3) > 0 LIMIT ?4",
+    )?;
+    let mut keep = Vec::with_capacity(narrowing.len());
+    for (piece, ids) in narrowing.iter_mut() {
+        let mut matched = 0usize;
+        let mut overflowed = false;
+        let mut cursor = 0i64;
+        while cursor < max_id {
+            if budget.expired() {
+                return Ok(Err(ScanReason::VocabBudgetExceeded));
+            }
+            let upper = cursor.saturating_add(VOCAB_SCAN_CHUNK).min(max_id);
+            let limit = (UNTRIGRAMMED_PIECE_CAP - matched + 1) as i64;
+            let rows = select
+                .query_map(rusqlite::params![cursor, upper, *piece, limit], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?;
+            for row in rows {
+                matched += 1;
+                if matched > UNTRIGRAMMED_PIECE_CAP {
+                    overflowed = true;
+                    break;
+                }
+                let (id, token) = row?;
+                // Trigram tokens were found already; the sets never overlap.
+                if tokens::is_gram_token(&token) {
+                    continue;
+                }
+                if ids.len() >= PIECE_TOKEN_CAP {
+                    overflowed = true;
+                    break;
+                }
                 ids.push(id);
             }
+            if overflowed {
+                break;
+            }
+            cursor = upper;
         }
+        keep.push(!overflowed);
     }
-    Ok(())
+    let mut idx = 0usize;
+    narrowing.retain(|_| {
+        let retained = keep[idx];
+        idx += 1;
+        retained
+    });
+    Ok(Ok(()))
 }
 
 /// Vocab ids of identifier tokens containing `piece`, or `None` when too

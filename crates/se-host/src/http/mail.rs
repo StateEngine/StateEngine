@@ -323,6 +323,13 @@ impl HostedRouter {
             .run_owned(deadline, move || context.mail_page(&secret))
             .await
     }
+    async fn mail_held(&self, session: SessionId, deadline: &Deadline) -> Result<bool> {
+        let bells = Arc::clone(&self.execution.mail_waits.bells);
+        self.execution
+            .blocking
+            .run_owned(deadline, move || bells.held(&session))
+            .await
+    }
     pub(crate) async fn next_mail(
         &self,
         secret: Arc<Secret>,
@@ -334,7 +341,7 @@ impl HostedRouter {
         let deadline = &bounded;
         let until = tokio::time::Instant::from_std(deadline.at() - Duration::from_secs(1));
         let first = self.mail_page(Arc::clone(&secret), deadline).await?;
-        if self.execution.mail_waits.bells.held(&first.session)? {
+        if self.mail_held(first.session.clone(), deadline).await? {
             return Err(SeError::invalid(
                 "Claude mail hold",
                 "explicit /stateengine-mail-resume; new mail or reconnect never clears a human hold",
@@ -355,7 +362,7 @@ impl HostedRouter {
                 ));
             }
             let page = self.mail_page(Arc::clone(&secret), deadline).await?;
-            if self.execution.mail_waits.bells.held(&page.session)? {
+            if self.mail_held(page.session.clone(), deadline).await? {
                 return Err(SeError::invalid(
                     "Claude mail hold",
                     "explicit /stateengine-mail-resume",

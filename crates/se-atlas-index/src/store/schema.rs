@@ -1,10 +1,10 @@
-//! The v5 schema, its version stamp, and connection settings.
+//! The v6 schema, its version stamp, and connection settings.
 use super::RebuildReason;
 use crate::{Result, extract::EXTRACTOR_VERSION};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// Stored in `PRAGMA user_version`; any other value rebuilds the store.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 const DDL: &str = include_str!("schema.sql");
 
 /// Who the store belongs to, written once into `meta`. Reopening with a

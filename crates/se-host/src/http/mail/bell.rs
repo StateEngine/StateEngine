@@ -342,7 +342,14 @@ async fn execute_bell_action(
     if (!is_hold && !resume) || (is_hold && action != serde_json::json!({"hold":reason})) {
         return Err(invalid("one explicit hold or resume transition"));
     }
-    set_hold(&auth.hold, is_hold, reason)?;
+    let (hold_path, reason) = (auth.hold.clone(), reason.map(str::to_owned));
+    router
+        .execution
+        .blocking
+        .run_owned(&deadline, move || {
+            set_hold(&hold_path, is_hold, reason.as_deref())
+        })
+        .await?;
     router.execution.mail_waits.interrupt(&auth.session)?;
     Ok(serde_json::json!({"held":is_hold}))
 }

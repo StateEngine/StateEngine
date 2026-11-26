@@ -101,7 +101,12 @@ impl Root {
 
     /// The last core event folded into the store's records.
     pub fn feed_cursor(&self) -> Result<Option<EventId>> {
-        crate::engine::feed_cursor(&self.shared)
+        Ok(crate::engine::feed_state(&self.shared)?.0)
+    }
+
+    /// Whether any unreadable record event was skipped in this store.
+    pub fn feed_degraded(&self) -> Result<bool> {
+        Ok(crate::engine::feed_state(&self.shared)?.1)
     }
 
     /// Whether `path` names a regular file in this worktree now, checked
