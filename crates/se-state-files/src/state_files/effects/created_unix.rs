@@ -404,9 +404,9 @@ fn check_private_dir_umask(path: &Path) -> Result<()> {
         .lines()
         .find_map(|line| line.strip_prefix("Umask:"))
         .and_then(|v| u32::from_str_radix(v.trim(), 8).ok());
-    if umask.is_some_and(|mask| mask & 0o700 != 0) {
+    if umask.is_some_and(|mask| mask & 0o400 != 0) {
         return Err(unsafe_path(
-            "process umask blocks private 0700 directory creation; set a umask allowing owner rwx",
+            "process umask strips owner read permission and blocks private 0700 directory creation; set a umask allowing owner read",
             path,
         ));
     }
@@ -425,20 +425,19 @@ fn create_staged_exclusive(
     let stage_name = random_name(path, ".se-stage-")?;
     let stage_path = dir.join(stage_name.to_string_lossy().as_ref());
     let mut created = Vec::new();
-    prepare_created_directory(&stage_path, &mut created)?;
-    if created.len() != 1 {
-        return Err(changed(
-            "exclusive private file staging directory was not created; preserved",
-            &stage_path,
-        ));
-    }
-    let stage_dir = super::leaf(parent_dir, &stage_name, &stage_path, true)?;
-    super::super::metadata(&stage_dir, &stage_path, true)?;
     let source = c"file";
     let source_path = stage_path.join("file");
     let mut created_file = false;
     let publish = (|| -> Result<()> {
-        // SAFETY: exclusive literal name inside our private 0700 stage_dir.
+        prepare_created_directory(&stage_path, &mut created)?;
+        let [custody] = created.as_slice() else {
+            return Err(changed(
+                "exclusive private file staging directory was not created; preserved",
+                &stage_path,
+            ));
+        };
+        let stage_dir = &custody.file;
+        // SAFETY: exclusive literal name inside our retained private 0700 stage_dir.
         let raw = unsafe {
             libc::openat(
                 stage_dir.as_raw_fd(),
@@ -481,15 +480,16 @@ fn create_staged_exclusive(
             .map_err(|e| io_error("sync user file parent after publish", dir, e))
     })();
     let cleanup = (|| -> Result<()> {
-        if created_file {
-            // SAFETY: private 0700 stage_dir owned by this call; drops nlink back to 1.
-            if unsafe { libc::unlinkat(stage_dir.as_raw_fd(), source.as_ptr(), 0) } < 0 {
+        if created_file && let Some(custody) = created.first() {
+            // SAFETY: retained private 0700 stage_dir owned by this call; drops nlink back to 1.
+            if unsafe { libc::unlinkat(custody.file.as_raw_fd(), source.as_ptr(), 0) } < 0 {
                 let err = io::Error::last_os_error();
                 if err.kind() != io::ErrorKind::NotFound {
                     return Err(io_error("remove staged user file", &source_path, err));
                 }
             }
-            stage_dir
+            custody
+                .file
                 .sync_all()
                 .map_err(|e| io_error("sync private file staging directory", &stage_path, e))?;
         }
@@ -526,9 +526,9 @@ fn create_staged_exclusive(
 
 /// Exclusively create a new regular file in a user-owned external directory
 /// without requiring `0700` on the parent directory. Validates the destination
-/// before creating, uses `O_TMPFILE` + `linkat` on Linux (falling back to a
-/// CSPRNG sibling temp file published by held fd via `/proc/self/fd/<fd>`),
-/// and uses `private_stage::create_exclusive` on macOS.
+/// before creating, uses `O_TMPFILE` + `linkat` on Linux (falling back to
+/// staging inside a private `0700` sibling directory and publishing by held fd
+/// via `/proc/self/fd/<fd>`), and uses `private_stage::create_exclusive` on macOS.
 pub(in crate::state_files) fn create_new_file(path: &Path, bytes: &[u8]) -> Result<()> {
     let dir = path
         .parent()
