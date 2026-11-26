@@ -86,6 +86,64 @@ impl CreatedDirectory {
         }
     }
 }
+#[cfg(not(target_os = "linux"))]
+fn handle_unreadable_staging_dir(
+    parent: &File,
+    staging: &CString,
+    stage_path: &Path,
+    path: &Path,
+    err: crate::state_files::StateFileError,
+) -> crate::state_files::StateFileError {
+    if !err
+        .source
+        .as_ref()
+        .is_some_and(|cause| cause.kind() == io::ErrorKind::PermissionDenied)
+    {
+        return err;
+    }
+    // SAFETY: zero-initialized stat struct populated by fstatat.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: held parent fd, NUL-terminated staging name, no symlink follow.
+    let stat_ok = unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            staging.as_ptr(),
+            &mut st,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } == 0;
+    // SAFETY: geteuid has no pointers or process-wide mutation.
+    let euid = unsafe { libc::geteuid() };
+    if !stat_ok
+        || (st.st_mode & libc::S_IFMT) != libc::S_IFDIR
+        || st.st_uid != euid
+        || (st.st_mode & 0o400) != 0
+    {
+        return err;
+    }
+    // SAFETY: empty mode-0000 staging dir just created by this call under a restrictive umask.
+    if unsafe { libc::unlinkat(parent.as_raw_fd(), staging.as_ptr(), libc::AT_REMOVEDIR) } < 0 {
+        let unlink_err = io::Error::last_os_error();
+        if unlink_err.kind() != io::ErrorKind::NotFound {
+            return io_error(
+                "remove unreadable directory staging",
+                stage_path,
+                unlink_err,
+            );
+        }
+    } else if let Err(sync_err) = parent.sync_all() {
+        return io_error(
+            "sync parent after removing unreadable staging",
+            path,
+            sync_err,
+        );
+    }
+    unsafe_path(
+        "process umask strips owner read permission and blocks private 0700 directory creation; set a umask allowing owner read",
+        path,
+    )
+}
+
 fn create_private_staging_dir(parent: &File, path: &Path) -> Result<(CString, File, (u64, u64))> {
     #[cfg(target_os = "linux")]
     check_private_dir_umask(path)?;
@@ -100,29 +158,21 @@ fn create_private_staging_dir(parent: &File, path: &Path) -> Result<(CString, Fi
         ));
     }
     let stage_path = path.with_file_name(std::ffi::OsStr::from_bytes(staging.to_bytes()));
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // O_EVTONLY opens the directory even under umask 0777 (mode 0000) so we
-        // can verify ownership, set 0700, and clear ACLs before opening readably.
-        let ev = owned(
-            // SAFETY: held parent fd, literal staging name, event-only directory no-follow.
-            unsafe {
-                libc::openat(
-                    parent.as_raw_fd(),
-                    staging.as_ptr(),
-                    libc::O_EVTONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                )
-            },
-            "open unpublished directory staging",
-            &stage_path,
-        )?;
-        let _ = id(&ev, &stage_path, true, true)?;
-        ev.set_permissions(std::fs::Permissions::from_mode(0o700))
-            .map_err(|error| io_error("protect created staging directory", &stage_path, error))?;
-        super::super::clear_created_acl(&ev, &stage_path, true)?;
-    }
-    let file = leaf(parent, &staging, &stage_path, true)?;
+    let file = match leaf(parent, &staging, &stage_path, true) {
+        Ok(file) => file,
+        #[cfg(not(target_os = "linux"))]
+        Err(err) => {
+            return Err(handle_unreadable_staging_dir(
+                parent,
+                &staging,
+                &stage_path,
+                path,
+                err,
+            ));
+        }
+        #[cfg(target_os = "linux")]
+        Err(err) => return Err(err),
+    };
     let identity = id(&file, &stage_path, true, true)?;
     // Creation mode is masked by the caller's umask. Publish only after an
     // explicit handle-based 0700 update and a native metadata readback.

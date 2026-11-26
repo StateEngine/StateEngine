@@ -1,8 +1,6 @@
 #![cfg(unix)]
 
-#[cfg(target_os = "linux")]
-use se_state_files::StateFileErrorCode;
-use se_state_files::{NativeDirectoryCreation, OwnedFile};
+use se_state_files::{NativeDirectoryCreation, OwnedFile, StateFileErrorCode};
 use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
@@ -156,25 +154,16 @@ fn private_dir_under_umask_0777_leaves_zero_residue() -> Result<(), Box<dyn std:
 
     let private_home = root.path().join("private-home");
     let mut creation = NativeDirectoryCreation::begin();
-    #[cfg(target_os = "linux")]
-    {
-        let err = creation
-            .prepare(&private_home)
-            .err()
-            .ok_or("expected Linux private dir creation to refuse under umask 0777")?;
-        assert_eq!(err.code, StateFileErrorCode::LocationUnsafe);
-        assert!(
-            err.to_string().contains("umask"),
-            "expected actionable umask refusal, got: {err}"
-        );
-        assert!(!private_home.exists());
-    }
-    #[cfg(target_os = "macos")]
-    {
-        creation.prepare(&private_home)?;
-        let dir_mode = std::fs::metadata(&private_home)?.permissions().mode() & 0o777;
-        assert_eq!(dir_mode, 0o700);
-    }
+    let err = creation
+        .prepare(&private_home)
+        .err()
+        .ok_or("expected private dir creation to refuse under umask 0777")?;
+    assert_eq!(err.code, StateFileErrorCode::LocationUnsafe);
+    assert!(
+        err.to_string().contains("umask"),
+        "expected actionable umask refusal, got: {err}"
+    );
+    assert!(!private_home.exists());
     assert_no_stage_residue(root.path())?;
     Ok(())
 }
@@ -217,11 +206,11 @@ fn create_new_under_umask_0777_matches_fs_support() -> Result<(), Box<dyn std::e
     {
         let _mask = UmaskGuard::set(0o777);
         let file_path = root.path().join("settings.json");
-        OwnedFile::create_new(&file_path, b"{\"ok\":true}\n")?;
-        let mode = std::fs::metadata(&file_path)?.permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
-        let mut opened = OwnedFile::open(&file_path)?.ok_or("created file missing on readback")?;
-        assert_eq!(opened.read(4096)?, b"{\"ok\":true}\n");
+        let err = OwnedFile::create_new(&file_path, b"{\"ok\":true}\n")
+            .err()
+            .ok_or("expected non-Linux private staging to refuse under umask 0777")?;
+        assert_eq!(err.code, StateFileErrorCode::LocationUnsafe);
+        assert!(!file_path.exists());
     }
     assert_no_stage_residue(root.path())?;
     Ok(())

@@ -50,7 +50,7 @@
   "se-harness": 18918,
   "se-tool-capture": 1083,
   "se-remote-host": 4500,
-  "se-state-files": 10574
+  "se-state-files": 10624
  },
  "directories": {
   "crates/se-host/src/runtime": 20253,
@@ -59,14 +59,14 @@
   "crates/se-harness/src/harness": 12242,
   "crates/se-host/src/remote": 6921,
   "crates/se/src/route": 11650,
-  "crates/se-state-files/src/state_files": 9755,
+  "crates/se-state-files/src/state_files": 9805,
   "crates/se-native-proc/src/platform": 7262,
   "crates/se-atlas-index/src/extract": 3950,
   "crates/se-atlas-index/src/store": 2655,
   "crates/se-host/src/runtime/embedded": 5046,
   "crates/se-store/src/read": 5968,
   "crates/se-store/src/apply": 5256,
-  "crates/se-state-files/src/state_files/effects": 5260,
+  "crates/se-state-files/src/state_files/effects": 5310,
   "crates/se-host/src/runtime/capture": 4001,
   "crates/se-harness/src/harness/codex_rpc": 3669,
   "crates/se/src/runtime": 3335,
