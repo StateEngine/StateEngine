@@ -40,6 +40,20 @@ impl OwnedFile {
     pub fn open(path: &Path) -> Result<Option<Self>> {
         os::Pin::open(path).map(|pin| pin.map(Self))
     }
+    /// Ensure a user-owned external directory (such as a provider config home)
+    /// exists without requiring StateEngine's private `0700`/owner-only DACL
+    /// policy on existing directories. Still refuses symlinks/reparse points
+    /// and world-writable final directories.
+    pub fn ensure_parent_directory(directory: &Path) -> Result<()> {
+        os::ensure_user_directory(directory)
+    }
+    /// Exclusively create a new user-owned file in an external directory
+    /// (ensuring the parent exists first) without requiring `0700`/private DACL
+    /// on the provider-owned directory. Refuses to overwrite an existing file
+    /// or follow a symlink/reparse point.
+    pub fn create_new(path: &Path, bytes: &[u8]) -> Result<()> {
+        os::create_new_file(path, bytes)
+    }
     /// Acquire the admitted record-local installer hold before reading bytes.
     /// A separate account-wide claim is required for pattern-based temp cleanup.
     pub fn claim_installation_record(&mut self) -> Result<()> {

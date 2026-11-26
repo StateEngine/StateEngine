@@ -8,14 +8,20 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE},
     Storage::FileSystem::{
-        CreateFileW, FILE_NAME_OPENED, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        GetFinalPathNameByHandleW, OPEN_EXISTING, ReOpenFile, VOLUME_NAME_GUID,
+        CreateFileW, FILE_BASIC_INFO, FILE_NAME_OPENED, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FileBasicInfo, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
+        OPEN_EXISTING, ReOpenFile, VOLUME_NAME_GUID,
     },
     System::{
         IO::DeviceIoControl,
         Ioctl::{FSCTL_QUERY_USN_JOURNAL, FSCTL_READ_FILE_USN_DATA, USN_JOURNAL_DATA_V0},
     },
 };
+
+/// Distinct tag for NTFS `FILE_BASIC_INFO.ChangeTime` fallback (non-admin
+/// standard users cannot open `\\?\Volume{guid}` for USN journal queries).
+/// Distinct from earlier reserved tags `0` and `1`.
+const CHANGE_TIME_TAG: u64 = 2;
 
 #[repr(align(8))]
 struct RecordBuffer([u8; 4096]);
@@ -42,11 +48,34 @@ pub(super) fn pin(file: &File) -> Option<File> {
 }
 
 /// Qualify every key capture, including hint publication outside hash_image.
-/// A full hash performed while a writer lives must not publish that writer's
-/// coalesced revision as reusable. Zero and unsupported journals also miss.
+/// Prefers an NTFS USN journal revision when the caller can query the volume;
+/// falls back to `FILE_BASIC_INFO.ChangeTime` (NTFS kernel change timestamp)
+/// for standard non-admin users who cannot open `\\?\Volume{guid}`.
 pub(super) fn revision(file: &File) -> Option<(i64, u64)> {
     let pin = pin(file)?;
-    let volume = volume(&pin)?;
+    if let Some(usn) = usn_revision(&pin) {
+        return Some(usn);
+    }
+    change_time(&pin).map(|ct| (ct, CHANGE_TIME_TAG))
+}
+
+fn change_time(file: &File) -> Option<i64> {
+    let mut info = FILE_BASIC_INFO::default();
+    // SAFETY: retained file handle and writable aligned FILE_BASIC_INFO buffer
+    // with its exact byte length. Readable by any non-admin user with read/attr access.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileBasicInfo,
+            (&mut info as *mut FILE_BASIC_INFO).cast(),
+            size_of::<FILE_BASIC_INFO>() as u32,
+        )
+    };
+    (ok != 0 && info.ChangeTime > 0).then_some(info.ChangeTime)
+}
+
+fn usn_revision(pin: &File) -> Option<(i64, u64)> {
+    let volume = volume(pin)?;
     let before = journal(&volume)?;
     let mut output = RecordBuffer([0; 4096]);
     let mut returned = 0;

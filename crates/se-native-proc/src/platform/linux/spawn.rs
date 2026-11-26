@@ -149,8 +149,9 @@ unsafe fn close_unkept_fds(kept: &[i32], fd_limit: i32, error_fd: i32) {
                 continue;
             }
             if libc::syscall(libc::SYS_close_range, low, high, 0u32) < 0 {
-                if *libc::__errno_location() != libc::ENOSYS {
-                    die_in_child(error_fd, *libc::__errno_location());
+                let err = *libc::__errno_location();
+                if err != libc::ENOSYS && err != libc::EPERM && err != libc::EINVAL {
+                    die_in_child(error_fd, err);
                 }
                 for descriptor in 3..fd_limit {
                     if !kept.contains(&descriptor) {

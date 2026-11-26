@@ -42,9 +42,9 @@ impl ImageKey {
         }
     }
 }
-// Unqualified keys may live only beside the handle that excluded writers
-// before their full hash. They can never be populated by persisted hints.
-type Cache = VecDeque<(ImageKey, Sha256, Option<File>)>;
+// Never retain open file handles in the global cache; on Windows a pinned
+// handle with write-sharing denied blocks upgrades, renames, and uninstalls.
+type Cache = VecDeque<(ImageKey, Sha256)>;
 static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
 pub(super) fn key(file: &File, metadata: &std::fs::Metadata) -> IpcNativeResult<ImageKey> {
     #[cfg(unix)]
@@ -137,27 +137,25 @@ pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeRe
     }
     let (read, digest) = read_content(&mut file, bound)?;
     verify_unchanged(&file, &before, read, &stamp, bound)?;
-    #[cfg(windows)]
-    let held = (guarded && !stamp.reusable()).then_some(file);
-    #[cfg(not(windows))]
-    let held = None;
-    if reusable {
-        remember_held(stamp, digest, held)?;
+    if reusable && stamp.reusable() {
+        remember(stamp, digest)?;
     }
     Ok(digest)
 }
-/// A reusable key's digest, or an unqualified key's digest whose writer-excluding
-/// pin is still retained beside it.
+/// A reusable key's cached digest.
 fn cached(stamp: &ImageKey) -> IpcNativeResult<Option<Sha256>> {
+    if !stamp.reusable() {
+        return Ok(None);
+    }
     let cache = cache().lock().map_err(|_| {
         refuse(
             IpcNativeErrorCode::Unreadable,
             "executable cache poisoned; restart the host",
         )
     })?;
-    Ok(cache.iter().find_map(|(stored, digest, held)| {
-        (stored == stamp && (stamp.reusable() || held.is_some())).then_some(*digest)
-    }))
+    Ok(cache
+        .iter()
+        .find_map(|(stored, digest)| (stored == stamp).then_some(*digest)))
 }
 /// Stream the pinned file under the original deadline and byte cap.
 fn read_content(file: &mut File, bound: &IpcIoBound) -> IpcNativeResult<(u64, Sha256)> {
@@ -225,17 +223,10 @@ fn verify_unchanged(
     Ok(())
 }
 
-/// Populate only an absent key. An already-observed process-local proof wins
-/// over a persisted hint, including a contradictory protected cache entry.
+/// Populate only an absent reusable key. An already-observed process-local
+/// proof wins over a persisted hint, including a contradictory cache entry.
 pub(super) fn remember(stamp: ImageKey, digest: Sha256) -> IpcNativeResult<()> {
-    remember_held(stamp, digest, None)
-}
-pub(super) fn remember_held(
-    stamp: ImageKey,
-    digest: Sha256,
-    held: Option<File>,
-) -> IpcNativeResult<()> {
-    if !stamp.reusable() && held.is_none() {
+    if !stamp.reusable() {
         return Ok(());
     }
     let mut cache = cache().lock().map_err(|_| {
@@ -244,12 +235,12 @@ pub(super) fn remember_held(
             "executable cache poisoned; restart the host",
         )
     })?;
-    if cache.iter().any(|(stored, _, _)| *stored == stamp) {
+    if cache.iter().any(|(stored, _)| *stored == stamp) {
         return Ok(());
     }
     if cache.len() == 64 {
         cache.pop_front();
     }
-    cache.push_back((stamp, digest, held));
+    cache.push_back((stamp, digest));
     Ok(())
 }

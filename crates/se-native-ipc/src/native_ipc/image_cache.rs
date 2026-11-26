@@ -259,20 +259,19 @@ fn restore_from_files(
     if entry.digest != expected {
         return Ok(ImageCacheRead::Stale);
     };
-    // The kernel binds both running images to this held file. Running image
-    // sections exclude in-place content writes since the host published its
-    // digest. The stored native key must still match the held volume/file ID,
-    // size, write time and any journal revision; a pathname is never a key.
+    // Verify running image continuity without retaining an open handle in the
+    // global cache; reusable keys (USN or NTFS ChangeTime) populate the cache.
     #[cfg(windows)]
     if !entry.image.reusable()
         && let Some(file) = peer.and_then(super::windows_peer::shared_mapped_image)
         && let Ok(metadata) = file.metadata()
-        && key(&file, &metadata).ok().as_ref() == Some(&entry.image)
+        && let Ok(live_key) = key(&file, &metadata)
+        && live_key.reusable()
     {
         bound
             .remaining()
             .map_err(|e| error("finish executable cache restore", e))?;
-        super::image::remember_held(entry.image, entry.digest, Some(file))?;
+        remember(live_key, entry.digest)?;
         return Ok(ImageCacheRead::Current);
     }
     #[cfg(not(windows))]

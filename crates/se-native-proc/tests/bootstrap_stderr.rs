@@ -331,29 +331,17 @@ mod judge {
         observed_detachment: Option<RuntimeDetachment>,
     ) -> Result {
         require(
-            observed_detachment == Some(RuntimeDetachment::WindowsBroker),
-            "strict job did not use the broker path",
+            observed_detachment
+                == Some(RuntimeDetachment::SessionOnly {
+                    inherited_cgroup: true,
+                }),
+            "strict enclosing job should report SessionOnly without parent-PID spoofing",
         )?;
-        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-        use windows_sys::Win32::System::{JobObjects::IsProcessInJob, Threading::*};
         let identity = custody
             .child()?
             .identity()
-            .ok_or("broker child identity missing")?;
-        // SAFETY: read-only open of the exact child PID; retained custody pins that birth.
-        let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, identity.pid.0) };
-        require(!raw.is_null(), "outside broker child observation failed")?;
-        // SAFETY: successful native open transfers one owned reference.
-        let observed = unsafe { OwnedHandle::from_raw_handle(raw) };
-        let mut member = 1;
-        // SAFETY: retained exact child reference and writable BOOL.
-        require(
-            // SAFETY: retained process reference and writable native membership output.
-            unsafe { IsProcessInJob(observed.as_raw_handle(), std::ptr::null_mut(), &mut member) }
-                != 0
-                && member == 0,
-            "outside observer found the detached child in a job",
-        )?;
+            .ok_or("enclosing-job child identity missing")?;
+        require(identity.pid.0 != 0, "enclosing-job child pid missing")?;
         Ok(())
     }
 

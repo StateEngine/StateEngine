@@ -1,8 +1,8 @@
 use super::{id, parent};
 use crate::state_files::{
-    Result, StateFileErrorCode,
+    Result,
     effects::{absent, changed},
-    failure, io_error,
+    io_error,
     permissions::{PermissionKind, PermissionProtection, PermissionSnapshot},
     unsafe_path,
 };
@@ -155,15 +155,46 @@ impl Pin {
             let error = io::Error::last_os_error();
             if matches!(
                 error.raw_os_error(),
-                Some(libc::ENOSYS) | Some(libc::EINVAL) | Some(libc::EOPNOTSUPP)
+                Some(libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP | libc::EPERM)
             ) {
-                return Err(failure(
-                    StateFileErrorCode::Unsupported,
-                    "metadata-only repair requires Linux 6.6 fchmodat2 AT_EMPTY_PATH; manually tighten this named path and rerun doctor",
-                    &self.path,
-                ));
+                return self.tighten_via_fchmod(expected.kind, target);
             }
             return Err(io_error("tighten pinned mode", &self.path, error));
+        }
+        Ok(())
+    }
+
+    /// Fallback for Linux < 6.6 (or seccomp profiles blocking `fchmodat2`):
+    /// reopen the exact leaf beneath the pinned parent without following links,
+    /// verify it matches the pinned inode, and tighten with `fchmod`.
+    fn tighten_via_fchmod(&self, kind: PermissionKind, target: u32) -> Result<()> {
+        let mut flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        if kind == PermissionKind::Directory {
+            flags |= libc::O_DIRECTORY;
+        } else {
+            flags |= libc::O_NONBLOCK;
+        }
+        // SAFETY: held parent directory fd and literal NUL-terminated leaf name.
+        let fd = unsafe { libc::openat(self.parent.as_raw_fd(), self.name.as_ptr(), flags) };
+        if fd < 0 {
+            return Err(io_error(
+                "reopen pinned path for fchmod fallback",
+                &self.path,
+                io::Error::last_os_error(),
+            ));
+        }
+        // SAFETY: successful openat transferred unique ownership of `fd`.
+        let reopened = unsafe { File::from_raw_fd(fd) };
+        if snapshot(&reopened, &self.path)?.object != self.object {
+            return Err(changed("permission repair path changed", &self.path));
+        }
+        // SAFETY: verified open descriptor matching the pinned inode and tighten-only mode.
+        if unsafe { libc::fchmod(reopened.as_raw_fd(), target as libc::mode_t) } < 0 {
+            return Err(io_error(
+                "tighten pinned mode via fchmod",
+                &self.path,
+                io::Error::last_os_error(),
+            ));
         }
         Ok(())
     }

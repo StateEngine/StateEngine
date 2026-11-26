@@ -310,6 +310,100 @@ impl Pin {
 #[path = "file_mutation_unix.rs"]
 mod file_mutation;
 
+/// Ensure a user-owned external directory exists without requiring `0700` on
+/// pre-existing provider-owned directories; refuses symlinks and world-writable
+/// final directories.
+pub(in crate::state_files) fn ensure_user_directory(path: &Path) -> Result<()> {
+    let parts = components(path)?;
+    let mut current = owned(
+        // SAFETY: literal root pathname with O_RDONLY | O_DIRECTORY | O_CLOEXEC.
+        unsafe {
+            libc::open(
+                c"/".as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        },
+        "open filesystem root",
+        Path::new("/"),
+    )?;
+    let mut traversed = PathBuf::from("/");
+    for (index, part) in parts.iter().enumerate() {
+        traversed.push(part);
+        let leaf = name(part, &traversed)?;
+        let final_component = index + 1 == parts.len();
+        let mut flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
+        if final_component {
+            flags |= libc::O_NOFOLLOW;
+        }
+        // SAFETY: held parent directory fd and literal NUL-terminated component.
+        let raw = unsafe { libc::openat(current.as_raw_fd(), leaf.as_ptr(), flags) };
+        let next = if raw < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() != io::ErrorKind::NotFound {
+                return Err(io_error("open user directory component", &traversed, err));
+            }
+            // SAFETY: held parent directory fd and literal NUL-terminated component.
+            if unsafe { libc::mkdirat(current.as_raw_fd(), leaf.as_ptr(), 0o755) } < 0 {
+                let mk_err = io::Error::last_os_error();
+                if mk_err.kind() != io::ErrorKind::AlreadyExists {
+                    return Err(io_error("create user directory", &traversed, mk_err));
+                }
+            }
+            owned(
+                // SAFETY: reopen newly created component without following symlinks.
+                unsafe {
+                    libc::openat(
+                        current.as_raw_fd(),
+                        leaf.as_ptr(),
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    )
+                },
+                "open created user directory",
+                &traversed,
+            )?
+        } else {
+            // SAFETY: successful openat transferred unique ownership of `raw`.
+            owned(raw, "open user directory component", &traversed)?
+        };
+        trusted_directory(&next, &traversed, final_component)?;
+        current = next;
+    }
+    Ok(())
+}
+
+/// Exclusively create a new regular file in a user-owned external directory
+/// without requiring `0700` on the parent directory.
+pub(in crate::state_files) fn create_new_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let dir = path
+        .parent()
+        .ok_or_else(|| unsafe_path("cannot create file at filesystem root", path))?;
+    ensure_user_directory(dir)?;
+    let (parent_dir, leaf) = parent(path)?;
+    let mut file = owned(
+        // SAFETY: held parent directory fd and literal NUL-terminated leaf name;
+        // O_CREAT | O_EXCL | O_NOFOLLOW refuses existing files and symlinks.
+        unsafe {
+            libc::openat(
+                parent_dir.as_raw_fd(),
+                leaf.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o600,
+            )
+        },
+        "create user file",
+        path,
+    )?;
+    file.write_all(bytes)
+        .map_err(|e| io_error("write new user file", path, e))?;
+    file.sync_all()
+        .map_err(|e| io_error("sync new user file", path, e))?;
+    parent_dir
+        .sync_all()
+        .map_err(|e| io_error("sync user file parent", dir, e))?;
+    Ok(())
+}
+
 pub(in crate::state_files) fn remove_empty_directory(path: &Path) -> Result<DirectoryRemoval> {
     let (parent_pin, name) = match parent(path) {
         Ok(v) => v,

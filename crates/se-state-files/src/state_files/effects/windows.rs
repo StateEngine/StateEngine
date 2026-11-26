@@ -652,3 +652,77 @@ pub(in crate::state_files) use created::{
     CreatedDirectory, prepare_created_directory, validate_creation_target,
 };
 pub use created::{create_directory_at, dispose_created_directory};
+
+/// Ensure a user-owned external directory exists without requiring StateEngine's
+/// strict private DACL on pre-existing provider-owned directories. Still refuses
+/// reparse points at the final directory.
+pub(in crate::state_files) fn ensure_user_directory(path: &Path) -> Result<()> {
+    wide(path)?;
+    let mut prefix = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(p) => {
+                prefix.push(p.as_os_str());
+                continue;
+            }
+            Component::RootDir => {
+                prefix.push(component.as_os_str());
+                continue;
+            }
+            Component::Normal(n) => prefix.push(n),
+            _ => return Err(unsafe_path("normalized user directory required", path)),
+        }
+        let target = wide(&prefix)?;
+        // SAFETY: validated NUL-terminated UTF-16 path; null security descriptor
+        // inherits the parent user directory's normal DACL.
+        if unsafe { CreateDirectoryW(target.as_ptr(), ptr::null()) } == 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() != io::ErrorKind::AlreadyExists {
+                return Err(io_error("create user directory", &prefix, err));
+            }
+        }
+    }
+    let _ = Parent::open_with_access(path, true)?;
+    Ok(())
+}
+
+/// Exclusively create a new regular file in a user-owned external directory
+/// using default inherited user security, refusing reparse points or overwrite.
+pub(in crate::state_files) fn create_new_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| unsafe_path("user file parent missing", path))?;
+    ensure_user_directory(dir)?;
+    let parent = Parent::open_with_access(dir, true)?;
+    let leaf = path
+        .file_name()
+        .ok_or_else(|| unsafe_path("user file name missing", path))?;
+    literal_leaf(leaf, path)?;
+    let physical = parent.path.join(leaf);
+    let target = wide(&physical)?;
+    // SAFETY: validated NUL-terminated UTF-16 path, CREATE_NEW refuses overwrite,
+    // FILE_FLAG_OPEN_REPARSE_POINT refuses reparse traversal, null SD inherits
+    // the provider directory's normal user DACL.
+    let raw = unsafe {
+        CreateFileW(
+            target.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_DELETE,
+            ptr::null(),
+            CREATE_NEW,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_ATTRIBUTE_NORMAL,
+            ptr::null_mut(),
+        )
+    };
+    if raw.is_null() || raw == INVALID_HANDLE_VALUE {
+        return Err(last("create user file", path));
+    }
+    // SAFETY: successful CreateFileW transferred unique ownership of `raw`.
+    let mut file = unsafe { File::from_raw_handle(raw) };
+    file.write_all(bytes)
+        .map_err(|e| io_error("write new user file", path, e))?;
+    file.sync_all()
+        .map_err(|e| io_error("sync new user file", path, e))?;
+    parent.sync(path)?;
+    Ok(())
+}
