@@ -106,24 +106,33 @@ pub fn install(
         }
         None => false,
     };
-    let installed = super::settings::missing(&path, &plan.required)?.is_empty();
-    if !registration.installed {
+    let absent = super::settings::missing(&path, &plan.required)?;
+    let installed = absent.is_empty();
+    let resumed = !registration.installed;
+    if resumed {
         // An earlier install stopped before it finished. Its hooks may have
         // landed and been removed since, so they are never written again here.
         if !installed {
+            let entries: Vec<_> = absent
+                .iter()
+                .map(|(event, entry)| format!("{event}: {entry}"))
+                .collect();
             return Err(SeError::invalid(
                 "provider adoption installation",
                 &format!(
-                    "the hooks an unfinished earlier install recorded in {}; they may have been removed there, so they were not added again. Run se uninstall, then this command, to install them",
-                    path.display()
+                    "these hooks an unfinished earlier install recorded in {}; they may have been removed there, so they were not added again. Add them back under hooks in that file, then run this command again: {}",
+                    path.display(),
+                    entries.join("; ")
                 ),
             ));
         }
-        registration.installed = true;
-        super::publish_for(home, kind, &registration)?;
     }
     let discovery = if installed {
-        adapter.discover(home, &mut registration, root)
+        let discovery = super::Discovery {
+            required: &plan.required,
+            resumed,
+        };
+        adapter.discover(home, &mut registration, root, discovery)
     } else {
         Ok(())
     };
@@ -134,6 +143,12 @@ pub fn install(
     }
     // A persisted refusal is retryable evidence, never a successful install.
     discovery?;
+    if resumed {
+        // Finished only once discovery confirmed it, so a refused retry stays
+        // a resumed one and still writes nothing an earlier run journaled.
+        registration.installed = true;
+        super::publish_for(home, kind, &registration)?;
+    }
     let active = adapter.active(home, project)?;
     let integration = integration(kind, &path, changed, installed, active)?;
     let next = NextStep {

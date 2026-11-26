@@ -38,10 +38,17 @@ fn listed(registration: &Registration, root: &Path) -> Result<(Vec<Value>, [u8; 
     }
     Ok((rows, before))
 }
-fn select(registration: &Registration, rows: &[Value]) -> Result<Vec<(String, String)>> {
+/// The discovery key and hash of each installed hook Codex lists. A required
+/// lifecycle hook must be listed and enabled; an optional one, such as the
+/// Atlas hook, is skipped when the owner has removed it.
+fn select(
+    registration: &Registration,
+    rows: &[Value],
+    required: &[(String, Value)],
+) -> Result<Vec<(String, String)>> {
     let path = registration.settings.to_local()?;
     let mut selected = Vec::new();
-    for (event, group) in &registration.hooks {
+    for entry @ (event, group) in &registration.hooks {
         let event = format!("{}{}", event[..1].to_ascii_lowercase(), &event[1..]);
         let handler = group
             .get("hooks")
@@ -63,6 +70,9 @@ fn select(registration: &Registration, rows: &[Value]) -> Result<Vec<(String, St
                     && row.get("command") == command
             })
             .collect::<Vec<_>>();
+        if matches.is_empty() && !required.contains(entry) {
+            continue;
+        }
         if matches.len() != 1 || matches[0].get("enabled").and_then(Value::as_bool) != Some(true) {
             return Err(invalid(
                 "Codex did not discover and enable the exact StateEngine hooks; capture and mail are unconfirmed",
@@ -79,7 +89,12 @@ fn select(registration: &Registration, rows: &[Value]) -> Result<Vec<(String, St
     }
     Ok(selected)
 }
-pub fn install(home: &Path, registration: &mut Registration, root: &Path) -> Result<()> {
+pub(crate) fn install(
+    home: &Path,
+    registration: &mut Registration,
+    root: &Path,
+    discovery: crate::Discovery<'_>,
+) -> Result<()> {
     if registration.discovery == Some(crate::discovery_stamp(registration)?)
         && registration
             .project(root)?
@@ -87,8 +102,18 @@ pub fn install(home: &Path, registration: &mut Registration, root: &Path) -> Res
     {
         return Ok(());
     }
-    let discovered = select(registration, &listed(registration, root)?.0)?;
-    let missing = crate::settings::missing_trust(&registration.settings.to_local()?, &discovered)?;
+    let discovered = select(
+        registration,
+        &listed(registration, root)?.0,
+        discovery.required,
+    )?;
+    let mut missing =
+        crate::settings::missing_trust(&registration.settings.to_local()?, &discovered)?;
+    if discovery.resumed {
+        // A journaled trust entry may have been written and then removed by
+        // the owner; only entries no run ever journaled are written now.
+        missing.retain(|entry| !registration.layout.trust.contains(entry));
+    }
     // Journal before writing trust, so an interrupted installation remains
     // reversible. A pre-existing owner decision is never replaced.
     for entry in &missing {
@@ -97,9 +122,24 @@ pub fn install(home: &Path, registration: &mut Registration, root: &Path) -> Res
         }
     }
     crate::publish_for(home, Kind::Codex, registration)?;
-    crate::settings::trust(&registration.settings.to_local()?, &discovered)?;
+    let settings = registration.settings.to_local()?;
+    crate::settings::trust(&settings, &missing)?;
+    if discovery.resumed {
+        let untrusted = crate::settings::missing_trust(&settings, &discovered)?;
+        if !untrusted.is_empty() {
+            let entries: Vec<_> = untrusted
+                .iter()
+                .map(|(key, hash)| format!("[hooks.state.{key:?}] trusted_hash = {hash:?}"))
+                .collect();
+            return Err(invalid(&format!(
+                "trust for these StateEngine hooks that an unfinished earlier install recorded in {}; it may have been removed there, so it was not added again. Add it back in that file, then run this command again: {}",
+                settings.display(),
+                entries.join("; ")
+            )));
+        }
+    }
     let (rows, stamp) = listed(registration, root)?;
-    if select(registration, &rows)? != discovered
+    if select(registration, &rows, discovery.required)? != discovered
         || discovered.iter().any(|(key, hash)| {
             !rows.iter().any(|r| {
                 r.get("key").and_then(Value::as_str) == Some(key)

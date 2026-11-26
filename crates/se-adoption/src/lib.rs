@@ -78,7 +78,13 @@ pub(crate) trait Adapter: Send + Sync {
         home: &Path,
         atlas: bool,
     ) -> Result<Vec<(String, serde_json::Value)>>;
-    fn discover(&self, _home: &Path, _saved: &mut Registration, _root: &Path) -> Result<()> {
+    fn discover(
+        &self,
+        _home: &Path,
+        _saved: &mut Registration,
+        _root: &Path,
+        _discovery: Discovery<'_>,
+    ) -> Result<()> {
         Ok(())
     }
     fn active(&self, _home: &Path, _project: &ProjectId) -> Result<bool> {
@@ -87,6 +93,16 @@ pub(crate) trait Adapter: Send + Sync {
     fn notice(&self) -> Option<String> {
         None
     }
+}
+/// What provider discovery must confirm for one installation run.
+#[cfg(feature = "listener")]
+#[derive(Clone, Copy)]
+pub(crate) struct Discovery<'a> {
+    /// The lifecycle hooks capture and mail need; any other entry is optional.
+    pub required: &'a [(String, serde_json::Value)],
+    /// This run finishes an install that stopped part-way, so nothing an
+    /// earlier run journaled may be written again.
+    pub resumed: bool,
 }
 #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
 pub(crate) struct ProviderSetup {
@@ -163,8 +179,14 @@ mod codex_adapter {
         ) -> Result<Vec<(String, serde_json::Value)>> {
             codex::hooks(executable, home, atlas)
         }
-        fn discover(&self, home: &Path, saved: &mut Registration, root: &Path) -> Result<()> {
-            codex::trust(home, saved, root)
+        fn discover(
+            &self,
+            home: &Path,
+            saved: &mut Registration,
+            root: &Path,
+            discovery: Discovery<'_>,
+        ) -> Result<()> {
+            codex::trust(home, saved, root, discovery)
         }
         fn active(&self, home: &Path, project: &ProjectId) -> Result<bool> {
             status::witnessed(home, Kind::Codex, project)
