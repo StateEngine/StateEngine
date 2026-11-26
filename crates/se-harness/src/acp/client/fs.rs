@@ -181,8 +181,11 @@ fn map_write_error(
     error: se_proc::WorkspaceWriteError,
 ) -> Refusal {
     match error {
+        se_proc::WorkspaceWriteError::Restored(detail) => Refusal::failed(format!(
+            "{path} was not updated because a conflict occurred and the prior state was restored ({detail}); re-read the file before retrying"
+        )),
         se_proc::WorkspaceWriteError::PublishedUncertain(detail) => Refusal::failed(format!(
-            "{path} was written, but final durability or workspace verification failed ({detail}); inspect the file on disk before retrying"
+            "{path} had an unresolved write outcome ({detail}); inspect the file on disk before retrying"
         )),
         se_proc::WorkspaceWriteError::BeforePublish(refusal) => {
             if let Err(root_err) = check_workspace(workspace) {

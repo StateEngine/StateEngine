@@ -560,9 +560,7 @@ fn publish_replace(ctx: &ReplaceCtx<'_>) -> Result<(), WorkspaceWriteError> {
         verify_parent_chain(ctx.root, ctx.chain, ctx.root_mount)?;
         let displaced = inspect_target_leaf(ctx.parent, ctx.stage, ctx.root_mount, ctx.dot_git)?;
         if displaced != Some(ctx.expected) {
-            return Err(invalid(
-                "target file changed during atomic exchange; original restored",
-            ));
+            return Err(invalid("target file changed during atomic exchange"));
         }
         Ok(())
     })();
@@ -597,8 +595,8 @@ fn publish_replace(ctx: &ReplaceCtx<'_>) -> Result<(), WorkspaceWriteError> {
                 "original restored and staging removed after exchange conflict ({reason}), but final directory sync failed: {sync_err}"
             )));
         }
-        return Err(WorkspaceWriteError::PublishedUncertain(format!(
-            "replacement briefly published before conflict ({reason}); original restored and staging removed"
+        return Err(WorkspaceWriteError::Restored(format!(
+            "conflict during exchange ({reason}); original restored and staging removed"
         )));
     }
     ctx.parent.sync_all().map_err(|error| {
@@ -694,23 +692,34 @@ pub(super) fn write_relative(
         })
         .and_then(|()| verify_parent_chain(root, &chain, root_mount));
     if let Err(reason) = post_custody {
-        let current = stat_entry_at(parent, &leaf, libc::AT_SYMLINK_NOFOLLOW);
-        if matches!(current, Ok(Some(m)) if (m.dev, m.ino) == stage_id) {
-            // SAFETY: verified our exact newly-created inode in the displaced parent.
-            if unsafe { libc::unlinkat(parent.as_raw_fd(), leaf.as_ptr(), 0) } == 0 {
-                return match parent.sync_all() {
-                    Ok(()) => Err(WorkspaceWriteError::PublishedUncertain(format!(
-                        "file was briefly created before parent displacement ({reason}); newly created file removed"
-                    ))),
-                    Err(sync_err) => Err(WorkspaceWriteError::PublishedUncertain(format!(
-                        "file was briefly created before parent displacement ({reason}) and removed, but rollback sync failed: {sync_err}"
-                    ))),
-                };
-            }
-        }
-        return Err(WorkspaceWriteError::PublishedUncertain(format!(
-            "workspace parent ancestry changed after creation ({reason}) and rollback could not confirm removal"
-        )));
+        return Err(
+            match stat_entry_at(parent, &leaf, libc::AT_SYMLINK_NOFOLLOW) {
+                Ok(Some(m)) if (m.dev, m.ino) == stage_id => {
+                    // SAFETY: verified our exact newly-created inode in the displaced parent.
+                    if unsafe { libc::unlinkat(parent.as_raw_fd(), leaf.as_ptr(), 0) } == 0 {
+                        match parent.sync_all() {
+                            Ok(()) => WorkspaceWriteError::Restored(format!(
+                                "parent displaced during create ({reason}); newly created file removed"
+                            )),
+                            Err(sync_err) => WorkspaceWriteError::PublishedUncertain(format!(
+                                "parent displaced during create ({reason}) and newly created file removed, but rollback sync failed: {sync_err}"
+                            )),
+                        }
+                    } else {
+                        let unlink_err = io::Error::last_os_error();
+                        WorkspaceWriteError::PublishedUncertain(format!(
+                            "parent displaced during create ({reason}); rollback unlink failed: {unlink_err}"
+                        ))
+                    }
+                }
+                Ok(_) => WorkspaceWriteError::PublishedUncertain(format!(
+                    "parent displaced during create ({reason}); created target changed before rollback"
+                )),
+                Err(stat_err) => WorkspaceWriteError::PublishedUncertain(format!(
+                    "parent displaced during create ({reason}); rollback inspection failed: {stat_err}"
+                )),
+            },
+        );
     }
     parent.sync_all().map_err(|error| {
         WorkspaceWriteError::PublishedUncertain(format!(

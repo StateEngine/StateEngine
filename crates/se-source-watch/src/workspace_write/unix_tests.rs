@@ -113,7 +113,7 @@ fn publish_replace_rolls_back_and_preserves_concurrent_editor_save() -> Check {
     })
     .err()
     .ok_or("expected exchange rollback on concurrent edit")?;
-    assert!(matches!(err, WorkspaceWriteError::PublishedUncertain(_)));
+    assert!(matches!(err, WorkspaceWriteError::Restored(_)));
     assert_eq!(
         std::fs::read(dir.0.join("note.txt"))?,
         b"concurrent-editor-save"
@@ -173,7 +173,7 @@ fn publish_replace_rolls_back_when_parent_displaced() -> Check {
     })
     .err()
     .ok_or("expected rollback when parent displaced")?;
-    assert!(matches!(err, WorkspaceWriteError::PublishedUncertain(_)));
+    assert!(matches!(err, WorkspaceWriteError::Restored(_)));
     assert_eq!(
         std::fs::read(outer.0.join("escaped").join("note.txt"))?,
         b"original"

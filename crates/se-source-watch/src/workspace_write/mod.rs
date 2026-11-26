@@ -53,9 +53,11 @@ impl fmt::Display for WorkspaceWriteRefusal {
 pub enum WorkspaceWriteError {
     /// Refused or failed before the target path was modified.
     BeforePublish(WorkspaceWriteRefusal),
-    /// The new file was atomically renamed into place, but post-publish
-    /// durability sync or root verification failed; the new bytes may already
-    /// be on disk.
+    /// A conflict occurred during publication, and the prior target state was
+    /// positively confirmed restored with staging cleaned up.
+    Restored(String),
+    /// Publication or rollback outcome is unresolved: the target may have been
+    /// modified, durability sync may have failed, or recovery siblings may remain.
     PublishedUncertain(String),
 }
 
@@ -63,6 +65,7 @@ impl fmt::Display for WorkspaceWriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BeforePublish(refusal) => write!(f, "{refusal}"),
+            Self::Restored(reason) => f.write_str(reason),
             Self::PublishedUncertain(reason) => f.write_str(reason),
         }
     }

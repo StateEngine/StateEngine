@@ -52,6 +52,67 @@ fn wide_path(path: &Path) -> Result<Vec<u16>, WorkspaceWriteError> {
         .map_err(|_| invalid("normalized Windows workspace path required"))
 }
 
+/// Pin the registered root directory without `FILE_SHARE_DELETE` so neither
+/// the root nor any descendant in `chain` can be moved during `ReplaceFileW`.
+fn pin_root_no_delete(root: &File, root_path: &Path) -> Result<File, WorkspaceWriteError> {
+    let name = wide_path(root_path)?;
+    // SAFETY: terminated UTF-16 root path; no reparse traversal, no delete share.
+    let raw = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+            ptr::null_mut(),
+        )
+    };
+    // SAFETY: CreateFileW returned a newly opened handle owned by this process.
+    let pin = unsafe { crate::source_root::windows::owned(raw) }.map_err(|error| {
+        WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::RootUnverified(error))
+    })?;
+    let expected = se_state_files::observe_object_key(root).map_err(|error| {
+        WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::RootUnverified(error))
+    })?;
+    let observed = se_state_files::observe_object_key(&pin).map_err(|error| {
+        WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::RootUnverified(error))
+    })?;
+    if observed != expected {
+        return Err(WorkspaceWriteError::BeforePublish(
+            WorkspaceWriteRefusal::RootUnverified(io::Error::other(
+                "registered physical source root changed before write",
+            )),
+        ));
+    }
+    Ok(pin)
+}
+
+fn sibling_exists(parent: &File, name: &str) -> bool {
+    let Ok(mut units) = utf16_component(name) else {
+        return false;
+    };
+    nt_open_relative(
+        parent,
+        &mut units,
+        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        0,
+    )
+    .is_ok()
+}
+
+fn matches_staged(file: &File, stage_key: NativeObjectKey, stage_baseline: TargetBaseline) -> bool {
+    let Ok(key) = se_state_files::observe_object_key(file) else {
+        return false;
+    };
+    let Ok(rev) = se_state_files::observe_file_revision(file) else {
+        return false;
+    };
+    key == stage_key && TargetBaseline::from_revision(rev) == stage_baseline
+}
+
 fn utf16_component(part: &str) -> Result<Vec<u16>, WorkspaceWriteError> {
     if part.is_empty() || part.ends_with(['.', ' ']) {
         return Err(invalid("ambiguous or empty Windows path component"));
@@ -418,160 +479,10 @@ fn rename_at(
     Ok(())
 }
 
-struct ReplaceCtx<'a> {
-    root: &'a File,
-    chain: &'a [(&'a str, File, NativeObjectKey)],
-    parent: &'a File,
-    parent_path: &'a Path,
-    leaf_str: &'a str,
-    stage_str: &'a str,
-    stage_key: NativeObjectKey,
-    expected: TargetBaseline,
-    root_check: &'a dyn Fn() -> io::Result<()>,
-}
+#[path = "windows_replace.rs"]
+mod replace;
 
-fn restore_displaced_backup(
-    ctx: &ReplaceCtx<'_>,
-    target_wide: &[u16],
-    backup_wide: &[u16],
-    reason: WorkspaceWriteError,
-) -> WorkspaceWriteError {
-    let restore_str = format!("{}.restore", ctx.stage_str);
-    let restore_path = ctx.parent_path.join(&restore_str);
-    let Ok(restore_wide) = wide_path(&restore_path) else {
-        return WorkspaceWriteError::PublishedUncertain(format!(
-            "replacement conflicted ({reason}); displaced target retained at backup sibling"
-        ));
-    };
-    // SAFETY: restore displaced backup back to target, moving our staged bytes aside.
-    let restored = unsafe {
-        ReplaceFileW(
-            target_wide.as_ptr(),
-            backup_wide.as_ptr(),
-            restore_wide.as_ptr(),
-            0,
-            ptr::null(),
-            ptr::null(),
-        )
-    };
-    if restored != 0 {
-        if let Ok(mut restore_units) = utf16_component(&restore_str)
-            && let Ok(restore_file) = nt_open_relative(
-                ctx.parent,
-                &mut restore_units,
-                DELETE | SYNCHRONIZE,
-                0,
-                FILE_OPEN,
-                FILE_NON_DIRECTORY_FILE,
-            )
-        {
-            dispose_stage(&restore_file);
-        }
-        return WorkspaceWriteError::PublishedUncertain(format!(
-            "replacement conflicted ({reason}); displaced target restored"
-        ));
-    }
-    WorkspaceWriteError::PublishedUncertain(format!(
-        "replacement conflicted ({reason}); displaced target retained at backup sibling"
-    ))
-}
-
-/// Replace an existing file via `ReplaceFileW` so the displaced original is
-/// retained at a sibling backup name, verified against `expected`, and either
-/// deleted cleanly or restored/retained on conflict.
-fn publish_replace(ctx: &ReplaceCtx<'_>, held_target: File) -> Result<(), WorkspaceWriteError> {
-    let backup_str = format!("{}.bak", ctx.stage_str);
-    let target_path = ctx.parent_path.join(ctx.leaf_str);
-    let stage_path = ctx.parent_path.join(ctx.stage_str);
-    let backup_path = ctx.parent_path.join(&backup_str);
-    let target_wide = wide_path(&target_path)?;
-    let stage_wide = wide_path(&stage_path)?;
-    let backup_wide = wide_path(&backup_path)?;
-
-    // SAFETY: terminated UTF-16 paths beneath pinned non-movable parent handles.
-    let replaced = unsafe {
-        ReplaceFileW(
-            target_wide.as_ptr(),
-            stage_wide.as_ptr(),
-            backup_wide.as_ptr(),
-            0,
-            ptr::null(),
-            ptr::null(),
-        )
-    };
-    if replaced == 0 {
-        let error = io::Error::last_os_error();
-        drop(held_target);
-        if error.raw_os_error() == Some(ERROR_UNABLE_TO_REMOVE_REPLACED as i32) {
-            let mut stage_units = utf16_component(ctx.stage_str)?;
-            if let Ok(stage_file) = nt_open_relative(
-                ctx.parent,
-                &mut stage_units,
-                DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-                0,
-                FILE_OPEN,
-                FILE_NON_DIRECTORY_FILE,
-            ) && se_state_files::observe_object_key(&stage_file).ok() == Some(ctx.stage_key)
-            {
-                dispose_stage(&stage_file);
-            }
-            return Err(io_before(error));
-        }
-        return Err(WorkspaceWriteError::PublishedUncertain(format!(
-            "ReplaceFileW failed; recovery siblings retained: {error}"
-        )));
-    }
-
-    let mut backup_units = utf16_component(&backup_str)?;
-    let backup_file = nt_open_relative(
-        ctx.parent,
-        &mut backup_units,
-        DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-        FILE_SHARE_READ | FILE_SHARE_DELETE,
-        FILE_OPEN,
-        FILE_NON_DIRECTORY_FILE,
-    )
-    .map_err(|error| {
-        WorkspaceWriteError::PublishedUncertain(format!(
-            "replacement published but displaced backup could not be opened: {error}"
-        ))
-    })?;
-    let backup_rev = se_state_files::observe_file_revision(&backup_file).map_err(|error| {
-        WorkspaceWriteError::PublishedUncertain(format!(
-            "replacement published but displaced backup revision unreadable: {error}"
-        ))
-    })?;
-    let custody = (|| -> Result<(), WorkspaceWriteError> {
-        (ctx.root_check)().map_err(|error| {
-            WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::RootUnverified(error))
-        })?;
-        verify_parent_chain(ctx.root, ctx.chain)?;
-        if TargetBaseline::from_revision(backup_rev) != ctx.expected {
-            return Err(invalid(
-                "target file changed concurrently before ReplaceFileW",
-            ));
-        }
-        Ok(())
-    })();
-    if let Err(reason) = custody {
-        drop(backup_file);
-        drop(held_target);
-        return Err(restore_displaced_backup(
-            ctx,
-            &target_wide,
-            &backup_wide,
-            reason,
-        ));
-    }
-
-    drop(held_target);
-    dispose_checked(&backup_file).map_err(|error| {
-        WorkspaceWriteError::PublishedUncertain(format!(
-            "replacement published but displaced backup removal failed: {error}"
-        ))
-    })?;
-    Ok(())
-}
+use replace::{ReplaceCtx, publish_replace};
 
 pub(super) fn write_relative(
     root: &File,
@@ -580,6 +491,7 @@ pub(super) fn write_relative(
     bytes: &[u8],
     root_check: &dyn Fn() -> io::Result<()>,
 ) -> Result<(), WorkspaceWriteError> {
+    let _root_pin = pin_root_no_delete(root, root_path)?;
     let (parent_prefix, leaf_str) = match path.rsplit_once('/') {
         Some((prefix, leaf)) => (Some(prefix), leaf),
         None => (None, path),
@@ -616,7 +528,6 @@ pub(super) fn write_relative(
         FILE_NON_DIRECTORY_FILE,
     )
     .map_err(io_before)?;
-    let stage_key = se_state_files::observe_object_key(&stage).map_err(io_before)?;
     if let Err(error) = stage
         .write_all(bytes)
         .and_then(|()| stage.sync_all())
@@ -625,6 +536,16 @@ pub(super) fn write_relative(
         dispose_stage(&stage);
         return Err(error);
     }
+    let stage_key = se_state_files::observe_object_key(&stage).map_err(|error| {
+        dispose_stage(&stage);
+        io_before(error)
+    })?;
+    let stage_baseline = se_state_files::observe_file_revision(&stage)
+        .map(TargetBaseline::from_revision)
+        .map_err(|error| {
+            dispose_stage(&stage);
+            io_before(error)
+        })?;
     let pre_publish = (|| -> Result<(), WorkspaceWriteError> {
         root_check().map_err(|error| {
             WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::RootUnverified(error))
@@ -649,6 +570,7 @@ pub(super) fn write_relative(
                 leaf_str,
                 stage_str: &stage_str,
                 stage_key,
+                stage_baseline,
                 expected,
                 root_check,
             },
@@ -670,84 +592,5 @@ pub(super) fn write_relative(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::source_root::NativeSourceRoot;
-    use std::path::PathBuf;
-
-    type Check = Result<(), Box<dyn std::error::Error>>;
-
-    struct Scratch(PathBuf);
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn scratch(label: &str) -> Result<Scratch, Box<dyn std::error::Error>> {
-        let dir = std::env::temp_dir().join(format!(
-            "se-workspace-write-win-{label}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir)?;
-        Ok(Scratch(dir))
-    }
-
-    #[test]
-    fn write_relative_creates_replaces_and_refuses_concurrent_create() -> Check {
-        let dir = scratch("nt-rename")?;
-        let root = NativeSourceRoot::open(&dir.0)?;
-
-        // Create new file under nested directory via handle-relative NtSetInformationFile.
-        root.write_relative("nested/note.txt", b"v1")?;
-        assert_eq!(std::fs::read(dir.0.join("nested").join("note.txt"))?, b"v1");
-
-        // Replace existing file via ReplaceFileW (retaining & verifying displaced backup).
-        root.write_relative("nested/note.txt", b"v2-updated")?;
-        assert_eq!(
-            std::fs::read(dir.0.join("nested").join("note.txt"))?,
-            b"v2-updated"
-        );
-
-        // Non-replacing rename must refuse overwriting an existing target.
-        let mut stage_units = utf16_component("stage.tmp")?;
-        let leaf_units = utf16_component("existing.txt")?;
-        std::fs::write(dir.0.join("existing.txt"), b"other-writer")?;
-        let mut stage = nt_open_relative(
-            &root.directory,
-            &mut stage_units,
-            DELETE | GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE,
-            0,
-            FILE_CREATE,
-            FILE_NON_DIRECTORY_FILE,
-        )?;
-        stage.write_all(b"stale-create")?;
-        let err = rename_at(&stage, &root.directory, &leaf_units, false)
-            .err()
-            .ok_or("expected non-replacing rename to fail on existing target")?;
-        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
-        dispose_stage(&stage);
-        drop(stage);
-        assert_eq!(std::fs::read(dir.0.join("existing.txt"))?, b"other-writer");
-
-        // An open concurrent writer holding write access must block replacement
-        // cleanly instead of being silently clobbered.
-        let writer = std::fs::OpenOptions::new()
-            .write(true)
-            .open(dir.0.join("existing.txt"))?;
-        let conflict = root
-            .write_relative("existing.txt", b"clobber")
-            .err()
-            .ok_or("expected open writer to block replacement")?;
-        assert!(matches!(
-            conflict,
-            WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::Io(_))
-        ));
-        drop(writer);
-        assert_eq!(std::fs::read(dir.0.join("existing.txt"))?, b"other-writer");
-        Ok(())
-    }
-}
+#[path = "windows_tests.rs"]
+mod tests;
