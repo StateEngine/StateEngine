@@ -311,8 +311,20 @@ fn entry(server: &toml::Value) -> std::result::Result<Entry, String> {
             _ => entry.unchecked.push(key.clone()),
         }
     }
-    if entry.enabled && entry.command.is_none() && !entry.url {
+    // `enabled = false` does not supply a transport, so the table is checked either way.
+    if entry.command.is_none() && !entry.url {
         return Err("it sets neither `command` nor `url`".into());
+    }
+    let stdio: Vec<_> = ["args", "cwd", "env", "env_vars"]
+        .into_iter()
+        .filter(|key| server.contains_key(*key))
+        .map(|key| format!("`{key}`"))
+        .collect();
+    if entry.command.is_none() && !stdio.is_empty() {
+        return Err(format!(
+            "it sets `url` with {}, which only a `command` server uses",
+            stdio.join(", ")
+        ));
     }
     Ok(entry)
 }
