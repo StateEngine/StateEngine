@@ -30,24 +30,40 @@ pub fn trust_repair(path: &Path, entries: &[(String, String)]) -> Result<String>
     if missing.is_empty() {
         return Ok(steps.join("\n"));
     }
-    steps.push(if state.is_some_and(Item::is_inline_table) {
+    // Inline tables written with dotted keys have no braces of their own to
+    // add entries inside, so they take dotted entries in the enclosing table.
+    let inline = |item: Option<&Item>| {
+        item.and_then(Item::as_inline_table)
+            .map(InlineTable::is_dotted)
+    };
+    let entries = |prefix: &str| {
         let entries: Vec<_> = missing
             .iter()
-            .map(|(key, hash)| format!("{} = {}", quoted(key), row(hash)))
+            .map(|(key, hash)| format!("{prefix}{} = {}", quoted(key), row(hash)))
             .collect();
-        format!(
+        entries.join(", ")
+    };
+    steps.push(match (inline(hooks), inline(state)) {
+        (_, Some(false)) => format!(
             "Inside the existing inline hooks.state table of {file}, add these entries on its line, separated by commas:\n\n{}\n",
-            entries.join(", ")
-        )
-    } else if state.is_none() && hooks.is_some_and(Item::is_inline_table) {
-        let mut rows = InlineTable::new();
-        for (key, hash) in &missing {
-            rows.insert(key, row(hash).into());
+            entries("")
+        ),
+        (_, Some(true)) => format!(
+            "Inside the existing inline hooks table of {file}, add these entries on its line, separated by commas:\n\n{}\n",
+            entries("state.")
+        ),
+        (Some(false), None) => {
+            let mut rows = InlineTable::new();
+            for (key, hash) in &missing {
+                rows.insert(key, row(hash).into());
+            }
+            format!("Inside the existing inline hooks table of {file}, add:\n\nstate = {rows}\n")
         }
-        format!("Inside the existing inline hooks table of {file}, add:\n\nstate = {rows}\n")
-    } else {
-        let tables: Vec<_> = missing.iter().map(|(key, hash)| table(key, hash)).collect();
-        format!("At the end of {file}, add:\n\n{}", tables.join("\n"))
+        // Absent, ordinary or dotted tables accept new subtables at the end.
+        _ => {
+            let tables: Vec<_> = missing.iter().map(|(key, hash)| table(key, hash)).collect();
+            format!("At the end of {file}, add:\n\n{}", tables.join("\n"))
+        }
     });
     Ok(steps.join("\n"))
 }
