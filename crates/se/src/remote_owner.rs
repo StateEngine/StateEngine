@@ -54,6 +54,9 @@ impl se_remote_cli::Presentation for Host {
     fn json_requested(&self, args: &[OsString]) -> bool {
         crate::grammar::json_requested(args)
     }
+    fn escape_far_text(&self, envelope: se_types::ErrorEnvelope) -> se_types::ErrorEnvelope {
+        crate::render::error::escape_far_text(envelope)
+    }
     fn write_error<O: Write, E: Write>(
         &self,
         error: &SeError,

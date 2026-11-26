@@ -2,7 +2,7 @@
 use crate::Input;
 use clap::Command;
 use se_core::ops::AnyOutput;
-use se_types::{RenderCx, Result, SeError};
+use se_types::{ErrorEnvelope, RenderCx, Result, SeError};
 use std::{
     ffi::OsString,
     io::{self, Write},
@@ -38,6 +38,7 @@ pub trait Presentation {
     fn help_grammar(&self, command: Command) -> Command;
     fn usage_error(&self, error: clap::Error, args: &[OsString]) -> SeError;
     fn json_requested(&self, args: &[OsString]) -> bool;
+    fn escape_far_text(&self, envelope: ErrorEnvelope) -> ErrorEnvelope;
     fn write_error<O: Write, E: Write>(
         &self,
         error: &SeError,

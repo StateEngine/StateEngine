@@ -27,6 +27,8 @@ fn exit_code_is_two_on_partial_progress_and_one_without_progress() {
         }],
         error: None,
         remedy: Some("fix it".into()),
+        requested_agent: None,
+        requested_allow_launch: false,
     };
     assert_eq!(exit_code_for(&report), 1);
     report.phases.insert(
@@ -65,6 +67,8 @@ fn human_output_escapes_control_chars_and_includes_remedy_and_rerun() -> io::Res
         ],
         error: None,
         remedy: Some("fix \u{1b}[1mnow".into()),
+        requested_agent: None,
+        requested_allow_launch: false,
     };
     let mut out = Vec::new();
     write_human(&report, &mut out)?;
@@ -77,6 +81,46 @@ fn human_output_escapes_control_chars_and_includes_remedy_and_rerun() -> io::Res
     assert!(
         rendered.contains("rerun `se remote init"),
         "rerun next step missing: {rendered}"
+    );
+    Ok(())
+}
+
+#[test]
+fn human_output_rerun_quotes_spaces_and_preserves_agent_and_allow_launch() -> io::Result<()> {
+    let report = InitReport {
+        complete: false,
+        alias: "build".into(),
+        destination: "dev@build-box".into(),
+        remote_path: "/srv/my repo".into(),
+        host: None,
+        project: None,
+        agent: None,
+        launch_allowed: false,
+        phases: vec![
+            PhaseReport {
+                phase: "prepare_local",
+                status: "ok",
+                detail: "verified".into(),
+            },
+            PhaseReport {
+                phase: "grant_launch_permission",
+                status: "failed",
+                detail: "timeout".into(),
+            },
+        ],
+        error: None,
+        remedy: Some("retry when reachable".into()),
+        requested_agent: Some("worker1".into()),
+        requested_allow_launch: true,
+    };
+    let mut out = Vec::new();
+    write_human(&report, &mut out)?;
+    let rendered = String::from_utf8_lossy(&out);
+    assert!(
+        rendered.contains(
+            "se remote init 'dev@build-box:/srv/my repo' --alias build --agent worker1 --allow-launch"
+        ),
+        "rerun command must quote spaces and preserve --agent and --allow-launch: {rendered}"
     );
     Ok(())
 }

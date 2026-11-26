@@ -60,6 +60,10 @@ struct InitReport {
     error: Option<serde_json::Value>,
     #[serde(skip_serializing)]
     remedy: Option<String>,
+    #[serde(skip_serializing)]
+    requested_agent: Option<String>,
+    #[serde(skip_serializing)]
+    requested_allow_launch: bool,
 }
 
 struct InitArgs {
@@ -263,6 +267,8 @@ fn execute<H: OwnerCommands + Presentation + 'static>(
         phases: Vec::new(),
         error: None,
         remedy: None,
+        requested_agent: args.agent.clone(),
+        requested_allow_launch: args.allow_launch,
     };
 
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -650,24 +656,15 @@ fn verify_grant_receipt(value: &serde_json::Value, expected: &RemoteTarget) -> R
     Ok(())
 }
 
-fn escape_far_envelope(envelope: se_types::ErrorEnvelope) -> se_types::ErrorEnvelope {
-    if !envelope.body().far() {
-        return envelope;
-    }
-    let message = envelope.message().escape_debug().to_string();
-    let remedy_text = envelope.remedy().text.escape_debug().to_string();
-    envelope.with_terminal_text(message, remedy_text)
-}
-
 fn fail_phase<H: Presentation>(
-    _host: &H,
+    host: &H,
     report: &mut InitReport,
     phase: &'static str,
     error: &SeError,
 ) {
     let escaped = se_types::ErrorEnvelope::new(error.body.clone(), &se_types::RenderCx::default())
         .ok()
-        .map(escape_far_envelope);
+        .map(|env| host.escape_far_text(env));
     let detail = escaped
         .as_ref()
         .map(|env| env.message().to_owned())
@@ -744,10 +741,44 @@ fn write_human(report: &InitReport, out: &mut impl Write) -> io::Result<()> {
         }
         writeln!(
             out,
-            "Next: resolve the reported error, then rerun `se remote init {destination}:{remote_path} --alias {alias}` to continue."
+            "Next: resolve the reported error, then rerun `{}` to continue.",
+            format_rerun_command(report)
         )?;
     }
     Ok(())
+}
+
+fn quote_rerun_arg(value: &str) -> String {
+    let safe = !value.is_empty()
+        && value.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(b, b'_' | b'-' | b'.' | b'/' | b':' | b'@' | b'\\')
+        });
+    if safe {
+        value.to_owned()
+    } else {
+        se_host::remote::ssh::posix_single_quote(value)
+    }
+}
+
+fn format_rerun_command(report: &InitReport) -> String {
+    let target = format!(
+        "{}:{}",
+        sanitize_terminal_text(&report.destination),
+        sanitize_terminal_text(&report.remote_path)
+    );
+    let mut cmd = format!(
+        "se remote init {} --alias {}",
+        quote_rerun_arg(&target),
+        sanitize_terminal_text(&report.alias)
+    );
+    if let Some(agent) = report.requested_agent.as_deref() {
+        cmd.push_str(&format!(" --agent {}", sanitize_terminal_text(agent)));
+    }
+    if report.requested_allow_launch {
+        cmd.push_str(" --allow-launch");
+    }
+    cmd
 }
 
 #[cfg(test)]
