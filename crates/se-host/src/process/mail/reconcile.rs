@@ -49,11 +49,7 @@ impl LaunchCoordinator {
         deadline: &Deadline,
     ) -> Result<()> {
         self.clear_settled_flight(work, target, deadline).await?;
-        let previous = work
-            .mail
-            .flight
-            .as_ref()
-            .map(|f| f.reservation.notice_id.clone());
+        let mut captured_notice = None;
         if let Some(flight) = work.mail.flight.as_mut() {
             // Only a witnessed zero-byte failure permits a fresh attempt on a
             // later commit/retry wake. Uncertain acceptance retains this flight.
@@ -110,11 +106,13 @@ impl LaunchCoordinator {
             if let Some(event) = captured {
                 self.confirm_captured(target, flight, &event, deadline)
                     .await?;
-                let (more, mut ids) = (
+                let (more, mut ids, notice) = (
                     flight.reservation.more_pending,
                     flight.reservation.ids.clone(),
+                    flight.reservation.notice_id.clone(),
                 );
                 work.mail.flight = None;
+                captured_notice = Some(notice);
                 work.mail.backlog = more;
                 if more {
                     ids.retain(|id| !work.mail.seen.contains(id));
@@ -127,7 +125,7 @@ impl LaunchCoordinator {
         self.settle_mail(work, target, deadline).await?;
         if work.mail.flight.is_none()
             && work.secode.is_some()
-            && let Some(notice) = previous
+            && let Some(notice) = captured_notice
         {
             self.retire_secode_notice(work, &notice, deadline).await?;
         }
@@ -296,7 +294,8 @@ impl LaunchCoordinator {
             .await?
         {
             if work.secode.is_some() {
-                self.retire_secode_notice(work, &notice, deadline).await?;
+                self.retire_settled_secode_notice(work, &notice, deadline)
+                    .await?;
             }
             work.mail.flight = None;
         }

@@ -549,6 +549,16 @@ impl LaunchCoordinator {
             .retire_secode_notice(work, notice, deadline)
             .await
     }
+    pub(in crate::process) async fn retire_settled_secode_notice(
+        &self,
+        work: &owned::Work,
+        notice: &se_types::NoticeId,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        Coordinator(self)
+            .retire_settled_secode_notice(work, notice, deadline)
+            .await
+    }
     pub(in crate::process) async fn observe_secode_output(
         &self,
         output: se_core::ops::AnyOutput,
