@@ -432,8 +432,13 @@ pub(crate) async fn commit_revocation_on_store(
             })
             .await?
     };
-    let _ = key;
-    store.commit("external.revoke", batch, deadline).await?;
+    let identity = WriteIdentity {
+        operation: "external.revoke",
+        key: Some(key),
+        natural_key: None,
+        natural_events: Vec::new(),
+    };
+    store.submit_batch(batch, identity, deadline).await?;
     let mut revocations = crate::runtime::mail::Revocations::default();
     revocations
         .sessions

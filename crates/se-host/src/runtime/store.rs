@@ -233,6 +233,14 @@ impl Store {
         };
         self.submit(batch, identity, deadline).await
     }
+    pub(crate) async fn submit_batch(
+        &self,
+        batch: AtomicBatch,
+        identity: crate::runtime::WriteIdentity,
+        deadline: &Deadline,
+    ) -> Result<CommitReceipt> {
+        self.submit(batch, identity, deadline).await
+    }
     async fn submit(
         &self,
         batch: AtomicBatch,

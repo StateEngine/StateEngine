@@ -56,8 +56,8 @@ impl LaunchCoordinator {
                     &self.store,
                     &self.capability_admission.external,
                     &self.human,
-                    &plan.project,
-                    &plan.agent,
+                    &plan.project.id,
+                    &plan.agent.id,
                     deadline,
                 )
                 .await?
