@@ -4,7 +4,7 @@
  "default_crate_lines": 40000,
  "default_directory_lines": 10000,
  "crates": {
-  "se-host": 54007,
+  "se-host": 54026,
   "se-adoption": 2563,
   "se-agent-observation": 1466,
   "se-channels": 6750,
@@ -28,7 +28,7 @@
   "se-remote-cli": 2013,
   "se-remote": 3100,
   "se-ssh-transport": 1116,
-  "se-provider-image": 560,
+  "se-provider-image": 693,
   "se-secode-service": 6045,
   "se-history-import": 4878,
   "se-repository": 2200,
