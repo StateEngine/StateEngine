@@ -38,6 +38,8 @@ pub use process_io::UnixProviderIo;
 #[cfg(all(windows, feature = "listener"))]
 pub use process_io::WindowsProviderIo;
 #[cfg(feature = "listener")]
-pub use se_local_socket::probe_peer_pid as probe_local_socket_peer_pid;
+pub use se_local_socket::{
+    PeerProcess as LocalSocketPeer, probe_peer_identity as probe_local_socket_peer,
+};
 pub use session::*;
 pub use sign_in::SignIn;

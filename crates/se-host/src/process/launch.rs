@@ -122,13 +122,18 @@ impl LaunchCoordinator {
                 environment: server.environment.entries,
                 windows_sandbox,
             };
-            if let Some(verified_pid) = self
+            if let Some(verified) = self
                 .ensure_codex_server(login, launch, &plan.lifecycle, deadline)
                 .await?
             {
                 invocation
                     .arguments
-                    .push(format!("--expected-peer-pid={verified_pid}").into());
+                    .push(format!("--expected-peer-pid={}", verified.pid.0).into());
+                if let se_proc::StartIdentity::Windows { creation_filetime } = verified.start {
+                    invocation
+                        .arguments
+                        .push(format!("--expected-peer-birth={creation_filetime}").into());
+                }
             }
         } else {
             #[cfg(unix)]

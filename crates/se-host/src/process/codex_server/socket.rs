@@ -23,9 +23,11 @@ pub(super) fn socket_fits(control: &Path) -> Result<()> {
 }
 
 /// Probe whether the login's control socket accepts a connection right now.
-/// Returns `Ok(None)` when not listening, or `Ok(Some(peer_pid))` where
-/// `peer_pid` is the OS-reported PID of the accepting process when available.
-pub(super) async fn probe_served(control: &Path) -> Result<Option<Option<u32>>> {
+/// Returns `Ok(None)` when not listening, or `Ok(Some(peer))` where `peer` is
+/// the OS-reported identity of the accepting process when available.
+pub(super) async fn probe_served(
+    control: &Path,
+) -> Result<Option<Option<se_harness::LocalSocketPeer>>> {
     match std::fs::symlink_metadata(control) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
@@ -36,29 +38,41 @@ pub(super) async fn probe_served(control: &Path) -> Result<Option<Option<u32>>> 
         }
         Ok(_) => {}
     }
-    se_harness::probe_local_socket_peer_pid(control)
+    se_harness::probe_local_socket_peer(control)
         .await
         .map_err(|e| se_core::scope::unreadable("Codex control socket", &e.to_string()))
 }
 
-/// Prove that the accepting socket peer matches our verified server PID when
-/// sandbox verification is required (Windows sandbox-managed servers).
-/// Non-sandbox / Unix alias launches are left independent of peer PID.
-pub(super) fn verify_peer_pid(
+/// Prove that the accepting socket peer matches our verified server identity
+/// (PID and Windows process birth) when sandbox verification is required.
+/// Non-sandbox / Unix alias launches are left independent of peer identity.
+pub(super) fn verify_peer_identity(
     login: &Path,
-    peer_pid: Option<u32>,
-    expected_pid: u32,
+    peer: Option<se_harness::LocalSocketPeer>,
+    expected: &se_proc::ProcessIdentity,
     require_verified: bool,
 ) -> Result<()> {
     if !require_verified {
         return Ok(());
     }
-    match peer_pid {
-        Some(actual) if actual == expected_pid => Ok(()),
+    let expected_pid = expected.pid.0;
+    let expected_birth = match expected.start {
+        se_proc::StartIdentity::Windows { creation_filetime } => Some(creation_filetime),
+        _ => None,
+    };
+    match peer {
+        Some(actual)
+            if actual.pid == expected_pid
+                && expected_birth.is_none_or(|b| actual.birth == Some(b)) =>
+        {
+            Ok(())
+        }
         Some(actual) => Err(crate::codex_rpc::incompatible(
             &format!(
-                "the Codex control socket for {} is served by PID {actual}, not StateEngine's verified server PID {expected_pid}",
-                login.display()
+                "the Codex control socket for {} is served by PID {} (birth {:?}), not StateEngine's verified server PID {expected_pid} (birth {expected_birth:?})",
+                login.display(),
+                actual.pid,
+                actual.birth,
             ),
             "Stop the other Codex app-server listening on that socket and retry.",
         )),
@@ -75,14 +89,14 @@ pub(super) fn verify_peer_pid(
 pub(super) async fn wait_served(
     login: &Path,
     control: &Path,
-    expected_pid: u32,
+    expected: &se_proc::ProcessIdentity,
     require_verified: bool,
     deadline: &Deadline,
 ) -> Result<()> {
     let until = tokio::time::Instant::now() + READY.min(deadline.remaining()?);
     loop {
-        if let Some(peer_pid) = probe_served(control).await? {
-            return verify_peer_pid(login, peer_pid, expected_pid, require_verified);
+        if let Some(peer) = probe_served(control).await? {
+            return verify_peer_identity(login, peer, expected, require_verified);
         }
         if tokio::time::Instant::now() >= until {
             return Err(crate::codex_rpc::incompatible(

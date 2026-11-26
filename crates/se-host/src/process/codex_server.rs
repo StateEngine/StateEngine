@@ -24,7 +24,7 @@ mod record;
 mod socket;
 mod spec;
 use record::{Record, checkpoint_source, refusal, remove_record};
-use socket::{probe_served, socket_fits, verify_peer_pid, wait_served};
+use socket::{probe_served, socket_fits, verify_peer_identity, wait_served};
 pub(super) use spec::ServerLaunch;
 use spec::codex_server_spec;
 
@@ -34,7 +34,7 @@ const RECORD_BYTES: usize = 1024 * 1024;
 const READY: Duration = Duration::from_secs(60);
 
 enum Recovered {
-    Started(Arc<se_proc::OwnedProcess>, u32),
+    Started(Arc<se_proc::OwnedProcess>, se_proc::ProcessIdentity),
     /// Its scope exists but the server was never allowed to start.
     Unstarted(Arc<se_proc::OwnedProcess>),
     Exited,
@@ -42,9 +42,10 @@ enum Recovered {
 
 #[derive(Default)]
 pub(super) struct CodexServer {
-    /// Servers this host holds native custody of, with their verified PID, by login.
-    slot:
-        tokio::sync::Mutex<std::collections::BTreeMap<PathBuf, (Arc<se_proc::OwnedProcess>, u32)>>,
+    /// Servers this host holds native custody of, with their verified identity, by login.
+    slot: tokio::sync::Mutex<
+        std::collections::BTreeMap<PathBuf, (Arc<se_proc::OwnedProcess>, se_proc::ProcessIdentity)>,
+    >,
 }
 
 /// The only read of the host environment on the Codex path. It is private to
@@ -128,15 +129,15 @@ impl LaunchCoordinator {
     }
 
     /// Make sure the login's shared server is serving before an agent starts.
-    /// Returns the verified server PID when Windows sandbox verification is
-    /// required so the forwarder enforces it on every live upstream connection.
+    /// Returns the verified server identity when Windows sandbox verification
+    /// is required so the forwarder enforces it on every live upstream connection.
     pub(super) async fn ensure_codex_server(
         &self,
         login: PathBuf,
         launch: ServerLaunch,
         requester: &se_types::LifecycleId,
         deadline: &Deadline,
-    ) -> Result<Option<u32>> {
+    ) -> Result<Option<se_proc::ProcessIdentity>> {
         self.set_codex_login(requester, &login)?;
         let require_verified = launch.windows_sandbox.is_some();
         let control = crate::harness::codex_input::control_socket(&login);
@@ -146,7 +147,7 @@ impl LaunchCoordinator {
             crate::runtime::pool::within(deadline, self.codex_server.slot.lock()).await?;
         let deadline = &Deadline::idle()?.stage(READY)?;
         let mut record = self.read_codex_record(&path, deadline).await?;
-        if let Some(peer_pid) = probe_served(&control).await? {
+        if let Some(peer) = probe_served(&control).await? {
             let Some(record) = record.take() else {
                 if let Some(wanted) = launch.windows_sandbox {
                     return Err(crate::codex_rpc::incompatible(
@@ -160,32 +161,32 @@ impl LaunchCoordinator {
                 }
                 return Ok(None);
             };
-            let (owner, verified_pid) = match slot.remove(&login) {
+            let (owner, verified) = match slot.remove(&login) {
                 Some(held) => held,
                 None => {
                     self.adopt_codex_server(&path, record.clone(), deadline)
                         .await?
                 }
             };
-            if let Err(err) = verify_peer_pid(&login, peer_pid, verified_pid, require_verified) {
-                slot.insert(login.clone(), (owner, verified_pid));
+            if let Err(err) = verify_peer_identity(&login, peer, &verified, require_verified) {
+                slot.insert(login.clone(), (owner, verified));
                 return Err(err);
             }
             match self.check_sandbox_restart(&login, &record, &launch, requester, "running") {
                 Ok(true) => self.stop_and_remove_codex(owner, &path, deadline).await?,
                 Ok(false) => {
-                    slot.insert(login.clone(), (owner, verified_pid));
-                    return Ok(require_verified.then_some(verified_pid));
+                    slot.insert(login.clone(), (owner, verified.clone()));
+                    return Ok(require_verified.then_some(verified));
                 }
                 Err(err) => {
-                    slot.insert(login.clone(), (owner, verified_pid));
+                    slot.insert(login.clone(), (owner, verified));
                     return Err(err);
                 }
             }
         }
         if let Some(record) = record {
             match self.recover_codex_server(&path, &record, deadline).await? {
-                Recovered::Started(owner, verified_pid) => {
+                Recovered::Started(owner, verified) => {
                     match self
                         .check_sandbox_restart(&login, &record, &launch, requester, "starting")
                     {
@@ -194,13 +195,13 @@ impl LaunchCoordinator {
                             slot.remove(&login);
                         }
                         Ok(false) => {
-                            slot.insert(login.clone(), (owner, verified_pid));
-                            wait_served(&login, &control, verified_pid, require_verified, deadline)
+                            slot.insert(login.clone(), (owner, verified.clone()));
+                            wait_served(&login, &control, &verified, require_verified, deadline)
                                 .await?;
-                            return Ok(require_verified.then_some(verified_pid));
+                            return Ok(require_verified.then_some(verified));
                         }
                         Err(err) => {
-                            slot.insert(login.clone(), (owner, verified_pid));
+                            slot.insert(login.clone(), (owner, verified));
                             return Err(err);
                         }
                     }
@@ -215,12 +216,12 @@ impl LaunchCoordinator {
         if let Some((previous, _)) = slot.remove(&login) {
             self.release_ended_codex_server(previous, deadline).await?;
         }
-        let (owner, verified_pid) = self
+        let (owner, verified) = self
             .start_codex_server(&login, &path, launch, deadline)
             .await?;
-        slot.insert(login.clone(), (owner, verified_pid));
-        wait_served(&login, &control, verified_pid, require_verified, deadline).await?;
-        Ok(require_verified.then_some(verified_pid))
+        slot.insert(login.clone(), (owner, verified.clone()));
+        wait_served(&login, &control, &verified, require_verified, deadline).await?;
+        Ok(require_verified.then_some(verified))
     }
 
     /// After restart, take back custody of every server a previous host
@@ -246,14 +247,20 @@ impl LaunchCoordinator {
         &self,
         path: &Path,
         deadline: &Deadline,
-    ) -> Result<Option<(PathBuf, Arc<se_proc::OwnedProcess>, u32)>> {
+    ) -> Result<
+        Option<(
+            PathBuf,
+            Arc<se_proc::OwnedProcess>,
+            se_proc::ProcessIdentity,
+        )>,
+    > {
         let Some(record) = self.read_codex_record(path, deadline).await? else {
             return Ok(None);
         };
         let login = record.login.to_local()?;
         let settled = async {
             match self.recover_codex_server(path, &record, deadline).await? {
-                Recovered::Started(owner, pid) => Ok(Some((login.clone(), owner, pid))),
+                Recovered::Started(owner, identity) => Ok(Some((login.clone(), owner, identity))),
                 Recovered::Unstarted(owner) => self
                     .stop_and_remove_codex(owner, path, deadline)
                     .await
@@ -488,9 +495,9 @@ impl LaunchCoordinator {
         path: &Path,
         record: Record,
         deadline: &Deadline,
-    ) -> Result<(Arc<se_proc::OwnedProcess>, u32)> {
+    ) -> Result<(Arc<se_proc::OwnedProcess>, se_proc::ProcessIdentity)> {
         match self.recover_codex_server(path, &record, deadline).await? {
-            Recovered::Started(owner, pid) => Ok((owner, pid)),
+            Recovered::Started(owner, identity) => Ok((owner, identity)),
             _ => Err(refusal(
                 path,
                 "the recorded server is not the one serving its socket",
@@ -531,7 +538,7 @@ impl LaunchCoordinator {
                 process,
                 record: native_record,
             } => {
-                let pid = native_record.root.pid.0;
+                let identity = native_record.root.clone();
                 self.save_codex_record(
                     path,
                     &Record {
@@ -542,7 +549,7 @@ impl LaunchCoordinator {
                     deadline,
                 )
                 .await?;
-                Ok(Recovered::Started(Arc::new(process), pid))
+                Ok(Recovered::Started(Arc::new(process), identity))
             }
             RecoveryOutcome::PendingScope { process, .. } => {
                 Ok(Recovered::Unstarted(Arc::new(process)))
@@ -561,7 +568,7 @@ impl LaunchCoordinator {
         path: &Path,
         launch: ServerLaunch,
         deadline: &Deadline,
-    ) -> Result<(Arc<se_proc::OwnedProcess>, u32)> {
+    ) -> Result<(Arc<se_proc::OwnedProcess>, se_proc::ProcessIdentity)> {
         let reservation = self.codex_reservation()?;
         let lifecycle = reservation.lifecycle.clone();
         let mut record = Record {
@@ -608,10 +615,10 @@ impl LaunchCoordinator {
                 }
             })
             .await?;
-        let pid = self
+        let identity = self
             .finish_codex_launch(path, record, ticket, deadline)
             .await?;
-        Ok((owner, pid))
+        Ok((owner, identity))
     }
 
     fn codex_reservation(&self) -> Result<se_proc::LaunchReservation> {
@@ -649,7 +656,7 @@ impl LaunchCoordinator {
         mut record: Record,
         mut ticket: se_proc::LaunchTicket,
         deadline: &Deadline,
-    ) -> Result<u32> {
+    ) -> Result<se_proc::ProcessIdentity> {
         loop {
             let native = self.native.clone();
             let (returned, progress) = self
@@ -680,11 +687,11 @@ impl LaunchCoordinator {
                         .await?;
                 }
                 LaunchProgress::Started(success) => {
-                    let pid = success.record.root.pid.0;
+                    let identity = success.record.root.clone();
                     record.checkpoint =
                         self.codex_checkpoint(CheckpointKind::Process(success.record))?;
                     self.save_codex_record(path, &record, deadline).await?;
-                    return Ok(pid);
+                    return Ok(identity);
                 }
                 LaunchProgress::Failed(failure) => {
                     return Err(error("Codex shared server launch", failure.error));
