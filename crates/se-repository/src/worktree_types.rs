@@ -64,6 +64,7 @@ pub enum WorktreeRemoveError {
     PruneFailed {
         worktree_name: String,
         reason: String,
+        locked_path: Option<PathBuf>,
     },
 }
 
@@ -302,11 +303,13 @@ pub(crate) fn late_prune_err(worktree_name: &str, err: WorktreeRemoveError) -> W
         | WorktreeRemoveError::DeleteFailed { reason, .. } => WorktreeRemoveError::PruneFailed {
             worktree_name: worktree_name.to_owned(),
             reason,
+            locked_path: None,
         },
-        WorktreeRemoveError::Locked { reason, .. } => WorktreeRemoveError::PruneFailed {
+        WorktreeRemoveError::Locked { path, reason } => WorktreeRemoveError::PruneFailed {
             worktree_name: worktree_name.to_owned(),
             reason: reason
                 .unwrap_or_else(|| "worktree was locked before metadata prune".to_owned()),
+            locked_path: Some(path),
         },
         WorktreeRemoveError::Unreadable { entries, .. } => {
             let reason = entries
@@ -317,6 +320,7 @@ pub(crate) fn late_prune_err(worktree_name: &str, err: WorktreeRemoveError) -> W
             WorktreeRemoveError::PruneFailed {
                 worktree_name: worktree_name.to_owned(),
                 reason,
+                locked_path: None,
             }
         }
         WorktreeRemoveError::LinksDetected { links, .. } => {
@@ -328,11 +332,13 @@ pub(crate) fn late_prune_err(worktree_name: &str, err: WorktreeRemoveError) -> W
             WorktreeRemoveError::PruneFailed {
                 worktree_name: worktree_name.to_owned(),
                 reason,
+                locked_path: None,
             }
         }
         other => WorktreeRemoveError::PruneFailed {
             worktree_name: worktree_name.to_owned(),
             reason: format!("{other:?}"),
+            locked_path: None,
         },
     }
 }

@@ -422,6 +422,11 @@ fn restore_dot_git(verified: &VerifiedWorktree, dot_git_bytes: &[u8]) -> (bool, 
 pub(crate) fn prune_verified_admin_dir(
     verified: &VerifiedWorktree,
 ) -> Result<(), WorktreeRemoveError> {
+    let prune_err = |reason: String| WorktreeRemoveError::PruneFailed {
+        worktree_name: verified.worktree_name.clone(),
+        reason,
+        locked_path: None,
+    };
     let admin_anchor = [AncestorLink {
         parent: &verified.worktrees_parent,
         name: OsStr::new(&verified.worktree_name),
@@ -436,21 +441,14 @@ pub(crate) fn prune_verified_admin_dir(
                 path: verified.admin_dir.clone(),
                 reason: format!("worktree metadata directory became a {kind} before prune"),
             },
-            other => WorktreeRemoveError::PruneFailed {
-                worktree_name: verified.worktree_name.clone(),
-                reason: format!(
-                    "cannot open worktree metadata directory: {}",
-                    format_dir_op_err(&other)
-                ),
-            },
+            other => prune_err(format!(
+                "cannot open worktree metadata directory: {}",
+                format_dir_op_err(&other)
+            )),
         })?;
-    let (actual_id, is_mount_root) =
-        admin_handle
-            .stat_self()
-            .map_err(|err| WorktreeRemoveError::PruneFailed {
-                worktree_name: verified.worktree_name.clone(),
-                reason: format!("cannot stat worktree metadata directory: {err}"),
-            })?;
+    let (actual_id, is_mount_root) = admin_handle
+        .stat_self()
+        .map_err(|err| prune_err(format!("cannot stat worktree metadata directory: {err}")))?;
     if is_mount_root || actual_id != verified.admin_dir_id {
         return Err(WorktreeRemoveError::CustodyChanged {
             path: verified.admin_dir.clone(),
@@ -466,13 +464,10 @@ pub(crate) fn prune_verified_admin_dir(
             });
         }
         Err(err) => {
-            return Err(WorktreeRemoveError::PruneFailed {
-                worktree_name: verified.worktree_name.clone(),
-                reason: format!(
-                    "cannot verify lock status before prune: {}",
-                    format_dir_op_err(&err)
-                ),
-            });
+            return Err(prune_err(format!(
+                "cannot verify lock status before prune: {}",
+                format_dir_op_err(&err)
+            )));
         }
     }
 
@@ -492,10 +487,7 @@ pub(crate) fn prune_verified_admin_dir(
         false,
         &mut removed_any,
     )
-    .map_err(|err| WorktreeRemoveError::PruneFailed {
-        worktree_name: verified.worktree_name.clone(),
-        reason: format!("failed clearing metadata directory: {err:?}"),
-    })?;
+    .map_err(|err| prune_err(format!("failed clearing metadata directory: {err:?}")))?;
     drop(admin_handle);
 
     verified
@@ -511,14 +503,10 @@ pub(crate) fn prune_verified_admin_dir(
                     reason: "worktree metadata directory changed identity during prune".to_owned(),
                 }
             }
-            DeleteChildError::ClearReadonlyFailed(e) => WorktreeRemoveError::PruneFailed {
-                worktree_name: verified.worktree_name.clone(),
-                reason: format!("failed clearing readonly attribute on metadata directory: {e}"),
-            },
-            DeleteChildError::Io(e) => WorktreeRemoveError::PruneFailed {
-                worktree_name: verified.worktree_name.clone(),
-                reason: e.to_string(),
-            },
+            DeleteChildError::ClearReadonlyFailed(e) => prune_err(format!(
+                "failed clearing readonly attribute on metadata directory: {e}"
+            )),
+            DeleteChildError::Io(e) => prune_err(e.to_string()),
         })
 }
 

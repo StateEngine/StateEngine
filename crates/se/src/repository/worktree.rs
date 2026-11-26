@@ -6,7 +6,7 @@ use crate::bootstrap::Bootstrap;
 use se_core::ops::{AnyOutput, WorktreeRemove, WorktreeRemoveOutput, inputs::Validate};
 use se_repository::worktree::{WorktreeRemoveError, remove_worktree};
 use se_types::{Detail, Result, SeError, details};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub(crate) fn remove(cx: &Bootstrap, input: WorktreeRemove) -> Result<AnyOutput> {
     input.validate()?;
@@ -110,14 +110,27 @@ fn map_error(error: WorktreeRemoveError) -> SeError {
         WorktreeRemoveError::PruneFailed {
             worktree_name,
             reason,
-        } => refusal(
-            "worktree metadata prune",
-            &format!(
-                "worktree directory was removed, but pruning Git metadata for '{worktree_name}' failed: {reason}"
-            ),
-            "Run `git worktree prune` in the primary repository to clean up stale metadata.",
-        ),
+            locked_path,
+        } => prune_refusal(&worktree_name, &reason, locked_path.as_deref()),
     }
+}
+
+fn prune_refusal(worktree_name: &str, reason: &str, locked_path: Option<&Path>) -> SeError {
+    let next_step = match locked_path {
+        Some(path) => format!(
+            "Run `git worktree unlock {}` and then `git worktree prune` in the primary repository to clean up the locked metadata.",
+            path.display()
+        ),
+        None => "Run `git worktree prune` in the primary repository to clean up stale metadata."
+            .to_owned(),
+    };
+    refusal(
+        "worktree metadata prune",
+        &format!(
+            "worktree directory was removed, but pruning Git metadata for '{worktree_name}' failed: {reason}"
+        ),
+        &next_step,
+    )
 }
 
 fn links_refusal(
