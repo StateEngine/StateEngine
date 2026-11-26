@@ -47,6 +47,11 @@ fn seed_installed(
     path: &Path,
     plan: &Plan,
 ) -> std::result::Result<super::super::Registration, Box<dyn std::error::Error>> {
+    let initial = match plan.kind {
+        Kind::Claude => "{}\n",
+        Kind::Codex => "",
+    };
+    std::fs::write(path, initial)?;
     let planned = super::super::settings::plan(path, &plan.entries)?;
     let reg = super::super::Registration {
         schema: 1,

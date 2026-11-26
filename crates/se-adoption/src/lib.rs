@@ -256,6 +256,7 @@ pub struct UpgradeJournal {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub awaiting_discovery: Vec<(String, serde_json::Value)>,
 }
+#[cfg(feature = "listener")]
 impl UpgradeJournal {
     pub(crate) fn is_empty(&self) -> bool {
         self.writing.is_empty() && self.awaiting_discovery.is_empty()
