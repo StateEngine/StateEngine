@@ -4,7 +4,9 @@ use se_types::code::*;
 fn common(c: Command) -> Command {
     c.arg(value("root").help("Registered worktree ID when the project has several"))
         .arg(value("cursor"))
-        .arg(value("limit").help("Page size; find 20, refs/impact/changes 50, outline 300"))
+        .arg(value("limit").help(
+            "Page size; find 20, refs/impact/changes 50, outline 300; inspect caps each section",
+        ))
         .arg(value("budget").default_value("16384"))
         .arg(toggle("explain"))
         .arg(
@@ -88,6 +90,12 @@ pub(super) fn command(name: &str, c: Command) -> Command {
             )
             .arg(toggle("full"))
             .arg(toggle("regex").help("Match a regular expression in live source (all/code/text; automatic or literal mode)")),
+        "atlas.inspect" => c
+            .about("Before editing, show a file or symbol's declarations, callers, dependents, possible tests, recent edits and linked records")
+            .arg(
+                positional("target", 1, true)
+                    .help("A path, path:line or symbol name, tried in that order"),
+            ),
         "atlas.refs" => targeted(c)
             .about("Find references to a symbol or --file path; spelling candidates are labelled")
             .arg(
@@ -260,6 +268,10 @@ pub(super) fn decode(name: &str, m: &ArgMatches, json: bool) -> Result<AnyOp> {
                 options,
             })
         }
+        "atlas.inspect" => AnyOp::AtlasInspect(AtlasInspect {
+            target: AtlasTarget::Auto(QueryText::new(required(m, "target")?)?),
+            options,
+        }),
         "atlas.refs" => AnyOp::AtlasRefs(AtlasRefs {
             target: target(m)?,
             kinds: m

@@ -6,6 +6,7 @@ pub mod clock;
 /// Synchronous read/batch/typed-continuation seam.
 pub mod commit;
 pub mod dispatch;
+pub mod orientation;
 pub mod ports;
 pub mod scope;
 pub mod store_error;

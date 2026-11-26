@@ -463,6 +463,16 @@ pub fn compact(
         AnyOutput::AtlasFind(value) => {
             se_atlas::render::search(&value.value.answer, max_bytes, explain)?
         }
+        AnyOutput::AtlasInspect(value) => {
+            let value = &value.value;
+            se_atlas::render::inspect(
+                &value.outline,
+                &value.refs,
+                &value.impact,
+                &value.changes,
+                se_core::ops::AtlasInspect::shares(max_bytes),
+            )?
+        }
         AnyOutput::AtlasRefs(value) => se_atlas::render::refs(&value.value.answer, max_bytes)?,
         AnyOutput::AtlasImpact(value) => se_atlas::render::impact(&value.value.answer, max_bytes)?,
         AnyOutput::AtlasChanges(value) => {

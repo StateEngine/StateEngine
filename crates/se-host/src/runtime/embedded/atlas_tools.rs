@@ -82,7 +82,7 @@ impl EmbeddedHost {
         let operation = ops::decode_tool(&call.name, call.arguments)?;
         let presentation = operation
             .atlas_options()
-            .ok_or_else(|| invalid("one of the five registered Atlas read tools"))?
+            .ok_or_else(|| invalid("one of the registered Atlas read tools"))?
             .clone();
         let family = operation.meta().family;
         let owner = router.execution.atlas.clone();

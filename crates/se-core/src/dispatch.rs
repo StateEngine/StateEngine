@@ -204,6 +204,7 @@ impl Kernel {
         }
         match op {
             AnyOp::AtlasFind(input) => plan_atlas_read(crate::ops::AtlasRead::Find(input)),
+            AnyOp::AtlasInspect(input) => plan_atlas_read(crate::ops::AtlasRead::Inspect(input)),
             AnyOp::AtlasRefs(input) => plan_atlas_read(crate::ops::AtlasRead::Refs(input)),
             AnyOp::AtlasImpact(input) => plan_atlas_read(crate::ops::AtlasRead::Impact(input)),
             AnyOp::AtlasChanges(input) => plan_atlas_read(crate::ops::AtlasRead::Changes(input)),

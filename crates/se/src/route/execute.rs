@@ -294,6 +294,7 @@ fn dispatch_read(
         observation_deadline,
     } = ctx;
     let observation_op = op.clone();
+    let resume_op = matches!(op, AnyOp::Resume(_)).then(|| op.clone());
     let observed = se_types::UnixMicros::new(u64::try_from(now_us()?).map_err(|_| {
         SeError::invalid("read observation clock", "nonnegative Unix microseconds")
     })?)?;
@@ -346,6 +347,27 @@ fn dispatch_read(
         };
         if let Some(live) = live {
             output = super::session_observation::merge_runtime_observation(output, live)?;
+        }
+    }
+    // An agent session's resume gains the host's code context and orientation
+    // when a host runs. Without one the store-only answer stands; a host that
+    // fails to answer is named in it rather than blocking the resume.
+    if let Some(resume_op) = resume_op
+        && matches!(caller.admission.actor, se_store::Actor::Agent(_))
+        && caller.admission.session.is_some()
+        && matches!(endpoint(files), Ok(Read::Present { .. }))
+    {
+        match super::hosted::forward(cx, files, reader, caller, resume_op, selections, diagnostic) {
+            Ok(hosted @ AnyOutput::Resume(_)) => output = hosted,
+            Ok(_) => (),
+            Err(error) => {
+                if let AnyOutput::Resume(resume) = &mut output {
+                    resume.value.attention.push(format!(
+                        "Code context and orientation were not added: {}",
+                        error.body.message()
+                    ));
+                }
+            }
         }
     }
     super::status::finish(cx, reader, output, &caller.admission)

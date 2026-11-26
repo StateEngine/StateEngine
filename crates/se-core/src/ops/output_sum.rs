@@ -83,6 +83,7 @@ macro_rules! output_types {
 output_types! {
 AtlasAugment => AtlasAugment, AtlasHookOutput;
 AtlasFind => AtlasFind, AtlasFindOutput;
+AtlasInspect => AtlasInspect, AtlasInspectOutput;
 AtlasRefs => AtlasRefs, AtlasRefsOutput;
 AtlasImpact => AtlasImpact, AtlasImpactOutput;
 AtlasChanges => AtlasChanges, AtlasChangesOutput;

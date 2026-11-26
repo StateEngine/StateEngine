@@ -2,7 +2,7 @@
 mod pages;
 mod pointer;
 use crate::errors::{AtlasResult, capacity};
-pub use pages::{changes, impact, outline, refs};
+pub use pages::{INSPECT_HEADING, changes, impact, inspect, outline, refs};
 use pointer::{location, pointer};
 use se_types::{Read, code::*};
 pub fn escape(text: &str) -> String {

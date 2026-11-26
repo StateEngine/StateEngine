@@ -145,7 +145,7 @@ pub struct HarnessRequest {
 pub const MCP_BEARER_PURPOSE: &str = "http";
 /// What a launched agent is told when Atlas is enabled, so it reaches for the
 /// index before an edit instead of reading whole files to find callers.
-pub const ATLAS_GUIDANCE: &str = "Before editing a shared symbol or reading a large file end to end, call the StateEngine Atlas tools: outline for a file's declarations, impact for dependents, covering tests and linked project messages, and refs for callers. Atlas find also locates recent agent edits.";
+pub const ATLAS_GUIDANCE: &str = "Before editing a file or symbol, or reading a large file end to end, call stateengine_atlas_inspect with its path, path:line or name: one call returns its declarations, callers, dependents, possible covering tests, recent agent edits and linked project messages. Use stateengine_atlas_find to locate code, text and messages by query.";
 /// The first input of a launch that has no separate instruction channel.
 pub fn with_atlas_guidance(enabled: bool, input: &str) -> String {
     if enabled {

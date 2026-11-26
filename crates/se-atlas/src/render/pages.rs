@@ -248,3 +248,45 @@ pub fn outline(answer: &Answer<Read<Outline>>, max: usize) -> AtlasResult<String
         max,
     )
 }
+/// Bytes each inspect section reserves for its heading.
+pub const INSPECT_HEADING: usize = 48;
+/// Inspect's sections in order, each rendered inside its byte share with its
+/// own coverage footer and continuation, so a gap in one never hides in
+/// another. A section that still overflows its share says so in its place.
+pub fn inspect(
+    outline_answer: &Answer<Read<Outline>>,
+    refs_answer: &Answer<Read<Page<ReferenceHit>>>,
+    impact_answer: &Answer<Read<Impact>>,
+    changes_answer: &Answer<Read<Page<CodeChange>>>,
+    shares: [usize; 4],
+) -> AtlasResult<String> {
+    let room = |share: usize| share.saturating_sub(INSPECT_HEADING);
+    let fitted = |rendered: AtlasResult<String>, share: usize, command: &str| match rendered {
+        Err(error)
+            if matches!(
+                error.body.detail(),
+                se_types::Detail::AtlasResourceBudget(_)
+            ) =>
+        {
+            Ok(format!(
+                "[over this section's {share}-byte share; page it with se atlas {command}, or raise byte_budget]\n"
+            ))
+        }
+        other => other,
+    };
+    Ok(format!(
+        "# outline\n{}# callers and references\n{}# dependents, tests and linked records\n{}# recent edits, last 7 days\n{}",
+        fitted(
+            outline(outline_answer, room(shares[0])),
+            shares[0],
+            "outline"
+        )?,
+        fitted(refs(refs_answer, room(shares[1])), shares[1], "refs")?,
+        fitted(impact(impact_answer, room(shares[2])), shares[2], "impact")?,
+        fitted(
+            changes(changes_answer, room(shares[3])),
+            shares[3],
+            "changes"
+        )?,
+    ))
+}

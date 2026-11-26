@@ -84,14 +84,13 @@ fn actual_value_grammars_remain_enforced_after_discovery_trim() -> Check {
         ("stateengine_resume", json!({"byte_budget":1})),
         ("stateengine_atlas_find", json!({"query":"work","limit":0})),
         (
-            "stateengine_atlas_impact",
-            json!({"target":{"File":"src/example.rs"},"depth":0}),
+            "stateengine_atlas_inspect",
+            json!({"target":{"File":"src/example.rs"},"byte_budget":1024}),
         ),
         (
-            "stateengine_atlas_changes",
-            json!({"since":"not-a-baseline"}),
+            "stateengine_atlas_inspect",
+            json!({"target":"src/example.rs","limit":0}),
         ),
-        ("stateengine_atlas_outline", json!({"path":"","limit":0})),
     ] {
         refusal(tool, arguments)?;
     }
@@ -110,9 +109,7 @@ fn actual_value_grammars_remain_enforced_after_discovery_trim() -> Check {
         json!({"File":"src/example.rs"}),
         json!({"Symbol":{"Name":{"name":"example"}}}),
     ] {
-        for name in ["stateengine_atlas_refs", "stateengine_atlas_impact"] {
-            decode_tool(name, json!({"target":target}))?;
-        }
+        decode_tool("stateengine_atlas_inspect", json!({"target":target}))?;
     }
     Ok(())
 }
