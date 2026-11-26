@@ -113,35 +113,16 @@ pub fn hooks(executable: &Path, home: &Path) -> Result<Vec<(String, Value)>> {
     // Provider hook timeouts are seconds. The mail hook waits for the session
     // lifetime; its individual queue RPC has a separate five-second budget.
     for (event, action, _) in super::settings::EVENTS {
-        // Session end must stay fail-open: a missing or broken se must not
-        // block the provider's session teardown, so the end hook always exits 0.
-        let command = if action == "end" {
-            format!(
-                "{} __se-codex-adopt {} {action} || true",
-                quoted(executable),
-                quoted(home)
-            )
-        } else {
-            format!(
-                "{} __se-codex-adopt {} {action}",
-                quoted(executable),
-                quoted(home)
-            )
-        };
-        let command_windows = if action == "end" {
-            format!(
-                "if (Test-Path -LiteralPath {}) {{ & {} '__se-codex-adopt' {} 'end' }}; exit 0",
-                windows_quoted(executable),
-                windows_quoted(executable),
-                windows_quoted(home)
-            )
-        } else {
-            format!(
-                "& {} '__se-codex-adopt' {} '{action}'",
-                windows_quoted(executable),
-                windows_quoted(home)
-            )
-        };
+        let command = format!(
+            "{} __se-codex-adopt {} {action}",
+            quoted(executable),
+            quoted(home)
+        );
+        let command_windows = format!(
+            "& {} '__se-codex-adopt' {} '{action}'",
+            windows_quoted(executable),
+            windows_quoted(home)
+        );
         entries.push((event.into(), json!({"hooks":[{
             "type":"command", "command":command, "commandWindows":command_windows,
             "async": action != "end", "timeout": if action == "mail" { 2_000_000 } else if action == "end" { 2 } else { 30 }

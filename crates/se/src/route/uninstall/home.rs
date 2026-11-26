@@ -6,7 +6,10 @@ use se_core::{ops::*, scope, store_error::store_error};
 use se_host::client::lease::Deadline;
 use se_store::{ReadStore, StateFiles};
 use se_types::{Detail, Read, Result, SeError, details};
-use std::{io, path::Path};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
 pub(super) fn execute(
     cx: &Bootstrap,
@@ -58,6 +61,9 @@ pub(super) fn execute(
     let observed_at = receipt::timestamp(route::execute::now_us()?)?;
     let home = cx.home.display().to_string();
     let preserved = preserved(&cx.home, &home);
+    // The account claim stays held, so the revocation is admitted and a
+    // partially cleaned home still reports the achieved effects.
+    let integrations = route::adoption::uninstall(cx)?;
     Ok(Some(UninstallOutput {
         idempotency_key: input.idempotency_key.clone(),
         complete,
@@ -70,7 +76,7 @@ pub(super) fn execute(
         }),
         install_files: Vec::new(),
         directories: Vec::new(),
-        integrations: Vec::new(),
+        integrations,
         stops: Vec::new(),
         revocations: Vec::new(),
         recovery: Vec::new(),
@@ -93,6 +99,9 @@ pub(super) fn execute(
 /// Admit cleanup only for a present home without an installation record,
 /// holding the account-wide installation exclusion for the caller.
 fn admit(cx: &Bootstrap, input: &Uninstall) -> Result<Option<se_proc::NativeInstallationClaim>> {
+    // A package-owned executable is refused before any read: an uninitialized
+    // package install must still learn its exact package-manager removal.
+    managed_package_refusal()?;
     let route::setup::Setup::Present(reader) =
         route::setup::inspect(&cx.home, receipt::timestamp(route::execute::now_us()?)?)?
     else {
@@ -112,7 +121,7 @@ fn admit(cx: &Bootstrap, input: &Uninstall) -> Result<Option<se_proc::NativeInst
         .map_err(|e| store_error(&e))?
     {
         Read::Present { .. } => return Ok(None),
-        Read::Absent { .. } => managed_package_refusal()?,
+        Read::Absent { .. } => (),
         other => {
             scope::require_present(
                 other,
@@ -143,18 +152,7 @@ fn managed_package_refusal() -> Result<()> {
     else {
         return Ok(());
     };
-    let components: Vec<&std::ffi::OsStr> = executable
-        .components()
-        .map(std::path::Component::as_os_str)
-        .collect();
-    let npm = components.windows(2).any(|pair| {
-        pair[0] == "node_modules" && pair[1].to_string_lossy().starts_with("@stateengine")
-    });
-    let brew = components
-        .windows(2)
-        .any(|pair| pair[0] == "Cellar" && pair[1] == "stateengine")
-        || components.iter().any(|component| *component == "homebrew");
-    if npm {
+    if npm_owned(&executable) {
         return Err(SeError::new(Detail::ListenerUnavailable(
             details::ListenerUnavailable {
                 subject: "the se command".into(),
@@ -163,7 +161,7 @@ fn managed_package_refusal() -> Result<()> {
             },
         )));
     }
-    if brew {
+    if brew_owned(&executable) {
         return Err(SeError::new(Detail::ListenerUnavailable(
             details::ListenerUnavailable {
                 subject: "the se command".into(),
@@ -173,6 +171,56 @@ fn managed_package_refusal() -> Result<()> {
         )));
     }
     Ok(())
+}
+/// Witness the npm global layout: a manifest naming this exact package at or
+/// above the executable. Other manifests and unreadable files never stop the
+/// bounded walk.
+fn npm_owned(executable: &Path) -> bool {
+    let Some(mut ancestor) = executable.parent() else {
+        return false;
+    };
+    for _ in 0..8 {
+        let manifest = ancestor.join("package.json");
+        let bounded = std::fs::metadata(&manifest)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() <= 65536);
+        if bounded {
+            let parsed: serde_json::Value = std::fs::read(&manifest)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or(serde_json::Value::Null);
+            if parsed.get("name").and_then(serde_json::Value::as_str) == Some("@stateengine/cli") {
+                return true;
+            }
+        }
+        let Some(next) = ancestor.parent() else {
+            break;
+        };
+        ancestor = next;
+    }
+    false
+}
+/// Witness the Homebrew layout: Cellar/stateengine/<version> whose version
+/// directory holds Homebrew's installation receipt.
+fn brew_owned(executable: &Path) -> bool {
+    let components: Vec<std::path::Component<'_>> = executable.components().collect();
+    let Some(index) = components
+        .windows(2)
+        .position(|pair| pair[0].as_os_str() == "Cellar" && pair[1].as_os_str() == "stateengine")
+    else {
+        return false;
+    };
+    let Some(version) = components.get(index + 2) else {
+        return false;
+    };
+    if !matches!(version, std::path::Component::Normal(_)) {
+        return false;
+    }
+    let receipt: PathBuf = components
+        .iter()
+        .take(index + 3)
+        .map(|component| component.as_os_str())
+        .collect();
+    receipt.join("INSTALL_RECEIPT.json").is_file()
 }
 fn preserved(root: &Path, home: &str) -> Vec<String> {
     [

@@ -92,6 +92,15 @@ fn execute_inner(
     }
     .plan()?;
     let plan = &owned_plan;
+    // Provider-integration revocation runs inside the admitted operation,
+    // under the held account claim, after record validation, so a later
+    // refusal still reports it. Replacement skips it: an image replacement
+    // leaves the adoption registration and its hooks intact.
+    let integrations = if reinstall.is_some() {
+        Vec::new()
+    } else {
+        route::adoption::uninstall(cx)?
+    };
     let running = running_image(plan, reinstall.map(|(_, expected)| expected))?;
     let installed = running.installed;
 
@@ -112,6 +121,7 @@ fn execute_inner(
         claim,
     )?;
     let mut effects = initial_effects(&cx.home, stops);
+    effects.integrations.extend(integrations);
     let completion = if reinstall.is_some() {
         None
     } else {

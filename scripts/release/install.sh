@@ -29,6 +29,24 @@ plain_path() {
         path=$(dirname "$path")
     done
 }
+# ZDOTDIR must be a real, non-linked directory tree; otherwise zsh never
+# reads dotfiles from it and the manual remedy names the real file.
+zdot_plain() {
+    path=$1
+    case "$path" in /*) ;; *) return 1 ;; esac
+    case "$path" in *'
+'*) return 1 ;; esac
+    if printf '%s' "$path" | LC_ALL=C grep -q '[[:cntrl:]]'; then return 1; fi
+    [ -d "$path" ] || return 1
+    while [ "$path" != / ]; do
+        [ ! -L "$path" ] || return 1
+        if [ -e "$path" ] && [ "$path" != "$1" ]; then
+            [ -d "$path" ] || return 1
+        fi
+        path=$(dirname "$path")
+    done
+    return 0
+}
 # All input and destination checks precede creation of installation directories.
 macos=0
 case "$(uname -s):$(uname -m)" in
@@ -87,7 +105,9 @@ else [ ! -e "$partial" ] || fail "partial installation at $partial; resume with:
 # checks precede effects; the claims span removal and this fresh installer.
 plain_path "$record"
 if [ "$recover" -eq 0 ] && [ "$native_held" -eq 0 ] && [ -e "$record" ]; then
-    "$bundle/se" __install-replace "$data" || fail 'current-archive replacement did not complete; preserve the reported paths and resolve its refusal before retrying'
+    replace_flags=''
+    if [ "$no_modify_path" -eq 1 ]; then replace_flags=' --no-modify-path'; fi
+    "$bundle/se" __install-replace "$data"$replace_flags || fail 'current-archive replacement did not complete; preserve the reported paths and resolve its refusal before retrying'
     exit 0
 fi
 for destination in "$bin/se" "$assets" "$record"; do
@@ -104,6 +124,17 @@ if [ "$recover" -eq 0 ] && command -v se >/dev/null 2>&1; then fail "another se 
 manual_path=0
 profiles=''
 fish_file=''
+zdot=''
+# zsh dotfiles live under an eligible ZDOTDIR when one is exported.
+profile_path() {
+    case "$1" in
+    .zprofile|.zshrc)
+        if [ -n "$zdot" ]; then printf '%s' "$zdot/$1"; else printf '%s' "$HOME/$1"; fi
+        return 0
+        ;;
+    esac
+    printf '%s' "$HOME/$1"
+}
 if [ "$no_modify_path" -eq 1 ]; then
     manual_path=1
 else
@@ -124,7 +155,12 @@ else
         elif [ -e "$HOME/.bash_login" ] || [ -L "$HOME/.bash_login" ]; then profiles="$profiles .bash_login"; fi
         case ${SHELL-} in
         */bash) profiles="$profiles .bashrc" ;;
-        */zsh) profiles="$profiles .zprofile .zshrc" ;;
+        */zsh)
+            if [ -n "${ZDOTDIR-}" ]; then
+                if zdot_plain "$ZDOTDIR"; then zdot=$ZDOTDIR; else manual_path=1; fi
+            fi
+            profiles="$profiles .zprofile .zshrc"
+            ;;
         esac
         ;;
     *)
@@ -133,7 +169,7 @@ else
     esac
     if [ "$manual_path" -eq 0 ]; then
         for name in $profiles; do
-            if [ -L "$HOME/$name" ]; then manual_path=1; break; fi
+            if [ -L "$(profile_path "$name")" ]; then manual_path=1; break; fi
         done
     fi
     if [ "$manual_path" -eq 1 ]; then profiles=''; fish_file=''; fi
@@ -141,7 +177,7 @@ fi
 profile_metadata() {
 profile_digests=''
 for name in $profiles; do
-    profile=$HOME/$name
+    profile=$(profile_path "$name")
     plain_path "$profile"
     if [ -e "$profile" ]; then
         [ -f "$profile" ] && [ -r "$profile" ] && [ -w "$profile" ] || fail "login profile is unreadable or not writable: $profile"
@@ -165,7 +201,7 @@ asset_destination() {
 # the same protection as init, and retains the account-wide installation claim.
 if [ "$native_held" -eq 0 ]; then
     set -- __install-hold --prepare-program --home "$data"
-    for name in $profiles; do set -- "$@" --profile "$HOME/$name"; done
+    for name in $profiles; do set -- "$@" --profile "$(profile_path "$name")"; done
     if [ -n "$fish_file" ]; then set -- "$@" --fish-directory "$(dirname "$fish_file")"; fi
     if [ -n "${XDG_STATE_HOME-}" ]; then set -- "$@" --xdg-state-home "$XDG_STATE_HOME"; fi
     if [ -n "${XDG_CONFIG_HOME-}" ]; then set -- "$@" --xdg-config-home "$XDG_CONFIG_HOME"; fi
@@ -228,7 +264,7 @@ prefix_digest() {
 }
 
 profile_append_matches() {
-    profile=$HOME/$1
+    profile=$(profile_path "$1")
     [ ! -L "$profile" ] && [ -f "$profile" ] || return 1
     prior=$(cat "$stage/$1.digest") || return 1
     prior_bytes=$(cat "$stage/$1.bytes") || return 1
@@ -282,10 +318,10 @@ if [ "$manual_path" -eq 1 ]; then
     printf 'No shell configuration file was modified. To use se by name, add this exact line to the listed file:\n'
     case ${SHELL-} in
     */fish) printf 'File: ~/.config/fish/config.fish\n  set -gx PATH "$HOME/.local/bin" $PATH\n' ;;
-    */zsh) printf 'File: ~/.zshrc\n  export PATH="$HOME/.local/bin:$PATH"\n' ;;
+    */zsh) if [ -n "${ZDOTDIR-}" ]; then printf 'File: %s/.zshrc\n  export PATH="$HOME/.local/bin:$PATH"\n' "$ZDOTDIR"; else printf 'File: ~/.zshrc\n  export PATH="$HOME/.local/bin:$PATH"\n'; fi ;;
     */csh|*/tcsh) printf 'File: ~/.tcshrc (or ~/.cshrc)\n  set path = ($HOME/.local/bin $path)\n' ;;
     */elvish) printf 'File: ~/.config/elvish/rc.elv\n  use builtin; var builtin:paths = ($env:HOME + "/.local/bin" +~ $builtin:paths)\n' ;;
-    */nu) printf 'File: ~/.config/nushell/config.nu\n  let-env PATH = ($env.PATH | prepend $home/.local/bin)\n' ;;
+    */nu) printf 'File: ~/.config/nushell/config.nu\n  $env.PATH = ($env.PATH | split row (char esep) | prepend $home/.local/bin)\n' ;;
     */xonsh) printf 'File: ~/.config/xonsh/rc.xsh\n  import os; os.environ["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + os.environ.get("PATH", "")\n' ;;
     *) printf 'File: ~/.profile (interactive bash: ~/.bashrc)\n  export PATH="$HOME/.local/bin:$PATH"\n' ;;
     esac
@@ -404,7 +440,7 @@ DIRECTORIES
     printf '],\n  "path_edits": ['
     comma=''
     for name in $profiles; do
-        printf '%s\n    {"target": ' "$comma"; json_string "$HOME/$name"; printf ', "before_sha256": '
+        printf '%s\n    {"target": ' "$comma"; json_string "$(profile_path "$name")"; printf ', "before_sha256": '
         prior=$(cat "$stage/$name.digest")
         if [ "$prior" != absent ]; then json_string "$prior"; else printf null; fi
         prior_bytes=$(cat "$stage/$name.bytes")
@@ -440,7 +476,7 @@ if [ -n "$fish_file" ]; then
     publish_file "$stage/fish-config" "$fish_file" 600
 fi
 for name in $profiles; do
-    profile=$HOME/$name
+    profile=$(profile_path "$name")
     prior=$(cat "$stage/$name.digest")
     if [ ! -e "$profile" ] && [ ! -L "$profile" ]; then
         [ "$prior" = absent ] || fail "original login profile is absent: $profile"
@@ -448,7 +484,7 @@ for name in $profiles; do
     fi
     profile_append_matches "$name" || fail "login profile changed; preserved: $profile"
     dd if="$stage/path-block" bs=1 skip="$appended_bytes" conv=notrunc >> "$profile" 2>/dev/null
-    flush "$profile" "$HOME"
+    flush "$profile" "$(dirname "$profile")"
     profile_append_matches "$name" && [ "$appended_bytes" -eq "$block_bytes" ] || fail "login profile append readback failed: $profile"
 done
 for relative in $asset_files; do cmp -s "$(asset_destination "$relative")" "$bundle/$relative" || fail "installed asset readback failed: $relative"; done

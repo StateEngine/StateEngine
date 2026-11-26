@@ -11,18 +11,10 @@ pub fn execute(
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<UninstallOutput> {
     input.validate()?;
-    if let Some(mut result) = home::execute(context, &input, diagnostic)? {
-        result
-            .integrations
-            .extend(super::adoption::uninstall(context)?);
+    if let Some(result) = home::execute(context, &input, diagnostic)? {
         return Ok(result);
     }
-    // Capture integration effects before the native uninstall: once the binary
-    // is deleted or the self-delete carrier is armed, a later refusal must not
-    // leave them out of the receipt.
-    let integrations = super::adoption::uninstall(context)?;
-    let (plan, mut effects) =
+    let (plan, effects) =
         crate::runtime::uninstall(context, &input.idempotency_key, input.yes, diagnostic)?;
-    effects.integrations.extend(integrations);
     finish_uninstall(&plan, input.idempotency_key, effects)
 }

@@ -211,13 +211,24 @@ fn resume_plan(
         ));
     }
     let block = required(&stage.join("path-block"), 8192)?;
+    let zdot = std::env::var_os("ZDOTDIR")
+        .filter(|value| !value.is_empty())
+        .map(|value| args::path(&value))
+        .transpose()?;
     let mut profiles = Vec::<String>::new();
     for edit in &record.path_edits {
-        let name = Path::new(&edit.target)
-            .strip_prefix(user)
-            .ok()
-            .and_then(|path| path.to_str())
-            .filter(|name| {
+        let target = Path::new(&edit.target);
+        // A zsh profile may have been journaled under an eligible ZDOTDIR.
+        // A ZDOTDIR that changed since the original run refuses honestly.
+        let name = std::iter::once(user)
+            .chain(zdot.as_deref())
+            .filter_map(|root| {
+                target
+                    .strip_prefix(root)
+                    .ok()
+                    .and_then(|path| path.to_str())
+            })
+            .find(|name| {
                 matches!(
                     *name,
                     ".profile"

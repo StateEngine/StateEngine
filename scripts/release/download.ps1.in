@@ -1,4 +1,5 @@
 # Install the exact checksummed release as the current user, from a file or irm/iex.
+param([switch]$NoModifyPath)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 Set-StrictMode -Version Latest
@@ -59,7 +60,9 @@ try {
     # Preserve the exact archive input if the child leaves a recovery journal,
     # refuses after handoff, or is interrupted before its completion readback.
     $preserveInput = $true
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $bundle 'install.ps1')
+    $installArgs = @()
+    if ($NoModifyPath) { $installArgs += '-NoModifyPath' }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $bundle 'install.ps1') @installArgs
     if ($LASTEXITCODE -ne 0) { throw 'installation did not complete; follow the installer refusal above before retrying' }
     $installed = Join-Path $env:LOCALAPPDATA 'StateEngine/bin/se.exe'
     $actual = & $installed --version
