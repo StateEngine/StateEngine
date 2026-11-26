@@ -42,19 +42,26 @@ pub fn configure(
             )?);
             return Ok(changed);
         }
-        match codex_transport::observe(root)? {
-            codex_transport::Transports::Read(config) => {
-                if let Some(conflict) = config.conflict() {
-                    return Err(failure(&conflict));
-                }
-                changed.extend(config.advisory().map(|note| format!("note: {note}")));
-            }
-            codex_transport::Transports::Unreadable { file, reason } => changed.push(format!(
-                "note: {} could not be read ({reason}), so its Codex MCP entry was not checked \
-                 for a conflict; repair that file, then run `se doctor`",
-                file.display()
-            )),
+        // An unusable Codex home is refused by name before its files are read, and a
+        // user entry that is broken or unknown stops here, before `codex mcp` runs.
+        usable_config_dir(
+            kind,
+            &provider_config_dirs().map_err(|reason| failure(&reason))?,
+        )?;
+        let (blocking, notes): (Vec<_>, Vec<_>) = codex_transport::observe(root)?
+            .findings()
+            .into_iter()
+            .partition(|finding| {
+                matches!(
+                    finding.severity,
+                    codex_transport::Severity::Blocking | codex_transport::Severity::UnreadableUser
+                )
+            });
+        if !blocking.is_empty() {
+            let reasons: Vec<_> = blocking.into_iter().map(|finding| finding.text).collect();
+            return Err(failure(&reasons.join(" ")));
         }
+        changed.extend(notes.into_iter().map(|note| format!("note: {}", note.text)));
     }
     let command = configuration.provider_command(kind.provider().into());
     let path = Path::new(command);
@@ -113,13 +120,7 @@ pub fn install(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) -> Re
         .map_err(|error| failure(&format!("could not start the setup runtime: {error}")))?;
     // Resolved once: the same checked bindings go to listing, registration and readback.
     let config = provider_config_dirs().map_err(|reason| failure(&reason))?;
-    for (provider, name, dir) in &config {
-        let reason =
-            (*provider == kind.policy()).then(|| unusable_config_dir(name, dir, kind.label()));
-        if let Some(reason) = reason.flatten() {
-            return Err(failure(&reason));
-        }
-    }
+    usable_config_dir(kind, &config)?;
     let setup = Setup {
         root,
         executable,
@@ -144,6 +145,21 @@ pub fn install(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) -> Re
         }
         Ok(true)
     })
+}
+
+/// Refuses, naming the setting and directory, when this harness's configuration home is unusable.
+fn usable_config_dir(
+    kind: Kind,
+    config: &[(Provider, &'static str, std::path::PathBuf)],
+) -> Result<()> {
+    for (provider, name, dir) in config {
+        let reason =
+            (*provider == kind.policy()).then(|| unusable_config_dir(name, dir, kind.label()));
+        if let Some(reason) = reason.flatten() {
+            return Err(failure(&reason));
+        }
+    }
+    Ok(())
 }
 
 /// One harness's setup commands: where they run, and the bindings `install` checked.

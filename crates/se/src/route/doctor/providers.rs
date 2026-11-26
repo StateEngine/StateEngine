@@ -4,7 +4,7 @@ use super::{Bootstrap, CheckFix, CheckState, DiagnosisCheck};
 use se_host::{
     adoption::Kind,
     provider_cli::{self, CliState},
-    provider_mcp::codex_transport::{self, Config, Transports},
+    provider_mcp::codex_transport::{self, Observation, Severity},
 };
 use se_types::RenderCx;
 
@@ -82,18 +82,14 @@ fn codex_mcp(at: &str) -> DiagnosisCheck {
         at,
     );
     value.expected = Some(
-        "The Codex `stateengine` MCP server sets one transport across the user and project configuration files, and its home and executable exist"
+        "The Codex user configuration file is readable and its `stateengine` MCP server sets one transport, with a home and executable that exist; no project configuration file defines that server"
             .into(),
     );
     let observed = std::env::current_dir()
         .map_err(|error| error.to_string())
         .and_then(|cwd| codex_transport::observe(&cwd).map_err(|error| error.body.message()));
     match observed {
-        Ok(Transports::Read(config)) => codex_entries(&mut value, &config),
-        Ok(Transports::Unreadable { file, reason }) => {
-            value.state = CheckState::Unmeasured;
-            value.observed = Some(format!("{} could not be read: {reason}", file.display()));
-        }
+        Ok(observation) => codex_findings(&mut value, &observation),
         Err(reason) => {
             value.state = CheckState::Unmeasured;
             value.observed = Some(format!("Codex configuration was not located: {reason}"));
@@ -102,34 +98,40 @@ fn codex_mcp(at: &str) -> DiagnosisCheck {
     value
 }
 
-fn codex_entries(value: &mut DiagnosisCheck, read: &Config) {
-    let files = &read.files;
-    let mut problems: Vec<String> = read.conflict().into_iter().collect();
-    problems.extend(read.stale());
-    if let Some((command, url)) = read.split() {
-        value.observed = Some(format!(
-            "`command` in {}; `url` in {}",
-            command.display(),
-            url.display()
-        ));
-    } else if files.is_empty() {
-        value.observed = Some("No Codex configuration file exists yet".into());
+/// Broken user entry: failed. Unreadable file: unmeasured. Project-file entry: warning.
+fn codex_findings(value: &mut DiagnosisCheck, observation: &Observation) {
+    let files = observation.files();
+    value.observed = Some(if files.is_empty() {
+        "No Codex configuration file exists yet".into()
     } else {
-        value.observed = Some(format!(
-            "Read {}",
+        format!(
+            "Found {}",
             files
                 .iter()
                 .map(|file| file.display().to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
+        )
+    });
+    let findings = observation.findings();
+    let rank = |severity: Severity| match severity {
+        Severity::Blocking | Severity::Problem => (3, CheckState::Failed),
+        Severity::UnreadableUser | Severity::Unmeasured => (2, CheckState::Unmeasured),
+        Severity::Advisory => (1, CheckState::Warning),
+    };
+    if let Some((_, state)) = findings
+        .iter()
+        .map(|finding| rank(finding.severity))
+        .max_by_key(|(order, _)| *order)
+    {
+        value.state = state;
+        value.fix = Some(text(
+            findings
+                .into_iter()
+                .map(|finding| finding.text)
+                .collect::<Vec<_>>()
+                .join(" "),
         ));
-    }
-    if !problems.is_empty() {
-        value.state = CheckState::Failed;
-        value.fix = Some(text(problems.join(" ")));
-    } else if let Some(note) = read.advisory() {
-        value.state = CheckState::Warning;
-        value.fix = Some(text(note));
     }
 }
 
