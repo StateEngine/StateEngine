@@ -249,15 +249,11 @@ fn execute_inner(
             "installed image preserved so unresolved effects can be retried",
         ));
     }
-    settle(
-        plan,
-        &parents,
-        &mut held,
-        safe,
+    let policy = settle::SettlePolicy {
         preserve,
-        reinstall.is_none(),
-        &mut effects,
-    );
+        clear_replace_custody: reinstall.is_none(),
+    };
+    settle(plan, &parents, &mut held, safe, policy, &mut effects);
     Ok((owned_plan, effects, Some(runtime_lease)))
 }
 

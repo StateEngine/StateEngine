@@ -111,6 +111,11 @@ fn preserve_file(file: &UninstallFile) -> FileEffect {
     }
 }
 
+pub(super) struct SettlePolicy {
+    pub preserve: bool,
+    pub clear_replace_custody: bool,
+}
+
 /// Settles the record, created directories and recovery inventory once the
 /// running image's outcome is known.
 pub(super) fn settle(
@@ -118,20 +123,20 @@ pub(super) fn settle(
     parents: &[PathBuf],
     held: &mut HeldRecord,
     safe: bool,
-    preserve: bool,
-    clear_replace_custody: bool,
+    policy: SettlePolicy,
     effects: &mut UninstallEffects,
 ) {
     let image_removed = effects
         .install_files
         .iter()
-        .all(|file| file_settled(file, preserve));
+        .all(|file| file_settled(file, policy.preserve));
     let settled = safe && image_removed;
     effects.integrations.push(remove_record(held, settled));
-    if settled && clear_replace_custody {
-        if let Some(effect) = remove_stale_replace_custody(plan.state_home()) {
-            effects.integrations.push(effect);
-        }
+    if settled
+        && policy.clear_replace_custody
+        && let Some(effect) = remove_stale_replace_custody(plan.state_home())
+    {
+        effects.integrations.push(effect);
     }
     remove_directories(plan, settled, effects);
     reconcile_recovery(plan, parents, effects);
