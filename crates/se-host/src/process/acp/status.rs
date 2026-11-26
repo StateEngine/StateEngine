@@ -43,6 +43,8 @@ impl LaunchCoordinator {
             return;
         }
         let mut found = None;
+        let mut context = None;
+        let configured = row.provider_settings.context_window;
         let mut read = || -> Result<Read<AcpRuntimeView>> {
             let Some(session) = &row.session.session_id else {
                 return Ok(Read::Absent {
@@ -87,11 +89,28 @@ impl LaunchCoordinator {
                         .into(),
                 });
             };
+            context = Some(binding.context(configured)?);
             Ok(Read::Present {
                 value: binding.runtime_view()?,
             })
         };
-        row.acp_runtime = Some(match read() {
+        let runtime = read();
+        // A connection that cannot be read has no usage either; the runtime keeps the detail.
+        row.context = Some(match (&runtime, context) {
+            (_, Some(context)) => context,
+            (Ok(Read::Absent { .. }), None) => Read::Absent {
+                checked: "No live protocol connection".into(),
+            },
+            (Err(error), None) => Read::Unreadable {
+                source: "protocol token usage".into(),
+                reason: error.to_string(),
+                error: Some(Box::new(error.body.clone())),
+            },
+            (Ok(_), None) => Read::Unknown {
+                what: "Token usage is not observed on this connection now".into(),
+            },
+        });
+        row.acp_runtime = Some(match runtime {
             Ok(value) => value,
             Err(error) => Read::Unreadable {
                 source: "ACP runtime".into(),

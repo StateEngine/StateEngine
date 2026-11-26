@@ -21,6 +21,7 @@ pub struct IgnoredNotifications {
 #[derive(Default)]
 pub(super) struct State {
     pub progress: crate::harness::progress::Progress,
+    pub context: Option<crate::harness::context_usage::ContextUsage>,
     pub capture: bool,
     pub restoring: bool,
     pub ignored: IgnoredNotifications,
@@ -66,6 +67,16 @@ impl Binding {
             .map_err(|_| poisoned())?
             .progress
             .view("Codex"))
+    }
+    /// The context usage Codex last reported for this thread.
+    pub fn context(
+        &self,
+        configured: Option<u64>,
+    ) -> Result<Read<se_core::ops::ContextWindowView>> {
+        let usage = self.state.lock().map_err(|_| poisoned())?.context;
+        Ok(crate::harness::context_usage::view(
+            usage, configured, "Codex",
+        ))
     }
     pub fn conversation(&self) -> Result<ProviderSessionId> {
         self.state
@@ -235,6 +246,7 @@ impl State {
     }
     fn observe(&mut self, method: String, params: Value) -> Result<bool> {
         self.observe_progress(&method, &params);
+        self.observe_context(&method, &params);
         if !matches!(
             method.as_str(),
             "turn/started" | "turn/completed" | "item/completed"
@@ -286,6 +298,25 @@ impl State {
             state.retain(json!({"method":method,"params":params}))?;
         }
         Ok(true)
+    }
+    /// `tokenUsage.last` is the latest request, so its total is what the thread
+    /// holds now; `total` sums every request and would overstate it.
+    fn observe_context(&mut self, method: &str, params: &Value) {
+        if method != "thread/tokenUsage/updated"
+            || self.restoring
+            || !self.conversation.as_ref().is_some_and(|id| {
+                params.get("threadId").and_then(Value::as_str) == Some(id.as_str())
+            })
+        {
+            return;
+        }
+        let usage = &params["tokenUsage"];
+        if let Some(used) = usage.pointer("/last/totalTokens").and_then(Value::as_u64) {
+            let window = usage.get("modelContextWindow").and_then(Value::as_u64);
+            self.context = Some(crate::harness::context_usage::ContextUsage::now(
+                used, window,
+            ));
+        }
     }
     fn observe_progress(&mut self, method: &str, params: &Value) {
         if !self.restoring

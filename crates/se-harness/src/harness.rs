@@ -73,6 +73,8 @@ pub use codex_rpc::CodexHarness;
 pub mod acp;
 pub mod codex_capture;
 #[cfg(feature = "listener")]
+pub mod context_usage;
+#[cfg(feature = "listener")]
 pub mod progress;
 #[cfg(feature = "secode")]
 pub mod secode;

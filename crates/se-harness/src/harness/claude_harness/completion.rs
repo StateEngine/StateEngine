@@ -15,6 +15,7 @@ pub struct Completion {
     pending: Mutex<Option<Observation>>,
     wake: Mutex<Option<Weak<Notify>>>,
     failure: Mutex<Option<se_types::ErrorBody>>,
+    context: Mutex<super::context::Context>,
 }
 impl Completion {
     pub fn offered(&self) -> Result<()> {
@@ -23,6 +24,16 @@ impl Completion {
     }
     pub fn activity(&self) -> Result<se_core::ops::ProviderActivityView> {
         Ok(self.progress.lock().map_err(|_| poisoned())?.view("Claude"))
+    }
+    /// The context usage Claude last reported for this conversation.
+    pub fn context(
+        &self,
+        configured: Option<u64>,
+    ) -> Result<se_types::Read<se_core::ops::ContextWindowView>> {
+        let usage = self.context.lock().map_err(|_| poisoned())?.latest();
+        Ok(crate::harness::context_usage::view(
+            usage, configured, "Claude",
+        ))
     }
     pub(super) fn inspect(&self, line: &[u8], conversation: &ProviderSessionId) {
         self.inspect_at(line, conversation, Instant::now());
@@ -48,6 +59,7 @@ impl Completion {
                     if frame.session_id.as_deref() == Some(conversation.as_str()) {
                         self.progress.lock().map_err(|_| poisoned())?.event();
                         if frame.kind == "assistant" {
+                            self.observe_context(line, conversation);
                             return Ok(Some(false));
                         }
                     }
@@ -59,6 +71,7 @@ impl Completion {
                         "the exact bound provider conversation",
                     ));
                 }
+                self.observe_context(line, conversation);
                 self.progress.lock().map_err(|_| poisoned())?.terminal(
                     if frame.is_error {
                         "failed"
@@ -78,6 +91,11 @@ impl Completion {
             }
         };
         self.nudge(observed_at, completed);
+    }
+    fn observe_context(&self, line: &[u8], conversation: &ProviderSessionId) {
+        if let Ok(mut context) = self.context.lock() {
+            context.observe(line, conversation.as_str());
+        }
     }
     fn nudge(&self, observed_at: Instant, completed: bool) {
         if let Ok(mut pending) = self.pending.lock() {

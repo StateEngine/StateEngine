@@ -8,6 +8,7 @@ use super::claude::{self, ClaudeLaunch};
 use crate::harness::binding::{AdapterBinding, Observation, StopPolicy};
 mod attended;
 mod completion;
+mod context;
 mod io;
 mod mail;
 mod settings;

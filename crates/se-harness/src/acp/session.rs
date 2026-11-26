@@ -69,6 +69,7 @@ struct State {
     handshake: Handshake,
     required_mode: Option<String>,
     current_mode: Option<String>,
+    context: Option<crate::harness::context_usage::ContextUsage>,
     capabilities: Value,
     conversation: Option<String>,
     opening: bool,
@@ -136,6 +137,14 @@ impl Session {
         let state = self.lock()?;
         ready(&state)?;
         Ok(http_mcp_allowed(&state, unadvertised))
+    }
+    /// The latest `usage_update`, without copying the rest of the observation.
+    pub fn context(&self) -> Result<Option<crate::harness::context_usage::ContextUsage>> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| failure("ACP session", "poisoned state"))?
+            .context)
     }
     pub fn observe(&self) -> Result<Observation> {
         let state = self

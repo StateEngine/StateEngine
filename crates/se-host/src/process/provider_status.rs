@@ -1,6 +1,6 @@
 //! Provider turn state is joined only to the exact current native session.
 use super::*;
-use se_core::ops::{AgentCommand, AgentRow, AnyOutput, ProviderActivityView};
+use se_core::ops::{AgentCommand, AgentRow, AnyOutput, ContextWindowView, ProviderActivityView};
 use se_types::{Page, Read};
 use std::sync::atomic::Ordering;
 
@@ -79,9 +79,22 @@ impl LaunchCoordinator {
             return;
         }
         let mut found = None;
-        let mut read = || -> Result<Read<ProviderActivityView>> {
+        let configured = row.provider_settings.context_window;
+        // A turn that cannot be read has no usage either; activity keeps the detail.
+        let unobserved = |activity: Read<ProviderActivityView>| {
+            let context = match &activity {
+                Read::Absent { .. } => Read::Absent {
+                    checked: "No live provider connection".into(),
+                },
+                _ => Read::Unknown {
+                    what: "Token usage is not observed on this connection now".into(),
+                },
+            };
+            Ok((activity, context))
+        };
+        let mut read = || -> Result<(Read<ProviderActivityView>, Read<ContextWindowView>)> {
             let Some(session) = &row.session.session_id else {
-                return Ok(Read::Absent {
+                return unobserved(Read::Absent {
                     checked: "This agent has no launched provider session".into(),
                 });
             };
@@ -94,14 +107,14 @@ impl LaunchCoordinator {
                 .find(|job| &job.session == session && job.target.1 == row.id)
                 .cloned();
             let Some(job) = job else {
-                return Ok(Read::Unknown { what: "This runtime retains no turn observation for this session. Native liveness does not establish progress; check provider sign-in and saved history before resubmitting input.".into() });
+                return unobserved(Read::Unknown { what: "This runtime retains no turn observation for this session. Native liveness does not establish progress; check provider sign-in and saved history before resubmitting input.".into() });
             };
             if job.settled.load(Ordering::Acquire) {
-                return Ok(Read::Absent { checked: "The provider lifecycle has settled; read saved history for its final outcome".into() });
+                return unobserved(Read::Absent { checked: "The provider lifecycle has settled; read saved history for its final outcome".into() });
             }
             let Ok(state) = job.state.try_lock() else {
                 let window = job.wake.awaiting_window.load(Ordering::Acquire);
-                return Ok(Read::Unknown { what: if window {
+                return unobserved(Read::Unknown { what: if window {
                     "Waiting for provider setup in the existing window. Finish sign-in or workspace trust there, or explicitly stop this agent to cancel setup."
                 } else {
                     "The runtime is handling provider setup or an accepted operation; turn activity cannot currently be read. Check provider sign-in and saved history; explicitly stop this agent to cancel setup rather than resubmitting uncertain input."
@@ -110,32 +123,42 @@ impl LaunchCoordinator {
             let paced = self.mail_paced_until(&state, &job);
             found = state.process.clone();
             let Some(binding) = &state.binding else {
-                return Ok(Read::Unknown { what: "Waiting for a provider connection; check provider sign-in. Explicitly stop this agent to cancel setup before retrying launch.".into() });
+                return unobserved(Read::Unknown { what: "Waiting for a provider connection; check provider sign-in. Explicitly stop this agent to cancel setup before retrying launch.".into() });
             };
             if let Some(binding) = binding.get::<crate::codex_rpc::Binding>() {
-                return Ok(self.with_provider_recovery(row, &job, binding.activity()?, paced));
+                return Ok((
+                    self.with_provider_recovery(row, &job, binding.activity()?, paced),
+                    binding.context(configured)?,
+                ));
             }
             if let Some(binding) = binding.get::<crate::harness::ClaudeBinding>() {
                 if binding.attended {
-                    return Ok(Read::Unknown { what: "The provider owns its terminal; turn progress is not observed on this connection. Inspect the existing window for sign-in, trust or permission prompts and read saved history before resubmitting input.".into() });
+                    return unobserved(Read::Unknown { what: "The provider owns its terminal; turn progress is not observed on this connection. Inspect the existing window for sign-in, trust or permission prompts and read saved history before resubmitting input.".into() });
                 }
-                return Ok(self.with_provider_recovery(
-                    row,
-                    &job,
-                    binding.completion.activity()?,
-                    paced,
+                return Ok((
+                    self.with_provider_recovery(row, &job, binding.completion.activity()?, paced),
+                    binding.completion.context(configured)?,
                 ));
             }
-            Ok(Read::Unknown { what: "The retained lifecycle has no matching provider turn connection; check saved history and provider sign-in.".into() })
+            unobserved(Read::Unknown { what: "The retained lifecycle has no matching provider turn connection; check saved history and provider sign-in.".into() })
         };
-        row.provider_activity = Some(match read() {
-            Ok(value) => value,
-            Err(error) => Read::Unreadable {
-                source: "provider turn observation".into(),
-                reason: error.to_string(),
-                error: Some(Box::new(error.body)),
-            },
-        });
+        let (activity, context) = match read() {
+            Ok(values) => values,
+            Err(error) => (
+                Read::Unreadable {
+                    source: "provider turn observation".into(),
+                    reason: error.to_string(),
+                    error: Some(Box::new(error.body.clone())),
+                },
+                Read::Unreadable {
+                    source: "provider token usage".into(),
+                    reason: error.to_string(),
+                    error: Some(Box::new(error.body)),
+                },
+            ),
+        };
+        row.provider_activity = Some(activity);
+        row.context = Some(context);
         row.background = se_agent_observation::background(row.provider, &self.native, found);
         if row.provider == se_types::Provider::Codex {
             row.codex_login = Some(match &row.session.session_id {

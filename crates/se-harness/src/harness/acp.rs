@@ -64,6 +64,20 @@ impl Binding {
         })
     }
 }
+impl Binding {
+    /// The context usage the protocol agent last reported for this session.
+    pub fn context(
+        &self,
+        configured: Option<u64>,
+    ) -> Result<se_types::Read<se_core::ops::ContextWindowView>> {
+        let usage = self.session.context()?;
+        Ok(super::context_usage::view(
+            usage,
+            configured,
+            "The protocol agent",
+        ))
+    }
+}
 fn error(reason: impl std::fmt::Display) -> SeError {
     se_core::scope::unreadable("ACP binding", &reason.to_string())
 }

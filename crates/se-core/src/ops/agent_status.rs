@@ -210,6 +210,7 @@ fn from_principal<R: Snapshot>(
             value: AgentRow {
                 provider_settings: profile.provider_settings.clone(),
                 harness: profile.harness.clone(),
+                context: None,
                 provider_activity: matches!(provider, se_types::Provider::Claude | se_types::Provider::Codex).then(|| if never_launched {
                     Read::Absent { checked: "This agent has no launched provider session".into() }
                 } else {

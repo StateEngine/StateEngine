@@ -56,6 +56,11 @@ pub struct AgentRow {
     pub acp_runtime: Option<Read<super::AcpRuntimeView>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_activity: Option<Read<ProviderActivityView>>,
+    /// How full the live conversation's context window is, from the provider's
+    /// own token reports. Set only by the runtime that owns the session: absent
+    /// when it holds no live session, unknown until the provider reports usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<Read<ContextWindowView>>,
     /// The Codex login this agent's shared app-server uses now; a login replaced
     /// while agents run is followed, so this names the current one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -197,6 +202,59 @@ pub struct ProviderActivityView {
     /// wake this agent. The mail itself is already delivered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail_paced_until: Option<String>,
+}
+/// How full an agent's context window is, as its provider last reported it.
+/// A size nobody reported stays unknown; it is never guessed from the model.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ContextWindowView {
+    /// Tokens in the conversation's context at the provider's latest report.
+    pub used_tokens: u64,
+    /// The window size, when the provider reported one or the agent's saved
+    /// `context_window` setting names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_tokens: Option<u64>,
+    /// `used_tokens` as a percentage of the window, to one decimal place. It is
+    /// not capped, so a provider that counts its reply as well can pass 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_percent: Option<f64>,
+    /// `provider` or `configured`: where the window size came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_source: Option<String>,
+    /// When the provider reported this usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<String>,
+}
+
+impl ContextWindowView {
+    /// A provider-reported size wins over the saved setting, because it is the
+    /// window the provider applied. A zero size is treated as unreported.
+    pub fn new(
+        used_tokens: u64,
+        provider_window: Option<u64>,
+        configured_window: Option<u64>,
+        observed_at: Option<std::time::SystemTime>,
+    ) -> Self {
+        let provider = provider_window.filter(|size| *size > 0);
+        let configured = configured_window.filter(|size| *size > 0);
+        let (context_window_tokens, window_source) = match (provider, configured) {
+            (Some(size), _) => (Some(size), Some("provider")),
+            (None, Some(size)) => (Some(size), Some("configured")),
+            (None, None) => (None, None),
+        };
+        let fill_percent = context_window_tokens
+            .map(|size| (used_tokens as f64 * 1000.0 / size as f64).round() / 10.0);
+        let observed_at = observed_at.and_then(|at| {
+            let micros = at.duration_since(std::time::UNIX_EPOCH).ok()?.as_micros();
+            se_types::format_timestamp(i64::try_from(micros).ok()?).ok()
+        });
+        Self {
+            used_tokens,
+            context_window_tokens,
+            fill_percent,
+            window_source: window_source.map(str::to_owned),
+            observed_at,
+        }
+    }
 }
 /// Single-agent readback reuses the status/list row without flattening Read.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

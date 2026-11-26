@@ -317,6 +317,7 @@ fn observe(
         provider_settings: profile.provider_settings.clone(),
         harness: None,
         provider_activity: None,
+        context: None,
         id: facts.target.agent.clone(),
         name: name.clone(),
         role: None,
