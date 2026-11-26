@@ -3,7 +3,7 @@
 use crate::{
     CallContext, HostFuture, ProviderIo, ProviderIoPlatform, ProviderStream, ProviderTransport,
     SessionIdentity, StreamRead, StreamWrite,
-    acp::{CapturedMessage, Connection, PermissionPolicy, Session},
+    acp::{CapturedMessage, Connection, PermissionPolicy, Session, WorkspaceAccess},
 };
 use se_types::{Generation, Result};
 use serde_json::{Value, json};
@@ -155,6 +155,7 @@ impl Fixture {
             connection.clone(),
             receiver,
             policy,
+            WorkspaceAccess::ReadOnly,
             Arc::new(
                 || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
                     Box::pin(async { false })

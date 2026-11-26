@@ -10,7 +10,9 @@ mod wire;
 
 pub use connection::{Connection, Diagnostics, Incoming, Message};
 pub use offer::OfferFailure;
-pub use permission::{PermissionOption, PermissionPolicy, PermissionRefusal, PermissionView};
+pub use permission::{
+    PermissionOption, PermissionPolicy, PermissionRefusal, PermissionView, WorkspaceAccess,
+};
 pub use session::{Observation, Session};
 pub use turn::{CapturedMessage, CompletedTurn, ProvisionalText, TurnItem};
 

@@ -5,7 +5,9 @@ use super::{
     Connection, Incoming, Message, OfferFailure,
     client::{Client, Refusal},
     failure,
-    permission::{Permission, PermissionPolicy, PermissionRefusal, PermissionView},
+    permission::{
+        Permission, PermissionPolicy, PermissionRefusal, PermissionView, WorkspaceAccess,
+    },
     turn::{CapturedMessage, CompletedTurn, Turn, text},
 };
 use crate::CallContext;
@@ -92,6 +94,7 @@ impl Session {
         connection: Arc<Connection>,
         receiver: mpsc::Receiver<Incoming>,
         policy: PermissionPolicy,
+        access: WorkspaceAccess,
         provider_exit: crate::harness::ProviderExitProof,
     ) -> Arc<Self> {
         let session = Arc::new(Self {
@@ -104,7 +107,7 @@ impl Session {
             policy,
             owner_wake: OnceLock::new(),
             provider_exit,
-            client: Client::default(),
+            client: Client::new(access),
         });
         let owned = session.clone();
         *session.pump.lock().await = Some(tokio::spawn(async move {
@@ -189,7 +192,7 @@ impl Session {
                 "initialize",
                 json!({"protocolVersion":1,
                     "clientInfo":{"name":"stateengine","version":env!("CARGO_PKG_VERSION")},
-                    "clientCapabilities":Client::capabilities()}),
+                    "clientCapabilities":self.client.capabilities()}),
                 remaining(&cx, until)?,
             )
             .await;
