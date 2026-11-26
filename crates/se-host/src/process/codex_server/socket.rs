@@ -41,13 +41,18 @@ pub(super) async fn probe_served(control: &Path) -> Result<Option<Option<u32>>> 
         .map_err(|e| se_core::scope::unreadable("Codex control socket", &e.to_string()))
 }
 
-/// Prove that the accepting socket peer matches our verified server PID.
+/// Prove that the accepting socket peer matches our verified server PID when
+/// sandbox verification is required (Windows sandbox-managed servers).
+/// Non-sandbox / Unix alias launches are left independent of peer PID.
 pub(super) fn verify_peer_pid(
     login: &Path,
     peer_pid: Option<u32>,
     expected_pid: u32,
     require_verified: bool,
 ) -> Result<()> {
+    if !require_verified {
+        return Ok(());
+    }
     match peer_pid {
         Some(actual) if actual == expected_pid => Ok(()),
         Some(actual) => Err(crate::codex_rpc::incompatible(
@@ -57,14 +62,13 @@ pub(super) fn verify_peer_pid(
             ),
             "Stop the other Codex app-server listening on that socket and retry.",
         )),
-        None if require_verified => Err(crate::codex_rpc::incompatible(
+        None => Err(crate::codex_rpc::incompatible(
             &format!(
                 "could not verify that the Codex control socket for {} is served by StateEngine's server PID {expected_pid}",
                 login.display()
             ),
             "Restart the Codex app-server for this login or run without windows.sandbox, then retry.",
         )),
-        None => Ok(()),
     }
 }
 

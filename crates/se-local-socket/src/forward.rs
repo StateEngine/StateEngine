@@ -27,26 +27,69 @@ type Listener = std::os::unix::net::UnixListener;
 #[cfg(windows)]
 type Listener = uds_windows::UnixListener;
 
-/// `se ENTRY <private socket> <control socket>`. Returns when the agent's
-/// provider has ended.
+/// `se ENTRY <private socket> <control socket> [--expected-peer-pid=<pid>]`.
+/// Returns when the agent's provider has ended.
 pub fn private_entry(args: &[OsString]) -> io::Result<()> {
-    let [_, _, downstream, control] = args else {
-        return Err(io::Error::other(
-            "the forwarder takes a downstream socket and a control socket",
-        ));
+    let (downstream, control, expected_peer_pid) = match args {
+        [_, _, downstream, control] => (downstream, control, None),
+        [_, _, downstream, control, flag] => {
+            let pid = flag
+                .to_str()
+                .and_then(|s| s.strip_prefix("--expected-peer-pid="))
+                .and_then(|s| s.parse::<u32>().ok())
+                .filter(|&pid| pid != 0)
+                .ok_or_else(|| io::Error::other("invalid --expected-peer-pid argument"))?;
+            (downstream, control, Some(pid))
+        }
+        _ => {
+            return Err(io::Error::other(
+                "the forwarder takes a downstream socket and a control socket",
+            ));
+        }
     };
     let control = PathBuf::from(control);
     if !control.is_absolute() {
         return Err(io::Error::other("the control socket path must be absolute"));
     }
     // Refuse at once, rather than at the first host connection, when the
-    // login's server is not there to forward to.
-    drop(Upstream::connect(&control)?);
-    pipe_socket(Path::new(downstream), control)
+    // login's server is not there (or does not match the verified peer PID).
+    let initial = Upstream::connect(&control)?;
+    verify_upstream_peer(&initial, expected_peer_pid)?;
+    drop(initial);
+    pipe_socket(Path::new(downstream), control, expected_peer_pid)
+}
+
+fn verify_upstream_peer(stream: &Upstream, expected_peer_pid: Option<u32>) -> io::Result<()> {
+    let Some(expected) = expected_peer_pid else {
+        return Ok(());
+    };
+    #[cfg(windows)]
+    let observed = {
+        use std::os::windows::io::AsRawSocket;
+        crate::ready::peer_pid(stream.as_raw_socket())
+    };
+    #[cfg(not(windows))]
+    let observed: Option<u32> = {
+        let _ = stream;
+        None
+    };
+    match observed {
+        Some(actual) if actual == expected => Ok(()),
+        Some(actual) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "Codex control socket peer PID {actual} does not match verified server PID {expected}"
+            ),
+        )),
+        None => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("could not verify Codex control socket peer PID against {expected}"),
+        )),
+    }
 }
 
 /// Serve the private socket until the server closes a connection first.
-fn pipe_socket(path: &Path, control: PathBuf) -> io::Result<()> {
+fn pipe_socket(path: &Path, control: PathBuf, expected_peer_pid: Option<u32>) -> io::Result<()> {
     use std::net::Shutdown;
     use std::sync::{
         Arc,
@@ -73,7 +116,15 @@ fn pipe_socket(path: &Path, control: PathBuf) -> io::Result<()> {
                     .name("se-codex-forward-connection".into())
                     .spawn(move || {
                         let server = match Upstream::connect(&control) {
-                            Ok(server) => server,
+                            Ok(server) => {
+                                if let Err(mismatch) =
+                                    verify_upstream_peer(&server, expected_peer_pid)
+                                {
+                                    let _ = ended.send(mismatch);
+                                    return;
+                                }
+                                server
+                            }
                             // Only an absent or refusing socket means the server is gone;
                             // any other failure ends this one connection.
                             Err(e)

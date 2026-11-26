@@ -122,8 +122,14 @@ impl LaunchCoordinator {
                 environment: server.environment.entries,
                 windows_sandbox,
             };
-            self.ensure_codex_server(login, launch, &plan.lifecycle, deadline)
-                .await?;
+            if let Some(verified_pid) = self
+                .ensure_codex_server(login, launch, &plan.lifecycle, deadline)
+                .await?
+            {
+                invocation
+                    .arguments
+                    .push(format!("--expected-peer-pid={verified_pid}").into());
+            }
         } else {
             #[cfg(unix)]
             {

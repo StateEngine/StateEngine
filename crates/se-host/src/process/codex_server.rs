@@ -128,13 +128,15 @@ impl LaunchCoordinator {
     }
 
     /// Make sure the login's shared server is serving before an agent starts.
+    /// Returns the verified server PID when Windows sandbox verification is
+    /// required so the forwarder enforces it on every live upstream connection.
     pub(super) async fn ensure_codex_server(
         &self,
         login: PathBuf,
         launch: ServerLaunch,
         requester: &se_types::LifecycleId,
         deadline: &Deadline,
-    ) -> Result<()> {
+    ) -> Result<Option<u32>> {
         self.set_codex_login(requester, &login)?;
         let require_verified = launch.windows_sandbox.is_some();
         let control = crate::harness::codex_input::control_socket(&login);
@@ -156,7 +158,7 @@ impl LaunchCoordinator {
                         "Stop that external Codex app-server and retry so StateEngine can start one with the configured windows.sandbox.",
                     ));
                 }
-                return Ok(());
+                return Ok(None);
             };
             let (owner, verified_pid) = match slot.remove(&login) {
                 Some(held) => held,
@@ -173,7 +175,7 @@ impl LaunchCoordinator {
                 Ok(true) => self.stop_and_remove_codex(owner, &path, deadline).await?,
                 Ok(false) => {
                     slot.insert(login.clone(), (owner, verified_pid));
-                    return Ok(());
+                    return Ok(require_verified.then_some(verified_pid));
                 }
                 Err(err) => {
                     slot.insert(login.clone(), (owner, verified_pid));
@@ -193,14 +195,9 @@ impl LaunchCoordinator {
                         }
                         Ok(false) => {
                             slot.insert(login.clone(), (owner, verified_pid));
-                            return wait_served(
-                                &login,
-                                &control,
-                                verified_pid,
-                                require_verified,
-                                deadline,
-                            )
-                            .await;
+                            wait_served(&login, &control, verified_pid, require_verified, deadline)
+                                .await?;
+                            return Ok(require_verified.then_some(verified_pid));
                         }
                         Err(err) => {
                             slot.insert(login.clone(), (owner, verified_pid));
@@ -222,7 +219,8 @@ impl LaunchCoordinator {
             .start_codex_server(&login, &path, launch, deadline)
             .await?;
         slot.insert(login.clone(), (owner, verified_pid));
-        wait_served(&login, &control, verified_pid, require_verified, deadline).await
+        wait_served(&login, &control, verified_pid, require_verified, deadline).await?;
+        Ok(require_verified.then_some(verified_pid))
     }
 
     /// After restart, take back custody of every server a previous host
