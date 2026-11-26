@@ -107,6 +107,21 @@ pub fn install(
         None => false,
     };
     let installed = super::settings::missing(&path, &plan.required)?.is_empty();
+    if !registration.installed {
+        // An earlier install stopped before it finished. Its hooks may have
+        // landed and been removed since, so they are never written again here.
+        if !installed {
+            return Err(SeError::invalid(
+                "provider adoption installation",
+                &format!(
+                    "the hooks an unfinished earlier install recorded in {}; they may have been removed there, so they were not added again. Run se uninstall, then this command, to install them",
+                    path.display()
+                ),
+            ));
+        }
+        registration.installed = true;
+        super::publish_for(home, kind, &registration)?;
+    }
     let discovery = if installed {
         adapter.discover(home, &mut registration, root)
     } else {
@@ -146,8 +161,7 @@ pub fn install(
 
 /// The saved registration, or a new one whose custody and layout are exactly
 /// what its planned first write adds, with that plan. A saved installation
-/// that never finished plans its journaled entries again, less absent ones
-/// the configuration no longer requests.
+/// that never finished is only read, never written again.
 fn registration(
     home: &Path,
     root: &Path,
@@ -165,11 +179,10 @@ fn registration(
                 ));
             }
             let mut saved = saved;
-            let planned = if saved.installed {
-                None
-            } else {
-                // An unfinished install never wrote what is absent, so an entry
-                // the configuration no longer requests leaves custody with it.
+            if !saved.installed {
+                // Whether the unfinished write landed is unknown, so this only
+                // reads: an absent entry the configuration no longer requests
+                // leaves custody, and nothing is written again.
                 let absent = super::settings::missing(&path, &saved.hooks)?;
                 saved
                     .hooks
@@ -179,9 +192,8 @@ fn registration(
                     .layout
                     .created_events
                     .retain(|event| hooks.iter().any(|(known, _)| known == event));
-                Some(super::settings::plan(&path, &saved.hooks)?)
-            };
-            (saved, planned)
+            }
+            (saved, None)
         }
         None => {
             let planned = super::settings::plan(&path, &plan.entries)?;
