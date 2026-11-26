@@ -1,12 +1,9 @@
-//! Safe linked Git worktree removal with a non-following link/junction guard.
-//!
-//! Before deleting anything, this module proves the target is a real linked Git
-//! worktree (never a primary repository root or unrelated directory), walks the
-//! entire tree with `symlink_metadata` to refuse any symbolic link, Windows
-//! directory junction / reparse point, or unreadable entry (even under
-//! `--force`), optionally enforces working-tree cleanliness, deletes files and
-//! directories bottom-up without following links, and prunes the worktree's
-//! administrative metadata from the common Git directory.
+//! Safe linked Git worktree removal with a non-following link/junction/mount guard.
+pub use crate::worktree_guard::parse_linux_mountinfo;
+use crate::worktree_guard::{
+    NodeIdentity, collect_mount_points, link_or_reparse_kind, remove_tree_no_follow,
+    scan_tree_for_links,
+};
 use git2::{
     Repository, RepositoryOpenFlags, StatusOptions, WorktreeLockStatus, WorktreePruneOptions,
 };
@@ -17,12 +14,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[cfg(windows)]
-const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-
-/// Maximum offending paths retained per category in a refusal report.
-const MAX_REPORTED_PATHS: usize = 64;
-/// Maximum dirty/untracked sample paths included in a dirty-worktree refusal.
+/// Maximum dirty/untracked/ignored sample paths included in a dirty refusal.
 const MAX_DIRTY_SAMPLE: usize = 10;
 
 /// Witnessed result of a completed safe worktree removal.
@@ -36,7 +28,8 @@ pub struct WorktreeRemoveReport {
 }
 
 /// Typed refusal or failure from [`remove_worktree`].
-/// Absent, unreadable, link-guarded, and dirty states are never collapsed.
+/// Absent, unreadable, link/mount-guarded, custody-changed, and dirty states
+/// are never collapsed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorktreeRemoveError {
     Absent {
@@ -51,6 +44,10 @@ pub enum WorktreeRemoveError {
         total_links: usize,
         unreadable: Vec<(PathBuf, String)>,
         total_unreadable: usize,
+    },
+    CustodyChanged {
+        path: PathBuf,
+        reason: String,
     },
     NotLinkedWorktree {
         path: PathBuf,
@@ -68,6 +65,8 @@ pub enum WorktreeRemoveError {
     DeleteFailed {
         path: PathBuf,
         reason: String,
+        partial: bool,
+        dot_git_preserved: bool,
     },
     PruneFailed {
         worktree_name: String,
@@ -75,77 +74,42 @@ pub enum WorktreeRemoveError {
     },
 }
 
-struct WalkFindings {
-    links: Vec<(PathBuf, String)>,
-    total_links: usize,
-    unreadable: Vec<(PathBuf, String)>,
-    total_unreadable: usize,
-}
-
-impl WalkFindings {
-    fn new() -> Self {
-        Self {
-            links: Vec::new(),
-            total_links: 0,
-            unreadable: Vec::new(),
-            total_unreadable: 0,
-        }
-    }
-
-    fn record_link(&mut self, path: PathBuf, kind: String) {
-        self.total_links += 1;
-        if self.links.len() < MAX_REPORTED_PATHS {
-            self.links.push((path, kind));
-        }
-    }
-
-    fn record_unreadable(&mut self, path: PathBuf, reason: String) {
-        self.total_unreadable += 1;
-        if self.unreadable.len() < MAX_REPORTED_PATHS {
-            self.unreadable.push((path, reason));
-        }
-    }
-
-    fn into_result(mut self) -> Result<(), WorktreeRemoveError> {
-        self.links.sort_by(|a, b| a.0.cmp(&b.0));
-        self.unreadable.sort_by(|a, b| a.0.cmp(&b.0));
-        if self.total_links > 0 {
-            return Err(WorktreeRemoveError::LinksDetected {
-                links: self.links,
-                total_links: self.total_links,
-                unreadable: self.unreadable,
-                total_unreadable: self.total_unreadable,
-            });
-        }
-        if self.total_unreadable > 0 {
-            return Err(WorktreeRemoveError::Unreadable {
-                entries: self.unreadable,
-                total: self.total_unreadable,
-            });
-        }
-        Ok(())
-    }
-}
-
-struct VerifiedWorktree {
-    canonical_root: PathBuf,
-    common_dir: PathBuf,
-    worktree_name: String,
+pub(crate) struct VerifiedWorktree {
+    pub(crate) canonical_root: PathBuf,
+    pub(crate) root_identity: NodeIdentity,
+    pub(crate) dot_git_identity: NodeIdentity,
+    pub(crate) common_dir: PathBuf,
+    pub(crate) common_dir_identity: NodeIdentity,
+    pub(crate) admin_dir: PathBuf,
+    pub(crate) admin_dir_identity: NodeIdentity,
+    pub(crate) worktree_name: String,
+    #[cfg(unix)]
+    pub(crate) root_dev: u64,
 }
 
 /// Safely remove a linked Git worktree at `path`.
 ///
-/// When `force` is `false`, dirty or untracked working-tree files refuse
-/// removal. `force` **never** bypasses the non-following link/junction guard,
-/// unreadable-entry refusal, locked-worktree check, or linked-worktree check.
+/// When `force` is `false`, modified, staged, untracked, or ignored files
+/// refuse removal. `force` **never** bypasses the non-following
+/// link/junction/mount guard, unreadable-entry refusal, custody verification,
+/// locked-worktree check, or linked-worktree check.
 pub fn remove_worktree(
     path: &Path,
     force: bool,
 ) -> Result<WorktreeRemoveReport, WorktreeRemoveError> {
-    let canonical_root = inspect_target_root(path)?;
-    let verified = verify_linked_worktree(&canonical_root, force)?;
-    scan_tree_for_links(&verified.canonical_root)?;
-    remove_tree_no_follow(&verified.canonical_root)?;
+    let (canonical_root, root_identity, root_dev) = inspect_target_root(path)?;
+    #[cfg(not(unix))]
+    let _ = root_dev;
+    let verified = verify_linked_worktree(
+        &canonical_root,
+        root_identity,
+        #[cfg(unix)]
+        root_dev,
+        force,
+    )?;
+    let mount_points = collect_mount_points(&verified.canonical_root)?;
+    let dir_identities = scan_tree_for_links(&verified, &mount_points)?;
+    remove_tree_no_follow(&verified, &dir_identities, &mount_points)?;
     verify_gone(&verified.canonical_root)?;
     prune_worktree_metadata(&verified)?;
     Ok(WorktreeRemoveReport {
@@ -158,7 +122,7 @@ pub fn remove_worktree(
 }
 
 /// Inspect `path` without following a final symlink or Windows reparse point.
-fn inspect_target_root(path: &Path) -> Result<PathBuf, WorktreeRemoveError> {
+fn inspect_target_root(path: &Path) -> Result<(PathBuf, NodeIdentity, u64), WorktreeRemoveError> {
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(err) if err.kind() == ErrorKind::NotFound => {
@@ -187,18 +151,34 @@ fn inspect_target_root(path: &Path) -> Result<PathBuf, WorktreeRemoveError> {
             reason: "target path is not a directory".to_owned(),
         });
     }
-    se_proc::canonicalize_path(path).map_err(|err| WorktreeRemoveError::Unreadable {
-        entries: vec![(path.to_path_buf(), err.to_string())],
-        total: 1,
-    })
+    let root_identity = NodeIdentity::from_meta(&meta);
+    #[cfg(unix)]
+    let root_dev = {
+        use std::os::unix::fs::MetadataExt;
+        meta.dev()
+    };
+    #[cfg(not(unix))]
+    let root_dev = 0;
+    let canonical =
+        se_proc::canonicalize_path(path).map_err(|err| WorktreeRemoveError::Unreadable {
+            entries: vec![(path.to_path_buf(), err.to_string())],
+            total: 1,
+        })?;
+    let canon_meta =
+        fs::symlink_metadata(&canonical).map_err(|err| WorktreeRemoveError::Unreadable {
+            entries: vec![(canonical.clone(), err.to_string())],
+            total: 1,
+        })?;
+    if NodeIdentity::from_meta(&canon_meta) != root_identity {
+        return Err(WorktreeRemoveError::CustodyChanged {
+            path: canonical,
+            reason: "worktree root changed identity during canonicalization".to_owned(),
+        });
+    }
+    Ok((canonical, root_identity, root_dev))
 }
 
-/// Prove `canonical_root` is a linked Git worktree (never the primary repo root,
-/// never a subdirectory, never locked, and clean unless `force` is set).
-fn verify_linked_worktree(
-    canonical_root: &Path,
-    force: bool,
-) -> Result<VerifiedWorktree, WorktreeRemoveError> {
+fn inspect_dot_git_file(canonical_root: &Path) -> Result<NodeIdentity, WorktreeRemoveError> {
     let dot_git = canonical_root.join(".git");
     let dot_git_meta = match fs::symlink_metadata(&dot_git) {
         Ok(meta) => meta,
@@ -235,6 +215,16 @@ fn verify_linked_worktree(
             reason: ".git entry is not a regular file".to_owned(),
         });
     }
+    Ok(NodeIdentity::from_meta(&dot_git_meta))
+}
+
+fn verify_linked_worktree(
+    canonical_root: &Path,
+    root_identity: NodeIdentity,
+    #[cfg(unix)] root_dev: u64,
+    force: bool,
+) -> Result<VerifiedWorktree, WorktreeRemoveError> {
+    let dot_git_identity = inspect_dot_git_file(canonical_root)?;
 
     let repo = Repository::open_ext(
         canonical_root,
@@ -290,6 +280,29 @@ fn verify_linked_worktree(
             total: 1,
         }
     })?;
+    let common_dir_meta =
+        fs::symlink_metadata(&common_dir).map_err(|err| WorktreeRemoveError::Unreadable {
+            entries: vec![(common_dir.clone(), err.to_string())],
+            total: 1,
+        })?;
+    let common_dir_identity = NodeIdentity::from_meta(&common_dir_meta);
+
+    let admin_dir = common_dir.join("worktrees").join(&worktree_name);
+    let admin_dir_meta =
+        fs::symlink_metadata(&admin_dir).map_err(|err| WorktreeRemoveError::Unreadable {
+            entries: vec![(admin_dir.clone(), err.to_string())],
+            total: 1,
+        })?;
+    if link_or_reparse_kind(&admin_dir_meta).is_some() || !admin_dir_meta.is_dir() {
+        return Err(WorktreeRemoveError::NotLinkedWorktree {
+            path: canonical_root.to_path_buf(),
+            reason: format!(
+                "worktree administrative entry {} is not a real directory",
+                admin_dir.display()
+            ),
+        });
+    }
+    let admin_dir_identity = NodeIdentity::from_meta(&admin_dir_meta);
 
     verify_registered_and_unlocked(canonical_root, &common_dir, &worktree_name)?;
 
@@ -300,8 +313,15 @@ fn verify_linked_worktree(
     drop(repo);
     Ok(VerifiedWorktree {
         canonical_root: canonical_root.to_path_buf(),
+        root_identity,
+        dot_git_identity,
         common_dir,
+        common_dir_identity,
+        admin_dir,
+        admin_dir_identity,
         worktree_name,
+        #[cfg(unix)]
+        root_dev,
     })
 }
 
@@ -374,7 +394,8 @@ fn check_clean_working_tree(
     let mut opts = StatusOptions::new();
     opts.include_untracked(true)
         .recurse_untracked_dirs(true)
-        .include_ignored(false)
+        .include_ignored(true)
+        .recurse_ignored_dirs(true)
         .include_unmodified(false)
         .exclude_submodules(false);
     let statuses =
@@ -407,175 +428,55 @@ fn check_clean_working_tree(
     })
 }
 
-/// Non-following pre-removal walk over `root`. Never descends into symlinks,
-/// Windows junctions, mount points, or any other reparse point.
-fn scan_tree_for_links(root: &Path) -> Result<(), WorktreeRemoveError> {
-    let mut findings = WalkFindings::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries = match fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(err) => {
-                findings.record_unreadable(dir, err.to_string());
-                continue;
-            }
-        };
-        for entry_res in entries {
-            let entry = match entry_res {
-                Ok(entry) => entry,
-                Err(err) => {
-                    findings.record_unreadable(dir.clone(), err.to_string());
-                    continue;
-                }
-            };
-            let entry_path = entry.path();
-            let meta = match fs::symlink_metadata(&entry_path) {
-                Ok(meta) => meta,
-                Err(err) => {
-                    findings.record_unreadable(entry_path, err.to_string());
-                    continue;
-                }
-            };
-            if let Some(kind) = link_or_reparse_kind(&meta) {
-                findings.record_link(entry_path, kind.to_owned());
-                continue;
-            }
-            if meta.is_dir() {
-                stack.push(entry_path);
-            }
-        }
-    }
-    findings.into_result()
-}
-
-/// Bottom-up non-following directory deletion. Re-verifies `symlink_metadata`
-/// before every removal so a concurrent link swap can never be followed.
-fn remove_tree_no_follow(root: &Path) -> Result<(), WorktreeRemoveError> {
-    enum Step {
-        Enter(PathBuf),
-        RemoveDir(PathBuf),
-    }
-    let mut stack = vec![Step::Enter(root.to_path_buf())];
-    while let Some(step) = stack.pop() {
-        match step {
-            Step::Enter(dir) => {
-                let dir_meta = fs::symlink_metadata(&dir).map_err(|err| {
-                    WorktreeRemoveError::DeleteFailed {
-                        path: dir.clone(),
-                        reason: err.to_string(),
-                    }
-                })?;
-                if let Some(kind) = link_or_reparse_kind(&dir_meta) {
-                    return Err(WorktreeRemoveError::LinksDetected {
-                        links: vec![(dir, kind.to_owned())],
-                        total_links: 1,
-                        unreadable: Vec::new(),
-                        total_unreadable: 0,
-                    });
-                }
-                stack.push(Step::RemoveDir(dir.clone()));
-                let entries =
-                    fs::read_dir(&dir).map_err(|err| WorktreeRemoveError::DeleteFailed {
-                        path: dir.clone(),
-                        reason: err.to_string(),
-                    })?;
-                for entry_res in entries {
-                    let entry = entry_res.map_err(|err| WorktreeRemoveError::DeleteFailed {
-                        path: dir.clone(),
-                        reason: err.to_string(),
-                    })?;
-                    let entry_path = entry.path();
-                    let meta = fs::symlink_metadata(&entry_path).map_err(|err| {
-                        WorktreeRemoveError::DeleteFailed {
-                            path: entry_path.clone(),
-                            reason: err.to_string(),
-                        }
-                    })?;
-                    if let Some(kind) = link_or_reparse_kind(&meta) {
-                        return Err(WorktreeRemoveError::LinksDetected {
-                            links: vec![(entry_path, kind.to_owned())],
-                            total_links: 1,
-                            unreadable: Vec::new(),
-                            total_unreadable: 0,
-                        });
-                    }
-                    if meta.is_dir() {
-                        stack.push(Step::Enter(entry_path));
-                    } else {
-                        remove_regular_file(&entry_path, &meta)?;
-                    }
-                }
-            }
-            Step::RemoveDir(dir) => {
-                remove_empty_dir(&dir)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn remove_regular_file(path: &Path, meta: &fs::Metadata) -> Result<(), WorktreeRemoveError> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == ErrorKind::PermissionDenied => {
-            clear_readonly(path, meta);
-            fs::remove_file(path).map_err(|retry_err| WorktreeRemoveError::DeleteFailed {
-                path: path.to_path_buf(),
-                reason: retry_err.to_string(),
-            })
-        }
-        Err(err) => Err(WorktreeRemoveError::DeleteFailed {
-            path: path.to_path_buf(),
-            reason: err.to_string(),
-        }),
-    }
-}
-
-fn remove_empty_dir(path: &Path) -> Result<(), WorktreeRemoveError> {
-    match fs::remove_dir(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == ErrorKind::PermissionDenied => {
-            if let Ok(meta) = fs::symlink_metadata(path)
-                && link_or_reparse_kind(&meta).is_none()
-            {
-                clear_readonly(path, &meta);
-            }
-            fs::remove_dir(path).map_err(|retry_err| WorktreeRemoveError::DeleteFailed {
-                path: path.to_path_buf(),
-                reason: retry_err.to_string(),
-            })
-        }
-        Err(err) => Err(WorktreeRemoveError::DeleteFailed {
-            path: path.to_path_buf(),
-            reason: err.to_string(),
-        }),
-    }
-}
-
-#[allow(clippy::permissions_set_readonly_false)]
-fn clear_readonly(path: &Path, meta: &fs::Metadata) {
-    let mut perms = meta.permissions();
-    if perms.readonly() {
-        perms.set_readonly(false);
-        let _ = fs::set_permissions(path, perms);
-    }
-}
-
 fn verify_gone(path: &Path) -> Result<(), WorktreeRemoveError> {
     match fs::symlink_metadata(path) {
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
         Ok(_) => Err(WorktreeRemoveError::DeleteFailed {
             path: path.to_path_buf(),
             reason: "worktree directory still exists after removal".to_owned(),
+            partial: true,
+            dot_git_preserved: false,
         }),
         Err(err) => Err(WorktreeRemoveError::DeleteFailed {
             path: path.to_path_buf(),
             reason: format!("cannot verify worktree removal: {err}"),
+            partial: true,
+            dot_git_preserved: false,
         }),
     }
 }
 
+/// Prune ONLY the exact verified, now-missing worktree registration.
 fn prune_worktree_metadata(verified: &VerifiedWorktree) -> Result<(), WorktreeRemoveError> {
+    let common_meta = fs::symlink_metadata(&verified.common_dir).map_err(|err| {
+        WorktreeRemoveError::PruneFailed {
+            worktree_name: verified.worktree_name.clone(),
+            reason: format!("cannot re-verify common Git directory: {err}"),
+        }
+    })?;
+    if link_or_reparse_kind(&common_meta).is_some()
+        || NodeIdentity::from_meta(&common_meta) != verified.common_dir_identity
+    {
+        return Err(WorktreeRemoveError::CustodyChanged {
+            path: verified.common_dir.clone(),
+            reason: "common Git directory changed identity before metadata prune".to_owned(),
+        });
+    }
+    let admin_meta = fs::symlink_metadata(&verified.admin_dir).map_err(|err| {
+        WorktreeRemoveError::PruneFailed {
+            worktree_name: verified.worktree_name.clone(),
+            reason: format!("cannot re-verify worktree metadata directory: {err}"),
+        }
+    })?;
+    if link_or_reparse_kind(&admin_meta).is_some()
+        || NodeIdentity::from_meta(&admin_meta) != verified.admin_dir_identity
+    {
+        return Err(WorktreeRemoveError::CustodyChanged {
+            path: verified.admin_dir.clone(),
+            reason: "worktree metadata directory changed identity before prune".to_owned(),
+        });
+    }
+
     let common_repo = Repository::open_ext(
         &verified.common_dir,
         RepositoryOpenFlags::NO_SEARCH,
@@ -591,28 +492,13 @@ fn prune_worktree_metadata(verified: &VerifiedWorktree) -> Result<(), WorktreeRe
             worktree_name: verified.worktree_name.clone(),
             reason: err.message().to_owned(),
         })?;
+    // `valid(false)` refuses pruning if a valid worktree reappeared at the path.
     let mut opts = WorktreePruneOptions::new();
-    opts.valid(true).working_tree(false).locked(false);
+    opts.valid(false).working_tree(false).locked(false);
     worktree
         .prune(Some(&mut opts))
         .map_err(|err| WorktreeRemoveError::PruneFailed {
             worktree_name: verified.worktree_name.clone(),
             reason: err.message().to_owned(),
         })
-}
-
-/// Returns a human-readable kind when `meta` is a symbolic link or (on Windows)
-/// any reparse point (directory junction, volume mount point, symlink, etc.).
-fn link_or_reparse_kind(meta: &fs::Metadata) -> Option<&'static str> {
-    if meta.file_type().is_symlink() {
-        return Some("symlink");
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return Some("reparse point / junction");
-        }
-    }
-    None
 }

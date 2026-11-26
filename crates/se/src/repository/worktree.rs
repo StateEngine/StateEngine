@@ -46,22 +46,12 @@ fn map_error(error: WorktreeRemoveError) -> SeError {
             total_links,
             unreadable,
             total_unreadable,
-        } => {
-            let listed = format_entries(&links, total_links);
-            let mut reason =
-                format!("detected symbolic link(s) or junction/reparse point(s): {listed}");
-            if total_unreadable > 0 {
-                reason.push_str(&format!(
-                    "; also found unreadable path(s): {}",
-                    format_entries(&unreadable, total_unreadable)
-                ));
-            }
-            refusal(
-                "worktree link guard",
-                &reason,
-                "Unlink or remove the listed symlinks/junctions manually (never recursively delete through them), then retry `se worktree remove`; `--force` never bypasses the link guard.",
-            )
-        }
+        } => links_refusal(&links, total_links, &unreadable, total_unreadable),
+        WorktreeRemoveError::CustodyChanged { path, reason } => refusal(
+            "worktree custody",
+            &format!("{}: {reason}", path.display()),
+            "Inspect the directory for concurrent modifications or mounts, then retry `se worktree remove`.",
+        ),
         WorktreeRemoveError::NotLinkedWorktree { path, reason } => refusal(
             "worktree target",
             &format!("{}: {reason}", path.display()),
@@ -103,11 +93,12 @@ fn map_error(error: WorktreeRemoveError) -> SeError {
                 "Commit, stash, or discard changes first, or pass `--force` to remove a dirty worktree (links/junctions are still refused).",
             )
         }
-        WorktreeRemoveError::DeleteFailed { path, reason } => refusal(
-            "worktree deletion",
-            &format!("failed to remove {}: {reason}", path.display()),
-            "Close any processes holding open handles in the worktree and check permissions, then retry.",
-        ),
+        WorktreeRemoveError::DeleteFailed {
+            path,
+            reason,
+            partial,
+            dot_git_preserved,
+        } => delete_refusal(&path, &reason, partial, dot_git_preserved),
         WorktreeRemoveError::PruneFailed {
             worktree_name,
             reason,
@@ -119,6 +110,48 @@ fn map_error(error: WorktreeRemoveError) -> SeError {
             "Run `git worktree prune` in the primary repository to clean up stale metadata.",
         ),
     }
+}
+
+fn links_refusal(
+    links: &[(PathBuf, String)],
+    total_links: usize,
+    unreadable: &[(PathBuf, String)],
+    total_unreadable: usize,
+) -> SeError {
+    let listed = format_entries(links, total_links);
+    let mut reason =
+        format!("detected symbolic link(s), junction/reparse point(s), or mount(s): {listed}");
+    if total_unreadable > 0 {
+        reason.push_str(&format!(
+            "; also found unreadable path(s): {}",
+            format_entries(unreadable, total_unreadable)
+        ));
+    }
+    refusal(
+        "worktree link guard",
+        &reason,
+        "Unlink or unmount the listed paths manually (never recursively delete through them), then retry `se worktree remove`; `--force` never bypasses the link/mount guard.",
+    )
+}
+
+fn delete_refusal(
+    path: &std::path::Path,
+    reason: &str,
+    partial: bool,
+    dot_git_preserved: bool,
+) -> SeError {
+    let status = match (partial, dot_git_preserved) {
+        (true, true) => {
+            "partial deletion occurred, but root .git was preserved so retry remains safe"
+        }
+        (true, false) => "partial deletion occurred after removing root .git",
+        (false, _) => "no files were removed",
+    };
+    refusal(
+        "worktree deletion",
+        &format!("failed to remove {}: {reason} ({status})", path.display()),
+        "Close any processes holding open handles and fix directory permissions, then retry `se worktree remove`.",
+    )
 }
 
 fn format_entries(entries: &[(PathBuf, String)], total: usize) -> String {

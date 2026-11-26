@@ -1,5 +1,5 @@
 use git2::Repository;
-use se_repository::worktree::{WorktreeRemoveError, remove_worktree};
+use se_repository::worktree::{WorktreeRemoveError, parse_linux_mountinfo, remove_worktree};
 use std::{
     error::Error,
     fs,
@@ -29,10 +29,11 @@ impl TempCase {
         let main_dir = self.dir.join("main");
         fs::create_dir_all(&main_dir)?;
         let repo = Repository::init(&main_dir)?;
-        let tracked = main_dir.join("README.md");
-        fs::write(&tracked, "hello\n")?;
+        fs::write(main_dir.join("README.md"), "hello\n")?;
+        fs::write(main_dir.join(".gitignore"), "*.ignored\n")?;
         let mut index = repo.index()?;
         index.add_path(Path::new("README.md"))?;
+        index.add_path(Path::new(".gitignore"))?;
         index.write()?;
         let tree_id = index.write_tree()?;
         let tree = repo.find_tree(tree_id)?;
@@ -104,19 +105,19 @@ fn refuses_primary_repo_unrelated_dir_subdirectory_and_absent_path() -> TestResu
 }
 
 #[test]
-fn refuses_dirty_worktree_without_force_and_removes_with_force() -> TestResult {
-    let case = TempCase::new("dirty")?;
-    let (_main_dir, wt_dir) = case.init_repo_with_worktree("wt-dirty")?;
-    fs::write(wt_dir.join("untracked.txt"), "wip\n")?;
+fn refuses_dirty_and_ignored_files_without_force_and_removes_with_force() -> TestResult {
+    let case = TempCase::new("dirty-ignored")?;
+    let (_main_dir, wt_dir) = case.init_repo_with_worktree("wt-ignored")?;
+    fs::write(wt_dir.join("secret.ignored"), "local-only\n")?;
 
     let err = remove_worktree(&wt_dir, false)
         .err()
-        .ok_or("dirty must refuse without force")?;
+        .ok_or("ignored unversioned file must refuse without force")?;
     assert!(matches!(err, WorktreeRemoveError::Dirty { count: 1, .. }));
     assert!(wt_dir.exists());
 
     let report = remove_worktree(&wt_dir, true)
-        .map_err(|err| format!("dirty removal should succeed with force: {err:?}"))?;
+        .map_err(|err| format!("forced removal should succeed: {err:?}"))?;
     assert!(report.forced);
     assert!(!wt_dir.exists());
     Ok(())
@@ -136,6 +137,20 @@ fn refuses_locked_worktree_even_with_force() -> TestResult {
     assert!(matches!(err, WorktreeRemoveError::Locked { .. }));
     assert!(wt_dir.exists());
     Ok(())
+}
+
+#[test]
+fn parses_linux_mountinfo_including_escaped_spaces_and_bind_mounts() {
+    let root = Path::new("/tmp/wt");
+    let sample = "\
+36 35 98:0 / / rw,relatime - ext4 /dev/sda1 rw
+142 36 98:0 /srv/shared /tmp/wt/bind\\040dir rw,relatime - ext4 /dev/sda1 rw
+143 36 98:0 /srv/other /tmp/other rw,relatime - ext4 /dev/sda1 rw
+";
+    let mounts = parse_linux_mountinfo(sample, root);
+    assert!(mounts.contains(Path::new("/tmp/wt/bind dir")));
+    assert!(!mounts.contains(Path::new("/tmp/other")));
+    assert!(!mounts.contains(Path::new("/")));
 }
 
 #[cfg(unix)]
@@ -209,5 +224,88 @@ fn refuses_unreadable_directory_inside_worktree_even_with_force() -> TestResult 
         assert!(wt_dir.exists());
     }
     fs::set_permissions(&secret_dir, fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn partial_delete_failure_preserves_dot_git_and_allows_retry() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+
+    let case = TempCase::new("partial-retry")?;
+    let (main_dir, wt_dir) = case.init_repo_with_worktree("wt-retry")?;
+    let ro_dir = wt_dir.join("ro-sub");
+    fs::create_dir_all(&ro_dir)?;
+    let stuck = ro_dir.join("stuck.txt");
+    fs::write(&stuck, "cannot unlink while parent is 0500\n")?;
+    fs::set_permissions(&ro_dir, fs::Permissions::from_mode(0o500))?;
+
+    // Root bypasses DAC write bits; only assert when unlink actually fails.
+    let unlink_blocked = fs::remove_file(ro_dir.join("probe")).is_err()
+        && fs::write(ro_dir.join("probe"), "x").is_err();
+    if unlink_blocked {
+        let err = remove_worktree(&wt_dir, true)
+            .err()
+            .ok_or("unwritable subdir must fail deletion")?;
+        assert!(matches!(
+            err,
+            WorktreeRemoveError::DeleteFailed {
+                dot_git_preserved: true,
+                ..
+            }
+        ));
+        assert!(wt_dir.join(".git").is_file(), "root .git must survive");
+        fs::set_permissions(&ro_dir, fs::Permissions::from_mode(0o700))?;
+
+        let report = remove_worktree(&wt_dir, true)
+            .map_err(|e| format!("retry after fixing perms must succeed: {e:?}"))?;
+        assert!(report.pruned);
+        assert!(!wt_dir.exists());
+        let repo = Repository::open(&main_dir)?;
+        assert!(repo.find_worktree("wt-retry").is_err());
+    } else {
+        fs::set_permissions(&ro_dir, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn refuses_windows_directory_junction_even_with_force_and_preserves_target_and_registration()
+-> TestResult {
+    let case = TempCase::new("win-junction")?;
+    let (main_dir, wt_dir) = case.init_repo_with_worktree("wt-junc")?;
+    let shared = case.dir.join("shared-node-modules");
+    fs::create_dir_all(&shared)?;
+    let precious = shared.join("keep.txt");
+    fs::write(&precious, "precious\n")?;
+
+    let junction = wt_dir.join("node_modules");
+    let status = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&shared)
+        .status()?;
+    assert!(status.success(), "mklink /J must succeed");
+
+    let err = remove_worktree(&wt_dir, true)
+        .err()
+        .ok_or("Windows directory junction must refuse even with force")?;
+    match err {
+        WorktreeRemoveError::LinksDetected {
+            links, total_links, ..
+        } => {
+            assert_eq!(total_links, 1);
+            assert!(links[0].0.ends_with("node_modules"));
+        }
+        other => return Err(format!("expected LinksDetected, got {other:?}").into()),
+    }
+    assert!(wt_dir.exists(), "worktree directory must survive");
+    assert!(precious.exists(), "junction target file must survive");
+    let repo = Repository::open(&main_dir)?;
+    assert!(
+        repo.find_worktree("wt-junc").is_ok(),
+        "worktree registration must survive untouched"
+    );
     Ok(())
 }
