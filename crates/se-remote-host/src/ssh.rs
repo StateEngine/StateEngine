@@ -68,6 +68,8 @@ impl Forward {
                     "-o",
                     "BatchMode=yes",
                     "-o",
+                    "StrictHostKeyChecking=yes",
+                    "-o",
                     "ExitOnForwardFailure=yes",
                     "-o",
                     "ServerAliveInterval=15",

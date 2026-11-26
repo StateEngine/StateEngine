@@ -103,13 +103,15 @@ pub fn posix_single_quote(value: &str) -> String {
     out
 }
 
-/// PowerShell single-quote escaping (used inside UTF-16LE `-EncodedCommand`).
+/// PowerShell single-quote escaping (escapes ASCII `'` and Unicode typographic
+/// single-quote delimiters U+2018..U+201B recognized by PowerShell).
 pub fn powershell_single_quote(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('\'');
     for ch in value.chars() {
-        if ch == '\'' {
-            out.push_str("''");
+        if matches!(ch, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+            out.push(ch);
+            out.push(ch);
         } else {
             out.push(ch);
         }
@@ -118,21 +120,33 @@ pub fn powershell_single_quote(value: &str) -> String {
     out
 }
 
+fn powershell_b64_expr(value: &str) -> String {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let encoded = STANDARD.encode(value.as_bytes());
+    format!("[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded}'))")
+}
+
 /// Build an injection-safe remote `se` invocation for Unix or Windows.
+/// Both executable path and arguments are passed as literal data (POSIX single
+/// quotes on Unix; Base64-decoded UTF-8 strings inside `-EncodedCommand` on
+/// Windows so PowerShell string delimiters and typographic quotes cannot break
+/// out of argument boundaries).
 pub fn build_remote_se_command(remote_bin: &str, windows: bool, args: &[&str]) -> String {
     if windows {
-        let quoted: Vec<String> = args
-            .iter()
-            .map(|arg| powershell_single_quote(arg))
-            .collect();
+        let exe_expr = powershell_b64_expr(remote_bin);
+        let arg_exprs: Vec<String> = args.iter().map(|arg| powershell_b64_expr(arg)).collect();
         staging::powershell(&format!(
-            "& (Join-Path $HOME {}) {}; exit $LASTEXITCODE",
-            powershell_single_quote(remote_bin),
-            quoted.join(" ")
+            "$exe = Join-Path $HOME ({exe_expr}); $a = @({}); & $exe @a; exit $LASTEXITCODE",
+            arg_exprs.join(", ")
         ))
     } else {
+        let exe = posix_single_quote(&format!("./{remote_bin}"));
         let quoted: Vec<String> = args.iter().map(|arg| posix_single_quote(arg)).collect();
-        format!("./{remote_bin} {}", quoted.join(" "))
+        if quoted.is_empty() {
+            exe
+        } else {
+            format!("{exe} {}", quoted.join(" "))
+        }
     }
 }
 

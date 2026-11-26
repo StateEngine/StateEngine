@@ -29,6 +29,9 @@ fn parse_remote_spec_refuses_injection_and_malformed_inputs() {
         "host;id:/tmp",
         "host:/tmp/\0bad",
         "host:/tmp/\nnewline",
+        "host:C:\\work\\has\"quote",
+        "host:C:\\work\\trailing\\",
+        "host:C:\\work\\space\\ dir",
     ] {
         assert!(parse_remote_spec(bad).is_err(), "must refuse {bad:?}");
     }
@@ -46,7 +49,15 @@ fn derive_alias_sanitizes_user_and_host() {
 #[test]
 fn validate_agent_name_rejects_shell_metacharacters() {
     assert!(validate_agent_name("worker_1-a").is_ok());
-    for bad in ["", "a;rm -rf /", "$(whoami)", "has space", "a/b"] {
+    for bad in [
+        "",
+        "-leading",
+        "--flag",
+        "a;rm -rf /",
+        "$(whoami)",
+        "has space",
+        "a/b",
+    ] {
         assert!(validate_agent_name(bad).is_err(), "must refuse {bad:?}");
     }
 }
@@ -62,12 +73,21 @@ fn quoting_neutralizes_shell_metacharacters() {
         powershell_single_quote(evil),
         "'/tmp/o''reilly; $(rm -rf /) `id` $HOME'"
     );
+    assert_eq!(
+        powershell_single_quote("a\u{2018}b\u{2019}c\u{201A}d\u{201B}e"),
+        "'a\u{2018}\u{2018}b\u{2019}\u{2019}c\u{201A}\u{201A}d\u{201B}\u{201B}e'"
+    );
 
     let cmd = build_remote_se_command(".se-bin", false, &["init", "--repo", evil, "--json"]);
+    assert!(cmd.starts_with("'./.se-bin' "));
     assert!(cmd.contains("'/tmp/o'\\''reilly; $(rm -rf /) `id` $HOME'"));
     assert!(!cmd.contains("init --repo /tmp"));
 
-    let win_cmd = build_remote_se_command(".se-bin", true, &["init", "--repo", evil, "--json"]);
+    let win_cmd = build_remote_se_command(
+        ".se-bin",
+        true,
+        &["init", "--repo", "a\u{2019};calc", "--json"],
+    );
     assert!(win_cmd.starts_with("powershell"));
     assert!(win_cmd.contains("-EncodedCommand"));
 }

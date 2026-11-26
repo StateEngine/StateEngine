@@ -5,6 +5,7 @@
 //! consent with honest partial-failure reporting across every phase.
 use crate::{OwnerCommands, Presentation, invalid, pair, progress, required, text};
 use clap::ArgMatches;
+use se_core::ops::{IdentityOutcome, InitOutcome};
 use se_host::remote::{
     LaunchPermissionChange, OwnerInput,
     ssh::{prepare_image, run_verified_se_command, validate_destination},
@@ -57,6 +58,8 @@ struct InitReport {
     phases: Vec<PhaseReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<serde_json::Value>,
+    #[serde(skip_serializing)]
+    remedy: Option<String>,
 }
 
 struct InitArgs {
@@ -99,10 +102,14 @@ pub fn validate_remote_path(path: &str) -> Result<()> {
         || path.len() > 4096
         || path.bytes().any(|b| b == 0)
         || path.chars().any(char::is_control)
+        || path.contains('"')
+        || path.ends_with('\\')
+        || path.contains("\\ ")
+        || path.contains("\\\t")
     {
         return Err(SeError::invalid(
             "remote path",
-            "a non-empty path without NUL or control characters (at most 4096 bytes)",
+            "a non-empty path without NUL, control characters, double quotes, or trailing/space-escaped backslashes (at most 4096 bytes)",
         ));
     }
     Ok(())
@@ -111,13 +118,14 @@ pub fn validate_remote_path(path: &str) -> Result<()> {
 pub fn validate_agent_name(agent: &str) -> Result<()> {
     if agent.is_empty()
         || agent.len() > 64
+        || agent.starts_with('-')
         || !agent
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
     {
         return Err(SeError::invalid(
             "remote agent name",
-            "1..64 ASCII letters, digits, hyphens, or underscores",
+            "1..64 ASCII letters, digits, hyphens, or underscores, not starting with '-'",
         ));
     }
     Ok(())
@@ -193,7 +201,21 @@ pub(crate) fn run<H: OwnerCommands + Presentation + 'static>(
         write_human(&report, stdout)?;
     }
     stdout.flush()?;
-    Ok(if report.complete { 0 } else { 1 })
+    Ok(exit_code_for(&report))
+}
+
+fn exit_code_for(report: &InitReport) -> u8 {
+    if report.complete {
+        0
+    } else if report
+        .phases
+        .iter()
+        .any(|phase| matches!(phase.status, "ok" | "reused"))
+    {
+        2
+    } else {
+        1
+    }
 }
 
 fn decode_args(m: &ArgMatches) -> Result<InitArgs> {
@@ -223,7 +245,7 @@ fn decode_args(m: &ArgMatches) -> Result<InitArgs> {
     })
 }
 
-fn execute<H: OwnerCommands + 'static>(
+fn execute<H: OwnerCommands + Presentation + 'static>(
     host: &'static H,
     context: &H::Context,
     args: InitArgs,
@@ -240,6 +262,7 @@ fn execute<H: OwnerCommands + 'static>(
         launch_allowed: false,
         phases: Vec::new(),
         error: None,
+        remedy: None,
     };
 
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -249,6 +272,7 @@ fn execute<H: OwnerCommands + 'static>(
         Ok(rt) => rt,
         Err(_) => {
             fail_phase(
+                host,
                 &mut report,
                 "prepare_local",
                 &SeError::invalid("remote setup", "an available native I/O runtime"),
@@ -281,7 +305,7 @@ fn execute<H: OwnerCommands + 'static>(
     report
 }
 
-async fn run_phases<H: OwnerCommands + 'static>(
+async fn run_phases<H: OwnerCommands + Presentation + 'static>(
     host: &'static H,
     context: &H::Context,
     args: &InitArgs,
@@ -303,11 +327,27 @@ async fn run_phases<H: OwnerCommands + 'static>(
     {
         Ok(info) => info,
         Err(err) => {
-            fail_phase(report, "init_remote_project", &err);
+            fail_phase(host, report, "init_remote_project", &err);
             return;
         }
     };
-    record_remote_project(report, &remote);
+    // Record the proved remote project receipt before validating any optional
+    // worker mismatch so partial progress is never lost.
+    record_remote_project_receipt(report, &remote);
+    if let Some(worker) = args.agent.as_deref()
+        && remote.agent_name != worker
+    {
+        let err = SeError::invalid(
+            "remote agent registration",
+            &format!(
+                "remote init returned agent '{}' instead of requested '{worker}'",
+                remote.agent_name.escape_debug()
+            ),
+        );
+        fail_phase(host, report, "init_remote_project", &err);
+        return;
+    }
+    record_remote_agent_and_phase(report, &remote);
 
     if !args.allow_launch {
         report.phases.push(PhaseReport {
@@ -336,12 +376,12 @@ async fn run_phases<H: OwnerCommands + 'static>(
             report.complete = true;
         }
         Err(err) => {
-            fail_phase(report, "grant_launch_permission", &err);
+            fail_phase(host, report, "grant_launch_permission", &err);
         }
     }
 }
 
-async fn stage_and_pair<H: OwnerCommands + 'static>(
+async fn stage_and_pair<H: OwnerCommands + Presentation + 'static>(
     host: &'static H,
     context: &H::Context,
     args: &InitArgs,
@@ -360,7 +400,7 @@ async fn stage_and_pair<H: OwnerCommands + 'static>(
     )
     .await
     {
-        fail_phase(report, "prepare_local", &err);
+        fail_phase(host, report, "prepare_local", &err);
         return None;
     }
     report.phases.push(PhaseReport {
@@ -372,12 +412,12 @@ async fn stage_and_pair<H: OwnerCommands + 'static>(
     let dist_path = match args.distribution.to_local() {
         Ok(path) => path,
         Err(err) => {
-            fail_phase(report, "stage_image", &err);
+            fail_phase(host, report, "stage_image", &err);
             return None;
         }
     };
     if let Err(err) = prepare_image(&args.destination, &dist_path, cancelled, progress).await {
-        fail_phase(report, "stage_image", &err);
+        fail_phase(host, report, "stage_image", &err);
         return None;
     }
     report.phases.push(PhaseReport {
@@ -400,7 +440,7 @@ async fn stage_and_pair<H: OwnerCommands + 'static>(
     {
         Ok(output) => output,
         Err(err) => {
-            fail_phase(report, "pair_machine", &err);
+            fail_phase(host, report, "pair_machine", &err);
             return None;
         }
     };
@@ -424,69 +464,21 @@ async fn init_remote_project(
     remote_path: &str,
     agent: Option<&str>,
 ) -> Result<RemoteProjectInit> {
-    let mut init_args = vec!["init", "--repo", remote_path, "--json"];
-    if let Some(worker) = agent {
-        init_args.extend(["--agent", worker]);
+    let repo_flag = format!("--repo={remote_path}");
+    let agent_flag = agent.map(|worker| format!("--agent={worker}"));
+    let mut init_args: Vec<&str> = vec!["init", &repo_flag, "--json"];
+    if let Some(flag) = agent_flag.as_deref() {
+        init_args.push(flag);
     }
     let stdout = run_verified_se_command(destination, distribution, &init_args).await?;
-    let mut result = parse_init_envelope(&stdout)?;
-    if let Some(worker) = agent
-        && result.agent_name != worker
-    {
-        let project_id = result.project_id.to_string();
-        let (agent_id, agent_reused) =
-            ensure_remote_agent(destination, distribution, &project_id, worker).await?;
-        result.agent_id = agent_id;
-        result.agent_name = worker.to_owned();
-        result.agent_reused = agent_reused;
-    }
-    Ok(result)
-}
-
-async fn ensure_remote_agent(
-    destination: &str,
-    distribution: &Path,
-    project_id: &str,
-    worker: &str,
-) -> Result<(AgentId, bool)> {
-    let add_args = ["--project", project_id, "agent", "add", worker, "--json"];
-    match run_verified_se_command(destination, distribution, &add_args).await {
-        Ok(stdout) => {
-            #[derive(serde::Deserialize)]
-            struct Envelope {
-                agent: Ref,
-            }
-            #[derive(serde::Deserialize)]
-            struct Ref {
-                id: AgentId,
-            }
-            let receipt: Envelope = serde_json::from_slice(&stdout)
-                .map_err(|_| SeError::invalid("remote agent add", "a compatible JSON receipt"))?;
-            Ok((receipt.agent.id, false))
-        }
-        Err(err) if err.code() == se_types::Code::AgentNameConflict => {
-            let show_args = ["--project", project_id, "agent", "show", worker, "--json"];
-            let stdout = run_verified_se_command(destination, distribution, &show_args).await?;
-            let value: serde_json::Value = serde_json::from_slice(&stdout)
-                .map_err(|_| SeError::invalid("remote agent show", "a compatible JSON response"))?;
-            let id_str = value
-                .pointer("/agent/value/id")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| SeError::invalid("remote agent show", "an agent id"))?;
-            let agent_id: AgentId = id_str
-                .parse()
-                .map_err(|_| SeError::invalid("remote agent show", "a valid agent id"))?;
-            Ok((agent_id, true))
-        }
-        Err(err) => Err(err),
-    }
+    parse_init_envelope(&stdout)
 }
 
 fn parse_init_envelope(bytes: &[u8]) -> Result<RemoteProjectInit> {
     #[derive(serde::Deserialize)]
     struct InitEnvelope {
         schema: String,
-        outcome: String,
+        outcome: InitOutcome,
         project: ProjectPart,
         agent: AgentPart,
     }
@@ -500,7 +492,7 @@ fn parse_init_envelope(bytes: &[u8]) -> Result<RemoteProjectInit> {
     struct AgentPart {
         id: AgentId,
         name: String,
-        outcome: String,
+        outcome: IdentityOutcome,
     }
     let env: InitEnvelope = serde_json::from_slice(bytes)
         .map_err(|_| SeError::invalid("remote init", "a compatible se.init/v1 JSON response"))?;
@@ -513,18 +505,21 @@ fn parse_init_envelope(bytes: &[u8]) -> Result<RemoteProjectInit> {
         project_root: env.project.root,
         agent_id: env.agent.id,
         agent_name: env.agent.name,
-        project_reused: env.outcome == "already-present",
-        agent_reused: env.agent.outcome == "existing",
+        project_reused: matches!(env.outcome, InitOutcome::AlreadyPresent),
+        agent_reused: matches!(env.agent.outcome, IdentityOutcome::Existing),
     })
 }
 
-fn record_remote_project(report: &mut InitReport, remote: &RemoteProjectInit) {
+fn record_remote_project_receipt(report: &mut InitReport, remote: &RemoteProjectInit) {
     report.project = Some(serde_json::json!({
         "id": remote.project_id,
         "name": remote.project_name,
         "root": remote.project_root,
         "reused": remote.project_reused,
     }));
+}
+
+fn record_remote_agent_and_phase(report: &mut InitReport, remote: &RemoteProjectInit) {
     report.agent = Some(serde_json::json!({
         "id": remote.agent_id,
         "name": remote.agent_name,
@@ -539,7 +534,10 @@ fn record_remote_project(report: &mut InitReport, remote: &RemoteProjectInit) {
         },
         detail: format!(
             "project {} ({}) with agent {} ({})",
-            remote.project_name, remote.project_id, remote.agent_name, remote.agent_id
+            remote.project_name.escape_debug(),
+            remote.project_id,
+            remote.agent_name.escape_debug(),
+            remote.agent_id
         ),
     });
 }
@@ -602,14 +600,14 @@ async fn grant_launch_consent<H: OwnerCommands + 'static>(
     };
 
     let key = IdempotencyKey::new(uuid::Uuid::new_v4().to_string())?;
-    pair::request(
+    let receipt = pair::request(
         host,
         context,
         OwnerInput::PairingLaunchPermissions {
             alias: alias.to_owned(),
             after: None,
             change: Some(LaunchPermissionChange {
-                target,
+                target: target.clone(),
                 allowed: true,
                 expected_revision,
                 key,
@@ -618,49 +616,139 @@ async fn grant_launch_consent<H: OwnerCommands + 'static>(
         Arc::clone(cancelled),
     )
     .await?;
+    verify_grant_receipt(&receipt.value, &target)?;
     Ok(false)
 }
 
-fn fail_phase(report: &mut InitReport, phase: &'static str, error: &SeError) {
-    let envelope = se_types::ErrorEnvelope::new(error.body.clone(), &se_types::RenderCx::default())
-        .ok()
-        .and_then(|env| serde_json::to_value(env).ok());
-    report.phases.push(PhaseReport {
-        phase,
-        status: "failed",
-        detail: error.to_string(),
-    });
-    report.error = envelope.or_else(|| Some(serde_json::json!({"message": error.to_string()})));
-}
-
-fn write_human(report: &InitReport, out: &mut impl Write) -> io::Result<()> {
-    if report.complete {
-        writeln!(
-            out,
-            "Initialized remote '{}' ({}:{}).",
-            report.alias, report.destination, report.remote_path
-        )?;
-        for phase in &report.phases {
-            writeln!(
-                out,
-                "  [{}] {}: {}",
-                phase.status, phase.phase, phase.detail
-            )?;
-        }
-        writeln!(out, "Next: se remote list --host {}", report.alias)?;
-    } else {
-        writeln!(
-            out,
-            "Remote init for '{}' ({}:{}) stopped with partial progress:",
-            report.alias, report.destination, report.remote_path
-        )?;
-        for phase in &report.phases {
-            writeln!(
-                out,
-                "  [{}] {}: {}",
-                phase.status, phase.phase, phase.detail
-            )?;
-        }
+fn verify_grant_receipt(value: &serde_json::Value, expected: &RemoteTarget) -> Result<()> {
+    #[derive(serde::Deserialize)]
+    struct ChangedReceipt {
+        permission: PermissionPart,
+        state: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct PermissionPart {
+        target: RemoteTarget,
+        allowed: bool,
+    }
+    let changed: ChangedReceipt =
+        serde_json::from_value(value["changed"].clone()).map_err(|_| {
+            SeError::invalid(
+                "launch consent receipt",
+                "a committed or replayed `changed` permission receipt from the destination",
+            )
+        })?;
+    if changed.permission.target != *expected
+        || !changed.permission.allowed
+        || !matches!(changed.state.as_str(), "committed" | "replayed")
+    {
+        return Err(SeError::invalid(
+            "launch consent receipt",
+            "a confirmed allowed launch permission receipt for the requested target",
+        ));
     }
     Ok(())
 }
+
+fn escape_far_envelope(envelope: se_types::ErrorEnvelope) -> se_types::ErrorEnvelope {
+    if !envelope.body().far() {
+        return envelope;
+    }
+    let message = envelope.message().escape_debug().to_string();
+    let remedy_text = envelope.remedy().text.escape_debug().to_string();
+    envelope.with_terminal_text(message, remedy_text)
+}
+
+fn fail_phase<H: Presentation>(
+    _host: &H,
+    report: &mut InitReport,
+    phase: &'static str,
+    error: &SeError,
+) {
+    let escaped = se_types::ErrorEnvelope::new(error.body.clone(), &se_types::RenderCx::default())
+        .ok()
+        .map(escape_far_envelope);
+    let detail = escaped
+        .as_ref()
+        .map(|env| env.message().to_owned())
+        .unwrap_or_else(|| error.to_string().escape_debug().to_string());
+    let remedy = escaped.as_ref().map(|env| env.remedy().text.clone());
+    let error_json = escaped
+        .and_then(|env| serde_json::to_value(env).ok())
+        .or_else(|| Some(serde_json::json!({"message": detail})));
+    report.phases.push(PhaseReport {
+        phase,
+        status: "failed",
+        detail,
+    });
+    report.remedy = remedy;
+    report.error = error_json;
+}
+
+fn sanitize_terminal_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if ch.is_control() {
+            out.extend(ch.escape_debug());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn write_human(report: &InitReport, out: &mut impl Write) -> io::Result<()> {
+    let alias = sanitize_terminal_text(&report.alias);
+    let destination = sanitize_terminal_text(&report.destination);
+    let remote_path = sanitize_terminal_text(&report.remote_path);
+    if report.complete {
+        writeln!(
+            out,
+            "Initialized remote '{alias}' ({destination}:{remote_path})."
+        )?;
+        for phase in &report.phases {
+            writeln!(
+                out,
+                "  [{}] {}: {}",
+                phase.status,
+                phase.phase,
+                sanitize_terminal_text(&phase.detail)
+            )?;
+        }
+        writeln!(out, "Next: se remote list --host {alias}")?;
+    } else {
+        let partial = report
+            .phases
+            .iter()
+            .any(|p| matches!(p.status, "ok" | "reused"));
+        let headline = if partial {
+            "stopped with partial progress"
+        } else {
+            "failed before completing any phase"
+        };
+        writeln!(
+            out,
+            "Remote init for '{alias}' ({destination}:{remote_path}) {headline}:"
+        )?;
+        for phase in &report.phases {
+            writeln!(
+                out,
+                "  [{}] {}: {}",
+                phase.status,
+                phase.phase,
+                sanitize_terminal_text(&phase.detail)
+            )?;
+        }
+        if let Some(remedy) = report.remedy.as_deref().filter(|r| !r.is_empty()) {
+            writeln!(out, "Remedy: {}", sanitize_terminal_text(remedy))?;
+        }
+        writeln!(
+            out,
+            "Next: resolve the reported error, then rerun `se remote init {destination}:{remote_path} --alias {alias}` to continue."
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;
