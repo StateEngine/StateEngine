@@ -21,8 +21,6 @@ struct EntryMeta {
     size: u64,
     mtime_sec: i64,
     mtime_nsec: i64,
-    ctime_sec: i64,
-    ctime_nsec: i64,
     #[cfg(target_os = "linux")]
     mnt_id: Option<u64>,
     #[cfg(target_os = "linux")]
@@ -36,8 +34,6 @@ struct TargetBaseline {
     size: u64,
     mtime_sec: i64,
     mtime_nsec: i64,
-    ctime_sec: i64,
-    ctime_nsec: i64,
     mode: libc::mode_t,
 }
 
@@ -49,8 +45,6 @@ impl TargetBaseline {
             size: meta.size,
             mtime_sec: meta.mtime_sec,
             mtime_nsec: meta.mtime_nsec,
-            ctime_sec: meta.ctime_sec,
-            ctime_nsec: meta.ctime_nsec,
             mode: meta.mode & 0o777,
         }
     }
@@ -104,8 +98,6 @@ fn stat_entry_at(
         size: stx.stx_size,
         mtime_sec: stx.stx_mtime.tv_sec,
         mtime_nsec: i64::from(stx.stx_mtime.tv_nsec),
-        ctime_sec: stx.stx_ctime.tv_sec,
-        ctime_nsec: i64::from(stx.stx_ctime.tv_nsec),
         mnt_id,
         is_mount_root,
     }))
@@ -138,8 +130,6 @@ fn stat_entry_at(
         size: st.st_size as u64,
         mtime_sec: st.st_mtime,
         mtime_nsec: st.st_mtime_nsec,
-        ctime_sec: st.st_ctime,
-        ctime_nsec: st.st_ctime_nsec,
     }))
 }
 
@@ -168,8 +158,6 @@ fn stat_fd(file: &File) -> Result<EntryMeta, io::Error> {
             size: st.st_size as u64,
             mtime_sec: st.st_mtime,
             mtime_nsec: st.st_mtime_nsec,
-            ctime_sec: st.st_ctime,
-            ctime_nsec: st.st_ctime_nsec,
         })
     }
 }
@@ -592,9 +580,26 @@ fn publish_replace(ctx: &ReplaceCtx<'_>) -> Result<(), WorkspaceWriteError> {
                 "rollback after exchange conflict ({reason}) failed: {rollback_err}"
             )));
         }
-        let _ = ctx.parent.sync_all();
-        cleanup_stage(ctx.parent, ctx.stage);
-        return Err(reason);
+        if let Err(sync_err) = ctx.parent.sync_all() {
+            return Err(WorkspaceWriteError::PublishedUncertain(format!(
+                "original restored after exchange conflict ({reason}), but rollback directory sync failed: {sync_err}"
+            )));
+        }
+        // SAFETY: retained parent directory fd and our restored unique staging name.
+        if unsafe { libc::unlinkat(ctx.parent.as_raw_fd(), ctx.stage.as_ptr(), 0) } < 0 {
+            return Err(WorkspaceWriteError::PublishedUncertain(format!(
+                "original restored after exchange conflict ({reason}), but staging cleanup failed: {}",
+                io::Error::last_os_error()
+            )));
+        }
+        if let Err(sync_err) = ctx.parent.sync_all() {
+            return Err(WorkspaceWriteError::PublishedUncertain(format!(
+                "original restored and staging removed after exchange conflict ({reason}), but final directory sync failed: {sync_err}"
+            )));
+        }
+        return Err(WorkspaceWriteError::PublishedUncertain(format!(
+            "replacement briefly published before conflict ({reason}); original restored and staging removed"
+        )));
     }
     ctx.parent.sync_all().map_err(|error| {
         WorkspaceWriteError::PublishedUncertain(format!(
@@ -618,6 +623,7 @@ fn publish_replace(ctx: &ReplaceCtx<'_>) -> Result<(), WorkspaceWriteError> {
 
 pub(super) fn write_relative(
     root: &File,
+    _root_path: &std::path::Path,
     path: &str,
     bytes: &[u8],
     root_check: &dyn Fn() -> io::Result<()>,
@@ -692,7 +698,14 @@ pub(super) fn write_relative(
         if matches!(current, Ok(Some(m)) if (m.dev, m.ino) == stage_id) {
             // SAFETY: verified our exact newly-created inode in the displaced parent.
             if unsafe { libc::unlinkat(parent.as_raw_fd(), leaf.as_ptr(), 0) } == 0 {
-                return Err(reason);
+                return match parent.sync_all() {
+                    Ok(()) => Err(WorkspaceWriteError::PublishedUncertain(format!(
+                        "file was briefly created before parent displacement ({reason}); newly created file removed"
+                    ))),
+                    Err(sync_err) => Err(WorkspaceWriteError::PublishedUncertain(format!(
+                        "file was briefly created before parent displacement ({reason}) and removed, but rollback sync failed: {sync_err}"
+                    ))),
+                };
             }
         }
         return Err(WorkspaceWriteError::PublishedUncertain(format!(

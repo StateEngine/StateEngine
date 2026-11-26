@@ -82,7 +82,7 @@ impl NativeSourceRoot {
         self.check().map_err(|error| {
             WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::RootUnverified(error))
         })?;
-        os_write::write_relative(&self.directory, path, bytes, &|| self.check())?;
+        os_write::write_relative(&self.directory, &self.path, path, bytes, &|| self.check())?;
         self.check().map_err(|error| {
             WorkspaceWriteError::PublishedUncertain(format!(
                 "workspace root could not be verified after publication: {error}"

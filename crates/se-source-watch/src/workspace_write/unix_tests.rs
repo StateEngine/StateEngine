@@ -1,4 +1,5 @@
 use super::*;
+use crate::source_root::NativeSourceRoot;
 use std::path::PathBuf;
 
 type Check = Result<(), Box<dyn std::error::Error>>;
@@ -112,15 +113,29 @@ fn publish_replace_rolls_back_and_preserves_concurrent_editor_save() -> Check {
     })
     .err()
     .ok_or("expected exchange rollback on concurrent edit")?;
-    assert!(matches!(
-        err,
-        WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::InvalidTarget(_))
-    ));
+    assert!(matches!(err, WorkspaceWriteError::PublishedUncertain(_)));
     assert_eq!(
         std::fs::read(dir.0.join("note.txt"))?,
         b"concurrent-editor-save"
     );
     assert!(!dir.0.join(".se-write-stage").exists());
+    Ok(())
+}
+
+#[test]
+fn write_relative_creates_and_replaces_existing_file() -> Check {
+    let dir = scratch("create-replace")?;
+    let root = NativeSourceRoot::open(&dir.0)?;
+    root.write_relative("sub/note.txt", b"v1")?;
+    assert_eq!(std::fs::read(dir.0.join("sub").join("note.txt"))?, b"v1");
+
+    // Normal replacement must succeed even though renameat2(RENAME_EXCHANGE)
+    // updates ctime on the displaced original.
+    root.write_relative("sub/note.txt", b"v2-replaced")?;
+    assert_eq!(
+        std::fs::read(dir.0.join("sub").join("note.txt"))?,
+        b"v2-replaced"
+    );
     Ok(())
 }
 
@@ -158,10 +173,7 @@ fn publish_replace_rolls_back_when_parent_displaced() -> Check {
     })
     .err()
     .ok_or("expected rollback when parent displaced")?;
-    assert!(matches!(
-        err,
-        WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::InvalidTarget(_))
-    ));
+    assert!(matches!(err, WorkspaceWriteError::PublishedUncertain(_)));
     assert_eq!(
         std::fs::read(outer.0.join("escaped").join("note.txt"))?,
         b"original"
@@ -184,8 +196,6 @@ fn same_device_different_mount_id_or_mount_root_is_refused() {
         size: 0,
         mtime_sec: 0,
         mtime_nsec: 0,
-        ctime_sec: 0,
-        ctime_nsec: 0,
         mnt_id: Some(101),
         is_mount_root: false,
     };

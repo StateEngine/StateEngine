@@ -69,7 +69,7 @@ use se_state_files::NativeObjectKey;
 pub use se_state_files::{NativeFileRevision, observe_file_revision};
 
 pub struct NativeSourceRoot {
-    path: PathBuf,
+    pub(crate) path: PathBuf,
     pub(crate) directory: File,
     identity: NativeFileRevision,
 }
