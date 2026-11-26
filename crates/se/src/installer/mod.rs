@@ -2,7 +2,7 @@
 mod args;
 mod manifest;
 mod replace;
-pub use replace::replace_installation;
+pub use replace::{read_replace_custody, replace_installation};
 #[cfg(unix)]
 mod recovery;
 use args::Options;

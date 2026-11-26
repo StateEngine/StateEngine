@@ -262,9 +262,14 @@ try {
     $data = if ($env:SE_HOME) { [IO.Path]::GetFullPath($env:SE_HOME) } else { $root }
     $record = Join-Path $data 'standalone-install.json'
     $pending = Join-Path $data 'standalone-install.pending.json'
+    $replaceState = Join-Path $data 'standalone-install.replace.json'
     Assert-PlainPath $pending
+    Assert-PlainPath $replaceState
     if ($Recover) {
-        if (-not [IO.File]::Exists($pending)) { throw "partial installation journal is absent: $pending" }
+        if (-not [IO.File]::Exists($pending)) {
+            if ([IO.File]::Exists($replaceState)) { $Recover = $false }
+            else { throw "partial installation journal is absent: $pending" }
+        }
     } elseif (Test-Path -LiteralPath $pending) { throw "partial installation at $pending; rerun this archive's install.ps1 -Recover" }
     foreach ($path in @($root, $bin, $assets, $record)) { Assert-PlainPath $path }
     # Current native code reads the retained schema and validates the exact old
@@ -307,6 +312,24 @@ try {
     $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
     $owner = $ownerSid.Value
     if ([IO.Directory]::Exists($data)) { Assert-ProtectedDataHome $data $ownerSid }
+    $inheritedEdits = @()
+    if ([IO.File]::Exists($replaceState)) {
+        if ((Get-Acl -LiteralPath $replaceState).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $owner) { throw 'replacement custody has a different native owner' }
+        & (Join-Path $bundle 'se.exe') __install-files-check $replaceState
+        if ($LASTEXITCODE -ne 0) { throw 'replacement custody native file custody refused' }
+        $replaceObj = Get-Content -LiteralPath $replaceState -Raw | ConvertFrom-Json
+        if ($replaceObj.schema -ne 'stateengine-install-replace/v1' -or $replaceObj.owner -ne $owner) { throw 'replacement custody has an invalid schema or owner' }
+        if ($replaceObj.no_modify_path -is [bool] -and $replaceObj.no_modify_path) { $skipPathEdits = $true }
+        $repProp = $replaceObj.PSObject.Properties['inherited_path_edits']
+        if ($null -ne $repProp -and $null -ne $repProp.Value) {
+            $inheritedEdits = @($repProp.Value)
+            foreach ($edit in @($inheritedEdits)) {
+                $target = $edit.PSObject.Properties['target']
+                if ($null -eq $target -or [string]$target.Value -cne 'HKCU\Environment\Path') { throw 'inherited PATH custody differs from the original registry target' }
+            }
+            if ($inheritedEdits.Count -gt 1) { throw 'inherited PATH custody differs from the original registry target' }
+        }
+    }
     $priorDigest = if ($hadPath) { Get-TextDigest ([string]$before) } else { $null }
     $edits = @()
     if (-not $alreadyPresent -and -not $skipPathEdits) {
@@ -314,9 +337,8 @@ try {
     }
     # A no-modify replacement of a PATH-owning install carries the prior registry
     # custody here; a recovery re-reads the journal instead, so this cannot double-add.
-    $inheritedEdits = @()
     $inherited = $InheritPathEdits
-    if ($null -ne $inherited -and $inherited -ne '') {
+    if ($inheritedEdits.Count -eq 0 -and $null -ne $inherited -and $inherited -ne '') {
         $extra = $inherited | ConvertFrom-Json
         # ConvertFrom-Json unwraps a single-element JSON array, so the usual
         # one-edit custody record arrives as a bare object, not an array.
@@ -517,6 +539,10 @@ try {
     Assert-PlainPath $pending
     if ((Get-Digest $pending) -cne $pendingDigest) { throw 'partial journal changed before completion' }
     [IO.File]::Delete($pending)
+    if ([IO.File]::Exists($replaceState)) {
+        Assert-PlainPath $replaceState
+        [IO.File]::Delete($replaceState)
+    }
     Write-Output "Installed se at $binary"
     Write-Output 'Run this command now in this PowerShell terminal to verify the installation:'
     Write-Output ("  & '" + $binary.Replace("'", "''") + "' --version")

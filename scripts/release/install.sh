@@ -113,9 +113,17 @@ if [ "$macos" -eq 1 ]; then data=${SE_HOME:-$HOME/Library/Application Support/St
 else data=${SE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/stateengine}; fi
 record=$data/standalone-install.json
 partial=$data/standalone-install.partial
+replace_state=$data/standalone-install.replace.json
 plain_path "$partial"
+plain_path "$replace_state"
 if [ "$recover" -eq 1 ]; then
-    [ -d "$partial" ] || fail "partial installation is absent: $partial"
+    if [ ! -d "$partial" ]; then
+        if [ -f "$replace_state" ]; then
+            recover=0
+        else
+            fail "partial installation is absent: $partial"
+        fi
+    fi
 else [ ! -e "$partial" ] || fail "partial installation at $partial; resume with: sh \"$bundle/install.sh\" --recover"; fi
 # A current archive can remove a proved older installation without asking the
 # old image to read newer data. Native owner, file custody and quiet-runtime
@@ -126,6 +134,25 @@ if [ "$recover" -eq 0 ] && [ "$native_held" -eq 0 ] && [ -e "$record" ]; then
     if [ "$no_modify_path" -eq 1 ]; then replace_flags=' --no-modify-path'; fi
     "$bundle/se" __install-replace "$data"$replace_flags || fail 'current-archive replacement did not complete; preserve the reported paths and resolve its refusal before retrying'
     exit 0
+fi
+inherited_fish_path=''
+inherited_fish_sha256=''
+if [ -f "$replace_state" ]; then
+    custody=$("$bundle/se" __install-replace-custody "$data") || fail 'invalid or foreign replacement custody record'
+    if [ -n "$custody" ]; then
+        custody_line=0
+        while IFS= read -r line; do
+            custody_line=$((custody_line + 1))
+            case "$custody_line" in
+            1) [ "$line" = 1 ] && no_modify_path=1 ;;
+            2) [ -n "$inherit_path_edits" ] || inherit_path_edits=$line ;;
+            3) inherited_fish_path=$line ;;
+            4) inherited_fish_sha256=$line ;;
+            esac
+        done <<CUSTODY
+$custody
+CUSTODY
+    fi
 fi
 for destination in "$bin/se" "$assets" "$record"; do
     plain_path "$destination"
@@ -490,6 +517,8 @@ fi
     if [ -n "$fish_file" ]; then
         checksum=$(file_digest "$stage/fish-config")
         printf ',\n    {"path": '; json_string "$fish_file"; printf ', "sha256": "%s"}' "$checksum"
+    elif [ -n "$inherited_fish_path" ]; then
+        printf ',\n    {"path": '; json_string "$inherited_fish_path"; printf ', "sha256": "%s"}' "$inherited_fish_sha256"
     fi
     printf '\n  ],\n  "created_directories": ['
     comma=''
@@ -575,6 +604,7 @@ for relative in $asset_files; do cmp -s "$(asset_destination "$relative")" "$bun
 cmp -s "$bin/se" "$bundle/se" || fail 'installed binary readback failed'
 set -- "$bundle/se" __install-files-check "$bin/se"
 for relative in $asset_files; do set -- "$@" "$(asset_destination "$relative")"; done
+if [ -n "$inherited_fish_path" ]; then set -- "$@" "$inherited_fish_path"; fi
 "$@" || fail 'native installed-file ownership readback failed'
 record_source=$stage/install.json
 inherited_elements=$(sed -n 's/^  "inherited_path_edits": \[\(.*\)\][[:space:]]*$/\1/p' "$stage/install.json")
@@ -605,4 +635,5 @@ fi
 publish_file "$record_source" "$record" 600
 cmp -s "$record" "$record_source" || fail 'ownership record readback failed'
 "$bundle/se" __install-files-check "$record" || fail 'native ownership record readback failed'
+if [ -f "$replace_state" ]; then rm "$replace_state"; flush "$data"; fi
 done_install=1

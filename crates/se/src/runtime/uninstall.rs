@@ -101,7 +101,10 @@ impl<'p> Achieved<'p> {
         } else {
             format!("{what} refused: {error}")
         };
-        match (self.any() || !revoked.is_empty()).then(|| {
+        let achieved_revocation = revoked
+            .iter()
+            .any(|entry| entry.witness.state == WitnessState::Witnessed);
+        match (self.any() || achieved_revocation).then(|| {
             let mut receipt = self.receipt(&reason);
             receipt.integrations.splice(0..0, revoked);
             receipt
@@ -210,18 +213,13 @@ fn execute_inner(
         }
         Err(PreparationOutcome::Failed(error)) => return Err(error),
     };
-    recover(plan, &mut effects.recovery);
-    cleanup_temporary(plan, claim, &mut effects.recovery);
-    let clean = effects.recovery.iter().all(recovery::resolved);
-    if !clean {
-        pending_assets(
-            plan,
-            &mut effects,
-            "recovery inventory is unreadable or contains unresolved copies",
-        );
+    if !reconcile_pre_removal_recovery(plan, claim, &mut effects) {
         return Ok((owned_plan, effects, Some(runtime_lease)));
     }
     let preserve = reinstall.is_some_and(|(_, _, preserve)| preserve);
+    if preserve {
+        reinstall::persist_custody(&cx.home, plan)?;
+    }
     let safe = remove_owned_files(plan, installed, &parents, &mut effects, preserve);
     // Never strand a partially removed installation without its retry entry point.
     if safe {
@@ -254,8 +252,26 @@ fn execute_inner(
             "installed image preserved so unresolved effects can be retried",
         ));
     }
-    settle(plan, &parents, &mut held, safe, &mut effects);
+    settle(plan, &parents, &mut held, safe, preserve, &mut effects);
     Ok((owned_plan, effects, Some(runtime_lease)))
+}
+
+fn reconcile_pre_removal_recovery(
+    plan: &ValidatedUninstallPlan,
+    claim: &se_proc::NativeInstallationClaim,
+    effects: &mut UninstallEffects,
+) -> bool {
+    recover(plan, &mut effects.recovery);
+    cleanup_temporary(plan, claim, &mut effects.recovery);
+    if effects.recovery.iter().all(recovery::resolved) {
+        return true;
+    }
+    pending_assets(
+        plan,
+        effects,
+        "recovery inventory is unreadable or contains unresolved copies",
+    );
+    false
 }
 
 /// Refusal or hard failure of the preparation phase. A refusal hands back the

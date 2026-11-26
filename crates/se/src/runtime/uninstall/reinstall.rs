@@ -43,6 +43,52 @@ pub(crate) fn remove_for_reinstall(
     Ok((lease, inherited))
 }
 
+/// Persist `--no-modify-path` replacement custody in the state home before
+/// removing the old record, so a kill before the child journal survives retry.
+pub(super) fn persist_custody(home: &Path, plan: &ValidatedUninstallPlan) -> Result<()> {
+    use std::io::Write;
+    let mut inherited_files = Vec::new();
+    for file in plan.files() {
+        if se_core::ops::installation::is_fish_path_file(&file.path)
+            && OwnedFile::open(Path::new(&file.path))
+                .map_err(native_error)?
+                .is_some()
+        {
+            inherited_files.push(file.clone());
+        }
+    }
+    let custody = crate::runtime::ReplaceCustody {
+        schema: "stateengine-install-replace/v1".into(),
+        owner: plan.owner().to_owned(),
+        no_modify_path: true,
+        inherited_path_edits: plan.path_edits().to_vec(),
+        inherited_files,
+    };
+    let bytes = serde_json::to_vec(&custody)
+        .map_err(|e| se_core::scope::unreadable("replacement custody record", &e.to_string()))?;
+    let files = se_proc::NativeStateFiles::open(home).map_err(native_error)?;
+    let path = home.join("standalone-install.replace.json");
+    if let Some(mut existing) = OwnedFile::open(&path).map_err(native_error)? {
+        let hash = existing.sha256().map_err(native_error)?;
+        existing.replace(hash, &bytes).map_err(native_error)?;
+    } else {
+        let mut staged = files.create_staging(home).map_err(native_error)?;
+        staged
+            .file
+            .write_all(&bytes)
+            .map_err(|e| unreadable(&staged.path, e))?;
+        staged
+            .file
+            .sync_all()
+            .map_err(|e| unreadable(&staged.path, e))?;
+        drop(staged.file);
+        files
+            .publish_no_replace(&staged.path, &path)
+            .map_err(native_error)?;
+    }
+    Ok(())
+}
+
 // No caller-provided destination: the installer selects this account's native
 // program path. Changed or foreign payloads never grant replacement authority.
 pub(super) fn image(

@@ -18,11 +18,13 @@ fn unix_command(
         "--home".into(),
         home.as_os_str().to_os_string(),
     ];
-    if std::env::var_os("SHELL").is_some_and(|shell| {
-        std::path::Path::new(&shell)
-            .file_name()
-            .is_some_and(|name| name == "fish")
-    }) {
+    if !no_modify_path
+        && std::env::var_os("SHELL").is_some_and(|shell| {
+            std::path::Path::new(&shell)
+                .file_name()
+                .is_some_and(|name| name == "fish")
+        })
+    {
         let config = match std::env::var_os("XDG_CONFIG_HOME") {
             Some(value) => args::path(&value)?,
             None => args::path(&std::env::var_os("HOME").ok_or_else(|| args::invalid("HOME"))?)?
@@ -139,4 +141,89 @@ pub fn replace_installation(arguments: &[OsString]) -> Result<i32> {
         "installation replacement",
         "a supported native platform",
     ))
+}
+
+/// Read and natively validate any durable replacement custody left by a
+/// `--no-modify-path` replacement before the child installer wrote its journal.
+pub fn read_replace_custody(arguments: &[OsString]) -> Result<i32> {
+    if arguments.len() != 3 {
+        return Err(args::invalid(
+            "__install-replace-custody <selected data home>",
+        ));
+    }
+    let home = args::path(&arguments[2])?;
+    if home != crate::bootstrap::state_home(None)? {
+        return Err(args::invalid("the selected platform data home"));
+    }
+    se_proc::NativeStateFiles::open(&home).map_err(native)?;
+    let path = home.join("standalone-install.replace.json");
+    let Some(mut file) = se_proc::OwnedFile::open(&path).map_err(native)? else {
+        return Ok(0);
+    };
+    let bytes = file.read(1024 * 1024).map_err(native)?;
+    let custody: crate::runtime::ReplaceCustody = serde_json::from_slice(&bytes)
+        .map_err(|e| args::invalid("a valid replacement custody record").with_cause(e))?;
+    if custody.schema != "stateengine-install-replace/v1"
+        || custody.owner != crate::route::owner::observe(&[])?.os_owner()
+    {
+        return Err(args::invalid("the native-owned replacement custody record"));
+    }
+    let mut seen_bases = Vec::<&str>::new();
+    for edit in &custody.inherited_path_edits {
+        #[cfg(windows)]
+        {
+            if edit.target != r"HKCU\Environment\Path" || !seen_bases.is_empty() {
+                return Err(args::invalid("the original registry PATH target"));
+            }
+            seen_bases.push(r"HKCU\Environment\Path");
+        }
+        #[cfg(not(windows))]
+        {
+            let base = std::path::Path::new(&edit.target)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| args::invalid("inherited profile paths"))?;
+            if !matches!(
+                base,
+                ".profile" | ".bash_profile" | ".bash_login" | ".zprofile" | ".bashrc" | ".zshrc"
+            ) || seen_bases.contains(&base)
+            {
+                return Err(args::invalid("unique inherited login profiles"));
+            }
+            seen_bases.push(base);
+        }
+    }
+    let mut fish_path = String::new();
+    let mut fish_sha = String::new();
+    if custody.inherited_files.len() > 1 {
+        return Err(args::invalid("at most one inherited Fish PATH file"));
+    }
+    if let Some(entry) = custody.inherited_files.first() {
+        if !se_core::ops::installation::is_fish_path_file(&entry.path) {
+            return Err(args::invalid("an inherited Fish PATH file"));
+        }
+        let mut owned = se_proc::OwnedFile::open(std::path::Path::new(&entry.path))
+            .map_err(native)?
+            .ok_or_else(|| args::invalid("the preserved Fish PATH file on disk"))?;
+        let actual = se_types::Sha256::from_bytes(owned.sha256().map_err(native)?);
+        if actual.hex() != entry.sha256 {
+            return Err(args::invalid("unchanged preserved Fish PATH file"));
+        }
+        fish_path = entry.path.clone();
+        fish_sha = entry.sha256.clone();
+    }
+    let edits_json = if custody.inherited_path_edits.is_empty() {
+        String::new()
+    } else {
+        serde_json::to_string(&custody.inherited_path_edits)
+            .map_err(|e| se_core::scope::unreadable("inherited PATH custody", &e.to_string()))?
+    };
+    println!(
+        "{}\n{}\n{}\n{}",
+        if custody.no_modify_path { 1 } else { 0 },
+        edits_json,
+        fish_path,
+        fish_sha
+    );
+    Ok(0)
 }

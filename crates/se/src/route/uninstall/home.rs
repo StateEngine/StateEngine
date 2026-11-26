@@ -64,7 +64,14 @@ pub(super) fn execute(
         Ok(integrations) => integrations,
         Err((revoked, error)) => {
             issues.push(error.body.clone());
-            failed_revocation(&error, revoked)?
+            if revoked
+                .iter()
+                .any(|entry| entry.witness.state == WitnessState::Failed)
+            {
+                revoked
+            } else {
+                failed_revocation(&error, revoked)?
+            }
         }
     };
     let complete = matches!(&runtime, Read::Present { value } if value.complete && value.witness.state == WitnessState::Witnessed)

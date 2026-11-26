@@ -188,18 +188,7 @@ fn resume_plan(
     {
         return Err(args::invalid("the original native-owned installation plan"));
     }
-    let mut fish = String::new();
-    let config = std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|value| !value.is_empty())
-        .map_or_else(|| user.join(".config"), Into::into);
-    let fish_path = config.join("fish/conf.d/stateengine.fish");
-    if record.files.iter().any(|file| file.path == fish_path) {
-        expected.insert(fish_path.clone(), hash(&stage.join("fish-config"))?);
-        fish = fish_path
-            .to_str()
-            .ok_or_else(|| args::invalid("lossless fish path"))?
-            .to_owned();
-    }
+    let fish = resume_fish_file(user, stage, &record, &mut expected)?;
     if record.files.len() != expected.len()
         || record
             .files
@@ -270,6 +259,47 @@ fn resume_plan(
         println!("resume {}\n{}\n{fish}", profiles.len(), profiles.join("\n"));
     }
     Ok(0)
+}
+
+fn resume_fish_file(
+    user: &Path,
+    stage: &Path,
+    record: &InstallRecord,
+    expected: &mut BTreeMap<PathBuf, Sha256>,
+) -> Result<String> {
+    let Some(fish_entry) = record
+        .files
+        .iter()
+        .find(|file| se_core::ops::installation::is_fish_path_file(&file.path.to_string_lossy()))
+    else {
+        return Ok(String::new());
+    };
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| user.join(".config"), Into::into);
+    let fish_path = config.join("fish/conf.d/stateengine.fish");
+    if OwnedFile::open(&stage.join("fish-config"))
+        .map_err(native)?
+        .is_some()
+    {
+        if fish_entry.path != fish_path {
+            return Err(args::invalid(
+                "exact original archive files and selected installation paths",
+            ));
+        }
+        expected.insert(fish_path.clone(), hash(&stage.join("fish-config"))?);
+        return fish_path
+            .to_str()
+            .ok_or_else(|| args::invalid("lossless fish path"))
+            .map(str::to_owned);
+    }
+    // Inherited Fish PATH file from a `--no-modify-path` replacement:
+    // verify the preserved file on disk without scheduling a rewrite.
+    if hash(&fish_entry.path)? != fish_entry.sha256 {
+        return Err(args::invalid("unchanged preserved Fish PATH file"));
+    }
+    expected.insert(fish_entry.path.clone(), fish_entry.sha256);
+    Ok(String::new())
 }
 
 fn profile_base(target: &str) -> Result<&str> {

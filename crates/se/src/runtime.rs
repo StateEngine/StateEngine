@@ -24,6 +24,20 @@ pub struct InstallRecord {
     pub inherited_path_edits: Vec<PathEdit>,
 }
 
+/// Durable custody written before a `--no-modify-path` replacement removes the
+/// prior record, so an interruption before the child journal survives recovery.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplaceCustody {
+    pub schema: String,
+    pub owner: String,
+    pub no_modify_path: bool,
+    #[serde(default)]
+    pub inherited_path_edits: Vec<UninstallPathEdit>,
+    #[serde(default)]
+    pub inherited_files: Vec<UninstallFile>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InstallFile {
