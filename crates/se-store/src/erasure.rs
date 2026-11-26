@@ -540,7 +540,11 @@ pub(crate) fn erase(
             report.cleanup_failure = Some(error.cause);
             return Ok(report);
         }
-        Err(error) => return Err(error),
+        // Nothing has committed yet, so a fresh request refuses with the bodies intact.
+        Err(mut error) => {
+            error.cause = format!("{}; nothing was forgotten", error.cause);
+            return Err(error);
+        }
     };
     let owned = if !committed {
         let observed = observe(&host.engine.db, &plan.targets, &options.state_directory)?;

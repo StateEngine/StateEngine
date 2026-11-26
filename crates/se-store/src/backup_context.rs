@@ -99,7 +99,7 @@ impl BackupContext {
             if std::time::Instant::now() >= deadline {
                 return Err(fail(
                     StoreErrorCode::Backpressure,
-                    "a backup is still being written; nothing was forgotten, retry once it finishes",
+                    "a backup is still being written; retry once it finishes",
                 ));
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
