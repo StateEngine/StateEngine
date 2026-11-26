@@ -57,11 +57,20 @@ pub(super) fn read(workspace: &Workspace, params: &Value) -> Outcome {
     // A moved or replaced workspace is not a missing file, even when the lookup
     // saw "not found", so the held folder is checked before naming the cause.
     let unreadable = |error: std::io::Error| {
-        if let Err(moved) = held.check() {
-            return Refusal::failed(format!(
-                "the workspace {} was moved or replaced ({moved}); start a new conversation there",
-                workspace.told.display()
-            ));
+        let told = workspace.told.display();
+        match held.check() {
+            Err(gone) if gone.kind() == std::io::ErrorKind::NotFound => {
+                return Refusal::failed(format!(
+                    "the workspace {told} was moved or removed ({gone}); start a new conversation there"
+                ));
+            }
+            Err(unverified) => {
+                return Refusal::failed(format!(
+                    "the workspace {told} could not be verified ({unverified}); check its \
+                     permissions, or start a new conversation there if it was moved or replaced"
+                ));
+            }
+            Ok(()) => {}
         }
         match error.kind() {
             std::io::ErrorKind::NotFound => Refusal::missing(format!("{path} does not exist")),
