@@ -38,9 +38,7 @@ pub(crate) fn target(target: &AtlasTarget) -> Result<Target> {
         }
         AtlasTarget::File(path) => Target::File(path.as_str().to_owned()),
         AtlasTarget::Auto(text) => Target::Auto(text.as_str().to_owned()),
-        AtlasTarget::Symbol(SymbolSelector::Id(_))
-        | AtlasTarget::Commit(_)
-        | AtlasTarget::Record(_) => {
+        AtlasTarget::Symbol(SymbolSelector::Id(_)) => {
             return Err(SeError::invalid(
                 "Atlas target",
                 "a path, path:line or symbol name",

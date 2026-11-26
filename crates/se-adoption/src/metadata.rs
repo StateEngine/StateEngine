@@ -4,7 +4,9 @@ use super::*;
 use se_proc::native_ipc::NativeIpcPeer;
 use serde_json::Value;
 
-fn verify(registration: &Registration, provider: &NativeIpcPeer, input: &Input) -> Result<()> {
+/// Refuse unless discovery names this exact native session now. It reads only;
+/// a read-only lookup proves itself with this and leaves no witness behind.
+pub fn verify(registration: &Registration, provider: &NativeIpcPeer, input: &Input) -> Result<()> {
     if current(registration, provider, input)? {
         Ok(())
     } else {

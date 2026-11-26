@@ -85,6 +85,7 @@ fn window_task_cannot_supply_claude_options_on_new_or_resumed_launches()
                 mcp_port: 21345,
                 conversation: &conversation,
                 resume,
+                atlas_guidance: false,
             };
             let invocation = claude::invocation(&launch, Vec::new())?;
             let args: Vec<_> = invocation

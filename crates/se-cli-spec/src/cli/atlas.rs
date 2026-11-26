@@ -54,22 +54,20 @@ fn targeted(c: Command) -> Command {
                     "EnumVariant",
                     "Macro",
                 ])
-                .conflicts_with_all(["file", "record", "commit", "symbol_id"]),
+                .conflicts_with_all(["file", "symbol_id"]),
         )
         .arg(value("line").requires("path"))
         .arg(value("column").requires("line").default_value("0"))
-        .arg(toggle("file").conflicts_with_all(["record", "commit", "symbol_id", "line"]))
+        .arg(toggle("file").conflicts_with_all(["symbol_id", "line"]))
         .arg(
             toggle("symbol")
                 .help("Treat the target as a symbol name, not a path")
-                .conflicts_with_all(["file", "record", "commit", "symbol_id"]),
+                .conflicts_with_all(["file", "symbol_id"]),
         )
-        .arg(toggle("record").conflicts_with_all(["file", "commit", "symbol_id", "line"]))
-        .arg(toggle("commit").conflicts_with_all(["file", "record", "symbol_id", "line"]))
         .arg(
             toggle("symbol_id")
                 .long("symbol-id")
-                .conflicts_with_all(["file", "record", "commit", "line"]),
+                .conflicts_with_all(["file", "line"]),
         )
 }
 pub(super) fn command(name: &str, c: Command) -> Command {
@@ -105,7 +103,16 @@ pub(super) fn command(name: &str, c: Command) -> Command {
             .arg(toggle("include_name_only").long("include-name-only")),
         "atlas.changes" => scoped(c)
             .about("Read changes since a duration (10m), ISO UTC time, commit SHA, cursor or Unix ms")
-            .arg(value("since").required(true)),
+            .arg(
+                positional("start", 1, false)
+                    .value_name("SINCE")
+                    .help("Start point, e.g. 10m, 2026-11-20T09:30Z or a commit SHA"),
+            )
+            .arg(
+                value("since")
+                    .conflicts_with("start")
+                    .help("The same start point as a flag, e.g. --since 10m"),
+            ),
         "atlas.outline" => c
             .about("Show declarations and project records linked to this file")
             .arg(positional("path", 1, true)),
@@ -165,22 +172,6 @@ fn hex(text: &str) -> Result<Vec<u8>> {
     se_types::decode_hex(text)
         .ok_or_else(|| SeError::invalid("object ID", "a complete hexadecimal ID"))
 }
-fn oid(text: &str) -> Result<GitObjectId> {
-    let bytes = hex(text)?;
-    match bytes.len() {
-        20 => {
-            Ok(GitObjectId::Sha1(bytes.try_into().map_err(|_| {
-                SeError::invalid("commit", "40 hex characters")
-            })?))
-        }
-        32 => {
-            Ok(GitObjectId::Sha256(bytes.try_into().map_err(|_| {
-                SeError::invalid("commit", "64 hex characters")
-            })?))
-        }
-        _ => Err(SeError::invalid("commit", "40 or 64 hex characters")),
-    }
-}
 fn target(m: &ArgMatches) -> Result<AtlasTarget> {
     if text(m, "kind").is_some() && text(m, "target").is_none() {
         return Err(SeError::invalid(
@@ -222,17 +213,11 @@ fn target(m: &ArgMatches) -> Result<AtlasTarget> {
     let value = text(m, "target").ok_or_else(|| {
         SeError::invalid(
             "Atlas target",
-            "a symbol name, --file path, --record key, --commit ID, or --path FILE --line N",
+            "a symbol name, --file path, or --path FILE --line N",
         )
     })?;
     if flag(m, "file") {
         return Ok(AtlasTarget::File(RelativePath::new(value)?));
-    }
-    if flag(m, "record") {
-        return Ok(AtlasTarget::Record(RecordKey::new(value)?));
-    }
-    if flag(m, "commit") {
-        return Ok(AtlasTarget::Commit(oid(&value)?));
     }
     if flag(m, "symbol_id") {
         return Ok(AtlasTarget::Symbol(SymbolSelector::Id(SymbolId(
@@ -304,7 +289,20 @@ pub(super) fn decode(name: &str, m: &ArgMatches, json: bool) -> Result<AnyOp> {
         "atlas.changes" => {
             let (paths, languages) = scope(m)?;
             AnyOp::AtlasChanges(AtlasChanges {
-                since: ChangeBaseline::from_text(&required(m, "since")?)?,
+                // Either spelling; help must still render without one, so the
+                // choice is checked here rather than by the parser.
+                since: ChangeBaseline::from_text(
+                    &text(m, "start")
+                        .or_else(|| text(m, "since"))
+                        .ok_or_else(|| {
+                            SeError::new(Detail::UsageMissingArgument(
+                                details::UsageMissingArgument {
+                                    command: "se atlas changes".into(),
+                                    argument: "SINCE (or --since), e.g. 10m".into(),
+                                },
+                            ))
+                        })?,
+                )?,
                 paths,
                 languages,
                 options,

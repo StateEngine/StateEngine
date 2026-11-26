@@ -176,13 +176,14 @@ fn discovery_trims_repeated_detail_without_mutating_full_cli_schemas() -> Check 
     );
     assert!(find.input_schema.get("$schema").is_none());
     assert!(find.input_schema.get("title").is_none());
+    // Descriptions stay, cut to their first line.
     assert!(
-        find.input_schema["properties"]["regex"]
-            .get("description")
-            .is_none()
+        find.input_schema["properties"]["regex"]["description"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty() && !text.contains('\n'))
     );
     let expanded = shape(&find.input_schema, &find.input_schema, &mut BTreeSet::new())?;
-    assert_eq!(expanded["properties"]["query"], json!({"type":"string"}));
+    assert_eq!(expanded["properties"]["query"]["type"], "string");
     // "format" is a real argument and must not be mistaken for an annotation.
     assert_eq!(
         expanded["properties"]["format"]["enum"],
@@ -321,7 +322,6 @@ fn compact_discovery_does_not_relax_runtime_validation() -> Check {
             "stateengine_atlas_find",
             json!({"query":"example","unknown":true}),
         ),
-        ("stateengine_atlas_refs", json!({"target":"src/example.rs"})),
         (
             "stateengine_msg_read",
             json!({"message_id":"not-a-message-id"}),

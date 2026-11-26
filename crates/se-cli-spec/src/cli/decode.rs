@@ -12,7 +12,11 @@ pub fn from_matches_with_key(
     let (path, m) = deepest(matches);
     let meta = selected_meta(matches)?;
     let common = CommonArgs::from_matches(matches)?;
-    if meta.name != "meta.help" && meta.scope == Scope::None && common.home.is_some() {
+    // Help and guide text is the same in every home, so a habitual --home is harmless.
+    if !matches!(meta.name, "meta.help" | "meta.guide")
+        && meta.scope == Scope::None
+        && common.home.is_some()
+    {
         return Err(unknown_flag(
             "--home",
             meta.name,

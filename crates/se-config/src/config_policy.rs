@@ -137,14 +137,15 @@ pub struct Profile {
 #[serde(default, deny_unknown_fields)]
 pub struct AtlasConfig {
     pub enabled: bool,
-    /// Opt in until native end-to-end latency has qualified this platform.
+    /// Give agents indexed context before a search or file read. A hook that
+    /// misses its deadline adds nothing and never blocks the tool call.
     pub hooks: bool,
 }
 impl Default for AtlasConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            hooks: false,
+            hooks: true,
         }
     }
 }

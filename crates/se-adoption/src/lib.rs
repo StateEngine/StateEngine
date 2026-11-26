@@ -70,8 +70,34 @@ pub(crate) trait Adapter: Send + Sync {
     #[cfg(any(target_os = "linux", windows))]
     fn prepare(&self, command: &Path, host: &HostSetup) -> Result<ProviderSetup>;
     #[cfg(any(target_os = "linux", windows))]
-    fn hooks(&self, executable: &Path, home: &Path) -> Result<Vec<(String, serde_json::Value)>>;
-    fn discover(&self, _home: &Path, _saved: &mut Registration, _root: &Path) -> Result<()> {
+    /// `atlas` adds the Atlas context hook, as the managed launch does when
+    /// `[atlas]` has both `enabled` and `hooks` set.
+    fn hooks(
+        &self,
+        executable: &Path,
+        home: &Path,
+        atlas: bool,
+    ) -> Result<Vec<(String, serde_json::Value)>>;
+    /// Fresh setup, run once by the install that created the registration;
+    /// it may write what provider discovery needs, such as Codex trust.
+    fn setup(
+        &self,
+        home: &Path,
+        saved: &mut Registration,
+        root: &Path,
+        required: &[(String, serde_json::Value)],
+    ) -> Result<()> {
+        self.discover(home, saved, root, required)
+    }
+    /// Read-only confirmation that the provider sees the required lifecycle
+    /// hooks; it never writes provider files.
+    fn discover(
+        &self,
+        _home: &Path,
+        _saved: &mut Registration,
+        _root: &Path,
+        _required: &[(String, serde_json::Value)],
+    ) -> Result<()> {
         Ok(())
     }
     fn active(&self, _home: &Path, _project: &ProjectId) -> Result<bool> {
@@ -103,8 +129,13 @@ impl Adapter for ClaudeAdoption {
         })
     }
     #[cfg(any(target_os = "linux", windows))]
-    fn hooks(&self, executable: &Path, home: &Path) -> Result<Vec<(String, serde_json::Value)>> {
-        settings::hooks(executable, home)
+    fn hooks(
+        &self,
+        executable: &Path,
+        home: &Path,
+        atlas: bool,
+    ) -> Result<Vec<(String, serde_json::Value)>> {
+        settings::hooks(executable, home, atlas)
     }
     fn notice(&self) -> Option<String> {
         Some("Review and trust the StateEngine hooks in Claude Code when the provider asks; declining keeps the provider usable with the integration inactive".into())
@@ -147,11 +178,27 @@ mod codex_adapter {
             &self,
             executable: &Path,
             home: &Path,
+            atlas: bool,
         ) -> Result<Vec<(String, serde_json::Value)>> {
-            codex::hooks(executable, home)
+            codex::hooks(executable, home, atlas)
         }
-        fn discover(&self, home: &Path, saved: &mut Registration, root: &Path) -> Result<()> {
-            codex::trust(home, saved, root)
+        fn setup(
+            &self,
+            home: &Path,
+            saved: &mut Registration,
+            root: &Path,
+            required: &[(String, serde_json::Value)],
+        ) -> Result<()> {
+            codex::trust(home, saved, root, required)
+        }
+        fn discover(
+            &self,
+            home: &Path,
+            saved: &mut Registration,
+            root: &Path,
+            required: &[(String, serde_json::Value)],
+        ) -> Result<()> {
+            codex::verify(home, saved, root, required)
         }
         fn active(&self, home: &Path, project: &ProjectId) -> Result<bool> {
             status::witnessed(home, Kind::Codex, project)
@@ -285,8 +332,12 @@ pub enum Action {
     Stop,
     End,
     Mail,
+    /// Indexed Atlas context before a tool call; observes nothing and commits nothing.
+    Context,
 }
 impl Action {
+    /// The lifecycle actions a hook names on its command line, each with its
+    /// own status row. A context lookup has neither.
     pub const ALL: [Self; 6] = [
         Self::Start,
         Self::Prompt,
@@ -303,6 +354,7 @@ impl Action {
             Self::Stop => "stop",
             Self::End => "end",
             Self::Mail => "mail",
+            Self::Context => "context",
         }
     }
     pub fn parse(value: &str) -> Option<Self> {
@@ -321,6 +373,9 @@ pub struct Input {
     pub action: Action,
     pub cursor: Option<se_types::Cursor>,
     pub offered: Vec<se_types::MessageId>,
+    /// What a [`Action::Context`] call asks Atlas about; absent for every other action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<se_core::ops::AtlasHookTarget>,
 }
 #[cfg(feature = "listener")]
 pub struct NativeCall {

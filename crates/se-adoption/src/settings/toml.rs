@@ -2,7 +2,7 @@
 use super::*;
 use toml_edit::{DocumentMut, Item, Table};
 
-fn parse(path: &Path, bytes: &[u8]) -> Result<DocumentMut> {
+pub(super) fn parse(path: &Path, bytes: &[u8]) -> Result<DocumentMut> {
     std::str::from_utf8(bytes)
         .map_err(|_| invalid("UTF-8 provider configuration"))?
         .parse()

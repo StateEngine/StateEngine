@@ -2,8 +2,10 @@
 use super::*;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+mod repair;
 mod text;
 mod toml;
+pub use repair::trust_repair;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -15,22 +17,6 @@ pub struct Layout {
     pub trust: Vec<(String, String)>,
     #[serde(default)]
     pub created_state: bool,
-}
-pub fn layout(path: &Path, entries: &[(String, Value)]) -> Result<Layout> {
-    let (pin, _, document) = read_document(path)?;
-    let mut events = Vec::new();
-    for (event, _) in entries {
-        if document.get("hooks").and_then(|h| h.get(event)).is_none() && !events.contains(event) {
-            events.push(event.clone());
-        }
-    }
-    Ok(Layout {
-        created_file: pin.is_none(),
-        created_hooks: document.get("hooks").is_none(),
-        created_events: events,
-        trust: vec![],
-        created_state: document.get("hooks").and_then(|h| h.get("state")).is_none(),
-    })
 }
 /// Exact entries already present before installation remain user-owned.
 pub fn missing(path: &Path, entries: &[(String, Value)]) -> Result<Vec<(String, Value)>> {
@@ -66,7 +52,7 @@ pub(crate) const EVENTS: [(&str, &str, bool); 7] = [
     ("SessionStart", "mail", true),
     ("Stop", "mail", true),
 ];
-pub fn hooks(executable: &Path, home: &Path) -> Result<Vec<(String, Value)>> {
+pub fn hooks(executable: &Path, home: &Path, atlas: bool) -> Result<Vec<(String, Value)>> {
     let image = executable
         .to_str()
         .ok_or_else(|| invalid("UTF-8 executable path"))?;
@@ -85,8 +71,21 @@ pub fn hooks(executable: &Path, home: &Path) -> Result<Vec<(String, Value)>> {
         }
         result.push((event.into(), json!({"hooks":[hook]})));
     }
+    // Indexed context before a search or file read. It runs in the foreground
+    // so the provider can add its output, finishes within its own deadline and
+    // prints nothing when Atlas is unready or has no confident answer.
+    if atlas {
+        result.push((
+        "PreToolUse".into(),
+        json!({"matcher":ATLAS_MATCHER, "hooks":[{"type":"command", "command":image,
+            "args":["--stateengine-private-atlas-hook",home,"claude"], "onFailure":"continue", "timeout":1}]}),
+        ));
+    }
     Ok(result)
 }
+/// The tools whose input can name a symbol search or one file to read.
+pub(crate) const ATLAS_MATCHER: &str =
+    "^(Grep|Read|Bash|exec_command|read_file|mcp__filesystem__read_file)$";
 pub(super) fn read_document(path: &Path) -> Result<(Option<se_proc::OwnedFile>, Vec<u8>, Value)> {
     let Some(mut file) = se_proc::OwnedFile::open(path).map_err(access_error)? else {
         return Ok((None, vec![], json!({})));
@@ -111,6 +110,10 @@ fn write_document(
     document: &Value,
     edits: &[text::Edit],
 ) -> Result<()> {
+    let bytes = render(path, before, document, edits)?;
+    store(path, pin, before, &bytes)
+}
+fn render(path: &Path, before: &[u8], document: &Value, edits: &[text::Edit]) -> Result<Vec<u8>> {
     let bytes = if is_toml(path) {
         toml::apply(path, before, document, edits)?
     } else {
@@ -119,11 +122,16 @@ fn write_document(
     if bytes.len() > LIMIT {
         return Err(invalid("provider settings within one MiB"));
     }
+    Ok(bytes)
+}
+/// Replace exactly `before` (or create the absent file) with `bytes`, then read
+/// the exact bytes back.
+fn store(path: &Path, pin: Option<se_proc::OwnedFile>, before: &[u8], bytes: &[u8]) -> Result<()> {
     if let Some(pin) = pin {
         writable(path, &pin)?;
-        pin.replace(digest(before), &bytes).map_err(native)?;
+        pin.replace(digest(before), bytes).map_err(native)?;
     } else {
-        se_proc::OwnedFile::create_new(path, &bytes).map_err(access_error)?;
+        se_proc::OwnedFile::create_new(path, bytes).map_err(access_error)?;
     }
     let (_, actual, _) = read_document(path)?;
     if actual != bytes {
@@ -131,10 +139,30 @@ fn write_document(
     }
     Ok(())
 }
-/// A changed owned entry is preserved and is not silently reinstalled. The
-/// owner may have deliberately disabled it in the provider's settings editor.
-pub fn merge(path: &Path, entries: &[(String, Value)]) -> Result<bool> {
+/// Appending entries, observed and rendered but not yet written. Its entries
+/// and layout come from the same observed document whose exact bytes
+/// [`commit`] replaces, so the journal claims only what this write adds.
+pub struct Planned {
+    pin: Option<se_proc::OwnedFile>,
+    before: Vec<u8>,
+    after: Option<Vec<u8>>,
+    /// The entries this plan appends, exactly as observed missing.
+    pub entries: Vec<(String, Value)>,
+    /// What this plan creates in the observed file.
+    pub layout: Layout,
+}
+/// Plan appending those of `entries` not already present. A changed owned
+/// entry is preserved and is not silently reinstalled: the owner may have
+/// deliberately disabled it.
+pub fn plan(path: &Path, entries: &[(String, Value)]) -> Result<Planned> {
     let (pin, before, mut document) = read_document(path)?;
+    let mut layout = Layout {
+        created_file: pin.is_none(),
+        created_hooks: document.get("hooks").is_none(),
+        created_events: vec![],
+        trust: vec![],
+        created_state: document.get("hooks").and_then(|h| h.get("state")).is_none(),
+    };
     let object = document
         .as_object_mut()
         .ok_or_else(|| invalid("settings object"))?;
@@ -145,9 +173,11 @@ pub fn merge(path: &Path, entries: &[(String, Value)]) -> Result<bool> {
         .ok_or_else(|| {
             invalid("an object-valued hooks setting; existing settings were preserved")
         })?;
-    let mut changed = false;
-    let mut edits = Vec::new();
+    let (mut edits, mut appended) = (Vec::new(), Vec::new());
     for (event, entry) in entries {
+        if !hooks.contains_key(event) && !layout.created_events.contains(event) {
+            layout.created_events.push(event.clone());
+        }
         let list = hooks
             .entry(event)
             .or_insert_with(|| json!([]))
@@ -158,13 +188,29 @@ pub fn merge(path: &Path, entries: &[(String, Value)]) -> Result<bool> {
         if !list.contains(entry) {
             list.push(entry.clone());
             edits.push(text::Edit::Append(event.clone(), entry.clone()));
-            changed = true;
+            appended.push((event.clone(), entry.clone()));
         }
     }
-    if changed {
-        write_document(path, pin, &before, &document, &edits)?;
-    }
-    Ok(changed)
+    let after = if edits.is_empty() {
+        None
+    } else {
+        Some(render(path, &before, &document, &edits)?)
+    };
+    Ok(Planned {
+        pin,
+        before,
+        after,
+        entries: appended,
+        layout,
+    })
+}
+/// Write a plan; `false` when it appends nothing.
+pub fn commit(path: &Path, planned: Planned) -> Result<bool> {
+    let Some(after) = planned.after else {
+        return Ok(false);
+    };
+    store(path, planned.pin, &planned.before, &after)?;
+    Ok(true)
 }
 /// Separate witnessed outcomes for one provider's settings edit and registration revocation.
 #[cfg_attr(not(feature = "listener"), allow(dead_code))]

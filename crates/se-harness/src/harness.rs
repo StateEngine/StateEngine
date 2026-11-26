@@ -141,6 +141,17 @@ pub struct HarnessRequest {
 }
 /// Credential purpose the loopback HTTP route accepts, and only it.
 pub const MCP_BEARER_PURPOSE: &str = "http";
+/// What a launched agent is told when Atlas is enabled, so it reaches for the
+/// index before an edit instead of reading whole files to find callers.
+pub const ATLAS_GUIDANCE: &str = "Before editing a shared symbol or reading a large file end to end, call the StateEngine Atlas tools: outline for a file's declarations, impact for dependents, covering tests and linked project messages, and refs for callers. Atlas find also locates recent agent edits.";
+/// The first input of a launch that has no separate instruction channel.
+pub fn with_atlas_guidance(enabled: bool, input: &str) -> String {
+    if enabled {
+        format!("{ATLAS_GUIDANCE}\n\n{input}")
+    } else {
+        input.to_owned()
+    }
+}
 /// The host's retained ends of one provider's streams. Only the platform that
 /// opened it can operate on it; the last reference owns the host ends.
 #[derive(Clone)]

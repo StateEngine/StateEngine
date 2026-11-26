@@ -47,16 +47,67 @@ pub enum AtlasFormat {
     Json,
 }
 
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+/// What a references or impact query starts from. A plain string is the
+/// positional form; the tagged forms narrow a symbol or force a file.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub enum AtlasTarget {
     Symbol(SymbolSelector),
     File(RelativePath),
     /// A positional target: an indexed path, `path:line`, then an exact symbol name.
     Auto(QueryText),
-    Commit(GitObjectId),
-    Record(RecordKey),
+}
+/// The tagged input forms of [`AtlasTarget`].
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+enum TargetSelector {
+    Symbol(SymbolSelector),
+    File(RelativePath),
+    Auto(QueryText),
+}
+impl<'de> serde::Deserialize<'de> for AtlasTarget {
+    fn deserialize<D: serde::Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
+        struct Target;
+        impl<'de> serde::de::Visitor<'de> for Target {
+            type Value = AtlasTarget;
+            fn expecting(&self, out: &mut std::fmt::Formatter) -> std::fmt::Result {
+                out.write_str(
+                    "a path, path:line or symbol name, or a tagged Symbol, File or Auto target",
+                )
+            }
+            fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<AtlasTarget, E> {
+                QueryText::new(text)
+                    .map(AtlasTarget::Auto)
+                    .map_err(E::custom)
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<AtlasTarget, A::Error> {
+                use serde::Deserialize as _;
+                Ok(
+                    match TargetSelector::deserialize(
+                        serde::de::value::MapAccessDeserializer::new(map),
+                    )? {
+                        TargetSelector::Symbol(selector) => AtlasTarget::Symbol(selector),
+                        TargetSelector::File(path) => AtlasTarget::File(path),
+                        TargetSelector::Auto(text) => AtlasTarget::Auto(text),
+                    },
+                )
+            }
+        }
+        input.deserialize_any(Target)
+    }
+}
+impl schemars::JsonSchema for AtlasTarget {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "AtlasTarget".into()
+    }
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let selector = generator.subschema_for::<TargetSelector>();
+        schemars::json_schema!({"anyOf": [
+            {"type": "string", "description": "A file path, path:line or symbol name, tried in that order"},
+            selector,
+        ]})
+    }
 }
 #[derive(
     Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,

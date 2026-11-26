@@ -83,7 +83,6 @@ fn actual_value_grammars_remain_enforced_after_discovery_trim() -> Check {
         ),
         ("stateengine_resume", json!({"byte_budget":1})),
         ("stateengine_atlas_find", json!({"query":"work","limit":0})),
-        ("stateengine_atlas_refs", json!({"target":"src/example.rs"})),
         (
             "stateengine_atlas_impact",
             json!({"target":{"File":"src/example.rs"},"depth":0}),
@@ -107,6 +106,7 @@ fn actual_value_grammars_remain_enforced_after_discovery_trim() -> Check {
         }
     }
     for target in [
+        json!("src/example.rs"),
         json!({"File":"src/example.rs"}),
         json!({"Symbol":{"Name":{"name":"example"}}}),
     ] {

@@ -188,7 +188,11 @@ impl CodexHarness {
             *binding.rollout.lock().map_err(|_| poisoned())? =
                 Some(NativePath::from_local(PathBuf::from(path))?);
         }
-        let mut initial = input::turn(&plan, &conversation, &request.initial_input)?;
+        let text = crate::harness::with_atlas_guidance(
+            self.configuration.atlas.enabled,
+            request.initial_input.as_str(),
+        );
+        let mut initial = input::turn(&plan, &conversation, &se_types::Body::new(text)?)?;
         initial["clientUserMessageId"] = json!(format!(
             "se-{}",
             se_types::hex_lower(&Sha256::digest(request.key.as_str().as_bytes()))

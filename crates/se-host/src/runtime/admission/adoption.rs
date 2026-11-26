@@ -10,6 +10,11 @@ impl AdmissionContext {
         input: crate::adoption::Input,
     ) -> Result<crate::adoption::NativeCall> {
         self.channel_owner(peer, connection, authority, grant)?;
+        if (input.action == crate::adoption::Action::Context) != input.context.is_some() {
+            return Err(crate::adoption::invalid(
+                "a lookup target on context calls and on no other action",
+            ));
+        }
         if input.offered.len() > 4096 {
             return Err(crate::adoption::invalid(
                 "at most 4096 pending native mail offers",
@@ -42,13 +47,17 @@ impl AdmissionContext {
         .map_err(|error| {
             se_core::scope::unreadable("adopted provider ancestry", &error.to_string())
         })?;
-        crate::adoption::metadata::authorize(
-            &self.state_directory,
-            self.generation,
-            &registration,
-            &provider,
-            &input,
-        )?;
+        if input.action == crate::adoption::Action::Context {
+            crate::adoption::metadata::verify(&registration, &provider, &input)?;
+        } else {
+            crate::adoption::metadata::authorize(
+                &self.state_directory,
+                self.generation,
+                &registration,
+                &provider,
+                &input,
+            )?;
+        }
         let expected = if input.kind == crate::adoption::Kind::Codex {
             crate::adoption::codex::transcript(&registration, &input)?
         } else {

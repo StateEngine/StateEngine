@@ -5,7 +5,7 @@ mod queue;
 mod rpc;
 mod trust;
 pub use queue::offer;
-pub use trust::install as trust;
+pub(crate) use trust::{install as trust, verify};
 #[cfg(not(target_os = "linux"))]
 pub fn native_executable(command: &Path) -> Result<std::path::PathBuf> {
     Ok(command.to_owned())
@@ -90,7 +90,7 @@ pub fn current(registration: &Registration, input: &Input) -> Result<bool> {
     Ok(same_root)
 }
 
-pub fn hooks(executable: &Path, home: &Path) -> Result<Vec<(String, Value)>> {
+pub fn hooks(executable: &Path, home: &Path, atlas: bool) -> Result<Vec<(String, Value)>> {
     let executable = executable
         .to_str()
         .ok_or_else(|| invalid("a Unicode hook executable"))?;
@@ -126,6 +126,14 @@ pub fn hooks(executable: &Path, home: &Path) -> Result<Vec<(String, Value)>> {
         entries.push((event.into(), json!({"hooks":[{
             "type":"command", "command":command, "commandWindows":command_windows,
             "async": action != "end", "timeout": if action == "mail" { 2_000_000 } else if action == "end" { 2 } else { 30 }
+        }]})));
+    }
+    if atlas {
+        entries.push(("PreToolUse".into(), json!({"matcher":super::settings::ATLAS_MATCHER, "hooks":[{
+            "type":"command",
+            "command":format!("{} --stateengine-private-atlas-hook {} codex", quoted(executable), quoted(home)),
+            "commandWindows":format!("& {} '--stateengine-private-atlas-hook' {} 'codex'", windows_quoted(executable), windows_quoted(home)),
+            "timeout":1
         }]})));
     }
     Ok(entries)

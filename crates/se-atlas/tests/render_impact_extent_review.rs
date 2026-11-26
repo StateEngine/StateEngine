@@ -87,7 +87,7 @@ fn inline_tests_render_at_zero_hops() -> Check {
         vec![dependent(at(1, "src/lib.rs", None)?, Vec::new())],
     )?;
     assert!(
-        output.contains("src/lib.rs (size unavailable) · 0 hops · possible test\n"),
+        output.contains("src/lib.rs · 0 hops · possible test\n"),
         "{output}"
     );
     assert!(!output.contains('→'), "{output}");
@@ -107,10 +107,7 @@ fn file_hops_skip_self_sites_and_empty_ranges() -> Check {
     };
     let output = page(vec![dependent(caller, vec![self_hop])], Vec::new())?;
     let line = output.lines().next().ok_or("empty page")?;
-    assert_eq!(
-        line,
-        "src/caller.rs (size unavailable) · 1 hop (ImportedFile)"
-    );
+    assert_eq!(line, "src/caller.rs · 1 hop (ImportedFile)");
     assert!(!output.contains("bytes 0..0"), "{output}");
 
     let elsewhere = FileImpactHop {
@@ -133,7 +130,7 @@ fn file_hops_skip_self_sites_and_empty_ranges() -> Check {
 }
 
 #[test]
-fn empty_byte_span_is_size_unavailable_not_zero_bytes() -> Check {
+fn empty_byte_span_shows_no_size_not_zero_bytes() -> Check {
     let output = page(
         vec![
             dependent(at(1, "src/empty.rs", Some(span(7, 5, 5)))?, Vec::new()),
@@ -141,10 +138,7 @@ fn empty_byte_span_is_size_unavailable_not_zero_bytes() -> Check {
         ],
         Vec::new(),
     )?;
-    assert!(
-        output.contains("src/empty.rs:7 (size unavailable)"),
-        "{output}"
-    );
+    assert!(output.contains("src/empty.rs:7 · "), "{output}");
     assert!(!output.contains("(0 B)"), "{output}");
     assert!(output.contains("src/sized.rs:3 (12 B)"), "{output}");
     Ok(())

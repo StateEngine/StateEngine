@@ -8,6 +8,9 @@ pub struct Plan {
     provider: PathBuf,
     config_home: PathBuf,
     entries: Vec<(String, serde_json::Value)>,
+    /// The lifecycle hooks capture and mail need, whoever owns them; the
+    /// optional Atlas entry is not among them.
+    required: Vec<(String, serde_json::Value)>,
 }
 #[cfg(any(target_os = "linux", windows))]
 pub fn prepare(
@@ -46,7 +49,12 @@ pub fn prepare(
         kind,
         provider,
         config_home,
-        entries: adapter.hooks(&image, home)?,
+        entries: adapter.hooks(
+            &image,
+            home,
+            configuration.atlas.enabled && configuration.atlas.hooks,
+        )?,
+        required: adapter.hooks(&image, home, false)?,
     })
 }
 #[cfg(not(any(target_os = "linux", windows)))]
@@ -76,31 +84,57 @@ pub fn install(
     let kind = plan.kind;
     let adapter = kind.adapter();
     let path = plan.config_home.join(kind.settings());
-    let expected_hooks = plan.entries.clone();
-    let mut registration = registration(home, root, &plan, project)?;
     se_proc::native_ipc::prepare_adoption_image_cache(
         home,
-        &registration.provider.to_local()?,
+        &plan.provider,
         &se_proc::native_ipc::IpcIoBound {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
             cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
     )
     .map_err(|e| se_core::scope::unreadable("adoption executable cache", &e.to_string()))?;
+    let (mut registration, planned) = registration(home, root, &plan, project)?;
     // Journal before changing provider files: a partial install always retains
     // the exact entries that uninstall must remove, never a whole-file backup.
     super::publish_for(home, kind, &registration)?;
-    let changed = if registration.installed {
-        false
-    } else {
-        let changed = super::settings::merge(&path, &registration.hooks)?;
-        registration.installed = true;
-        super::publish_for(home, kind, &registration)?;
-        changed
+    // Only the run that created the registration writes provider files.
+    let fresh = planned.is_some();
+    let changed = match planned {
+        Some(planned) => {
+            let changed = super::settings::commit(&path, planned)?;
+            registration.installed = true;
+            super::publish_for(home, kind, &registration)?;
+            changed
+        }
+        None => false,
     };
-    let installed = super::settings::missing(&path, &expected_hooks)?.is_empty();
+    let absent = super::settings::missing(&path, &plan.required)?;
+    let installed = absent.is_empty();
+    let resumed = !registration.installed;
+    if resumed {
+        // An earlier install stopped before it finished. Its hooks may have
+        // landed and been removed since, so they are never written again here.
+        if !installed {
+            let entries: Vec<_> = absent
+                .iter()
+                .map(|(event, entry)| format!("{event}: {entry}"))
+                .collect();
+            return Err(SeError::invalid(
+                "provider adoption installation",
+                &format!(
+                    "these hooks an unfinished earlier install recorded in {}; they may have been removed there, so they were not added again. Add them back under hooks in that file, then run this command again: {}",
+                    path.display(),
+                    entries.join("; ")
+                ),
+            ));
+        }
+    }
     let discovery = if installed {
-        adapter.discover(home, &mut registration, root)
+        if fresh {
+            adapter.setup(home, &mut registration, root, &plan.required)
+        } else {
+            adapter.discover(home, &mut registration, root, &plan.required)
+        }
     } else {
         Ok(())
     };
@@ -111,6 +145,12 @@ pub fn install(
     }
     // A persisted refusal is retryable evidence, never a successful install.
     discovery?;
+    if resumed {
+        // Finished only once discovery confirmed it, so a refused retry stays
+        // a resumed one.
+        registration.installed = true;
+        super::publish_for(home, kind, &registration)?;
+    }
     let active = adapter.active(home, project)?;
     let integration = integration(kind, &path, changed, installed, active)?;
     let next = NextStep {
@@ -136,15 +176,18 @@ pub fn install(
     })
 }
 
+/// The saved registration, or a new one whose custody and layout are exactly
+/// what its planned first write adds, with that plan. A saved installation
+/// that never finished is only read, never written again.
 fn registration(
     home: &Path,
     root: &Path,
     plan: &Plan,
     project: &se_types::ProjectId,
-) -> Result<super::Registration> {
+) -> Result<(super::Registration, Option<super::settings::Planned>)> {
     let kind = plan.kind;
     let path = plan.config_home.join(kind.settings());
-    let mut registration = match super::read_for(home, kind)? {
+    let (mut registration, planned) = match super::read_for(home, kind)? {
         Some(saved) => {
             if saved.settings.to_local()? != path || saved.provider.to_local()? != plan.provider {
                 return Err(SeError::invalid(
@@ -152,21 +195,40 @@ fn registration(
                     "the original provider and settings location; uninstall this integration before changing them",
                 ));
             }
-            saved
+            let mut saved = saved;
+            if !saved.installed {
+                // Whether the unfinished write landed is unknown, so this only
+                // reads: an absent entry the configuration no longer requests
+                // leaves custody, and nothing is written again.
+                let absent = super::settings::missing(&path, &saved.hooks)?;
+                saved
+                    .hooks
+                    .retain(|entry| plan.entries.contains(entry) || !absent.contains(entry));
+                let hooks = &saved.hooks;
+                saved
+                    .layout
+                    .created_events
+                    .retain(|event| hooks.iter().any(|(known, _)| known == event));
+            }
+            (saved, None)
         }
-        None => super::Registration {
-            layout: super::settings::layout(&path, &plan.entries)?,
-            installed: false,
-            schema: 1,
-            settings: NativePath::from_local(path.clone())?,
-            provider: NativePath::from_local(plan.provider.clone())?,
-            config_home: NativePath::from_local(plan.config_home.clone())?,
-            hooks: super::settings::missing(&path, &plan.entries)?,
-            projects: vec![],
-            discovery: None,
-            discovery_refusal: None,
-            installation: Some(uuid::Uuid::new_v4().to_string()),
-        },
+        None => {
+            let planned = super::settings::plan(&path, &plan.entries)?;
+            let registration = super::Registration {
+                layout: planned.layout.clone(),
+                installed: false,
+                schema: 1,
+                settings: NativePath::from_local(path.clone())?,
+                provider: NativePath::from_local(plan.provider.clone())?,
+                config_home: NativePath::from_local(plan.config_home.clone())?,
+                hooks: planned.entries.clone(),
+                projects: vec![],
+                discovery: None,
+                discovery_refusal: None,
+                installation: Some(uuid::Uuid::new_v4().to_string()),
+            };
+            (registration, Some(planned))
+        }
     };
     let selected = super::Project {
         project: project.clone(),
@@ -186,7 +248,7 @@ fn registration(
             "at most 4096 registered projects",
         ));
     }
-    Ok(registration)
+    Ok((registration, planned))
 }
 
 fn integration(

@@ -40,6 +40,7 @@ pub struct ClaudeHarness {
     bells: Option<Arc<dyn crate::BellRegistry>>,
     plugins: Mutex<std::collections::BTreeMap<se_types::SessionId, PathBuf>>,
     atlas_hooks: Option<crate::AtlasHookConfigFn>,
+    atlas_guidance: bool,
 }
 impl ClaudeHarness {
     /// `se_executable` is the trusted installed se the hooks call; `mcp_port`
@@ -59,6 +60,7 @@ impl ClaudeHarness {
             bells: None,
             plugins: Mutex::default(),
             atlas_hooks: None,
+            atlas_guidance: false,
         }
     }
     pub fn with_bells(mut self, bells: Arc<dyn crate::BellRegistry>) -> Self {
@@ -77,6 +79,11 @@ impl ClaudeHarness {
             },
             None => Read::Present { value: false },
         }
+    }
+    /// Tell launched agents about Atlas when it is enabled.
+    pub fn with_atlas_guidance(mut self, enabled: bool) -> Self {
+        self.atlas_guidance = enabled;
+        self
     }
     pub fn with_atlas_hooks(mut self, hook_config: Option<crate::AtlasHookConfigFn>) -> Self {
         self.atlas_hooks = hook_config;
@@ -103,6 +110,7 @@ impl ClaudeHarness {
             mcp_port: self.mcp_port,
             conversation,
             resume: matches!(request.resume, Read::Present { .. }),
+            atlas_guidance: self.atlas_guidance,
         }
     }
 }

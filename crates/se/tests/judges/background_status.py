@@ -53,16 +53,27 @@ runpy.run_path(sys.argv[0], run_name="__main__")
     os.chmod(executable, 0o755)
 
 
-def readable(fixture):
-    agent, _ = row(fixture)
-    return (agent.get("background") or {}).get("state") == "present"
-
-
-def count(fixture):
-    agent, _ = row(fixture)
+def processes(agent):
+    """The counted background processes, or None while the read is unreadable.
+    While the runtime holds the session, for example delivering a turn's mail,
+    status omits the background read, so an unreadable moment means not yet."""
     background = agent.get("background") or {}
-    assert background.get("state") == "present", f"background is not readable: {background}"
+    if background.get("state") != "present":
+        return None
     return background["value"]["processes"]
+
+
+def snapshot(fixture, accept, seconds, what):
+    """The first status read whose background count satisfies `accept`; every
+    assertion after it runs against that same read."""
+    end = time.monotonic() + seconds
+    while True:
+        agent, text = row(fixture)
+        if accept(processes(agent)):
+            return agent, text
+        if time.monotonic() >= end:
+            raise AssertionError(f"deadline waiting for {what}; last read {agent.get('background')}")
+        time.sleep(0.2)
 
 
 def until(predicate, seconds, what):
@@ -84,16 +95,14 @@ def run(fixture):
     fixture.launch()
     until(lambda: (fixture.repo / "launch-turn-complete").exists(), 30, "the launch turn")
     # Right after launch the runtime may still hold the session for setup.
-    until(lambda: readable(fixture), 30, "the agent's background to be readable")
-    before = count(fixture)
-    agent, _ = row(fixture)
+    agent, _ = snapshot(fixture, lambda n: n is not None, 30, "the agent's background to be readable")
+    before = processes(agent)
     assert before == 0, f"an idle agent with nothing left running counts {before} background processes"
     assert agent["state"]["state"] == "idle", f"an idle agent reads {agent['state']}"
     print("ok 1 - an idle script-launched agent counts no background processes and reads idle", flush=True)
 
     turn(fixture, "spawn-background", "start a long job")
-    until(lambda: count(fixture) == 1, 20, "the new background process to be counted")
-    agent, text = row(fixture)
+    agent, text = snapshot(fixture, lambda n: n == 1, 20, "the new background process to be counted")
     assert agent["state"]["state"] == "background", f"state is {agent['state']}"
     assert agent["state"]["since"], "a background state names when its oldest process started"
     oldest = agent["background"]["value"]["oldest"]
@@ -102,7 +111,7 @@ def run(fixture):
     print("ok 2 - the job is counted, the agent reads background, and no argument is shown", flush=True)
 
     turn(fixture, "stop-background", "the job is done")
-    until(lambda: count(fixture) == 0, 20, "the background count to drop back to zero")
+    snapshot(fixture, lambda n: n == 0, 20, "the background count to drop back to zero")
     print("ok 3 - the count drops back once the job ends", flush=True)
 
 
