@@ -8,8 +8,9 @@
 //! - Symbolic links, reparse points, non-regular targets, mount crossings
 //!   (Unix), and `.git` metadata (by spelling and by native object identity)
 //!   are refused before any target mutation.
-//! - Replacement is atomic last-writer-wins with O(1) metadata inspection on
-//!   existing targets (no unbounded read or hash of the replaced file).
+//! - Replacement carries an O(1) native identity/revision check (no unbounded
+//!   read or hash of the replaced file); absent-destination writes publish
+//!   exclusively so a concurrent creator's file is never overwritten.
 //! - Failures before publication (`BeforePublish`) are distinct from post-
 //!   publication durability or verification failures (`PublishedUncertain`).
 use crate::source_root::{NativeSourceRoot, validate};
@@ -81,7 +82,7 @@ impl NativeSourceRoot {
         self.check().map_err(|error| {
             WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::RootUnverified(error))
         })?;
-        os_write::write_relative(&self.directory, path, bytes)?;
+        os_write::write_relative(&self.directory, path, bytes, &|| self.check())?;
         self.check().map_err(|error| {
             WorkspaceWriteError::PublishedUncertain(format!(
                 "workspace root could not be verified after publication: {error}"

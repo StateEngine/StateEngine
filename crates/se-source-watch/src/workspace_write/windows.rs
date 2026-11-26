@@ -1,5 +1,5 @@
 use super::{WorkspaceWriteError, WorkspaceWriteRefusal, stage_name};
-use se_state_files::NativeObjectKey;
+use se_state_files::{NativeFileRevision, NativeObjectKey};
 use std::{
     fs::File,
     io::{self, Write},
@@ -104,7 +104,12 @@ fn dot_git_key(parent: &File) -> Result<Option<NativeObjectKey>, WorkspaceWriteE
     }
 }
 
-fn open_or_create_dir(parent: &File, part: &str) -> Result<File, WorkspaceWriteError> {
+/// Open or create a child directory without `FILE_SHARE_DELETE` so it cannot
+/// be renamed or moved out of the workspace while the returned handle is held.
+fn open_or_create_dir(
+    parent: &File,
+    part: &str,
+) -> Result<(File, NativeObjectKey), WorkspaceWriteError> {
     if part.eq_ignore_ascii_case(".git") {
         return Err(invalid(
             "path enters .git metadata, which StateEngine does not write",
@@ -112,7 +117,7 @@ fn open_or_create_dir(parent: &File, part: &str) -> Result<File, WorkspaceWriteE
     }
     let dot_git = dot_git_key(parent)?;
     let mut units = utf16_component(part)?;
-    let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    let share = FILE_SHARE_READ | FILE_SHARE_WRITE;
     let child = match nt_open_relative(
         parent,
         &mut units,
@@ -149,21 +154,53 @@ fn open_or_create_dir(parent: &File, part: &str) -> Result<File, WorkspaceWriteE
         Err(err) => return Err(io_before(err)),
     };
     crate::source_root::windows::verify_handle(&child, true).map_err(|e| invalid(e.to_string()))?;
-    if dot_git.is_some()
-        && Some(se_state_files::observe_object_key(&child).map_err(io_before)?) == dot_git
-    {
+    let key = se_state_files::observe_object_key(&child).map_err(io_before)?;
+    if dot_git == Some(key) {
         return Err(invalid(
             "path aliases .git metadata, which StateEngine does not write",
         ));
     }
-    Ok(child)
+    Ok((child, key))
+}
+
+fn verify_parent_chain(
+    root: &File,
+    chain: &[(&str, File, NativeObjectKey)],
+) -> Result<(), WorkspaceWriteError> {
+    let mut cursor: Option<File> = None;
+    for (part, _, expected_key) in chain {
+        let parent = cursor.as_ref().unwrap_or(root);
+        let mut units = utf16_component(part)?;
+        let fresh = nt_open_relative(
+            parent,
+            &mut units,
+            FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_OPEN,
+            FILE_DIRECTORY_FILE,
+        )
+        .map_err(|err| {
+            invalid(format!(
+                "workspace parent directory changed during write: {err}"
+            ))
+        })?;
+        crate::source_root::windows::verify_handle(&fresh, true)
+            .map_err(|e| invalid(e.to_string()))?;
+        if se_state_files::observe_object_key(&fresh).map_err(io_before)? != *expected_key {
+            return Err(invalid(
+                "workspace parent directory was moved or replaced during write",
+            ));
+        }
+        cursor = Some(fresh);
+    }
+    Ok(())
 }
 
 fn inspect_target_leaf(
     parent: &File,
     leaf_units: &mut [u16],
     dot_git: Option<NativeObjectKey>,
-) -> Result<(), WorkspaceWriteError> {
+) -> Result<Option<NativeFileRevision>, WorkspaceWriteError> {
     let existing = match nt_open_relative(
         parent,
         leaf_units,
@@ -173,7 +210,7 @@ fn inspect_target_leaf(
         0,
     ) {
         Ok(file) => file,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(io_before(err)),
     };
     crate::source_root::windows::verify_handle(&existing, false)
@@ -185,7 +222,35 @@ fn inspect_target_leaf(
             "target aliases .git metadata, which StateEngine does not write",
         ));
     }
-    Ok(())
+    let rev = se_state_files::observe_file_revision(&existing).map_err(io_before)?;
+    Ok(Some(rev))
+}
+
+fn verify_target_unchanged(
+    parent: &File,
+    leaf_units: &mut [u16],
+    dot_git: Option<NativeObjectKey>,
+    baseline: Option<NativeFileRevision>,
+) -> Result<(), WorkspaceWriteError> {
+    let current = inspect_target_leaf(parent, leaf_units, dot_git)?;
+    match (baseline, current) {
+        (None, None) => Ok(()),
+        (None, Some(_)) => Err(io_before(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "target file was created concurrently during staging",
+        ))),
+        (Some(_), None) => Err(invalid(
+            "target file was removed concurrently during staging",
+        )),
+        (Some(expected), Some(actual)) => {
+            if expected != actual {
+                return Err(invalid(
+                    "target file changed concurrently during staging; retry write",
+                ));
+            }
+            Ok(())
+        }
+    }
 }
 
 fn dispose_stage(file: &File) {
@@ -215,7 +280,12 @@ fn dispose_stage(file: &File) {
     }
 }
 
-fn rename_replace_at(file: &File, parent: &File, leaf_units: &[u16]) -> Result<(), io::Error> {
+fn rename_at(
+    file: &File,
+    parent: &File,
+    leaf_units: &[u16],
+    replace_if_exists: bool,
+) -> Result<(), io::Error> {
     // Win32 FILE_RENAME_INFO::Flags values for FileRenameInfoEx.
     const RENAME_REPLACE_IF_EXISTS: u32 = 0x0000_0001;
     const RENAME_POSIX_SEMANTICS: u32 = 0x0000_0002;
@@ -225,7 +295,11 @@ fn rename_replace_at(file: &File, parent: &File, leaf_units: &[u16]) -> Result<(
     // SAFETY: `buf` is 8-byte aligned and sized for FILE_RENAME_INFO + UTF-16 name.
     unsafe {
         let info = buf.as_mut_ptr().cast::<FILE_RENAME_INFO>();
-        (*info).Anonymous.Flags = RENAME_REPLACE_IF_EXISTS | RENAME_POSIX_SEMANTICS;
+        (*info).Anonymous.Flags = if replace_if_exists {
+            RENAME_REPLACE_IF_EXISTS | RENAME_POSIX_SEMANTICS
+        } else {
+            RENAME_POSIX_SEMANTICS
+        };
         (*info).RootDirectory = parent.as_raw_handle();
         (*info).FileNameLength = name_bytes as u32;
         ptr::copy_nonoverlapping(
@@ -249,7 +323,7 @@ fn rename_replace_at(file: &File, parent: &File, leaf_units: &[u16]) -> Result<(
         ) {
             return Err(first_err);
         }
-        (*info).Anonymous.ReplaceIfExists = true;
+        (*info).Anonymous.ReplaceIfExists = replace_if_exists;
         if SetFileInformationByHandle(
             file.as_raw_handle(),
             FileRenameInfo,
@@ -267,6 +341,7 @@ pub(super) fn write_relative(
     root: &File,
     path: &str,
     bytes: &[u8],
+    root_check: &dyn Fn() -> io::Result<()>,
 ) -> Result<(), WorkspaceWriteError> {
     let (parent_prefix, leaf_str) = match path.rsplit_once('/') {
         Some((prefix, leaf)) => (Some(prefix), leaf),
@@ -277,17 +352,18 @@ pub(super) fn write_relative(
             "path targets .git metadata, which StateEngine does not write",
         ));
     }
-    let mut held: Option<File> = None;
+    let mut chain: Vec<(&str, File, NativeObjectKey)> = Vec::new();
     if let Some(prefix) = parent_prefix {
         for part in prefix.split('/') {
-            let parent = held.as_ref().unwrap_or(root);
-            held = Some(open_or_create_dir(parent, part)?);
+            let parent = chain.last().map_or(root, |(_, dir, _)| dir);
+            let (dir, key) = open_or_create_dir(parent, part)?;
+            chain.push((part, dir, key));
         }
     }
-    let parent = held.as_ref().unwrap_or(root);
+    let parent = chain.last().map_or(root, |(_, dir, _)| dir);
     let dot_git = dot_git_key(parent)?;
     let mut leaf_units = utf16_component(leaf_str)?;
-    inspect_target_leaf(parent, &mut leaf_units, dot_git)?;
+    let baseline = inspect_target_leaf(parent, &mut leaf_units, dot_git)?;
 
     let stage_str = stage_name()?;
     let mut stage_units = utf16_component(&stage_str)?;
@@ -308,13 +384,27 @@ pub(super) fn write_relative(
         dispose_stage(&stage);
         return Err(error);
     }
-    if let Err(error) = inspect_target_leaf(parent, &mut leaf_units, dot_git) {
+    let pre_publish = (|| -> Result<(), WorkspaceWriteError> {
+        root_check().map_err(|error| {
+            WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::RootUnverified(error))
+        })?;
+        verify_parent_chain(root, &chain)?;
+        verify_target_unchanged(parent, &mut leaf_units, dot_git, baseline)
+    })();
+    if let Err(error) = pre_publish {
         dispose_stage(&stage);
         return Err(error);
     }
-    if let Err(error) = rename_replace_at(&stage, parent, &leaf_units).map_err(io_before) {
+    if let Err(error) =
+        rename_at(&stage, parent, &leaf_units, baseline.is_some()).map_err(io_before)
+    {
         dispose_stage(&stage);
         return Err(error);
     }
+    verify_parent_chain(root, &chain).map_err(|error| {
+        WorkspaceWriteError::PublishedUncertain(format!(
+            "workspace parent ancestry changed after publication: {error}"
+        ))
+    })?;
     Ok(())
 }
