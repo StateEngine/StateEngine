@@ -4,7 +4,8 @@ use windows_sys::Wdk::{
     Foundation::OBJECT_ATTRIBUTES,
     Storage::FileSystem::{
         FILE_CREATE, FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
-        FILE_SYNCHRONOUS_IO_NONALERT, NtCreateFile,
+        FILE_RENAME_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT, FileRenameInformation, NtCreateFile,
+        NtSetInformationFile,
     },
 };
 use windows_sys::Win32::{
@@ -366,7 +367,7 @@ pub(in crate::state_files) fn validate_creation_target(path: &Path) -> Result<()
 
 /// Stage a new regular file handle-relatively beneath the pinned `parent`,
 /// write and flush it while holding exclusive custody, and publish atomically
-/// without replacement by handle (`FileRenameInfo`). Preserves any staging
+/// without replacement by handle (`NtSetInformationFile` + `FileRenameInformation`). Preserves any staging
 /// disposal failure as a separate fact.
 pub(in crate::state_files) fn create_and_publish_file_at(
     parent: &File,
@@ -429,41 +430,39 @@ pub(in crate::state_files) fn create_and_publish_file_at(
     }
     // SAFETY: successful NtCreateFile transferred unique ownership of `raw`.
     let mut file = unsafe { File::from_raw_handle(raw) };
-    if let Err(error) = file
-        .write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|e| io_error("write new user file", path, e))
-    {
-        if let Err(cleanup) = dispose(&file, path) {
-            return Err(io_error(
-                "write new user file (staging cleanup also failed)",
-                path,
-                io::Error::other(format!("{error}; staging cleanup failed: {cleanup}")),
-            ));
-        }
-        return Err(error);
+    let cleanup = |f: &File, op, error| match dispose(f, path) {
+        Ok(()) => error,
+        Err(c) => io_error(
+            op,
+            path,
+            io::Error::other(format!("{error}; staging cleanup failed: {c}")),
+        ),
+    };
+    if let Err(e) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        return Err(cleanup(
+            &file,
+            "write new user file (staging cleanup also failed)",
+            io_error("write new user file", path, e),
+        ));
     }
-    if let Err(error) = rename_no_replace_at(&file, parent, &leaf_units, path) {
-        if let Err(cleanup) = dispose(&file, path) {
-            return Err(io_error(
-                "publish new user file (staging cleanup also failed)",
-                path,
-                io::Error::other(format!("{error}; staging cleanup failed: {cleanup}")),
-            ));
-        }
-        return Err(error);
-    }
-    Ok(())
+    rename_no_replace_at(&file, parent, &leaf_units, path).map_err(|e| {
+        cleanup(
+            &file,
+            "publish new user file (staging cleanup also failed)",
+            e,
+        )
+    })
 }
 
 fn rename_no_replace_at(file: &File, parent: &File, leaf_units: &[u16], path: &Path) -> Result<()> {
     let name_bytes = leaf_units.len() * 2;
-    let header_size = size_of::<FILE_RENAME_INFO>();
-    let total = header_size + name_bytes;
+    let total = (std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName) + name_bytes)
+        .max(size_of::<FILE_RENAME_INFORMATION>());
     let mut buf = vec![0u64; total.div_ceil(size_of::<u64>())];
-    // SAFETY: `buf` is 8-byte aligned and sized for FILE_RENAME_INFO + UTF-16 name.
-    unsafe {
-        let info = buf.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    // SAFETY: POD completion block + aligned FILE_RENAME_INFORMATION with pinned RootDirectory for NtSetInformationFile.
+    let code = unsafe {
+        let mut status: IO_STATUS_BLOCK = zeroed();
+        let info = buf.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
         (*info).Anonymous.ReplaceIfExists = false;
         (*info).RootDirectory = parent.as_raw_handle();
         (*info).FileNameLength = name_bytes as u32;
@@ -472,15 +471,21 @@ fn rename_no_replace_at(file: &File, parent: &File, leaf_units: &[u16], path: &P
             ptr::addr_of_mut!((*info).FileName).cast::<u16>(),
             leaf_units.len(),
         );
-        if SetFileInformationByHandle(
+        NtSetInformationFile(
             file.as_raw_handle(),
-            FileRenameInfo,
+            &mut status,
             buf.as_ptr().cast(),
             total as u32,
-        ) == 0
-        {
-            return Err(last("publish new user file", path));
-        }
+            FileRenameInformation,
+        )
+    };
+    if code < 0 {
+        // SAFETY: NTSTATUS-to-Win32 error translation has no pointer inputs.
+        return Err(io_error(
+            "publish new user file",
+            path,
+            io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(code) } as i32),
+        ));
     }
     Ok(())
 }
