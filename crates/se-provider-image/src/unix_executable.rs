@@ -21,9 +21,7 @@ pub(crate) fn packaged_codex(launcher: &Path) -> io::Result<Option<(PathBuf, Pat
         package.to_path_buf()
     } else if launcher.file_name().is_some_and(|name| name == "codex")
         && let Some(directory) = launcher.parent()
-        && let Some(package) =
-            crate::package_roots::unique_installed_root(directory, "@openai/codex")?
-        && dispatcher_binds_package(directory, &entry, &package)?
+        && let Some(package) = resolve_codex_dispatcher(directory, &entry)?
     {
         package
     } else {
@@ -86,69 +84,129 @@ fn platform() -> Option<(&'static str, &'static str)> {
     }
 }
 
-/// Bind package resolution strictly to the selected launcher:
-/// - Volta's `volta-shim` only resolves packages inside Volta's own `tools/image/packages`.
-/// - A `#!` shell shim only resolves `package` when its script body explicitly
-///   dispatches to that exact `package/bin/codex.js`.
+/// Resolve only known package-manager dispatchers before inspecting any
+/// package manifests:
+/// - Volta's `volta-shim` resolves only inside Volta's own `tools/image/packages`.
+/// - A `#!` shell shim resolves only when a real `exec`/`node` command line
+///   (ignoring `#` comments and diagnostic strings) directly executes a
+///   `.../bin/codex.js` target.
 ///
-/// Independent user wrappers and standalone binaries stay untouched.
-fn dispatcher_binds_package(
-    directory: &Path,
-    canonical: &Path,
-    package: &Path,
-) -> io::Result<bool> {
+/// Standalone binaries and independent user wrappers return `Ok(None)` without
+/// scanning neighboring package directories.
+fn resolve_codex_dispatcher(directory: &Path, canonical: &Path) -> io::Result<Option<PathBuf>> {
     if canonical
         .file_name()
         .is_some_and(|name| name == "volta-shim")
     {
-        let volta_pkg = directory
-            .parent()
-            .unwrap_or(directory)
-            .join("tools/image/packages/@openai/codex");
-        return Ok(fs::canonicalize(volta_pkg)
-            .ok()
-            .is_some_and(|root| package.starts_with(root)));
+        return resolve_volta_codex_root(directory);
     }
     let mut bytes = Vec::new();
     fs::File::open(canonical)?
         .take(8192)
         .read_to_end(&mut bytes)?;
     if !bytes.starts_with(b"#!") {
-        return Ok(false);
+        return Ok(None);
     }
     let Ok(script) = std::str::from_utf8(&bytes) else {
-        return Ok(false);
+        return Ok(None);
     };
-    if !script.contains("@openai/codex/bin/codex.js") {
-        return Ok(false);
-    }
-    let target_js = match fs::canonicalize(package.join("bin/codex.js")) {
-        Ok(path) => path,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error),
+    let Some(target_js) = parse_shim_codex_js_target(directory, script)? else {
+        return Ok(None);
     };
-    if let Some(exact) = target_js.to_str()
-        && script.contains(exact)
-    {
-        return Ok(true);
+    let Some(bin) = target_js
+        .parent()
+        .filter(|bin| bin.file_name().is_some_and(|name| name == "bin"))
+    else {
+        return Ok(None);
+    };
+    Ok(bin.parent().map(Path::to_path_buf))
+}
+
+fn resolve_volta_codex_root(directory: &Path) -> io::Result<Option<PathBuf>> {
+    let volta_pkg = directory
+        .parent()
+        .unwrap_or(directory)
+        .join("tools/image/packages/@openai/codex");
+    let mut holding = Vec::new();
+    for root in [
+        volta_pkg.join("lib/node_modules/@openai/codex"),
+        volta_pkg.join("node_modules/@openai/codex"),
+    ] {
+        if crate::package_roots::holds_package_manifest(&root)? {
+            let canonical = se_proc::canonicalize_path(&root)?;
+            if !holding.contains(&canonical) {
+                holding.push(canonical);
+            }
+        }
     }
-    let canon_dir = fs::canonicalize(directory)?;
-    if let Ok(rel) = target_js.strip_prefix(&canon_dir)
-        && let Some(rel) = rel.to_str()
-        && (script.contains(&format!("$basedir/{rel}"))
-            || script.contains(&format!("${{basedir}}/{rel}")))
-    {
-        return Ok(true);
+    match holding.as_slice() {
+        [] => Ok(None),
+        [root] => Ok(Some(root.clone())),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "several Volta installs beside {} hold @openai/codex; remove the extra installs, then retry",
+                directory.display()
+            ),
+        )),
     }
-    if let Some(parent) = canon_dir.parent()
-        && let Ok(rel) = target_js.strip_prefix(parent)
-        && let Some(rel) = rel.to_str()
-        && (script.contains(&format!("$basedir/../{rel}"))
-            || script.contains(&format!("${{basedir}}/../{rel}")))
-    {
-        return Ok(true);
+}
+
+fn parse_shim_codex_js_target(directory: &Path, script: &str) -> io::Result<Option<PathBuf>> {
+    let mut found: Option<PathBuf> = None;
+    for raw_line in script.lines().skip(1) {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        let after_exec = match tokens.first().copied() {
+            Some("exec") => &tokens[1..],
+            _ => &tokens[..],
+        };
+        let Some(cmd) = after_exec.first().copied() else {
+            continue;
+        };
+        let cmd_clean = cmd.trim_matches(|c| c == '"' || c == '\'');
+        let is_node = cmd_clean == "node"
+            || cmd_clean.ends_with("/node")
+            || cmd_clean == "$node"
+            || cmd_clean == "${node}";
+        if !is_node {
+            continue;
+        }
+        // Only recognize direct `node <codex.js> "$@"` dispatcher invocations
+        // (no extra wrapper flags before the script path).
+        let Some(arg) = after_exec.get(1).copied() else {
+            continue;
+        };
+        let arg = arg.trim_matches(|c| c == '"' || c == '\'');
+        if !arg.ends_with("/@openai/codex/bin/codex.js") {
+            continue;
+        }
+        let candidate = if let Some(rel) = arg
+            .strip_prefix("$basedir/")
+            .or_else(|| arg.strip_prefix("${basedir}/"))
+        {
+            directory.join(rel)
+        } else if Path::new(arg).is_absolute() {
+            PathBuf::from(arg)
+        } else {
+            continue;
+        };
+        let canonical = match fs::canonicalize(&candidate) {
+            Ok(path) => path,
+            Err(error) if crate::package_roots::absent(&error) => continue,
+            Err(error) => return Err(error),
+        };
+        if let Some(prev) = &found
+            && prev != &canonical
+        {
+            return Ok(None);
+        }
+        found = Some(canonical);
     }
-    Ok(false)
+    Ok(found)
 }
 
 fn native_image(path: &Path) -> io::Result<bool> {
