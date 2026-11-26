@@ -117,13 +117,21 @@ impl Redactor {
             let Some(start) = fragment else { break };
             decoded.push_str(&text[offset..start]);
             let fragment = &text[start..];
-            let Some(end) = structured_end(fragment) else {
-                // Prose legitimately opens brackets and quotes without closing them,
-                // such as [INFO] tags or timestamps. Publish the opener as literal
-                // text and let the prose patterns judge what follows.
-                decoded.push_str(&text[start..start + 1]);
-                remaining = &text[start + 1..];
+            if let Some(tag_end) = benign_bracket_tag_end(fragment) {
+                // Ordinary flat log tags like `[INFO]` or `[2026-11-26T00:00:00Z]`
+                // contain no nested structured delimiters or escapes; keep them
+                // verbatim in O(tag_len) without withholding the line.
+                decoded.push_str(&fragment[..tag_end]);
+                remaining = &fragment[tag_end..];
                 continue;
+            }
+            let Some(end) = structured_end(fragment) else {
+                // Never export an undecodable suffix or re-scan it quadratically:
+                // it may contain an escaped credential label that prose patterns
+                // cannot recognize.
+                decoded.push_str(OMITTED);
+                remaining = "";
+                break;
             };
             let balanced = &fragment[..end];
             match serde_json::from_str::<Value>(balanced) {
@@ -133,9 +141,10 @@ impl Redactor {
                         &serde_json::to_string(&value).unwrap_or_else(|_| OMITTED.into()),
                     );
                 }
-                // Balanced but not JSON: keep it verbatim; the prose patterns
-                // below still redact credential-shaped text inside it.
-                Err(_) => decoded.push_str(balanced),
+                // Balanced structured fragment that is not valid JSON: withhold
+                // it rather than copying it verbatim so mixed prose + escaped
+                // JSON cannot leak credentials past prose patterns.
+                Err(_) => decoded.push_str(OMITTED),
             }
             remaining = &fragment[end..];
         }
@@ -204,6 +213,23 @@ impl Redactor {
             _ => (),
         }
     }
+}
+
+/// Matches a short flat log tag like `[INFO]` or `[2026-11-26T00:00:00Z]`
+/// containing no nested structured delimiters, quotes, escapes, or assignments.
+fn benign_bracket_tag_end(text: &str) -> Option<usize> {
+    if !text.starts_with('[') {
+        return None;
+    }
+    let limit = text.floor_char_boundary(64);
+    for (index, ch) in text[1..limit].char_indices() {
+        match ch {
+            ']' => return Some(index + 2),
+            '[' | '{' | '}' | '"' | '\'' | '\\' | '=' | '\r' | '\n' => return None,
+            _ => {}
+        }
+    }
+    None
 }
 
 // A single linear scan isolates each candidate, including quoted scalar strings.
