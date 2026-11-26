@@ -2,19 +2,19 @@
 //! Dropping a forward closes only SSH; it never stops a remote host or agent.
 use super::RemoteReady;
 use super::channel::unavailable;
-use crate::child_io::Child;
-use crate::ssh_transport::Diagnostics;
+use se_harness::child_io::Child;
+use se_ssh_transport::Diagnostics;
 mod authorization;
 mod bootstrap;
 pub(super) mod command;
 pub use super::native_image::prepare::{ImageProgress, ImageStage, prepare_image};
 use super::native_image::{self as image, staging, transactions as image_commands};
 pub use authorization::{
-    Authorization, AuthorizationResult, LaunchPermissionsRequest, PermissionsRequest,
-    PermissionsResult, Request as SshRequest, StartResult,
+    Authorization, AuthorizationResult, LaunchPermissionChange, LaunchPermissionsRequest,
+    PermissionsRequest, PermissionsResult, Request as SshRequest, SourcePermissionChange,
+    StartResult, launch_permissions, permissions,
 };
-pub(crate) use authorization::{launch_permissions, permissions};
-pub use bootstrap::connect;
+pub use bootstrap::{BootstrapSession, connect};
 use se_types::Result;
 use std::{collections::BTreeMap, net::SocketAddr, process::Stdio, sync::Arc, time::Duration};
 use tokio::{sync::Mutex, time::timeout};
@@ -55,8 +55,8 @@ impl Forward {
         );
         // Forwarding refusals are functional input, so ambient quiet logging
         // must not suppress the diagnostic read by this owned process.
-        let mut child = crate::child_io::spawn(
-            crate::ssh_transport::client("ssh")
+        let mut child = se_harness::child_io::spawn(
+            se_ssh_transport::client("ssh")
                 .args([
                     "-N",
                     "-T",
@@ -76,7 +76,7 @@ impl Forward {
                 .arg(&self.config.destination)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null()),
-            crate::child_io::Pipes {
+            se_harness::child_io::Pipes {
                 stdin: false,
                 stdout: false,
                 stderr: true,
@@ -180,14 +180,14 @@ impl Forwards {
         &self,
         config: ForwardConfig,
         signer: Arc<dyn super::CredentialSource>,
-        blocking: &crate::BlockingPool,
+        blocking: &dyn crate::BlockingRunner,
     ) -> Result<SocketAddr> {
         self.ensure_inner(config, Some((signer, blocking))).await
     }
     async fn ensure_inner(
         &self,
         config: ForwardConfig,
-        admission: Option<(Arc<dyn super::CredentialSource>, &crate::BlockingPool)>,
+        admission: Option<(Arc<dyn super::CredentialSource>, &dyn crate::BlockingRunner)>,
     ) -> Result<SocketAddr> {
         config.validate()?;
         let alias = config.host.0.hex();
@@ -219,18 +219,13 @@ impl Forwards {
         }
         let result = async {
             if let Some((signer, blocking)) = admission {
-                let deadline =
-                    crate::client::lease::Deadline::from_options(&crate::client::ClientOptions {
-                        expected_generation: None,
-                        timeout: Duration::from_secs(10),
-                        cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                    })?;
                 // Recheck protected custody while holding this link's lock.
                 // Disconnect either follows and joins this spawn, or precedes
                 // this read and prevents a stale client from recreating it.
-                blocking
-                    .run_owned(&deadline, move || signer.credential())
-                    .await?;
+                crate::run_owned(blocking, Duration::from_secs(10), move || {
+                    signer.credential()
+                })
+                .await?;
             }
             forward.ensure().await?;
             Ok(forward.config.local)
@@ -292,7 +287,7 @@ impl Forwards {
         &self,
         config: ForwardConfig,
         signer: Arc<dyn super::CredentialSource>,
-        blocking: &crate::BlockingPool,
+        blocking: &dyn crate::BlockingRunner,
     ) -> Result<()> {
         let entry = self
             .entries
@@ -310,15 +305,10 @@ impl Forwards {
                 "saved SSH connection changed or was disconnected",
             ));
         }
-        let deadline =
-            crate::client::lease::Deadline::from_options(&crate::client::ClientOptions {
-                expected_generation: None,
-                timeout: Duration::from_secs(25),
-                cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            })?;
-        blocking
-            .run_owned(&deadline, move || signer.credential())
-            .await?;
+        crate::run_owned(blocking, Duration::from_secs(25), move || {
+            signer.credential()
+        })
+        .await?;
         authorization::restart(&config).await
     }
     pub async fn activate(&self, config: ForwardConfig) -> Result<SocketAddr> {

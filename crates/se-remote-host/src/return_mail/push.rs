@@ -2,8 +2,8 @@
 use super::*;
 
 pub(super) async fn page(
-    broker: &RemoteBroker,
-    context: &ExecutionContext,
+    mailboxes: &Mailboxes,
+    host: &dyn ReturnMailHost,
     source: &VerifiedSourceSession,
     route: &Route,
     device: &MachineSession,
@@ -17,7 +17,7 @@ pub(super) async fn page(
         agent: route.target.agent.clone(),
     };
     let lookup = address.clone();
-    let outgoing = background_read(context, move |phase| {
+    let outgoing = background_read(host, move |phase| {
         phase.remote_outgoing_replies(&lookup, &peer, 20)
     })
     .await?;
@@ -27,7 +27,7 @@ pub(super) async fn page(
             let key=IdempotencyKey::new(format!("remote-reply-{}",outgoing.message))?;
             let pending=PendingContact { source:address.clone(),peer:route.peer,target:route.target.clone(),alias:alias.into(),
                 request_key:key.clone(),original_grant:device.grant.clone(),local_reply:Some(outgoing.message.clone()) };
-            broker.persist_pending(context,source,pending.clone()).await?;
+            mailboxes.persist_pending(host,source,pending.clone()).await?;
             let result=client.reply(source.context(),RemoteSendReply {
                 source_message:outgoing.message,target:route.target.clone(),reply_to:outgoing.original,body:outgoing.body,
                 idempotency_key:key.clone(),kind:outgoing.kind,quiet:outgoing.quiet,
@@ -46,7 +46,7 @@ pub(super) async fn page(
                     else { result.attribution.source.as_ref()!=Some(source.source()) } {
                 return Err(refused("remote reply receipt differs from its original machine, source or mutation key; retain the pending mail"));
             }
-            broker.record_contact(context,source,pending,commit.value.clone()).await
+            mailboxes.record_contact(host,source,pending,commit.value.clone()).await
         }.await;
         if let Err(error) = result
             && failure.is_none()

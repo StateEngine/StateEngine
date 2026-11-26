@@ -2,8 +2,8 @@
 use super::staging;
 use super::transactions as image_commands;
 use super::{Image, describe};
-use crate::remote::channel::unavailable;
-use crate::remote::ssh::command::{ssh, verification_error};
+use crate::channel::unavailable;
+use crate::ssh::command::{ssh, verification_error};
 use se_types::Result;
 use std::{
     path::Path,
@@ -58,10 +58,10 @@ pub async fn prepare_image(
     let upload = format!(
         "{}.upload-{}",
         image.remote(),
-        se_types::hex_lower(&crate::remote::session::entropy::<16>()?)
+        se_types::hex_lower(&crate::session::entropy::<16>()?)
     );
     let result = async {
-        crate::ssh_transport::upload(
+        se_ssh_transport::upload(
             destination,
             &image.path,
             &upload,
@@ -242,7 +242,7 @@ fn unsafe_cache() -> se_types::SeError {
 /// Unix, SID on Windows); group-or-other-writable carries a trailing mode.
 /// Paths are positional and may contain colons (Windows drive letters), so
 /// only the single trailing extra splits off.
-pub(in crate::remote) fn cache_refusal(detail: &[u8]) -> Option<se_types::SeError> {
+pub(crate) fn cache_refusal(detail: &[u8]) -> Option<se_types::SeError> {
     let line = detail
         .split(|byte| *byte == b'\n')
         .find_map(|line| line.strip_prefix(b"image-cache-refused:"))?;

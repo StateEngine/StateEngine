@@ -64,3 +64,73 @@ pub async fn run_owned<T: Send + 'static>(
 pub trait WriterFaultObserver: Send + Sync {
     fn observe_writer(&self, error: &se_store::StoreError);
 }
+
+/// Narrow host runtime port for source-side return-mail couriers.
+pub trait ReturnMailHost: Send + Sync {
+    fn generation(&self) -> u64;
+    fn enable_return_mail(&self);
+    fn check_open(&self) -> Result<()>;
+    fn resolve_binding<'a>(
+        &'a self,
+        alias: &'a str,
+        call: se_remote::RemoteCallContext,
+        admission: &'a se_store::Admission,
+        terminal: &'a se_core::admission::HumanTerminal,
+    ) -> RemoteFuture<'a, se_remote::broker::Binding>;
+    fn connection<'a>(
+        &'a self,
+        binding: &'a se_remote::broker::Binding,
+        call: &'a se_remote::RemoteCallContext,
+    ) -> RemoteFuture<'a, std::sync::Arc<dyn se_remote::RemoteClient>>;
+    fn store_info(&self) -> RemoteFuture<'_, se_store::StoreInfo>;
+    fn read_owned(
+        &self,
+        work: Box<
+            dyn FnOnce(&se_store::ReadPhase) -> se_store::StoreResult<Box<dyn Any + Send>> + Send,
+        >,
+    ) -> RemoteFuture<'_, Box<dyn Any + Send>>;
+    fn read_background(
+        &self,
+        work: Box<
+            dyn FnOnce(&se_store::ReadPhase) -> se_store::StoreResult<Box<dyn Any + Send>> + Send,
+        >,
+    ) -> RemoteFuture<'_, Box<dyn Any + Send>>;
+    fn submit_batch(
+        &self,
+        batch: se_store::AtomicBatch,
+        operation: &'static str,
+        key: se_types::IdempotencyKey,
+    ) -> RemoteFuture<'_, se_store::CommitReceipt>;
+}
+
+/// Run a typed owned read against the host's pooled read phase.
+pub async fn return_mail_read<T: Send + 'static>(
+    host: &dyn ReturnMailHost,
+    work: impl FnOnce(&se_store::ReadPhase) -> se_store::StoreResult<T> + Send + 'static,
+) -> Result<T> {
+    let boxed = host
+        .read_owned(Box::new(move |phase| {
+            work(phase).map(|value| Box::new(value) as Box<dyn Any + Send>)
+        }))
+        .await?;
+    boxed
+        .downcast::<T>()
+        .map(|value| *value)
+        .map_err(|_| SeError::invalid("return-mail read", "the expected typed read result"))
+}
+
+/// Run a typed background read against the host's pooled read phase.
+pub async fn return_mail_background_read<T: Send + 'static>(
+    host: &dyn ReturnMailHost,
+    work: impl FnOnce(&se_store::ReadPhase) -> se_store::StoreResult<T> + Send + 'static,
+) -> Result<T> {
+    let boxed = host
+        .read_background(Box::new(move |phase| {
+            work(phase).map(|value| Box::new(value) as Box<dyn Any + Send>)
+        }))
+        .await?;
+    boxed
+        .downcast::<T>()
+        .map(|value| *value)
+        .map_err(|_| SeError::invalid("return-mail read", "the expected typed background result"))
+}

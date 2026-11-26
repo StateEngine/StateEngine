@@ -10,12 +10,12 @@ use std::{sync::Arc, time::Duration};
 use tokio::{net::TcpStream, time::timeout};
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
-pub(super) use se_remote::channel::{Socket, unavailable};
+pub use se_remote::channel::{Socket, busy, unavailable};
 pub(super) async fn open(
     route: &RemoteRoute,
     device: &MachineSession,
     signer: Arc<dyn CredentialSource>,
-    blocking: &crate::runtime::BlockingPool,
+    blocking: &dyn BlockingRunner,
     forwards: &ssh::Forwards,
 ) -> Result<Socket> {
     route.validate()?;
@@ -62,7 +62,7 @@ async fn authorize_forwarded(
     route: &RemoteRoute,
     device: &MachineSession,
     signer: Arc<dyn CredentialSource>,
-    blocking: &crate::runtime::BlockingPool,
+    blocking: &dyn BlockingRunner,
     forwards: &ssh::Forwards,
 ) -> Result<()> {
     timeout(Duration::from_secs(10), async {
@@ -71,16 +71,10 @@ async fn authorize_forwarded(
             ServerFrame::Error { error, .. } => return Err(error.with_far_origin().into()),
             _ => return Err(auth::refused("native forwarded channel identity is absent")),
         };
-        let credential = blocking
-            .run_owned(
-                &crate::client::lease::Deadline::from_options(&crate::client::ClientOptions {
-                    expected_generation: None,
-                    timeout: Duration::from_secs(10),
-                    cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                })?,
-                move || signer.credential(),
-            )
-            .await?;
+        let credential = crate::run_owned(blocking, Duration::from_secs(10), move || {
+            signer.credential()
+        })
+        .await?;
         let config = route.forward.clone().ok_or_else(|| {
             auth::refused("application authorization requires the owned SSH connection")
         })?;

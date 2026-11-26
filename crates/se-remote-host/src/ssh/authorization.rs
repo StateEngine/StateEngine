@@ -1,6 +1,25 @@
 //! Application authorization stays on SSH; a forwarded socket carries no secret.
-pub use crate::remote::auth::Authorization;
-use crate::remote::{RemoteHostId, RemoteReady};
+pub use crate::auth::Authorization;
+use crate::{RemoteAgentAddress, RemoteHostId, RemoteReady, RemoteTarget};
+use se_types::IdempotencyKey;
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchPermissionChange {
+    pub target: RemoteTarget,
+    pub allowed: bool,
+    pub expected_revision: Option<u64>,
+    pub key: IdempotencyKey,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourcePermissionChange {
+    pub address: RemoteAgentAddress,
+    pub allowed: bool,
+    pub expected_revision: Option<u64>,
+    pub key: IdempotencyKey,
+}
 use se_types::ErrorBody;
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize)]
@@ -17,7 +36,7 @@ pub struct AuthorizationResult {
 pub struct PermissionsRequest {
     pub permissions: RemoteHostId,
     pub after: Option<se_types::remote::RemoteAgentAddress>,
-    pub change: Option<crate::remote::owner_input::SourcePermissionChange>,
+    pub change: Option<crate::SourcePermissionChange>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
@@ -33,7 +52,7 @@ pub struct LaunchPermissionsRequest {
     pub launch_permissions: RemoteHostId,
     pub grant: se_types::RemoteGrantId,
     pub after: Option<se_types::remote::RemoteTarget>,
-    pub change: Option<crate::remote::owner_input::LaunchPermissionChange>,
+    pub change: Option<crate::LaunchPermissionChange>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -42,7 +61,7 @@ pub struct PermissionsResult {
     pub result: std::result::Result<serde_json::Value, ErrorBody>,
 }
 
-pub(crate) async fn permissions(
+pub async fn permissions(
     config: &super::ForwardConfig,
     request: PermissionsRequest,
 ) -> se_types::Result<serde_json::Value> {
@@ -59,7 +78,7 @@ pub(crate) async fn permissions(
         .result
         .map_err(|error| error.with_far_origin().into())
 }
-pub(crate) async fn launch_permissions(
+pub async fn launch_permissions(
     config: &super::ForwardConfig,
     request: LaunchPermissionsRequest,
 ) -> se_types::Result<serde_json::Value> {
@@ -157,12 +176,12 @@ async fn exchange(
 ) -> se_types::Result<Vec<u8>> {
     use super::unavailable;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut child = crate::child_io::spawn(
-        crate::ssh_transport::client("ssh")
+    let mut child = se_harness::child_io::spawn(
+        se_ssh_transport::client("ssh")
             .args(["-T", "-o", "BatchMode=yes"])
             .arg(&config.destination)
             .arg(&config.command),
-        crate::child_io::Pipes {
+        se_harness::child_io::Pipes {
             stdin: true,
             stdout: true,
             stderr: true,

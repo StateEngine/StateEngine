@@ -1,12 +1,10 @@
 //! Optional source couriers retain only bounded native-admitted active routes.
-use crate::remote::{
-    broker::{RemoteBroker, VerifiedSourceSession},
+use crate::{
+    ReturnMailHost, return_mail_background_read as background_read, return_mail_read as read,
     session, *,
 };
-use crate::runtime::ExecutionContext;
-use se_core::store_error::store_error;
 use se_core::{admission::HumanTerminal, ops::remote::*};
-use se_remote::broker::Binding;
+use se_remote::broker::{Binding, VerifiedSourceSession};
 use se_store::remote::{MailContact, MailRoute as Route, MailboxChange, PendingContact};
 use se_store::{Actor, Admission, RecordIdentity, Scope};
 use se_types::{IdempotencyKey, Receipt};
@@ -26,12 +24,12 @@ struct MailTask {
     error: Arc<Mutex<Option<se_types::ErrorBody>>>,
 }
 #[derive(Default)]
-pub(crate) struct Mailboxes {
-    pub(crate) writes: tokio::sync::Mutex<()>,
+pub struct Mailboxes {
+    pub writes: tokio::sync::Mutex<()>,
     tasks: Mutex<HashMap<String, MailTask>>,
 }
 impl Mailboxes {
-    pub(crate) async fn close(&self) -> Result<()> {
+    pub async fn close(&self) -> Result<()> {
         let tasks: Vec<_> = self
             .tasks
             .lock()
@@ -59,19 +57,17 @@ impl Mailboxes {
         }
         failure.map_or(Ok(()), Err)
     }
-}
 
-impl RemoteBroker {
-    pub(crate) async fn start_mail(
+    pub async fn start_mail(
         self: &Arc<Self>,
-        context: &ExecutionContext,
+        host: &Arc<dyn ReturnMailHost>,
         source: VerifiedSourceSession,
     ) -> Result<Option<se_types::ErrorBody>> {
-        self.check_open()?;
+        host.check_open()?;
         source.context().check_current()?;
         let address = source.source().address();
         let finished: Vec<_> = {
-            let mut tasks = self.mailbox.tasks.lock().map_err(|_| poisoned())?;
+            let mut tasks = self.tasks.lock().map_err(|_| poisoned())?;
             let keys: Vec<_> = tasks
                 .iter()
                 .filter(|(_, t)| t.task.is_finished())
@@ -112,16 +108,16 @@ impl RemoteBroker {
         let key = serde_json::to_string(&(source.source(), source.credential().as_bytes()))
             .map_err(|_| poisoned())?;
         {
-            let tasks = self.mailbox.tasks.lock().map_err(|_| poisoned())?;
+            let tasks = self.tasks.lock().map_err(|_| poisoned())?;
             if let Some(task) = tasks.get(&key) {
                 return Ok(task.error.lock().map_err(|_| poisoned())?.clone());
             }
         }
         let lookup = address.clone();
-        if !read(context, move |p| p.has_remote_mail_for(&lookup)).await? {
+        if !read(host.as_ref(), move |p| p.has_remote_mail_for(&lookup)).await? {
             return Ok(None);
         }
-        let mut tasks = self.mailbox.tasks.lock().map_err(|_| poisoned())?;
+        let mut tasks = self.tasks.lock().map_err(|_| poisoned())?;
         if let Some(task) = tasks.get(&key) {
             return Ok(task.error.lock().map_err(|_| poisoned())?.clone());
         }
@@ -130,11 +126,11 @@ impl RemoteBroker {
                 "return-mail source capacity reached; finish an older source session before starting another",
             ));
         }
-        let broker = self.clone();
-        let context = context.clone();
+        let mailboxes = self.clone();
+        let host = host.clone();
         let error = Arc::new(Mutex::new(None));
         let state = error.clone();
-        let task = tokio::spawn(async move { broker.courier(context, source, state).await });
+        let task = tokio::spawn(async move { mailboxes.courier(host, source, state).await });
         tasks.insert(
             key,
             MailTask {
@@ -156,42 +152,6 @@ fn source_admission(source: &VerifiedSourceSession) -> Admission {
     }
 }
 
-async fn read<T: Send + 'static>(
-    context: &ExecutionContext,
-    work: impl FnOnce(&se_store::ReadPhase) -> se_store::StoreResult<T> + Send + 'static,
-) -> Result<T> {
-    let reads = context.reads.clone();
-    let generation = context.generation;
-    context
-        .blocking
-        .run_owned(&crate::remote::remote_deadline()?, move || {
-            let phase = crate::runtime::executor::checked_pooled_phase(&reads, generation)?;
-            let result = work(&phase).map_err(|e| store_error(&e));
-            crate::runtime::executor::close_read(result, phase.close())
-        })
-        .await
-}
-
-async fn background_read<T: Send + 'static>(
-    context: &ExecutionContext,
-    work: impl FnOnce(&se_store::ReadPhase) -> se_store::StoreResult<T> + Send + 'static,
-) -> Result<T> {
-    let reads = context.reads.clone();
-    let generation = context.generation;
-    context
-        .blocking
-        .run(
-            crate::runtime::BlockingClass::Background,
-            &crate::remote::remote_deadline()?,
-            move || {
-                let phase = crate::runtime::executor::checked_pooled_phase(&reads, generation)?;
-                let result = work(&phase).map_err(|e| store_error(&e));
-                crate::runtime::executor::close_read(result, phase.close())
-            },
-        )
-        .await
-}
-
 const MAX_SOURCES: usize = 64;
 fn poisoned() -> SeError {
     refused("return-mail state is unreadable")
@@ -210,4 +170,3 @@ fn check_size(value: &impl serde::Serialize, budget: u32) -> Result<()> {
     }
     Ok(())
 }
-mod destination;

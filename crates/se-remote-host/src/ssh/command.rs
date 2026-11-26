@@ -1,10 +1,10 @@
 //! Remote image verification refusals adapt the shared native SSH transport.
 use super::unavailable;
-pub(super) use crate::ssh_transport::close;
-pub(in crate::remote) use crate::ssh_transport::command as ssh;
+pub(super) use se_ssh_transport::close;
+pub(crate) use se_ssh_transport::command as ssh;
 use se_types::SeError;
 
-pub(in crate::remote) fn verification_error(bytes: &[u8]) -> SeError {
+pub(crate) fn verification_error(bytes: &[u8]) -> SeError {
     if let Some(mode) = std::str::from_utf8(bytes)
         .ok()
         .and_then(|text| {

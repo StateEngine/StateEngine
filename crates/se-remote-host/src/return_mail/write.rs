@@ -1,25 +1,17 @@
 //! Use the existing writer and retained ordinary-mail completion observer.
 use super::*;
-use se_store::{
-    AtomicBatch, EventBody, EventHeader, IntentDigest, NewEvent, ReadStore, RequestIdentity,
-};
+use se_store::{AtomicBatch, EventBody, EventHeader, IntentDigest, NewEvent, RequestIdentity};
 use sha2::{Digest, Sha256};
 
 pub(super) async fn commit(
-    context: &ExecutionContext,
+    host: &dyn ReturnMailHost,
     admission: Admission,
     key: IdempotencyKey,
     operation: &'static str,
     intent: serde_json::Value,
     bodies: Vec<EventBody<se_store::InputText>>,
 ) -> Result<se_store::CommitReceipt> {
-    let reader = context.reader.clone();
-    let info = context
-        .blocking
-        .run_owned(&crate::remote::remote_deadline()?, move || {
-            reader.info().map_err(|e| store_error(&e))
-        })
-        .await?;
+    let info = host.store_info().await?;
     let now = session::now()?;
     let events = bodies
         .into_iter()
@@ -55,17 +47,5 @@ pub(super) async fn commit(
             },
         }),
     };
-    let identity = crate::runtime::WriteIdentity {
-        operation,
-        key: Some(key),
-        natural_key: None,
-        natural_events: Vec::new(),
-    };
-    crate::runtime::submit::submit(
-        context,
-        batch,
-        &identity,
-        &crate::remote::remote_deadline()?,
-    )
-    .await
+    host.submit_batch(batch, operation, key).await
 }

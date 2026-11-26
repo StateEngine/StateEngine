@@ -62,23 +62,7 @@ pub enum OwnerInput {
     },
 }
 #[cfg(feature = "remote")]
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LaunchPermissionChange {
-    pub target: RemoteTarget,
-    pub allowed: bool,
-    pub expected_revision: Option<u64>,
-    pub key: IdempotencyKey,
-}
-#[cfg(feature = "remote")]
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SourcePermissionChange {
-    pub address: RemoteAgentAddress,
-    pub allowed: bool,
-    pub expected_revision: Option<u64>,
-    pub key: IdempotencyKey,
-}
+pub use se_remote_host::{LaunchPermissionChange, SourcePermissionChange};
 impl OwnerInput {
     #[cfg(feature = "remote")]
     pub(crate) fn initializes_resources(&self) -> bool {

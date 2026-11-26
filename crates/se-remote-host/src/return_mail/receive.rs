@@ -3,7 +3,7 @@ use super::*;
 use se_store::{EventBody, InputText, remote::ReturnAttribution};
 
 pub(super) async fn page(
-    context: &ExecutionContext,
+    host: &dyn ReturnMailHost,
     source: &VerifiedSourceSession,
     contact: &MailContact,
     device: &MachineSession,
@@ -13,7 +13,7 @@ pub(super) async fn page(
     let selected = contact.clone();
     let grant = device.grant.clone();
     let lookup = address.clone();
-    let after = background_read(context, move |phase| {
+    let after = background_read(host, move |phase| {
         phase.remote_return_cursor(&lookup, selected.peer, &selected.target, &grant)
     })
     .await?;
@@ -33,7 +33,7 @@ pub(super) async fn page(
     let messages = result.body.messages;
     let intent = serde_json::json!({"source":address,"peer":device.host,"grant":device.grant,"target":contact.target,"messages":messages,"cursor":cursor});
     let last = messages.last().ok_or_else(poisoned)?.message.clone();
-    let bodies = background_read(context, move |phase| {
+    let bodies = background_read(host, move |phase| {
         let mut bodies = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for message in messages {
@@ -75,11 +75,11 @@ pub(super) async fn page(
         scope: Scope::Project(source.source().project.clone()),
         actor: Actor::Remote(contact.principal.clone()),
         session: None,
-        generation: context.generation.get(),
+        generation: host.generation(),
     };
     let key = IdempotencyKey::new(format!("remote-return-{}-{last}", device.grant))?;
     write::commit(
-        context,
+        host,
         admission,
         key,
         "remote.return.receive",

@@ -8,7 +8,7 @@ use se_store::{EventBody, ProjectionRecord, RecordedIdentity, remote::TargetFact
 use se_types::{AgentId, Read, Result};
 use std::time::Instant;
 
-pub(crate) trait SecurityStoreRead {
+pub trait SecurityStoreRead {
     fn watch_position(
         &self,
         request: &view_request::ViewRequest,
@@ -347,7 +347,7 @@ fn observe(
         Read::Present { value } => Some(value),
         _ => None,
     };
-    let plan = crate::AgentObservationPlan::remote(
+    let plan = se_agent_observation::AgentObservationPlan::remote(
         facts.target.project.clone(),
         row.clone(),
         process,
@@ -355,11 +355,11 @@ fn observe(
         recorded_session,
     );
     let plan = if let Some(home) = home {
-        plan.with_command_home(home, crate::state_files::machine_identity_in)
+        plan.with_command_home(home, read_machine_identity)
     } else {
         plan
     };
-    crate::observe_agent(plan, deadline)?.apply(&mut row)?;
+    se_agent_observation::observe_agent(plan, deadline)?.apply(&mut row)?;
     let status = status_of(recovering, &row, lifecycle);
     Ok(RemoteAgentView {
         target: facts.target,
@@ -371,4 +371,67 @@ fn observe(
             value: facts.pending,
         },
     })
+}
+
+fn read_machine_identity(home: &std::path::Path) -> Result<se_types::MachineId> {
+    use se_core::machine_identity::{
+        MACHINE_IDENTITY_FILE, MACHINE_IDENTITY_MAX_BYTES, MachineIdentityPort, Publication,
+    };
+    use std::io::Read as _;
+    let files = se_proc::NativeStateFiles::open(home)
+        .map_err(|e| se_types::SeError::invalid("agent session observation", &e.to_string()))?;
+    struct ReadOnly<'a>(&'a se_proc::NativeStateFiles);
+    fn read_bounded(
+        files: &se_proc::NativeStateFiles,
+        path: &std::path::Path,
+    ) -> Result<Option<Vec<u8>>> {
+        let unreadable = |e: &dyn std::fmt::Display| {
+            scope::unreadable("protected machine identity", &e.to_string())
+        };
+        let Some(file) = files.readback(path).map_err(|e| unreadable(&e))? else {
+            return Ok(None);
+        };
+        let mut bytes = Vec::new();
+        file.take((MACHINE_IDENTITY_MAX_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|e| unreadable(&e))?;
+        if bytes.len() > MACHINE_IDENTITY_MAX_BYTES {
+            return Err(unreadable(&"record exceeds 1024 bytes"));
+        }
+        Ok(Some(bytes))
+    }
+    impl MachineIdentityPort for ReadOnly<'_> {
+        fn read(&self, home: &std::path::Path) -> Result<Read<Vec<u8>>> {
+            if home != self.0.root() {
+                return Err(scope::unreadable(
+                    "protected machine identity",
+                    "home differs from retained native custody",
+                ));
+            }
+            let path = home.join(MACHINE_IDENTITY_FILE);
+            let Some(bytes) = read_bounded(self.0, &path)? else {
+                return Ok(Read::Absent {
+                    checked: format!("native owner-only file absence at {}", path.display()),
+                });
+            };
+            if read_bounded(self.0, &path)?.as_ref() != Some(&bytes) {
+                return Err(scope::unreadable(
+                    "protected machine identity",
+                    "record changed during read",
+                ));
+            }
+            Ok(Read::Present { value: bytes })
+        }
+        fn publish_no_replace(
+            &self,
+            _home: &std::path::Path,
+            _bytes: &[u8],
+        ) -> Result<Publication> {
+            Err(se_types::SeError::invalid(
+                "machine identity",
+                "one created by se init; an embedded host never creates it",
+            ))
+        }
+    }
+    se_core::machine_identity::require_machine_identity(files.root(), &ReadOnly(&files))
 }

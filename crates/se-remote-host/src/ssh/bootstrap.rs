@@ -1,7 +1,15 @@
 //! Pair only after the calling CLI staged and independently verified the image.
 use super::command::ssh;
 use super::*;
-use crate::remote::{BootstrapSession, RemoteHostId};
+use crate::{LinkSecret, MachineSession, RemoteHostId};
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BootstrapSession {
+    pub device: MachineSession,
+    pub secret: LinkSecret,
+    pub port: u16,
+}
 use std::path::PathBuf;
 
 /// A refused bootstrap answer carries the peer's own error body: mark it as
@@ -72,8 +80,7 @@ pub async fn connect(
         return Err(unavailable("remote bootstrap protocol is incompatible"));
     }
     let session = envelope.value;
-    if !matches!(session.device.subject, crate::remote::RemoteSubject::Machine {host} if host == source)
-    {
+    if !matches!(session.device.subject, crate::RemoteSubject::Machine {host} if host == source) {
         return Err(unavailable(
             "remote bootstrap changed the authenticated source machine",
         ));
