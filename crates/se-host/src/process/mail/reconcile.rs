@@ -9,7 +9,19 @@ impl LaunchCoordinator {
         target: &core::MailTarget,
         deadline: &Deadline,
     ) -> Result<()> {
+        let previous = work
+            .mail
+            .flight
+            .as_ref()
+            .map(|f| f.reservation.notice_id.clone());
+        self.clear_settled_flight(&mut work.mail.flight, target, deadline)
+            .await?;
         let Some(flight) = work.mail.flight.as_mut() else {
+            if work.secode.is_some()
+                && let Some(notice) = previous
+            {
+                self.retire_secode_notice(work, &notice, deadline).await?;
+            }
             return self.reconcile_captured_mail(work, target, deadline).await;
         };
         let evidence = flight.evidence.clone().ok_or_else(|| {
@@ -52,6 +64,8 @@ impl LaunchCoordinator {
             .flight
             .as_ref()
             .map(|f| f.reservation.notice_id.clone());
+        self.clear_settled_flight(&mut work.mail.flight, target, deadline)
+            .await?;
         if let Some(flight) = work.mail.flight.as_mut() {
             // Only a witnessed zero-byte failure permits a fresh attempt on a
             // later commit/retry wake. Uncertain acceptance retains this flight.
@@ -240,7 +254,7 @@ impl LaunchCoordinator {
                 Ok(resolved)
             })
             .await?;
-        let (mut step, effect_id) = (Ok(()), flight.as_ref().map(|f| f.reservation.effect_id));
+        let mut step = Ok(());
         for (effect, evidence) in resolved {
             let req = core::SettleResolved {
                 target: target.clone(),
@@ -262,21 +276,35 @@ impl LaunchCoordinator {
                 break;
             }
         }
-        if let Some(effect) = effect_id
-            && self
-                .store
-                .read(admission(target), deadline, move |cx| {
-                    let rec = scope::require_present(
-                        cx.read.effect(effect).map_err(|e| store_error(&e))?,
-                        "mail flight effect",
-                        scope::COMMITTED_READ_RECOVERY,
-                    )?;
-                    Ok(matches!(rec.current.body, EventBody::EffectSettled { .. }))
-                })
-                .await?
+        self.clear_settled_flight(flight, target, deadline).await?;
+        step
+    }
+
+    /// Clear `flight` directly when its effect is already settled, before any
+    /// fallible replay, capture, or pending-inventory read can fail.
+    async fn clear_settled_flight(
+        &self,
+        flight: &mut Option<Flight>,
+        target: &core::MailTarget,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let Some(effect) = flight.as_ref().map(|f| f.reservation.effect_id) else {
+            return Ok(());
+        };
+        if self
+            .store
+            .read(admission(target), deadline, move |cx| {
+                let rec = scope::require_present(
+                    cx.read.effect(effect).map_err(|e| store_error(&e))?,
+                    "mail flight effect",
+                    scope::COMMITTED_READ_RECOVERY,
+                )?;
+                Ok(matches!(rec.current.body, EventBody::EffectSettled { .. }))
+            })
+            .await?
         {
             *flight = None;
         }
-        step
+        Ok(())
     }
 }
