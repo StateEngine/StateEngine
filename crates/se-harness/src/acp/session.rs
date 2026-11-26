@@ -2,7 +2,9 @@
 //! update pump. Replayed history never enters the new-turn capture queue.
 mod events;
 use super::{
-    Connection, Incoming, Message, OfferFailure, failure,
+    Connection, Incoming, Message, OfferFailure,
+    client::{Client, Refusal},
+    failure,
     permission::{Permission, PermissionPolicy, PermissionRefusal, PermissionView},
     turn::{CapturedMessage, CompletedTurn, Turn, text},
 };
@@ -30,6 +32,7 @@ pub struct Session {
     policy: PermissionPolicy,
     owner_wake: OnceLock<Arc<tokio::sync::Notify>>,
     provider_exit: crate::harness::ProviderExitProof,
+    client: Client,
 }
 #[derive(Clone)]
 pub struct Observation {
@@ -100,6 +103,7 @@ impl Session {
             policy,
             owner_wake: OnceLock::new(),
             provider_exit,
+            client: Client::default(),
         });
         let owned = session.clone();
         *session.pump.lock().await = Some(tokio::spawn(async move {
@@ -176,7 +180,7 @@ impl Session {
                 "initialize",
                 json!({"protocolVersion":1,
                     "clientInfo":{"name":"stateengine","version":env!("CARGO_PKG_VERSION")},
-                    "clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}}),
+                    "clientCapabilities":Client::capabilities()}),
                 remaining(&cx, until)?,
             )
             .await;
@@ -259,6 +263,7 @@ impl Session {
                 None => ("session/new", json!({"cwd":cwd,"mcpServers":mcp_servers})),
             }
         };
+        self.client.bind(cwd);
         self.connection
             .request(method, params, remaining(&cx, until)?)
             .await?;
@@ -563,6 +568,9 @@ impl Session {
     }
     pub async fn close(&self, cx: CallContext) -> Result<()> {
         let until = super::connection::until(&cx)?;
+        // No call starts from here on, and admitted calls get until the bound to
+        // answer before the connection closes; a late answer is then discarded.
+        self.client.close(until).await;
         self.connection.close(remaining(&cx, until)?).await?;
         self.synchronize(until).await?;
         self.closing.store(true, Ordering::Release);
@@ -628,6 +636,23 @@ fn valid_id(id: &str) -> Result<&str> {
     } else {
         Ok(id)
     }
+}
+/// A client call names the open conversation exactly; none is admitted before
+/// the agent has established one.
+fn established(state: &State, params: &Value) -> Result<()> {
+    let expected = state.conversation.as_deref().ok_or_else(|| {
+        failure(
+            "ACP session",
+            "no conversation is established yet, so no client call is admitted",
+        )
+    })?;
+    if params.get("sessionId").and_then(Value::as_str) != Some(expected) {
+        return Err(failure(
+            "ACP session",
+            "the call names another conversation or none",
+        ));
+    }
+    Ok(())
 }
 fn session_matches(state: &State, params: &Value) -> Result<()> {
     let expected = state
