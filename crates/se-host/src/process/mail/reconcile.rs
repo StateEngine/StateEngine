@@ -9,19 +9,8 @@ impl LaunchCoordinator {
         target: &core::MailTarget,
         deadline: &Deadline,
     ) -> Result<()> {
-        let previous = work
-            .mail
-            .flight
-            .as_ref()
-            .map(|f| f.reservation.notice_id.clone());
-        self.clear_settled_flight(&mut work.mail.flight, target, deadline)
-            .await?;
+        self.clear_settled_flight(work, target, deadline).await?;
         let Some(flight) = work.mail.flight.as_mut() else {
-            if work.secode.is_some()
-                && let Some(notice) = previous
-            {
-                self.retire_secode_notice(work, &notice, deadline).await?;
-            }
             return self.reconcile_captured_mail(work, target, deadline).await;
         };
         let evidence = flight.evidence.clone().ok_or_else(|| {
@@ -59,13 +48,12 @@ impl LaunchCoordinator {
         target: &core::MailTarget,
         deadline: &Deadline,
     ) -> Result<()> {
+        self.clear_settled_flight(work, target, deadline).await?;
         let previous = work
             .mail
             .flight
             .as_ref()
             .map(|f| f.reservation.notice_id.clone());
-        self.clear_settled_flight(&mut work.mail.flight, target, deadline)
-            .await?;
         if let Some(flight) = work.mail.flight.as_mut() {
             // Only a witnessed zero-byte failure permits a fresh attempt on a
             // later commit/retry wake. Uncertain acceptance retains this flight.
@@ -75,8 +63,7 @@ impl LaunchCoordinator {
                 .is_some_and(|e| matches!(e.report, se_store::mail::OfferReport::Failed { .. }))
             {
                 work.mail.flight = None;
-                self.settle_mail(&mut work.mail.flight, target, deadline)
-                    .await?;
+                self.settle_mail(work, target, deadline).await?;
                 return Ok(());
             }
             let (recipient, session) = (target.agent.clone(), target.session.clone());
@@ -137,8 +124,7 @@ impl LaunchCoordinator {
                 }
             }
         }
-        self.settle_mail(&mut work.mail.flight, target, deadline)
-            .await?;
+        self.settle_mail(work, target, deadline).await?;
         if work.mail.flight.is_none()
             && work.secode.is_some()
             && let Some(notice) = previous
@@ -198,7 +184,7 @@ impl LaunchCoordinator {
 
     async fn settle_mail(
         &self,
-        flight: &mut Option<Flight>,
+        work: &mut owned::Work,
         target: &core::MailTarget,
         deadline: &Deadline,
     ) -> Result<()> {
@@ -276,19 +262,25 @@ impl LaunchCoordinator {
                 break;
             }
         }
-        self.clear_settled_flight(flight, target, deadline).await?;
+        self.clear_settled_flight(work, target, deadline).await?;
         step
     }
 
-    /// Clear `flight` directly when its effect is already settled, before any
-    /// fallible replay, capture, or pending-inventory read can fail.
+    /// Clear `work.mail.flight` directly when its effect is already settled,
+    /// retiring any durable SE Code notice first so neither a retirement error
+    /// nor a later pending-inventory failure can strand the notice.
     async fn clear_settled_flight(
         &self,
-        flight: &mut Option<Flight>,
+        work: &mut owned::Work,
         target: &core::MailTarget,
         deadline: &Deadline,
     ) -> Result<()> {
-        let Some(effect) = flight.as_ref().map(|f| f.reservation.effect_id) else {
+        let Some((effect, notice)) = work
+            .mail
+            .flight
+            .as_ref()
+            .map(|f| (f.reservation.effect_id, f.reservation.notice_id.clone()))
+        else {
             return Ok(());
         };
         if self
@@ -303,7 +295,10 @@ impl LaunchCoordinator {
             })
             .await?
         {
-            *flight = None;
+            if work.secode.is_some() {
+                self.retire_secode_notice(work, &notice, deadline).await?;
+            }
+            work.mail.flight = None;
         }
         Ok(())
     }
