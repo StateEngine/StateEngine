@@ -2,13 +2,13 @@
 //! one snapshot: the largest areas by file count, and the files most other
 //! files import, each with its first top-level declarations. Ordering is
 //! fixed by counts then paths, so the same index always gives the same map.
-use rusqlite::params;
+use rusqlite::{Connection, ErrorCode, params};
 use se_atlas_index::{
-    Result,
+    IndexError, Result,
     extract::{SymbolKind, display_name, flags},
     store::Reader,
 };
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Instant};
 
 /// Areas, hubs and declarations per hub a map lists at most.
 pub const MAX_AREAS: usize = 8;
@@ -24,6 +24,8 @@ pub struct Map {
     /// Areas left out by [`MAX_AREAS`].
     pub more_areas: u64,
     pub hubs: Vec<Hub>,
+    /// More imported files exist than [`MAX_HUBS`] lists.
+    pub more_hubs: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,9 +50,26 @@ fn area(path: &str, split: Option<&str>) -> String {
     }
 }
 
-pub fn map(reader: &Reader) -> Result<Map> {
-    let snapshot = reader.snapshot()?;
-    let conn = snapshot.connection();
+/// The map, or `None` once `deadline` passes. SQLite is interrupted mid-query,
+/// so a slow index never holds the caller past its deadline.
+pub fn map(reader: &mut Reader, deadline: Instant) -> Result<Option<Map>> {
+    reader.interrupt_at(Some(deadline))?;
+    let built = reader
+        .snapshot()
+        .and_then(|snapshot| build(snapshot.connection()));
+    reader.interrupt_at(None)?;
+    match built {
+        Err(IndexError::Sqlite(error))
+            if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) =>
+        {
+            Ok(None)
+        }
+        Ok(_) if Instant::now() >= deadline => Ok(None),
+        built => built.map(Some),
+    }
+}
+
+fn build(conn: &Connection) -> Result<Map> {
     let mut select = conn.prepare_cached("SELECT path, flags FROM files")?;
     let mut paths = Vec::new();
     for row in select.query_map([], |row| {
@@ -105,15 +124,21 @@ pub fn map(reader: &Reader) -> Result<Map> {
     ]
     .map(SymbolKind::code);
     let skip = flags::TEST | flags::GENERATED | flags::BINARY;
-    let rows = ranked.query_map(params![skip, MAX_HUBS as i64], |row| {
+    // One row past the page tells whether hubs were left out.
+    let rows = ranked.query_map(params![skip, MAX_HUBS as i64 + 1], |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, i64>(2)?,
         ))
     })?;
+    let mut more_hubs = false;
     for row in rows {
         let (id, path, importers) = row?;
+        if hubs.len() == MAX_HUBS {
+            more_hubs = true;
+            break;
+        }
         let names = declared.query_map(
             params![
                 id,
@@ -141,5 +166,6 @@ pub fn map(reader: &Reader) -> Result<Map> {
         areas,
         more_areas,
         hubs,
+        more_hubs,
     })
 }

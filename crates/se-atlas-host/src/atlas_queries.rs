@@ -190,7 +190,9 @@ fn inspect(
         |answer| room(2).is_none_or(|room| render::impact(answer, room).is_ok()),
     )?;
     let (files, capped) = engine.defining_files(&input.target)?;
-    let (outline, changes) = if let [path] = files.as_slice() {
+    // A capped definition set may hide other defining files, so even one
+    // listed file is not the one file that defines the target.
+    let (outline, changes) = if let ([path], false) = (files.as_slice(), capped) {
         let path = RelativePath::new(path.clone())?;
         (
             fitted(
@@ -209,17 +211,28 @@ fn inspect(
             "no indexed file defines this target; the refs section says why".to_owned()
         } else {
             let shown: Vec<_> = files.iter().take(5).map(String::as_str).collect();
-            format!(
-                "{}{} files define this name ({}{}); inspect one of those paths",
-                if capped { "at least " } else { "" },
-                files.len(),
-                shown.join(", "),
-                if files.len() > shown.len() {
-                    ", ..."
-                } else {
-                    ""
-                }
-            )
+            let more = if files.len() > shown.len() {
+                ", ..."
+            } else {
+                ""
+            };
+            if capped {
+                format!(
+                    "this name has more definitions than the index lists; they include {} ({}{more}), so more files may define it; inspect one exact path",
+                    if files.len() == 1 {
+                        "1 file".to_owned()
+                    } else {
+                        format!("{} files", files.len())
+                    },
+                    shown.join(", "),
+                )
+            } else {
+                format!(
+                    "{} files define this name ({}{more}); inspect one of those paths",
+                    files.len(),
+                    shown.join(", "),
+                )
+            }
         };
         fn unknown<T>(index: &IndexSummary, what: String) -> Answer<Read<T>> {
             Answer {

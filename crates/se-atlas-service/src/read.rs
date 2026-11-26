@@ -147,13 +147,17 @@ impl Root {
 
     /// The orientation map of this root, from SQL alone. `current` is false
     /// while the index builds, catches up or holds files changed since.
-    pub fn repo_map(&self) -> Result<RepoMap> {
+    /// `None` when the map could not be read before `deadline`.
+    pub fn repo_map(&self, deadline: std::time::Instant) -> Result<Option<RepoMap>> {
         let (index, dirty) = self.shared.snapshot()?;
-        let map = self
-            .shared
-            .with_reader(|reader| se_atlas_query::map::map(reader).map_err(|e| index_error(&e)))?;
+        let Some(map) = self.shared.with_reader(|reader| {
+            se_atlas_query::map::map(reader, deadline).map_err(|e| index_error(&e))
+        })?
+        else {
+            return Ok(None);
+        };
         let coverage = &index.coverage;
-        Ok(RepoMap {
+        Ok(Some(RepoMap {
             files: map.files,
             current: index.state == IndexState::Current
                 && dirty.paths.is_empty()
@@ -169,8 +173,8 @@ impl Root {
                     declarations: hub.declarations,
                 })
                 .collect(),
-            complete: map.more_areas == 0,
-        })
+            complete: map.more_areas == 0 && !map.more_hubs,
+        }))
     }
 
     /// A unique definition of `name`, with its importers, from SQL alone.

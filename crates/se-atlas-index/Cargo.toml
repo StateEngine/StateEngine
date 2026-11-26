@@ -13,7 +13,8 @@ serde_json.workspace = true
 blake3 = { version = "=1.8.7", default-features = false, features = ["std"] }
 # Ignore-file rule matching only; every source open goes through se-proc custody.
 ignore = "=0.4.33"
-rusqlite = { version = "0.41", features = ["bundled"] }
+# `hooks` lets a reader stop a query at its deadline.
+rusqlite = { version = "0.41", features = ["bundled", "hooks"] }
 
 [target.'cfg(unix)'.dependencies]
 # Only to name ELOOP, the no-follow open's link refusal.

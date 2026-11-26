@@ -133,8 +133,8 @@ fn short_circuit_state(state: &IndexState) -> Option<ResumeCodeState> {
         _ => None,
     }
 }
-/// The map may take this long on top of the code context; past it the
-/// orientation says so rather than slowing the resume.
+/// The map may take this long on top of the code context; its query is
+/// interrupted there, and the orientation says so rather than slowing resume.
 const MAP_DEADLINE: Duration = Duration::from_millis(15);
 /// Open assignments read to find this agent's; more are reported as cut short.
 const ASSIGNMENT_PAGE: u16 = 50;
@@ -156,15 +156,15 @@ fn orientation(
             more_assignments: false,
         };
     };
-    let started = Instant::now();
+    let deadline = Instant::now() + MAP_DEADLINE;
     let (map, map_note) = match owner.summary(project, None) {
         Ok(summary) if crate::atlas_queries::readable(&summary) => {
             match owner
                 .engine(project, Some(&summary.root))
-                .and_then(|engine| engine.repo_map())
+                .and_then(|engine| engine.repo_map(deadline))
             {
-                Ok(map) if started.elapsed() <= MAP_DEADLINE => (Some(map), None),
-                Ok(_) => (None, Some("over its 15 ms time budget".into())),
+                Ok(Some(map)) => (Some(map), None),
+                Ok(None) => (None, Some("over its 15 ms time budget".into())),
                 Err(error) => (None, Some(format!("unreadable: {}", error.body.message()))),
             }
         }

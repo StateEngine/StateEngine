@@ -293,8 +293,13 @@ fn dispatch_read(
         selections,
         observation_deadline,
     } = ctx;
+    let mut op = op;
+    if let Some(hosted) = hosted_resume(&mut op, cx, files, reader, caller, selections, diagnostic)
+    {
+        snapshot.close().map_err(|e| store_error(&e))?;
+        return super::status::finish(cx, reader, hosted, &caller.admission);
+    }
     let observation_op = op.clone();
-    let resume_op = matches!(op, AnyOp::Resume(_)).then(|| op.clone());
     let observed = se_types::UnixMicros::new(u64::try_from(now_us()?).map_err(|_| {
         SeError::invalid("read observation clock", "nonnegative Unix microseconds")
     })?)?;
@@ -349,28 +354,56 @@ fn dispatch_read(
             output = super::session_observation::merge_runtime_observation(output, live)?;
         }
     }
-    // An agent session's resume gains the host's code context and orientation
-    // when a host runs. Without one the store-only answer stands; a host that
-    // fails to answer is named in it rather than blocking the resume.
-    if let Some(resume_op) = resume_op
-        && matches!(caller.admission.actor, se_store::Actor::Agent(_))
-        && caller.admission.session.is_some()
-        && matches!(endpoint(files), Ok(Read::Present { .. }))
+    super::status::finish(cx, reader, output, &caller.admission)
+}
+
+/// An agent session's resume is answered by its running host, which adds code
+/// context and orientation. With no host the store-only answer stands; a host
+/// that fails to answer, or whose endpoint cannot be read, becomes a source
+/// failure the store-only packet reports within its byte budget.
+fn hosted_resume<R: se_store::ReadStore>(
+    op: &mut AnyOp,
+    cx: &Bootstrap,
+    files: &Files,
+    reader: &R,
+    caller: &super::admit::Caller,
+    selections: &se_core::ops::CliSelections,
+    diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Option<AnyOutput> {
+    let AnyOp::Resume(input) = op else {
+        return None;
+    };
+    if !matches!(caller.admission.actor, se_store::Actor::Agent(_))
+        || caller.admission.session.is_none()
     {
-        match super::hosted::forward(cx, files, reader, caller, resume_op, selections, diagnostic) {
-            Ok(hosted @ AnyOutput::Resume(_)) => output = hosted,
-            Ok(_) => (),
-            Err(error) => {
-                if let AnyOutput::Resume(resume) = &mut output {
-                    resume.value.attention.push(format!(
-                        "Code context and orientation were not added: {}",
-                        error.body.message()
-                    ));
+        return None;
+    }
+    let failure = match endpoint(files) {
+        Ok(Read::Absent { .. }) => return None,
+        Ok(Read::Present { .. }) => {
+            let forwarded = AnyOp::Resume(input.clone());
+            match super::hosted::forward(
+                cx, files, reader, caller, forwarded, selections, diagnostic,
+            ) {
+                Ok(hosted @ AnyOutput::Resume(_)) => return Some(hosted),
+                Ok(_) => {
+                    scope::unreadable("hosted resume", "the host answered with another output")
                 }
+                Err(error) => error,
             }
         }
-    }
-    super::status::finish(cx, reader, output, &caller.admission)
+        Ok(Read::Unreadable { source, reason, .. }) => scope::unreadable(&source, &reason),
+        Ok(Read::Unknown { what }) => scope::unreadable("runtime endpoint", &what),
+        Err(error) => error,
+    };
+    input.source_failure = Some(
+        scope::unreadable(
+            "code context and orientation from the running host",
+            &failure.body.message(),
+        )
+        .into_body(),
+    );
+    None
 }
 
 /// Writes and host operations: authorize, then forward to the host or take
