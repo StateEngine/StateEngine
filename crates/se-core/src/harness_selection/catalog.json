@@ -86,5 +86,128 @@
       }
     },
     "package": null
+  },
+  "opencode": {
+    "title": "OpenCode",
+    "setup_url": "https://opencode.ai/docs/cli/acp/",
+    "descriptor": {
+      "driver": "acp-stdio",
+      "command": "opencode",
+      "arguments": [
+        "acp"
+      ],
+      "environment": [],
+      "permissions": {
+        "default": {
+          "arguments": [],
+          "environment": {},
+          "mode": ""
+        }
+      }
+    },
+    "package": null
+  },
+  "gemini": {
+    "title": "Gemini CLI",
+    "setup_url": "https://geminicli.com/docs/cli/acp-mode/",
+    "descriptor": {
+      "driver": "acp-stdio",
+      "command": "node",
+      "arguments": [
+        "--acp"
+      ],
+      "environment": [
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_GENAI_USE_VERTEXAI",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_PROJECT_ID",
+        "GOOGLE_CLOUD_LOCATION",
+        "GOOGLE_APPLICATION_CREDENTIALS"
+      ],
+      "permissions": {
+        "default": {
+          "arguments": [],
+          "environment": {},
+          "mode": ""
+        }
+      },
+      "model_arguments": [
+        "--model",
+        "{model}"
+      ]
+    },
+    "package": {
+      "name": "@google/gemini-cli",
+      "bin": "gemini"
+    }
+  },
+  "kimi": {
+    "title": "Kimi Code CLI",
+    "setup_url": "https://www.kimi.com/code/docs/en/kimi-code-cli/reference/kimi-acp.html",
+    "descriptor": {
+      "driver": "acp-stdio",
+      "command": "kimi",
+      "arguments": [
+        "acp"
+      ],
+      "environment": [],
+      "permissions": {
+        "default": {
+          "arguments": [],
+          "environment": {},
+          "mode": ""
+        }
+      }
+    },
+    "package": null
+  },
+  "auggie": {
+    "title": "Auggie",
+    "setup_url": "https://docs.augmentcode.com/cli/acp",
+    "descriptor": {
+      "driver": "acp-stdio",
+      "command": "node",
+      "arguments": [
+        "--acp"
+      ],
+      "environment": [
+        "AUGMENT_SESSION_AUTH"
+      ],
+      "permissions": {
+        "default": {
+          "arguments": [],
+          "environment": {},
+          "mode": ""
+        }
+      }
+    },
+    "package": {
+      "name": "@augmentcode/auggie",
+      "bin": "auggie"
+    }
+  },
+  "cline": {
+    "title": "Cline",
+    "setup_url": "https://docs.cline.bot/usage/acp",
+    "descriptor": {
+      "driver": "acp-stdio",
+      "command": "node",
+      "arguments": [
+        "--acp"
+      ],
+      "environment": [],
+      "permissions": {
+        "default": {
+          "arguments": [],
+          "environment": {},
+          "mode": ""
+        }
+      }
+    },
+    "package": {
+      "name": "cline",
+      "bin": "cline"
+    }
   }
 }

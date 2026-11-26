@@ -4,7 +4,7 @@
  "default_crate_lines": 40000,
  "default_directory_lines": 10000,
  "crates": {
-  "se-host": 52863,
+  "se-host": 53039,
   "se-adoption": 2563,
   "se-agent-observation": 1466,
   "se-channels": 6750,
@@ -48,7 +48,7 @@
   "se-cli-spec": 2600,
   "se-atlas-host": 2283,
   "se-harness": 18918,
-  "se-tool-capture": 1082,
+  "se-tool-capture": 1083,
   "se-remote-host": 4500,
   "se-state-files": 10500
  },
@@ -58,7 +58,7 @@
   "crates/se-host/src/process": 15596,
   "crates/se-harness/src/harness": 12242,
   "crates/se-host/src/remote": 6921,
-  "crates/se/src/route": 11045,
+  "crates/se/src/route": 11068,
   "crates/se-state-files/src/state_files": 9009,
   "crates/se-native-proc/src/platform": 7233,
   "crates/se-atlas-index/src/extract": 3950,

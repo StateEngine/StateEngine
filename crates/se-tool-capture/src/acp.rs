@@ -14,6 +14,7 @@ pub fn facts(update: &Value, request: u64, cwd: &str) -> Result<Vec<Fact>> {
     match update.get("status").and_then(Value::as_str) {
         Some("completed") => phases.push((Phase::Completed, Outcome::Succeeded)),
         Some("failed") => phases.push((Phase::Completed, Outcome::Failed)),
+        Some("cancelled") => phases.push((Phase::Completed, Outcome::Cancelled)),
         None | Some("pending" | "in_progress") => (),
         _ => {
             return Err(SeError::invalid(

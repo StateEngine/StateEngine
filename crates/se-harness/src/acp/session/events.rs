@@ -130,16 +130,11 @@ impl Session {
             update_history(&mut state, update)?;
         } else if let Some(active) = state.active.as_mut() {
             active.update(update)?;
-        } else if !matches!(
-            update.get("sessionUpdate").and_then(Value::as_str),
-            Some(
-                "available_commands_update"
-                    | "current_mode_update"
-                    | "config_option_update"
-                    | "session_info_update"
-                    | "usage_update"
-            )
-        ) {
+        } else if update
+            .get("sessionUpdate")
+            .and_then(Value::as_str)
+            .is_none_or(carries_content)
+        {
             return Err(failure(
                 "ACP updates",
                 "conversation content outside an owned prompt or replay",
@@ -217,21 +212,26 @@ fn update_history(state: &mut State, update: &Value) -> Result<()> {
                 )
             })?;
         append(&mut state.replay, role, text);
-    } else if !matches!(
-        kind,
-        "tool_call"
-            | "tool_call_update"
-            | "agent_thought_chunk"
-            | "plan"
-            | "available_commands_update"
-            | "current_mode_update"
-            | "config_option_update"
-            | "session_info_update"
-            | "usage_update"
-    ) {
-        return Err(failure("ACP replay", "unsupported history content"));
+    } else if kind.is_empty() {
+        return Err(failure("ACP replay", "update variant is absent"));
     }
+    // Other content is not compared on resume; metadata and vendor
+    // extensions carry no conversation text.
     Ok(())
+}
+
+/// Variants that carry conversation content, which only an owned prompt or
+/// replay may produce. Metadata and vendor extensions are ignored.
+fn carries_content(kind: &str) -> bool {
+    matches!(
+        kind,
+        "agent_message_chunk"
+            | "user_message_chunk"
+            | "agent_thought_chunk"
+            | "tool_call"
+            | "tool_call_update"
+            | "plan"
+    )
 }
 
 fn response_initialize(state: &mut State, result: Value) -> Result<()> {

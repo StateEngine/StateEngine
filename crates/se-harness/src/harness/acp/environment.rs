@@ -1,4 +1,5 @@
-//! Only OS execution context is implicit; provider settings require named opt-in.
+//! Only OS execution and network context is implicit; provider settings and
+//! credentials require named opt-in in the harness descriptor.
 use std::ffi::OsString;
 
 const NAMES: &[&str] = &[
@@ -32,8 +33,10 @@ const NAMES: &[&str] = &[
 ];
 
 pub(super) fn inherited() -> Vec<(OsString, OsString)> {
-    NAMES
+    let mut entries: Vec<_> = NAMES
         .iter()
         .filter_map(|name| std::env::var_os(name).map(|value| (OsString::from(name), value)))
-        .collect()
+        .collect();
+    entries.extend(crate::acp::network_environment());
+    entries
 }

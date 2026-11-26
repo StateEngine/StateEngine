@@ -36,6 +36,12 @@ pub(super) fn prepare(
             entries.push((name, value));
         }
     }
+    // Proxy and TLS settings reach protocol children through this host.
+    for (name, value) in se_host::acp::network_environment() {
+        if !entries.iter().any(|(existing, _)| existing == &name) {
+            entries.push((name, value));
+        }
+    }
     // The detached host must retain human-selected protocol context too;
     // each protocol child still receives only its neutral and configured names.
     let selected = crate::config::load::<se_config::config_policy::ConfigFile>(

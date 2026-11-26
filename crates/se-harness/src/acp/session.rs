@@ -664,12 +664,28 @@ fn normalize(messages: Vec<CapturedMessage>) -> Vec<CapturedMessage> {
     }
     result
 }
+/// A loaded conversation must end with the latest captured exchange: the last
+/// user message and every reply after it, in order and with nothing after it.
+/// Roles must match exactly; text is compared after trimming surrounding
+/// whitespace, which providers add or drop when they replay a conversation.
+/// The match is anchored at the replay's own last user message, so a different
+/// conversation that once contained the same exchange earlier does not match.
+/// Messages before that boundary, such as a banner or a compaction summary that
+/// replaced older turns, are not compared.
 fn same_history(expected: &[CapturedMessage], replay: &[CapturedMessage]) -> bool {
-    expected.len() == replay.len()
-        && expected
+    let latest = expected.iter().rposition(|message| message.role == "user");
+    // Nothing the user said was captured, so the replay must not invent any.
+    if latest.is_none() && replay.iter().any(|message| message.role == "user") {
+        return false;
+    }
+    let tail = &expected[latest.unwrap_or(0)..];
+    replay.len() >= tail.len()
+        && replay[replay.len() - tail.len()..]
             .iter()
-            .zip(replay)
-            .all(|(a, b)| a.role == b.role && a.text.trim() == b.text.trim())
+            .zip(tail)
+            .all(|(seen, wanted)| {
+                seen.role == wanted.role && seen.text.trim() == wanted.text.trim()
+            })
 }
 
 fn http_mcp_allowed(state: &State, unadvertised: bool) -> bool {

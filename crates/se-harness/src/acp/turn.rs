@@ -16,8 +16,16 @@ pub struct CapturedMessage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TurnItem {
-    Message { index: usize },
-    Tool { index: usize },
+    Message {
+        index: usize,
+    },
+    Tool {
+        index: usize,
+    },
+    /// An update variant this version does not recognise, retained raw.
+    Unrecognized {
+        index: usize,
+    },
 }
 /// A complete protocol turn, still awaiting host-owned durable capture.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -27,6 +35,9 @@ pub struct CompletedTurn {
     pub input: String,
     pub messages: Vec<CapturedMessage>,
     pub tools: Vec<Value>,
+    /// Raw updates whose variant this version does not recognise.
+    #[serde(default)]
+    pub unrecognized: Vec<Value>,
     pub order: Vec<TurnItem>,
     pub stop_reason: String,
 }
@@ -42,6 +53,7 @@ pub(super) struct Turn {
     pub input: String,
     pub messages: Vec<CapturedMessage>,
     pub tools: Vec<Value>,
+    unrecognized: Vec<Value>,
     order: Vec<TurnItem>,
     statuses: BTreeMap<String, String>,
     permission_tools: BTreeSet<String>,
@@ -64,6 +76,7 @@ impl Turn {
             input,
             messages: Vec::new(),
             tools: Vec::new(),
+            unrecognized: Vec::new(),
             order: Vec::new(),
             statuses: BTreeMap::new(),
             permission_tools: BTreeSet::new(),
@@ -118,12 +131,9 @@ impl Turn {
             | "config_option_update"
             | "session_info_update"
             | "usage_update" => {}
-            _ => {
-                return Err(failure(
-                    "ACP capture",
-                    "unsupported update; no complete prefix is claimed",
-                ));
-            }
+            // A variant this version does not know may carry content; keep it
+            // raw and named in the capture instead of claiming it was empty.
+            _ => self.unrecognized(update)?,
         }
         Ok(())
     }
@@ -202,8 +212,12 @@ impl Turn {
                 *original = status.into();
             }
         }
-        if status.is_some_and(|s| !matches!(s, "pending" | "in_progress" | "completed" | "failed"))
-        {
+        if status.is_some_and(|s| {
+            !matches!(
+                s,
+                "pending" | "in_progress" | "completed" | "failed" | "cancelled"
+            )
+        }) {
             return Err(failure("ACP tool", "unknown tool state"));
         }
         let bytes = serde_json::to_vec(update)
@@ -214,6 +228,18 @@ impl Turn {
             index: self.tools.len(),
         });
         self.tools.push(update.clone());
+        self.last_message = None;
+        Ok(())
+    }
+    fn unrecognized(&mut self, update: &Value) -> Result<()> {
+        let bytes = serde_json::to_vec(update)
+            .map_err(|_| failure("ACP update", "encoding failed"))?
+            .len();
+        self.count(bytes)?;
+        self.order.push(TurnItem::Unrecognized {
+            index: self.unrecognized.len(),
+        });
+        self.unrecognized.push(update.clone());
         self.last_message = None;
         Ok(())
     }
@@ -244,7 +270,7 @@ impl Turn {
         if self
             .statuses
             .values()
-            .any(|s| !matches!(s.as_str(), "completed" | "failed"))
+            .any(|s| !matches!(s.as_str(), "completed" | "failed" | "cancelled"))
         {
             return Err(failure("ACP completion", "a tool call remains unsettled"));
         }
@@ -260,6 +286,7 @@ impl Turn {
             input: self.input.clone(),
             messages: self.messages.clone(),
             tools: self.tools.clone(),
+            unrecognized: self.unrecognized.clone(),
             order: self.order.clone(),
             stop_reason: reason.into(),
         })
@@ -276,6 +303,7 @@ impl Turn {
             "input_echo": self.echo,
             "messages": self.messages,
             "tools": self.tools,
+            "unrecognized": self.unrecognized,
             "order": self.order,
         })
     }
