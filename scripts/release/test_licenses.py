@@ -20,7 +20,9 @@ class PinnedLicenseBytes(unittest.TestCase):
             "ls-files", "-z", "--", "LICENSE", "LICENSE-MIT", "LICENSE-APACHE", "scripts/release/licenses"
         ).split(b"\0")
         paths = [path.decode("utf-8") for path in paths if path]
-        self.assertGreater(len(paths), 0, "pinned release licenses are absent")
+        for required in ("LICENSE", "LICENSE-MIT", "LICENSE-APACHE"):
+            self.assertIn(required, paths, f"required first-party license is absent: {required}")
+        self.assertGreater(len(paths), 3, "pinned third-party release licenses are absent")
         with tempfile.TemporaryDirectory() as directory:
             prefix = Path(directory).as_posix() + "/"
             git("-c", "core.autocrlf=true", "checkout-index", "--force",

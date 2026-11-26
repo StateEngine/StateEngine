@@ -19,14 +19,20 @@ TARGETS = {"linux": "x86_64-unknown-linux-gnu", "arm": "aarch64-apple-darwin",
            "intel": "x86_64-apple-darwin"}
 
 
+RESERVED_OPERATORS = frozenset({"AND", "OR", "WITH"})
+
+
+def valid_spdx_operand(value):
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+-]*", value)) and value.upper() not in RESERVED_OPERATORS
+
+
 def license_expression(repository, source):
     cargo = subprocess.check_output(["git", "-C", str(repository), "show", source + ":Cargo.toml"], text=True)
     license_id = tomllib.loads(cargo)["workspace"]["package"]["license"]
-    token = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]*")
-    if token.fullmatch(license_id):
+    if valid_spdx_operand(license_id):
         return f'"{license_id}"'
     arms = license_id.split(" OR ")
-    if len(arms) > 1 and all(token.fullmatch(arm) for arm in arms):
+    if len(arms) > 1 and all(valid_spdx_operand(arm) for arm in arms):
         rendered = ", ".join(f'"{arm}"' for arm in arms)
         return f"any_of: [{rendered}]"
     raise ValueError("source license requires an explicit Homebrew expression; no license is inferred")

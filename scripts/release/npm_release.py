@@ -32,6 +32,15 @@ def document(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
+def license_identifier(notice_path):
+    for line in notice_path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("License identifier: "):
+            value = line.removeprefix("License identifier: ").strip()
+            if value:
+                return value
+    raise ValueError("release notice is missing its license identifier")
+
+
 def prepare(release_directory, output):
     release = json.loads((release_directory / "release.json").read_bytes())
     if (release["schema"] != "stateengine.release-assets/v1" or release["trust"] != "unsigned"
@@ -53,6 +62,7 @@ def prepare(release_directory, output):
         pins = {}
         order = []
         license_bytes = None
+        license_id = None
         for platform, target in PLATFORMS.items():
             entry = release["packages"][target]
             suffix = ".zip" if platform.startswith("win32-") else ".tar.gz"
@@ -71,10 +81,14 @@ def prepare(release_directory, output):
             if license_bytes is not None and license_bytes != current_license:
                 raise ValueError("platform packages disagree on the source license")
             license_bytes = current_license
+            current_license_id = license_identifier(package / "payload/NOTICE.txt")
+            if license_id is not None and license_id != current_license_id:
+                raise ValueError("platform packages disagree on the source license identifier")
+            license_id = current_license_id
             name = "@stateengine/cli-" + platform
             operating_system, cpu = platform.split("-")
             metadata = {"name": name, "version": release["version"], "private": False,
-                        "license": "MIT OR Apache-2.0",
+                        "license": license_id,
                         "description": "Native StateEngine payload", "os": [operating_system],
                         "cpu": [cpu], "files": ["payload"],
                         "repository": REPOSITORY}
@@ -91,7 +105,7 @@ def prepare(release_directory, output):
         (wrapper / "LICENSE").write_bytes(license_bytes)
         document(wrapper / "package.json", {
             "name": "@stateengine/cli", "version": release["version"], "type": "module",
-            "license": "MIT OR Apache-2.0",
+            "license": license_id,
             "description": "StateEngine native command-line interface", "bin": {"se": "bin/se.mjs"},
             "engines": {"node": ">=18"}, "files": ["bin", "platforms.json", "LICENSE", "README.md"],
             "repository": REPOSITORY,
