@@ -15,6 +15,9 @@ pub struct StoreForget {
     /// Confirms the printed plan, including the copies it cannot erase.
     #[serde(default)]
     pub yes: bool,
+    /// The digest printed with that plan: `yes` erases only a plan that still matches it.
+    #[serde(default)]
+    pub plan: Option<String>,
     pub idempotency_key: IdempotencyKey,
 }
 impl Validate for StoreForget {
@@ -26,6 +29,16 @@ impl Validate for StoreForget {
             if self.events[..index].contains(event) {
                 return Err(SeError::invalid("--event", "each event ID once"));
             }
+        }
+        if self
+            .plan
+            .as_ref()
+            .is_some_and(|plan| plan.len() != 64 || !plan.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return Err(SeError::invalid(
+                "--plan",
+                "the 64-character digest printed with the plan",
+            ));
         }
         Ok(())
     }
@@ -61,6 +74,8 @@ pub struct ErasureReceipt {
     /// The copies StateEngine knows of; `unlisted` says what it cannot know.
     pub residuals: Vec<ForgetResidual>,
     pub unlisted: String,
+    /// Digest of the targets and residual copies shown; `--yes --plan` must repeat it.
+    pub plan: String,
     /// The retained, content-free audit fact once cleanup is complete.
     pub completed_event: Option<EventId>,
     pub next: Option<ForgetNext>,
@@ -72,8 +87,46 @@ impl ErasureReceipt {
 }
 /// What no residual list can cover, stated on every plan and receipt.
 pub const UNLISTED: &str = "Text already shown or relayed elsewhere, such as a phone channel, a remote device or a provider's own records, is not listed and cannot be erased here.";
+/// One copy a confirmation binds, located by its exact native path.
+pub struct BoundCopy<'a> {
+    pub custodian: &'a str,
+    pub location: &'a se_types::NativePath,
+    pub reason: &'a str,
+}
+/// A lossless text form of a native path: its exact bytes, or UTF-16 units, in hex.
+pub fn exact_path(path: &se_types::NativePath) -> String {
+    match path.encoded() {
+        se_types::PathEncoding::UnixBytes(bytes) => format!("unix:{}", se_types::hex_lower(bytes)),
+        se_types::PathEncoding::WindowsUtf16(units) => {
+            let bytes: Vec<u8> = units.iter().flat_map(|unit| unit.to_be_bytes()).collect();
+            format!("windows:{}", se_types::hex_lower(&bytes))
+        }
+    }
+}
+/// What a confirmation binds: each target revision and every copy that will remain,
+/// by exact path, so two paths that display alike never share a digest.
+pub fn plan_digest(targets: &[ForgetTarget], residuals: &[BoundCopy<'_>]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut copies: Vec<_> = residuals
+        .iter()
+        .map(|r| (r.custodian, exact_path(r.location), r.reason))
+        .collect();
+    copies.sort();
+    let mut hash = Sha256::new();
+    for target in targets {
+        hash.update(format!(
+            "target\0{}\0{}\0",
+            target.event.as_str(),
+            target.revision
+        ));
+    }
+    for (custodian, location, reason) in copies {
+        hash.update(format!("copy\0{custodian}\0{location}\0{reason}\0"));
+    }
+    se_types::hex_lower(&hash.finalize())
+}
 /// The command that confirms this exact plan.
-pub fn confirm(input: &StoreForget) -> ForgetNext {
+pub fn confirm(input: &StoreForget, plan: &str) -> ForgetNext {
     let mut argv = vec!["se".to_string(), "forget".to_string()];
     for event in &input.events {
         argv.extend(["--event".to_string(), event.as_str().to_string()]);
@@ -81,6 +134,8 @@ pub fn confirm(input: &StoreForget) -> ForgetNext {
     argv.extend([
         "--key".to_string(),
         input.idempotency_key.as_str().to_string(),
+        "--plan".to_string(),
+        plan.to_string(),
         "--yes".to_string(),
     ]);
     ForgetNext {

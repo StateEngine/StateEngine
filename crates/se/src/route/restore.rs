@@ -172,6 +172,13 @@ fn run(
             "No verified automatic backup exists in this home, so there is nothing to restore; nothing was changed.",
         ));
     };
+    // A copy taken before any history was saved registers no owner and holds nothing.
+    if backup.through.sequence() == 0 {
+        return Ok(refused(
+            input,
+            "The newest automatic backup was taken before any history was saved, so it holds nothing to restore; nothing was changed. Keep using this home.",
+        ));
+    }
     let backup_owners = sorted(
         SqliteFactory::backup_owners(&options, &files, &backup).map_err(|e| store_error(&e))?,
     );

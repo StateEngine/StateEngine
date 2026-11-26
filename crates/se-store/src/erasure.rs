@@ -4,9 +4,13 @@
 //! Copies outside the store's custody are named, never treated as erased.
 pub(crate) mod apply;
 pub(crate) mod permit;
+mod residuals;
+mod resume;
 use crate::{connection, error::*, open::SqliteHost, *};
+use residuals::{inventory, recipient_transcripts, residual, same_inventory};
+use resume::{committed_generations, open_manifest, pinned_generations, unfinished};
 use rusqlite::{Connection, OptionalExtension};
-use se_types::{EventId, HumanId, NativePath};
+use se_types::{EventId, HumanId};
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
 
@@ -109,9 +113,14 @@ fn observe_one(
             true,
             "SELECT length(p.content),s.value FROM turn_data d JOIN payloads p ON p.payload_id=d.text_payload LEFT JOIN symbols s ON s.id=d.source_path WHERE d.event_seq=?",
         ),
-        "message.sent" | "message.work_sent" => (
+        "message.sent" => (
             false,
             "SELECT length(p.content),NULL FROM message_data d JOIN payloads p ON p.payload_id=d.body_payload WHERE d.event_seq=?",
+        ),
+        // Shared work mail keeps one body payload per event and no message_data row.
+        "message.work_sent" => (
+            false,
+            "SELECT length(p.content),NULL FROM payloads p WHERE p.event_seq=? AND p.field='body'",
         ),
         _ => {
             return Err(fail(
@@ -142,83 +151,9 @@ fn observe_one(
     };
     let mut residuals: Vec<ResidualCopy> = residual(source, turn, home)?.into_iter().collect();
     if !turn {
-        residuals.extend(recipient_transcripts(c, seq)?);
+        residuals.extend(recipient_transcripts(c, seq, &kind)?);
     }
     Ok((project, body, residuals))
-}
-/// The copy outside the store's custody that a forgotten body leaves behind.
-fn residual(
-    source: Option<Vec<u8>>,
-    turn: bool,
-    home: &std::path::Path,
-) -> StoreResult<Option<ResidualCopy>> {
-    Ok(match source {
-        Some(path) => serde_json::from_slice::<Option<NativePath>>(&path)
-            .map_err(invalid)?
-            .map(|location| ResidualCopy {
-                custodian: "provider transcript".into(),
-                location,
-                reason: "The provider wrote this turn to its own transcript; StateEngine does not own or edit that file.".into(),
-            }),
-        None if !turn => Some(ResidualCopy {
-            custodian: "Atlas project index".into(),
-            location: NativePath::from_local(home.join("atlas")).map_err(invalid)?,
-            reason: "Atlas drops the message record when it next reads history; freed index pages may hold the text until Atlas compacts its database.".into(),
-        }),
-        None => None,
-    })
-}
-/// The recipient agent's recorded provider transcripts written after the message
-/// was sent: the message may have been shown to it there, through its mail
-/// prompt or a read tool result.
-fn recipient_transcripts(c: &Connection, seq: i64) -> StoreResult<Option<ResidualCopy>> {
-    let mut q = c
-        .prepare(
-            "SELECT DISTINCT s.value FROM message_data m JOIN events e ON e.seq=m.event_seq JOIN turn_data t ON t.project_id=e.project_id AND t.agent_id=m.recipient_id AND t.event_seq>m.event_seq JOIN symbols s ON s.id=t.source_path WHERE m.event_seq=?",
-        )
-        .map_err(sql)?;
-    let mut rows = q.query([seq]).map_err(sql)?;
-    let mut paths = Vec::new();
-    while let Some(row) = rows.next().map_err(sql)? {
-        let path: Vec<u8> = row.get(0).map_err(sql)?;
-        if let Some(location) =
-            serde_json::from_slice::<Option<NativePath>>(&path).map_err(invalid)?
-        {
-            paths.push(location.to_local().map_err(invalid)?);
-        }
-    }
-    // One entry per message, however many transcripts: their shared folder.
-    let Some(first) = paths.first() else {
-        return Ok(None);
-    };
-    let (location, reason) = if paths.len() == 1 {
-        (first.clone(), "The recipient agent's conversation after this message may contain it; StateEngine does not own or edit that file.".to_string())
-    } else {
-        let mut shared = first.clone();
-        while !paths.iter().all(|p| p.starts_with(&shared)) && shared.pop() {}
-        let count = paths.len();
-        if shared.as_os_str().is_empty() {
-            // No folder holds them all (for example, two drives): name one.
-            (
-                first.clone(),
-                format!(
-                    "The recipient agent's {count} transcript files after this message, including this one, may contain it; StateEngine does not own or edit them."
-                ),
-            )
-        } else {
-            (
-                shared,
-                format!(
-                    "The recipient agent's {count} transcript files after this message, under this folder, may contain it; StateEngine does not own or edit them."
-                ),
-            )
-        }
-    };
-    Ok(Some(ResidualCopy {
-        custodian: "recipient's provider transcripts".into(),
-        location: NativePath::from_local(location).map_err(invalid)?,
-        reason,
-    }))
 }
 fn observe(
     c: &Connection,
@@ -284,12 +219,6 @@ pub(crate) fn plan(
     let c = reader.connect()?;
     let info = connection::info_at(&c, &reader.path)?;
     crate::open::validate_lease(&info, lease, LeaseMode::Host)?;
-    let owned_generations = crate::backup::generation_ids(
-        lease.files(),
-        &options.state_directory,
-        &info.id,
-        deadline(options.busy_timeout)?,
-    )?;
     let se_types::Read::Present { value: database } =
         lease.files().inspect_metadata(&reader.path)?
     else {
@@ -300,16 +229,20 @@ pub(crate) fn plan(
     };
     // Rebuilding the database and each replaced backup each needs a full copy,
     // for a resumed erasure as much as a fresh one.
-    let required_bytes = database
-        .len()
-        .saturating_mul(1 + owned_generations.len() as u64);
-    if let Some(resumed) = unfinished(&c, &targets)? {
+    let required =
+        |generations: &[RecordId]| database.len().saturating_mul(1 + generations.len() as u64);
+    // A committed erasure is planned from its own record before any live inventory.
+    if let Some((resumed, pinned)) = unfinished(&c, &targets)? {
+        let owned_generations =
+            committed_generations(&c, &resumed.id, pinned, lease, options, &info)?;
         return Ok(ErasurePlan {
+            required_bytes: required(&owned_generations),
             owned_generations,
-            required_bytes,
             ..resumed
         });
     }
+    let owned_generations = generations(lease, options, &info)?;
+    let required_bytes = required(&owned_generations);
     let observed = observe(&c, &targets, &options.state_directory)?;
     let mut random = [0u8; 10];
     random.copy_from_slice(&se_proc::random_secret().map_err(invalid)?.expose()[..10]);
@@ -319,140 +252,8 @@ pub(crate) fn plan(
         targets: observed.bodies.into_iter().map(|b| b.target).collect(),
         required_bytes,
         owned_generations,
-        residuals: within_cap(
-            observed
-                .residuals
-                .into_iter()
-                .chain(preserved_copies(lease.files(), &options.state_directory)?)
-                .collect(),
-        )?,
+        residuals: inventory(lease.files(), &options.state_directory, observed.residuals)?,
     })
-}
-/// The commit names at most `MAX_RESIDUALS` copies; refuse in the plan, with a
-/// step that works, rather than at --yes.
-fn within_cap(residuals: Vec<ResidualCopy>) -> StoreResult<Vec<ResidualCopy>> {
-    if residuals.len() > MAX_RESIDUALS {
-        let mut error = fail(
-            StoreErrorCode::InvalidTransition,
-            format!(
-                "these events leave {} copies to name, more than one forget can record ({MAX_RESIDUALS})",
-                residuals.len()
-            ),
-        );
-        error.remedy.text = "Forget fewer events at a time.".into();
-        return Err(error);
-    }
-    Ok(residuals)
-}
-/// Stores a restore replaced are kept whole under `preserved/`; a forget leaves
-/// them as they are, so the folder is named once rather than claimed as erased.
-fn preserved_copies(
-    files: &dyn StateFiles,
-    home: &std::path::Path,
-) -> StoreResult<Option<ResidualCopy>> {
-    let directory = home.join("preserved");
-    // Absence is read without following links; the listing itself goes
-    // through the lease's protected file port.
-    match std::fs::symlink_metadata(&directory) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(fail(StoreErrorCode::Unreadable, error.to_string())),
-        Ok(_) => (),
-    }
-    let files = files.list_owned(&directory, 4096)?.len();
-    if files == 0 {
-        return Ok(None);
-    }
-    Ok(Some(ResidualCopy {
-        custodian: "stores replaced by a restore".into(),
-        location: NativePath::from_local(directory).map_err(invalid)?,
-        reason: format!(
-            "A restore kept the store it replaced here, unchanged ({files} files); they may still hold this text. Delete them yourself once you no longer need them."
-        ),
-    }))
-}
-/// An interrupted erasure is planned again from its own committed manifest, so
-/// a retry resumes its cleanup instead of failing on bodies it already removed.
-fn unfinished(c: &Connection, targets: &[EraseTarget]) -> StoreResult<Option<ErasurePlan>> {
-    let mut erasure: Option<Vec<u8>> = None;
-    for target in targets {
-        let id: Option<Vec<u8>> = c
-            .query_row(
-                "SELECT f.erasure_id FROM events e JOIN erased_fields f ON f.event_seq=e.seq WHERE e.event_id=? AND f.field='body'",
-                [event_key(c, &target.event)?],
-                |r| crate::sql_value::value(r, 0),
-            )
-            .optional()
-            .map_err(sql)?;
-        match (id, &erasure) {
-            (None, _) => return Ok(None),
-            (Some(id), Some(known)) if &id != known => return Ok(None),
-            (Some(id), _) => erasure = Some(id),
-        }
-    }
-    let Some(erasure) = erasure else {
-        return Ok(None);
-    };
-    let manifest: Option<Vec<u8>> = c
-        .query_row(
-            "SELECT p.content FROM erasures x JOIN payloads p ON p.payload_id=x.manifest_payload WHERE x.erasure_id=? AND x.completed_seq IS NULL",
-            [&erasure],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(sql)?;
-    let Some(manifest) = manifest else {
-        return Ok(None);
-    };
-    let value: serde_json::Value = serde_json::from_slice(&manifest).map_err(invalid)?;
-    let field = |v: &serde_json::Value, name: &str| {
-        v.get(name)
-            .cloned()
-            .ok_or_else(|| invalid(format!("erasure manifest lacks {name}")))
-    };
-    let mut planned = Vec::new();
-    for t in field(&value, "targets")?
-        .as_array()
-        .ok_or_else(|| invalid("erasure manifest targets"))?
-    {
-        planned.push(EraseTarget {
-            event: serde_json::from_value(field(t, "event")?).map_err(invalid)?,
-            expected: Revision {
-                value: serde_json::from_value(field(t, "expected")?).map_err(invalid)?,
-            },
-        });
-    }
-    if planned.len() != targets.len()
-        || targets
-            .iter()
-            .any(|t| !planned.iter().any(|p| p.event == t.event))
-    {
-        return Err(fail(
-            StoreErrorCode::ScopeMismatch,
-            "these events belong to an unfinished erasure with a different event list; retry it with exactly its events",
-        ));
-    }
-    let mut residuals = Vec::new();
-    for r in field(&value, "residuals")?
-        .as_array()
-        .ok_or_else(|| invalid("erasure manifest residuals"))?
-    {
-        residuals.push(ResidualCopy {
-            custodian: serde_json::from_value(field(r, "custodian")?).map_err(invalid)?,
-            location: serde_json::from_value(field(r, "location")?).map_err(invalid)?,
-            reason: serde_json::from_value(field(r, "reason")?).map_err(invalid)?,
-        });
-    }
-    Ok(Some(ErasurePlan {
-        id: RecordId::from_bytes(
-            erasure
-                .try_into()
-                .map_err(|_| invalid("erasure ID length"))?,
-        )?,
-        targets: planned,
-        owned_generations: Vec::new(),
-        residuals,
-        required_bytes: 0,
-    }))
 }
 /// Names the committed revision of each event, for a caller that holds only IDs.
 pub(crate) fn plan_events(
@@ -599,6 +400,7 @@ fn request(
     plan: &ErasurePlan,
     owner: &HumanId,
     observed: Observed,
+    generations: &[RecordId],
 ) -> StoreResult<()> {
     let mut events = vec![(
         derived_event(&plan.id, "requested", connection::now()?)?,
@@ -606,6 +408,7 @@ fn request(
             erasure: plan.id,
             targets: plan.targets.clone(),
             residuals: plan.residuals.clone(),
+            generations: Some(generations.to_vec()),
         },
     )];
     for body in observed.bodies {
@@ -644,34 +447,46 @@ fn request(
     committed?;
     restored
 }
+/// How long erasure waits for one backup copy to finish.
+const BACKUP_WAIT: Duration = Duration::from_secs(60);
 /// Each new backup retires the oldest of at most two, so two fresh copies
-/// replace every generation taken before the erasure.
+/// replace every generation taken before the erasure. `retired` counts the
+/// pinned generations witnessed gone, removed by these backups or absent on
+/// disk, as each is confirmed, so a later failure keeps the count so far.
 fn replace_backups(
     host: &SqliteHost,
     lease: &dyn RuntimeLease,
     options: &StoreOptions,
-    info: &StoreInfo,
-    plan: &ErasurePlan,
-) -> StoreResult<bool> {
-    let mut stale = !plan.owned_generations.is_empty();
+    owned: &[RecordId],
+    retired: &mut usize,
+) -> StoreResult<()> {
+    let mut witnessed: Vec<RecordId> = Vec::new();
+    let mut witness = |removed: &[RecordId], retired: &mut usize| -> StoreResult<()> {
+        for id in owned {
+            if !witnessed.contains(id)
+                && (removed.contains(id)
+                    || crate::backup::generation_absent(
+                        lease.files(),
+                        &options.state_directory,
+                        *id,
+                    )?)
+            {
+                witnessed.push(*id);
+                *retired = witnessed.len();
+            }
+        }
+        Ok(())
+    };
+    witness(&[], retired)?;
     for _ in 0..2 {
-        if !stale {
+        if *retired == owned.len() {
             break;
         }
-        let timeout = options.busy_timeout.max(Duration::from_secs(60));
-        crate::backup::run(options, lease, host.context.clone(), timeout)?;
-        let deadline = deadline(options.busy_timeout)?;
-        let remaining = crate::backup::generation_ids(
-            lease.files(),
-            &options.state_directory,
-            &info.id,
-            deadline,
-        )?;
-        stale = remaining
-            .iter()
-            .any(|id| plan.owned_generations.contains(id));
+        let timeout = options.busy_timeout.max(BACKUP_WAIT);
+        let report = crate::backup::run(options, lease, host.context.clone(), timeout)?;
+        witness(&report.removed, retired)?;
     }
-    Ok(!stale)
+    Ok(())
 }
 pub(crate) fn erase(
     host: &mut SqliteHost,
@@ -696,36 +511,144 @@ pub(crate) fn erase(
         ));
     }
     let options = options(host)?;
-    let observed = observe(&host.engine.db, &plan.targets, &options.state_directory);
-    let manifest = apply::manifest(&plan.id, &plan.targets, &plan.residuals);
-    match (requested(host, &plan.id)?, observed) {
-        (Some(true), _) => {
-            return Err(fail(
-                StoreErrorCode::InvalidTransition,
-                "this erasure already completed",
-            ));
-        }
-        // An interrupted erasure resumes its physical cleanup; nothing is re-planned.
-        (Some(false), _) => {}
-        (None, Err(error)) => return Err(error),
-        (None, Ok(observed)) => request(host, &info, &plan, &approval.owner, observed)?,
+    if requested(host, &plan.id)? == Some(true) {
+        return Err(fail(
+            StoreErrorCode::InvalidTransition,
+            "this erasure already completed",
+        ));
     }
-    let cleanup_complete =
-        rewrite(host, lease)? && replace_backups(host, lease, &options, &info, &plan)?;
     let mut report = ErasureReport {
         erasure: plan.id,
         completed_event: None,
-        cleanup_complete,
+        cleanup_complete: false,
         incarnation: info.incarnation,
         erased_fields: plan.targets.clone(),
         residuals: plan.residuals.clone(),
+        backups_replaced: 0,
+        cleanup_failure: None,
     };
-    if cleanup_complete {
-        let scope = event_scope(host, &plan)?;
+    // No backup copies or publishes while this is held: one already running finishes
+    // first, and none starts until the bodies are gone. The final residual check and
+    // the generations to replace are both read under it, before anything commits. A
+    // committed erasure that cannot take it yet still reports its bodies as gone.
+    let committed = requested(host, &plan.id)?.is_some();
+    let fence = match deadline(options.busy_timeout.max(BACKUP_WAIT))
+        .and_then(|until| host.context.fence(until))
+    {
+        Ok(fence) => fence,
+        Err(error) if committed => {
+            report.cleanup_failure = Some(error.cause);
+            return Ok(report);
+        }
+        // Nothing has committed yet, so a fresh request refuses with the bodies intact.
+        Err(mut error) => {
+            error.cause = format!("{}; nothing was forgotten", error.cause);
+            return Err(error);
+        }
+    };
+    let owned = if !committed {
+        let observed = observe(&host.engine.db, &plan.targets, &options.state_directory)?;
+        let residuals = inventory(
+            lease.files(),
+            &options.state_directory,
+            observed.residuals.clone(),
+        )?;
+        if !same_inventory(&residuals, &plan.residuals) {
+            return Err(fail(
+                StoreErrorCode::ErasurePlanChanged,
+                "copies outside StateEngine's custody changed after planning; nothing was erased",
+            ));
+        }
+        let owned = generations(lease, &options, &info)?;
+        request(host, &info, &plan, &approval.owner, observed, &owned)?;
+        Ok(owned)
+    } else {
+        // An interrupted erasure resumes its physical cleanup against the generations
+        // its request pinned; nothing is re-planned.
+        resumed_generations(host, lease, &options, &info, &plan.id)
+    };
+    drop(fence);
+    // The bodies are gone from here on: a later failure leaves cleanup incomplete and
+    // says why, rather than reading as if nothing happened.
+    let outcome = owned.and_then(|owned| {
+        Cleanup {
+            lease,
+            options: &options,
+            info: &info,
+            plan: &plan,
+            approval: &approval,
+            owned: &owned,
+        }
+        .run(host, &mut report)
+    });
+    if let Err(error) = outcome {
+        report.cleanup_complete = false;
+        report.completed_event = None;
+        report.cleanup_failure = Some(error.cause);
+    }
+    Ok(report)
+}
+/// The backup generations taken before now, which this erasure must replace.
+fn generations(
+    lease: &dyn RuntimeLease,
+    options: &StoreOptions,
+    info: &StoreInfo,
+) -> StoreResult<Vec<RecordId>> {
+    crate::backup::generation_ids(
+        lease.files(),
+        &options.state_directory,
+        &info.id,
+        deadline(options.busy_timeout)?,
+    )
+}
+/// The generations a committed request replaces, read under the backup fence.
+fn resumed_generations(
+    host: &SqliteHost,
+    lease: &dyn RuntimeLease,
+    options: &StoreOptions,
+    info: &StoreInfo,
+    erasure: &RecordId,
+) -> StoreResult<Vec<RecordId>> {
+    let (_, manifest) = open_manifest(&host.engine.db, erasure.as_bytes())?
+        .ok_or_else(|| invalid("the unfinished erasure has no manifest"))?;
+    let pinned = pinned_generations(&manifest)?;
+    committed_generations(&host.engine.db, erasure, pinned, lease, options, info)
+}
+/// Physical cleanup after the request committed: rewrite, replace the pinned backups,
+/// then record completion.
+struct Cleanup<'a> {
+    lease: &'a dyn RuntimeLease,
+    options: &'a StoreOptions,
+    info: &'a StoreInfo,
+    plan: &'a ErasurePlan,
+    approval: &'a ErasureApproval,
+    owned: &'a [RecordId],
+}
+impl Cleanup<'_> {
+    fn run(&self, host: &mut SqliteHost, report: &mut ErasureReport) -> StoreResult<()> {
+        let Self {
+            lease,
+            options,
+            info,
+            plan,
+            approval,
+            owned,
+        } = *self;
+        if !rewrite(host, lease)? {
+            return Ok(());
+        }
+        replace_backups(host, lease, options, owned, &mut report.backups_replaced)?;
+        if report.backups_replaced != owned.len() {
+            return Ok(());
+        }
+        // The digest covers the manifest exactly as its request committed it.
+        let (manifest, _) = open_manifest(&host.engine.db, plan.id.as_bytes())?
+            .ok_or_else(|| invalid("the unfinished erasure has no manifest"))?;
+        let scope = event_scope(host, plan)?;
         let event = derived_event(&plan.id, "completed", connection::now()?)?;
         let body = EventBody::ErasureCompleted {
             erasure: plan.id,
-            manifest_sha256: Sha256::digest(manifest.as_bytes()).into(),
+            manifest_sha256: Sha256::digest(&manifest).into(),
             incarnation: info.incarnation,
             witnesses: approval.buffer_witnesses.clone(),
         };
@@ -733,15 +656,16 @@ pub(crate) fn erase(
             host,
             batch(
                 host,
-                &info,
+                info,
                 &scope,
                 &approval.owner,
                 vec![(event.clone(), body)],
             )?,
         )?;
+        report.cleanup_complete = true;
         report.completed_event = Some(event);
+        Ok(())
     }
-    Ok(report)
 }
 /// The completion is recorded in the project scope its request used.
 fn event_scope(host: &SqliteHost, plan: &ErasurePlan) -> StoreResult<Scope> {

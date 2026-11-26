@@ -19,6 +19,14 @@ pub(crate) struct State {
     pub abort: AtomicBool,
 }
 pub(crate) struct Pin(BackupContext);
+/// The pending-backup reservation held without a copy: while it lives, no backup is
+/// copying or publishing a generation.
+pub(crate) struct Fence(BackupContext);
+impl Drop for Fence {
+    fn drop(&mut self) {
+        self.0.state.pending.store(false, Ordering::Release);
+    }
+}
 impl Drop for Pin {
     fn drop(&mut self) {
         self.0.state.abort.store(false, Ordering::Release);
@@ -75,6 +83,27 @@ impl BackupContext {
         self.state.abort.store(false, Ordering::Release);
         self.state.pinned.store(true, Ordering::Release);
         Ok(Pin(self.clone()))
+    }
+    /// Waits until `deadline` for a running backup to finish publishing, then holds its slot.
+    pub(crate) fn fence(&self, deadline: std::time::Instant) -> StoreResult<Fence> {
+        loop {
+            let taken = self.state.pending.compare_exchange(
+                false,
+                true,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            if taken.is_ok() {
+                return Ok(Fence(self.clone()));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(fail(
+                    StoreErrorCode::Backpressure,
+                    "a backup is still being written; retry once it finishes",
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
     pub(crate) fn suppress_checkpoint(&self, wal_frames: i64, hard: bool) -> bool {
         if !self.state.pinned.load(Ordering::Acquire) {

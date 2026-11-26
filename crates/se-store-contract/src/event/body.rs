@@ -494,6 +494,10 @@ pub enum EventBody<T> {
         erasure: RecordId,
         targets: Vec<crate::EraseTarget>,
         residuals: Vec<crate::ResidualCopy>,
+        /// The backup generations taken before this erasure, pinned under the backup
+        /// fence before it commits; cleanup replaces exactly these. Absent in requests
+        /// recorded before generations were pinned.
+        generations: Option<Vec<RecordId>>,
     },
     ErasureCompleted {
         erasure: RecordId,

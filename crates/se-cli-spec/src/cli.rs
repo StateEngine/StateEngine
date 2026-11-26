@@ -473,6 +473,7 @@ fn input_command_store(name: &str, c: Command) -> Command {
         "store.restore" => c.arg(toggle("yes").help("Restore after reviewing the printed plan; without it nothing changes")),
         "store.forget" => c
             .arg(value("event").long("event").action(ArgAction::Append).required(true).help("Message or captured-turn event ID to forget; repeat for several from one project"))
+            .arg(value("plan").help("Digest printed with the plan; --yes erases only that exact plan"))
             .arg(toggle("yes").help("Erase after reviewing the printed plan; without it nothing is erased")),
         _ => c,
     }

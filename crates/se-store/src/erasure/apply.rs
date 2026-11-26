@@ -5,13 +5,15 @@ use crate::{connection::payload, error::*, identity::key, *};
 use rusqlite::{Connection, OptionalExtension};
 use se_types::EventId;
 
-/// The canonical manifest an erasure commits to before any body is removed.
+/// The canonical manifest an erasure commits to before any body is removed,
+/// with the backup generations its cleanup replaces once they were pinned.
 pub(crate) fn manifest(
     erasure: &RecordId,
     targets: &[EraseTarget],
     residuals: &[ResidualCopy],
+    generations: Option<&[RecordId]>,
 ) -> String {
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "erasure": uuid::Uuid::from_bytes(*erasure.as_bytes()).to_string(),
         "targets": targets.iter().map(|t| serde_json::json!({
             "event": t.event.as_str(),
@@ -22,8 +24,16 @@ pub(crate) fn manifest(
             "location": r.location,
             "reason": r.reason,
         })).collect::<Vec<_>>(),
-    })
-    .to_string()
+    });
+    if let Some(generations) = generations {
+        value["generations"] = serde_json::json!(
+            generations
+                .iter()
+                .map(|id| uuid::Uuid::from_bytes(*id.as_bytes()).to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+    value.to_string()
 }
 fn erasure_key(erasure: &RecordId) -> StoreResult<Vec<u8>> {
     Ok(erasure.as_bytes().to_vec())
@@ -34,13 +44,23 @@ pub(crate) fn requested(
     erasure: &RecordId,
     targets: &[EraseTarget],
     residuals: &[ResidualCopy],
+    generations: Option<&[RecordId]>,
 ) -> StoreResult<()> {
-    if targets.is_empty() || targets.len() > 60 || residuals.len() > super::MAX_RESIDUALS {
+    if targets.is_empty()
+        || targets.len() > 60
+        || residuals.len() > super::MAX_RESIDUALS
+        || generations.is_some_and(|g| g.len() > super::MAX_RESIDUALS)
+    {
         return Err(invalid(
-            "erasure needs 1..60 targets and at most 64 residuals",
+            "erasure needs 1..60 targets and at most 64 residuals and backup generations",
         ));
     }
-    let manifest = payload(c, seq, "manifest", &manifest(erasure, targets, residuals))?;
+    let manifest = payload(
+        c,
+        seq,
+        "manifest",
+        &manifest(erasure, targets, residuals, generations),
+    )?;
     c.execute(
         "INSERT INTO erasures(erasure_id,requested_seq,completed_seq,manifest_payload) VALUES(?,?,NULL,?)",
         crate::sql_value::sql_params![erasure_key(erasure)?, seq, manifest],
@@ -93,9 +113,11 @@ pub(crate) fn body(
             "body erasure names no open erasure request",
         ));
     }
+    // Work mail keeps its body payload without a projection column to clear.
     let (table, column) = match (kind, stored_kind.as_str()) {
-        ("turn", "session.turn") => ("turn_data", "text_payload"),
-        ("message", "message.sent" | "message.work_sent") => ("message_data", "body_payload"),
+        ("turn", "session.turn") => ("turn_data", Some("text_payload")),
+        ("message", "message.sent") => ("message_data", Some("body_payload")),
+        ("message", "message.work_sent") => ("payloads", None),
         _ => {
             return Err(fail(
                 StoreErrorCode::InvalidTransition,
@@ -103,14 +125,22 @@ pub(crate) fn body(
             ));
         }
     };
+    let lookup = match column {
+        Some(column) => format!(
+            "SELECT p.payload_id,length(p.content) FROM {table} d JOIN payloads p ON p.payload_id=d.{column} WHERE d.event_seq=?"
+        ),
+        None => {
+            "SELECT payload_id,length(content) FROM payloads WHERE event_seq=? AND field='body'"
+                .into()
+        }
+    };
     let found: Option<(i64, u64)> = c
-        .query_row(
-            &format!(
-                "SELECT p.payload_id,length(p.content) FROM {table} d JOIN payloads p ON p.payload_id=d.{column} WHERE d.event_seq=?"
-            ),
-            [seq],
-            |r| Ok((crate::sql_value::value(r, 0)?, crate::sql_value::value(r, 1)?)),
-        )
+        .query_row(&lookup, [seq], |r| {
+            Ok((
+                crate::sql_value::value(r, 0)?,
+                crate::sql_value::value(r, 1)?,
+            ))
+        })
         .optional()
         .map_err(sql)?;
     let Some((payload_id, bytes)) = found else {
@@ -127,16 +157,18 @@ pub(crate) fn body(
     }
     {
         let _allowed = permit::body(seq, "body");
-        let digest = if table == "turn_data" {
-            ",source_sha256=NULL"
-        } else {
-            ""
-        };
-        c.execute(
-            &format!("UPDATE {table} SET {column}=NULL{digest} WHERE event_seq=?"),
-            [seq],
-        )
-        .map_err(sql)?;
+        if let Some(column) = column {
+            let digest = if table == "turn_data" {
+                ",source_sha256=NULL"
+            } else {
+                ""
+            };
+            c.execute(
+                &format!("UPDATE {table} SET {column}=NULL{digest} WHERE event_seq=?"),
+                [seq],
+            )
+            .map_err(sql)?;
+        }
         c.execute("DELETE FROM payloads WHERE payload_id=?", [payload_id])
             .map_err(sql)?;
     }

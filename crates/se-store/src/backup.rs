@@ -111,6 +111,23 @@ pub(crate) fn generation_ids(
     let (index, _) = read_index(files, &home.join("backups"), store, deadline)?;
     Ok(index.generations.iter().map(|entry| entry.id).collect())
 }
+/// Indexed generations whose copy ends before sequence `seq` of this incarnation.
+/// One from another incarnation cannot be ordered against `seq`, so it counts as earlier.
+pub(crate) fn generations_before(
+    files: &dyn StateFiles,
+    home: &Path,
+    info: &StoreInfo,
+    seq: u64,
+    deadline: Instant,
+) -> StoreResult<Vec<RecordId>> {
+    let (index, _) = read_index(files, &home.join("backups"), &info.id, deadline)?;
+    Ok(index
+        .generations
+        .iter()
+        .filter(|entry| entry.incarnation != info.incarnation || entry.through < seq)
+        .map(|entry| entry.id)
+        .collect())
+}
 fn read_index(
     files: &dyn StateFiles,
     root: &Path,
@@ -192,6 +209,19 @@ fn refuse_unindexed(
         }
     }
     Ok(())
+}
+/// Whether a generation's file is natively absent from the backups folder now.
+pub(crate) fn generation_absent(
+    files: &dyn StateFiles,
+    home: &Path,
+    id: RecordId,
+) -> StoreResult<bool> {
+    let path = home.join("backups").join(filename(id));
+    // Only measured absence counts; an unreadable or unknown file is not retired.
+    Ok(matches!(
+        files.inspect_metadata(&path)?,
+        se_types::Read::Absent { .. }
+    ))
 }
 pub(crate) fn remove_if_present(
     files: &dyn StateFiles,
