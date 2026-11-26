@@ -85,10 +85,27 @@ impl<'p> Achieved<'p> {
         what: &str,
         lease: Option<std::fs::File>,
     ) -> PreparationOutcome {
-        match self
-            .any()
-            .then(|| self.receipt(&format!("{what} refused after shutdown: {error}")))
-        {
+        self.refused_with(error, what, lease, Vec::new())
+    }
+
+    /// `refused` plus witnessed revocation effects achieved before the refusal.
+    fn refused_with(
+        &self,
+        error: SeError,
+        what: &str,
+        lease: Option<std::fs::File>,
+        revoked: Vec<IntegrationEffect>,
+    ) -> PreparationOutcome {
+        let reason = if self.any() {
+            format!("{what} refused after shutdown: {error}")
+        } else {
+            format!("{what} refused: {error}")
+        };
+        match (self.any() || !revoked.is_empty()).then(|| {
+            let mut receipt = self.receipt(&reason);
+            receipt.integrations.splice(0..0, revoked);
+            receipt
+        }) {
             Some(receipt) => PreparationOutcome::Refused {
                 receipt: Box::new(receipt),
                 lease,
@@ -104,6 +121,18 @@ struct RunningImage<'p> {
     /// The record's Windows image was natively proved absent, not unreadable.
     #[cfg(windows)]
     missing: bool,
+}
+
+/// The native claim governing this uninstall: the reinstalled image's own
+/// claim when replacing, otherwise the fresh acquisition.
+fn governing_claim<'a>(
+    reinstall: Option<(&'a se_proc::NativeInstallationClaim, &Path, bool)>,
+    installation_claim: Option<&'a se_proc::NativeInstallationClaim>,
+) -> Result<&'a se_proc::NativeInstallationClaim> {
+    reinstall
+        .map(|(claim, _, _)| claim)
+        .or(installation_claim)
+        .ok_or_else(|| invalid("native installation claim missing"))
 }
 
 fn execute_inner(
@@ -128,10 +157,7 @@ fn execute_inner(
     } else {
         None
     };
-    let claim = reinstall
-        .map(|(claim, _, _)| claim)
-        .or(installation_claim.as_ref())
-        .ok_or_else(|| invalid("native installation claim missing"))?;
+    let claim = governing_claim(reinstall, installation_claim.as_ref())?;
     // Only uninstall takes the account claim, protecting install/PATH effects
     // across homes. Share setup's persistent home lock through every effect,
     // including when no store exists yet, then re-observe under exclusion.
@@ -195,7 +221,8 @@ fn execute_inner(
         );
         return Ok((owned_plan, effects, Some(runtime_lease)));
     }
-    let safe = remove_owned_files(plan, installed, &parents, &mut effects, false);
+    let preserve = reinstall.is_some_and(|(_, _, preserve)| preserve);
+    let safe = remove_owned_files(plan, installed, &parents, &mut effects, preserve);
     // Never strand a partially removed installation without its retry entry point.
     if safe {
         // Preserve the already achieved native facts and original request key
@@ -357,11 +384,12 @@ impl<'a> Preparation<'a> {
         } else {
             match route::adoption::uninstall(cx) {
                 Ok(value) => value,
-                Err(error) => {
-                    return Err(achieved.refused(
+                Err((revoked, error)) => {
+                    return Err(achieved.refused_with(
                         error,
                         "provider integration revocation",
                         Some(lease),
+                        revoked,
                     ));
                 }
             }

@@ -47,6 +47,17 @@ zdot_plain() {
     done
     return 0
 }
+# A tree with non-normal components is not accepted; those spellings use the
+# manual instruction path instead of exiting.
+zdot_components_ok() {
+    rest=${1#/}
+    while [ -n "$rest" ]; do
+        part=${rest%%/*}
+        case "$part" in ''|.|..) return 1 ;; esac
+        case "$rest" in */*) rest=${rest#*/} ;; *) rest='' ;; esac
+    done
+    return 0
+}
 # All input and destination checks precede creation of installation directories.
 macos=0
 case "$(uname -s):$(uname -m)" in
@@ -171,7 +182,7 @@ else
             if [ -n "${ZDOTDIR-}" ] && [ "${ZDOTDIR-}" != "$HOME" ]; then
                 case "$ZDOTDIR" in
                 "$HOME"/*)
-                    if zdot_plain "$ZDOTDIR"; then zdot=$ZDOTDIR; else manual_path=1; fi
+                    if zdot_components_ok "$ZDOTDIR" && zdot_plain "$ZDOTDIR"; then zdot=$ZDOTDIR; else manual_path=1; fi
                     ;;
                 *) manual_path=1 ;;
                 esac
@@ -351,7 +362,7 @@ if [ "$manual_path" -eq 1 ]; then
     */zsh) if [ -n "${ZDOTDIR-}" ]; then printf 'File: %s/.zshrc\n  export PATH="$HOME/.local/bin:$PATH"\n' "$ZDOTDIR"; else printf 'File: ~/.zshrc\n  export PATH="$HOME/.local/bin:$PATH"\n'; fi ;;
     */csh|*/tcsh) printf 'File: ~/.tcshrc (or ~/.cshrc)\n  set path = ($HOME/.local/bin $path)\n' ;;
     */elvish) printf 'File: ~/.config/elvish/rc.elv\n  use builtin; var builtin:paths = ($env:HOME + "/.local/bin" +~ $builtin:paths)\n' ;;
-    */nu) printf "File: \$nu.env-path (Nushell env config, e.g. ~/.config/nushell/env.nu)\n  \$env.PATH = (\$env.PATH | split row (char esep) | prepend (\$home | path join '.local' 'bin'))\n" ;;
+    */nu) printf "File: \$nu.env-path (Nushell env config, e.g. ~/.config/nushell/env.nu)\n  \$env.PATH = (\$env.PATH | split row (char esep) | prepend (\$env.HOME | path join '.local' 'bin'))\n" ;;
     */xonsh) printf 'File: ~/.config/xonsh/rc.xsh\n  import os; os.environ["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + os.environ.get("PATH", "")\n' ;;
     *) printf 'File: ~/.profile (interactive bash: ~/.bashrc)\n  export PATH="$HOME/.local/bin:$PATH"\n' ;;
     esac
@@ -500,18 +511,19 @@ DIRECTORIES
     done <<PROFILES
 $profiles
 PROFILES
+    printf '\n  ]'
     inherited=$inherit_path_edits
     if [ -n "$inherited" ]; then
         case "$inherited" in
         '['*']')
             elements=${inherited#[}
             elements=${elements%]}
-            printf '%s%s' "$comma" "$elements"
+            printf ',\n  "inherited_path_edits": [%s]' "$elements"
             ;;
         *) fail 'inherited PATH custody is malformed' ;;
         esac
     fi
-    printf '\n  ]}\n'
+    printf '\n}\n'
 } > "$stage/install.json"
 file_digest "$bundle/manifest.json" > "$stage/.manifest-ready"
 set -- "$stage/install.json" "$stage/.manifest-ready" "$stage/path-block"
@@ -564,7 +576,33 @@ cmp -s "$bin/se" "$bundle/se" || fail 'installed binary readback failed'
 set -- "$bundle/se" __install-files-check "$bin/se"
 for relative in $asset_files; do set -- "$@" "$(asset_destination "$relative")"; done
 "$@" || fail 'native installed-file ownership readback failed'
-publish_file "$stage/install.json" "$record" 600
-cmp -s "$record" "$stage/install.json" || fail 'ownership record readback failed'
+record_source=$stage/install.json
+inherited_elements=$(sed -n 's/^  "inherited_path_edits": \[\(.*\)\][[:space:]]*$/\1/p' "$stage/install.json")
+if [ -n "$inherited_elements" ]; then
+    # Carry inherited PATH custody into the published record as one owned
+    # array; the journal keeps pending writes and inheritance separate.
+    inherited="$inherited_elements" awk '
+        BEGIN { in_edits = 0; count = 0; inherited = ENVIRON["inherited"] }
+        /^  "inherited_path_edits": \[/ { next }
+        /^  "path_edits": \[/ { in_edits = 1; print; next }
+        in_edits && /^  \]/ {
+            for (i = 1; i <= count; i++) {
+                line = buf[i]
+                if (i == count) line = line ","
+                print line
+            }
+            printf "    %s\n", inherited
+            print "  ]"
+            in_edits = 0
+            next
+        }
+        in_edits { buf[++count] = $0; next }
+        { print }
+    ' "$stage/install.json" > "$stage/install.record"
+    flush "$stage/install.record" "$stage"
+    record_source=$stage/install.record
+fi
+publish_file "$record_source" "$record" 600
+cmp -s "$record" "$record_source" || fail 'ownership record readback failed'
 "$bundle/se" __install-files-check "$record" || fail 'native ownership record readback failed'
 done_install=1

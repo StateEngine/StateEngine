@@ -34,6 +34,8 @@ pub(crate) fn install(
     output.value.changed.extend(result.changed);
     Ok(())
 }
-pub(crate) fn uninstall(cx: &Bootstrap) -> Result<Vec<IntegrationEffect>> {
+pub(crate) fn uninstall(
+    cx: &Bootstrap,
+) -> std::result::Result<Vec<IntegrationEffect>, (Vec<IntegrationEffect>, SeError)> {
     se_host::adoption::install::uninstall(&cx.home)
 }

@@ -16,6 +16,12 @@ pub struct InstallRecord {
     pub files: Vec<InstallFile>,
     pub created_directories: Vec<PathBuf>,
     pub path_edits: Vec<PathEdit>,
+    /// PATH custody inherited from a replaced image: edits it already owns.
+    /// These are not pending writes of this installation.
+    #[serde(default)]
+    #[cfg_attr(not(unix), allow(dead_code))]
+    // unix-only recovery reads it; Windows recovery is the PowerShell installer
+    pub inherited_path_edits: Vec<PathEdit>,
 }
 
 #[derive(Debug, Deserialize)]

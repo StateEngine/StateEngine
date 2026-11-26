@@ -228,14 +228,40 @@ fn integration(
     })
 }
 
-pub fn uninstall(home: &Path) -> Result<Vec<IntegrationEffect>> {
+pub fn uninstall(
+    home: &Path,
+) -> std::result::Result<Vec<IntegrationEffect>, (Vec<IntegrationEffect>, SeError)> {
     let mut effects = Vec::new();
     for kind in Kind::ALL {
-        for path in super::settings::uninstall_for(home, kind)? {
-            effects.push(IntegrationEffect { path: path.display().to_string(), entry: format!("{} user-started session hooks", kind.label()), action: FileOutcome::Removed, witness: Witness { state: WitnessState::Witnessed, method: "removed exact journaled entries; preserved unrelated hooks and edits".into(), observed_at: receipt::timestamp(now_us()?)?, detail: Some("Provider settings, permissions and running provider processes were preserved; adoption registration revoked".into()) } });
+        let paths = match super::settings::uninstall_for(home, kind) {
+            Ok(paths) => paths,
+            Err(error) => return Err((effects, error)),
+        };
+        for path in paths {
+            let effect = match removed_effect(&path, kind) {
+                Ok(effect) => effect,
+                Err(error) => return Err((effects, error)),
+            };
+            effects.push(effect);
         }
     }
     Ok(effects)
+}
+
+fn removed_effect(path: &Path, kind: Kind) -> Result<IntegrationEffect> {
+    Ok(IntegrationEffect {
+        path: path.display().to_string(),
+        entry: format!("{} user-started session hooks", kind.label()),
+        action: FileOutcome::Removed,
+        witness: Witness {
+            state: WitnessState::Witnessed,
+            method: "removed exact journaled entries; preserved unrelated hooks and edits".into(),
+            observed_at: receipt::timestamp(now_us()?)?,
+            detail: Some(
+                "Provider settings, permissions and running provider processes were preserved; adoption registration revoked".into(),
+            ),
+        },
+    })
 }
 
 fn now_us() -> Result<i64> {

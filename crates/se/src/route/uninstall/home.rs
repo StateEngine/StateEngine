@@ -62,19 +62,9 @@ pub(super) fn execute(
     // partially cleaned home still reports the achieved effects.
     let integrations = match route::adoption::uninstall(cx) {
         Ok(integrations) => integrations,
-        Err(error) => {
+        Err((revoked, error)) => {
             issues.push(error.body.clone());
-            vec![IntegrationEffect {
-                path: "provider integrations".into(),
-                entry: "provider integration revocation".into(),
-                action: FileOutcome::Unreadable,
-                witness: Witness {
-                    state: WitnessState::Failed,
-                    method: "provider integration revocation".into(),
-                    observed_at: receipt::timestamp(route::execute::now_us()?)?,
-                    detail: Some(error.to_string()),
-                },
-            }]
+            failed_revocation(&error, revoked)?
         }
     };
     let complete = matches!(&runtime, Read::Present { value } if value.complete && value.witness.state == WitnessState::Witnessed)
@@ -119,6 +109,26 @@ pub(super) fn execute(
             },
         },
     }))
+}
+/// A refused provider revocation still reports the effects achieved before
+/// the refusal, marked failed, alongside the issue it added.
+fn failed_revocation(
+    error: &SeError,
+    revoked: Vec<IntegrationEffect>,
+) -> Result<Vec<IntegrationEffect>> {
+    let mut integrations = revoked;
+    integrations.push(IntegrationEffect {
+        path: "provider integrations".into(),
+        entry: "provider integration revocation".into(),
+        action: FileOutcome::Unreadable,
+        witness: Witness {
+            state: WitnessState::Failed,
+            method: "provider integration revocation".into(),
+            observed_at: receipt::timestamp(route::execute::now_us()?)?,
+            detail: Some(error.to_string()),
+        },
+    });
+    Ok(integrations)
 }
 /// Admit cleanup only for a present home without an installation record,
 /// holding the account-wide installation exclusion for the caller.

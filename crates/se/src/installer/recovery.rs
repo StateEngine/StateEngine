@@ -217,16 +217,7 @@ fn resume_plan(
     let mut profiles = Vec::<String>::new();
     let mut bases = Vec::<String>::new();
     for edit in &record.path_edits {
-        let base = Path::new(&edit.target)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| args::invalid("the original profile paths"))?;
-        if !matches!(
-            base,
-            ".profile" | ".bash_profile" | ".bash_login" | ".zprofile" | ".bashrc" | ".zshrc"
-        ) {
-            return Err(args::invalid("the original profile paths"));
-        }
+        let base = profile_base(&edit.target)?;
         if bases.iter().any(|prior| prior == base) || edit.block.as_bytes() != block {
             return Err(args::invalid(
                 "unique original login profiles and PATH block",
@@ -251,6 +242,23 @@ fn resume_plan(
         bases.push(base.to_owned());
         profiles.push(edit.target.clone());
     }
+    // Inherited custody from a replaced image: validated against the profile
+    // allowlist and uniqueness only. It carries no sidecars or block to
+    // replay, and nothing here becomes a pending write.
+    let mut inherited_bases = Vec::<String>::new();
+    for edit in &record.inherited_path_edits {
+        let base = profile_base(&edit.target)?;
+        if bases
+            .iter()
+            .chain(inherited_bases.iter())
+            .any(|prior| prior == base)
+        {
+            return Err(args::invalid(
+                "unique original login profiles and PATH block",
+            ));
+        }
+        inherited_bases.push(base.to_owned());
+    }
     Installation {
         record_path: home.join("standalone-install.json"),
         record,
@@ -262,4 +270,18 @@ fn resume_plan(
         println!("resume {}\n{}\n{fish}", profiles.len(), profiles.join("\n"));
     }
     Ok(0)
+}
+
+fn profile_base(target: &str) -> Result<&str> {
+    let base = Path::new(target)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| args::invalid("the original profile paths"))?;
+    if !matches!(
+        base,
+        ".profile" | ".bash_profile" | ".bash_login" | ".zprofile" | ".bashrc" | ".zshrc"
+    ) {
+        return Err(args::invalid("the original profile paths"));
+    }
+    Ok(base)
 }
