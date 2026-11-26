@@ -118,7 +118,7 @@ fn map_error(error: WorktreeRemoveError) -> SeError {
 fn prune_refusal(worktree_name: &str, reason: &str, locked_path: Option<&Path>) -> SeError {
     let next_step = match locked_path {
         Some(path) => format!(
-            "Run `git worktree unlock {}` and then `git worktree prune` in the primary repository to clean up the locked metadata.",
+            "In the primary repository, pass this exact path as a single argument to `git worktree unlock` and then run `git worktree prune` (path: {}).",
             path.display()
         ),
         None => "Run `git worktree prune` in the primary repository to clean up stale metadata."
