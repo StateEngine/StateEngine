@@ -40,6 +40,7 @@ pub fn prepare(
         ));
     }
     let image = std::env::current_exe()
+        .and_then(se_proc::canonicalize_path)
         .map_err(|e| se_core::scope::unreadable("installed executable", &e.to_string()))?;
     Ok(Plan {
         kind,

@@ -345,6 +345,7 @@ const ENVIRONMENT: &[&str] = &[
     "TZ",
     "TMPDIR",
     "TERM",
+    "SSH_AUTH_SOCK",
     "DISPLAY",
     "XAUTHORITY",
     "WAYLAND_DISPLAY",
@@ -355,6 +356,9 @@ const ENVIRONMENT: &[&str] = &[
     "XDG_RUNTIME_DIR",
     "CLAUDE_CONFIG_DIR",
     "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLOUD_ML_REGION",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_BASE_URL",
     "SystemRoot",
@@ -408,6 +412,14 @@ pub fn launch_environment(sign_in: Option<&crate::sign_in::SignIn>) -> Vec<(OsSt
     }
     environment
 }
+const PREFIXES: &[&str] = &[
+    "LC_",
+    "AWS_",
+    "ANTHROPIC_BEDROCK_",
+    "ANTHROPIC_VERTEX_",
+    "GOOGLE_CLOUD_",
+];
+
 /// The base environment handed to the provider, built from an allowlist.
 pub fn provider_environment() -> Vec<(OsString, OsString)> {
     std::env::vars_os()
@@ -416,7 +428,16 @@ pub fn provider_environment() -> Vec<(OsString, OsString)> {
             ENVIRONMENT
                 .iter()
                 .any(|allowed| allowed.eq_ignore_ascii_case(&name))
-                || name.starts_with("LC_")
+                || crate::network_env::is_network_environment(&name)
+                || PREFIXES.iter().any(|prefix| {
+                    if cfg!(windows) {
+                        name.len() >= prefix.len()
+                            && name.is_char_boundary(prefix.len())
+                            && name[..prefix.len()].eq_ignore_ascii_case(prefix)
+                    } else {
+                        name.starts_with(prefix)
+                    }
+                })
         })
         .collect()
 }

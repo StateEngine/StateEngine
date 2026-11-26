@@ -87,14 +87,54 @@ pub fn configure(
     Ok(changed)
 }
 
+fn current_se_command() -> Result<String> {
+    let current = std::env::current_exe().map_err(|error| {
+        failure(&format!(
+            "could not locate the running se executable: {error}"
+        ))
+    })?;
+    let canonical = se_proc::canonicalize_path(&current).map_err(|error| {
+        failure(&format!(
+            "could not resolve the running se executable: {error}"
+        ))
+    })?;
+    if !std::fs::metadata(&canonical)
+        .map_err(|error| {
+            failure(&format!(
+                "could not inspect the running se executable: {error}"
+            ))
+        })?
+        .is_file()
+    {
+        return Err(failure("the resolved se executable is not a regular file"));
+    }
+    canonical
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| failure("the resolved se executable path is not valid UTF-8"))
+}
+
+fn matches_se_command(registered: &str, expected: &str) -> bool {
+    if registered == expected || registered == "se" {
+        return true;
+    }
+    let path = Path::new(registered);
+    path.is_absolute()
+        && se_proc::canonicalize_path(path).ok().as_deref() == Some(Path::new(expected))
+}
+
 fn missing(kind: Kind, args: &[&str]) -> Result<String> {
     manual(kind, args, &format!("Install {}, then", kind.label()))
 }
 
 fn manual(kind: Kind, args: &[&str], lead: &str) -> Result<String> {
+    let command = current_se_command()
+        .ok()
+        .and_then(|path| se_core::ops::AgentCommand::quoted_word(&path))
+        .unwrap_or_else(|| "se".into());
     let prefix = match kind {
-        Kind::Claude => "claude mcp add --scope local stateengine -- se",
-        Kind::Codex => "codex mcp add stateengine -- se",
+        Kind::Claude => format!("claude mcp add --scope local stateengine -- {command}"),
+        Kind::Codex => format!("codex mcp add stateengine -- {command}"),
     };
     let words = args
         .iter()
@@ -121,6 +161,7 @@ pub fn install(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) -> Re
     // Resolved once: the same checked bindings go to listing, registration and readback.
     let config = provider_config_dirs().map_err(|reason| failure(&reason))?;
     usable_config_dir(kind, &config)?;
+    let se_command = current_se_command()?;
     let setup = Setup {
         root,
         executable,
@@ -128,19 +169,27 @@ pub fn install(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) -> Re
         config: &config,
     };
     runtime.block_on(async {
-        if configured(setup, entry).await? {
+        if configured(setup, &se_command, entry).await? {
             return Ok(false);
         }
         let mut args: Vec<&str> = match kind {
-            Kind::Claude => vec!["mcp", "add", "--scope", "local", "stateengine", "--", "se"],
-            Kind::Codex => vec!["mcp", "add", "stateengine", "--", "se"],
+            Kind::Claude => vec![
+                "mcp",
+                "add",
+                "--scope",
+                "local",
+                "stateengine",
+                "--",
+                &se_command,
+            ],
+            Kind::Codex => vec!["mcp", "add", "stateengine", "--", &se_command],
         };
         args.extend_from_slice(entry);
         let output = run(setup, &args).await?;
         if !output.status.success() {
             return Err(refused(kind, "mcp add", &output));
         }
-        if !configured(setup, entry).await? {
+        if !configured(setup, &se_command, entry).await? {
             return Err(failure("the harness did not confirm the saved MCP entry"));
         }
         Ok(true)
@@ -170,7 +219,7 @@ struct Setup<'a> {
     kind: Kind,
     config: &'a [(Provider, &'static str, std::path::PathBuf)],
 }
-async fn configured(setup: Setup<'_>, entry: &[&str]) -> Result<bool> {
+async fn configured(setup: Setup<'_>, se_command: &str, entry: &[&str]) -> Result<bool> {
     let kind = setup.kind;
     match kind {
         Kind::Claude => {
@@ -197,7 +246,8 @@ async fn configured(setup: Setup<'_>, entry: &[&str]) -> Result<bool> {
                 ));
             }
             if field("Type: ") != Some("stdio")
-                || field("Command: ") != Some("se")
+                || !field("Command: ")
+                    .is_some_and(|command| matches_se_command(command, se_command))
                 || field("Args: ") != Some(entry.join(" ").as_str())
             {
                 return Err(failure(
@@ -240,7 +290,9 @@ async fn configured(setup: Setup<'_>, entry: &[&str]) -> Result<bool> {
             if matches.next().is_some()
                 || row["enabled"] != true
                 || transport["type"] != "stdio"
-                || transport["command"] != "se"
+                || !transport["command"]
+                    .as_str()
+                    .is_some_and(|command| matches_se_command(command, se_command))
                 || transport["args"] != serde_json::json!(entry)
                 || !transport["cwd"].is_null()
                 || !transport["env"].is_null()

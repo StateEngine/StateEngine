@@ -175,17 +175,13 @@ fn parse_version(
             "Use a stock supported Codex executable.",
         )
     })?;
-    let parts = version
-        .split('.')
-        .map(str::parse::<u16>)
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|_| {
-            incompatible(
-                "unrecognized Codex version",
-                "Use a stable supported Codex release.",
-            )
-        })?;
-    if parts.len() != 3 || (parts[0], parts[1], parts[2]) < CODEX_MINIMUM_VERSION {
+    let parsed = crate::version::parse_semver(version).ok_or_else(|| {
+        incompatible(
+            "unrecognized Codex version",
+            "Use a stable supported Codex release.",
+        )
+    })?;
+    if !parsed.meets_minimum(CODEX_MINIMUM_VERSION) {
         return Err(incompatible(
             "Codex is below the required app-server version floor",
             "Install Codex 0.152.0 or newer.",

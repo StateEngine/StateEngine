@@ -78,20 +78,22 @@ fn stub_provider(root: &Path, se: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let script = format!(
         r#"#!/bin/sh
 entry_file="$CLAUDE_CONFIG_DIR/synthetic-mcp-entry"
+command_file="$CLAUDE_CONFIG_DIR/synthetic-mcp-command"
 if [ "$*" = "--version" ]; then echo "2.1.318 (Claude Code)"; exit 0; fi
 if [ "$*" = "mcp get stateengine" ]; then
   if [ ! -f "$entry_file" ]; then echo 'No MCP server named "stateengine".' >&2; exit 1; fi
   entry=$(cat "$entry_file")
+  cmd=$(cat "$command_file")
   reply=$(printf '%s\n%s\n%s\n' \
     '{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2024-11-05","capabilities":{{}},"clientInfo":{{"name":"synthetic-health-check","version":"1"}}}}}}' \
     '{{"jsonrpc":"2.0","method":"notifications/initialized"}}' \
     '{{"jsonrpc":"2.0","id":2,"method":"tools/list"}}' | "{se}" $entry 2>/dev/null)
   case "$reply" in *'"tools"'*) status=Connected;; *) status=Failed;; esac
-  printf 'stateengine:\n  Scope: Local config (private to you in this project)\n  Status: %s\n  Type: stdio\n  Command: se\n  Args: %s\n  Environment:\n' "$status" "$entry"
+  printf 'stateengine:\n  Scope: Local config (private to you in this project)\n  Status: %s\n  Type: stdio\n  Command: %s\n  Args: %s\n  Environment:\n' "$status" "$cmd" "$entry"
   exit 0
 fi
-if [ "$1 $2 $3 $4 $5 $6 $7" = "mcp add --scope local stateengine -- se" ]; then
-  shift 7; printf '%s' "$*" > "$entry_file"; exit 0
+if [ "$1 $2 $3 $4 $5 $6" = "mcp add --scope local stateengine --" ] && [ -n "$7" ]; then
+  cmd="$7"; shift 7; printf '%s' "$cmd" > "$command_file"; printf '%s' "$*" > "$entry_file"; exit 0
 fi
 exit 91
 "#,

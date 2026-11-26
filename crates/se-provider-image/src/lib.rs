@@ -8,6 +8,7 @@ use std::{
 
 mod codex_package;
 pub use codex_package::PackageLaunch;
+pub mod package_roots;
 // Resolve packaged providers before their probe and native ownership setup.
 #[cfg(unix)]
 mod unix_executable;

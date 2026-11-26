@@ -5,6 +5,7 @@ mod directory;
 #[path = "../src/windows_executable.rs"]
 mod windows_executable;
 
+use se_provider_image::package_roots;
 use se_types::Provider;
 use std::{fs, io, path::Path};
 

@@ -14,6 +14,7 @@ const NAMES: &[&str] = &[
     "TZ",
     "TMPDIR",
     "TERM",
+    "SSH_AUTH_SOCK",
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
     "XDG_CACHE_HOME",

@@ -450,6 +450,7 @@ pub fn provider_environment() -> Vec<(OsString, OsString)> {
         "TZ",
         "TMPDIR",
         "TERM",
+        "SSH_AUTH_SOCK",
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
         "XDG_CACHE_HOME",
@@ -479,6 +480,7 @@ pub fn provider_environment() -> Vec<(OsString, OsString)> {
             ALLOWED
                 .iter()
                 .any(|allowed| allowed.eq_ignore_ascii_case(&name))
+                || crate::network_env::is_network_environment(&name)
                 || name.starts_with("LC_")
         })
         .collect()

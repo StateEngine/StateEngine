@@ -17,7 +17,7 @@ use crate::{
     HarnessRequest, HostFuture, LaunchOutcome, ProbeRequest, ProviderInterrupt, ProviderInvocation,
     ProviderIoPlatform, ProviderStream, ProviderTransport, ProviderVersion,
 };
-use io::{drain, parse_version, poisoned, version_output};
+use io::{drain, poisoned, version_output};
 use se_types::{NativePath, ProviderSessionId, Read, Result, SeError};
 use std::{
     num::NonZeroU32,
@@ -390,7 +390,9 @@ pub async fn probe_version(command: &Path, timeout: std::time::Duration) -> Resu
         .filter(|_| output.contains("Claude Code"))
         .ok_or_else(|| SeError::invalid("Claude version", "`<version> (Claude Code)` output"))?
         .to_owned();
-    if parse_version(&version).is_none_or(|found| found < MINIMUM_VERSION) {
+    if crate::version::parse_semver(&version)
+        .is_none_or(|found| !found.meets_minimum(MINIMUM_VERSION))
+    {
         return Err(SeError::invalid(
             "Claude version",
             "Claude Code 2.1.287 or newer; update Claude Code and retry",
@@ -420,8 +422,8 @@ pub fn qualify_adoption(command: &Path) -> Result<()> {
         || output
             .split_whitespace()
             .next()
-            .and_then(parse_version)
-            .is_none_or(|version| version < (2, 1, 295))
+            .and_then(crate::version::parse_semver)
+            .is_none_or(|version| !version.meets_minimum((2, 1, 295)))
     {
         return Err(SeError::invalid(
             "Claude adoption",

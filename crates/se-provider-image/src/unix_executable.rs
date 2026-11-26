@@ -3,22 +3,29 @@
 use std::{
     fs, io,
     io::Read,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 
 pub(crate) fn packaged_codex(launcher: &Path) -> io::Result<Option<(PathBuf, PathBuf)>> {
     let entry = fs::canonicalize(launcher)?;
-    if entry.file_name().is_none_or(|name| name != "codex.js") {
-        return Ok(None);
-    }
-    let Some(bin) = entry
-        .parent()
-        .filter(|bin| bin.file_name().is_some_and(|name| name == "bin"))
-    else {
-        return Ok(None);
-    };
-    let Some(package) = bin.parent() else {
+    let package = if entry.file_name().is_some_and(|name| name == "codex.js") {
+        let Some(bin) = entry
+            .parent()
+            .filter(|bin| bin.file_name().is_some_and(|name| name == "bin"))
+        else {
+            return Ok(None);
+        };
+        let Some(package) = bin.parent() else {
+            return Ok(None);
+        };
+        package.to_path_buf()
+    } else if launcher.file_name().is_some_and(|name| name == "codex")
+        && let Some(directory) = launcher.parent()
+        && let Some(package) =
+            crate::package_roots::unique_installed_root(directory, "@openai/codex")?
+    {
+        package
+    } else {
         return Ok(None);
     };
     let metadata = match fs::File::open(package.join("package.json")) {
@@ -62,7 +69,7 @@ pub(crate) fn packaged_codex(launcher: &Path) -> io::Result<Option<(PathBuf, Pat
     ] {
         let candidate = vendor.join(target).join("bin/codex");
         if native_image(&candidate)? {
-            return fs::canonicalize(candidate).map(|image| Some((image, package.to_path_buf())));
+            return fs::canonicalize(candidate).map(|image| Some((image, package)));
         }
     }
     Ok(None)
@@ -84,7 +91,7 @@ fn native_image(path: &Path) -> io::Result<bool> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error),
     };
-    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+    if !metadata.is_file() || se_proc::file_access::require_executable_access(path).is_err() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Codex package payload is not an executable file",

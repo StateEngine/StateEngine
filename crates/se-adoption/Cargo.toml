@@ -15,6 +15,7 @@ se-core = { path = "../se-core" }
 se-harness = { path = "../se-harness" }
 se-mcp = { path = "../se-mcp" }
 se-proc = { path = "../se-proc" }
+se-provider-image = { path = "../se-provider-image" }
 se-repository = { path = "../se-repository" }
 se-store = { path = "../se-store" }
 se-types = { path = "../se-types" }
