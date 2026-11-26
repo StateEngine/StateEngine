@@ -2,7 +2,7 @@
 use super::*;
 use toml_edit::{DocumentMut, Item, Table};
 
-fn parse(path: &Path, bytes: &[u8]) -> Result<DocumentMut> {
+pub(super) fn parse(path: &Path, bytes: &[u8]) -> Result<DocumentMut> {
     std::str::from_utf8(bytes)
         .map_err(|_| invalid("UTF-8 provider configuration"))?
         .parse()
@@ -118,20 +118,11 @@ pub(super) fn apply(
                 }
                 let state = hooks
                     .get_mut("state")
+                    .and_then(Item::as_table_like_mut)
                     .ok_or_else(|| invalid("hook state table"))?;
-                let dotted = state.as_table().is_some_and(Table::is_dotted);
-                let state = state
-                    .as_table_like_mut()
-                    .ok_or_else(|| invalid("hook state table"))?;
-                // An existing entry keeps its other keys, comments and layout.
-                if let Some(row) = state.get_mut(key).and_then(Item::as_table_like_mut) {
-                    row.insert("trusted_hash", toml_edit::value(hash));
-                } else {
-                    let mut row = Table::new();
-                    row.set_dotted(dotted);
-                    row.insert("trusted_hash", toml_edit::value(hash));
-                    state.insert(key, Item::Table(row));
-                }
+                let mut row = Table::new();
+                row.insert("trusted_hash", toml_edit::value(hash));
+                state.insert(key, Item::Table(row));
             }
             text::Edit::RemoveTrust(key) => {
                 let hooks = hooks(&mut doc)?;
