@@ -100,20 +100,16 @@ pub fn install(
     // Only the run that created the registration writes provider files.
     let fresh = planned.is_some();
     let changed = match planned {
-        Some(planned) => {
-            let changed = super::settings::commit(&path, planned)?;
-            registration.installed = true;
-            super::publish_for(home, kind, &registration)?;
-            changed
-        }
+        Some(planned) => super::settings::commit(&path, planned)?,
         None => false,
     };
     let absent = super::settings::missing(&path, &plan.required)?;
     let installed = absent.is_empty();
-    let resumed = !registration.installed;
-    if resumed {
-        // An earlier install stopped before it finished. Its hooks may have
-        // landed and been removed since, so they are never written again here.
+    let unfinished = !registration.installed || registration.discovery_refusal.is_some();
+    if unfinished {
+        // An earlier install stopped before discovery confirmed it. Its hooks
+        // may have landed and been removed since, so they are never written
+        // again here.
         if !installed {
             let entries: Vec<_> = absent
                 .iter()
@@ -145,9 +141,9 @@ pub fn install(
     }
     // A persisted refusal is retryable evidence, never a successful install.
     discovery?;
-    if resumed {
-        // Finished only once discovery confirmed it, so a refused retry stays
-        // a resumed one.
+    if !registration.installed {
+        // Finished only once discovery confirmed it, so a refused fresh run or
+        // retry stays unfinished until discovery succeeds.
         registration.installed = true;
         super::publish_for(home, kind, &registration)?;
     }

@@ -217,9 +217,13 @@ impl Fixture {
             fs::read_to_string(self.root.join(format!("{mode}.stderr")))?,
         ))
     }
-    fn exited(&self, identity: &se_proc::ProcessIdentity) -> Result<bool> {
-        match se_proc::NativeProcessRuntime::read_process(identity.machine.clone(), identity.pid)
-            .map_err(|e| format!("outside runtime closure: {e:?}"))?
+    fn exited(&self, identity: &se_proc::ProcessIdentity, until: Instant) -> Result<bool> {
+        match se_proc::NativeProcessRuntime::read_process_until(
+            identity.machine.clone(),
+            identity.pid,
+            until,
+        )
+        .map_err(|e| format!("outside runtime closure: {e:?}"))?
         {
             se_proc::ProcessRead::Absent { .. } => Ok(true),
             se_proc::ProcessRead::ExitedRecord {
@@ -242,17 +246,25 @@ impl Fixture {
             return Err("endpoint does not carry a Windows process birth".into());
         };
         assert_eq!(creation_filetime.get(), expected_birth);
+        let expected_start = se_proc::StartIdentity::Windows {
+            creation_filetime: expected_birth,
+        };
         let pid = se_proc::ProcessId(fields.pid.get());
         let until = Instant::now() + Duration::from_secs(10);
         loop {
-            match se_proc::NativeProcessRuntime::read_process(fields.machine.clone(), pid)
-                .map_err(|e| format!("outside KILL_ON_JOB_CLOSE read: {e:?}"))?
+            match se_proc::NativeProcessRuntime::read_process_until(
+                fields.machine.clone(),
+                pid,
+                until,
+            )
+            .map_err(|e| format!("outside KILL_ON_JOB_CLOSE read: {e:?}"))?
             {
                 se_proc::ProcessRead::Absent { .. } | se_proc::ProcessRead::ExitedRecord { .. } => {
                     return Ok(());
                 }
                 se_proc::ProcessRead::Present(live)
-                    if live.state == se_proc::NativeState::ExitedAwaitingReap =>
+                    if live.state == se_proc::NativeState::ExitedAwaitingReap
+                        || live.identity.start != expected_start =>
                 {
                     return Ok(());
                 }
@@ -284,7 +296,7 @@ impl Fixture {
         }
         if let Some(identity) = &self.host {
             let until = Instant::now() + Duration::from_secs(15);
-            while !self.exited(identity)? {
+            while !self.exited(identity, until)? {
                 if Instant::now() >= until {
                     return Err("exact broker runtime did not exit".into());
                 }

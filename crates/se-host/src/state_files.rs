@@ -130,8 +130,8 @@ impl Files {
     }
 }
 impl Files {
-    /// Retire only this caller's exact native staging bytes. A losing create
-    /// can briefly contend with another retirement's cooperating parent pin.
+    /// Retire only this caller's exact native staging bytes without contending
+    /// on the parent directory lock across concurrent losing creates.
     pub fn retire_staging(&self, path: &Path, digest: [u8; 32]) -> StoreResult<()> {
         let deadline = Instant::now() + Duration::from_secs(5);
         self.check_path(path)?;
@@ -147,7 +147,7 @@ impl Files {
         let mut retry = AcquisitionRetry::new(deadline);
         let acquired = loop {
             match retry
-                .acquire(|| OwnedFile::open(path))
+                .acquire(|| OwnedFile::open_staging(path))
                 .map_err(AcquisitionError::into_store)?
             {
                 Acquisition::Ready(file) => break file,
