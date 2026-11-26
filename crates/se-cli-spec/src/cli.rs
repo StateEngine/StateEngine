@@ -225,6 +225,9 @@ pub fn cli_command() -> Command {
     }
     // MCP, external-seat lifecycle, and blocking mail wait are dedicated host
     // transports rather than store catalogue operations.
+    transport_commands(root)
+}
+fn transport_commands(root: Command) -> Command {
     let root = root.mut_subcommand("msg", |msg| {
         msg.subcommand(
             Command::new("wait")
