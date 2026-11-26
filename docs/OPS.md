@@ -282,7 +282,7 @@ Crew can omit the recipient for a `question`, `blocker`, or `done` message to se
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 62 operations (56 core, 6 Atlas), 32 MCP tools (27 core, 5 Atlas). Planned: 5 operations, 1 MCP tool.
+Registered: 63 operations (57 core, 6 Atlas), 32 MCP tools (27 core, 5 Atlas). Planned: 5 operations, 1 MCP tool.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -347,6 +347,7 @@ Registered: 62 operations (56 core, 6 Atlas), 32 MCP tools (27 core, 5 Atlas). P
 | `agent.show` | agent show | none | owner | read |
 | `config.get` | config get | none | owner | read |
 | `config.set` | config set | none | owner | write |
+| `harness.add` | harness add | none | owner | write |
 | `config.list` | config list | none | owner | read |
 
 `store.import_node` needs the optional `import` build feature; the standard release archive does not enable it.
@@ -356,4 +357,6 @@ Shipped as CLI transport commands outside the registry: `mcp.serve`
 Planned operations (design tables, not yet registered): `credential.rotate`, `mcp.token`, `session.begin`, `session.end`, `session.turn`
 
 Planned MCP tools: `stateengine_session_turn`
+
+Registered without a design-table row: `harness.add` (CLI `harness add`)
 <!-- END GENERATED: ops-inventory -->

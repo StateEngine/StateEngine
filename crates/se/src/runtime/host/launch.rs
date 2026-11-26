@@ -197,8 +197,10 @@ fn prepare_launch(
         arguments
     };
     log.note("Preparing protected runtime temporary storage");
-    let environment = super::environment::prepare(&files, configuration)?;
+    let (environment, selection) = super::environment::prepare(&files, configuration)?;
     log.note("Protected runtime temporary storage ready");
+    let mut arguments = arguments;
+    arguments.push(selection.into());
     let spec = se_proc::RuntimeLaunchSpec {
         machine,
         startup_nonce: nonce,
@@ -277,7 +279,7 @@ fn startup_failure(
             let until = bound
                 .at()
                 .min(std::time::Instant::now() + Duration::from_millis(100));
-            let (observed, no_reported_failure) = match child.startup_stderr(until) {
+            let (observed, no_reported_failure, changed) = match child.startup_stderr(until) {
                 Ok(stderr) => (
                     format!(
                         "child startup stderr (complete={}, truncated={}, read_failure={:?}): {}",
@@ -290,26 +292,34 @@ fn startup_failure(
                         && !stderr.truncated
                         && stderr.failure.is_none()
                         && !stderr.complete,
+                    stderr.reports_stage(super::child::CONFIGURATION_CHANGED_STAGE),
                 ),
                 Err(failure) => (
                     format!("child startup stderr unreadable: {failure:?}"),
                     false,
+                    false,
                 ),
             };
-            let timed_out = matches!(
-                error.code(),
-                se_types::Code::DeadlineExceeded | se_types::Code::RuntimeStartPending
-            );
-            let diagnostic =
-                se_core::scope::unreadable("runtime startup", &format!("{error}; {observed}"))
-                    .with_cause(error);
-            if timed_out && no_reported_failure {
-                SeError::new(se_types::Detail::RuntimeStartPending(
-                    se_types::details::RuntimeStartPending { waited_ms: 0 },
-                ))
-                .with_cause(diagnostic)
+            // The child's typed configuration conflict keeps its kind and remedy;
+            // only its framed stage decides that, never text inside a refusal.
+            if changed {
+                super::child::configuration_changed().with_cause(error)
             } else {
-                diagnostic
+                let timed_out = matches!(
+                    error.code(),
+                    se_types::Code::DeadlineExceeded | se_types::Code::RuntimeStartPending
+                );
+                let diagnostic =
+                    se_core::scope::unreadable("runtime startup", &format!("{error}; {observed}"))
+                        .with_cause(error);
+                if timed_out && no_reported_failure {
+                    SeError::new(se_types::Detail::RuntimeStartPending(
+                        se_types::details::RuntimeStartPending { waited_ms: 0 },
+                    ))
+                    .with_cause(diagnostic)
+                } else {
+                    diagnostic
+                }
             }
         }
         None => error,

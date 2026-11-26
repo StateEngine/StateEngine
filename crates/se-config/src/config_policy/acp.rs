@@ -41,21 +41,18 @@ impl AcpConfig {
             ));
         }
         if self.environment.len() > 128
-            || self.environment.iter().any(|v| {
-                v.is_empty()
-                    || v.len() > 128
-                    || !v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-            })
+            || self.environment.iter().any(|v| !valid_environment_name(v))
         {
             return Err(invalid(
                 "acp.environment",
                 "expected at most 128 explicit environment variable names",
             ));
         }
-        if let Some(name) = self.environment.iter().find(|name| {
-            let name = name.to_ascii_uppercase();
-            name == "SE_SESSION" || name.starts_with("STATEENGINE_") || name.starts_with("SECODE_")
-        }) {
+        if let Some(name) = self
+            .environment
+            .iter()
+            .find(|name| reserved_environment_name(name))
+        {
             return Err(invalid(
                 "acp.environment",
                 &format!(
@@ -71,4 +68,19 @@ impl AcpConfig {
         }
         Ok(())
     }
+}
+
+/// A variable name an agent may be given: letters, digits and underscores,
+/// 1 to 128 bytes.
+pub fn valid_environment_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// Names that carry StateEngine's own session or machine authority and are
+/// never passed to an agent.
+pub fn reserved_environment_name(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    name == "SE_SESSION" || name.starts_with("STATEENGINE_") || name.starts_with("SECODE_")
 }

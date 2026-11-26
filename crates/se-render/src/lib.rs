@@ -132,6 +132,7 @@ fn render_human(value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
         HumanKind::ConfigReceipt
         | HumanKind::ConfigValue
         | HumanKind::ConfigPage
+        | HumanKind::HarnessReceipt
         | HumanKind::AgentPage
         | HumanKind::AgentStatus
         | HumanKind::AgentReceipt => render_administration(kind, value, out),
@@ -295,6 +296,9 @@ fn render_administration(
         }
         (HumanKind::ConfigPage, AnyOutput::ConfigList(value)) => {
             administration::config_page(&value.value, out)
+        }
+        (HumanKind::HarnessReceipt, AnyOutput::HarnessAdd(value)) => {
+            administration::harness(&value.value, out)
         }
         (HumanKind::AgentPage, AnyOutput::AgentList(value)) => {
             administration::agents(&value.value, out)

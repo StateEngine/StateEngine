@@ -207,3 +207,27 @@ pub(super) fn agents(
     }
     Ok(())
 }
+
+pub fn harness(value: &se_core::ops::HarnessAddOutput, out: &mut impl Write) -> io::Result<()> {
+    writeln!(
+        out,
+        "Harness {} saved in {}",
+        value.name, value.configuration
+    )?;
+    let mut words = vec![value.command.as_str()];
+    words.extend(value.arguments.iter().map(String::as_str));
+    writeln!(out, "Runs: {}", words.join(" "))?;
+    if !value.environment.is_empty() {
+        writeln!(out, "Reads environment: {}", value.environment.join(", "))?;
+    }
+    writeln!(
+        out,
+        "Launch profile {} is mapped to the agent's native default; launch checks that the agent speaks ACP and reports its permissions.",
+        value.profile
+    )?;
+    writeln!(
+        out,
+        "Next: se init --harness {name} for a new project, or se agent add NAME --harness {name}",
+        name = value.name
+    )
+}

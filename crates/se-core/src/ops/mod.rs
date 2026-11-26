@@ -282,6 +282,7 @@ ops! {
     AgentShow => AgentShow, AgentStatusOutput, ("agent.show",leaf(&["agent","show"]),no_mcp("This owner CLI read inspects saved agent metadata."),Owner,false,Never,Read,Project,None,"se.agent-status",AgentStatus,&["E3","J2"]);
     ConfigGet => ConfigGet, ConfigValueOutput, ("config.get",leaf(&["config","get"]),no_mcp("Saved agent settings are inspected by the owner CLI."),Owner,false,Never,Read,Project,None,"se.config-value",ConfigValue,&["E3"]);
     ConfigSet => ConfigSet, AgentConfigReceipt, ("config.set",leaf(&["config","set"]),no_mcp("Saved agent metadata changes are owner CLI operations."),Owner,false,ConfigKey,Write,Project,HostForWrites,"se.config-receipt",ConfigReceipt,&["E3"]);
+    HarnessAdd => HarnessAdd, HarnessAddOutput, ("harness.add",leaf(&["harness","add"]),no_mcp("A harness descriptor chooses the program agents run; it needs the verified owner at a human terminal."),Owner,false,Always,Write,Home,None,"se.harness-add",HarnessReceipt,&["E3"]);
     ConfigList => ConfigList, ConfigPageOutput, ("config.list",leaf(&["config","list"]),no_mcp("Configuration is owner administration."),Owner,false,Never,Read,Home,None,"se.config-page",ConfigPage,&["J2","J3","J4","J5"]);
 }
 impl AnyOp {

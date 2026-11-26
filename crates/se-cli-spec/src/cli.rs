@@ -491,6 +491,11 @@ fn input_command_config(name: &str, c: Command) -> Command {
             c.arg(positional("setting_key", 1, true).help("Saved agent setting: agent.<AGENT>.model, agent.<AGENT>.profile, .can-create, .model_provider, .base_url, .wire_api, .reasoning_effort or .context_window. Edit permission profiles directly in your state home's config.toml."))
                 .arg(positional("setting_value", 2, true).help("Model/provider/endpoint/effort string, positive context token count, null to inherit, an existing permission profile, or true/false for can-create"))
         }
+        "harness.add" => c
+            .arg(positional("harness_name", 1, true).help("New harness name: 1..64 letters, digits, underscore or hyphen"))
+            .arg(value("command").required(true).help("Native executable that speaks ACP version 1 over stdio; StateEngine runs it without a shell"))
+            .arg(value("arg").action(ArgAction::Append).allow_hyphen_values(true).help("Argument passed to the command, such as --arg=--acp; repeat in order"))
+            .arg(value("env").action(ArgAction::Append).help("Environment variable name the harness may read, such as OPENAI_API_KEY; repeat for each. Names only, never values")),
         _ => c,
     }
 }

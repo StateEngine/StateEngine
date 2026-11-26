@@ -18,8 +18,17 @@ pub(super) fn receive(guard: se_proc::RuntimeBootstrap) -> Result<u8> {
             Ok(remedy) => format!("{error}\n  fix: {}", remedy.text),
             Err(render_error) => format!("{error}\n  remedy unreadable: {render_error}"),
         };
+        let changed = matches!(
+            error.body.detail(),
+            se_types::Detail::StateConflict(conflict) if conflict.subject == "host configuration"
+        );
+        let stage = if changed {
+            CONFIGURATION_CHANGED_STAGE
+        } else {
+            "host preparation"
+        };
         bootstrap
-            .report_startup_failure("host preparation", &diagnostic)
+            .report_startup_failure(stage, &diagnostic)
             .map_err(native_error)?;
     }
     result
@@ -39,18 +48,33 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
         origin,
         runtime_directory,
         temporary_directory,
+        selection,
     ] = args.as_slice()
     else {
         return Err(invalid(
-            "the closed host/home/instance/generation/configuration/origin/socket-paths frame",
+            "the closed host/home/instance/generation/configuration/origin/socket-paths/selection frame",
         ));
     };
     #[cfg(windows)]
-    let [tag, home, instance, generation, configuration, origin] = args.as_slice() else {
+    let [
+        tag,
+        home,
+        instance,
+        generation,
+        configuration,
+        origin,
+        selection,
+    ] = args.as_slice()
+    else {
         return Err(invalid(
-            "the closed host/home/instance/generation/configuration/origin frame",
+            "the closed host/home/instance/generation/configuration/origin/selection frame",
         ));
     };
+    let selection = selection
+        .to_str()
+        .filter(|value| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(|| invalid("the starter's configuration selection"))?
+        .to_owned();
     if tag != "host" {
         return Err(invalid("the private host frame discriminator"));
     }
@@ -96,6 +120,7 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
                     .then(|| PathBuf::from(temporary_directory)),
             },
             instance: Some(instance),
+            selection: Some(selection),
         },
         guard,
         &mut |_| Ok(()),
@@ -123,6 +148,7 @@ pub(crate) fn foreground(
             #[cfg(unix)]
             socket_paths: crate::config::unix_socket_paths()?,
             instance: None,
+            selection: None,
         },
         &mut None,
         ready,
@@ -138,6 +164,8 @@ struct ServeRequest {
     #[cfg(unix)]
     socket_paths: se_proc::native_ipc::UnixSocketPaths,
     instance: Option<se_proc::HostInstanceId>,
+    /// The configuration identity a detached starter chose its environment from.
+    selection: Option<String>,
 }
 
 fn serve(
@@ -154,6 +182,7 @@ fn serve(
         #[cfg(unix)]
         socket_paths,
         instance,
+        selection,
     } = request;
     let mut phases = super::startup_log::StartupLog::success_phases(&home);
     note(&mut phases, "Host process preparation started");
@@ -161,6 +190,7 @@ fn serve(
     se_proc::initialize_host_console_policy().map_err(native_error)?;
     let initialized = se_host::initialize_host_process()?;
     let (config, blocking_jobs) = configure(&home, &configuration)?;
+    let state_home = home.clone();
     let epoch = verify_epoch(machine, generation, guard, &mut phases)?;
     // The same native image was just verified against the bootstrap and peer;
     // no PATH/cwd lookup may select a different helper for owned agent custody.
@@ -179,6 +209,7 @@ fn serve(
         )
         .await?;
         note(&mut phases, "Host state preparation finished");
+        let config = reselect(&state_home, &configuration, selection.as_deref(), &config, blocking_jobs)?;
         let restored=host.restore_transcripts(&bound).await?;
         if !restored.unavailable.is_empty() {eprintln!("capture recovery: {} binding(s) unavailable; their original cursors remain protected",restored.unavailable.len());}
         match config.origin {
@@ -244,6 +275,38 @@ fn serve(
     let result = serve();
     drop_engine(engine);
     result
+}
+/// Rereads the configuration once the startup lease excludes registration, and
+/// serves it only if it is the file this startup selected.
+fn reselect(
+    home: &std::path::Path,
+    configuration: &std::path::Path,
+    selection: Option<&str>,
+    first: &crate::config::Loaded<ConfigFile>,
+    blocking_jobs: NonZeroU32,
+) -> Result<crate::config::Loaded<ConfigFile>> {
+    // A foreground host has no starter; its own first read is the selection.
+    let expected = match selection {
+        Some(selection) => selection.to_owned(),
+        None => super::environment::selection(&first.value)?,
+    };
+    let (config, jobs) = configure(home, configuration)?;
+    if jobs != blocking_jobs || super::environment::selection(&config.value)? != expected {
+        return Err(configuration_changed());
+    }
+    Ok(config)
+}
+/// The startup stage a detached host reports for [`configuration_changed`], so
+/// its starter returns the same typed conflict and remedy as a foreground host.
+pub(super) const CONFIGURATION_CHANGED_STAGE: &str = "host configuration changed";
+pub(super) fn configuration_changed() -> se_types::SeError {
+    se_types::SeError::new(se_types::Detail::StateConflict(
+        se_types::details::StateConflict {
+            subject: "host configuration".into(),
+            reason: "config.toml changed while the host was starting, so it would not run the saved file".into(),
+            next_step: "Run the command again; the host then starts from the saved configuration".into(),
+        },
+    ))
 }
 /// Loads and validates the selected configuration and resolves the blocking
 /// job budget before any native identity or runtime work begins.

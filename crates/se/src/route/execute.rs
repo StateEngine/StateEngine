@@ -255,6 +255,9 @@ fn route_without_store(
     if let AnyOp::ProjectInit(input) = op {
         return super::init::execute(cx, input).map(ControlFlow::Break);
     }
+    if let AnyOp::HarnessAdd(input) = op {
+        return super::harness_setup::add(cx, input).map(ControlFlow::Break);
+    }
     if let AnyOp::StoreRestore(input) = op {
         return super::restore::execute(cx, input, diagnostic).map(ControlFlow::Break);
     }

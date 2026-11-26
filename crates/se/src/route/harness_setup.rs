@@ -1,8 +1,25 @@
-//! Prepare a catalogue choice from an existing installation before setup writes.
-use crate::bootstrap::Bootstrap;
-use se_config::config_policy::{Approval, ConfigFile, Profile};
-use se_core::{harness_selection::catalog, ops::ProjectInit};
+//! Harness descriptors in `config.toml`: prepare a catalogue choice from an
+//! existing installation before setup writes, or register an owner's own
+//! protocol agent by appending its entry, so existing bytes survive.
+use super::{
+    execute,
+    files::{DirectLease, Files},
+    init_config, owner, setup,
+};
+use crate::{bootstrap::Bootstrap, config::Origin};
+use se_config::config_policy::{
+    Approval, ConfigFile, Profile,
+    harness::{Driver, HarnessDescriptor, PermissionChoice},
+};
+use se_core::{
+    harness_selection::catalog,
+    ops::{AnyOutput, HarnessAdd, HarnessAddOutput, ProjectInit, inputs::Validate, receipt},
+    scope,
+    store_error::store_error,
+};
+use se_store::{LeaseIdentity, LeaseMode};
 use se_types::{Result, SeError};
+use std::collections::BTreeMap;
 
 pub(super) fn prepare(cx: &Bootstrap, input: &ProjectInit) -> Result<ConfigFile> {
     let mut configuration = cx.config.value.clone();
@@ -135,4 +152,184 @@ fn resolve(
                 .into(),
         },
     )))
+}
+
+pub(super) fn add(cx: &Bootstrap, input: HarnessAdd) -> Result<AnyOutput> {
+    input.validate()?;
+    let path = match &cx.config.origin {
+        Origin::File(path) => path.clone(),
+        Origin::BuiltIn => cx.home.join("config.toml"),
+    };
+    // The locked read below must equal this bootstrap configuration, so a taken
+    // name or a missing command refuses here, before anything is created.
+    let profile = cx.config.value.providers.acp.profile.clone();
+    let descriptor = HarnessDescriptor {
+        driver: Driver::AcpStdio,
+        command: input.command.clone(),
+        arguments: input.arguments.clone(),
+        model_arguments: Vec::new(),
+        environment: input.environment.clone(),
+        model_environment: None,
+        unadvertised_http_mcp: false,
+        permissions: BTreeMap::from([(profile.clone(), PermissionChoice::default())]),
+    };
+    if cx.config.value.harnesses.contains_key(&input.name) {
+        return Err(SeError::invalid(
+            "harness name",
+            &format!(
+                "a new name; [harnesses.{}] already exists in {}. Edit that entry there, or choose another name",
+                input.name,
+                path.display()
+            ),
+        ));
+    }
+    let mut proposed = cx.config.value.clone();
+    proposed
+        .harnesses
+        .insert(input.name.clone(), descriptor.clone());
+    resolve_command(&proposed, &input.name)?;
+    authorize(cx, None)?;
+    let lease = exclusive_home(cx)?;
+    authorize(cx, Some(&lease.files))?;
+    let files = &lease.files;
+    let mut pin = se_proc::OwnedFile::open(&path)
+        .map_err(|e| scope::unreadable("harness configuration", &e.to_string()))?;
+    let (observed, prior) = init_config::load_observed_config(&mut pin)?;
+    init_config::observed_matches_bootstrap(&observed, cx)?;
+    // Without a file yet, start from the defaults the observed reader applied.
+    let text = match &prior {
+        Some(bytes) => std::str::from_utf8(bytes)
+            .map_err(|_| SeError::invalid("configuration", "UTF-8 TOML"))?
+            .to_owned(),
+        None => toml::to_string_pretty(&observed)
+            .map_err(|e| scope::unreadable("configuration encoding", &e.to_string()))?,
+    };
+    let bytes = with_harness(&text, &input.name, &descriptor)?;
+    // The file decoded alone, so a failure here is the appended section
+    // colliding with `harnesses` written another way, such as an inline table.
+    let updated: ConfigFile = toml::from_str(&bytes).map_err(|e| {
+        let mut error = scope::unreadable("harness configuration", &e.to_string());
+        error.body = error.body.with_remedy(se_types::Remedy {
+            text: format!(
+                "{} defines harnesses in a form a new section cannot join, such as harnesses = {{ ... }}. Rewrite each entry as its own [harnesses.NAME] section, then retry; nothing was written.",
+                path.display()
+            ),
+            command: Some(se_types::Cmd::Manual),
+        });
+        error
+    })?;
+    updated.validate()?;
+    let saved = updated
+        .harnesses
+        .get(&input.name)
+        .ok_or_else(|| scope::unreadable("harness configuration", "the new entry is absent"))?;
+    if identity(saved)? != identity(&descriptor)? {
+        return Err(scope::unreadable(
+            "harness configuration",
+            "the edited file decodes to a different descriptor; nothing was written",
+        ));
+    }
+    init_config::publish_bytes(&path, pin, files, prior.as_deref(), bytes.as_bytes())?;
+    Ok(HarnessAddOutput {
+        name: input.name,
+        command: input.command,
+        arguments: input.arguments,
+        environment: input.environment,
+        profile,
+        configuration: path.display().to_string(),
+    }
+    .into())
+}
+
+/// Custody comes from the complete home-wide inventory, or from measured store
+/// absence before first setup. Either refusal happens before any file changes.
+fn authorize(cx: &Bootstrap, files: Option<&Files>) -> Result<()> {
+    let before = setup::inspect(&cx.home, receipt::timestamp(execute::now_us()?)?)?;
+    let observed = match &before {
+        setup::Setup::Absent(_) => owner::observe(&[])?,
+        setup::Setup::Present(reader) => {
+            let opened;
+            let files = match files {
+                Some(files) => files,
+                None => {
+                    opened = Files::open(&cx.home).map_err(|e| store_error(&e))?;
+                    &opened
+                }
+            };
+            owner::from_inventory(&owner::inventory(reader, files)?)?
+        }
+    };
+    observed.authorize(
+        "harness.add",
+        observed.os_owner(),
+        cx.session.is_some(),
+        true,
+    )
+}
+
+/// A running host keeps the configuration it started with, so registration
+/// takes setup's exclusive home lease: no host runs or starts until the new
+/// entry is published. Before first setup this creates the home as init would.
+fn exclusive_home(cx: &Bootstrap) -> Result<DirectLease> {
+    let files = Files::create(&cx.home).map_err(|e| store_error(&e))?;
+    let identity = LeaseIdentity {
+        store: None,
+        generation: 1,
+        mode: LeaseMode::DirectClient,
+    };
+    DirectLease::acquire_setup(files, identity)
+        .map_err(|e| store_error(&e))?
+        .ok_or_else(|| {
+            SeError::new(se_types::Detail::StateConflict(
+                se_types::details::StateConflict {
+                    subject: "harness registration".into(),
+                    reason: "a running host or another setup holds this home's lease; a running host would not see the new harness until it restarts".into(),
+                    next_step: "Wait for any setup or removal to finish, or run se down with the same --home; then retry se harness add and run se up".into(),
+                },
+            ))
+        })
+}
+
+/// Appends `[harnesses.NAME]` and its permission mapping after the existing
+/// bytes, which stay exactly as the owner wrote them. The caller decodes the
+/// result, so a file that already defines `harnesses` another way refuses.
+fn with_harness(text: &str, name: &str, descriptor: &HarnessDescriptor) -> Result<String> {
+    let entry = BTreeMap::from([("harnesses", BTreeMap::from([(name, descriptor)]))]);
+    let encoded = toml::to_string(&entry)
+        .map_err(|e| scope::unreadable("harness encoding", &e.to_string()))?;
+    let mut updated = text.to_owned();
+    if !updated.is_empty() {
+        if !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        updated.push('\n');
+    }
+    updated.push_str(&encoded);
+    Ok(updated)
+}
+
+fn identity(descriptor: &HarnessDescriptor) -> Result<serde_json::Value> {
+    serde_json::to_value(descriptor)
+        .map_err(|e| scope::unreadable("harness identity", &e.to_string()))
+}
+
+/// The command must already be installed: a descriptor nothing can run would
+/// only fail later, at an agent's first launch.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn resolve_command(configuration: &ConfigFile, name: &str) -> Result<()> {
+    se_host::resolve_provider_executable(configuration, se_types::Provider::Acp, None, Some(name))
+        .map(drop)
+        // The launch-time remedy edits a saved entry; this one was never written.
+        .map_err(|mut error| {
+            error.body = error.body.with_remedy(se_types::Remedy {
+                text: "Install the command, or pass its absolute path (or an interpreter with the script as the first --arg) to --command, then run se harness add again; nothing was written.".into(),
+                command: Some(se_types::Cmd::Manual),
+            });
+            error
+        })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn resolve_command(_: &ConfigFile, _: &str) -> Result<()> {
+    Ok(())
 }

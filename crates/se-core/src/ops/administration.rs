@@ -116,3 +116,91 @@ impl Validate for ConfigList {
         Ok(())
     }
 }
+/// Owner registration of a protocol harness descriptor in the state home's
+/// `config.toml`. The owner CLI route edits the file; the kernel never plans it.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HarnessAdd {
+    /// New `[harnesses.NAME]` entry; built-in provider names are refused.
+    pub name: String,
+    /// Native executable that speaks ACP version 1 over standard input and output.
+    pub command: String,
+    /// Arguments passed to the executable without a shell.
+    #[serde(default)]
+    pub arguments: Vec<String>,
+    /// Environment variable names the harness may read from the owner's environment.
+    #[serde(default)]
+    pub environment: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct HarnessAddOutput {
+    pub name: String,
+    pub command: String,
+    pub arguments: Vec<String>,
+    pub environment: Vec<String>,
+    /// Launch profile the new descriptor maps, from `[providers.acp].profile`.
+    pub profile: String,
+    /// The configuration file that now holds the descriptor.
+    pub configuration: String,
+}
+
+impl Validate for HarnessAdd {
+    fn validate(&self) -> Result<()> {
+        se_config::config_policy::harness::validate_name(&self.name)?;
+        if se_types::Provider::from_id(&self.name).is_some() {
+            return Err(SeError::invalid(
+                "harness name",
+                "a name other than a built-in provider; built-in providers need no descriptor",
+            ));
+        }
+        bounded("harness command", &self.command, 4096, false)?;
+        if self.arguments.len() > 128 || self.environment.len() > 128 {
+            return Err(SeError::invalid(
+                "harness descriptor",
+                "at most 128 arguments and 128 environment variable names",
+            ));
+        }
+        self.environment
+            .iter()
+            .try_for_each(|name| environment_name(name))
+    }
+}
+
+/// `--env` names a variable the agent may read; its value stays in the
+/// owner's environment and never enters `config.toml`. A rejected argument may
+/// hold a secret, so a refusal never repeats it: at most a valid name before `=`.
+fn environment_name(name: &str) -> Result<()> {
+    use se_config::config_policy::{reserved_environment_name, valid_environment_name as valid};
+    if let Some((before, _)) = name.split_once('=') {
+        let shown = if valid(before) {
+            format!("pass {before} without =value")
+        } else {
+            "pass only the variable name".to_owned()
+        };
+        return Err(SeError::invalid(
+            "--env",
+            &format!(
+                "a variable name such as OPENAI_API_KEY, not NAME=value; values stay in your environment, so {shown}. The value given was not saved or shown"
+            ),
+        ));
+    }
+    if !valid(name) {
+        return Err(SeError::invalid(
+            "--env",
+            &format!(
+                "a variable name of letters, digits and underscores, at most 128 bytes; the {}-byte argument given is not one and was not saved or shown",
+                name.len()
+            ),
+        ));
+    }
+    if reserved_environment_name(name) {
+        return Err(SeError::invalid(
+            "--env",
+            &format!(
+                "{name} is reserved for StateEngine's own session and machine authority and is never passed to an agent; name the agent's own variables instead"
+            ),
+        ));
+    }
+    Ok(())
+}

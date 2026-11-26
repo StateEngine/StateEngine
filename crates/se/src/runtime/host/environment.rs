@@ -2,11 +2,22 @@
 //! configuration, plus native protected temporary storage. Fleet and session
 //! authority never crosses this environment boundary.
 use super::*;
+use sha2::Digest;
 
+/// The identity of a configuration selection. The host compares it once it holds
+/// the home, so startup never serves an older file than its starter chose.
+pub(super) fn selection(value: &se_config::config_policy::ConfigFile) -> Result<String> {
+    let bytes = serde_json::to_vec(value).map_err(|error| {
+        se_core::scope::unreadable("host configuration identity", &error.to_string())
+    })?;
+    Ok(se_types::hex_lower(&sha2::Sha256::digest(&bytes)))
+}
+
+/// The host environment and the identity of the configuration it was chosen from.
 pub(super) fn prepare(
     files: &se_proc::NativeStateFiles,
     configuration: &std::path::Path,
-) -> Result<se_proc::Environment> {
+) -> Result<(se_proc::Environment, String)> {
     let temporary = files.root().join("tmp");
     files.prepare_directory(&temporary).map_err(|error| {
         se_core::scope::unreadable("protected host temporary directory", &error.to_string())
@@ -77,5 +88,8 @@ pub(super) fn prepare(
             ("TMP".into(), temporary.into_os_string()),
         ]);
     }
-    Ok(se_proc::Environment { entries })
+    Ok((
+        se_proc::Environment { entries },
+        selection(&selected.value)?,
+    ))
 }
