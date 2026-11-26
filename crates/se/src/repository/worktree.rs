@@ -1,0 +1,141 @@
+//! Native CLI route for `se worktree remove <PATH>`.
+//! Runs directly against the local filesystem and Git metadata without opening
+//! or requiring a StateEngine store, while enforcing the non-following
+//! link/junction guard before any deletion.
+use crate::bootstrap::Bootstrap;
+use se_core::ops::{AnyOutput, WorktreeRemove, WorktreeRemoveOutput, inputs::Validate};
+use se_repository::worktree::{WorktreeRemoveError, remove_worktree};
+use se_types::{Detail, Result, SeError, details};
+use std::path::PathBuf;
+
+pub(crate) fn remove(cx: &Bootstrap, input: WorktreeRemove) -> Result<AnyOutput> {
+    input.validate()?;
+    let requested = PathBuf::from(&input.path);
+    let target = if requested.is_absolute() {
+        requested
+    } else {
+        cx.cwd.join(requested)
+    };
+    let report = remove_worktree(&target, input.force).map_err(map_error)?;
+    Ok(AnyOutput::from(WorktreeRemoveOutput {
+        path: report.path.display().to_string(),
+        worktree_name: report.worktree_name,
+        common_dir: report.common_dir.display().to_string(),
+        forced: report.forced,
+        pruned: report.pruned,
+    }))
+}
+
+fn map_error(error: WorktreeRemoveError) -> SeError {
+    match error {
+        WorktreeRemoveError::Absent { path } => refusal(
+            "worktree path",
+            &format!("{} does not exist", path.display()),
+            "Check active worktrees with `git worktree list` and pass an existing linked worktree path.",
+        ),
+        WorktreeRemoveError::Unreadable { entries, total } => {
+            let listed = format_entries(&entries, total);
+            SeError::new(Detail::SourceUnreadable(details::SourceUnreadable {
+                subject: "worktree link inspection".into(),
+                reason: format!("unreadable path(s) prevented link-guard verification: {listed}"),
+                next_step: "Restore read permissions on the listed paths so the worktree can be inspected for links/junctions before removal.".into(),
+            }))
+        }
+        WorktreeRemoveError::LinksDetected {
+            links,
+            total_links,
+            unreadable,
+            total_unreadable,
+        } => {
+            let listed = format_entries(&links, total_links);
+            let mut reason =
+                format!("detected symbolic link(s) or junction/reparse point(s): {listed}");
+            if total_unreadable > 0 {
+                reason.push_str(&format!(
+                    "; also found unreadable path(s): {}",
+                    format_entries(&unreadable, total_unreadable)
+                ));
+            }
+            refusal(
+                "worktree link guard",
+                &reason,
+                "Unlink or remove the listed symlinks/junctions manually (never recursively delete through them), then retry `se worktree remove`; `--force` never bypasses the link guard.",
+            )
+        }
+        WorktreeRemoveError::NotLinkedWorktree { path, reason } => refusal(
+            "worktree target",
+            &format!("{}: {reason}", path.display()),
+            "Pass the root directory of a linked Git worktree from `git worktree list`; primary repositories and unrelated directories are refused.",
+        ),
+        WorktreeRemoveError::Locked { path, reason } => {
+            let detail = reason
+                .as_deref()
+                .filter(|r| !r.is_empty())
+                .map(|r| format!(" ({r})"))
+                .unwrap_or_default();
+            refusal(
+                "locked worktree",
+                &format!("{} is locked{detail}", path.display()),
+                "Unlock it with `git worktree unlock <PATH>` first, then retry `se worktree remove`.",
+            )
+        }
+        WorktreeRemoveError::Dirty {
+            path,
+            count,
+            sample,
+        } => {
+            let preview = if sample.is_empty() {
+                String::new()
+            } else {
+                let suffix = if count > sample.len() {
+                    format!(", ... (+{} more)", count - sample.len())
+                } else {
+                    String::new()
+                };
+                format!(" ({}{suffix})", sample.join(", "))
+            };
+            refusal(
+                "dirty worktree",
+                &format!(
+                    "{} has {count} uncommitted or untracked change(s){preview}",
+                    path.display()
+                ),
+                "Commit, stash, or discard changes first, or pass `--force` to remove a dirty worktree (links/junctions are still refused).",
+            )
+        }
+        WorktreeRemoveError::DeleteFailed { path, reason } => refusal(
+            "worktree deletion",
+            &format!("failed to remove {}: {reason}", path.display()),
+            "Close any processes holding open handles in the worktree and check permissions, then retry.",
+        ),
+        WorktreeRemoveError::PruneFailed {
+            worktree_name,
+            reason,
+        } => refusal(
+            "worktree metadata prune",
+            &format!(
+                "worktree directory was removed, but pruning Git metadata for '{worktree_name}' failed: {reason}"
+            ),
+            "Run `git worktree prune` in the primary repository to clean up stale metadata.",
+        ),
+    }
+}
+
+fn format_entries(entries: &[(PathBuf, String)], total: usize) -> String {
+    let mut parts: Vec<String> = entries
+        .iter()
+        .map(|(path, detail)| format!("{} ({detail})", path.display()))
+        .collect();
+    if total > entries.len() {
+        parts.push(format!("... (+{} more)", total - entries.len()));
+    }
+    parts.join(", ")
+}
+
+fn refusal(subject: &str, reason: &str, next_step: &str) -> SeError {
+    SeError::new(Detail::RepoInvalid(details::RepoInvalid {
+        subject: subject.into(),
+        reason: reason.into(),
+        next_step: next_step.into(),
+    }))
+}

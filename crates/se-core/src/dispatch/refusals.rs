@@ -32,6 +32,13 @@ pub(super) fn project_move_refused() -> SeError {
     )
 }
 
+pub(super) fn worktree_remove_refused() -> SeError {
+    SeError::invalid(
+        "worktree remove adapter",
+        "the local CLI with the non-following filesystem link guard",
+    )
+}
+
 pub(super) fn metadata_refused() -> SeError {
     scope::unreadable(
         "metadata dispatch",

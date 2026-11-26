@@ -370,6 +370,10 @@ fn decode_project(
             root: required(m, "root")?,
             idempotency_key: key()?,
         }),
+        "worktree.remove" => AnyOp::WorktreeRemove(WorktreeRemove {
+            path: required(m, "path")?,
+            force: flag(m, "force"),
+        }),
         "project.remove" => AnyOp::ProjectRemove(ProjectRemove {
             all: flag(m, "all"),
             keep_integrations: flag(m, "keep-integrations"),

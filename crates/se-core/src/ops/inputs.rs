@@ -345,3 +345,22 @@ impl Validate for MessageList {
 }
 macro_rules! keyed { ($($ty:ty),+) => { $(impl Validate for $ty { fn validate(&self)->Result<()> { Ok(()) } })+ }; }
 keyed!(RuntimeUp, RuntimeDown, Uninstall);
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorktreeRemove {
+    pub path: String,
+    #[serde(default)]
+    pub force: bool,
+}
+impl Validate for WorktreeRemove {
+    fn validate(&self) -> Result<()> {
+        if self.path.trim().is_empty() || self.path.contains('\0') || self.path.len() > 4096 {
+            return Err(SeError::invalid(
+                "worktree path",
+                "a non-empty local path without NUL bytes (at most 4096 bytes)",
+            ));
+        }
+        Ok(())
+    }
+}

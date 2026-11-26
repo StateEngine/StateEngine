@@ -1,4 +1,5 @@
-//! Read-only Git observation and repository identity, independent of CLI routing.
+//! Git observation, repository identity, and safe linked worktree removal.
 pub(crate) mod identity;
 mod pipe;
 pub(crate) mod state;
+pub(crate) mod worktree;

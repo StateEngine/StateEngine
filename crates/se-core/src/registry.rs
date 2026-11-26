@@ -77,6 +77,7 @@ pub enum HumanKind {
     Principal,
     Init,
     ProjectMove,
+    WorktreeRemove,
     Status,
     Diagnosis,
     Repair,
