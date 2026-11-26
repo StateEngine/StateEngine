@@ -128,6 +128,53 @@ pub(crate) async fn reconcile_expired_leases(
     Ok(reconciled)
 }
 
+async fn ensure_agent_clear_for_external(
+    router: &HostedRouter,
+    project_id: &ProjectId,
+    agent_id: &AgentId,
+    deadline: &Deadline,
+) -> Result<()> {
+    let _ = reconcile_expired_leases(router, Some(project_id)).await;
+    let context = router.context.clone();
+    let project = project_id.clone();
+    let agent = agent_id.clone();
+    let live_check = router
+        .execution
+        .blocking
+        .run_owned(deadline, move || {
+            let phase = context.reads.read_phase().map_err(|e| store_error(&e))?;
+            if let Err(error) = context.check_generation(&phase) {
+                return crate::runtime::executor::close_read(Err(error), phase.close());
+            }
+            commit::inspect_live_seat(
+                phase,
+                &project,
+                &context.owner,
+                context.generation.get(),
+                &agent,
+            )
+        })
+        .await?;
+    match live_check {
+        commit::LiveSeatCheck::Clear => Ok(()),
+        commit::LiveSeatCheck::StaleExternal(stale, reason) => {
+            commit::commit_revocation(
+                router,
+                project_id,
+                &stale.session_id,
+                stale.session_rev,
+                stale.cred,
+                reason,
+                deadline,
+            )
+            .await
+        }
+        commit::LiveSeatCheck::LiveConflict(remedy) => {
+            Err(SeError::invalid("external seat approval", remedy))
+        }
+    }
+}
+
 /// Owner approves a pending claim once. Atomically commits the external session
 /// and credential in the host writer (arbitrated by per-agent exclusivity),
 /// then delivers the capability exclusively to the waiting bridge connection.
@@ -143,49 +190,7 @@ pub(crate) async fn approve_claim(
         .execution
         .external
         .peek_claim(claim_id, host_generation)?;
-    let _ = reconcile_expired_leases(router, Some(&peeked.project_id)).await;
-    // Check for an existing live session or crash-recovered stale external session
-    // before consuming the claim.
-    let live_check = {
-        let context = router.context.clone();
-        let project_id = peeked.project_id.clone();
-        let agent_id = peeked.agent_id.clone();
-        router
-            .execution
-            .blocking
-            .run_owned(deadline, move || {
-                let phase = context.reads.read_phase().map_err(|e| store_error(&e))?;
-                if let Err(error) = context.check_generation(&phase) {
-                    return crate::runtime::executor::close_read(Err(error), phase.close());
-                }
-                commit::inspect_live_seat(
-                    phase,
-                    &project_id,
-                    &context.owner,
-                    context.generation.get(),
-                    &agent_id,
-                )
-            })
-            .await?
-    };
-    match live_check {
-        commit::LiveSeatCheck::Clear => {}
-        commit::LiveSeatCheck::StaleExternal(stale, reason) => {
-            commit::commit_revocation(
-                router,
-                &peeked.project_id,
-                &stale.session_id,
-                stale.session_rev,
-                stale.cred,
-                reason,
-                deadline,
-            )
-            .await?;
-        }
-        commit::LiveSeatCheck::LiveConflict(remedy) => {
-            return Err(SeError::invalid("external seat approval", remedy));
-        }
-    }
+    ensure_agent_clear_for_external(router, &peeked.project_id, &peeked.agent_id, deadline).await?;
     let consumed = router
         .execution
         .external
