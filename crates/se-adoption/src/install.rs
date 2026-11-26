@@ -100,14 +100,8 @@ pub fn install(
     super::publish_for(home, kind, &registration)?;
     let fresh = matches!(write_plan, WritePlan::Fresh(_));
     let changed = match write_plan {
-        WritePlan::Fresh(planned) => super::settings::commit(&path, planned)?,
-        WritePlan::Upgrade(planned) => {
-            let changed = super::settings::commit(&path, planned)?;
-            if let Some(upgrade) = registration.upgrade.as_mut() {
-                upgrade.mark_written();
-                super::publish_for(home, kind, &registration)?;
-            }
-            changed
+        WritePlan::Fresh(planned) | WritePlan::Upgrade(planned) => {
+            super::settings::commit(&path, planned)?
         }
         WritePlan::None => false,
     };
@@ -115,10 +109,10 @@ pub fn install(
     let installed = absent.is_empty();
     let unfinished = !registration.installed
         || registration.discovery_refusal.is_some()
-        || registration.upgrade.as_ref().is_some_and(|u| {
-            u.entries()
-                .any(|entry| plan.required.contains(entry) && absent.contains(entry))
-        });
+        || registration
+            .upgrade
+            .iter()
+            .any(|entry| plan.required.contains(entry) && absent.contains(entry));
     if unfinished && !installed {
         return Err(missing_resumed_hooks(&path, &absent));
     }
@@ -184,16 +178,16 @@ fn confirm_discovery(
 ) -> Result<()> {
     let kind = plan.kind;
     let adapter = kind.adapter();
-    let pending_upgrade = match &registration.upgrade {
-        Some(upgrade) if installed => {
-            let entries: Vec<_> = upgrade.entries().cloned().collect();
-            let absent = super::settings::missing(path, &entries)?;
-            entries
-                .into_iter()
-                .filter(|entry| !absent.contains(entry))
-                .collect()
-        }
-        _ => Vec::new(),
+    let pending_upgrade = if installed && !registration.upgrade.is_empty() {
+        let absent = super::settings::missing(path, &registration.upgrade)?;
+        registration
+            .upgrade
+            .iter()
+            .filter(|entry| !absent.contains(entry))
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
     };
     let discovery = if installed {
         if fresh {
@@ -220,8 +214,8 @@ fn confirm_discovery(
         registration.installed = true;
         finish = true;
     }
-    if installed && registration.upgrade.is_some() {
-        registration.upgrade = None;
+    if installed && !registration.upgrade.is_empty() {
+        registration.upgrade.clear();
         finish = true;
     }
     if finish {
@@ -289,7 +283,7 @@ fn registration(
                 discovery: None,
                 discovery_refusal: None,
                 installation: Some(uuid::Uuid::new_v4().to_string()),
-                upgrade: None,
+                upgrade: Vec::new(),
             };
             (registration, WritePlan::Fresh(planned))
         }
@@ -316,35 +310,16 @@ fn registration(
 }
 
 /// Retire pending upgrade entries that are absent and no longer requested.
-/// Published `awaiting_discovery` entries remain in `saved.hooks` to preserve
-/// owner-removal custody; unpublished `writing` entries leave custody.
+/// Entries remain in `saved.hooks` regardless of whether a prior interrupted
+/// write landed, preserving owner-removal custody across option toggles.
 fn prune_upgrade_journal(path: &Path, plan: &Plan, saved: &mut super::Registration) -> Result<()> {
-    let Some(upgrade) = saved.upgrade.as_mut() else {
+    if saved.upgrade.is_empty() {
         return Ok(());
-    };
-    let entries: Vec<_> = upgrade.entries().cloned().collect();
-    let absent = super::settings::missing(path, &entries)?;
-    upgrade
-        .awaiting_discovery
+    }
+    let absent = super::settings::missing(path, &saved.upgrade)?;
+    saved
+        .upgrade
         .retain(|entry| contains_hook(&plan.entries, entry) || !absent.contains(entry));
-    let dropped: Vec<_> = upgrade
-        .writing
-        .iter()
-        .filter(|entry| !contains_hook(&plan.entries, entry) && absent.contains(entry))
-        .cloned()
-        .collect();
-    if !dropped.is_empty() {
-        upgrade.writing.retain(|entry| !dropped.contains(entry));
-        saved.hooks.retain(|entry| !dropped.contains(entry));
-        let hooks = &saved.hooks;
-        saved
-            .layout
-            .created_events
-            .retain(|event| hooks.iter().any(|(known, _)| known == event));
-    }
-    if upgrade.is_empty() {
-        saved.upgrade = None;
-    }
     Ok(())
 }
 
@@ -362,8 +337,8 @@ fn plan_upgrade(path: &Path, plan: &Plan, saved: &mut super::Registration) -> Re
             contains_hook(&saved.hooks, entry)
                 && !saved
                     .upgrade
-                    .as_ref()
-                    .is_some_and(|u| u.entries().any(|pending| same_hook(pending, entry)))
+                    .iter()
+                    .any(|pending| same_hook(pending, entry))
         })
         .cloned()
         .collect();
@@ -387,11 +362,8 @@ fn plan_upgrade(path: &Path, plan: &Plan, saved: &mut super::Registration) -> Re
         if !saved.hooks.contains(entry) {
             saved.hooks.push(entry.clone());
         }
-    }
-    let upgrade = saved.upgrade.get_or_insert_with(Default::default);
-    for entry in &planned.entries {
-        if !upgrade.contains(entry) {
-            upgrade.writing.push(entry.clone());
+        if !saved.upgrade.contains(entry) {
+            saved.upgrade.push(entry.clone());
         }
     }
     saved.layout.created_file |= planned.layout.created_file;

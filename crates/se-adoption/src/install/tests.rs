@@ -65,7 +65,7 @@ fn seed_installed(
         discovery: None,
         discovery_refusal: None,
         installation: Some("test-inst".into()),
-        upgrade: None,
+        upgrade: Vec::new(),
     };
     super::super::settings::commit(path, planned)?;
     Ok(reg)
@@ -81,23 +81,18 @@ fn atlas_disable_after_written_preserves_owner_removal_across_reenable() -> Chec
     let mut saved = seed_installed(&settings, &base_plan)?;
     let base_bytes = std::fs::read(&settings)?;
 
-    // Enable Atlas -> upgrade writes Atlas hook and marks it awaiting discovery.
+    // Enable Atlas -> upgrade writes Atlas hook and records it in `upgrade`.
     let atlas_plan = plan_for(Kind::Claude, &exe, &home, &dir.0, true)?;
     let WritePlan::Upgrade(planned) = plan_upgrade(&settings, &atlas_plan, &mut saved)? else {
         return Err("expected WritePlan::Upgrade for new Atlas hook".into());
     };
     super::super::settings::commit(&settings, planned)?;
-    saved
-        .upgrade
-        .as_mut()
-        .ok_or("missing upgrade journal")?
-        .mark_written();
 
     // Owner removes Atlas hook before discovery finishes, then disables Atlas.
     std::fs::write(&settings, &base_bytes)?;
     let plan_off = plan_upgrade(&settings, &base_plan, &mut saved)?;
     assert!(matches!(plan_off, WritePlan::None));
-    assert!(saved.upgrade.is_none(), "retired discovery work");
+    assert!(saved.upgrade.is_empty(), "retired discovery work");
     assert_eq!(
         saved.hooks.len(),
         8,
@@ -112,30 +107,33 @@ fn atlas_disable_after_written_preserves_owner_removal_across_reenable() -> Chec
 }
 
 #[test]
-fn unpublished_writing_entry_leaves_custody_when_disabled() -> Check {
-    let dir = scratch("writing-drop")?;
+fn interrupted_upgrade_unknown_outcome_preserves_custody_across_toggle() -> Check {
+    let dir = scratch("unknown-outcome")?;
     let home = dir.0.join("home");
     let settings = dir.0.join("settings.json");
     let exe = dir.0.join("se");
     let base_plan = plan_for(Kind::Claude, &exe, &home, &dir.0, false)?;
     let mut saved = seed_installed(&settings, &base_plan)?;
 
-    // Journal upgrade in `writing` phase without committing settings.
+    // Journal upgrade before crash: whether settings::commit landed is unknown.
     let atlas_plan = plan_for(Kind::Claude, &exe, &home, &dir.0, true)?;
     let WritePlan::Upgrade(_) = plan_upgrade(&settings, &atlas_plan, &mut saved)? else {
         return Err("expected WritePlan::Upgrade".into());
     };
     assert_eq!(saved.hooks.len(), 8);
 
-    // Disabling Atlas drops the never-written entry from custody.
+    // Disabling Atlas retires pending upgrade work but preserves custody in
+    // `saved.hooks` so a possibly-published hook removed by the owner is never
+    // silently re-added later.
     let plan_off = plan_upgrade(&settings, &base_plan, &mut saved)?;
     assert!(matches!(plan_off, WritePlan::None));
-    assert!(saved.upgrade.is_none());
-    assert_eq!(saved.hooks.len(), 7);
+    assert!(saved.upgrade.is_empty());
+    assert_eq!(saved.hooks.len(), 8);
 
-    // Re-enabling Atlas now plans installing it cleanly.
+    // Re-enabling Atlas must NOT re-append the journaled hook.
     let plan_back = plan_upgrade(&settings, &atlas_plan, &mut saved)?;
-    assert!(matches!(plan_back, WritePlan::Upgrade(_)));
+    assert!(matches!(plan_back, WritePlan::None));
+    assert_eq!(saved.hooks.len(), 8);
     Ok(())
 }
 

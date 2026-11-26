@@ -244,37 +244,6 @@ pub struct Project {
     #[serde(default)]
     pub discovery: Option<[u8; 32]>,
 }
-#[derive(Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UpgradeJournal {
-    /// Hooks whose settings write was journaled; whether it landed is unknown
-    /// if interrupted, so retries never re-write provider settings for them.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub writing: Vec<(String, serde_json::Value)>,
-    /// Hooks whose settings write completed and are awaiting provider
-    /// discovery/trust confirmation.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub awaiting_discovery: Vec<(String, serde_json::Value)>,
-}
-#[cfg(feature = "listener")]
-impl UpgradeJournal {
-    pub(crate) fn is_empty(&self) -> bool {
-        self.writing.is_empty() && self.awaiting_discovery.is_empty()
-    }
-    pub(crate) fn entries(&self) -> impl Iterator<Item = &(String, serde_json::Value)> {
-        self.writing.iter().chain(&self.awaiting_discovery)
-    }
-    pub(crate) fn contains(&self, entry: &(String, serde_json::Value)) -> bool {
-        self.writing.contains(entry) || self.awaiting_discovery.contains(entry)
-    }
-    pub(crate) fn mark_written(&mut self) {
-        for entry in self.writing.drain(..) {
-            if !self.awaiting_discovery.contains(&entry) {
-                self.awaiting_discovery.push(entry);
-            }
-        }
-    }
-}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Registration {
@@ -293,10 +262,10 @@ pub struct Registration {
     #[serde(default)]
     pub installation: Option<String>,
     /// Hooks newly added to an existing adoption whose write or provider trust
-    /// has not yet completed. Retained in `hooks` for uninstall custody while
-    /// pending and cleared only once discovery succeeds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub upgrade: Option<UpgradeJournal>,
+    /// has not yet completed. Retained in `hooks` for uninstall and removal
+    /// custody while pending and cleared only once discovery succeeds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upgrade: Vec<(String, serde_json::Value)>,
 }
 impl Registration {
     pub fn project(&self, cwd: &Path) -> Result<Option<&Project>> {
