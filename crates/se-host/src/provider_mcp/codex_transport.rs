@@ -13,6 +13,9 @@ struct Entry {
     command: Option<String>,
     args: Vec<String>,
     url: bool,
+    enabled: bool,
+    /// Fields present but not checked here, in name order.
+    unchecked: Vec<String>,
 }
 
 /// What one file says about the server.
@@ -103,8 +106,34 @@ fn user_entry(file: &Path, entry: &Entry) -> Vec<Finding> {
             severity: Severity::Blocking,
             text: format!(
                 "{shown} sets both `command` and `url` for `[mcp_servers.stateengine]`, which \
-                 Codex refuses. Run `codex mcp remove stateengine`, then run `se init` again in \
-                 your project."
+                 Codex refuses, so `codex mcp remove` cannot load it either. Delete the `url` \
+                 line, or the whole table, from {shown}, then run `se init` again in your \
+                 project."
+            ),
+        });
+    }
+    if !entry.enabled {
+        findings.push(Finding {
+            severity: Severity::Problem,
+            text: format!(
+                "{shown} sets `enabled = false` for `[mcp_servers.stateengine]`, so Codex agents \
+                 get no StateEngine tools. Set it to true, or delete that table from {shown} and \
+                 run `se init` again in your project."
+            ),
+        });
+    }
+    if !entry.unchecked.is_empty() {
+        findings.push(Finding {
+            severity: Severity::Unmeasured,
+            text: format!(
+                "{shown} also sets {} for `[mcp_servers.stateengine]`, which StateEngine does \
+                 not check; if Codex refuses the server, inspect those fields there.",
+                entry
+                    .unchecked
+                    .iter()
+                    .map(|key| format!("`{key}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         });
     }
@@ -175,13 +204,21 @@ fn project(file: &Path, state: &State) -> Option<Finding> {
     })
 }
 
+/// A `--home DIR` or `--home=DIR` argument whose directory no longer exists.
 fn missing_home(entry: &Entry) -> Option<PathBuf> {
-    entry
-        .args
-        .windows(2)
-        .find(|pair| pair[0] == "--home")
-        .map(|pair| PathBuf::from(&pair[1]))
-        .filter(|home| !home.is_dir())
+    let mut args = entry.args.iter();
+    let mut home = None;
+    while let Some(arg) = args.next() {
+        if arg == "--home" {
+            home = args.next().map(PathBuf::from);
+        } else if let Some(value) = arg.strip_prefix("--home=") {
+            home = Some(PathBuf::from(value));
+        }
+        if home.is_some() {
+            break;
+        }
+    }
+    home.filter(|home| !home.is_dir())
 }
 
 /// Reads the user file under the Codex home and each project `.codex/config.toml` from
@@ -236,29 +273,48 @@ fn inspect(file: &Path) -> State {
     }
 }
 
-/// The table's fields, refusing any of the wrong type rather than dropping it.
+/// The table's fields, refusing any of the wrong type rather than dropping it. Fields
+/// this does not know are kept by name, so a check never claims more than it read.
 fn entry(server: &toml::Value) -> std::result::Result<Entry, String> {
+    use toml::Value::{Array, Boolean, String as Text, Table};
     let server = server.as_table().ok_or("`stateengine` is not a table")?;
-    let command = match server.get("command") {
-        None => None,
-        Some(toml::Value::String(command)) => Some(command.clone()),
-        Some(_) => return Err("`command` is not a string".into()),
-    };
-    let args = match server.get("args") {
-        None => Vec::new(),
-        Some(toml::Value::Array(args)) => args
+    let strings = |value: &toml::Value| match value {
+        Array(items) => items
             .iter()
-            .map(|arg| arg.as_str().map(str::to_owned))
-            .collect::<Option<_>>()
-            .ok_or("`args` holds a value that is not a string")?,
-        Some(_) => return Err("`args` is not an array of strings".into()),
+            .map(|item| item.as_str().map(str::to_owned))
+            .collect::<Option<Vec<_>>>(),
+        _ => None,
     };
-    let url = match server.get("url") {
-        None => false,
-        Some(toml::Value::String(_)) => true,
-        Some(_) => return Err("`url` is not a string".into()),
+    let mut entry = Entry {
+        command: None,
+        args: Vec::new(),
+        url: false,
+        enabled: true,
+        unchecked: Vec::new(),
     };
-    Ok(Entry { command, args, url })
+    for (key, value) in server {
+        match (key.as_str(), value) {
+            ("command", Text(command)) => entry.command = Some(command.clone()),
+            ("args", value) => {
+                entry.args = strings(value).ok_or("`args` is not an array of strings")?;
+            }
+            ("url", Text(_)) => entry.url = true,
+            ("enabled", Boolean(enabled)) => entry.enabled = *enabled,
+            ("cwd", Text(_)) => {}
+            ("env_vars", value) => {
+                strings(value).ok_or("`env_vars` is not an array of strings")?;
+            }
+            ("env", Table(env)) if env.values().all(toml::Value::is_str) => {}
+            ("command" | "url" | "cwd", _) => return Err(format!("`{key}` is not a string")),
+            ("enabled", _) => return Err("`enabled` is not true or false".into()),
+            ("env", _) => return Err("`env` is not a table of strings".into()),
+            _ => entry.unchecked.push(key.clone()),
+        }
+    }
+    if entry.enabled && entry.command.is_none() && !entry.url {
+        return Err("it sets neither `command` nor `url`".into());
+    }
+    Ok(entry)
 }
 
 /// A command Codex can start: a path with execute access, or a name found on PATH.
