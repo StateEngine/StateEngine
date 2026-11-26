@@ -29,11 +29,9 @@ listener = [
 ]
 secode = ["listener", "dep:secode-stateengine-api"]
 remote = []
-channels = ["listener", "dep:se-channels"]
 
 [dependencies]
 se-config = { path = "../se-config" }
-se-channels = { path = "../se-channels", optional = true }
 se-core = { path = "../se-core" }
 se-mcp = { path = "../se-mcp" }
 se-proc = { path = "../se-proc" }

@@ -11,8 +11,6 @@ mod acp_session_independent;
 #[path = "../tests/support/acp_transport_independent.rs"]
 mod acp_transport_independent;
 pub mod adoption;
-#[cfg(feature = "channels")]
-pub mod channels;
 pub mod client;
 pub mod host_process;
 pub mod remote;

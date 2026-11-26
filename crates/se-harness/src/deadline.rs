@@ -143,13 +143,6 @@ impl Deadline {
     }
 }
 
-#[cfg(feature = "channels")]
-impl se_channels::AsChannelDeadline for Deadline {
-    fn as_channel_deadline(&self) -> se_channels::ChannelDeadline {
-        se_channels::ChannelDeadline::from_parts(self.at, self.budget, Arc::clone(&self.cancelled))
-    }
-}
-
 #[cfg(feature = "listener")]
 impl se_remote::broker::Budget for Deadline {
     fn remaining(&self) -> Result<Duration> {

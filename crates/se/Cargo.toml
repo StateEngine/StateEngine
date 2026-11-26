@@ -7,11 +7,10 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-default = ["channels"]
+default = []
 rebind-fixture = []
 remote = ["se-host/remote", "se-remote-cli/remote"]
 import = ["se-host/import", "se-core/import", "se-cli-spec/import", "se-render/import"]
-channels = ["se-host/channels"]
 secode = ["se-cli-spec/secode", "se-core/secode", "se-host/secode"]
 
 [dependencies]

@@ -7,7 +7,6 @@ impl HostServeExit {
         &mut self,
         mut tasks: JoinSet<Result<ConnectionEnd>>,
         shutdown: &watch::Sender<Option<Deadline>>,
-        #[cfg(feature = "channels")] channel_task: tokio::task::JoinHandle<Result<()>>,
     ) {
         self.runtime.fenced.store(true, Ordering::Release);
         if let Err(error) = self.runtime.execution.mail_waits.close() {
@@ -34,19 +33,6 @@ impl HostServeExit {
         ) && let Err(error) = custody.begin_shutdown(deadline).await
         {
             self.failure.get_or_insert(error);
-        }
-        #[cfg(feature = "channels")]
-        match channel_task.await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                self.failure.get_or_insert(error);
-            }
-            Err(error) => {
-                self.failure.get_or_insert(se_core::scope::unreadable(
-                    "channel receiver",
-                    &error.to_string(),
-                ));
-            }
         }
         while let Some(joined) = tasks.join_next().await {
             match joined {

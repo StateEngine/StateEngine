@@ -1706,28 +1706,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "se-channels"
-version = "0.1.0"
-dependencies = [
- "base64",
- "futures-util",
- "hmac",
- "reqwest",
- "se-config",
- "se-core",
- "se-proc",
- "se-store",
- "se-types",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "tokio",
- "tokio-tungstenite",
- "zeroize",
-]
-
-[[package]]
 name = "se-cli-spec"
 version = "0.1.0"
 dependencies = [
@@ -1787,7 +1765,6 @@ dependencies = [
  "hyper",
  "hyper-util",
  "reqwest",
- "se-channels",
  "se-config",
  "se-core",
  "se-local-socket",
@@ -1851,7 +1828,6 @@ dependencies = [
  "se-agent-observation",
  "se-atlas-host",
  "se-atlas-records",
- "se-channels",
  "se-cli-spec",
  "se-config",
  "se-core",

@@ -51,11 +51,7 @@ impl Drop for Work {
 }
 /// The existing native/channel idle window restarts after client work closes.
 /// This shares the existing idle timer and adds no task or network subscription.
-pub(crate) async fn idle(
-    waits: Arc<Waits>,
-    activity: &mut tokio::sync::watch::Receiver<u32>,
-    #[cfg(feature = "channels")] channels: Arc<crate::channels::Channels>,
-) {
+pub(crate) async fn idle(waits: Arc<Waits>, activity: &mut tokio::sync::watch::Receiver<u32>) {
     loop {
         let changed = waits.client_activity.changed.notified();
         tokio::pin!(changed);
@@ -64,9 +60,6 @@ pub(crate) async fn idle(
             changed.await;
             continue;
         }
-        #[cfg(feature = "channels")]
-        let expiry = crate::channels::idle(activity, channels.clone());
-        #[cfg(not(feature = "channels"))]
         let expiry = super::serve::idle_expiry(activity);
         tokio::select! { biased;
             _ = changed => (),

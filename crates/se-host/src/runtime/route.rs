@@ -59,8 +59,6 @@ pub struct AdmittedExchange {
     call: Option<Result<RoutedCall>>,
     /// An owner terminal's launch sign-in, scoped around this call's execution.
     pub(super) sign_in: Option<crate::launch_sign_in::SignIn>,
-    #[cfg(feature = "channels")]
-    pub(super) channels: Option<crate::channels::ChannelRequest>,
     pub(super) adopted: Option<crate::adoption::NativeCall>,
     #[cfg(feature = "remote")]
     owner: Option<crate::remote::OwnerCall>,
@@ -75,8 +73,6 @@ pub struct HostedRouter {
     pub(crate) execution: ExecutionContext,
     pub(crate) sources: TranscriptBindings,
     pub(crate) context: AdmissionContext,
-    #[cfg(feature = "channels")]
-    pub(crate) channels: std::sync::Arc<crate::channels::Channels>,
     response_bytes: std::num::NonZeroU32,
     pub(crate) fenced: std::sync::Arc<std::sync::atomic::AtomicBool>,
     http_port: std::sync::Arc<std::sync::OnceLock<u16>>,
@@ -93,8 +89,6 @@ impl HostedRuntime {
             execution: self.execution.clone(),
             sources: self.sources.clone(),
             context: self.admission_context(),
-            #[cfg(feature = "channels")]
-            channels: self.channels()?,
             response_bytes: self.response_bytes,
             fenced: std::sync::Arc::clone(&self.fenced),
             http_port: std::sync::Arc::clone(&self.http_port),
@@ -277,8 +271,6 @@ impl HostedRouter {
                 #[cfg(feature = "remote")]
                 let mut owner = None;
                 let mut adopted = None;
-                #[cfg(feature = "channels")]
-                let mut channels = None;
                 let call = match call {
                     Ok(RouteChoice::Adopt(call)) => {
                         adopted = Some(*call);
@@ -289,11 +281,6 @@ impl HostedRouter {
                         owner = Some(*call);
                         None
                     }
-                    #[cfg(feature = "channels")]
-                    Ok(RouteChoice::Channels(input)) => {
-                        channels = Some(*input);
-                        None
-                    }
                     Ok(RouteChoice::Core(call)) => Some(Ok(*call)),
                     Err(error) => Some(Err(error)),
                 };
@@ -302,8 +289,6 @@ impl HostedRouter {
                     request_id,
                     call,
                     sign_in: None,
-                    #[cfg(feature = "channels")]
-                    channels,
                     adopted,
                     #[cfg(feature = "remote")]
                     owner,
@@ -472,8 +457,6 @@ enum RouteChoice {
     #[cfg(feature = "remote")]
     Owner(Box<crate::remote::OwnerCall>),
     Core(Box<RoutedCall>),
-    #[cfg(feature = "channels")]
-    Channels(Box<crate::channels::ChannelRequest>),
 }
 /// The authenticated frame fields shared by the three terminal-scoped routes.
 /// Each resolves to its own call kind and never reaches the core decoder.
@@ -524,23 +507,6 @@ impl RouteScope<'_> {
             input,
         })))
     }
-    #[cfg(feature = "channels")]
-    fn channels(&self, input: crate::channels::ChannelRequest) -> Result<RouteChoice> {
-        self.context.channel_owner(
-            self.connection.connection.peer(),
-            self.connection.connection.connection_authority(),
-            self.authority,
-            &self.connection.grant,
-        )?;
-        if self.cli_selections {
-            return Err(SeError::invalid(
-                "channel scope",
-                "the closed native channel input without CLI selection overrides",
-            ));
-        }
-        input.validate().map_err(|error| error.refusal())?;
-        Ok(RouteChoice::Channels(Box::new(input)))
-    }
 }
 
 fn route(
@@ -562,8 +528,6 @@ fn route(
         IpcRequest::Adopt(input) => return scoped.adopt(input),
         #[cfg(feature = "remote")]
         IpcRequest::RemoteOwner(input) => return scoped.owner(*input),
-        #[cfg(feature = "channels")]
-        IpcRequest::Channels(input) => return scoped.channels(input),
         IpcRequest::Operation(raw) => {
             if raw.name == "hook.claude" {
                 return Err(SeError::invalid(
