@@ -48,6 +48,12 @@ impl ScratchDir {
 
 impl Drop for ScratchDir {
     fn drop(&mut self) {
+        if let Ok(entries) = std::fs::read_dir(&self.0) {
+            for entry in entries.flatten() {
+                let _ =
+                    std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(0o700));
+            }
+        }
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
@@ -147,7 +153,7 @@ fn create_new_and_private_dir_succeed_under_umask_0177() -> Result<(), Box<dyn s
 }
 
 #[test]
-fn private_dir_under_umask_0777_leaves_zero_residue() -> Result<(), Box<dyn std::error::Error>> {
+fn private_dir_under_umask_0777_refuses_cleanly() -> Result<(), Box<dyn std::error::Error>> {
     let _lock = UMASK_LOCK.lock().map_err(|_| "umask lock poisoned")?;
     let root = ScratchDir::new("umask-0777-dir")?;
     let _mask = UmaskGuard::set(0o777);
@@ -164,7 +170,21 @@ fn private_dir_under_umask_0777_leaves_zero_residue() -> Result<(), Box<dyn std:
         "expected actionable umask refusal, got: {err}"
     );
     assert!(!private_home.exists());
+    #[cfg(target_os = "linux")]
     assert_no_stage_residue(root.path())?;
+    #[cfg(not(target_os = "linux"))]
+    {
+        assert_eq!(err.path.parent(), Some(root.path()));
+        assert!(
+            err.path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".se-dir-stage-")),
+            "expected preserved staging dir path, got: {}",
+            err.path.display()
+        );
+        assert!(err.path.exists());
+    }
     Ok(())
 }
 
@@ -201,6 +221,7 @@ fn create_new_under_umask_0777_matches_fs_support() -> Result<(), Box<dyn std::e
                 assert!(!file_path.exists());
             }
         }
+        assert_no_stage_residue(root.path())?;
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -211,7 +232,16 @@ fn create_new_under_umask_0777_matches_fs_support() -> Result<(), Box<dyn std::e
             .ok_or("expected non-Linux private staging to refuse under umask 0777")?;
         assert_eq!(err.code, StateFileErrorCode::LocationUnsafe);
         assert!(!file_path.exists());
+        assert_eq!(err.path.parent(), Some(root.path()));
+        assert!(
+            err.path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".se-dir-stage-")),
+            "expected preserved staging dir path, got: {}",
+            err.path.display()
+        );
+        assert!(err.path.exists());
     }
-    assert_no_stage_residue(root.path())?;
     Ok(())
 }

@@ -91,7 +91,6 @@ fn handle_unreadable_staging_dir(
     parent: &File,
     staging: &CString,
     stage_path: &Path,
-    path: &Path,
     err: crate::state_files::StateFileError,
 ) -> crate::state_files::StateFileError {
     if !err
@@ -121,26 +120,11 @@ fn handle_unreadable_staging_dir(
     {
         return err;
     }
-    // SAFETY: empty mode-0000 staging dir just created by this call under a restrictive umask.
-    if unsafe { libc::unlinkat(parent.as_raw_fd(), staging.as_ptr(), libc::AT_REMOVEDIR) } < 0 {
-        let unlink_err = io::Error::last_os_error();
-        if unlink_err.kind() != io::ErrorKind::NotFound {
-            return io_error(
-                "remove unreadable directory staging",
-                stage_path,
-                unlink_err,
-            );
-        }
-    } else if let Err(sync_err) = parent.sync_all() {
-        return io_error(
-            "sync parent after removing unreadable staging",
-            path,
-            sync_err,
-        );
-    }
+    // Never unlink by name without an FD/inode custody handle; preserve the
+    // unreadable staging directory and report its exact pathname.
     unsafe_path(
-        "process umask strips owner read permission and blocks private 0700 directory creation; set a umask allowing owner read",
-        path,
+        "process umask strips owner read permission and blocks private 0700 directory creation; preserved unreadable staging directory because custody could not be established; set a umask allowing owner read and remove it",
+        stage_path,
     )
 }
 
@@ -166,7 +150,6 @@ fn create_private_staging_dir(parent: &File, path: &Path) -> Result<(CString, Fi
                 parent,
                 &staging,
                 &stage_path,
-                path,
                 err,
             ));
         }
