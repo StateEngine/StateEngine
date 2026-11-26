@@ -1,5 +1,21 @@
 use super::*;
 
+fn reparse_identity(file: &File, path: &Path) -> Result<(u32, u32, u32)> {
+    // SAFETY: zero-initialized Win32 output struct filled by GetFileInformationByHandle.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
+    // SAFETY: retained handle and valid output pointer.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(last("inspect pinned reparse ancestor", path));
+    }
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+        return Err(changed("reparse ancestor changed before follow", path));
+    }
+    Ok((
+        info.dwVolumeSerialNumber,
+        info.nFileIndexHigh,
+        info.nFileIndexLow,
+    ))
+}
 fn final_path(file: &File, path: &Path) -> Result<PathBuf> {
     let mut buffer = vec![0u16; 32768];
     // SAFETY: retained directory handle and initialized owned UTF-16 output buffer.
@@ -137,9 +153,7 @@ impl Parent {
                 FILE_SHARE_READ,
                 true,
             )?;
-            if metadata(&write_locked, prefix, true, false)?
-                != metadata(&file, prefix, true, false)?
-            {
+            if reparse_identity(&write_locked, prefix)? != reparse_identity(&file, prefix)? {
                 return Err(changed("reparse ancestor changed before follow", prefix));
             }
             security::verify_system_ancestor(&write_locked, prefix)?;

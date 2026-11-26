@@ -82,7 +82,7 @@ pub(super) fn observe(pid: u32, bound: &IpcIoBound) -> IpcNativeResult<NativeIpc
                     ),
                 )
             })?;
-    let image_sha256 = hash_image(file, bound)?;
+    let image_sha256 = super::image::hash_mapped_image(file, bound)?;
     check_live(&process)?;
     Ok(NativeIpcPeer {
         principal: IpcPrincipal::Windows { sid },

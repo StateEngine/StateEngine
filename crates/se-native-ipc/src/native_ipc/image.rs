@@ -102,6 +102,25 @@ fn cache() -> &'static Mutex<Cache> {
 const MAX_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
 
 pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeResult<Sha256> {
+    hash_image_with_mode(file, bound, false)
+}
+
+/// Hash a file proved to be a live mapped Windows executable image (whose
+/// kernel image section blocks in-place writes), seeding the handle-free
+/// live-mapped cache so neither client nor receiving host rehashes per call.
+#[cfg(windows)]
+pub(super) fn hash_mapped_image(
+    file: std::fs::File,
+    bound: &IpcIoBound,
+) -> IpcNativeResult<Sha256> {
+    hash_image_with_mode(file, bound, true)
+}
+
+fn hash_image_with_mode(
+    file: std::fs::File,
+    bound: &IpcIoBound,
+    live_mapped: bool,
+) -> IpcNativeResult<Sha256> {
     #[cfg(windows)]
     let (mut file, guarded) = match windows::pin(&file) {
         Some(pin) => (pin, true),
@@ -148,6 +167,13 @@ pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeRe
     verify_unchanged(&file, &before, read, &stamp, bound)?;
     if reusable && stamp.reusable() {
         remember(stamp, digest)?;
+    } else {
+        #[cfg(windows)]
+        if reusable && live_mapped {
+            remember_live_mapped(stamp, digest)?;
+        }
+        #[cfg(not(windows))]
+        let _ = live_mapped;
     }
     Ok(digest)
 }

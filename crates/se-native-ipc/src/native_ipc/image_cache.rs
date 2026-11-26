@@ -84,6 +84,13 @@ fn publish(root: &Path, name: &str, expected: Sha256, bound: &IpcIoBound) -> Ipc
             .metadata()
             .map_err(|e| error("read current executable cache metadata", e))?,
     )?;
+    #[cfg(windows)]
+    let digest = super::image::hash_mapped_image(
+        held.try_clone()
+            .map_err(|e| error("duplicate executable cache pin", e))?,
+        bound,
+    )?;
+    #[cfg(not(windows))]
     let digest = hash_image(
         held.try_clone()
             .map_err(|e| error("duplicate executable cache pin", e))?,
