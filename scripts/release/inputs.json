@@ -4,8 +4,7 @@
   "package": "se",
   "default_features": false,
   "features": [
-    "remote",
-    "channels"
+    "remote"
   ],
   "targets": [
     "x86_64-unknown-linux-gnu",

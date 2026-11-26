@@ -210,16 +210,7 @@ pub(crate) fn apply(
         }
         body @ WorkMessageSent { .. } => work_message::send(c, header, body, seq, revision, facts)?,
         body @ (MessageRead { .. } | MessageDismissed { .. } | MessageDelivered { .. }) => {
-            let channel_mark = match &body {
-                MessageRead { message, .. } => Some((message.clone(), "read")),
-                MessageDismissed { message, .. } => Some((message.clone(), "dismiss")),
-                MessageDelivered { message, .. } => Some((message.clone(), "notice")),
-                _ => None,
-            };
-            work_message::mark(c, header, body, seq, revision)?;
-            if let Some((message, kind)) = channel_mark {
-                channel::enqueue_mark(c, header, &message, kind, seq)?;
-            }
+            work_message::mark(c, header, body, seq, revision)?
         }
         b @ WorkingStateSet { .. } => set_working_state(x, b)?,
         b @ (SessionPrepared { .. }
@@ -581,7 +572,6 @@ fn send_message(x: Ctx<'_>, body: EventBody<InputText>) -> StoreResult<()> {
     )
     .map_err(sql)?;
     message_rows(x, schema_version, &m, &sender, &recipient, &kind)?;
-    channel::enqueue_reply(c, header, &m, reply.as_deref(), seq)?;
     let is_remote_reply = remote_reply.is_some();
     crate::remote::enqueue_reply(c, remote_reply, x.project()?, &m, seq)?;
     notification::sent(c, seq, &recipient, quiet)?;

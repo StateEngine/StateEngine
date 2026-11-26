@@ -23,7 +23,6 @@ use std::{
 };
 use zeroize::Zeroizing;
 mod adoption;
-mod channel;
 mod codex;
 mod http;
 #[cfg(feature = "remote")]

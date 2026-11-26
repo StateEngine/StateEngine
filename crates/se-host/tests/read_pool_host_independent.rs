@@ -183,8 +183,8 @@ fn real_http_refuses_a_replaced_inode_even_after_its_first_refusal_empties_idle(
             result
         };
         let (exit, result) = join(host.serve(listener), consumer).await;
-        // The channel worker may observe either the deliberate pathname gap or
-        // the replacement inode. Retain either exact refusal, not unrelated errors.
+        // A background host read may observe either the deliberate pathname gap
+        // or the replacement inode. Retain either exact refusal, not unrelated errors.
         let expected = expected_refusal(exit.failure.as_ref(), &f.options.state_directory);
         let report = exit.finish(&bound()?).await;
         let expected = expected?;

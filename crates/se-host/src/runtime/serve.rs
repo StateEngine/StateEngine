@@ -78,11 +78,6 @@ impl HostedRuntime {
             }
             Err(error) => return ended(self, listener, Some(error)),
         };
-        #[cfg(feature = "channels")]
-        let channels = match self.channels() {
-            Ok(service) => service,
-            Err(error) => return ended(self, listener, Some(error)),
-        };
         let runtime = self.execution.blocking.handle();
         // Provider MCP sessions reach this host over the loopback HTTP listener
         // bound at publication, before readiness was reported.
@@ -95,10 +90,7 @@ impl HostedRuntime {
         };
         let mut local_stop = self.local_stop.take();
         let activity = self.activity.clone();
-        let idle = self.idle_window(
-            #[cfg(feature = "channels")]
-            &channels,
-        );
+        let idle = self.idle_window();
         let (shutdown, cancelled) = watch::channel(None);
         let mut supervisor = Supervisor::new(
             router,
@@ -120,8 +112,6 @@ impl HostedRuntime {
                 &runtime,
             );
         }
-        #[cfg(feature = "channels")]
-        let channel_task = runtime.spawn(channels.run(cancelled.clone(), self.receiver_intervals));
         let mut timers =
             super::live::Timers::new(idle, activity, self.execution.ownership_fault.clone());
         let mut outcome = loop {
@@ -141,38 +131,20 @@ impl HostedRuntime {
                 break exit;
             }
         };
-        outcome
-            .fence_and_join(
-                supervisor.tasks,
-                &shutdown,
-                #[cfg(feature = "channels")]
-                channel_task,
-            )
-            .await;
+        outcome.fence_and_join(supervisor.tasks, &shutdown).await;
         outcome
     }
     /// Only an automatically started host with a known activity count may exit
     /// when idle; any other host's window never expires.
-    fn idle_window(
-        &mut self,
-        #[cfg(feature = "channels")] channels: &Arc<crate::channels::Channels>,
-    ) -> Idle {
+    fn idle_window(&mut self) -> Idle {
         // Only an automatically started host with a known activity count may
         // exit when idle; an explicit `se up` or an unknown count stays resident.
         // Built once: unrelated traffic must not restart its zero-activity window.
         let idle: Idle = match self.auto_start.then(|| self.activity.take()).flatten() {
             Some(mut activity) => {
-                #[cfg(feature = "channels")]
-                let channels = Arc::clone(channels);
                 let waits = self.execution.mail_waits.clone();
                 Box::pin(async move {
-                    super::client_activity::idle(
-                        waits,
-                        &mut activity,
-                        #[cfg(feature = "channels")]
-                        channels,
-                    )
-                    .await;
+                    super::client_activity::idle(waits, &mut activity).await;
                 })
             }
             None => Box::pin(std::future::pending()),
@@ -302,15 +274,6 @@ async fn connection(
         if let Some(input) = exchange.adopted.take() {
             let output = router.execute_adoption(input, &deadline).await;
             connection = exchange.reply_adoption(output, &deadline).await?;
-            continue;
-        }
-        #[cfg(feature = "channels")]
-        if let Some(input) = exchange.take_channels() {
-            let output = router.execute_channels(input, &deadline).await;
-            let draining = shutdown.borrow().clone();
-            connection = exchange
-                .reply_channels(output, draining.as_ref().unwrap_or(&deadline))
-                .await?;
             continue;
         }
         #[cfg(feature = "remote")]

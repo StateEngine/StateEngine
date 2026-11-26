@@ -28,7 +28,6 @@ members = [
     "crates/se-secode-image",
     "crates/se-secode-service",
     "crates/se-local-socket",
-    "crates/se-channels",
     "crates/se-agent-observation",
     "crates/se-adoption",
     "crates/se-host",

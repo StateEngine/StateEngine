@@ -130,8 +130,6 @@ struct CallRef<'a> {
 #[serde(tag = "kind", content = "input", rename_all = "snake_case")]
 enum RequestRef<'a> {
     Adopt(&'a crate::adoption::Input),
-    #[cfg(feature = "channels")]
-    Channels(&'a crate::channels::ChannelRequest),
     #[cfg(feature = "remote")]
     RemoteOwner(&'a crate::remote::OwnerInput),
     Operation(OperationRef<'a>),
@@ -198,8 +196,6 @@ struct CallWire {
 )]
 enum RequestWire {
     Adopt(crate::adoption::Input),
-    #[cfg(feature = "channels")]
-    Channels(crate::channels::ChannelRequest),
     #[cfg(feature = "remote")]
     RemoteOwner(Box<crate::remote::OwnerInput>),
     Operation(OperationWire),
@@ -231,8 +227,6 @@ pub fn encode_call(call: &crate::IpcEnvelope) -> Result<WireBytes> {
         NonZeroU64::new(call.request_id).ok_or_else(|| invalid("a positive request ID"))?;
     let request = match &call.request {
         crate::IpcRequest::Adopt(input) => RequestRef::Adopt(input),
-        #[cfg(feature = "channels")]
-        crate::IpcRequest::Channels(input) => RequestRef::Channels(input),
         #[cfg(feature = "remote")]
         crate::IpcRequest::RemoteOwner(input) => RequestRef::RemoteOwner(input),
         crate::IpcRequest::Operation(operation) => RequestRef::Operation(OperationRef {
@@ -269,8 +263,6 @@ pub fn decode_call(payload: &[u8]) -> Result<crate::IpcEnvelope> {
     )?;
     let request = match wire.request {
         RequestWire::Adopt(input) => crate::IpcRequest::Adopt(input),
-        #[cfg(feature = "channels")]
-        RequestWire::Channels(input) => crate::IpcRequest::Channels(input),
         #[cfg(feature = "remote")]
         RequestWire::RemoteOwner(input) => crate::IpcRequest::RemoteOwner(input),
         RequestWire::Operation(operation) => crate::IpcRequest::Operation(crate::RawOperation {

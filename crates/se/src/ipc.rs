@@ -97,8 +97,6 @@ pub(crate) fn exchange_output(
     let keyed = match &call.request {
         IpcRequest::Operation(op) => op.key.as_ref().map(|k| (op.name.clone(), k.clone())),
         IpcRequest::Hook(_) | IpcRequest::Adopt(_) => None,
-        #[cfg(feature = "channels")]
-        IpcRequest::Channels(_) => None,
         #[cfg(feature = "remote")]
         IpcRequest::RemoteOwner(input) => input
             .key()
@@ -188,8 +186,6 @@ fn call_operation(call: &IpcEnvelope) -> &str {
     match &call.request {
         IpcRequest::Operation(op) => &op.name,
         IpcRequest::Hook(_) => "hook.claude",
-        #[cfg(feature = "channels")]
-        IpcRequest::Channels(_) => "native.channels",
         IpcRequest::Adopt(_) => "native.adopt",
         #[cfg(feature = "remote")]
         IpcRequest::RemoteOwner(_) => "remote authority control",

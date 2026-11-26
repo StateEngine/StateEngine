@@ -7,11 +7,10 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-default = ["runtime", "listener", "channels"]
+default = ["runtime", "listener"]
 import = ["se-core/import", "dep:se-history-import", "se-history-import/import"]
 runtime = ["se-harness/runtime", "dep:tokio", "dep:se-agent-observation"]
 listener = ["runtime", "se-adoption/listener", "se-harness/listener", "se-remote/listener", "se-atlas-host/listener", "dep:reqwest", "tokio/macros", "tokio/net", "tokio/io-util", "tokio/time", "tokio/sync", "tokio/process", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio-tungstenite", "dep:futures-util", "dep:base64", "dep:se-secode-image", "dep:se-secode-service"]
-channels = ["listener", "se-harness/channels", "dep:se-channels"]
 secode = ["runtime", "listener", "se-harness/secode", "dep:secode-stateengine-api"]
 remote = ["se-harness/remote", "dep:se-remote-host", "se-remote/remote", "dep:base64", "listener", "tokio/fs", "dep:chacha20poly1305", "tokio/macros"]
 
@@ -19,7 +18,6 @@ remote = ["se-harness/remote", "dep:se-remote-host", "se-remote/remote", "dep:ba
 se-adoption = { path = "../se-adoption" }
 se-agent-observation = { path = "../se-agent-observation", optional = true }
 se-config = { path = "../se-config" }
-se-channels = { path = "../se-channels", optional = true }
 se-harness = { path = "../se-harness" }
 se-remote-host = { path = "../se-remote-host", optional = true }
 se-provider-image = { path = "../se-provider-image" }
@@ -78,48 +76,7 @@ name = "w3_lifecycle_independent"
 path = "tests/w3_lifecycle_independent.rs"
 required-features = ["secode"]
 
-[[test]]
-name = "channel_checkpoint_independent"
-path = "tests/channel_checkpoint_independent.rs"
-required-features = ["channels"]
-
-[[test]]
-name = "channel_credentials"
-path = "tests/channel_credentials.rs"
-required-features = ["channels"]
-
-[[test]]
-name = "channel_host"
-path = "tests/channel_host.rs"
-required-features = ["channels"]
-
-[[test]]
-name = "channel_idle_review"
-path = "tests/channel_idle_review.rs"
-required-features = ["channels"]
-
-[[test]]
-name = "channel_roundtrip"
-path = "tests/channel_roundtrip.rs"
-required-features = ["channels"]
-
-[[test]]
-name = "channel_safety_independent"
-path = "tests/channel_safety_independent.rs"
-required-features = ["channels"]
-
-[[test]]
-name = "discord_channel_host"
-path = "tests/discord_channel_host.rs"
-required-features = ["channels"]
-
-[[test]]
-name = "lifecycle_read_custody_independent"
-path = "tests/lifecycle_read_custody_independent.rs"
-required-features = ["channels"]
-
 [dev-dependencies]
 se-atlas-records = { path = "../se-atlas-records" }
-se-channels = { path = "../se-channels", features = ["test-fixture"] }
 rusqlite = { version = "0.41", features = ["hooks"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "io-util"] }

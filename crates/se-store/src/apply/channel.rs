@@ -3,7 +3,6 @@ mod resume;
 mod update;
 use super::*;
 use crate::channel::{Change, Connection as ChannelConnection, Pairing};
-pub(crate) use update::{enqueue_mark, enqueue_reply};
 
 pub(crate) fn load(
     c: &Connection,

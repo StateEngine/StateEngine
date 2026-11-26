@@ -9,7 +9,7 @@ impl AdmissionContext {
         grant: &ConnectionGrant,
         input: crate::adoption::Input,
     ) -> Result<crate::adoption::NativeCall> {
-        self.channel_owner(peer, connection, authority, grant)?;
+        self.native_owner(peer, connection, authority, grant)?;
         if (input.action == crate::adoption::Action::Context) != input.context.is_some() {
             return Err(crate::adoption::invalid(
                 "a lookup target on context calls and on no other action",
@@ -73,5 +73,38 @@ impl AdmissionContext {
             ));
         }
         Ok(crate::adoption::NativeCall { input, provider })
+    }
+    /// Adoption hooks are a native Owner capability, never a session or HTTP grant.
+    fn native_owner(
+        &self,
+        peer: &PeerProof,
+        connection: &PresentedAuthority,
+        override_authority: Option<&PresentedAuthority>,
+        grant: &ConnectionGrant,
+    ) -> Result<()> {
+        let mut phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
+        let result = (|| {
+            self.check_generation(&phase)?;
+            if override_authority.is_some()
+                || !matches!(connection, PresentedAuthority::OwnerProof { .. })
+            {
+                return Err(SeError::new(se_types::Detail::OwnerRequired(
+                    se_types::details::OwnerRequired {
+                        op: "native adoption hook".into(),
+                    },
+                )));
+            }
+            let key = self.machine_key()?;
+            let current = Sha256::from_bytes(Hasher::digest(key.expose()).into());
+            if grant.owner_key != Some(current) {
+                return Err(SeError::invalid(
+                    "adoption Owner connection",
+                    "the same current protected machine credential",
+                ));
+            }
+            self.owner_peer(&mut phase, peer)?;
+            Ok(())
+        })();
+        super::super::executor::close_read(result, phase.close())
     }
 }
