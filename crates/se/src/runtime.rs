@@ -16,6 +16,28 @@ pub struct InstallRecord {
     pub files: Vec<InstallFile>,
     pub created_directories: Vec<PathBuf>,
     pub path_edits: Vec<PathEdit>,
+    /// PATH custody inherited from a replaced image: edits it already owns.
+    /// These are not pending writes of this installation.
+    #[serde(default)]
+    #[cfg_attr(not(unix), allow(dead_code))]
+    // unix-only recovery reads it; Windows recovery is the PowerShell installer
+    pub inherited_path_edits: Vec<PathEdit>,
+}
+
+/// Durable custody written before a `--no-modify-path` replacement removes the
+/// prior record, so an interruption before the child journal survives recovery.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplaceCustody {
+    pub schema: String,
+    pub owner: String,
+    pub no_modify_path: bool,
+    #[serde(default)]
+    pub inherited_path_edits: Vec<UninstallPathEdit>,
+    #[serde(default)]
+    pub inherited_files: Vec<UninstallFile>,
+    #[serde(default)]
+    pub inherited_directories: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

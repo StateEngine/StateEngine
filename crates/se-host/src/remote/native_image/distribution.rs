@@ -1,6 +1,7 @@
 //! Native runtime discovery and hashing shared by staging and pairing.
 use super::staging;
 use crate::remote::{channel::unavailable, ssh::command::ssh};
+use se_proc::canonicalize_path;
 use se_remote::ssh::validate_destination;
 use se_types::{Detail, Result, SeError, details};
 use sha2::{Digest, Sha256};
@@ -142,7 +143,12 @@ fn discovery_failure(destination: &str, reported: &str) -> SeError {
     }))
 }
 
+/// Resolve the running executable before consulting its neighbors: a
+/// Homebrew `bin/se` is a symlink into `libexec`, and the companion images
+/// sit beside the real binary.
 fn image(target: &str, executable: &Path) -> Result<PathBuf> {
+    let executable = canonicalize_path(executable)
+        .map_err(|_| unavailable("native distribution image path is unreadable"))?;
     let local = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
         ("windows", "x86_64") => "x86_64-pc-windows-msvc",
@@ -155,7 +161,7 @@ fn image(target: &str, executable: &Path) -> Result<PathBuf> {
         }
     };
     if target == local {
-        return Ok(executable.to_path_buf());
+        return Ok(executable);
     }
     let name = if target.ends_with("windows-msvc") {
         "se.exe"

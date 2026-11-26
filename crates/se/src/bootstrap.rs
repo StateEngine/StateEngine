@@ -259,6 +259,13 @@ fn variable(name: &str) -> Result<Option<OsString>> {
     }
 }
 
+// XDG base directory variables name a location; the spec makes an empty value
+// mean unset, so resolution falls back to the default directory.
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn xdg_variable(name: &str) -> Result<Option<OsString>> {
+    Ok(std::env::var_os(name).filter(|value| !value.is_empty()))
+}
+
 fn text_variable(name: &str) -> Result<Option<String>> {
     variable(name)?
         .map(|value| {
@@ -295,7 +302,7 @@ pub(crate) fn default_home() -> Result<PathBuf> {
     #[cfg(target_os = "macos")]
     let path = user_home()?.join("Library/Application Support/StateEngine");
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    let path = match variable("XDG_STATE_HOME")? {
+    let path = match xdg_variable("XDG_STATE_HOME")? {
         Some(path) => {
             let path = PathBuf::from(path);
             if !path.is_absolute() {

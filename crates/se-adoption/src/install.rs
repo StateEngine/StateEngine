@@ -228,14 +228,87 @@ fn integration(
     })
 }
 
-pub fn uninstall(home: &Path) -> Result<Vec<IntegrationEffect>> {
+pub fn uninstall(
+    home: &Path,
+) -> std::result::Result<Vec<IntegrationEffect>, (Vec<IntegrationEffect>, SeError)> {
     let mut effects = Vec::new();
     for kind in Kind::ALL {
-        for path in super::settings::uninstall_for(home, kind)? {
-            effects.push(IntegrationEffect { path: path.display().to_string(), entry: format!("{} user-started session hooks", kind.label()), action: FileOutcome::Removed, witness: Witness { state: WitnessState::Witnessed, method: "removed exact journaled entries; preserved unrelated hooks and edits".into(), observed_at: receipt::timestamp(now_us()?)?, detail: Some("Provider settings, permissions and running provider processes were preserved; adoption registration revoked".into()) } });
+        match super::settings::uninstall_steps(home, kind) {
+            Ok(steps) => {
+                if let Some(path) = steps.settings_edited {
+                    match removed_hooks_effect(&path, kind) {
+                        Ok(effect) => effects.push(effect),
+                        Err(error) => return Err((effects, error)),
+                    }
+                }
+                if let Some(journal) = steps.registration_revoked {
+                    match revoked_registration_effect(&journal, kind) {
+                        Ok(effect) => effects.push(effect),
+                        Err(error) => return Err((effects, error)),
+                    }
+                }
+            }
+            Err(failure) => {
+                if let Some(path) = failure.settings_edited
+                    && let Ok(effect) = removed_hooks_effect(&path, kind)
+                {
+                    effects.push(effect);
+                }
+                if let Ok(effect) = failed_effect(&failure.failed_path, kind, &failure.error) {
+                    effects.push(effect);
+                }
+                return Err((effects, failure.error));
+            }
         }
     }
     Ok(effects)
+}
+
+fn removed_hooks_effect(path: &Path, kind: Kind) -> Result<IntegrationEffect> {
+    Ok(IntegrationEffect {
+        path: path.display().to_string(),
+        entry: format!("{} user-started session hooks", kind.label()),
+        action: FileOutcome::Removed,
+        witness: Witness {
+            state: WitnessState::Witnessed,
+            method: "removed exact journaled entries; preserved unrelated hooks and edits".into(),
+            observed_at: receipt::timestamp(now_us()?)?,
+            detail: Some(
+                "Provider settings, permissions and running provider processes were preserved"
+                    .into(),
+            ),
+        },
+    })
+}
+
+fn revoked_registration_effect(path: &Path, kind: Kind) -> Result<IntegrationEffect> {
+    Ok(IntegrationEffect {
+        path: path.display().to_string(),
+        entry: format!("{} adoption registration", kind.label()),
+        action: FileOutcome::Removed,
+        witness: Witness {
+            state: WitnessState::Witnessed,
+            method: "native owned adoption registration removal".into(),
+            observed_at: receipt::timestamp(now_us()?)?,
+            detail: Some(
+                "Adoption registration revoked; any remaining provider hooks are inert".into(),
+            ),
+        },
+    })
+}
+
+fn failed_effect(path: &Path, kind: Kind, error: &SeError) -> Result<IntegrationEffect> {
+    Ok(IntegrationEffect {
+        path: path.display().to_string(),
+        entry: format!("{} provider integration revocation", kind.label()),
+        action: FileOutcome::Unreadable,
+        witness: Witness {
+            state: WitnessState::Failed,
+            method: format!("{} provider integration revocation failed", kind.label()),
+            observed_at: receipt::timestamp(now_us()?)?,
+            detail: Some(error.to_string()),
+        },
+    })
 }
 
 fn now_us() -> Result<i64> {

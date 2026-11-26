@@ -29,6 +29,35 @@ plain_path() {
         path=$(dirname "$path")
     done
 }
+# ZDOTDIR must be a real, non-linked directory tree; otherwise zsh never
+# reads dotfiles from it and the manual remedy names the real file.
+zdot_plain() {
+    path=$1
+    case "$path" in /*) ;; *) return 1 ;; esac
+    case "$path" in *'
+'*) return 1 ;; esac
+    if printf '%s' "$path" | LC_ALL=C grep -q '[[:cntrl:]]'; then return 1; fi
+    [ -d "$path" ] || return 1
+    while [ "$path" != / ]; do
+        [ ! -L "$path" ] || return 1
+        if [ -e "$path" ] && [ "$path" != "$1" ]; then
+            [ -d "$path" ] || return 1
+        fi
+        path=$(dirname "$path")
+    done
+    return 0
+}
+# A tree with non-normal components is not accepted; those spellings use the
+# manual instruction path instead of exiting.
+zdot_components_ok() {
+    rest=${1#/}
+    while [ -n "$rest" ]; do
+        part=${rest%%/*}
+        case "$part" in ''|.|..) return 1 ;; esac
+        case "$rest" in */*) rest=${rest#*/} ;; *) rest='' ;; esac
+    done
+    return 0
+}
 # All input and destination checks precede creation of installation directories.
 macos=0
 case "$(uname -s):$(uname -m)" in
@@ -38,13 +67,26 @@ case "$(uname -s):$(uname -m)" in
     *) fail 'this archive requires native Linux x86_64 or macOS arm64/x86_64' ;;
 esac
 native_held=0
-recover=0
 if [ "$#" -ge 1 ] && [ "$1" = --native-held ]; then
     native_held=1
     shift
 fi
-if [ "$#" -eq 1 ] && [ "$1" = --recover ]; then recover=1; shift; fi
-[ "$#" -eq 0 ] || fail 'usage: sh ./install.sh [--recover]'
+recover=0
+no_modify_path=0
+inherit_path_edits=''
+while [ "$#" -ge 1 ]; do
+    case "$1" in
+    --recover) recover=1 ;;
+    --no-modify-path) no_modify_path=1 ;;
+    --inherit-path-edits)
+        [ "$#" -ge 2 ] || fail 'usage: sh ./install.sh [--recover] [--no-modify-path] [--inherit-path-edits JSON]'
+        inherit_path_edits=$2
+        shift
+        ;;
+    *) fail 'usage: sh ./install.sh [--recover] [--no-modify-path] [--inherit-path-edits JSON]' ;;
+    esac
+    shift
+done
 bundle=$(CDPATH='' cd -P "$(dirname "$0")" && pwd)
 links=$(find "$bundle" -type l -print)
 [ -z "$links" ] || fail 'extract the archive without symbolic links'
@@ -71,17 +113,61 @@ if [ "$macos" -eq 1 ]; then data=${SE_HOME:-$HOME/Library/Application Support/St
 else data=${SE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/stateengine}; fi
 record=$data/standalone-install.json
 partial=$data/standalone-install.partial
+replace_state=$data/standalone-install.replace.json
 plain_path "$partial"
+plain_path "$replace_state"
+orig_recover=$recover
+orig_no_modify=$no_modify_path
 if [ "$recover" -eq 1 ]; then
-    [ -d "$partial" ] || fail "partial installation is absent: $partial"
+    if [ ! -d "$partial" ]; then
+        if [ -f "$replace_state" ]; then
+            recover=0
+        else
+            fail "partial installation is absent: $partial"
+        fi
+    fi
 else [ ! -e "$partial" ] || fail "partial installation at $partial; resume with: sh \"$bundle/install.sh\" --recover"; fi
 # A current archive can remove a proved older installation without asking the
 # old image to read newer data. Native owner, file custody and quiet-runtime
 # checks precede effects; the claims span removal and this fresh installer.
+# Pass only the caller's explicit --no-modify-path flag; __install-replace reads
+# any durable replace.json authoritatively under the held native claim.
 plain_path "$record"
 if [ "$recover" -eq 0 ] && [ "$native_held" -eq 0 ] && [ -e "$record" ]; then
-    "$bundle/se" __install-replace "$data" || fail 'current-archive replacement did not complete; preserve the reported paths and resolve its refusal before retrying'
+    replace_flags=''
+    if [ "$orig_no_modify" -eq 1 ]; then replace_flags=' --no-modify-path'; fi
+    "$bundle/se" __install-replace "$data"$replace_flags || fail 'current-archive replacement did not complete; preserve the reported paths and resolve its refusal before retrying'
     exit 0
+fi
+inherited_fish_path=''
+inherited_fish_sha256=''
+inherited_dirs=''
+if [ -f "$replace_state" ]; then
+    custody=$("$bundle/se" __install-replace-custody "$data") || fail "replacement custody at $replace_state is invalid or stale; remove '$replace_state' if no replacement is in progress, then retry"
+    if [ -n "$custody" ]; then
+        while IFS= read -r line; do
+            case "$line" in
+            no_modify_path=1) no_modify_path=1 ;;
+            no_modify_path=0) ;;
+            inherited_path_edits=*) [ -n "$inherit_path_edits" ] || inherit_path_edits=${line#inherited_path_edits=} ;;
+            inherited_fish_path=*) inherited_fish_path=${line#inherited_fish_path=} ;;
+            inherited_fish_sha256=*) inherited_fish_sha256=${line#inherited_fish_sha256=} ;;
+            inherited_dir=*)
+                dir_val=${line#inherited_dir=}
+                if [ -n "$dir_val" ]; then
+                    if [ -n "$inherited_dirs" ]; then inherited_dirs="$inherited_dirs
+$dir_val"
+                    else inherited_dirs=$dir_val; fi
+                fi
+                ;;
+            esac
+        done <<CUSTODY
+$custody
+CUSTODY
+        if [ "$orig_recover" -eq 0 ] && [ "$native_held" -eq 0 ] && [ "$orig_no_modify" -eq 0 ] && [ "$no_modify_path" -eq 1 ]; then
+            printf 'Note: preserving --no-modify-path from prior interrupted replacement (%s)\n' "$replace_state" >&2
+        fi
+    fi
 fi
 for destination in "$bin/se" "$assets" "$record"; do
     plain_path "$destination"
@@ -92,26 +178,82 @@ for destination in "$bin/se" "$assets" "$record"; do
     else [ ! -e "$destination" ] || fail "existing installation path is preserved; run se uninstall before reinstalling: $destination"; fi
 done
 if [ "$recover" -eq 0 ] && command -v se >/dev/null 2>&1; then fail "another se command is already on PATH: $(command -v se)"; fi
-profiles='.profile'
+# PATH wiring is best effort: unsupported shells and symlinked configuration files
+# install the binary cleanly and print manual instructions instead of aborting.
+manual_path=0
+profiles=''
 fish_file=''
-case ${SHELL-} in
+zdot=''
+# A profile entry is a fresh-run profile name or a resume's saved full target path.
+profile_base() { printf '%s' "${1##*/}"; }
+# zsh dotfiles live under an eligible ZDOTDIR when one is exported.
+profile_path() {
+    case "$1" in
+    /*) printf '%s' "$1"; return 0 ;;
+    .zprofile|.zshrc)
+        if [ -n "$zdot" ]; then printf '%s' "$zdot/$1"; else printf '%s' "$HOME/$1"; fi
+        return 0
+        ;;
+    esac
+    printf '%s' "$HOME/$1"
+}
+if [ "$no_modify_path" -eq 1 ]; then
+    manual_path=1
+else
+    case ${SHELL-} in
     */fish)
-        profiles=''
         fish_file=${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/stateengine.fish
-        plain_path "$fish_file"
-        [ "$recover" -eq 1 ] || [ ! -e "$fish_file" ] || fail "existing fish configuration is preserved: $fish_file"
+        if [ -L "$fish_file" ]; then
+            fish_file=''
+            manual_path=1
+        else
+            plain_path "$fish_file"
+            [ "$recover" -eq 1 ] || [ ! -e "$fish_file" ] || fail "existing fish configuration is preserved: $fish_file"
+        fi
         ;;
     ''|*/sh|*/bash|*/dash|*/ksh|*/zsh)
-        if [ -e "$HOME/.bash_profile" ] || [ -L "$HOME/.bash_profile" ]; then profiles="$profiles .bash_profile"
-        elif [ -e "$HOME/.bash_login" ] || [ -L "$HOME/.bash_login" ]; then profiles="$profiles .bash_login"; fi
-        case ${SHELL-} in */zsh) profiles="$profiles .zprofile" ;; esac
+        profiles='.profile'
+        if [ -e "$HOME/.bash_profile" ] || [ -L "$HOME/.bash_profile" ]; then profiles="$profiles
+.bash_profile"
+        elif [ -e "$HOME/.bash_login" ] || [ -L "$HOME/.bash_login" ]; then profiles="$profiles
+.bash_login"; fi
+        case ${SHELL-} in
+        */bash) profiles="$profiles
+.bashrc" ;;
+        */zsh)
+            if [ -n "${ZDOTDIR-}" ] && [ "${ZDOTDIR-}" != "$HOME" ]; then
+                case "$ZDOTDIR" in
+                "$HOME"/*)
+                    if zdot_components_ok "$ZDOTDIR" && zdot_plain "$ZDOTDIR"; then zdot=$ZDOTDIR; else manual_path=1; fi
+                    ;;
+                *) manual_path=1 ;;
+                esac
+            fi
+            profiles="$profiles
+.zprofile
+.zshrc"
+            ;;
+        esac
         ;;
-    *) fail 'supported login shells are sh, bash, dash, ksh, zsh and fish; open one of these shells before installing' ;;
-esac
+    *)
+        manual_path=1
+        ;;
+    esac
+    if [ "$manual_path" -eq 0 ]; then
+        while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            if [ -L "$(profile_path "$name")" ]; then manual_path=1; break; fi
+        done <<PROFILES
+$profiles
+PROFILES
+    fi
+    if [ "$manual_path" -eq 1 ]; then profiles=''; fish_file=''; fi
+fi
 profile_metadata() {
 profile_digests=''
-for name in $profiles; do
-    profile=$HOME/$name
+while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    profile=$(profile_path "$name")
     plain_path "$profile"
     if [ -e "$profile" ]; then
         [ -f "$profile" ] && [ -r "$profile" ] && [ -w "$profile" ] || fail "login profile is unreadable or not writable: $profile"
@@ -119,9 +261,11 @@ for name in $profiles; do
         prior=$(file_digest "$profile")
         prior_bytes=$(wc -c < "$profile")
     else prior=absent; prior_bytes=0; fi
-    profile_digests="$profile_digests$name $prior $prior_bytes
+    profile_digests="$profile_digests$profile $prior $prior_bytes
 "
-done
+done <<PROFILES
+$profiles
+PROFILES
 }
 if [ "$recover" -eq 0 ]; then profile_metadata; fi
 # The inventory contains only safe relative names, so this list needs no path splitting.
@@ -135,14 +279,20 @@ asset_destination() {
 # the same protection as init, and retains the account-wide installation claim.
 if [ "$native_held" -eq 0 ]; then
     set -- __install-hold --prepare-program --home "$data"
-    for name in $profiles; do set -- "$@" --profile "$HOME/$name"; done
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        set -- "$@" --profile "$(profile_path "$name")"
+    done <<PROFILES
+$profiles
+PROFILES
     if [ -n "$fish_file" ]; then set -- "$@" --fish-directory "$(dirname "$fish_file")"; fi
     if [ -n "${XDG_STATE_HOME-}" ]; then set -- "$@" --xdg-state-home "$XDG_STATE_HOME"; fi
     if [ -n "${XDG_CONFIG_HOME-}" ]; then set -- "$@" --xdg-config-home "$XDG_CONFIG_HOME"; fi
     # Retain the public caller while the native holder watches its lifetime.
-    if [ "$recover" -eq 1 ]; then
-        "$bundle/se" "$@" -- /bin/sh "$bundle/install.sh" --native-held --recover
-    else "$bundle/se" "$@" -- /bin/sh "$bundle/install.sh" --native-held; fi
+child_flags=--native-held
+if [ "$recover" -eq 1 ]; then child_flags="$child_flags --recover"; fi
+if [ "$no_modify_path" -eq 1 ]; then child_flags="$child_flags --no-modify-path"; fi
+"$bundle/se" "$@" -- /bin/sh "$bundle/install.sh" $child_flags
     exit "$?"
 fi
 # This reads custody from the native channel only after verifying the inherited
@@ -197,10 +347,10 @@ prefix_digest() {
 }
 
 profile_append_matches() {
-    profile=$HOME/$1
+    profile=$(profile_path "$1")
     [ ! -L "$profile" ] && [ -f "$profile" ] || return 1
-    prior=$(cat "$stage/$1.digest") || return 1
-    prior_bytes=$(cat "$stage/$1.bytes") || return 1
+    prior=$(cat "$stage/$(profile_base "$1").digest") || return 1
+    prior_bytes=$(cat "$stage/$(profile_base "$1").bytes") || return 1
     current_bytes=$(wc -c < "$profile") || return 1
     block_bytes=$(wc -c < "$stage/path-block") || return 1
     appended_bytes=$((current_bytes - prior_bytes))
@@ -247,12 +397,26 @@ report_install() {
     printf 'Run this command now in this terminal to verify the installation:\n  '
     # Single-quote the literal path, including homes containing spaces or apostrophes.
     printf "'%s' --version\n" "$(printf '%s' "$bin/se" | sed "s/'/'\"'\"'/g")"
+if [ "$manual_path" -eq 1 ]; then
+    printf 'No shell configuration file was modified. To use se by name, add this exact line to the listed file:\n'
+    case ${SHELL-} in
+    */fish) printf 'File: ~/.config/fish/config.fish\n  set -gx PATH "$HOME/.local/bin" $PATH\n' ;;
+    */zsh) if [ -n "${ZDOTDIR-}" ]; then printf 'File: %s/.zshrc\n  export PATH="$HOME/.local/bin:$PATH"\n' "$ZDOTDIR"; else printf 'File: ~/.zshrc\n  export PATH="$HOME/.local/bin:$PATH"\n'; fi ;;
+    */csh|*/tcsh) printf 'File: ~/.tcshrc (or ~/.cshrc)\n  set path = ($HOME/.local/bin $path)\n' ;;
+    */elvish) printf 'File: ~/.config/elvish/rc.elv\n  use builtin; var builtin:paths = ($env:HOME + "/.local/bin" +~ $builtin:paths)\n' ;;
+    */nu) printf "File: \$nu.env-path (Nushell env config, e.g. ~/.config/nushell/env.nu)\n  \$env.PATH = (\$env.PATH | split row (char esep) | prepend (\$env.HOME | path join '.local' 'bin'))\n" ;;
+    */xonsh) printf 'File: ~/.config/xonsh/rc.xsh\n  import os; os.environ["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + os.environ.get("PATH", "")\n' ;;
+    *) printf 'File: ~/.profile (interactive bash: ~/.bashrc)\n  export PATH="$HOME/.local/bin:$PATH"\n' ;;
+    esac
+    printf 'Run the same line now in this terminal to use se by name here.\n'
+else
     printf 'To use se by name here, add its directory to this terminal PATH:\n'
     case ${SHELL-} in
-        */fish) printf '  set -gx PATH "$HOME/.local/bin" $PATH\n' ;;
-        *) printf '  export PATH="$HOME/.local/bin:$PATH"\n' ;;
+    */fish) printf '  set -gx PATH "$HOME/.local/bin" $PATH\n' ;;
+    *) printf '  export PATH="$HOME/.local/bin:$PATH"\n' ;;
     esac
     printf 'New login terminals load the saved PATH change automatically.\n'
+fi
 }
 cleanup() {
     exit_code=$?
@@ -291,17 +455,37 @@ stage=$partial
 resume=0
 if [ "$recover" -eq 1 ]; then
     recovery=$("$bundle/se" __install-recovery-check "$data" && printf 'end\n') || fail 'partial journal or matching archive is unreadable'
-    {
-        IFS= read -r mode
-        IFS= read -r saved_profiles
-        IFS= read -r saved_fish
-        IFS= read -r end_marker
-    } <<RECOVERY
+    mode=''; count=0; targets=0; saved_profiles=''; saved_fish=''; end_marker=''
+    while IFS= read -r line; do
+        if [ "$line" = end ]; then end_marker=end; break; fi
+        if [ -z "$mode" ]; then
+            case $line in
+            'fresh 0') mode=fresh; count=0 ;;
+            'resume '*)
+                count=${line#resume }
+                case $count in ''|*[!0-9]*) mode=unknown; count=0 ;; *) mode=resume ;; esac
+                ;;
+            *) mode=unknown; count=0 ;;
+            esac
+            continue
+        fi
+        if [ "$targets" -lt "$count" ]; then
+            targets=$((targets + 1))
+            saved_profiles="${saved_profiles}${line}
+"
+            continue
+        fi
+        [ -n "$saved_fish" ] || saved_fish=$line
+    done <<RECOVERY
 $recovery
 RECOVERY
+    [ "$mode" = fresh ] || [ "$mode" = resume ] || fail 'native recovery response is invalid'
     [ "$end_marker" = end ] || fail 'native recovery response is incomplete'
     if [ "$mode" = resume ]; then
-        resume=1; profiles=$saved_profiles; fish_file=$saved_fish
+        # Resume follows the saved plan; flags on this run never re-select it.
+        resume=1; profiles="$saved_profiles"; fish_file="$saved_fish"
+        if [ -n "$saved_profiles" ] || [ -n "$saved_fish" ]; then manual_path=0
+        else manual_path=1; fi
     elif [ "$mode" = fresh ]; then
         # No payload was published before the interrupted journal was complete.
         find "$stage" -depth -type f -exec rm {} +
@@ -318,11 +502,14 @@ case ":$PATH:" in
 esac
 # <<< StateEngine PATH <<<
 BLOCK
-while read -r name prior prior_bytes; do
-    if [ -n "$name" ]; then
-        printf '%s\n' "$prior" > "$stage/$name.digest"
-        printf '%s\n' "$prior_bytes" > "$stage/$name.bytes"
-    fi
+while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    prior_bytes=${line##* }
+    rest=${line% *}
+    prior=${rest##* }
+    name=${rest% *}
+    printf '%s\n' "$prior" > "$stage/$(profile_base "$name").digest"
+    printf '%s\n' "$prior_bytes" > "$stage/$(profile_base "$name").bytes"
 done <<DIGESTS
 $profile_digests
 DIGESTS
@@ -345,29 +532,66 @@ fi
     if [ -n "$fish_file" ]; then
         checksum=$(file_digest "$stage/fish-config")
         printf ',\n    {"path": '; json_string "$fish_file"; printf ', "sha256": "%s"}' "$checksum"
+    elif [ -n "$inherited_fish_path" ]; then
+        printf ',\n    {"path": '; json_string "$inherited_fish_path"; printf ', "sha256": "%s"}' "$inherited_fish_sha256"
     fi
     printf '\n  ],\n  "created_directories": ['
     comma=''
+    seen_dirs=''
     while IFS= read -r directory; do
-        if [ -n "$directory" ]; then printf '%s' "$comma"; json_string "$directory"; comma=','; fi
+        if [ -n "$directory" ]; then
+            case "
+$seen_dirs
+" in
+            *"
+$directory
+"*) ;;
+            *)
+                printf '%s' "$comma"; json_string "$directory"; comma=','
+                seen_dirs="$seen_dirs
+$directory"
+                ;;
+            esac
+        fi
     done <<DIRECTORIES
 $created_directories
+$inherited_dirs
 DIRECTORIES
     printf '],\n  "path_edits": ['
     comma=''
-    for name in $profiles; do
-        printf '%s\n    {"target": ' "$comma"; json_string "$HOME/$name"; printf ', "before_sha256": '
-        prior=$(cat "$stage/$name.digest")
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        printf '%s\n    {"target": ' "$comma"; json_string "$(profile_path "$name")"; printf ', "before_sha256": '
+        prior=$(cat "$stage/$(profile_base "$name").digest")
         if [ "$prior" != absent ]; then json_string "$prior"; else printf null; fi
-        prior_bytes=$(cat "$stage/$name.bytes")
+        prior_bytes=$(cat "$stage/$(profile_base "$name").bytes")
         printf ', "before_bytes": %s, "block": ' "$prior_bytes"; json_block "$stage/path-block"; printf '}'
         comma=','
-    done
-    printf '\n  ]}\n'
+    done <<PROFILES
+$profiles
+PROFILES
+    printf '\n  ]'
+    inherited=$inherit_path_edits
+    if [ -n "$inherited" ]; then
+        case "$inherited" in
+        '['*']')
+            elements=${inherited#[}
+            elements=${elements%]}
+            printf ',\n  "inherited_path_edits": [%s]' "$elements"
+            ;;
+        *) fail 'inherited PATH custody is malformed' ;;
+        esac
+    fi
+    printf '\n}\n'
 } > "$stage/install.json"
 file_digest "$bundle/manifest.json" > "$stage/.manifest-ready"
 set -- "$stage/install.json" "$stage/.manifest-ready" "$stage/path-block"
-for name in $profiles; do set -- "$@" "$stage/$name.digest" "$stage/$name.bytes"; done
+while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    set -- "$@" "$stage/$(profile_base "$name").digest" "$stage/$(profile_base "$name").bytes"
+done <<PROFILES
+$profiles
+PROFILES
 if [ -n "$fish_file" ]; then set -- "$@" "$stage/fish-config"; fi
 flush "$@" "$stage" "$data"
 # Publish readiness only after the entire original journal is durable.
@@ -391,24 +615,55 @@ publish_file "$bundle/se" "$bin/se" 755
 if [ -n "$fish_file" ]; then
     publish_file "$stage/fish-config" "$fish_file" 600
 fi
-for name in $profiles; do
-    profile=$HOME/$name
-    prior=$(cat "$stage/$name.digest")
+while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    profile=$(profile_path "$name")
+    prior=$(cat "$stage/$(profile_base "$name").digest")
     if [ ! -e "$profile" ] && [ ! -L "$profile" ]; then
         [ "$prior" = absent ] || fail "original login profile is absent: $profile"
         (set -C; : > "$profile") || fail "login profile appeared during installation: $profile"
     fi
     profile_append_matches "$name" || fail "login profile changed; preserved: $profile"
     dd if="$stage/path-block" bs=1 skip="$appended_bytes" conv=notrunc >> "$profile" 2>/dev/null
-    flush "$profile" "$HOME"
+    flush "$profile" "$(dirname "$profile")"
     profile_append_matches "$name" && [ "$appended_bytes" -eq "$block_bytes" ] || fail "login profile append readback failed: $profile"
-done
+done <<PROFILES
+$profiles
+PROFILES
 for relative in $asset_files; do cmp -s "$(asset_destination "$relative")" "$bundle/$relative" || fail "installed asset readback failed: $relative"; done
 cmp -s "$bin/se" "$bundle/se" || fail 'installed binary readback failed'
 set -- "$bundle/se" __install-files-check "$bin/se"
 for relative in $asset_files; do set -- "$@" "$(asset_destination "$relative")"; done
+if [ -n "$inherited_fish_path" ]; then set -- "$@" "$inherited_fish_path"; fi
 "$@" || fail 'native installed-file ownership readback failed'
-publish_file "$stage/install.json" "$record" 600
-cmp -s "$record" "$stage/install.json" || fail 'ownership record readback failed'
+record_source=$stage/install.json
+inherited_elements=$(sed -n 's/^  "inherited_path_edits": \[\(.*\)\][[:space:]]*$/\1/p' "$stage/install.json")
+if [ -n "$inherited_elements" ]; then
+    # Carry inherited PATH custody into the published record as one owned
+    # array; the journal keeps pending writes and inheritance separate.
+    inherited="$inherited_elements" awk '
+        BEGIN { in_edits = 0; count = 0; inherited = ENVIRON["inherited"] }
+        /^  "inherited_path_edits": \[/ { next }
+        /^  "path_edits": \[/ { in_edits = 1; print; next }
+        in_edits && /^  \]/ {
+            for (i = 1; i <= count; i++) {
+                line = buf[i]
+                if (i == count) line = line ","
+                print line
+            }
+            printf "    %s\n", inherited
+            print "  ]"
+            in_edits = 0
+            next
+        }
+        in_edits { buf[++count] = $0; next }
+        { print }
+    ' "$stage/install.json" > "$stage/install.record"
+    flush "$stage/install.record" "$stage"
+    record_source=$stage/install.record
+fi
+publish_file "$record_source" "$record" 600
+cmp -s "$record" "$record_source" || fail 'ownership record readback failed'
 "$bundle/se" __install-files-check "$record" || fail 'native ownership record readback failed'
+if [ -f "$replace_state" ]; then rm "$replace_state"; flush "$data"; fi
 done_install=1

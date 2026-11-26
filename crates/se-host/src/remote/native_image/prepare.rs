@@ -93,7 +93,16 @@ pub async fn prepare_image(
     if let Err(error) = result {
         // A lost response or cancelled stream leaves no cleanup witness. Retry
         // removal of this invocation's nonce only; retain the original refusal.
-        let _cleanup = ssh(destination, staging::remove(&upload, image.windows)).await;
+        let script = staging::remove(&upload, image.windows);
+        let _cleanup = ssh(
+            destination,
+            if image.windows {
+                script
+            } else {
+                staging::sh(&script)
+            },
+        )
+        .await;
         return Err(error);
     }
     progress(ImageProgress {
@@ -184,9 +193,14 @@ async fn publish_image(destination: &str, image: &Image, upload: &str) -> Result
 }
 
 async fn verify_image(destination: &str, image: &Image, path: &str) -> Result<()> {
+    let script = staging::verify(path, &image.digest, image.windows, image.apple);
     let outcome = ssh(
         destination,
-        staging::verify(path, &image.digest, image.windows, image.apple),
+        if image.windows {
+            script
+        } else {
+            staging::sh(&script)
+        },
     )
     .await?;
     let (verified, detail) = (outcome.success, &outcome.stdout);
@@ -198,9 +212,14 @@ async fn verify_image(destination: &str, image: &Image, path: &str) -> Result<()
 }
 
 async fn check_image(destination: &str, image: &Image, path: &str) -> Result<()> {
+    let script = staging::check(path, image.windows, image.apple);
     let outcome = ssh(
         destination,
-        staging::check(path, image.windows, image.apple),
+        if image.windows {
+            script
+        } else {
+            staging::sh(&script)
+        },
     )
     .await?;
     let (checked, detail) = (outcome.success, &outcome.stdout);
@@ -502,7 +521,7 @@ mod tests {
         // link(1) acts on the exact destination and refuses any incumbent
         // atomically; the refusal names the destination before exiting.
         assert!(
-            bundle.contains("if (chmod 700 u.upload && link u.upload .stateengine-runtime/abc || { printf 'image-publish-refused:link-failed:%s\\n' .stateengine-runtime/abc; exit 1; }); then"),
+            bundle.contains("if (chmod 700 u.upload && link u.upload .stateengine-runtime/abc || { printf \"image-publish-refused:link-failed:%s\\n\" .stateengine-runtime/abc; exit 1; }); then"),
             "publish must link the exact destination:
 {bundle}"
         );

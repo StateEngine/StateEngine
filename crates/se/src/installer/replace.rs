@@ -3,14 +3,71 @@ use super::{args, manifest, native};
 use se_types::Result;
 use std::ffi::OsString;
 
+#[cfg(unix)]
+fn unix_command(
+    program: &OsString,
+    home: &std::path::Path,
+    archive: &std::path::Path,
+    no_modify_path: bool,
+    inherited: Option<&str>,
+) -> Result<Vec<OsString>> {
+    let mut command = vec![
+        program.clone(),
+        "__install-hold".into(),
+        "--prepare-program".into(),
+        "--home".into(),
+        home.as_os_str().to_os_string(),
+    ];
+    if !no_modify_path
+        && std::env::var_os("SHELL").is_some_and(|shell| {
+            std::path::Path::new(&shell)
+                .file_name()
+                .is_some_and(|name| name == "fish")
+        })
+    {
+        let config = match std::env::var_os("XDG_CONFIG_HOME") {
+            Some(value) => args::path(&value)?,
+            None => args::path(&std::env::var_os("HOME").ok_or_else(|| args::invalid("HOME"))?)?
+                .join(".config"),
+        };
+        command.extend([
+            "--fish-directory".into(),
+            config.join("fish/conf.d").into_os_string(),
+        ]);
+    }
+    command.extend([
+        "--".into(),
+        "/bin/sh".into(),
+        archive.join("install.sh").into_os_string(),
+        "--native-held".into(),
+    ]);
+    if no_modify_path {
+        command.push("--no-modify-path".into());
+    }
+    if let Some(inherited) = inherited {
+        command.push("--inherit-path-edits".into());
+        command.push(inherited.into());
+    }
+    Ok(command)
+}
+
 pub fn replace_installation(arguments: &[OsString]) -> Result<i32> {
-    if arguments.len() != 3 {
-        return Err(args::invalid("__install-replace <selected data home>"));
+    const USAGE: &str = "__install-replace <selected data home> [--no-modify-path]";
+    if !(3..=4).contains(&arguments.len()) {
+        return Err(args::invalid(USAGE));
     }
     let home = args::path(&arguments[2])?;
     if home != crate::bootstrap::state_home(None)? {
         return Err(args::invalid("the selected platform data home"));
     }
+    let no_modify_path = if arguments.len() == 4 {
+        if arguments[3] != std::ffi::OsStr::new("--no-modify-path") {
+            return Err(args::invalid(USAGE));
+        }
+        true
+    } else {
+        false
+    };
     // Verify the replacement before removal. This does not prepare directories
     // or open a writer/migrate the retained database.
     manifest::verify()?;
@@ -38,39 +95,22 @@ pub fn replace_installation(arguments: &[OsString]) -> Result<i32> {
         stderr.write_all(text.as_bytes())?;
         stderr.flush()
     };
-    let _lease = crate::runtime::remove_for_reinstall(&context, &claim, &image, &mut diagnostic)?;
+    let (_lease, no_modify_path, inherited) = crate::runtime::remove_for_reinstall(
+        &context,
+        &claim,
+        &image,
+        no_modify_path,
+        &mut diagnostic,
+    )?;
     #[cfg(unix)]
     {
-        let mut command = vec![
-            arguments[0].clone(),
-            "__install-hold".into(),
-            "--prepare-program".into(),
-            "--home".into(),
-            home.into_os_string(),
-        ];
-        if std::env::var_os("SHELL").is_some_and(|shell| {
-            std::path::Path::new(&shell)
-                .file_name()
-                .is_some_and(|name| name == "fish")
-        }) {
-            let config = match std::env::var_os("XDG_CONFIG_HOME") {
-                Some(value) => args::path(&value)?,
-                None => {
-                    args::path(&std::env::var_os("HOME").ok_or_else(|| args::invalid("HOME"))?)?
-                        .join(".config")
-                }
-            };
-            command.extend([
-                "--fish-directory".into(),
-                config.join("fish/conf.d").into_os_string(),
-            ]);
-        }
-        command.extend([
-            "--".into(),
-            "/bin/sh".into(),
-            archive.join("install.sh").into_os_string(),
-            "--native-held".into(),
-        ]);
+        let command = unix_command(
+            &arguments[0],
+            &home,
+            archive,
+            no_modify_path,
+            inherited.as_deref(),
+        )?;
         super::run_claimed(&command, &claim)
     }
     #[cfg(windows)]
@@ -78,17 +118,22 @@ pub fn replace_installation(arguments: &[OsString]) -> Result<i32> {
         let windows =
             args::path(&std::env::var_os("WINDIR").ok_or_else(|| args::invalid("WINDIR"))?)?;
         let powershell = windows.join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let mut child_args: Vec<OsString> = vec![
+            "-NoProfile".into(),
+            "-ExecutionPolicy".into(),
+            "Bypass".into(),
+            "-File".into(),
+            archive.join("install.ps1").into_os_string(),
+        ];
+        if no_modify_path {
+            child_args.push("-NoModifyPath".into());
+        }
+        if let Some(inherited) = &inherited {
+            child_args.push("-InheritPathEdits".into());
+            child_args.push(inherited.into());
+        }
         claim
-            .run_child(
-                powershell.as_os_str(),
-                &[
-                    "-NoProfile".into(),
-                    "-ExecutionPolicy".into(),
-                    "Bypass".into(),
-                    "-File".into(),
-                    archive.join("install.ps1").into_os_string(),
-                ],
-            )
+            .run_child(powershell.as_os_str(), &child_args)
             .map_err(native)
     }
     #[cfg(not(any(unix, windows)))]
@@ -96,4 +141,162 @@ pub fn replace_installation(arguments: &[OsString]) -> Result<i32> {
         "installation replacement",
         "a supported native platform",
     ))
+}
+
+fn stale_custody(path: &std::path::Path, reason: impl Into<String>) -> se_types::SeError {
+    se_types::SeError::new(se_types::Detail::StateConflict(
+        se_types::details::StateConflict {
+            subject: path.display().to_string(),
+            reason: reason.into(),
+            next_step: format!(
+                "Remove '{}' if no replacement is in progress, then retry the installer",
+                path.display()
+            ),
+        },
+    ))
+}
+
+fn load_replace_custody(home: &std::path::Path) -> Result<Option<crate::runtime::ReplaceCustody>> {
+    se_proc::NativeStateFiles::open(home).map_err(native)?;
+    let path = home.join("standalone-install.replace.json");
+    let Some(mut file) = se_proc::OwnedFile::open(&path).map_err(native)? else {
+        return Ok(None);
+    };
+    let bytes = file.read(1024 * 1024).map_err(native)?;
+    let custody: crate::runtime::ReplaceCustody = serde_json::from_slice(&bytes)
+        .map_err(|e| stale_custody(&path, format!("invalid replacement custody JSON: {e}")))?;
+    if custody.schema != "stateengine-install-replace/v1"
+        || custody.owner != crate::route::owner::observe(&[])?.os_owner()
+    {
+        return Err(stale_custody(
+            &path,
+            "replacement custody has an invalid schema or owner",
+        ));
+    }
+    Ok(Some(custody))
+}
+
+fn validate_inherited_directories<'a>(
+    path: &std::path::Path,
+    custody: &'a crate::runtime::ReplaceCustody,
+) -> Result<&'a [String]> {
+    let mut seen = Vec::<&str>::new();
+    for dir in &custody.inherited_directories {
+        let dir_path = std::path::Path::new(dir);
+        if dir.is_empty()
+            || !dir_path.is_absolute()
+            || seen.contains(&dir.as_str())
+            || !custody
+                .inherited_files
+                .iter()
+                .any(|file| std::path::Path::new(&file.path).starts_with(dir_path))
+        {
+            return Err(stale_custody(
+                path,
+                "replacement custody names invalid inherited directories",
+            ));
+        }
+        seen.push(dir.as_str());
+    }
+    Ok(&custody.inherited_directories)
+}
+
+/// Read and natively validate any durable replacement custody left by a
+/// `--no-modify-path` replacement before the child installer wrote its journal.
+pub fn read_replace_custody(arguments: &[OsString]) -> Result<i32> {
+    if arguments.len() != 3 {
+        return Err(args::invalid(
+            "__install-replace-custody <selected data home>",
+        ));
+    }
+    let home = args::path(&arguments[2])?;
+    if home != crate::bootstrap::state_home(None)? {
+        return Err(args::invalid("the selected platform data home"));
+    }
+    let custody_path = home.join("standalone-install.replace.json");
+    let Some(custody) = load_replace_custody(&home)? else {
+        return Ok(0);
+    };
+    let mut seen_bases = Vec::<&str>::new();
+    for edit in &custody.inherited_path_edits {
+        #[cfg(windows)]
+        {
+            if edit.target != r"HKCU\Environment\Path" || !seen_bases.is_empty() {
+                return Err(stale_custody(
+                    &custody_path,
+                    "inherited PATH custody differs from the original registry target",
+                ));
+            }
+            seen_bases.push(r"HKCU\Environment\Path");
+        }
+        #[cfg(not(windows))]
+        {
+            let base = std::path::Path::new(&edit.target)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| stale_custody(&custody_path, "invalid inherited profile path"))?;
+            if !matches!(
+                base,
+                ".profile" | ".bash_profile" | ".bash_login" | ".zprofile" | ".bashrc" | ".zshrc"
+            ) || seen_bases.contains(&base)
+            {
+                return Err(stale_custody(
+                    &custody_path,
+                    "duplicate or unsupported inherited login profile",
+                ));
+            }
+            seen_bases.push(base);
+        }
+    }
+    let mut fish_path = String::new();
+    let mut fish_sha = String::new();
+    if custody.inherited_files.len() > 1 {
+        return Err(stale_custody(
+            &custody_path,
+            "replacement custody lists more than one Fish PATH file",
+        ));
+    }
+    if let Some(entry) = custody.inherited_files.first() {
+        if !se_core::ops::installation::is_fish_path_file(&entry.path) {
+            return Err(stale_custody(
+                &custody_path,
+                "replacement custody lists a non-Fish inherited file",
+            ));
+        }
+        let mut owned = se_proc::OwnedFile::open(std::path::Path::new(&entry.path))
+            .map_err(native)?
+            .ok_or_else(|| {
+                stale_custody(
+                    &custody_path,
+                    format!("preserved Fish PATH file is absent: {}", entry.path),
+                )
+            })?;
+        let actual = se_types::Sha256::from_bytes(owned.sha256().map_err(native)?);
+        if actual.hex() != entry.sha256 {
+            return Err(stale_custody(
+                &custody_path,
+                format!("preserved Fish PATH file changed: {}", entry.path),
+            ));
+        }
+        fish_path = entry.path.clone();
+        fish_sha = entry.sha256.clone();
+    }
+    let dirs = validate_inherited_directories(&custody_path, &custody)?;
+    println!(
+        "no_modify_path={}",
+        if custody.no_modify_path { 1 } else { 0 }
+    );
+    if !custody.inherited_path_edits.is_empty() {
+        let edits_json = serde_json::to_string(&custody.inherited_path_edits)
+            .map_err(|e| se_core::scope::unreadable("inherited PATH custody", &e.to_string()))?;
+        println!("inherited_path_edits={edits_json}");
+    }
+    if !fish_path.is_empty() {
+        println!("inherited_fish_path={fish_path}");
+        println!("inherited_fish_sha256={fish_sha}");
+    }
+    for dir in dirs {
+        println!("inherited_dir={dir}");
+    }
+    Ok(0)
 }

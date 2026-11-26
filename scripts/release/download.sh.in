@@ -14,6 +14,14 @@ for tool in curl tar mktemp awk; do
 done
 if [ "$macos" = 1 ]; then hash=shasum; else hash=sha256sum; fi
 command -v "$hash" >/dev/null 2>&1 || fail "required checksum command is absent: $hash"
+no_modify_path=''
+while [ "$#" -ge 1 ]; do
+    case "$1" in
+    --no-modify-path) no_modify_path=--no-modify-path ;;
+    *) fail 'usage: sh ./install.sh [--no-modify-path]' ;;
+    esac
+    shift
+done
 work=$(mktemp -d "${TMPDIR:-/tmp}/stateengine-download.XXXXXX") || fail 'cannot create private download scratch'
 preserve_input=0
 cleanup() {
@@ -25,7 +33,7 @@ cleanup() {
 }
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
-curl --proto '=https' --proto-redir '=https' -fsSL --retry 2 \
+curl --proto '=https' --proto-redir '=https' -fsSL --retry 2 --connect-timeout 30 --max-time 300 \
     -o "$work/archive" "$base/$archive" || fail 'release download failed; check your network and retry this installer'
 if [ "$macos" = 1 ]; then
     sum=$(shasum -a 256 < "$work/archive") || fail 'cannot hash the download'
@@ -59,7 +67,8 @@ printf 'Installing StateEngine %s (unsigned release, SHA-256 verified)...\n' "$v
 # A child may have durably recorded a partial installation before refusing or
 # being interrupted. Its printed recovery command must keep its original input.
 preserve_input=1
-sh "$bundle/install.sh" || fail 'installation did not complete; follow the installer refusal above before retrying'
+# Unquoted: no flag is an empty word.
+sh "$bundle/install.sh" $no_modify_path </dev/null || fail 'installation did not complete; follow the installer refusal above before retrying'
 installed=${HOME:?}/.local/bin/se
 actual=$("$installed" --version) || fail 'installed command version readback failed'
 expected=$("$bundle/se" --version) || fail 'release command version readback failed'

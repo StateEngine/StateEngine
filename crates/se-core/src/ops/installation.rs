@@ -16,6 +16,21 @@ pub struct UninstallFile {
     pub path: String,
     pub sha256: String,
 }
+
+/// Owned Fish PATH snippet under `.../fish/conf.d/stateengine.fish`.
+pub fn is_fish_path_file(path: &str) -> bool {
+    let p = Path::new(path);
+    p.file_name().and_then(|n| n.to_str()) == Some("stateengine.fish")
+        && p.parent()
+            .and_then(Path::file_name)
+            .and_then(|n| n.to_str())
+            == Some("conf.d")
+        && p.parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .and_then(|n| n.to_str())
+            == Some("fish")
+}
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UninstallPathEdit {

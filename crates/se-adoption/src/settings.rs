@@ -166,15 +166,33 @@ pub fn merge(path: &Path, entries: &[(String, Value)]) -> Result<bool> {
     }
     Ok(changed)
 }
+/// Separate witnessed outcomes for one provider's settings edit and registration revocation.
+#[cfg_attr(not(feature = "listener"), allow(dead_code))]
+pub(crate) struct UninstallSteps {
+    pub settings_edited: Option<PathBuf>,
+    pub registration_revoked: Option<PathBuf>,
+}
+/// Failure during one provider's uninstall, preserving any achieved settings
+/// edit and naming the exact path where the refusal occurred.
+#[cfg_attr(not(feature = "listener"), allow(dead_code))]
+pub(crate) struct UninstallFailure {
+    pub settings_edited: Option<PathBuf>,
+    pub failed_path: PathBuf,
+    pub error: SeError,
+}
 pub fn uninstall(home: &Path) -> Result<Vec<PathBuf>> {
     uninstall_for(home, Kind::Claude)
 }
 pub fn uninstall_for(home: &Path, kind: Kind) -> Result<Vec<PathBuf>> {
-    let Some(registration) = super::read_for(home, kind)? else {
-        return Ok(vec![]);
-    };
-    let path = registration.settings.to_local()?;
-    let (pin, before, mut document) = read_document(&path)?;
+    match uninstall_steps(home, kind) {
+        Ok(steps) => Ok(steps.settings_edited.into_iter().collect()),
+        Err(failure) => Err(failure.error),
+    }
+}
+fn remove_registered_entries(
+    document: &mut Value,
+    registration: &super::Registration,
+) -> (bool, Vec<text::Edit>) {
     let mut changed = false;
     let mut edits = Vec::new();
     if let Some(hooks) = document.get_mut("hooks").and_then(Value::as_object_mut) {
@@ -222,24 +240,77 @@ pub fn uninstall_for(home: &Path, kind: Kind) -> Result<Vec<PathBuf>> {
             changed = true;
         }
     }
+    (changed, edits)
+}
+pub(crate) fn uninstall_steps(
+    home: &Path,
+    kind: Kind,
+) -> std::result::Result<UninstallSteps, UninstallFailure> {
+    let journal = home.join(kind.journal());
+    let Some(registration) = super::read_for(home, kind).map_err(|error| UninstallFailure {
+        settings_edited: None,
+        failed_path: journal.clone(),
+        error,
+    })?
+    else {
+        return Ok(UninstallSteps {
+            settings_edited: None,
+            registration_revoked: None,
+        });
+    };
+    let path = registration
+        .settings
+        .to_local()
+        .map_err(|error| UninstallFailure {
+            settings_edited: None,
+            failed_path: journal.clone(),
+            error,
+        })?;
+    let (pin, before, mut document) = read_document(&path).map_err(|error| UninstallFailure {
+        settings_edited: None,
+        failed_path: path.clone(),
+        error,
+    })?;
+    let (changed, edits) = remove_registered_entries(&mut document, &registration);
+    let mut settings_edited = None;
     if changed {
-        if let Some(pin) = &pin {
-            writable(&path, pin)?;
-        }
-        if registration.layout.created_file
-            && document.as_object().is_some_and(serde_json::Map::is_empty)
-        {
-            if let Some(pin) = pin {
-                pin.remove(digest(&before)).map_err(native)?;
+        let write_result = (|| -> Result<()> {
+            if let Some(pin) = &pin {
+                writable(&path, pin)?;
             }
-        } else {
-            write_document(&path, pin, &before, &document, &edits)?;
+            if registration.layout.created_file
+                && document.as_object().is_some_and(serde_json::Map::is_empty)
+            {
+                if let Some(pin) = pin {
+                    pin.remove(digest(&before)).map_err(native)?;
+                }
+            } else {
+                write_document(&path, pin, &before, &document, &edits)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = write_result {
+            return Err(UninstallFailure {
+                settings_edited: None,
+                failed_path: path,
+                error,
+            });
         }
+        settings_edited = Some(path);
     }
     // Revocation is independent of edited hooks: an edited command can remain
     // in the provider, but without this registration it is an inert success.
-    super::remove_for(home, kind)?;
-    Ok(if changed { vec![path] } else { vec![] })
+    if let Err(error) = super::remove_for(home, kind) {
+        return Err(UninstallFailure {
+            settings_edited,
+            failed_path: journal,
+            error,
+        });
+    }
+    Ok(UninstallSteps {
+        settings_edited,
+        registration_revoked: Some(journal),
+    })
 }
 
 fn is_toml(path: &Path) -> bool {

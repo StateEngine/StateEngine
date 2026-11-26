@@ -55,6 +55,42 @@ fn plain_tree(root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn remote_image_inventory(
+    sums: &[u8],
+    user: &Path,
+    archive: &Path,
+    expected: &mut BTreeMap<PathBuf, Sha256>,
+) -> Result<()> {
+    // The journal's exact-file comparison remains the binding check; this only
+    // extends the expected set so a full-archive install can resume.
+    let text = std::str::from_utf8(sums)
+        .map_err(|_| args::invalid("the original archive checksum inventory"))?;
+    for line in text.lines() {
+        let (_, name) = line
+            .split_once("  ")
+            .filter(|(digest, name)| {
+                digest.len() == 64
+                    && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    && !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"_./+-".contains(&byte))
+            })
+            .ok_or_else(|| args::invalid("the original archive checksum inventory"))?;
+        if name.starts_with("remote-images/")
+            && name
+                .split('/')
+                .all(|part| !part.is_empty() && part != "." && part != "..")
+        {
+            expected.insert(
+                user.join(".local/bin").join(name),
+                hash(&archive.join(name))?,
+            );
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn check(arguments: &[OsString]) -> Result<i32> {
     if arguments.len() != 3 {
         return Err(args::invalid(
@@ -87,6 +123,10 @@ pub(super) fn check(arguments: &[OsString]) -> Result<i32> {
     ] {
         expected.insert(assets.join(name), hash(&archive.join(name))?);
     }
+    let sums = read(&archive.join("SHA256SUMS"), 1024 * 1024)
+        .map_err(|_| args::invalid("the original archive checksum inventory"))?
+        .ok_or_else(|| args::invalid("the original archive checksum inventory"))?;
+    remote_image_inventory(&sums, &user, archive, &mut expected)?;
     let manifest = read(&stage.join("manifest.sha256"), 128)?;
     let plan = read(&stage.join("install.json"), 1024 * 1024)?;
     if manifest.is_none() || plan.is_none() {
@@ -119,7 +159,7 @@ fn fresh_destination_guard(expected: &BTreeMap<PathBuf, Sha256>, home: &Path) ->
             }
         }
     }
-    println!("fresh\n\n");
+    println!("fresh 0\n\n");
     Ok(())
 }
 
@@ -148,17 +188,7 @@ fn resume_plan(
     {
         return Err(args::invalid("the original native-owned installation plan"));
     }
-    let mut fish = String::new();
-    let config =
-        std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| user.join(".config"), Into::into);
-    let fish_path = config.join("fish/conf.d/stateengine.fish");
-    if record.files.iter().any(|file| file.path == fish_path) {
-        expected.insert(fish_path.clone(), hash(&stage.join("fish-config"))?);
-        fish = fish_path
-            .to_str()
-            .ok_or_else(|| args::invalid("lossless fish path"))?
-            .to_owned();
-    }
+    let fish = resume_fish_file(user, stage, &record, &mut expected)?;
     if record.files.len() != expected.len()
         || record
             .files
@@ -170,30 +200,24 @@ fn resume_plan(
         ));
     }
     let block = required(&stage.join("path-block"), 8192)?;
+    // The saved plan is the only eligibility source: recovery resumes the
+    // exact full target paths from the verified journal, never names
+    // recomputed from this run's flags or environment.
     let mut profiles = Vec::<String>::new();
+    let mut bases = Vec::<String>::new();
     for edit in &record.path_edits {
-        let name = Path::new(&edit.target)
-            .strip_prefix(user)
-            .ok()
-            .and_then(|path| path.to_str())
-            .filter(|name| {
-                matches!(
-                    *name,
-                    ".profile" | ".bash_profile" | ".bash_login" | ".zprofile"
-                )
-            })
-            .ok_or_else(|| args::invalid("the original login profile paths"))?;
-        if profiles.iter().any(|prior| prior == name) || edit.block.as_bytes() != block {
+        let base = profile_base(&edit.target)?;
+        if bases.iter().any(|prior| prior == base) || edit.block.as_bytes() != block {
             return Err(args::invalid(
                 "unique original login profiles and PATH block",
             ));
         }
-        let digest = required(&stage.join(format!("{name}.digest")), 128)?;
+        let digest = required(&stage.join(format!("{base}.digest")), 128)?;
         let expected_digest = edit
             .before_sha256
             .as_ref()
             .map_or_else(|| "absent".into(), Sha256::hex);
-        let bytes = required(&stage.join(format!("{name}.bytes")), 64)?;
+        let bytes = required(&stage.join(format!("{base}.bytes")), 64)?;
         if std::str::from_utf8(&digest).ok().map(str::trim) != Some(expected_digest.as_str())
             || std::str::from_utf8(&bytes)
                 .ok()
@@ -204,13 +228,90 @@ fn resume_plan(
                 "the original profile prefix digest and length",
             ));
         }
-        profiles.push(name.to_owned());
+        bases.push(base.to_owned());
+        profiles.push(edit.target.clone());
+    }
+    // Inherited custody from a replaced image: validated against the profile
+    // allowlist and uniqueness only. It carries no sidecars or block to
+    // replay, and nothing here becomes a pending write.
+    let mut inherited_bases = Vec::<String>::new();
+    for edit in &record.inherited_path_edits {
+        let base = profile_base(&edit.target)?;
+        if bases
+            .iter()
+            .chain(inherited_bases.iter())
+            .any(|prior| prior == base)
+        {
+            return Err(args::invalid(
+                "unique original login profiles and PATH block",
+            ));
+        }
+        inherited_bases.push(base.to_owned());
     }
     Installation {
         record_path: home.join("standalone-install.json"),
         record,
     }
     .plan()?;
-    println!("resume\n{}\n{fish}", profiles.join(" "));
+    if profiles.is_empty() {
+        println!("resume 0\n{fish}");
+    } else {
+        println!("resume {}\n{}\n{fish}", profiles.len(), profiles.join("\n"));
+    }
     Ok(0)
+}
+
+fn resume_fish_file(
+    user: &Path,
+    stage: &Path,
+    record: &InstallRecord,
+    expected: &mut BTreeMap<PathBuf, Sha256>,
+) -> Result<String> {
+    let Some(fish_entry) = record
+        .files
+        .iter()
+        .find(|file| se_core::ops::installation::is_fish_path_file(&file.path.to_string_lossy()))
+    else {
+        return Ok(String::new());
+    };
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| user.join(".config"), Into::into);
+    let fish_path = config.join("fish/conf.d/stateengine.fish");
+    if OwnedFile::open(&stage.join("fish-config"))
+        .map_err(native)?
+        .is_some()
+    {
+        if fish_entry.path != fish_path {
+            return Err(args::invalid(
+                "exact original archive files and selected installation paths",
+            ));
+        }
+        expected.insert(fish_path.clone(), hash(&stage.join("fish-config"))?);
+        return fish_path
+            .to_str()
+            .ok_or_else(|| args::invalid("lossless fish path"))
+            .map(str::to_owned);
+    }
+    // Inherited Fish PATH file from a `--no-modify-path` replacement:
+    // verify the preserved file on disk without scheduling a rewrite.
+    if hash(&fish_entry.path)? != fish_entry.sha256 {
+        return Err(args::invalid("unchanged preserved Fish PATH file"));
+    }
+    expected.insert(fish_entry.path.clone(), fish_entry.sha256);
+    Ok(String::new())
+}
+
+fn profile_base(target: &str) -> Result<&str> {
+    let base = Path::new(target)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| args::invalid("the original profile paths"))?;
+    if !matches!(
+        base,
+        ".profile" | ".bash_profile" | ".bash_login" | ".zprofile" | ".bashrc" | ".zshrc"
+    ) {
+        return Err(args::invalid("the original profile paths"));
+    }
+    Ok(base)
 }

@@ -39,6 +39,95 @@ pub(super) fn reconcile_paths(plan: &ValidatedUninstallPlan, effects: &mut Unins
         None,
     );
 }
+/// Replacement with `--no-modify-path`: read back every planned target,
+/// write nothing, and report its custody carried to the replacement.
+pub(super) fn preserve_paths(plan: &ValidatedUninstallPlan, effects: &mut UninstallEffects) {
+    effects.path_complete = true;
+    for edit in plan.path_edits() {
+        match preserve_edit(edit, &mut effects.path) {
+            Ok(()) => effects.integrations.push(IntegrationEffect {
+                path: edit.target.clone(),
+                entry: edit.block.clone(),
+                action: FileOutcome::Unchanged,
+                witness: witness(
+                    WitnessState::Witnessed,
+                    "owned PATH custody preserved for the replacement; no bytes written",
+                    None,
+                ),
+            }),
+            Err(error) => {
+                effects.path_complete = false;
+                effects.integrations.push(IntegrationEffect {
+                    path: edit.target.clone(),
+                    entry: edit.block.clone(),
+                    action: FileOutcome::Unreadable,
+                    witness: witness(
+                        WitnessState::Failed,
+                        "PATH custody preserved check failed",
+                        Some(error.to_string()),
+                    ),
+                });
+            }
+        }
+    }
+    effects.path.witness = witness(
+        if effects.path_complete {
+            WitnessState::Witnessed
+        } else {
+            WitnessState::Failed
+        },
+        "all planned user PATH targets read back unchanged; no bytes written",
+        None,
+    );
+}
+#[cfg(not(windows))]
+fn preserve_edit(edit: &UninstallPathEdit, path: &mut PathEffect) -> Result<()> {
+    let Some(mut pin) = OwnedFile::open(Path::new(&edit.target)).map_err(native_error)? else {
+        path.after_entries.push(format!(
+            "{}: profile absent; record custody carried to the replacement",
+            edit.target
+        ));
+        return Ok(());
+    };
+    let bytes = pin.read(1024 * 1024).map_err(native_error)?;
+    let current = std::str::from_utf8(&bytes).map_err(|_| conflict(&edit.target))?;
+    if current.contains(&edit.block) {
+        path.before_entries
+            .push(format!("{}: owned profile block preserved", edit.target));
+    } else {
+        path.after_entries.push(format!(
+            "{}: owned block missing; record custody carried to the replacement",
+            edit.target
+        ));
+    }
+    Ok(())
+}
+#[cfg(windows)]
+fn preserve_edit(edit: &UninstallPathEdit, path: &mut PathEffect) -> Result<()> {
+    let native = se_proc::NativeUserPath::open();
+    let observed = native
+        .read()
+        .map_err(|e| se_core::scope::unreadable("user PATH", &e.to_string()))?;
+    let entries: Vec<String> = observed
+        .value()
+        .map(|value| value.split(';').map(str::to_owned).collect())
+        .unwrap_or_default();
+    if entries
+        .iter()
+        .any(|entry| entry.eq_ignore_ascii_case(&edit.block))
+    {
+        path.before_entries = entries;
+        path.before_entries
+            .push(format!("{}: owned PATH block preserved", edit.target));
+    } else {
+        path.before_entries = entries;
+        path.after_entries.push(format!(
+            "{}: PATH entry absent; record custody carried to the replacement",
+            edit.target
+        ));
+    }
+    Ok(())
+}
 pub(super) fn converted(edit: &UninstallPathEdit) -> Result<PathEdit> {
     Ok(PathEdit {
         target: edit.target.clone(),

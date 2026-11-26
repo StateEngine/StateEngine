@@ -2,29 +2,126 @@
 //! it, the record, created directories and the recovery rescan after it.
 use super::*;
 
-/// Reconciles PATH and removes every owned file except the running image.
-/// Reports whether all of them and the recovery rescan resolved.
+pub(super) struct SettlePolicy {
+    pub preserve: bool,
+    pub clear_replace_custody: bool,
+}
+
+/// Reconciles PATH (or preserves it for a `--no-modify-path` replacement),
+/// clears stale replacement custody on plain uninstall, and removes every
+/// owned file except the running image. Reports whether all of them and the
+/// recovery rescan resolved.
 pub(super) fn remove_owned_files(
     plan: &ValidatedUninstallPlan,
     installed: &UninstallFile,
     parents: &[PathBuf],
     effects: &mut UninstallEffects,
+    policy: SettlePolicy,
 ) -> bool {
     let mut safe = true;
-    reconcile_paths(plan, effects);
+    if policy.preserve {
+        preserve_paths(plan, effects);
+    } else {
+        reconcile_paths(plan, effects);
+    }
     safe &= effects.path_complete;
+    if policy.clear_replace_custody
+        && let Some(effect) = remove_stale_replace_custody(plan.state_home())
+    {
+        safe &= matches!(effect.action, FileOutcome::Removed)
+            && effect.witness.state == WitnessState::Witnessed;
+        effects.integrations.push(effect);
+    }
     for file in plan
         .files()
         .iter()
         .filter(|file| file.path != installed.path)
     {
-        let result = remove_file(file);
-        safe &= gone(&result.outcome);
+        let fish = policy.preserve && se_core::ops::installation::is_fish_path_file(&file.path);
+        let result = if fish {
+            preserve_file(file)
+        } else {
+            remove_file(file)
+        };
+        safe &= file_settled(&result, policy.preserve);
         effects.install_files.push(result);
     }
     effects.recovery = recovery::merge(std::mem::take(&mut effects.recovery), scan(plan, parents));
     safe &= effects.recovery.iter().all(recovery::resolved);
     safe
+}
+
+fn file_settled(effect: &FileEffect, preserve: bool) -> bool {
+    gone(&effect.outcome)
+        || (preserve
+            && se_core::ops::installation::is_fish_path_file(&effect.path)
+            && matches!(effect.outcome, FileOutcome::Unchanged))
+}
+
+fn preserve_file(file: &UninstallFile) -> FileEffect {
+    let expected = match digest_bytes(&file.sha256) {
+        Ok(value) => value,
+        Err(error) => {
+            return FileEffect {
+                path: file.path.clone(),
+                outcome: FileOutcome::Unreadable,
+                witness: witness(
+                    WitnessState::Failed,
+                    "owned Fish PATH file digest is invalid",
+                    Some(error.to_string()),
+                ),
+            };
+        }
+    };
+    match OwnedFile::open(Path::new(&file.path)) {
+        Ok(None) => FileEffect {
+            path: file.path.clone(),
+            outcome: FileOutcome::AlreadyAbsent,
+            witness: witness(
+                WitnessState::Witnessed,
+                "owned Fish PATH file already absent; custody preserved",
+                None,
+            ),
+        },
+        Ok(Some(mut owned)) => match owned.sha256() {
+            Ok(actual) if actual == expected => FileEffect {
+                path: file.path.clone(),
+                outcome: FileOutcome::Unchanged,
+                witness: witness(
+                    WitnessState::Witnessed,
+                    "owned Fish PATH file read back unchanged; custody preserved for replacement",
+                    None,
+                ),
+            },
+            Ok(_) => FileEffect {
+                path: file.path.clone(),
+                outcome: FileOutcome::ConflictKept,
+                witness: witness(
+                    WitnessState::Failed,
+                    "owned Fish PATH file changed; preserved",
+                    None,
+                ),
+            },
+            Err(error) => FileEffect {
+                path: file.path.clone(),
+                outcome: FileOutcome::Unreadable,
+                witness: witness(
+                    WitnessState::Failed,
+                    "owned Fish PATH file custody check failed",
+                    Some(error.to_string()),
+                ),
+            },
+        },
+        Err(error) => FileEffect {
+            path: file.path.clone(),
+            outcome: FileOutcome::Unreadable,
+            witness: witness(
+                WitnessState::Failed,
+                "owned Fish PATH file custody check failed",
+                Some(error.to_string()),
+            ),
+        },
+    }
 }
 
 /// Settles the record, created directories and recovery inventory once the
@@ -34,13 +131,60 @@ pub(super) fn settle(
     parents: &[PathBuf],
     held: &mut HeldRecord,
     safe: bool,
+    preserve: bool,
     effects: &mut UninstallEffects,
 ) {
-    let image_removed = effects.install_files.iter().all(|file| gone(&file.outcome));
+    let image_removed = effects
+        .install_files
+        .iter()
+        .all(|file| file_settled(file, preserve));
     let settled = safe && image_removed;
     effects.integrations.push(remove_record(held, settled));
     remove_directories(plan, settled, effects);
     reconcile_recovery(plan, parents, effects);
+}
+
+fn remove_stale_replace_custody(state_home: &Path) -> Option<IntegrationEffect> {
+    let path = state_home.join("standalone-install.replace.json");
+    let (action, proof) = match OwnedFile::open(&path) {
+        Ok(None) => return None,
+        Ok(Some(mut file)) => match file
+            .sha256()
+            .and_then(|digest| file.remove(digest))
+            .map_err(native_error)
+        {
+            Ok(()) => (
+                FileOutcome::Removed,
+                witness(
+                    WitnessState::Witnessed,
+                    "stale replacement custody removed on plain uninstall",
+                    None,
+                ),
+            ),
+            Err(error) => (
+                FileOutcome::Unreadable,
+                witness(
+                    WitnessState::Failed,
+                    "stale replacement custody removal failed",
+                    Some(error.to_string()),
+                ),
+            ),
+        },
+        Err(error) => (
+            FileOutcome::Unreadable,
+            witness(
+                WitnessState::Failed,
+                "stale replacement custody inspection failed",
+                Some(error.to_string()),
+            ),
+        ),
+    };
+    Some(IntegrationEffect {
+        path: path.display().to_string(),
+        entry: "stale replacement custody".into(),
+        action,
+        witness: proof,
+    })
 }
 
 fn remove_record(held: &mut HeldRecord, settled: bool) -> IntegrationEffect {
