@@ -557,11 +557,11 @@ fn simultaneous_external_claims_and_managed_launch_exclusivity() -> Check {
 
     // Second claim must be refused with a typed remedy naming `se external revoke`
     // (never a raw SQLite UNIQUE error) and must NOT consume claim2!
-    let second_err = h
-        .owner_external(ExternalRequest::Approve {
-            claim_id: claim2.claim_id.clone(),
-        })
-        .expect_err("second simultaneous external claim must be refused");
+    let Err(second_err) = h.owner_external(ExternalRequest::Approve {
+        claim_id: claim2.claim_id.clone(),
+    }) else {
+        panic!("second simultaneous external claim must be refused");
+    };
     let err_msg = second_err.to_string();
     assert!(
         err_msg.contains("se external revoke"),
