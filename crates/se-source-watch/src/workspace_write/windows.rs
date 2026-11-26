@@ -197,6 +197,39 @@ fn verify_parent_chain(
     Ok(())
 }
 
+/// Open an existing target leaf with `GENERIC_READ` and `FILE_SHARE_READ |
+/// FILE_SHARE_DELETE` (excluding `FILE_SHARE_WRITE`) so no concurrent writer
+/// can hold or acquire write access while we stage and atomically replace it.
+fn open_target_leaf(
+    parent: &File,
+    leaf_units: &mut [u16],
+    dot_git: Option<NativeObjectKey>,
+) -> Result<Option<(File, NativeFileRevision)>, WorkspaceWriteError> {
+    let existing = match nt_open_relative(
+        parent,
+        leaf_units,
+        GENERIC_READ | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        0,
+    ) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(io_before(err)),
+    };
+    crate::source_root::windows::verify_handle(&existing, false)
+        .map_err(|e| invalid(e.to_string()))?;
+    if dot_git.is_some()
+        && Some(se_state_files::observe_object_key(&existing).map_err(io_before)?) == dot_git
+    {
+        return Err(invalid(
+            "target aliases .git metadata, which StateEngine does not write",
+        ));
+    }
+    let rev = se_state_files::observe_file_revision(&existing).map_err(io_before)?;
+    Ok(Some((existing, rev)))
+}
+
 fn inspect_target_leaf(
     parent: &File,
     leaf_units: &mut [u16],
@@ -375,7 +408,10 @@ pub(super) fn write_relative(
     let parent = chain.last().map_or(root, |(_, dir, _)| dir);
     let dot_git = dot_git_key(parent)?;
     let mut leaf_units = utf16_component(leaf_str)?;
-    let baseline = inspect_target_leaf(parent, &mut leaf_units, dot_git)?;
+    // Hold the existing target open without FILE_SHARE_WRITE through rename_at
+    // so no concurrent editor/writer can modify it while we stage and replace.
+    let held_target = open_target_leaf(parent, &mut leaf_units, dot_git)?;
+    let baseline = held_target.as_ref().map(|(_, rev)| *rev);
 
     let stage_str = stage_name()?;
     let mut stage_units = utf16_component(&stage_str)?;
@@ -413,6 +449,7 @@ pub(super) fn write_relative(
         dispose_stage(&stage);
         return Err(error);
     }
+    drop(held_target);
     verify_parent_chain(root, &chain).map_err(|error| {
         WorkspaceWriteError::PublishedUncertain(format!(
             "workspace parent ancestry changed after publication: {error}"
@@ -483,6 +520,20 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         dispose_stage(&stage);
         drop(stage);
+        // An open concurrent writer holding write access must block replacement
+        // cleanly instead of being silently clobbered.
+        let writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.0.join("existing.txt"))?;
+        let conflict = root
+            .write_relative("existing.txt", b"clobber")
+            .err()
+            .ok_or("expected open writer to block replacement")?;
+        assert!(matches!(
+            conflict,
+            WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::Io(_))
+        ));
+        drop(writer);
         assert_eq!(std::fs::read(dir.0.join("existing.txt"))?, b"other-writer");
         Ok(())
     }

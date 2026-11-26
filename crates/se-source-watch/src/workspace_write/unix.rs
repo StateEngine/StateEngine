@@ -388,6 +388,54 @@ fn verify_target_unchanged(
     }
 }
 
+fn exchange_at(parent: &File, a: &CString, b: &CString) -> Result<(), io::Error> {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: retained parent directory fd and two NUL-terminated literal
+        // names; RENAME_EXCHANGE atomically swaps `a` and `b` without data loss.
+        let rc = unsafe {
+            libc::syscall(
+                libc::SYS_renameat2,
+                parent.as_raw_fd(),
+                a.as_ptr(),
+                parent.as_raw_fd(),
+                b.as_ptr(),
+                libc::RENAME_EXCHANGE,
+            )
+        };
+        if rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: retained parent directory fd and two NUL-terminated literal
+        // names; RENAME_SWAP atomically swaps `a` and `b` without data loss.
+        if unsafe {
+            libc::renameatx_np(
+                parent.as_raw_fd(),
+                a.as_ptr(),
+                parent.as_raw_fd(),
+                b.as_ptr(),
+                libc::RENAME_SWAP,
+            )
+        } < 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (parent, a, b);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "atomic rename exchange is unsupported on this platform",
+        ))
+    }
+}
+
 fn publish_exclusive(
     parent: &File,
     stage: &CString,
@@ -451,7 +499,7 @@ fn stage_file(
     stage_cstr: &CString,
     bytes: &[u8],
     baseline: Option<TargetBaseline>,
-) -> Result<(), WorkspaceWriteError> {
+) -> Result<(u64, u64), WorkspaceWriteError> {
     let mode: libc::c_uint = baseline.map_or(0o600, |b| {
         #[cfg(target_os = "macos")]
         {
@@ -473,7 +521,7 @@ fn stage_file(
         )
     };
     let mut stage = owned(raw).map_err(io_before)?;
-    let prepare = (|| -> Result<(), WorkspaceWriteError> {
+    let prepare = (|| -> Result<(u64, u64), WorkspaceWriteError> {
         if let Some(baseline) = baseline {
             // Preserve the replaced file's exact mode without umask masking.
             // SAFETY: uniquely owned staging file descriptor and masked mode bits.
@@ -483,13 +531,88 @@ fn stage_file(
         }
         stage.write_all(bytes).map_err(io_before)?;
         stage.sync_all().map_err(io_before)?;
-        Ok(())
+        let meta = stat_fd(&stage).map_err(io_before)?;
+        Ok((meta.dev, meta.ino))
     })();
     drop(stage);
-    if let Err(error) = prepare {
-        cleanup_stage(parent, stage_cstr);
-        return Err(error);
+    match prepare {
+        Ok(id) => Ok(id),
+        Err(error) => {
+            cleanup_stage(parent, stage_cstr);
+            Err(error)
+        }
     }
+}
+
+struct ReplaceCtx<'a> {
+    root: &'a File,
+    chain: &'a [(&'a str, File, (u64, u64))],
+    parent: &'a File,
+    stage: &'a CString,
+    leaf: &'a CString,
+    stage_id: (u64, u64),
+    expected: TargetBaseline,
+    root_mount: MountIdentity,
+    dot_git: Option<(u64, u64)>,
+    root_check: &'a dyn Fn() -> io::Result<()>,
+}
+
+/// Atomically exchange `stage` and `leaf`, verify the displaced file's baseline
+/// and parent custody, and swap back cleanly on any concurrent modification or
+/// parent displacement before unlinking the displaced original.
+fn publish_replace(ctx: &ReplaceCtx<'_>) -> Result<(), WorkspaceWriteError> {
+    if let Err(err) = exchange_at(ctx.parent, ctx.stage, ctx.leaf) {
+        cleanup_stage(ctx.parent, ctx.stage);
+        return Err(io_before(err));
+    }
+    let custody = (|| -> Result<(), WorkspaceWriteError> {
+        (ctx.root_check)().map_err(|error| {
+            WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::RootUnverified(error))
+        })?;
+        verify_parent_chain(ctx.root, ctx.chain, ctx.root_mount)?;
+        let displaced = inspect_target_leaf(ctx.parent, ctx.stage, ctx.root_mount, ctx.dot_git)?;
+        if displaced != Some(ctx.expected) {
+            return Err(invalid(
+                "target file changed during atomic exchange; original restored",
+            ));
+        }
+        Ok(())
+    })();
+    if let Err(reason) = custody {
+        // Only swap back if `leaf` still points to our exact staged inode.
+        let current = stat_entry_at(ctx.parent, ctx.leaf, libc::AT_SYMLINK_NOFOLLOW);
+        let can_rollback = matches!(current, Ok(Some(m)) if (m.dev, m.ino) == ctx.stage_id);
+        if !can_rollback {
+            return Err(WorkspaceWriteError::PublishedUncertain(format!(
+                "target raced with exchange ({reason}); both versions retained"
+            )));
+        }
+        if let Err(rollback_err) = exchange_at(ctx.parent, ctx.stage, ctx.leaf) {
+            return Err(WorkspaceWriteError::PublishedUncertain(format!(
+                "rollback after exchange conflict ({reason}) failed: {rollback_err}"
+            )));
+        }
+        let _ = ctx.parent.sync_all();
+        cleanup_stage(ctx.parent, ctx.stage);
+        return Err(reason);
+    }
+    ctx.parent.sync_all().map_err(|error| {
+        WorkspaceWriteError::PublishedUncertain(format!(
+            "containing directory sync failed after exchange: {error}"
+        ))
+    })?;
+    // SAFETY: retained parent directory fd and verified displaced original at `stage`.
+    if unsafe { libc::unlinkat(ctx.parent.as_raw_fd(), ctx.stage.as_ptr(), 0) } < 0 {
+        return Err(WorkspaceWriteError::PublishedUncertain(format!(
+            "replacement published but displaced backup removal failed: {}",
+            io::Error::last_os_error()
+        )));
+    }
+    ctx.parent.sync_all().map_err(|error| {
+        WorkspaceWriteError::PublishedUncertain(format!(
+            "containing directory sync failed after backup removal: {error}"
+        ))
+    })?;
     Ok(())
 }
 
@@ -524,10 +647,8 @@ pub(super) fn write_relative(
 
     let stage_str = stage_name()?;
     let stage_cstr = cstr(&stage_str)?;
-    stage_file(parent, &stage_cstr, bytes, baseline)?;
+    let stage_id = stage_file(parent, &stage_cstr, bytes, baseline)?;
 
-    // Re-verify root custody, parent ancestry inside the workspace, and target
-    // baseline immediately before publication.
     let pre_publish = (|| -> Result<(), WorkspaceWriteError> {
         root_check().map_err(|error| {
             WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::RootUnverified(error))
@@ -540,167 +661,52 @@ pub(super) fn write_relative(
         return Err(error);
     }
 
-    if baseline.is_none() {
-        if let Err(error) = publish_exclusive(parent, &stage_cstr, &leaf) {
-            if matches!(error, WorkspaceWriteError::BeforePublish(_)) {
-                cleanup_stage(parent, &stage_cstr);
-            }
-            return Err(error);
-        }
-    } else {
-        // SAFETY: retained parent directory fd and two NUL-terminated literal
-        // names in that same directory; atomic replacement without following symlinks.
-        if unsafe {
-            libc::renameat(
-                parent.as_raw_fd(),
-                stage_cstr.as_ptr(),
-                parent.as_raw_fd(),
-                leaf.as_ptr(),
-            )
-        } < 0
-        {
-            let err = io::Error::last_os_error();
-            cleanup_stage(parent, &stage_cstr);
-            return Err(io_before(err));
-        }
+    if let Some(expected) = baseline {
+        return publish_replace(&ReplaceCtx {
+            root,
+            chain: &chain,
+            parent,
+            stage: &stage_cstr,
+            leaf: &leaf,
+            stage_id,
+            expected,
+            root_mount,
+            dot_git,
+            root_check,
+        });
     }
 
-    // File is now published; any failure from here on is PublishedUncertain.
+    if let Err(error) = publish_exclusive(parent, &stage_cstr, &leaf) {
+        if matches!(error, WorkspaceWriteError::BeforePublish(_)) {
+            cleanup_stage(parent, &stage_cstr);
+        }
+        return Err(error);
+    }
+    let post_custody = root_check()
+        .map_err(|error| {
+            WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::RootUnverified(error))
+        })
+        .and_then(|()| verify_parent_chain(root, &chain, root_mount));
+    if let Err(reason) = post_custody {
+        let current = stat_entry_at(parent, &leaf, libc::AT_SYMLINK_NOFOLLOW);
+        if matches!(current, Ok(Some(m)) if (m.dev, m.ino) == stage_id) {
+            // SAFETY: verified our exact newly-created inode in the displaced parent.
+            if unsafe { libc::unlinkat(parent.as_raw_fd(), leaf.as_ptr(), 0) } == 0 {
+                return Err(reason);
+            }
+        }
+        return Err(WorkspaceWriteError::PublishedUncertain(format!(
+            "workspace parent ancestry changed after creation ({reason}) and rollback could not confirm removal"
+        )));
+    }
     parent.sync_all().map_err(|error| {
         WorkspaceWriteError::PublishedUncertain(format!(
             "containing directory sync failed after publication: {error}"
-        ))
-    })?;
-    verify_parent_chain(root, &chain, root_mount).map_err(|error| {
-        WorkspaceWriteError::PublishedUncertain(format!(
-            "workspace parent ancestry changed after publication: {error}"
         ))
     })?;
     Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    type Check = Result<(), Box<dyn std::error::Error>>;
-
-    struct Scratch(PathBuf);
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn scratch(label: &str) -> Result<Scratch, Box<dyn std::error::Error>> {
-        let dir = std::env::temp_dir().join(format!(
-            "se-workspace-write-{label}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir)?;
-        Ok(Scratch(dir))
-    }
-
-    #[test]
-    fn exclusive_publish_refuses_concurrently_created_target() -> Check {
-        let dir = scratch("exclusive")?;
-        let root = File::open(&dir.0)?;
-        std::fs::write(dir.0.join("stage"), b"stale")?;
-        std::fs::write(dir.0.join("leaf"), b"concurrent-writer")?;
-        let err = publish_exclusive(&root, &cstr("stage")?, &cstr("leaf")?)
-            .err()
-            .ok_or("expected exclusive publish to fail")?;
-        assert!(matches!(
-            err,
-            WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::Io(ref e))
-                if e.kind() == io::ErrorKind::AlreadyExists
-        ));
-        assert_eq!(std::fs::read(dir.0.join("leaf"))?, b"concurrent-writer");
-        Ok(())
-    }
-
-    #[test]
-    fn moved_child_directory_fails_parent_chain_custody() -> Check {
-        let outer = scratch("moved-parent")?;
-        let ws = outer.0.join("ws");
-        std::fs::create_dir_all(ws.join("sub"))?;
-        let root = File::open(&ws)?;
-        let root_mount = root_mount_identity(&root)?;
-        let (sub_dir, sub_id) = open_or_create_dir(&root, "sub", root_mount)?;
-        let chain = vec![("sub", sub_dir, sub_id)];
-
-        // Move `ws/sub` outside `ws` while its fd is held.
-        std::fs::rename(ws.join("sub"), outer.0.join("escaped"))?;
-        let err = verify_parent_chain(&root, &chain, root_mount)
-            .err()
-            .ok_or("expected parent custody refusal after move")?;
-        assert!(matches!(
-            err,
-            WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::InvalidTarget(_))
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn target_baseline_detects_concurrent_modification() -> Check {
-        let dir = scratch("baseline")?;
-        let root = File::open(&dir.0)?;
-        let root_mount = root_mount_identity(&root)?;
-        let leaf = cstr("note.txt")?;
-        std::fs::write(dir.0.join("note.txt"), b"v1")?;
-        let baseline = inspect_target_leaf(&root, &leaf, root_mount, None)?;
-        assert!(baseline.is_some());
-
-        std::fs::write(dir.0.join("note.txt"), b"v2-longer")?;
-        let err = verify_target_unchanged(&root, &leaf, root_mount, None, baseline)
-            .err()
-            .ok_or("expected concurrent modification refusal")?;
-        assert!(matches!(
-            err,
-            WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::InvalidTarget(_))
-        ));
-        Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn same_device_different_mount_id_or_mount_root_is_refused() {
-        let root_mount = MountIdentity {
-            dev: 42,
-            mnt_id: Some(100),
-        };
-        let same_dev_other_mnt = EntryMeta {
-            dev: 42,
-            ino: 1,
-            mode: libc::S_IFDIR | 0o755,
-            size: 0,
-            mtime_sec: 0,
-            mtime_nsec: 0,
-            ctime_sec: 0,
-            ctime_nsec: 0,
-            mnt_id: Some(101),
-            is_mount_root: false,
-        };
-        assert!(matches!(
-            verify_same_mount(same_dev_other_mnt, root_mount, "path"),
-            Err(WorkspaceWriteError::BeforePublish(
-                WorkspaceWriteRefusal::InvalidTarget(_)
-            ))
-        ));
-        let mount_root = EntryMeta {
-            mnt_id: Some(100),
-            is_mount_root: true,
-            ..same_dev_other_mnt
-        };
-        assert!(matches!(
-            verify_same_mount(mount_root, root_mount, "path"),
-            Err(WorkspaceWriteError::BeforePublish(
-                WorkspaceWriteRefusal::InvalidTarget(_)
-            ))
-        ));
-    }
-}
+#[path = "unix_tests.rs"]
+mod tests;
