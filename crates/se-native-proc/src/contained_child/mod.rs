@@ -110,7 +110,13 @@ impl ContainedKiller {
     /// witnesses no surviving members (process group `ESRCH` on Unix, Job
     /// Object `ActiveProcesses == 0` on Windows). Never kills by process name.
     pub fn kill_tree(&self) -> io::Result<()> {
-        self.0.kill_tree()
+        self.kill_tree_until(Instant::now() + KILL_DRAIN_TIMEOUT)
+    }
+
+    /// Terminate the entire contained process tree and wait up to `deadline`
+    /// until the OS witnesses no surviving members.
+    pub fn kill_tree_until(&self, deadline: Instant) -> io::Result<()> {
+        self.0.kill_tree_until(deadline)
     }
 }
 
@@ -143,13 +149,15 @@ impl ContainedChild {
 
     /// Terminate the entire contained process tree.
     pub fn kill_tree(&mut self) -> io::Result<()> {
-        self.0.killer().kill_tree()
+        self.0
+            .killer()
+            .kill_tree_until(Instant::now() + KILL_DRAIN_TIMEOUT)
     }
 
     /// Terminate the entire contained process tree, reap the leader (releasing
-    /// its kernel PID/PGID witness only after `SIGKILL`), and wait until the OS
-    /// witnesses no surviving descendants.
-    pub fn terminate_and_reap(&mut self) -> io::Result<()> {
-        self.0.terminate_and_reap()
+    /// its kernel PID/PGID witness only after `SIGKILL`), and wait up to
+    /// `deadline` until the OS witnesses no surviving descendants.
+    pub fn terminate_and_reap_until(&mut self, deadline: Instant) -> io::Result<()> {
+        self.0.terminate_and_reap_until(deadline)
     }
 }

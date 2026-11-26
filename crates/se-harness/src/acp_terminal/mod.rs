@@ -7,8 +7,12 @@
 //! threads with explicit error propagation, and deterministic tree kill on
 //! `terminal/kill`, `terminal/release`, and session close.
 mod custody;
-use crate::acp::client::{Outcome, RESPONSE_BYTES, Refusal, fs::Workspace};
+mod params;
+use crate::acp::client::{Outcome, Refusal, fs::Workspace};
 use custody::{MAX_TERMINALS, PendingSlot, ReleasingSlot, TerminalTable};
+use params::{
+    exit_json, fit_response, optional_str, parse_args, parse_env, parse_output_limit, required_str,
+};
 use se_proc::{ContainedChild, ContainedChildSpec, ContainedExit, ContainedKiller};
 use serde_json::{Value, json};
 use std::{
@@ -31,22 +35,6 @@ use tokio::sync::Notify;
 const RELEASE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 /// Maximum time synchronous `Drop for Terminals` waits per terminal.
 const DROP_CLEANUP_TIMEOUT: Duration = Duration::from_millis(250);
-/// Default retained tail output bytes per terminal.
-const DEFAULT_OUTPUT_BYTES: usize = 256 * 1024;
-/// Hard ceiling on retained tail output bytes per terminal (fits inside one reply).
-const MAX_OUTPUT_BYTES: usize = {
-    let reply_room = RESPONSE_BYTES.saturating_sub(1024);
-    let one_mib = 1024 * 1024;
-    if reply_room < one_mib {
-        reply_room
-    } else {
-        one_mib
-    }
-};
-/// Maximum arguments accepted by `terminal/create`.
-const MAX_ARGS: usize = 256;
-/// Maximum environment overrides accepted by `terminal/create`.
-const MAX_ENV: usize = 128;
 
 pub(super) const CREATE: &str = "terminal/create";
 pub(super) const OUTPUT: &str = "terminal/output";
@@ -127,18 +115,39 @@ struct IoWorker {
     done: mpsc::Receiver<()>,
 }
 
+enum WorkerJoin<T> {
+    Settled(Result<T, String>),
+    TimedOut(IoWorker),
+}
+
 impl IoWorker {
-    fn join_bounded(self, deadline: Instant) -> Result<(), String> {
+    fn try_join(self, deadline: Instant) -> WorkerJoin<()> {
         let remaining = deadline.saturating_duration_since(Instant::now());
         match self.done.recv_timeout(remaining) {
-            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => self
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => WorkerJoin::Settled(
+                self.handle
+                    .join()
+                    .map_err(|_| "terminal output reader thread panicked".to_owned()),
+            ),
+            Err(mpsc::RecvTimeoutError::Timeout) => WorkerJoin::TimedOut(self),
+        }
+    }
+}
+
+struct WaitWorker {
+    handle: JoinHandle<ContainedChild>,
+    done: mpsc::Receiver<()>,
+}
+
+impl WaitWorker {
+    fn try_join(self, deadline: Instant) -> Result<Result<ContainedChild, String>, Self> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match self.done.recv_timeout(remaining) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => Ok(self
                 .handle
                 .join()
-                .map_err(|_| "terminal output reader thread panicked".to_owned()),
-            Err(mpsc::RecvTimeoutError::Timeout) => Err(
-                "terminal output stream did not close before cleanup deadline (an escaped descendant may still hold stdout/stderr open)"
-                    .to_owned(),
-            ),
+                .map_err(|_| "terminal exit waiter thread panicked".to_owned())),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(self),
         }
     }
 }
@@ -149,37 +158,74 @@ pub(super) struct TerminalEntry {
     exit: Arc<Mutex<Option<Result<ContainedExit, String>>>>,
     notify: Arc<Notify>,
     released: AtomicBool,
-    wait_worker: Mutex<Option<JoinHandle<ContainedChild>>>,
+    wait_worker: Mutex<Option<WaitWorker>>,
+    /// Retained child owner once `wait_worker` settles, held across retries
+    /// until `terminate_and_reap_until` succeeds.
+    child: Mutex<Option<ContainedChild>>,
     io_workers: Mutex<Vec<IoWorker>>,
 }
 
 impl TerminalEntry {
     fn terminate_and_join(&self, deadline: Instant) -> Result<(), String> {
         let mut errors = Vec::new();
-        if let Err(err) = self.killer.kill_tree() {
+        if let Err(err) = self.killer.kill_tree_until(deadline) {
             errors.push(err.to_string());
         }
         self.notify.notify_waiters();
-        if let Some(wait_handle) = self.wait_worker.lock().ok().and_then(|mut w| w.take()) {
-            match wait_handle.join() {
-                Ok(mut child) => {
-                    if let Err(err) = child.terminate_and_reap() {
-                        errors.push(err.to_string());
+
+        if let Some(wait_worker) = self.wait_worker.lock().ok().and_then(|mut w| w.take()) {
+            match wait_worker.try_join(deadline) {
+                Ok(Ok(child)) => {
+                    if let Ok(mut slot) = self.child.lock() {
+                        *slot = Some(child);
                     }
                 }
-                Err(_) => errors.push("terminal exit waiter thread panicked".to_owned()),
+                Ok(Err(err)) => errors.push(err),
+                Err(still_waiting) => {
+                    if let Ok(mut slot) = self.wait_worker.lock() {
+                        *slot = Some(still_waiting);
+                    }
+                    errors.push(
+                        "terminal exit waiter did not settle before cleanup deadline".to_owned(),
+                    );
+                }
             }
         }
+
+        if let Some(mut child) = self.child.lock().ok().and_then(|mut c| c.take())
+            && let Err(err) = child.terminate_and_reap_until(deadline)
+        {
+            if let Ok(mut slot) = self.child.lock() {
+                *slot = Some(child);
+            }
+            errors.push(err.to_string());
+        }
+
         let workers: Vec<IoWorker> = self
             .io_workers
             .lock()
             .map(|mut w| std::mem::take(&mut *w))
             .unwrap_or_default();
+        let mut still_reading = Vec::new();
         for worker in workers {
-            if let Err(err) = worker.join_bounded(deadline) {
-                errors.push(err);
+            match worker.try_join(deadline) {
+                WorkerJoin::Settled(Ok(())) => {}
+                WorkerJoin::Settled(Err(err)) => errors.push(err),
+                WorkerJoin::TimedOut(pending) => {
+                    still_reading.push(pending);
+                    errors.push(
+                        "terminal output stream did not close before cleanup deadline (an escaped descendant may still hold stdout/stderr open)"
+                            .to_owned(),
+                    );
+                }
             }
         }
+        if !still_reading.is_empty()
+            && let Ok(mut slot) = self.io_workers.lock()
+        {
+            slot.extend(still_reading);
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
@@ -508,8 +554,9 @@ fn start_entry(
     let stderr_handle = match spawn_pipe_reader(stderr, Arc::clone(&output)) {
         Ok(h) => h,
         Err(err) => {
-            let _ = child.terminate_and_reap();
-            let _ = stdout_handle.join_bounded(Instant::now() + DROP_CLEANUP_TIMEOUT);
+            let deadline = Instant::now() + DROP_CLEANUP_TIMEOUT;
+            let _ = child.terminate_and_reap_until(deadline);
+            let _ = stdout_handle.try_join(deadline);
             return Err(Refusal::failed(format!(
                 "failed to start terminal stderr reader: {err}"
             )));
@@ -518,6 +565,7 @@ fn start_entry(
 
     let exit_slot = Arc::clone(&exit);
     let exit_notify = Arc::clone(&notify);
+    let (wait_done_tx, wait_done_rx) = mpsc::channel();
     let wait_handle = match std::thread::Builder::new()
         .name("acp-terminal-wait".into())
         .spawn(move || {
@@ -526,14 +574,18 @@ fn start_entry(
                 *slot = Some(outcome);
             }
             exit_notify.notify_waiters();
+            let _ = wait_done_tx.send(());
             child
         }) {
-        Ok(h) => h,
+        Ok(h) => WaitWorker {
+            handle: h,
+            done: wait_done_rx,
+        },
         Err(err) => {
-            let _ = killer.kill_tree();
             let deadline = Instant::now() + DROP_CLEANUP_TIMEOUT;
-            let _ = stdout_handle.join_bounded(deadline);
-            let _ = stderr_handle.join_bounded(deadline);
+            let _ = killer.kill_tree_until(deadline);
+            let _ = stdout_handle.try_join(deadline);
+            let _ = stderr_handle.try_join(deadline);
             return Err(Refusal::failed(format!(
                 "failed to start terminal exit waiter: {err}"
             )));
@@ -547,6 +599,7 @@ fn start_entry(
         notify,
         released: AtomicBool::new(false),
         wait_worker: Mutex::new(Some(wait_handle)),
+        child: Mutex::new(None),
         io_workers: Mutex::new(vec![stdout_handle, stderr_handle]),
     }))
 }
@@ -582,145 +635,6 @@ fn spawn_pipe_reader<R: Read + Send + 'static>(
         handle,
         done: done_rx,
     })
-}
-
-fn exit_json(exit: ContainedExit) -> Value {
-    json!({
-        "exitCode": exit.exit_code,
-        "signal": exit.signal,
-    })
-}
-
-fn fit_response(mut text: String, truncated: &mut bool) -> Result<String, Refusal> {
-    let limit = RESPONSE_BYTES.saturating_sub(256);
-    while serde_json::to_string(&text)
-        .map_err(|_| Refusal::failed("terminal output could not be encoded"))?
-        .len()
-        > limit
-    {
-        *truncated = true;
-        let drop_bytes = (text.len() / 4).max(1);
-        let mut cut = drop_bytes.min(text.len());
-        while cut < text.len() && !text.is_char_boundary(cut) {
-            cut += 1;
-        }
-        text.drain(..cut);
-    }
-    Ok(text)
-}
-
-fn required_str<'a>(params: &'a Value, field: &str, max_len: usize) -> Result<&'a str, Refusal> {
-    params
-        .get(field)
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty() && s.len() <= max_len && !s.contains('\0'))
-        .ok_or_else(|| {
-            Refusal::invalid(format!(
-                "`{field}` must be a non-empty string (<= {max_len} bytes, no NUL)"
-            ))
-        })
-}
-
-fn optional_str<'a>(
-    params: &'a Value,
-    field: &str,
-    max_len: usize,
-) -> Result<Option<&'a str>, Refusal> {
-    match params.get(field) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(s)) if !s.is_empty() && s.len() <= max_len && !s.contains('\0') => {
-            Ok(Some(s.as_str()))
-        }
-        _ => Err(Refusal::invalid(format!(
-            "`{field}` must be a non-empty string (<= {max_len} bytes, no NUL)"
-        ))),
-    }
-}
-
-fn parse_args(params: &Value) -> Result<Vec<OsString>, Refusal> {
-    let Some(value) = params.get("args") else {
-        return Ok(Vec::new());
-    };
-    if value.is_null() {
-        return Ok(Vec::new());
-    }
-    let arr = value
-        .as_array()
-        .ok_or_else(|| Refusal::invalid("`args` must be an array of strings"))?;
-    if arr.len() > MAX_ARGS {
-        return Err(Refusal::invalid(format!(
-            "`args` exceeds maximum of {MAX_ARGS} entries"
-        )));
-    }
-    let mut out = Vec::with_capacity(arr.len());
-    for item in arr {
-        let s = item
-            .as_str()
-            .filter(|s| s.len() <= 65536 && !s.contains('\0'))
-            .ok_or_else(|| Refusal::invalid("each element of `args` must be a valid string"))?;
-        out.push(OsString::from(s));
-    }
-    Ok(out)
-}
-
-fn is_forbidden_env_key(name: &str) -> bool {
-    let upper = name.to_ascii_uppercase();
-    upper.starts_with("SE_")
-        || upper.starts_with("STATEENGINE_")
-        || upper.starts_with("LD_")
-        || upper.starts_with("DYLD_")
-}
-
-fn parse_env(params: &Value) -> Result<Vec<(OsString, OsString)>, Refusal> {
-    let Some(value) = params.get("env") else {
-        return Ok(Vec::new());
-    };
-    if value.is_null() {
-        return Ok(Vec::new());
-    }
-    let arr = value
-        .as_array()
-        .ok_or_else(|| Refusal::invalid("`env` must be an array of {name, value} objects"))?;
-    if arr.len() > MAX_ENV {
-        return Err(Refusal::invalid(format!(
-            "`env` exceeds maximum of {MAX_ENV} entries"
-        )));
-    }
-    let mut out = Vec::with_capacity(arr.len());
-    for item in arr {
-        let name = item
-            .get("name")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty() && s.len() <= 256 && !s.contains('=') && !s.contains('\0'))
-            .ok_or_else(|| Refusal::invalid("`env[].name` must be a valid environment key"))?;
-        if is_forbidden_env_key(name) {
-            return Err(Refusal::invalid(format!(
-                "`env[].name` '{name}' is reserved and cannot be overridden by terminal/create"
-            )));
-        }
-        let val = item
-            .get("value")
-            .and_then(Value::as_str)
-            .filter(|s| s.len() <= 65536 && !s.contains('\0'))
-            .ok_or_else(|| Refusal::invalid("`env[].value` must be a valid string"))?;
-        out.push((OsString::from(name), OsString::from(val)));
-    }
-    Ok(out)
-}
-
-fn parse_output_limit(params: &Value) -> Result<usize, Refusal> {
-    match params.get("outputByteLimit") {
-        None | Some(Value::Null) => Ok(DEFAULT_OUTPUT_BYTES),
-        Some(value) => {
-            let requested = value.as_u64().ok_or_else(|| {
-                Refusal::invalid("`outputByteLimit` must be a nonnegative integer")
-            })?;
-            let clamped = usize::try_from(requested)
-                .unwrap_or(MAX_OUTPUT_BYTES)
-                .min(MAX_OUTPUT_BYTES);
-            Ok(clamped)
-        }
-    }
 }
 
 #[cfg(test)]

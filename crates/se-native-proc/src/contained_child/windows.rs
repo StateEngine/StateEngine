@@ -94,13 +94,12 @@ impl JobGuard {
         Ok(acct.ActiveProcesses)
     }
 
-    fn terminate_and_drain(&self) -> io::Result<()> {
+    fn terminate_and_drain_until(&self, deadline: Instant) -> io::Result<()> {
         // SAFETY: `self.handle` is a live job handle owned by `self`.
         let ok = unsafe { TerminateJobObject(self.handle, 1) };
         if ok == 0 {
             return Err(io::Error::last_os_error());
         }
-        let deadline = Instant::now() + KILL_DRAIN_TIMEOUT;
         loop {
             if self.active_processes()? == 0 {
                 return Ok(());
@@ -132,8 +131,8 @@ pub(super) struct KillerState {
 }
 
 impl KillerState {
-    pub(super) fn kill_tree(&self) -> io::Result<()> {
-        self.job.terminate_and_drain()
+    pub(super) fn kill_tree_until(&self, deadline: Instant) -> io::Result<()> {
+        self.job.terminate_and_drain_until(deadline)
     }
 }
 
@@ -397,8 +396,8 @@ impl Inner {
         Ok(exit)
     }
 
-    pub(super) fn terminate_and_reap(&mut self) -> io::Result<()> {
-        self.killer.kill_tree()
+    pub(super) fn terminate_and_reap_until(&mut self, deadline: Instant) -> io::Result<()> {
+        self.killer.kill_tree_until(deadline)
     }
 
     fn read_exit_code(&self) -> io::Result<ContainedExit> {
@@ -416,6 +415,8 @@ impl Inner {
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        let _ = self.killer.kill_tree();
+        let _ = self
+            .killer
+            .kill_tree_until(Instant::now() + KILL_DRAIN_TIMEOUT);
     }
 }
