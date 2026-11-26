@@ -13,94 +13,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 pub(crate) const EXPIRED_LEASE_REASON: &str = "external seat lease expired";
-
-/// Resolve an agent selector (exact ID or display name) and verify external eligibility.
-pub(crate) fn resolve_external_agent(
-    phase: se_store::ReadPhase,
-    project: &ProjectId,
-    owner: &HumanId,
-    generation: u64,
-    selector: &str,
-    require_external: bool,
-) -> Result<(AgentId, String, se_store::Provider)> {
-    let admission = Admission {
-        scope: Scope::Project(project.clone()),
-        actor: Actor::Human(owner.clone()),
-        session: None,
-        generation,
-    };
-    let mut snapshot = phase
-        .into_snapshot(se_core::admission::read_scope(&admission))
-        .map_err(|e| store_error(&e))?;
-    let result = (|| {
-        let mut after = None;
-        for _ in 0..64 {
-            let page = snapshot
-                .active_principals(crate::read_budget(
-                    after,
-                    100,
-                    1024 * 1024,
-                    std::time::Duration::from_secs(1),
-                ))
-                .map_err(|e| store_error(&e))?;
-            let next = page.next().cloned();
-            let complete = page.window().complete();
-            for record in page.into_items() {
-                let (agent_id, name) = match &record.current.body {
-                    EventBody::PrincipalRegistered {
-                        principal: Actor::Agent(id),
-                        name,
-                        ..
-                    }
-                    | EventBody::PrincipalRenamed {
-                        principal: Actor::Agent(id),
-                        name,
-                        ..
-                    } => (id.clone(), name.clone()),
-                    _ => continue,
-                };
-                if agent_id.as_str() == selector || name == selector {
-                    let profile_rec = se_core::scope::require_present(
-                        snapshot
-                            .profile(agent_id.clone())
-                            .map_err(|e| store_error(&e))?,
-                        "external agent profile",
-                        "Save a valid agent profile before joining an external seat.",
-                    )?;
-                    let EventBody::ProfileSaved { profile, .. } = profile_rec.current.body else {
-                        return Err(se_core::scope::unreadable(
-                            "external agent profile",
-                            "unexpected profile event kind",
-                        ));
-                    };
-                    if require_external && !profile.external {
-                        return Err(SeError::invalid(
-                            "external seat agent",
-                            "an agent marked external-eligible (`se agent add <name> --external`)",
-                        ));
-                    }
-                    return Ok((agent_id, name, profile.provider));
-                }
-            }
-            match next {
-                Some(cursor) => after = Some(cursor),
-                None if complete => {
-                    return Err(SeError::invalid(
-                        "external seat agent",
-                        "an existing active agent in this project",
-                    ));
-                }
-                None => break,
-            }
-        }
-        Err(se_core::scope::unreadable(
-            "external seat agent",
-            "agent inventory is incomplete",
-        ))
-    })();
-    let closed = snapshot.close();
-    crate::runtime::executor::close_read(result, closed)
-}
+pub(crate) use commit::resolve_external_agent;
 
 /// Durably revoke any expired external leases still tracked in this host's registry.
 /// Propagates reconciliation failures so callers never conceal a still-active row.
@@ -212,7 +125,7 @@ pub(crate) async fn reconcile_external_for_launch_on_store(
             })
             .await?;
         if let Some(session_rev) = rev_info {
-            commit::commit_revocation_on_store(
+            let warn = commit::commit_revocation_on_store(
                 store,
                 owner,
                 project_id,
@@ -223,14 +136,24 @@ pub(crate) async fn reconcile_external_for_launch_on_store(
                 deadline,
             )
             .await?;
+            let _ = external.remove_if_matching(
+                project_id,
+                agent_id,
+                &lease.session_id,
+                lease.lease_generation,
+            )?;
+            if let Some(err) = warn {
+                return Err(err);
+            }
             changed = true;
+        } else {
+            let _ = external.remove_if_matching(
+                project_id,
+                agent_id,
+                &lease.session_id,
+                lease.lease_generation,
+            )?;
         }
-        let _ = external.remove_if_matching(
-            project_id,
-            agent_id,
-            &lease.session_id,
-            lease.lease_generation,
-        )?;
     }
     let reads = store.reads.clone();
     let generation = store.generation.get();
@@ -245,7 +168,7 @@ pub(crate) async fn reconcile_external_for_launch_on_store(
         })
         .await?;
     if let commit::LiveSeatCheck::StaleExternal(stale, reason) = check {
-        commit::commit_revocation_on_store(
+        let warn = commit::commit_revocation_on_store(
             store,
             owner,
             project_id,
@@ -256,6 +179,9 @@ pub(crate) async fn reconcile_external_for_launch_on_store(
             deadline,
         )
         .await?;
+        if let Some(err) = warn {
+            return Err(err);
+        }
         changed = true;
     }
     Ok(changed)
@@ -310,7 +236,7 @@ async fn ensure_agent_clear_locked(
     match live_check {
         commit::LiveSeatCheck::Clear => Ok(()),
         commit::LiveSeatCheck::StaleExternal(stale, reason) => {
-            commit::commit_revocation(
+            if let Some(warn) = commit::commit_revocation(
                 router,
                 project_id,
                 &stale.session_id,
@@ -319,7 +245,11 @@ async fn ensure_agent_clear_locked(
                 reason,
                 deadline,
             )
-            .await
+            .await?
+            {
+                return Err(warn);
+            }
+            Ok(())
         }
         commit::LiveSeatCheck::LiveConflict(remedy) => {
             Err(SeError::invalid("external seat approval", remedy))
@@ -380,24 +310,41 @@ pub(crate) async fn approve_claim(
         natural_key: None,
         natural_events: Vec::new(),
     };
-    match submit::submit_retained(&router.execution, batch, &identity, deadline).await? {
-        submit::RetainedCommit::Committed => {}
-        submit::RetainedCommit::OutcomeUnknown(err) => {
-            let check_deadline =
-                crate::runtime::serve::options(std::time::Duration::from_secs(10))?;
-            if !commit::session_is_active(
-                &router.execution,
-                &router.context.owner,
-                &consumed.project_id,
-                &session_id,
-                &check_deadline,
-            )
-            .await?
-            {
-                return Err(err);
+    let observer_warning =
+        match submit::submit_retained(&router.execution, batch, &identity, deadline).await? {
+            submit::RetainedCommit::Committed { observer_warning } => observer_warning,
+            submit::RetainedCommit::OutcomeUnknown(err) => {
+                let check_deadline =
+                    crate::runtime::serve::options(std::time::Duration::from_secs(10))?;
+                match commit::session_is_active(
+                    &router.execution,
+                    &router.context.owner,
+                    &consumed.project_id,
+                    &session_id,
+                    &check_deadline,
+                )
+                .await
+                {
+                    Ok(true) => None,
+                    Ok(false) => return Err(err),
+                    Err(read_err) => {
+                        let _ = router.execution.external.record_active_lease(ActiveLease {
+                            project_id: consumed.project_id.clone(),
+                            agent_id: consumed.agent_id.clone(),
+                            agent_name: consumed.agent_name.clone(),
+                            session_id: session_id.clone(),
+                            credential_id,
+                            lease_generation,
+                            peer_pid: consumed.peer_pid,
+                            host_generation,
+                            expires_at_us,
+                            reconcile_required: true,
+                        });
+                        return Err(err.with_cause(read_err));
+                    }
+                }
             }
-        }
-    }
+        };
 
     let active = ActiveLease {
         project_id: consumed.project_id.clone(),
@@ -409,9 +356,10 @@ pub(crate) async fn approve_claim(
         peer_pid: consumed.peer_pid,
         host_generation,
         expires_at_us,
+        reconcile_required: false,
     };
     router.execution.external.record_active_lease(active)?;
-    handoff_to_bridge_locked(
+    let output = handoff_to_bridge_locked(
         router,
         consumed,
         session_id,
@@ -419,7 +367,11 @@ pub(crate) async fn approve_claim(
         expires_at_us,
         secret,
     )
-    .await
+    .await?;
+    if let Some(warn) = observer_warning {
+        return Err(warn);
+    }
+    Ok(output)
 }
 
 async fn handoff_to_bridge_locked(
@@ -430,8 +382,6 @@ async fn handoff_to_bridge_locked(
     expires_at_us: i64,
     secret: Arc<Secret>,
 ) -> Result<ExternalApproveOutput> {
-    // Atomically bind cleanup ownership onto the bridge BEFORE sending on the
-    // oneshot so EOF/timeout on the bridge can never strand the committed seat.
     let handoff_ok = {
         let mut bridge = consumed
             .bridge
@@ -463,28 +413,43 @@ async fn handoff_to_bridge_locked(
             })
             .is_ok();
     if !delivered {
-        let should_revoke = !handoff_ok
-            || consumed
-                .bridge
-                .lock()
-                .ok()
-                .and_then(|mut b| b.active.take())
-                .is_some();
-        if should_revoke {
-            let _ = fenced_disconnect_locked_with_retry(
-                router,
-                &consumed.project_id,
-                &consumed.agent_id,
-                &session_id,
-                lease_generation,
-                "external bridge disconnected before capability delivery",
-            )
-            .await;
+        match fenced_disconnect_locked_with_retry(
+            router,
+            &consumed.project_id,
+            &consumed.agent_id,
+            &session_id,
+            lease_generation,
+            "external bridge disconnected before capability delivery",
+        )
+        .await
+        {
+            Ok(_) => {
+                if let Ok(mut b) = consumed.bridge.lock()
+                    && b.active
+                        .as_ref()
+                        .is_some_and(|(_, _, s, g)| *s == session_id && *g == lease_generation)
+                {
+                    b.active = None;
+                }
+                return Err(SeError::invalid(
+                    "external claim approval",
+                    "a still-connected bridge waiting on this claim; the bridge disconnected so the seat was revoked",
+                ));
+            }
+            Err(revoke_err) => {
+                router.execution.external.mark_reconcile_required(
+                    &consumed.project_id,
+                    &consumed.agent_id,
+                    &session_id,
+                    lease_generation,
+                );
+                return Err(SeError::invalid(
+                    "external claim approval",
+                    "a still-connected bridge waiting on this claim; the bridge disconnected and rollback could not be confirmed, so run `se external revoke`",
+                )
+                .with_cause(revoke_err));
+            }
         }
-        return Err(SeError::invalid(
-            "external claim approval",
-            "a still-connected bridge waiting on this claim; the bridge disconnected so the seat was revoked",
-        ));
     }
     Ok(ExternalApproveOutput {
         claim_id: consumed.claim_id,
@@ -559,7 +524,7 @@ pub(crate) async fn revoke_seat(
             .await?
     };
 
-    commit::commit_revocation(
+    let observer_warning = commit::commit_revocation(
         router,
         &project,
         &active.session_id,
@@ -584,6 +549,9 @@ pub(crate) async fn revoke_seat(
                 .remove_if_session(&project, &agent_id, &active.session_id)?
         }
     };
+    if let Some(warn) = observer_warning {
+        return Err(warn);
+    }
     let lease_generation = removed
         .as_ref()
         .map(|lease| lease.lease_generation)
@@ -738,7 +706,7 @@ async fn fenced_disconnect_locked_on_execution(
         )?;
         return Ok(false);
     };
-    commit::commit_revocation_on_execution(
+    let observer_warning = commit::commit_revocation_on_execution(
         execution,
         owner,
         project_id,
@@ -755,5 +723,8 @@ async fn fenced_disconnect_locked_on_execution(
         session_id,
         lease_generation,
     )?;
+    if let Some(warn) = observer_warning {
+        return Err(warn);
+    }
     Ok(true)
 }

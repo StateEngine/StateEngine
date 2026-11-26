@@ -51,8 +51,18 @@ impl LaunchCoordinator {
         if !plan.replayed {
             self.require_force_selection(&plan)?;
             plan = crate::reboot::after_reboot(self, plan, &admission, deadline).await?;
-            if !plan.control.sessions.is_empty()
-                && crate::external::lifecycle::reconcile_external_for_launch_on_store(
+            let has_external_session = plan.control.sessions.iter().any(|rec| {
+                let orig = rec.original.as_deref().unwrap_or(&rec.current);
+                matches!(
+                    orig.body,
+                    EventBody::SessionPrepared {
+                        surface: Some(se_store::SessionSurface::External),
+                        ..
+                    }
+                )
+            });
+            if has_external_session {
+                crate::external::lifecycle::reconcile_external_for_launch_on_store(
                     &self.store,
                     &self.capability_admission.external,
                     &self.human,
@@ -60,8 +70,10 @@ impl LaunchCoordinator {
                     &plan.agent.id,
                     deadline,
                 )
-                .await?
-            {
+                .await?;
+                // Always replan after expiry reconciliation so launch evaluates a
+                // fresh post-reconciliation snapshot even if a concurrent call
+                // settled the expiry between planning and acquiring the agent lock.
                 plan = self.replan_launch(&plan, &admission, deadline).await?;
             }
         }

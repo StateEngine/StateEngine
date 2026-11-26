@@ -624,9 +624,18 @@ fn prepare_route(
     {
         input.deadline = Some(admitted_at + se_core::ops::atlas_hook::HOOK_HOST_BUDGET);
     }
+    let needs_external_reconcile = matches!(
+        &admitted.input,
+        HostedInput::Operation(
+            se_core::ops::AnyOp::ProjectStatus(_) | se_core::ops::AnyOp::AgentShow(_)
+        )
+    ) && super::start::now_unix_micros()
+        .ok()
+        .is_some_and(|now_us| planner.has_reconcilable_external(now_us));
     // Long polls, remote exchanges and pinned-source capture retain their
     // specialized fresh checks. None may carry this finite pin across awaits.
-    let deferred = admitted.selections.as_ref().is_some_and(|s| s.mail_follow)
+    let deferred = needs_external_reconcile
+        || admitted.selections.as_ref().is_some_and(|s| s.mail_follow)
         || hook.is_some()
         || matches!(&admitted.input,
         HostedInput::Operation(operation) if operation.is_remote()

@@ -233,13 +233,83 @@ impl Store {
         };
         self.submit(batch, identity, deadline).await
     }
-    pub(crate) async fn submit_batch(
+    /// Submit a batch and return its authoritative writer outcome, separating
+    /// durable commit from any secondary observer warning.
+    pub(crate) async fn submit_batch_retained(
         &self,
         batch: AtomicBatch,
         identity: crate::runtime::WriteIdentity,
         deadline: &Deadline,
-    ) -> Result<CommitReceipt> {
-        self.submit(batch, identity, deadline).await
+    ) -> Result<super::submit::RetainedCommit> {
+        let fault = self.fault.clone();
+        let submitted = identity.clone();
+        let recipients = crate::runtime::mail::recipients(&batch);
+        let revocations = crate::runtime::mail::revocations(&batch);
+        let writer = self.writer.clone();
+        let pending = self.pending.clone();
+        let mail_waits = self.mail_waits.clone();
+        let runtime = self.pool.handle();
+        let record_feed = self.record_feed.clone();
+        let completion = self
+            .pool
+            .run_owned(deadline, move || {
+                let record_write = record_feed.before_scoped_write(&batch.admission.scope)?;
+                pending.register(&submitted)?;
+                mail_waits.fence_remote(&revocations)?;
+                match writer.submit(batch) {
+                    Ok(completion) => Ok(super::submit::CommitObserver {
+                        completion,
+                        record_write,
+                        fault,
+                        pending,
+                        submitted,
+                        mail_waits,
+                        revocations,
+                        recipients,
+                        custody: None,
+                    }
+                    .spawn(&runtime)),
+                    Err(err) => {
+                        fault.observe_writer(&err);
+                        let err = submitted.store_error(&err);
+                        pending.failed_attempt(&submitted)?;
+                        Err(err)
+                    }
+                }
+            })
+            .await?;
+        let (receipt, settled) = completion
+            .await
+            .map_err(|cause| identity.wait_error(error("lifecycle completion observer", cause)))?;
+        match receipt {
+            Ok(receipt) => {
+                let observer_warning = settled.err().map(|cause| {
+                    crate::runtime::CommittedWrite {
+                        operation: identity.operation.into(),
+                        key: identity.key.clone(),
+                        natural_events: identity.natural_events.clone(),
+                        committed_events: receipt.events.clone(),
+                    }
+                    .response_error(cause)
+                });
+                Ok(super::submit::RetainedCommit::Committed { observer_warning })
+            }
+            Err(err) if err.code == se_store::StoreErrorCode::CommitOutcomeUnknown => {
+                let err = identity.store_error(&err);
+                let err = match settled {
+                    Ok(()) => err,
+                    Err(cause) => err.with_cause(cause),
+                };
+                Ok(super::submit::RetainedCommit::OutcomeUnknown(err))
+            }
+            Err(err) => {
+                let err = identity.store_error(&err);
+                Err(match settled {
+                    Ok(()) => err,
+                    Err(cause) => err.with_cause(cause),
+                })
+            }
+        }
     }
     async fn submit(
         &self,

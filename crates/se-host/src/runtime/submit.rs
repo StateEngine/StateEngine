@@ -7,8 +7,11 @@ use se_types::Result;
 use std::{sync::Arc, time::Instant};
 
 pub(crate) enum RetainedCommit {
-    /// The writer durably committed the batch (even if a secondary observer step warned).
-    Committed,
+    /// The writer durably committed the batch. `observer_warning` preserves any
+    /// secondary observer failure after commit without hiding the durable fact.
+    Committed {
+        observer_warning: Option<se_types::SeError>,
+    },
     /// The writer reported an indeterminate commit outcome; caller must reconcile.
     OutcomeUnknown(se_types::SeError),
 }
@@ -69,18 +72,40 @@ pub(crate) async fn submit_retained(
         },
     )
     .await?;
-    let (receipt, _settled) = completion.await.map_err(|error| {
+    let (receipt, settled) = completion.await.map_err(|error| {
         identity.wait_error(se_core::scope::unreadable(
             "write completion observer",
             &error.to_string(),
         ))
     })?;
     match receipt {
-        Ok(_receipt) => Ok(RetainedCommit::Committed),
-        Err(error) if error.code == se_store::StoreErrorCode::CommitOutcomeUnknown => {
-            Ok(RetainedCommit::OutcomeUnknown(identity.store_error(&error)))
+        Ok(receipt) => {
+            let observer_warning = settled.err().map(|cause| {
+                CommittedWrite {
+                    operation: identity.operation.into(),
+                    key: identity.key.clone(),
+                    natural_events: identity.natural_events.clone(),
+                    committed_events: receipt.events.clone(),
+                }
+                .response_error(cause)
+            });
+            Ok(RetainedCommit::Committed { observer_warning })
         }
-        Err(error) => Err(identity.store_error(&error)),
+        Err(error) if error.code == se_store::StoreErrorCode::CommitOutcomeUnknown => {
+            let error = identity.store_error(&error);
+            let error = match settled {
+                Ok(()) => error,
+                Err(cause) => error.with_cause(cause),
+            };
+            Ok(RetainedCommit::OutcomeUnknown(error))
+        }
+        Err(error) => {
+            let error = identity.store_error(&error);
+            Err(match settled {
+                Ok(()) => error,
+                Err(cause) => error.with_cause(cause),
+            })
+        }
     }
 }
 

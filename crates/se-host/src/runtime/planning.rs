@@ -12,6 +12,7 @@ enum Prepared {
 }
 pub(super) struct Planner {
     atlas: Arc<crate::atlas_runtime::read_port::AtlasOwnerPort>,
+    external: Arc<crate::external::ExternalRegistry>,
     ticket: Result<Option<crate::atlas_runtime::record_fence::RecordFeedTicket>>,
     generation: se_types::Generation,
     status_home: Option<std::path::PathBuf>,
@@ -23,6 +24,7 @@ impl Planner {
         Self {
             ticket: context.atlas.records.ticket(),
             atlas: Arc::clone(&context.atlas),
+            external: Arc::clone(&context.external),
             generation: context.generation,
             status_home: context
                 .custody
@@ -30,6 +32,9 @@ impl Planner {
                 .filter(|custody| custody.prepares_status())
                 .map(|_| context.state_directory.clone()),
         }
+    }
+    pub(super) fn has_reconcilable_external(&self, now_us: i64) -> bool {
+        self.external.has_reconcilable_leases(now_us)
     }
     pub(super) fn prepare(
         self,

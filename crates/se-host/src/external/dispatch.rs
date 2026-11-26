@@ -143,8 +143,10 @@ async fn execute_claim_wait(
     )
 }
 
-/// Atomically mark the bridge closed, take any bound active seat, cancel any
-/// pending claim, and durably revoke any seat owned by this connection.
+/// Atomically mark the bridge closed and spawn durable cleanup on a detached
+/// host task so peer EOF cancelling `ClaimWait` can never drop the cleanup
+/// before durable revocation settles. Cleanup ownership stays in `active_binding`
+/// and `registry.active` until revocation succeeds.
 async fn close_bridge_and_revoke(
     router: &HostedRouter,
     claim_id: Option<&str>,
@@ -153,35 +155,72 @@ async fn close_bridge_and_revoke(
 ) {
     let active = active_binding.lock().ok().and_then(|mut b| {
         b.closed = true;
-        b.active.take()
+        b.active.clone()
     });
     let undelivered = claim_id.and_then(|id| router.execution.external.cancel_pending_claim(id));
-    if let Some((project_id, agent_id, session_id, lease_generation)) = &active {
-        let _ = lifecycle::fenced_disconnect_with_retry(
-            router,
-            project_id,
-            agent_id,
-            session_id,
-            *lease_generation,
-            reason,
-        )
-        .await;
+    if active.is_none() && undelivered.is_none() {
+        return;
     }
-    if let Some(undelivered) = undelivered
-        && active.as_ref().is_none_or(|(_, _, s, g)| {
-            *s != undelivered.session_id || *g != undelivered.lease_generation
-        })
-    {
-        let _ = lifecycle::fenced_disconnect_with_retry(
-            router,
-            &undelivered.project_id,
-            &undelivered.agent_id,
-            &undelivered.session_id,
-            undelivered.lease_generation,
-            reason,
-        )
-        .await;
-    }
+    let router = router.clone();
+    let binding = Arc::clone(active_binding);
+    let reason = reason.to_owned();
+    let handle = tokio::spawn(async move {
+        if let Some((project_id, agent_id, session_id, lease_generation)) = &active {
+            match lifecycle::fenced_disconnect_with_retry(
+                &router,
+                project_id,
+                agent_id,
+                session_id,
+                *lease_generation,
+                &reason,
+            )
+            .await
+            {
+                Ok(_) => {
+                    if let Ok(mut b) = binding.lock()
+                        && b.active.as_ref().is_some_and(|(_, _, s, g)| {
+                            *s == *session_id && *g == *lease_generation
+                        })
+                    {
+                        b.active = None;
+                    }
+                }
+                Err(_) => {
+                    router.execution.external.mark_reconcile_required(
+                        project_id,
+                        agent_id,
+                        session_id,
+                        *lease_generation,
+                    );
+                }
+            }
+        }
+        if let Some(undelivered) = undelivered
+            && active.as_ref().is_none_or(|(_, _, s, g)| {
+                *s != undelivered.session_id || *g != undelivered.lease_generation
+            })
+            && lifecycle::fenced_disconnect_with_retry(
+                &router,
+                &undelivered.project_id,
+                &undelivered.agent_id,
+                &undelivered.session_id,
+                undelivered.lease_generation,
+                &reason,
+            )
+            .await
+            .is_err()
+        {
+            router.execution.external.mark_reconcile_required(
+                &undelivered.project_id,
+                &undelivered.agent_id,
+                &undelivered.session_id,
+                undelivered.lease_generation,
+            );
+        }
+    });
+    // Await the detached task; if the caller future is cancelled by peer EOF,
+    // dropping `handle` detaches the task rather than cancelling cleanup.
+    let _ = handle.await;
 }
 
 /// Clean up any pending claim or active external lease owned by a disconnecting bridge.

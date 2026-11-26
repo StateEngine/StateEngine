@@ -90,6 +90,9 @@ pub(crate) struct ActiveLease {
     pub peer_pid: u32,
     pub host_generation: Generation,
     pub expires_at_us: i64,
+    /// Set when an indeterminate approval or failed rollback must be reconciled
+    /// against durable store state before the slot can be treated as healthy.
+    pub reconcile_required: bool,
 }
 
 /// Tracks pending claims and active external seat leases for this host generation.
@@ -353,7 +356,7 @@ impl ExternalRegistry {
             .cloned())
     }
 
-    /// Read-only fenced lookup matching exact `(session_id, lease_generation)` that is not expired.
+    /// Read-only fenced lookup matching exact `(session_id, lease_generation)` that is healthy and unexpired.
     pub(crate) fn matching_active_lease(
         &self,
         project_id: &ProjectId,
@@ -364,7 +367,39 @@ impl ExternalRegistry {
     ) -> Result<Option<ActiveLease>> {
         Ok(self
             .matching_lease(project_id, agent_id, session_id, lease_generation)?
-            .filter(|lease| lease.expires_at_us > now_us))
+            .filter(|lease| !lease.reconcile_required && lease.expires_at_us > now_us))
+    }
+
+    /// Mark an active lease as requiring durable reconciliation (e.g. after a
+    /// failed rollback or disconnect cleanup) so it is excluded from healthy
+    /// active views and retried on the next reconciliation pass.
+    pub(crate) fn mark_reconcile_required(
+        &self,
+        project_id: &ProjectId,
+        agent_id: &AgentId,
+        session_id: &SessionId,
+        lease_generation: u64,
+    ) {
+        if let Ok(mut guard) = self.state.lock()
+            && let Some(lease) = guard
+                .active
+                .get_mut(&(project_id.clone(), agent_id.clone()))
+            && lease.session_id == *session_id
+            && lease.lease_generation == lease_generation
+        {
+            lease.reconcile_required = true;
+        }
+    }
+
+    /// Cheap lock check used by `prepare_route` to defer `ProjectStatus`/`AgentShow`
+    /// only when an expired or indeterminate external lease requires reconciliation.
+    pub(crate) fn has_reconcilable_leases(&self, now_us: i64) -> bool {
+        self.state.lock().is_ok_and(|guard| {
+            guard
+                .active
+                .values()
+                .any(|lease| lease.reconcile_required || lease.expires_at_us <= now_us)
+        })
     }
 
     /// Fenced removal: removes the active lease ONLY if `(session_id, lease_generation)` matches.
@@ -408,7 +443,7 @@ impl ExternalRegistry {
         }
     }
 
-    /// Returns the unexpired active lease for `(project_id, agent_id)`, if any.
+    /// Returns the healthy unexpired active lease for `(project_id, agent_id)`, if any.
     pub(crate) fn active_lease(
         &self,
         project_id: &ProjectId,
@@ -419,11 +454,11 @@ impl ExternalRegistry {
         Ok(guard
             .active
             .get(&(project_id.clone(), agent_id.clone()))
-            .filter(|lease| lease.expires_at_us > now_us)
+            .filter(|lease| !lease.reconcile_required && lease.expires_at_us > now_us)
             .cloned())
     }
 
-    /// Returns all currently expired leases still tracked in the registry for durable reconciliation.
+    /// Returns all currently expired or reconcile-required leases still tracked in the registry.
     pub(crate) fn expired_leases(
         &self,
         project: Option<&ProjectId>,
@@ -434,7 +469,8 @@ impl ExternalRegistry {
             .active
             .values()
             .filter(|lease| {
-                lease.expires_at_us <= now_us && project.is_none_or(|p| &lease.project_id == p)
+                (lease.reconcile_required || lease.expires_at_us <= now_us)
+                    && project.is_none_or(|p| &lease.project_id == p)
             })
             .cloned()
             .collect())
@@ -466,7 +502,9 @@ impl ExternalRegistry {
             .active
             .values()
             .filter(|lease| {
-                lease.expires_at_us > now_us && project.is_none_or(|p| &lease.project_id == p)
+                !lease.reconcile_required
+                    && lease.expires_at_us > now_us
+                    && project.is_none_or(|p| &lease.project_id == p)
             })
             .map(|lease| ActiveExternalLeaseView {
                 project_id: lease.project_id.clone(),

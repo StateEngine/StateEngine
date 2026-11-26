@@ -16,6 +16,94 @@ use se_types::{AgentId, EventId, IdempotencyKey, ProjectId, Result, SeError, Ses
 use sha2::{Digest, Sha256};
 use std::num::NonZeroU64;
 
+/// Resolve an agent selector (exact ID or display name) and verify external eligibility.
+pub(crate) fn resolve_external_agent(
+    phase: se_store::ReadPhase,
+    project: &ProjectId,
+    owner: &se_types::HumanId,
+    generation: u64,
+    selector: &str,
+    require_external: bool,
+) -> Result<(AgentId, String, se_store::Provider)> {
+    let admission = Admission {
+        scope: Scope::Project(project.clone()),
+        actor: Actor::Human(owner.clone()),
+        session: None,
+        generation,
+    };
+    let mut snapshot = phase
+        .into_snapshot(se_core::admission::read_scope(&admission))
+        .map_err(|e| store_error(&e))?;
+    let result = (|| {
+        let mut after = None;
+        for _ in 0..64 {
+            let page = snapshot
+                .active_principals(crate::read_budget(
+                    after,
+                    100,
+                    1024 * 1024,
+                    std::time::Duration::from_secs(1),
+                ))
+                .map_err(|e| store_error(&e))?;
+            let next = page.next().cloned();
+            let complete = page.window().complete();
+            for record in page.into_items() {
+                let (agent_id, name) = match &record.current.body {
+                    EventBody::PrincipalRegistered {
+                        principal: Actor::Agent(id),
+                        name,
+                        ..
+                    }
+                    | EventBody::PrincipalRenamed {
+                        principal: Actor::Agent(id),
+                        name,
+                        ..
+                    } => (id.clone(), name.clone()),
+                    _ => continue,
+                };
+                if agent_id.as_str() == selector || name == selector {
+                    let profile_rec = se_core::scope::require_present(
+                        snapshot
+                            .profile(agent_id.clone())
+                            .map_err(|e| store_error(&e))?,
+                        "external agent profile",
+                        "Save a valid agent profile before joining an external seat.",
+                    )?;
+                    let EventBody::ProfileSaved { profile, .. } = profile_rec.current.body else {
+                        return Err(se_core::scope::unreadable(
+                            "external agent profile",
+                            "unexpected profile event kind",
+                        ));
+                    };
+                    if require_external && !profile.external {
+                        return Err(SeError::invalid(
+                            "external seat agent",
+                            "an agent marked external-eligible (`se agent add <name> --external`)",
+                        ));
+                    }
+                    return Ok((agent_id, name, profile.provider));
+                }
+            }
+            match next {
+                Some(cursor) => after = Some(cursor),
+                None if complete => {
+                    return Err(SeError::invalid(
+                        "external seat agent",
+                        "an existing active agent in this project",
+                    ));
+                }
+                None => break,
+            }
+        }
+        Err(se_core::scope::unreadable(
+            "external seat agent",
+            "agent inventory is incomplete",
+        ))
+    })();
+    let closed = snapshot.close();
+    crate::runtime::executor::close_read(result, closed)
+}
+
 pub(crate) struct ActiveExternalSession {
     pub session_id: SessionId,
     pub session_rev: Revision,
@@ -301,7 +389,15 @@ pub(crate) async fn session_is_active(
                     value.current.body,
                     EventBody::SessionPrepared { .. } | EventBody::SessionActivated { .. }
                 )),
-                Ok(_) => Ok(false),
+                Ok(se_types::Read::Absent { .. }) => Ok(false),
+                Ok(se_types::Read::Unreadable { reason, .. }) => Err(se_core::scope::unreadable(
+                    "external seat session verification",
+                    &reason,
+                )),
+                Ok(se_types::Read::Unknown { what }) => Err(se_core::scope::unreadable(
+                    "external seat session verification",
+                    &what,
+                )),
                 Err(err) => Err(err),
             };
             crate::runtime::executor::close_read(active, snap.close())
@@ -318,7 +414,7 @@ pub(crate) async fn commit_revocation(
     cred: Option<(RecordId, Revision)>,
     reason: &str,
     deadline: &Deadline,
-) -> Result<()> {
+) -> Result<Option<SeError>> {
     commit_revocation_on_execution(
         &router.execution,
         &router.context.owner,
@@ -431,7 +527,7 @@ pub(crate) async fn commit_revocation_on_store(
     cred: Option<(RecordId, Revision)>,
     reason: &str,
     deadline: &Deadline,
-) -> Result<()> {
+) -> Result<Option<SeError>> {
     let now_us = now_unix_micros()?;
     let reads = store.reads.clone();
     let generation = store.generation;
@@ -461,7 +557,13 @@ pub(crate) async fn commit_revocation_on_store(
         natural_key: None,
         natural_events: Vec::new(),
     };
-    store.submit_batch(batch, identity, deadline).await?;
+    let observer_warning = match store
+        .submit_batch_retained(batch, identity, deadline)
+        .await?
+    {
+        crate::runtime::submit::RetainedCommit::Committed { observer_warning } => observer_warning,
+        crate::runtime::submit::RetainedCommit::OutcomeUnknown(err) => return Err(err),
+    };
     let mut revocations = crate::runtime::mail::Revocations::default();
     revocations
         .sessions
@@ -470,7 +572,7 @@ pub(crate) async fn commit_revocation_on_store(
         revocations.credentials.push((project.clone(), cred_id));
     }
     let _ = store.mail_waits.revoked(&revocations);
-    Ok(())
+    Ok(observer_warning)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -483,7 +585,7 @@ pub(crate) async fn commit_revocation_on_execution(
     cred: Option<(RecordId, Revision)>,
     reason: &str,
     deadline: &Deadline,
-) -> Result<()> {
+) -> Result<Option<SeError>> {
     let store = crate::runtime::store::Store::for_execution(execution);
     commit_revocation_on_store(
         &store,
