@@ -445,7 +445,7 @@ impl LaunchCoordinator {
         if let Some(job) = jobs.values().find(|job| &job.lifecycle == lifecycle)
             && let Ok(mut bound) = job.codex_login.lock()
         {
-            *bound = Some(se_proc::canonicalize_path(login).unwrap_or_else(|_| login.to_owned()));
+            *bound = se_proc::canonicalize_path(login).ok();
         }
         Ok(())
     }
@@ -467,7 +467,7 @@ impl LaunchCoordinator {
         login: &Path,
         exclude: Option<&se_types::LifecycleId>,
     ) -> Result<bool> {
-        let target = se_proc::canonicalize_path(login).unwrap_or_else(|_| login.to_owned());
+        let target = se_proc::canonicalize_path(login).ok();
         let jobs = self
             .jobs
             .0
@@ -480,13 +480,15 @@ impl LaunchCoordinator {
             {
                 return false;
             }
-            // Jobs bound to a different login do not share this login's server;
-            // an unbound/recovered job with unknown login stays conservative.
-            job.codex_login
-                .lock()
-                .ok()
-                .and_then(|guard| guard.clone())
-                .is_none_or(|bound| bound == target)
+            // Jobs bound to a proved different login do not share this login's
+            // server; an uncanonicalized/unknown login on either side stays conservative.
+            match (
+                &target,
+                job.codex_login.lock().ok().and_then(|guard| guard.clone()),
+            ) {
+                (Some(target), Some(bound)) => bound == *target,
+                _ => true,
+            }
         }))
     }
 
