@@ -126,11 +126,11 @@ struct RunningImage<'p> {
 /// The native claim governing this uninstall: the reinstalled image's own
 /// claim when replacing, otherwise the fresh acquisition.
 fn governing_claim<'a>(
-    reinstall: Option<(&'a se_proc::NativeInstallationClaim, &Path, bool)>,
+    reinstall: Option<&(&'a se_proc::NativeInstallationClaim, &Path, &mut bool)>,
     installation_claim: Option<&'a se_proc::NativeInstallationClaim>,
 ) -> Result<&'a se_proc::NativeInstallationClaim> {
     reinstall
-        .map(|(claim, _, _)| claim)
+        .map(|(claim, _, _)| *claim)
         .or(installation_claim)
         .ok_or_else(|| invalid("native installation claim missing"))
 }
@@ -139,7 +139,7 @@ fn execute_inner(
     cx: &Bootstrap,
     key: &se_types::IdempotencyKey,
     diagnostic: &mut dyn FnMut(&str) -> io::Result<()>,
-    reinstall: Option<(&se_proc::NativeInstallationClaim, &Path, bool)>,
+    mut reinstall: Option<(&se_proc::NativeInstallationClaim, &Path, &mut bool)>,
     confirmed: bool,
 ) -> Result<(
     ValidatedUninstallPlan,
@@ -157,7 +157,7 @@ fn execute_inner(
     } else {
         None
     };
-    let claim = governing_claim(reinstall, installation_claim.as_ref())?;
+    let claim = governing_claim(reinstall.as_ref(), installation_claim.as_ref())?;
     // Only uninstall takes the account claim, protecting install/PATH effects
     // across homes. Share setup's persistent home lock through every effect,
     // including when no store exists yet, then re-observe under exclusion.
@@ -171,7 +171,7 @@ fn execute_inner(
     }
     .plan()?;
     let plan = &owned_plan;
-    let running = running_image(plan, reinstall.map(|(_, expected, _)| expected))?;
+    let running = running_image(plan, reinstall.as_ref().map(|(_, expected, _)| *expected))?;
     let installed = running.installed;
 
     // The account claim and exact installation record stay held across ordinary
@@ -213,11 +213,18 @@ fn execute_inner(
     if !reconcile_pre_removal_recovery(plan, claim, &mut effects) {
         return Ok((owned_plan, effects, Some(runtime_lease)));
     }
-    let preserve = reinstall.is_some_and(|(_, _, preserve)| preserve);
-    if preserve {
-        reinstall::persist_custody(&cx.home, plan)?;
-    }
-    let safe = remove_owned_files(plan, installed, &parents, &mut effects, preserve);
+    let preserve = match reinstall.as_mut() {
+        Some((_, _, requested)) => {
+            **requested = reinstall::prepare_custody(&cx.home, plan, **requested)?;
+            **requested
+        }
+        None => false,
+    };
+    let policy = settle::SettlePolicy {
+        preserve,
+        clear_replace_custody: reinstall.is_none(),
+    };
+    let safe = remove_owned_files(plan, installed, &parents, &mut effects, policy);
     // Never strand a partially removed installation without its retry entry point.
     if safe {
         // Preserve the already achieved native facts and original request key
@@ -249,11 +256,7 @@ fn execute_inner(
             "installed image preserved so unresolved effects can be retried",
         ));
     }
-    let policy = settle::SettlePolicy {
-        preserve,
-        clear_replace_custody: reinstall.is_none(),
-    };
-    settle(plan, &parents, &mut held, safe, policy, &mut effects);
+    settle(plan, &parents, &mut held, safe, preserve, &mut effects);
     Ok((owned_plan, effects, Some(runtime_lease)))
 }
 

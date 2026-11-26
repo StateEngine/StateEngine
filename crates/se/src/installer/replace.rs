@@ -60,7 +60,7 @@ pub fn replace_installation(arguments: &[OsString]) -> Result<i32> {
     if home != crate::bootstrap::state_home(None)? {
         return Err(args::invalid("the selected platform data home"));
     }
-    let mut no_modify_path = if arguments.len() == 4 {
+    let no_modify_path = if arguments.len() == 4 {
         if arguments[3] != std::ffi::OsStr::new("--no-modify-path") {
             return Err(args::invalid(USAGE));
         }
@@ -68,10 +68,6 @@ pub fn replace_installation(arguments: &[OsString]) -> Result<i32> {
     } else {
         false
     };
-    if !no_modify_path && load_replace_custody(&home)?.is_some_and(|custody| custody.no_modify_path)
-    {
-        no_modify_path = true;
-    }
     // Verify the replacement before removal. This does not prepare directories
     // or open a writer/migrate the retained database.
     manifest::verify()?;
@@ -99,7 +95,7 @@ pub fn replace_installation(arguments: &[OsString]) -> Result<i32> {
         stderr.write_all(text.as_bytes())?;
         stderr.flush()
     };
-    let (_lease, inherited) = crate::runtime::remove_for_reinstall(
+    let (_lease, no_modify_path, inherited) = crate::runtime::remove_for_reinstall(
         &context,
         &claim,
         &image,

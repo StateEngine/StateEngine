@@ -8,13 +8,14 @@ pub(crate) fn remove_for_reinstall(
     image: &Path,
     preserve_paths: bool,
     diagnostic: &mut dyn FnMut(&str) -> io::Result<()>,
-) -> Result<(std::fs::File, Option<String>)> {
+) -> Result<(std::fs::File, bool, Option<String>)> {
     let key = se_types::IdempotencyKey::new(uuid::Uuid::new_v4().to_string())?;
+    let mut preserve = preserve_paths;
     let (plan, effects, lease) = execute_inner(
         cx,
         &key,
         diagnostic,
-        Some((claim, image, preserve_paths)),
+        Some((claim, image, &mut preserve)),
         false,
     )?;
     let report = se_core::ops::installation::finish_uninstall(&plan, key, effects)?;
@@ -33,19 +34,64 @@ pub(crate) fn remove_for_reinstall(
     })?;
     // The replacement child must re-read the owned blocks it was asked to
     // preserve; carrying them by name and bytes keeps its journal honest.
-    let inherited = if preserve_paths && !plan.path_edits().is_empty() {
+    let inherited = if preserve && !plan.path_edits().is_empty() {
         Some(serde_json::to_string(plan.path_edits()).map_err(|e| {
             se_core::scope::unreadable("inherited PATH custody record", &e.to_string())
         })?)
     } else {
         None
     };
-    Ok((lease, inherited))
+    Ok((lease, preserve, inherited))
+}
+
+/// Under the held native installation claim and home lease, authoritatively
+/// combine any existing durable replacement custody with the requested flag
+/// and persist custody before any old installation file or PATH entry changes.
+pub(super) fn prepare_custody(
+    home: &Path,
+    plan: &ValidatedUninstallPlan,
+    requested: bool,
+) -> Result<bool> {
+    se_proc::NativeStateFiles::open(home).map_err(native_error)?;
+    let path = home.join("standalone-install.replace.json");
+    let preserve = if let Some(mut file) = OwnedFile::open(&path).map_err(native_error)? {
+        let bytes = file.read(1024 * 1024).map_err(native_error)?;
+        let custody: crate::runtime::ReplaceCustody =
+            serde_json::from_slice(&bytes).map_err(|e| {
+                SeError::new(Detail::StateConflict(details::StateConflict {
+                    subject: path.display().to_string(),
+                    reason: format!("invalid replacement custody JSON: {e}"),
+                    next_step: format!(
+                        "Remove '{}' if no replacement is in progress, then retry the installer",
+                        path.display()
+                    ),
+                }))
+            })?;
+        if custody.schema != "stateengine-install-replace/v1" || custody.owner != plan.owner() {
+            return Err(SeError::new(Detail::StateConflict(
+                details::StateConflict {
+                    subject: path.display().to_string(),
+                    reason: "replacement custody has an invalid schema or owner".into(),
+                    next_step: format!(
+                        "Remove '{}' if no replacement is in progress, then retry the installer",
+                        path.display()
+                    ),
+                },
+            )));
+        }
+        requested || custody.no_modify_path
+    } else {
+        requested
+    };
+    if preserve {
+        persist_custody(home, plan)?;
+    }
+    Ok(preserve)
 }
 
 /// Persist `--no-modify-path` replacement custody in the state home before
 /// removing the old record, so a kill before the child journal survives retry.
-pub(super) fn persist_custody(home: &Path, plan: &ValidatedUninstallPlan) -> Result<()> {
+fn persist_custody(home: &Path, plan: &ValidatedUninstallPlan) -> Result<()> {
     use std::io::Write;
     let mut inherited_files = Vec::new();
     for file in plan.files() {
