@@ -1,7 +1,12 @@
-//! Native watcher thread: recursive on Windows/macOS, per-directory on Linux.
-//! Paths pass through [`crate::filter`] before any syscall; lost events mark
-//! the dirty set overflowed so the writer reconciles by file stats.
-//! Drains queued events, then blocks with no timer until signaled or stopped.
+//! The native watcher thread. Windows and macOS watch the whole tree with one
+//! recursive request; Linux watches each directory. Every reported path goes
+//! through [`crate::filter`] before any filesystem call, so ignored and
+//! private paths never cost a syscall or reach the dirty set. Lost events (a
+//! queue overflow, a moved directory, a failed read) mark the dirty set
+//! overflowed, which makes the writer reconcile the tree by file stats. A
+//! watch that cannot be kept marks the root unwatched instead of current.
+//! The thread drains what is queued, then sleeps with no timer until the
+//! watch signals more events or [`Watcher::stop`] wakes it.
 use crate::{
     dirty::Change,
     filter::{self, Reported},
@@ -166,11 +171,14 @@ fn subscribe(
         branches.extend(subdirectories(refs_root, &dir).unwrap_or_default());
     }
     for dir in std::iter::once("").chain(directories.iter().map(String::as_str)) {
-        if let Some(reg) = watch
-            .subscribe(root, dir)
-            .map_err(|e| format!("watching {dir:?}: {e}"))?
-        {
-            names.insert(reg.descriptor, dir.to_owned());
+        match watch.subscribe(root, dir) {
+            Ok(Some(reg)) => {
+                names.insert(reg.descriptor, dir.to_owned());
+            }
+            // A vanished directory means the tree changed, which the
+            // reconcile after arming catches.
+            Ok(None) => {}
+            Err(e) => return Err(format!("watching {dir:?}: {e}")),
         }
     }
     let watched = names.len() as u64;
@@ -499,7 +507,9 @@ impl Thread<'_> {
                     self.names.insert(reg.descriptor, logical);
                     added += 1;
                 }
+                // Gone again before it could be watched.
                 Ok(None) => continue,
+                // Watched under an older name: a reconcile settles the tree.
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     self.lose();
                     continue;

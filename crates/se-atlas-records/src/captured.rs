@@ -75,6 +75,10 @@ pub(super) fn successful(event: &StoredEvent) -> Result<Captured> {
     if !vendor_ref.starts_with(se_store::TRANSCRIPT_EVENT_PREFIX) {
         return Ok(Captured::Skip);
     }
+    // Native metadata is already bounded by capture. Avoid parsing arbitrary
+    // chat or scanning bodies for tool-looking strings. Known non-tool system
+    // envelopes over 8 KiB are skipped cleanly; oversized tool-edit candidates
+    // are reported as unreadable so feed coverage degrades honestly.
     if text.len() > 8192 {
         return Ok(if is_oversized_non_tool(text) {
             Captured::Skip
@@ -97,8 +101,6 @@ pub(super) fn successful(event: &StoredEvent) -> Result<Captured> {
         SeError::invalid("captured metadata", "the retained native tool observation")
     })?;
     tool.validate_binding(session, agent, *provider, tool.source, evidence)?;
-    const EDIT_TOOLS: &str =
-        "Edit Write MultiEdit apply_patch FileChange fileChange file_change write_file edit_file";
     let ToolName::Known(name) = &tool.tool else {
         return Ok(Captured::Skip);
     };
@@ -106,7 +108,18 @@ pub(super) fn successful(event: &StoredEvent) -> Result<Captured> {
         || !matches!(tool.outcome, Outcome::Succeeded)
         || matches!(tool.native, NativeIdentity::Unknown(_))
         || !matches!(tool.target, Target::Paths(_))
-        || !EDIT_TOOLS.split(' ').any(|t| t == name)
+        || !matches!(
+            name.as_str(),
+            "Edit"
+                | "Write"
+                | "MultiEdit"
+                | "apply_patch"
+                | "FileChange"
+                | "fileChange"
+                | "file_change"
+                | "write_file"
+                | "edit_file"
+        )
     {
         return Ok(Captured::Skip);
     }

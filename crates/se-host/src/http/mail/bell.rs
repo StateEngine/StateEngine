@@ -68,11 +68,6 @@ impl Bells {
             entries: Mutex::new(BTreeMap::new()),
         })
     }
-    fn lock_entries(&self) -> Result<std::sync::MutexGuard<'_, BTreeMap<SessionId, Entry>>> {
-        self.entries
-            .lock()
-            .map_err(|_| invalid("unpoisoned bell bindings"))
-    }
     pub(crate) fn register(
         &self,
         session: SessionId,
@@ -82,13 +77,18 @@ impl Bells {
         hold: PathBuf,
     ) -> Result<String> {
         let key = mac(bearer.expose(), "se.claude.mail.key/v1")?;
-        let mut entries = self.lock_entries()?;
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| invalid("unpoisoned bell bindings"))?;
         if !entries.contains_key(&session) && entries.len() >= self.maximum {
             return Err(invalid("available bounded bell capacity"));
         }
         if let Some(found) = entries.get(&session) {
-            if (found.key, &found.agent, &found.origin, &found.hold)
-                != (key, &agent, &origin, &hold)
+            if found.key != key
+                || found.agent != agent
+                || found.origin != origin
+                || found.hold != hold
             {
                 return Err(invalid("the original protected launch binding"));
             }
@@ -111,9 +111,11 @@ impl Bells {
     }
     pub(crate) fn revoke(&self, session: &SessionId) -> Result<()> {
         let hold = self
-            .lock_entries()?
+            .entries
+            .lock()
+            .map_err(|_| invalid("unpoisoned bell bindings"))?
             .get(session)
-            .map(|e| (e.hold.clone(), e.expired_setup));
+            .map(|entry| (entry.hold.clone(), entry.expired_setup));
         if let Some((hold, false)) = hold {
             set_hold(&hold, true, Some("revocation"))?;
         }
@@ -123,18 +125,26 @@ impl Bells {
     /// Preserve the entire prior hold and identify this disconnected setup so
     /// its mod cannot turn expiry or final closure into a new permanent hold.
     pub(crate) fn expire_setup(&self, session: &SessionId) -> Result<()> {
-        let mut entries = self.lock_entries()?;
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| invalid("unpoisoned bell bindings"))?;
         let Some(entry) = entries.get_mut(session) else {
             return Ok(());
         };
-        let mut file = open_hold(&entry.hold)?;
+        let mut file = se_proc::OwnedFile::open(&entry.hold)
+            .map_err(|e| invalid(&e.to_string()))?
+            .ok_or_else(|| invalid("the original protected durable mail hold"))?;
         let prior = file.read(1024).map_err(|e| invalid(&e.to_string()))?;
         let mut value: serde_json::Value = serde_json::from_slice(&prior)
             .map_err(|_| invalid("readable durable mail hold before setup expiry"))?;
-        value
+        if value
             .get("held")
             .and_then(serde_json::Value::as_bool)
-            .ok_or_else(|| invalid("an explicit prior durable hold state"))?;
+            .is_none()
+        {
+            return Err(invalid("an explicit prior durable hold state"));
+        }
         value["expired_setup"] = serde_json::to_value(session)
             .map_err(|_| invalid("an encodable expired setup identity"))?;
         let bytes = serde_json::to_vec(&value).map_err(|_| invalid("an encodable durable hold"))?;
@@ -144,21 +154,29 @@ impl Bells {
         Ok(())
     }
     pub(crate) fn retire(&self, session: &SessionId) -> Result<()> {
-        self.lock_entries()?.remove(session);
+        self.entries
+            .lock()
+            .map_err(|_| invalid("unpoisoned bell bindings"))?
+            .remove(session);
         Ok(())
     }
     pub(crate) fn connected(&self, session: &SessionId) -> Result<bool> {
         Ok(self
-            .lock_entries()?
+            .entries
+            .lock()
+            .map_err(|_| invalid("unpoisoned bell bindings"))?
             .get(session)
             .is_some_and(|entry| entry.connected && !entry.expired_setup))
     }
     pub(crate) fn held(&self, session: &SessionId) -> Result<bool> {
-        let hold = self
-            .lock_entries()?
-            .get(session)
-            .map(|entry| entry.hold.clone());
-        hold.map_or(Ok(false), |path| held(&path))
+        let entries = self
+            .entries
+            .lock()
+            .map_err(|_| invalid("unpoisoned bell bindings"))?;
+        match entries.get(session) {
+            Some(entry) => held(&entry.hold),
+            None => Ok(false),
+        }
     }
     pub(crate) fn authenticate(
         &self,
@@ -188,7 +206,10 @@ impl Bells {
                 "a request within the thirty-second authentication window",
             ));
         }
-        let mut entries = self.lock_entries()?;
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| invalid("unpoisoned bell bindings"))?;
         let entry = entries
             .get_mut(&session)
             .ok_or_else(|| invalid("a current installed bell binding; relaunch this agent"))?;
@@ -223,25 +244,23 @@ impl Bells {
         })
     }
 }
-fn open_hold(path: &std::path::Path) -> Result<se_proc::OwnedFile> {
-    se_proc::OwnedFile::open(path)
-        .map_err(|e| invalid(&e.to_string()))?
-        .ok_or_else(|| invalid("the original protected durable mail hold"))
-}
 fn held(path: &std::path::Path) -> Result<bool> {
-    let bytes = open_hold(path)?
-        .read(1024)
-        .map_err(|e| invalid(&e.to_string()))?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| {
-        invalid("readable durable mail hold; an unreadable hold never enables wake")
-    })?;
+    let mut file = se_proc::OwnedFile::open(path)
+        .map_err(|e| invalid(&e.to_string()))?
+        .ok_or_else(|| invalid("the original protected durable mail hold"))?;
+    let value: serde_json::Value = serde_json::from_slice(
+        &file.read(1024).map_err(|e| invalid(&e.to_string()))?,
+    )
+    .map_err(|_| invalid("readable durable mail hold; an unreadable hold never enables wake"))?;
     value
         .get("held")
         .and_then(serde_json::Value::as_bool)
         .ok_or_else(|| invalid("an explicit durable hold state"))
 }
 fn set_hold(path: &std::path::Path, held: bool, reason: Option<&str>) -> Result<()> {
-    let mut file = open_hold(path)?;
+    let mut file = se_proc::OwnedFile::open(path)
+        .map_err(|e| invalid(&e.to_string()))?
+        .ok_or_else(|| invalid("the original protected durable mail hold"))?;
     let prior = file.read(1024).map_err(|e| invalid(&e.to_string()))?;
     let value = serde_json::to_vec(&serde_json::json!({"held":held,"reason":reason}))
         .map_err(|_| invalid("an encodable durable hold"))?;
@@ -295,12 +314,18 @@ async fn execute_bell_action(
     after: Option<String>,
     active: Arc<Mutex<Option<tokio::sync::OwnedSemaphorePermit>>>,
 ) -> Result<serde_json::Value> {
-    let deadline = crate::client::lease::Deadline::idle()?.stage(Duration::from_secs(30))?;
+    let deadline = crate::client::lease::Deadline::from_options(&crate::client::ClientOptions {
+        expected_generation: None,
+        timeout: Duration::from_secs(30),
+        cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    })?;
     if method == "GET" && body.is_empty() {
-        let page = router
-            .next_mail(auth.bearer.clone(), after, active, &deadline)
-            .await?;
-        return serde_json::to_value(page).map_err(|_| invalid("encodable bounded mail page"));
+        return serde_json::to_value(
+            router
+                .next_mail(auth.bearer.clone(), after, active, &deadline)
+                .await?,
+        )
+        .map_err(|_| invalid("encodable bounded mail page"));
     }
     if method != "POST" {
         return Err(invalid("GET wait or POST hold transition"));
@@ -317,14 +342,7 @@ async fn execute_bell_action(
     if (!is_hold && !resume) || (is_hold && action != serde_json::json!({"hold":reason})) {
         return Err(invalid("one explicit hold or resume transition"));
     }
-    let (hold_path, reason) = (auth.hold.clone(), reason.map(str::to_owned));
-    router
-        .execution
-        .blocking
-        .run_owned(&deadline, move || {
-            set_hold(&hold_path, is_hold, reason.as_deref())
-        })
-        .await?;
+    set_hold(&auth.hold, is_hold, reason)?;
     router.execution.mail_waits.interrupt(&auth.session)?;
     Ok(serde_json::json!({"held":is_hold}))
 }

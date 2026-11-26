@@ -1,5 +1,8 @@
-//! Fold core's committed record feed into `records`, `mentions`, and `touches`.
-//! Bodies are tokenized into a contentless FTS index and never stored verbatim.
+//! Fold core's committed record feed into the store's `records`, `mentions`
+//! and `touches`. Each record keeps its visibility: a restricted record's
+//! touches carry `restricted_record`, so queries never count it for a viewer
+//! core has not checked. Bodies are tokenized into a contentless index and
+//! then dropped; no plaintext body is stored.
 use crate::{error::sqlite, root::FeedReceipt};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use se_types::code::AtlasText as _;
@@ -17,7 +20,8 @@ const TOUCHES_PER_TARGET: i64 = 10;
 /// Title bytes the store keeps; core may send a longer excerpt.
 const MAX_TITLE: usize = 160;
 
-/// The longest prefix of `text` within `max` bytes on a character boundary.
+/// The longest prefix of `text` within `max` bytes, cut on a character
+/// boundary, so an over-long title never stalls the feed on a CHECK.
 fn clip(text: &str, max: usize) -> &str {
     &text[..text.floor_char_boundary(max)]
 }
@@ -75,11 +79,7 @@ pub(crate) fn apply(
         let mut degraded = was_degraded;
         for change in &feed.changes {
             match change {
-                RecordFeedChange::Remove { key, .. } => {
-                    let old = affected(&tx, key)?;
-                    tx.execute("DELETE FROM records WHERE record_id=?1", [key.as_str()])?;
-                    refresh(&tx, &old)?;
-                }
+                RecordFeedChange::Remove { key, .. } => remove(&tx, key)?,
                 RecordFeedChange::Upsert(record) => upsert(&tx, record)?,
                 RecordFeedChange::Skipped(_) => degraded = true,
             }
@@ -97,6 +97,13 @@ pub(crate) fn apply(
         })
     };
     run().map_err(|e| sqlite(&e))
+}
+
+fn remove(tx: &Transaction<'_>, key: &RecordKey) -> rusqlite::Result<()> {
+    let old = affected(tx, key)?;
+    // The schema's triggers drop the record's search rows and mentions.
+    tx.execute("DELETE FROM records WHERE record_id=?1", [key.as_str()])?;
+    refresh(tx, &old)
 }
 
 fn upsert(tx: &Transaction<'_>, record: &FeedRecord) -> rusqlite::Result<()> {

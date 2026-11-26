@@ -265,6 +265,8 @@ pub enum ScanReason {
     /// A cold build is still publishing, so the trigrams a regex needs are
     /// not written yet.
     TrigramsPending,
+    /// Vocabulary supplementation hit the search deadline; scanned live instead.
+    VocabBudgetExceeded,
 }
 
 impl SearchOutcome {

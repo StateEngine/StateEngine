@@ -1,5 +1,9 @@
-//! Pure-Rust extraction: shared lexical scanner feeding outline rules,
-//! dual tokenization, and import discovery. Panics are contained per file.
+//! Pure-Rust extraction: one shared lexical and delimiter-depth scanner feeds
+//! per-language outline rules, dual tokenization and import discovery.
+//!
+//! Extraction never fails a file: binary, minified and oversized inputs keep
+//! their path and leading tokens with an explicit flag, and a panic in any rule
+//! is contained to that file and reported as `EXTRACT_FAILED`.
 mod c_family;
 pub mod covers;
 mod declared;
@@ -112,12 +116,14 @@ impl Grammar {
     }
 
     fn by_name(name: &str) -> Option<Self> {
-        match name.to_ascii_lowercase().as_str() {
-            "makefile" | "gnumakefile" => Some(Self::Makefile),
-            "cargo.lock" => Some(Self::Toml),
-            n if n == "dockerfile" || n.starts_with("dockerfile.") => Some(Self::Dockerfile),
-            _ => None,
+        let lower = name.to_ascii_lowercase();
+        if matches!(lower.as_str(), "makefile" | "gnumakefile") {
+            return Some(Self::Makefile);
         }
+        if lower == "dockerfile" || lower.starts_with("dockerfile.") {
+            return Some(Self::Dockerfile);
+        }
+        (lower == "cargo.lock").then_some(Self::Toml)
     }
 
     fn by_extension(ext: &str) -> Self {
@@ -206,20 +212,18 @@ pub struct Extracted {
 
 /// The 16-byte stable key of a root-relative path.
 pub fn file_key(path: &str) -> [u8; 16] {
-    blake3::hash(path.as_bytes()).as_bytes()[..16]
-        .try_into()
-        .unwrap_or([0; 16])
+    let digest = blake3::hash(path.as_bytes());
+    let mut key = [0u8; 16];
+    key.copy_from_slice(&digest.as_bytes()[..16]);
+    key
 }
 
 /// Extract one file. `prefix_only` reports that the reader kept only the
 /// leading bytes of a larger file. A panic anywhere in extraction is
 /// contained: the file keeps its path tokens and is flagged `EXTRACT_FAILED`.
 pub fn extract(path: &str, bytes: &[u8], prefix_only: bool) -> Extracted {
-    std::panic::catch_unwind(|| extract_guarded(path, bytes, prefix_only)).unwrap_or_else(|_| {
-        let mut counts = HashMap::new();
-        tokens::tokenize(path, &mut counts);
-        shell(Grammar::detect(path), bytes, flags::EXTRACT_FAILED, counts)
-    })
+    std::panic::catch_unwind(|| extract_guarded(path, bytes, prefix_only))
+        .unwrap_or_else(|_| failed(path, bytes))
 }
 
 fn shell(grammar: Grammar, bytes: &[u8], flags: u32, counts: HashMap<String, u32>) -> Extracted {
@@ -232,6 +236,12 @@ fn shell(grammar: Grammar, bytes: &[u8], flags: u32, counts: HashMap<String, u32
         symbols: Vec::new(),
         imports: Vec::new(),
     }
+}
+
+fn failed(path: &str, bytes: &[u8]) -> Extracted {
+    let mut counts = HashMap::new();
+    tokens::tokenize(path, &mut counts);
+    shell(Grammar::detect(path), bytes, flags::EXTRACT_FAILED, counts)
 }
 
 fn extract_guarded(path: &str, bytes: &[u8], prefix_only: bool) -> Extracted {
@@ -247,27 +257,34 @@ fn extract_guarded(path: &str, bytes: &[u8], prefix_only: bool) -> Extracted {
         tokens::tokenize(char_prefix(&text, MINIFIED_PREFIX), &mut counts);
         return shell(grammar, bytes, flags::TRUNCATED | flags::MINIFIED, counts);
     }
-    if LOCK_FILES
-        .split(' ')
-        .any(|lock| lock == path.rsplit('/').next().unwrap_or(path))
-    {
+    if lock_file(path) {
         // Generated dependency pins: searchable, but an outline is noise.
         tokens::tokenize(&text, &mut counts);
         return shell(grammar, bytes, flags::GENERATED, counts);
     }
-    match std::panic::catch_unwind(|| extract_text(path, bytes, &text, grammar, counts.clone())) {
-        Ok(out) => out,
+    match std::panic::catch_unwind(|| extract_text(path, &text, grammar)) {
+        Ok(full) => {
+            for (token, tf) in full.tokens {
+                *counts.entry(token).or_insert(0) += tf;
+            }
+            let mut out = shell(grammar, bytes, full.flags, counts);
+            out.symbols = full.symbols;
+            out.imports = full.imports;
+            out
+        }
         Err(_) => shell(grammar, bytes, flags::EXTRACT_FAILED, counts),
     }
 }
 
-fn extract_text(
-    path: &str,
-    bytes: &[u8],
-    text: &str,
-    grammar: Grammar,
-    mut tokens: HashMap<String, u32>,
-) -> Extracted {
+struct FullText {
+    tokens: HashMap<String, u32>,
+    flags: u32,
+    symbols: Vec<Symbol>,
+    imports: Vec<ImportSpec>,
+}
+
+fn extract_text(path: &str, text: &str, grammar: Grammar) -> FullText {
+    let mut tokens = HashMap::new();
     tokens::tokenize(text, &mut tokens);
     let masked = lex::mask_for(grammar, text);
     let (mut symbols, truncated) = outline::outline(grammar, text, &masked);
@@ -285,22 +302,31 @@ fn extract_text(
     if generated(path, text) {
         flags |= self::flags::GENERATED;
     }
-    Extracted {
+    FullText {
+        tokens,
+        flags,
         symbols,
         imports,
-        ..shell(grammar, bytes, flags, tokens)
     }
 }
 
 fn minified(text: &str) -> bool {
-    let (lines, longest) = text
-        .split('\n')
-        .fold((0usize, 0usize), |(n, m), l| (n + 1, m.max(l.len())));
+    let mut lines = 0usize;
+    let mut longest = 0usize;
+    for line in text.split('\n') {
+        lines += 1;
+        longest = longest.max(line.len());
+    }
     longest > MAX_LINE
         || (text.len() >= MINIFIED_MIN_BYTES && text.len() / lines.max(1) > MINIFIED_AVERAGE_LINE)
 }
 
 const LOCK_FILES: &str = "Cargo.lock package-lock.json npm-shrinkwrap.json yarn.lock pnpm-lock.yaml bun.lock poetry.lock Pipfile.lock uv.lock Gemfile.lock composer.lock go.sum flake.lock";
+
+fn lock_file(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    LOCK_FILES.split(' ').any(|lock| lock == name)
+}
 
 fn generated(path: &str, text: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
@@ -308,6 +334,7 @@ fn generated(path: &str, text: &str) -> bool {
     name.ends_with(".min.js")
         || name.ends_with(".pb.go")
         || name.contains("_generated.")
+        || name == "package-lock.json"
         || head.contains("@generated")
         || head.contains("DO NOT EDIT")
 }

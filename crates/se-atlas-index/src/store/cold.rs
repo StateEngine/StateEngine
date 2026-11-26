@@ -1,7 +1,14 @@
-//! Parallel cold builder: workers read through shared custody and extract;
-//! one writer commits bounded batches (<= 500 files or 250 ms), then publishes
-//! postings, trigrams, and covering tests in chunked transactions before
-//! clearing the cold watermark. Custody failure aborts and clears the build.
+//! The parallel cold builder. Up to eight workers read through the shared
+//! custody and extract; one writer commits at most 500 files or 250 ms per
+//! transaction, so readers can query every committed batch. Each worker
+//! re-verifies its scan's custody after every claim, before handing the
+//! claim's files to the writer, so no batch publishes an unverified read; a
+//! custody failure stops the build and clears what it committed.
+//!
+//! Files are numbered by sorted path before reading, so import targets get
+//! ids at once. Postings accumulate in memory as compact varints and are
+//! written once, sorted, in chunked transactions when the build ends; until
+//! then readers find committed files through `file_tok` (see [`super::read`]).
 use super::{
     Store, history, varint,
     write::{self, FileRecord},
@@ -125,23 +132,19 @@ impl Store {
         };
         let next = AtomicUsize::new(0);
         let (sender, receiver) = mpsc::sync_channel(256);
-        let mut writer = ColdWriter {
-            conn: self.connection_mut(),
-            batch_files: options.batch_files.max(1),
-            batch_time: options.batch_time,
-            vocab: Vocab::default(),
-            covers: Vec::new(),
-            report: BuildReport::default(),
-        };
+        let mut writer = ColdWriter::new(self.connection_mut(), options);
         let consumed = thread::scope(|scope| {
             for _ in 0..workers {
-                let (sender, next, resolver, ids) = (sender.clone(), &next, &resolver, &ids);
+                let sender = sender.clone();
+                let (next, resolver, ids) = (&next, &resolver, &ids);
                 scope.spawn(move || work(root, paths, next, resolver, ids, sender));
             }
             drop(sender);
             writer.consume(receiver)
         });
         if let Some(error) = consumed? {
+            // Lost custody: publish nothing further, and leave no partial
+            // build looking current.
             drop(writer);
             clear_index(self.connection_mut())?;
             return Err(IndexError::Io(error));
@@ -248,6 +251,17 @@ struct ColdWriter<'c> {
 }
 
 impl<'c> ColdWriter<'c> {
+    fn new(conn: &'c mut Connection, options: &BuildOptions) -> Self {
+        Self {
+            conn,
+            batch_files: options.batch_files.max(1),
+            batch_time: options.batch_time,
+            vocab: Vocab::default(),
+            covers: Vec::new(),
+            report: BuildReport::default(),
+        }
+    }
+
     /// Drain the workers, committing bounded batches. A custody failure
     /// reported by any worker stops at once, before another batch commits;
     /// dropping the receiver stops the other workers.
@@ -288,11 +302,7 @@ impl<'c> ColdWriter<'c> {
         let tx = self.conn.transaction()?;
         for (id, record) in batch.drain(..) {
             write_record(&tx, &mut self.vocab, id, &record)?;
-            let f = record.extracted.flags;
-            self.report.indexed += 1;
-            self.report.extract_failed += usize::from(f & flags::EXTRACT_FAILED != 0);
-            self.report.binary += usize::from(f & flags::BINARY != 0);
-            self.report.minified += usize::from(f & flags::MINIFIED != 0);
+            count(&mut self.report, record.extracted.flags);
             let mut targets: Vec<i64> = record.targets.iter().flatten().copied().collect();
             targets.sort_unstable();
             targets.dedup();
@@ -339,6 +349,13 @@ impl<'c> ColdWriter<'c> {
             .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         Ok(())
     }
+}
+
+fn count(report: &mut BuildReport, file_flags: u32) {
+    report.indexed += 1;
+    report.extract_failed += usize::from(file_flags & flags::EXTRACT_FAILED != 0);
+    report.binary += usize::from(file_flags & flags::BINARY != 0);
+    report.minified += usize::from(file_flags & flags::MINIFIED != 0);
 }
 
 fn write_record(
@@ -433,6 +450,7 @@ fn write_grams_chunked(conn: &mut Connection, vocab: &HashMap<String, i64>) -> R
             grams.entry(gram).or_default().push(*id);
         }
     }
+    // Key order fills the WITHOUT ROWID pages densely.
     let mut grams: Vec<_> = grams.into_iter().collect();
     grams.sort_unstable_by_key(|(gram, _)| *gram);
     for chunk in grams.chunks_mut(FINISH_CHUNK) {

@@ -1,6 +1,8 @@
-//! Single writer of one root: opens the store, arms the watcher, builds or
-//! reconciles, then commits debounced watcher batches with lazy compaction.
-//! Every long loop checks for stop between files so shutdown is prompt.
+//! The single writer of one root. It opens the store, arms the watcher,
+//! builds or reconciles, then commits watcher batches: changes are coalesced
+//! for [`DEBOUNCE`] after the last event (at most [`MAX_DEBOUNCE`] after the
+//! first) and written path by path, with lazy delta compaction when due.
+//! Every long loop checks for a stop between files, so shutdown is prompt.
 use crate::{
     dirty::{Change, DirtyPath},
     filter, githead,
@@ -213,6 +215,8 @@ impl<'a> Engine<'a> {
         Ok(())
     }
 
+    /// Every directory discovery enters, empty ones included, where each
+    /// needs its own watch.
     fn directories(&self) -> se_atlas_index::Result<Vec<String>> {
         if cfg!(target_os = "linux") {
             Ok(walk::discover(&self.source, &walk_options())?.directories)
@@ -268,6 +272,8 @@ impl<'a> Engine<'a> {
         Ok(d)
     }
 
+    /// Rebuild the store. Files the build could not read are counted, and a
+    /// reconcile soon after names each one; the build never recurses into it.
     fn cold(&mut self, discovery: Option<walk::Discovery>) -> se_atlas_index::Result<()> {
         if self.shared.stopping() {
             return Ok(());
@@ -492,11 +498,14 @@ impl<'a> Engine<'a> {
         if rules || overflowed || removed {
             self.ignores.clear();
         }
-        if rules
-            && cfg!(target_os = "linux")
-            && let Ok(dirs) = self.directories()
-        {
-            self.arm(&dirs);
+        if rules {
+            // A per-directory watch must also cover folders a rule stopped
+            // ignoring; the reconcile below catches what the swap misses.
+            if cfg!(target_os = "linux")
+                && let Ok(dirs) = self.directories()
+            {
+                self.arm(&dirs);
+            }
         }
         if overflowed || rules {
             match self.reconcile() {
@@ -572,10 +581,14 @@ impl<'a> Engine<'a> {
         };
         let indexed = count("SELECT count(*) FROM files");
         let generation = count("SELECT generation FROM meta WHERE singleton=1");
-        let extract_failed = count(&format!(
-            "SELECT count(*) FROM files WHERE flags & {} != 0",
-            flags::EXTRACT_FAILED
-        ));
+        let extract_failed = conn
+            .query_row(
+                "SELECT count(*) FROM files WHERE flags & ?1 != 0",
+                [i64::from(flags::EXTRACT_FAILED)],
+                |row| row.get::<_, i64>(0),
+            )
+            .ok()
+            .and_then(|n| u64::try_from(n).ok());
         if let Ok(mut progress) = self.shared.progress() {
             progress.batch_running = false;
             progress.counts.failed = self.failed.len() as u64 + self.unnamed_failed;
