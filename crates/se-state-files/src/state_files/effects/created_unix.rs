@@ -350,21 +350,53 @@ fn try_create_tmpfile_and_publish(
 
 fn cleanup_private_stage(
     parent_fd: i32,
-    stage_dir: Option<&File>,
+    stage_dir: &File,
+    stage_id: (u64, u64),
     unlink_data: bool,
     stage_name: &std::ffi::CStr,
 ) -> std::result::Result<(), io::Error> {
-    if unlink_data && let Some(dir) = stage_dir {
+    if unlink_data {
         let data = c"data";
         // SAFETY: held verified private 0700 stage_dir fd and "data" created by this call.
-        if unsafe { libc::unlinkat(dir.as_raw_fd(), data.as_ptr(), 0) } < 0 {
+        if unsafe { libc::unlinkat(stage_dir.as_raw_fd(), data.as_ptr(), 0) } < 0 {
             let err = io::Error::last_os_error();
             if err.kind() != io::ErrorKind::NotFound {
                 return Err(err);
             }
         }
     }
-    // SAFETY: held parent_fd and staging directory created by this call.
+    // Only remove `stage_name` when positive custody of that exact directory
+    // entry is re-established; otherwise preserve it untouched.
+    // SAFETY: held parent_fd, NUL-terminated stage_name, directory + no-follow.
+    let raw = unsafe {
+        libc::openat(
+            parent_fd,
+            stage_name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if raw < 0 {
+        let err = io::Error::last_os_error();
+        if matches!(
+            err.raw_os_error(),
+            Some(libc::ENOENT | libc::ENOTDIR | libc::ELOOP)
+        ) {
+            return Ok(());
+        }
+        return Err(err);
+    }
+    // SAFETY: successful openat transferred unique ownership of `raw`.
+    let reopened = unsafe { <File as std::os::unix::io::FromRawFd>::from_raw_fd(raw) };
+    let meta = reopened.metadata()?;
+    // SAFETY: geteuid has no preconditions.
+    let euid = unsafe { libc::geteuid() };
+    let matches_custody =
+        meta.is_dir() && (meta.dev(), meta.ino()) == stage_id && meta.uid() == euid;
+    drop(reopened);
+    if !matches_custody {
+        return Ok(());
+    }
+    // SAFETY: held parent_fd and verified staging directory owned by this call.
     if unsafe { libc::unlinkat(parent_fd, stage_name.as_ptr(), libc::AT_REMOVEDIR) } < 0 {
         let err = io::Error::last_os_error();
         if err.kind() != io::ErrorKind::NotFound {
@@ -394,7 +426,7 @@ fn open_verified_private_stage(
     parent_dir: &File,
     stage_name: &std::ffi::CStr,
     path: &Path,
-) -> Result<File> {
+) -> Result<(File, (u64, u64))> {
     use std::os::unix::fs::PermissionsExt;
     // SAFETY: held parent_dir fd and unpredictable random private dir name.
     if unsafe { libc::mkdirat(parent_dir.as_raw_fd(), stage_name.as_ptr(), 0o700) } < 0 {
@@ -404,7 +436,9 @@ fn open_verified_private_stage(
             io::Error::last_os_error(),
         ));
     }
-    let stage_dir = match owned(
+    // If openat fails, we have no handle proving custody of `stage_name`, so
+    // return without attempting unlinkat(AT_REMOVEDIR).
+    let stage_dir = owned(
         // SAFETY: held parent_dir fd, literal name, O_DIRECTORY | O_NOFOLLOW.
         unsafe {
             libc::openat(
@@ -415,20 +449,9 @@ fn open_verified_private_stage(
         },
         "open private staging directory",
         path,
-    ) {
-        Ok(dir) => dir,
-        Err(err) => {
-            let cleanup = cleanup_private_stage(parent_dir.as_raw_fd(), None, false, stage_name);
-            return Err(attach_stage_cleanup(
-                "open private staging directory (staging cleanup also failed)",
-                path,
-                err,
-                cleanup,
-            ));
-        }
-    };
+    )?;
     // Prove ownership of the opened directory before mutating or removing it.
-    let _ = id(&stage_dir, path, true, true)?;
+    let stage_id = id(&stage_dir, path, true, true)?;
     let protect_stage = || -> Result<()> {
         stage_dir
             .set_permissions(std::fs::Permissions::from_mode(0o700))
@@ -449,8 +472,13 @@ fn open_verified_private_stage(
         Ok(())
     };
     if let Err(err) = protect_stage() {
-        let cleanup =
-            cleanup_private_stage(parent_dir.as_raw_fd(), Some(&stage_dir), false, stage_name);
+        let cleanup = cleanup_private_stage(
+            parent_dir.as_raw_fd(),
+            &stage_dir,
+            stage_id,
+            false,
+            stage_name,
+        );
         return Err(attach_stage_cleanup(
             "verify private staging directory (staging cleanup also failed)",
             path,
@@ -458,7 +486,7 @@ fn open_verified_private_stage(
             cleanup,
         ));
     }
-    Ok(stage_dir)
+    Ok((stage_dir, stage_id))
 }
 
 fn create_via_private_staging_dir(
@@ -471,7 +499,7 @@ fn create_via_private_staging_dir(
     use std::io::Write;
 
     let stage_name = random_name(path, ".se-stage-")?;
-    let stage_dir = open_verified_private_stage(parent_dir, &stage_name, path)?;
+    let (stage_dir, stage_id) = open_verified_private_stage(parent_dir, &stage_name, path)?;
     let data = c"data";
     let mut file = match owned(
         // SAFETY: held verified mode-0700 private stage_dir fd and literal "data".
@@ -489,8 +517,13 @@ fn create_via_private_staging_dir(
         Ok(file) => file,
         Err(err) => {
             // Never unlink "data" when O_CREAT|O_EXCL did not create it.
-            let cleanup =
-                cleanup_private_stage(parent_dir.as_raw_fd(), Some(&stage_dir), false, &stage_name);
+            let cleanup = cleanup_private_stage(
+                parent_dir.as_raw_fd(),
+                &stage_dir,
+                stage_id,
+                false,
+                &stage_name,
+            );
             return Err(attach_stage_cleanup(
                 "create staged user file (staging cleanup also failed)",
                 path,
@@ -505,8 +538,13 @@ fn create_via_private_staging_dir(
         .map_err(|e| io_error("write new user file", path, e))
     {
         drop(file);
-        let cleanup =
-            cleanup_private_stage(parent_dir.as_raw_fd(), Some(&stage_dir), true, &stage_name);
+        let cleanup = cleanup_private_stage(
+            parent_dir.as_raw_fd(),
+            &stage_dir,
+            stage_id,
+            true,
+            &stage_name,
+        );
         return Err(attach_stage_cleanup(
             "write new user file (staging cleanup also failed)",
             path,
@@ -532,8 +570,13 @@ fn create_via_private_staging_dir(
     } else {
         None
     };
-    let cleanup_res =
-        cleanup_private_stage(parent_dir.as_raw_fd(), Some(&stage_dir), true, &stage_name);
+    let cleanup_res = cleanup_private_stage(
+        parent_dir.as_raw_fd(),
+        &stage_dir,
+        stage_id,
+        true,
+        &stage_name,
+    );
     match (link_err, sync_err, cleanup_res) {
         (Some(err), _, Ok(())) => Err(io_error("publish new user file", path, err)),
         (Some(err), _, Err(cleanup)) => Err(io_error(

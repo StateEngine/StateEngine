@@ -51,8 +51,9 @@ impl ImageKey {
 }
 // Never retain open file handles in the global cache; on Windows a pinned
 // handle with write-sharing denied blocks upgrades, renames, and uninstalls.
-// The third tuple field marks entries validated against a live mapped Windows
-// image (whose running image section blocks in-place writes).
+// The third tuple field marks the current process's own continuously mapped
+// Windows image (whose running image section blocks in-place writes for the
+// entire lifetime of this process).
 type Cache = VecDeque<(ImageKey, Sha256, bool)>;
 static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
 pub(super) fn key(file: &File, metadata: &std::fs::Metadata) -> IpcNativeResult<ImageKey> {
@@ -105,11 +106,11 @@ pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeRe
     hash_image_with_mode(file, bound, false)
 }
 
-/// Hash a file proved to be a live mapped Windows executable image (whose
-/// kernel image section blocks in-place writes), seeding the handle-free
-/// live-mapped cache so neither client nor receiving host rehashes per call.
+/// Hash a file proved to be the current process's own continuously mapped
+/// Windows executable image (whose kernel image section blocks in-place writes
+/// for the entire lifetime of this process), seeding the handle-free cache.
 #[cfg(windows)]
-pub(super) fn hash_mapped_image(
+pub(super) fn hash_self_mapped_image(
     file: std::fs::File,
     bound: &IpcIoBound,
 ) -> IpcNativeResult<Sha256> {
@@ -119,7 +120,7 @@ pub(super) fn hash_mapped_image(
 fn hash_image_with_mode(
     file: std::fs::File,
     bound: &IpcIoBound,
-    live_mapped: bool,
+    self_mapped: bool,
 ) -> IpcNativeResult<Sha256> {
     #[cfg(windows)]
     let (mut file, guarded) = match windows::pin(&file) {
@@ -169,16 +170,16 @@ fn hash_image_with_mode(
         remember(stamp, digest)?;
     } else {
         #[cfg(windows)]
-        if reusable && live_mapped {
-            remember_live_mapped(stamp, digest)?;
+        if reusable && self_mapped {
+            remember_self_mapped(stamp, digest)?;
         }
         #[cfg(not(windows))]
-        let _ = live_mapped;
+        let _ = self_mapped;
     }
     Ok(digest)
 }
-/// A reusable key's cached digest (or on Windows, a digest validated against a
-/// live mapped executable image without retaining any file handle).
+/// A reusable key's cached digest (or on Windows, the current process's own
+/// continuously mapped executable image without retaining any file handle).
 fn cached(stamp: &ImageKey) -> IpcNativeResult<Option<Sha256>> {
     let cache = cache().lock().map_err(|_| {
         refuse(
@@ -193,8 +194,8 @@ fn cached(stamp: &ImageKey) -> IpcNativeResult<Option<Sha256>> {
     }
     #[cfg(windows)]
     {
-        Ok(cache.iter().find_map(|(stored, digest, live_mapped)| {
-            (*live_mapped && stored.same_mapped_image(stamp)).then_some(*digest)
+        Ok(cache.iter().find_map(|(stored, digest, self_mapped)| {
+            (*self_mapped && stored.same_mapped_image(stamp)).then_some(*digest)
         }))
     }
     #[cfg(not(windows))]
@@ -277,15 +278,15 @@ pub(super) fn remember(stamp: ImageKey, digest: Sha256) -> IpcNativeResult<()> {
     insert_cached(stamp, digest, false)
 }
 
-/// Record a digest validated against a live mapped Windows executable image
-/// (whose running image section blocks in-place writes) without retaining any
-/// open file handle in the global cache.
+/// Record the current process's own continuously mapped Windows executable
+/// image (whose running image section blocks in-place writes for the entire
+/// lifetime of this process) without retaining any open file handle.
 #[cfg(windows)]
-pub(super) fn remember_live_mapped(stamp: ImageKey, digest: Sha256) -> IpcNativeResult<()> {
+pub(super) fn remember_self_mapped(stamp: ImageKey, digest: Sha256) -> IpcNativeResult<()> {
     insert_cached(stamp, digest, true)
 }
 
-fn insert_cached(stamp: ImageKey, digest: Sha256, live_mapped: bool) -> IpcNativeResult<()> {
+fn insert_cached(stamp: ImageKey, digest: Sha256, self_mapped: bool) -> IpcNativeResult<()> {
     let mut cache = cache().lock().map_err(|_| {
         refuse(
             IpcNativeErrorCode::Unreadable,
@@ -294,13 +295,13 @@ fn insert_cached(stamp: ImageKey, digest: Sha256, live_mapped: bool) -> IpcNativ
     })?;
     if cache
         .iter()
-        .any(|(stored, _, stored_live)| *stored == stamp && *stored_live == live_mapped)
+        .any(|(stored, _, stored_self)| *stored == stamp && *stored_self == self_mapped)
     {
         return Ok(());
     }
     if cache.len() == 64 {
         cache.pop_front();
     }
-    cache.push_back((stamp, digest, live_mapped));
+    cache.push_back((stamp, digest, self_mapped));
     Ok(())
 }

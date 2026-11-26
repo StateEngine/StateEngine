@@ -84,13 +84,6 @@ fn publish(root: &Path, name: &str, expected: Sha256, bound: &IpcIoBound) -> Ipc
             .metadata()
             .map_err(|e| error("read current executable cache metadata", e))?,
     )?;
-    #[cfg(windows)]
-    let digest = super::image::hash_mapped_image(
-        held.try_clone()
-            .map_err(|e| error("duplicate executable cache pin", e))?,
-        bound,
-    )?;
-    #[cfg(not(windows))]
     let digest = hash_image(
         held.try_clone()
             .map_err(|e| error("duplicate executable cache pin", e))?,
@@ -108,6 +101,16 @@ fn publish(root: &Path, name: &str, expected: Sha256, bound: &IpcIoBound) -> Ipc
             IpcNativeErrorCode::PeerChanged,
             "current executable differs from the runtime's measured image",
         ));
+    }
+    #[cfg(windows)]
+    // SAFETY: current-process pseudo handle and retained file handle verified above.
+    if unsafe {
+        crate::windows_process::maps_executable(
+            windows_sys::Win32::System::Threading::GetCurrentProcess(),
+            &held,
+        )
+    } {
+        super::image::remember_self_mapped(stamp.clone(), digest)?;
     }
     store(
         &files,
@@ -283,7 +286,7 @@ fn restore_from_files(
         if !live.same_mapped_image(&entry.image) {
             return Ok(ImageCacheRead::Stale);
         }
-        super::image::remember_live_mapped(live, entry.digest)?;
+        super::image::remember_self_mapped(live, entry.digest)?;
         return Ok(ImageCacheRead::Current);
     }
     #[cfg(not(windows))]
