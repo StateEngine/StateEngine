@@ -194,6 +194,9 @@ pub fn plan(path: &Path, entries: &[(String, Value)]) -> Result<Planned> {
     let after = if edits.is_empty() {
         None
     } else {
+        if let Some(pin) = &pin {
+            writable(path, pin)?;
+        }
         Some(render(path, &before, &document, &edits)?)
     };
     Ok(Planned {

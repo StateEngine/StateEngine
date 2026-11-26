@@ -160,6 +160,45 @@ pub(crate) fn install(
     }
     record(home, registration, root, stamp)
 }
+/// Upgrade an existing Codex adoption with newly added hooks: trust only those
+/// newly added entries that have not already been journaled in `layout.trust`
+/// (never pre-existing hooks or trust decisions the owner may have removed),
+/// then verify all required lifecycle hooks are discovered and trusted.
+pub(crate) fn upgrade(
+    home: &Path,
+    registration: &mut Registration,
+    root: &Path,
+    added: &[(String, Value)],
+    required: &[(String, Value)],
+) -> Result<()> {
+    if !added.is_empty() {
+        let rows = listed(registration, root)?.0;
+        let discovered = select(registration, &rows, added, required)?;
+        let settings = registration.settings.to_local()?;
+        // Never re-trust an entry already journaled in `layout.trust`: if its
+        // trust is absent in config.toml on retry, the owner may have removed it.
+        let missing: Vec<_> = crate::settings::missing_trust(&settings, &discovered)?
+            .into_iter()
+            .filter(|entry| !registration.layout.trust.contains(entry))
+            .collect();
+        if !missing.is_empty() {
+            // Journal before writing trust, so an interrupted upgrade remains
+            // reversible. A pre-existing owner decision is never replaced.
+            for entry in &missing {
+                registration.layout.trust.push(entry.clone());
+            }
+            crate::publish_for(home, Kind::Codex, registration)?;
+            crate::settings::trust(&settings, &missing)?;
+            let (rows, _) = listed(registration, root)?;
+            if !missing.iter().all(|entry| trusted(&rows, entry)) {
+                return Err(invalid(
+                    "provider readback of trusted upgraded hooks; capture and mail are unconfirmed",
+                ));
+            }
+        }
+    }
+    verify(home, registration, root, required)
+}
 /// Every other run: read only. Codex must list, enable and trust each required
 /// lifecycle hook StateEngine installed; the optional Atlas hook's state never
 /// decides this. Trust is never written here, because an absent entry may be

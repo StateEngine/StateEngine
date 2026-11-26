@@ -89,6 +89,18 @@ pub(crate) trait Adapter: Send + Sync {
     ) -> Result<()> {
         self.discover(home, saved, root, required)
     }
+    /// Upgrade setup for hooks newly added to an existing adoption; it may
+    /// write provider trust only for `added`, then confirms discovery.
+    fn upgrade(
+        &self,
+        home: &Path,
+        saved: &mut Registration,
+        root: &Path,
+        _added: &[(String, serde_json::Value)],
+        required: &[(String, serde_json::Value)],
+    ) -> Result<()> {
+        self.discover(home, saved, root, required)
+    }
     /// Read-only confirmation that the provider sees the required lifecycle
     /// hooks; it never writes provider files.
     fn discover(
@@ -191,6 +203,16 @@ mod codex_adapter {
         ) -> Result<()> {
             codex::trust(home, saved, root, required)
         }
+        fn upgrade(
+            &self,
+            home: &Path,
+            saved: &mut Registration,
+            root: &Path,
+            added: &[(String, serde_json::Value)],
+            required: &[(String, serde_json::Value)],
+        ) -> Result<()> {
+            codex::upgrade(home, saved, root, added, required)
+        }
         fn discover(
             &self,
             home: &Path,
@@ -222,6 +244,23 @@ pub struct Project {
     #[serde(default)]
     pub discovery: Option<[u8; 32]>,
 }
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpgradePhase {
+    /// Settings write was journaled; whether it landed is unknown if interrupted,
+    /// so retries never re-write provider settings for these entries.
+    #[default]
+    Writing,
+    /// Settings write completed; awaiting provider discovery/trust confirmation.
+    AwaitingDiscovery,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpgradeJournal {
+    pub entries: Vec<(String, serde_json::Value)>,
+    #[serde(default)]
+    pub phase: UpgradePhase,
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Registration {
@@ -239,6 +278,11 @@ pub struct Registration {
     pub discovery_refusal: Option<String>,
     #[serde(default)]
     pub installation: Option<String>,
+    /// Hooks newly added to an existing adoption whose write or provider trust
+    /// has not yet completed. Retained in `hooks` for uninstall custody while
+    /// pending and cleared only once discovery succeeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade: Option<UpgradeJournal>,
 }
 impl Registration {
     pub fn project(&self, cwd: &Path) -> Result<Option<&Project>> {

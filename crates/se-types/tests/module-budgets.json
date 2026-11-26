@@ -5,7 +5,7 @@
  "default_directory_lines": 10000,
  "crates": {
   "se-host": 50584,
-  "se-adoption": 3000,
+  "se-adoption": 3231,
   "se-agent-observation": 1466,
   "se-proc": 4045,
   "se-native-proc": 16100,

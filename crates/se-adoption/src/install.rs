@@ -93,60 +93,45 @@ pub fn install(
         },
     )
     .map_err(|e| se_core::scope::unreadable("adoption executable cache", &e.to_string()))?;
-    let (mut registration, planned) = registration(home, root, &plan, project)?;
-    // Journal before changing provider files: a partial install always retains
-    // the exact entries that uninstall must remove, never a whole-file backup.
+    let (mut registration, write_plan) = registration(home, root, &plan, project)?;
+    // Journal before changing provider files: a partial install or upgrade
+    // always retains the exact entries that uninstall must remove, never a
+    // whole-file backup.
     super::publish_for(home, kind, &registration)?;
-    // Only the run that created the registration writes provider files.
-    let fresh = planned.is_some();
-    let changed = match planned {
-        Some(planned) => super::settings::commit(&path, planned)?,
-        None => false,
+    let fresh = matches!(write_plan, WritePlan::Fresh(_));
+    let changed = match write_plan {
+        WritePlan::Fresh(planned) => super::settings::commit(&path, planned)?,
+        WritePlan::Upgrade(planned) => {
+            let changed = super::settings::commit(&path, planned)?;
+            if let Some(upgrade) = registration.upgrade.as_mut() {
+                upgrade.phase = super::UpgradePhase::AwaitingDiscovery;
+                super::publish_for(home, kind, &registration)?;
+            }
+            changed
+        }
+        WritePlan::None => false,
     };
     let absent = super::settings::missing(&path, &plan.required)?;
     let installed = absent.is_empty();
-    let unfinished = !registration.installed || registration.discovery_refusal.is_some();
-    if unfinished {
-        // An earlier install stopped before discovery confirmed it. Its hooks
-        // may have landed and been removed since, so they are never written
-        // again here.
-        if !installed {
-            let entries: Vec<_> = absent
+    let unfinished = !registration.installed
+        || registration.discovery_refusal.is_some()
+        || registration.upgrade.as_ref().is_some_and(|u| {
+            u.entries
                 .iter()
-                .map(|(event, entry)| format!("{event}: {entry}"))
-                .collect();
-            return Err(SeError::invalid(
-                "provider adoption installation",
-                &format!(
-                    "these hooks an unfinished earlier install recorded in {}; they may have been removed there, so they were not added again. Add them back under hooks in that file, then run this command again: {}",
-                    path.display(),
-                    entries.join("; ")
-                ),
-            ));
-        }
+                .any(|entry| plan.required.contains(entry) && absent.contains(entry))
+        });
+    if unfinished && !installed {
+        return Err(missing_resumed_hooks(&path, &absent));
     }
-    let discovery = if installed {
-        if fresh {
-            adapter.setup(home, &mut registration, root, &plan.required)
-        } else {
-            adapter.discover(home, &mut registration, root, &plan.required)
-        }
-    } else {
-        Ok(())
-    };
-    let refusal = discovery.as_ref().err().map(ToString::to_string);
-    if registration.discovery_refusal != refusal {
-        registration.discovery_refusal = refusal;
-        super::publish_for(home, kind, &registration)?;
-    }
-    // A persisted refusal is retryable evidence, never a successful install.
-    discovery?;
-    if !registration.installed {
-        // Finished only once discovery confirmed it, so a refused fresh run or
-        // retry stays unfinished until discovery succeeds.
-        registration.installed = true;
-        super::publish_for(home, kind, &registration)?;
-    }
+    confirm_discovery(
+        home,
+        root,
+        &path,
+        &plan,
+        &mut registration,
+        installed,
+        fresh,
+    )?;
     let active = adapter.active(home, project)?;
     let integration = integration(kind, &path, changed, installed, active)?;
     let next = NextStep {
@@ -172,26 +157,107 @@ pub fn install(
     })
 }
 
+/// An earlier install stopped before it finished. Its hooks may have landed
+/// and been removed since, so they are never written again here.
+fn missing_resumed_hooks(path: &Path, absent: &[(String, serde_json::Value)]) -> SeError {
+    let entries: Vec<_> = absent
+        .iter()
+        .map(|(event, entry)| format!("{event}: {entry}"))
+        .collect();
+    SeError::invalid(
+        "provider adoption installation",
+        &format!(
+            "these hooks an unfinished earlier install recorded in {}; they may have been removed there, so they were not added again. Add them back under hooks in that file, then run this command again: {}",
+            path.display(),
+            entries.join("; ")
+        ),
+    )
+}
+
+fn confirm_discovery(
+    home: &Path,
+    root: &Path,
+    path: &Path,
+    plan: &Plan,
+    registration: &mut super::Registration,
+    installed: bool,
+    fresh: bool,
+) -> Result<()> {
+    let kind = plan.kind;
+    let adapter = kind.adapter();
+    let pending_upgrade = match &registration.upgrade {
+        Some(upgrade) if installed => {
+            let absent = super::settings::missing(path, &upgrade.entries)?;
+            upgrade
+                .entries
+                .iter()
+                .filter(|entry| !absent.contains(entry))
+                .cloned()
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    let discovery = if installed {
+        if fresh {
+            adapter.setup(home, registration, root, &plan.required)
+        } else if !pending_upgrade.is_empty() {
+            adapter.upgrade(home, registration, root, &pending_upgrade, &plan.required)
+        } else {
+            adapter.discover(home, registration, root, &plan.required)
+        }
+    } else {
+        Ok(())
+    };
+    let refusal = discovery.as_ref().err().map(ToString::to_string);
+    if registration.discovery_refusal != refusal {
+        registration.discovery_refusal = refusal;
+        super::publish_for(home, kind, registration)?;
+    }
+    // A persisted refusal is retryable evidence, never a successful install.
+    discovery?;
+    let mut finish = false;
+    if !registration.installed {
+        // Finished only once discovery confirmed it, so a refused fresh run or
+        // retry stays unfinished until discovery succeeds.
+        registration.installed = true;
+        finish = true;
+    }
+    if installed && registration.upgrade.is_some() {
+        registration.upgrade = None;
+        finish = true;
+    }
+    if finish {
+        super::publish_for(home, kind, registration)?;
+    }
+    Ok(())
+}
+
+enum WritePlan {
+    None,
+    Fresh(super::settings::Planned),
+    Upgrade(super::settings::Planned),
+}
+
 /// The saved registration, or a new one whose custody and layout are exactly
-/// what its planned first write adds, with that plan. A saved installation
-/// that never finished is only read, never written again.
+/// what its planned write adds, with that plan. A saved installation that
+/// never finished is only read, never written again; a completed installation
+/// may upgrade only hooks it has never journaled (or an unfinished upgrade).
 fn registration(
     home: &Path,
     root: &Path,
     plan: &Plan,
     project: &se_types::ProjectId,
-) -> Result<(super::Registration, Option<super::settings::Planned>)> {
+) -> Result<(super::Registration, WritePlan)> {
     let kind = plan.kind;
     let path = plan.config_home.join(kind.settings());
-    let (mut registration, planned) = match super::read_for(home, kind)? {
-        Some(saved) => {
+    let (mut registration, write_plan) = match super::read_for(home, kind)? {
+        Some(mut saved) => {
             if saved.settings.to_local()? != path || saved.provider.to_local()? != plan.provider {
                 return Err(SeError::invalid(
                     "provider adoption installation",
                     "the original provider and settings location; uninstall this integration before changing them",
                 ));
             }
-            let mut saved = saved;
             if !saved.installed {
                 // Whether the unfinished write landed is unknown, so this only
                 // reads: an absent entry the configuration no longer requests
@@ -205,8 +271,11 @@ fn registration(
                     .layout
                     .created_events
                     .retain(|event| hooks.iter().any(|(known, _)| known == event));
+                (saved, WritePlan::None)
+            } else {
+                let write_plan = plan_upgrade(&path, plan, &mut saved)?;
+                (saved, write_plan)
             }
-            (saved, None)
         }
         None => {
             let planned = super::settings::plan(&path, &plan.entries)?;
@@ -222,8 +291,9 @@ fn registration(
                 discovery: None,
                 discovery_refusal: None,
                 installation: Some(uuid::Uuid::new_v4().to_string()),
+                upgrade: None,
             };
-            (registration, Some(planned))
+            (registration, WritePlan::Fresh(planned))
         }
     };
     let selected = super::Project {
@@ -244,7 +314,94 @@ fn registration(
             "at most 4096 registered projects",
         ));
     }
-    Ok((registration, planned))
+    Ok((registration, write_plan))
+}
+
+/// Plan appending only hooks never previously journaled on an active existing
+/// adoption. Previously journaled hooks (including any from an interrupted
+/// upgrade) are never re-appended, preserving owner removals.
+fn plan_upgrade(path: &Path, plan: &Plan, saved: &mut super::Registration) -> Result<WritePlan> {
+    if let Some(upgrade) = saved.upgrade.as_mut() {
+        let absent = super::settings::missing(path, &upgrade.entries)?;
+        let dropped: Vec<_> = upgrade
+            .entries
+            .iter()
+            .filter(|entry| !plan.entries.contains(entry) && absent.contains(entry))
+            .cloned()
+            .collect();
+        if !dropped.is_empty() {
+            upgrade.entries.retain(|entry| !dropped.contains(entry));
+            saved.hooks.retain(|entry| !dropped.contains(entry));
+            let hooks = &saved.hooks;
+            saved
+                .layout
+                .created_events
+                .retain(|event| hooks.iter().any(|(known, _)| known == event));
+        }
+        if upgrade.entries.is_empty() {
+            saved.upgrade = None;
+        }
+    }
+    // Apply removal preservation only to previously owned required hooks; a
+    // newly introduced required hook not yet in `saved.hooks` is still owed.
+    let owned_required: Vec<_> = plan
+        .required
+        .iter()
+        .filter(|entry| {
+            saved.hooks.contains(entry)
+                && !saved
+                    .upgrade
+                    .as_ref()
+                    .is_some_and(|u| u.entries.contains(entry))
+        })
+        .cloned()
+        .collect();
+    if !super::settings::missing(path, &owned_required)?.is_empty() {
+        return Ok(WritePlan::None);
+    }
+    let owed: Vec<_> = plan
+        .entries
+        .iter()
+        .filter(|entry| !saved.hooks.contains(entry))
+        .cloned()
+        .collect();
+    if owed.is_empty() {
+        return Ok(WritePlan::None);
+    }
+    let planned = super::settings::plan(path, &owed)?;
+    if planned.entries.is_empty() {
+        return Ok(WritePlan::None);
+    }
+    for entry in &planned.entries {
+        if !saved.hooks.contains(entry) {
+            saved.hooks.push(entry.clone());
+        }
+    }
+    match saved.upgrade.as_mut() {
+        Some(upgrade) => {
+            for entry in &planned.entries {
+                if !upgrade.entries.contains(entry) {
+                    upgrade.entries.push(entry.clone());
+                }
+            }
+            upgrade.phase = super::UpgradePhase::Writing;
+        }
+        None => {
+            saved.upgrade = Some(super::UpgradeJournal {
+                entries: planned.entries.clone(),
+                phase: super::UpgradePhase::Writing,
+            });
+        }
+    }
+    saved.layout.created_file |= planned.layout.created_file;
+    saved.layout.created_hooks |= planned.layout.created_hooks;
+    saved.layout.created_state |= planned.layout.created_state;
+    for event in &planned.layout.created_events {
+        if !saved.layout.created_events.contains(event) {
+            saved.layout.created_events.push(event.clone());
+        }
+    }
+    Ok(WritePlan::Upgrade(planned))
 }
 
 fn integration(
