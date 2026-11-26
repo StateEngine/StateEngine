@@ -116,7 +116,6 @@ struct Engine<'a> {
     /// Files a build could not read, before a reconcile names them.
     unnamed_failed: u64,
     watcher: Option<Watcher>,
-    watched_dirs: Vec<String>,
     head: Option<Vec<u8>>,
     /// When a head change began waiting for Git's index lock.
     head_waiting: Option<Instant>,
@@ -155,7 +154,6 @@ impl<'a> Engine<'a> {
             failed: BTreeSet::new(),
             unnamed_failed: 0,
             watcher: None,
-            watched_dirs: Vec::new(),
             head: None,
             head_waiting: None,
             last_write: Instant::now(),
@@ -232,13 +230,10 @@ impl<'a> Engine<'a> {
         let watch = match Watcher::arm(self.shared, directories) {
             Ok((watcher, count)) => {
                 self.watcher = Some(watcher);
-                self.watched_dirs = directories.to_vec();
-                self.watched_dirs.sort();
                 self.watch_backoff = None;
                 Watch::Armed { directories: count }
             }
             Err(reason) => {
-                self.watched_dirs.clear();
                 let n = self.watch_backoff.map_or(0, |(_, n)| n).saturating_add(1);
                 let delay = Duration::from_secs(60u64 << n.saturating_sub(1).min(4))
                     .min(Duration::from_secs(600));
@@ -255,10 +250,10 @@ impl<'a> Engine<'a> {
         let mut d = walk::discover(&self.source, &walk_options())?;
         for _ in 0..4 {
             if !cfg!(target_os = "linux")
-                || self.watcher.is_none()
-                || d.directories
-                    .iter()
-                    .all(|dir| self.watched_dirs.binary_search(dir).is_ok())
+                || self
+                    .watcher
+                    .as_ref()
+                    .is_none_or(|watcher| watcher.covers(&d.directories))
             {
                 return Ok(d);
             }

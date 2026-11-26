@@ -46,6 +46,9 @@ type Woken = Receiver<()>;
 pub(crate) struct Watcher {
     stop: Arc<AtomicBool>,
     wake: Wake,
+    /// Directories currently subscribed on per-directory platforms (Linux),
+    /// kept live as the watcher thread attaches or drops subdirectories.
+    watched: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -55,14 +58,20 @@ impl Watcher {
     pub fn arm(shared: &Arc<Shared>, directories: &[String]) -> Result<(Self, u64), String> {
         let root = NativeSourceRoot::open(&shared.spec.source).map_err(|e| e.to_string())?;
         let watch = NativeSourceWatch::new().map_err(|e| e.to_string())?;
-        let (names, watched, refs_root) =
+        let (names, watched_count, refs_root) =
             subscribe(&watch, &root, &shared.spec.source, directories)?;
+        let watched = Arc::new(std::sync::Mutex::new(
+            names
+                .values()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+        ));
         let stop = Arc::new(AtomicBool::new(false));
         let (wake, woken) = signal(&watch)?;
         let thread = std::thread::Builder::new()
             .name("atlas-watch".into())
             .spawn({
-                let (shared, stop) = (shared.clone(), stop.clone());
+                let (shared, stop, watched) = (shared.clone(), stop.clone(), watched.clone());
                 move || {
                     let mut state = Thread {
                         shared: &shared,
@@ -70,6 +79,7 @@ impl Watcher {
                         root,
                         refs_root,
                         names,
+                        watched,
                         ignores: Ignores::default(),
                     };
                     state.run(&stop, &woken);
@@ -80,10 +90,18 @@ impl Watcher {
             Self {
                 stop,
                 wake,
+                watched,
                 thread: Some(thread),
             },
-            watched,
+            watched_count,
         ))
+    }
+
+    /// True when every directory in `directories` is currently subscribed.
+    pub fn covers(&self, directories: &[String]) -> bool {
+        self.watched
+            .lock()
+            .is_ok_and(|watched| directories.iter().all(|dir| watched.contains(dir)))
     }
 
     /// Stop the thread at once: it is woken, not left to find out later.
@@ -225,6 +243,8 @@ struct Thread<'a> {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     refs_root: Option<NativeSourceRoot>,
     names: Names,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    watched: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     /// Discovery's ignore rules, so an ignored new folder costs no watch.
     ignores: Ignores,
 }
@@ -450,7 +470,11 @@ impl Thread<'_> {
             Some(false) => {
                 // A moved directory keeps its kernel watch; drop it so its
                 // later events are not reported under a stale name.
-                self.names.remove(&descriptor);
+                if let Some(removed) = self.names.remove(&descriptor)
+                    && let Ok(mut watched) = self.watched.lock()
+                {
+                    watched.remove(&removed);
+                }
                 let _ = self.watch.remove(descriptor);
                 self.count();
                 false
@@ -472,7 +496,11 @@ impl Thread<'_> {
             .map(|(descriptor, _)| *descriptor)
             .collect();
         for descriptor in moved {
-            self.names.remove(&descriptor);
+            if let Some(removed) = self.names.remove(&descriptor)
+                && let Ok(mut watched) = self.watched.lock()
+            {
+                watched.remove(&removed);
+            }
             let _ = self.watch.remove(descriptor);
         }
         self.count();
@@ -504,6 +532,9 @@ impl Thread<'_> {
             let children = subdirectories(target, &directory);
             match sub {
                 Ok(Some(reg)) => {
+                    if let Ok(mut watched) = self.watched.lock() {
+                        watched.insert(logical.clone());
+                    }
                     self.names.insert(reg.descriptor, logical);
                     added += 1;
                 }

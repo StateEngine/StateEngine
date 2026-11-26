@@ -148,45 +148,60 @@ fn regex_files(
 /// trigram hits with untrigrammed tokens. A piece exceeding this cap is
 /// dropped individually so rarer pieces still narrow the query.
 const UNTRIGRAMMED_PIECE_CAP: usize = PIECE_TOKEN_CAP * 4;
+/// Keyset window of `vocab(id)` rows inspected per SQLite step so the shared
+/// deadline is checked frequently even when a rare piece matches few rows.
+const VOCAB_SCAN_CHUNK: i64 = 4_096;
 
 /// Add to each piece the indexed tokens holding it that the trigram index
-/// leaves out, using a bounded filtered query per piece. Drops only an
-/// overflowing piece rather than discarding all narrowing.
+/// leaves out, scanning `vocab` in bounded primary-key chunks so the shared
+/// budget is enforced on large vocabularies. Drops only an overflowing piece
+/// rather than discarding all narrowing.
 fn add_untrigrammed(
     snapshot: &ReadSnapshot<'_>,
     narrowing: &mut Vec<(&str, Vec<i64>)>,
     budget: &Budget,
 ) -> Result<std::result::Result<(), ScanReason>> {
-    let mut select = snapshot
-        .connection()
-        .prepare_cached("SELECT id, tok FROM vocab WHERE instr(tok, ?1) > 0 LIMIT ?2")?;
-    let limit = (UNTRIGRAMMED_PIECE_CAP + 1) as i64;
+    let conn = snapshot.connection();
+    let max_id: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) FROM vocab", [], |r| r.get(0))?;
+    let mut select = conn.prepare_cached(
+        "SELECT id, tok FROM vocab WHERE id > ?1 AND id <= ?2 AND instr(tok, ?3) > 0 LIMIT ?4",
+    )?;
     let mut keep = Vec::with_capacity(narrowing.len());
     for (piece, ids) in narrowing.iter_mut() {
-        if budget.expired() {
-            return Ok(Err(ScanReason::VocabBudgetExceeded));
-        }
-        let rows = select.query_map(rusqlite::params![*piece, limit], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })?;
         let mut matched = 0usize;
         let mut overflowed = false;
-        for row in rows {
-            matched += 1;
-            if matched > UNTRIGRAMMED_PIECE_CAP {
-                overflowed = true;
+        let mut cursor = 0i64;
+        while cursor < max_id {
+            if budget.expired() {
+                return Ok(Err(ScanReason::VocabBudgetExceeded));
+            }
+            let upper = cursor.saturating_add(VOCAB_SCAN_CHUNK).min(max_id);
+            let limit = (UNTRIGRAMMED_PIECE_CAP - matched + 1) as i64;
+            let rows = select
+                .query_map(rusqlite::params![cursor, upper, *piece, limit], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?;
+            for row in rows {
+                matched += 1;
+                if matched > UNTRIGRAMMED_PIECE_CAP {
+                    overflowed = true;
+                    break;
+                }
+                let (id, token) = row?;
+                // Trigram tokens were found already; the sets never overlap.
+                if tokens::is_gram_token(&token) {
+                    continue;
+                }
+                if ids.len() >= PIECE_TOKEN_CAP {
+                    overflowed = true;
+                    break;
+                }
+                ids.push(id);
+            }
+            if overflowed {
                 break;
             }
-            let (id, token) = row?;
-            // Trigram tokens were found already; the sets never overlap.
-            if tokens::is_gram_token(&token) {
-                continue;
-            }
-            if ids.len() >= PIECE_TOKEN_CAP {
-                overflowed = true;
-                break;
-            }
-            ids.push(id);
+            cursor = upper;
         }
         keep.push(!overflowed);
     }
