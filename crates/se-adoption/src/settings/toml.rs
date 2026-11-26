@@ -27,24 +27,6 @@ fn parse(path: &Path, bytes: &[u8]) -> Result<DocumentMut> {
 pub(super) fn read(path: &Path, bytes: &[u8]) -> Result<Value> {
     toml_edit::de::from_document(parse(path, bytes)?).map_err(|_| invalid("provider TOML settings"))
 }
-/// One pasteable `[hooks.state."key"]` table per entry, quoted by the TOML
-/// writer and separated by blank lines.
-pub(super) fn trust_tables(entries: &[(String, String)]) -> String {
-    let table = |(key, hash): &(String, String)| {
-        let mut row = Table::new();
-        row.insert("trusted_hash", toml_edit::value(hash));
-        let mut state = Table::new();
-        state.set_implicit(true);
-        state.insert(key, Item::Table(row));
-        let mut hooks = Table::new();
-        hooks.set_implicit(true);
-        hooks.insert("state", Item::Table(state));
-        let mut document = DocumentMut::new();
-        document.insert("hooks", Item::Table(hooks));
-        document.to_string()
-    };
-    entries.iter().map(table).collect::<Vec<_>>().join("\n")
-}
 fn group(value: &Value) -> Result<Table> {
     toml_edit::ser::to_document(value)
         .map(|doc| doc.as_table().clone())
@@ -136,11 +118,20 @@ pub(super) fn apply(
                 }
                 let state = hooks
                     .get_mut("state")
-                    .and_then(Item::as_table_like_mut)
                     .ok_or_else(|| invalid("hook state table"))?;
-                let mut row = Table::new();
-                row.insert("trusted_hash", toml_edit::value(hash));
-                state.insert(key, Item::Table(row));
+                let dotted = state.as_table().is_some_and(Table::is_dotted);
+                let state = state
+                    .as_table_like_mut()
+                    .ok_or_else(|| invalid("hook state table"))?;
+                // An existing entry keeps its other keys, comments and layout.
+                if let Some(row) = state.get_mut(key).and_then(Item::as_table_like_mut) {
+                    row.insert("trusted_hash", toml_edit::value(hash));
+                } else {
+                    let mut row = Table::new();
+                    row.set_dotted(dotted);
+                    row.insert("trusted_hash", toml_edit::value(hash));
+                    state.insert(key, Item::Table(row));
+                }
             }
             text::Edit::RemoveTrust(key) => {
                 let hooks = hooks(&mut doc)?;
