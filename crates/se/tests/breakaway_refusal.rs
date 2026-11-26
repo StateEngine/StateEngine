@@ -367,9 +367,12 @@ fn no_eligible_broker_uses_reported_foreground_until_public_down() -> Result {
         let (exit, stdout, stderr) = f.result(mode)?;
         assert_eq!(exit, "0", "enclosing-job startup/down failed: {stderr}");
         assert!(
-            stderr.contains("Background survival after logout is not guaranteed on this platform.")
+            stderr.contains("KILL_ON_JOB_CLOSE")
+                && stderr.contains(
+                    "closing the launching application or terminal will stop this runtime"
+                )
                 && stderr.contains("up --foreground"),
-            "session-only lifetime notice was hidden: {stderr}"
+            "KILL_ON_JOB_CLOSE lifetime notice was hidden: {stderr}"
         );
         let observed = cases
             .iter()
@@ -380,11 +383,12 @@ fn no_eligible_broker_uses_reported_foreground_until_public_down() -> Result {
         assert_eq!(observed["detachment"], "session-only");
         assert!(
             observed["detachment_notice"].as_str().is_some_and(|text| {
-                text.contains(
-                    "Background survival after logout is not guaranteed on this platform.",
-                )
+                text.contains("KILL_ON_JOB_CLOSE")
+                    && text.contains(
+                        "closing the launching application or terminal will stop this runtime",
+                    )
             }),
-            "missing session-only status notice: {observed}"
+            "missing KILL_ON_JOB_CLOSE status notice: {observed}"
         );
         assert_eq!(observed["down_exit"], 0);
         if mode == "json" {

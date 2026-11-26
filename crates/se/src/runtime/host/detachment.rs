@@ -46,7 +46,10 @@ impl DetachmentObservation {
         #[cfg(not(target_os = "linux"))]
         {
             Some(format!(
-                "Background survival after logout is not guaranteed on this platform. {foreground}"
+                "{} {foreground}",
+                self.lifetime.session_reason.as_deref().unwrap_or(
+                    "Background survival after logout is not guaranteed on this platform."
+                )
             ))
         }
     }

@@ -359,6 +359,26 @@ pub fn spawn_runtime(spec: RuntimeLaunchSpec) -> Result<RuntimeLaunch, Box<Runti
             remaining: None,
         })
     })?;
+    #[cfg(windows)]
+    let lifetime = if matches!(
+        detachment,
+        RuntimeDetachment::SessionOnly {
+            inherited_cgroup: true
+        }
+    ) && windows::enclosing_kill_on_close()
+    {
+        RuntimeLifetime {
+            user_scope: None,
+            session_reason: Some(
+                "This host is running inside an enclosing Windows job configured with KILL_ON_JOB_CLOSE; closing the launching application or terminal will stop this runtime and all running agents immediately."
+                    .into(),
+            ),
+        }
+    } else {
+        RuntimeLifetime::default()
+    };
+    #[cfg(not(windows))]
+    let lifetime = RuntimeLifetime::default();
     let mut child = RuntimeChild {
         state: Parent {
             native,
@@ -368,7 +388,7 @@ pub fn spawn_runtime(spec: RuntimeLaunchSpec) -> Result<RuntimeLaunch, Box<Runti
             deadline: spec.deadline,
             identity: None,
             detachment,
-            lifetime: RuntimeLifetime::default(),
+            lifetime,
             endpoint_notified: false,
             commit_sent: false,
             released: false,
