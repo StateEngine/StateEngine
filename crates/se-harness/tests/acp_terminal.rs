@@ -348,9 +348,9 @@ async fn workspace_write_terminal_lifecycle_and_env() -> Check {
     let subdir = fx.root().join("nested");
     std::fs::create_dir(&subdir)?;
     #[cfg(unix)]
-    let (cmd, args) = echo_command("printf '%s:%s' \"$SE_TEST_VAR\" \"$(pwd)\"");
+    let (cmd, args) = echo_command("printf '%s:%s' \"$TEST_TERM_VAR\" \"$(pwd)\"");
     #[cfg(windows)]
-    let (cmd, args) = echo_command("echo %SE_TEST_VAR%:%CD%");
+    let (cmd, args) = echo_command("echo %TEST_TERM_VAR%:%CD%");
 
     let created = fx
         .call_client(
@@ -360,7 +360,7 @@ async fn workspace_write_terminal_lifecycle_and_env() -> Check {
                 "command": cmd,
                 "args": args,
                 "cwd": subdir.to_string_lossy(),
-                "env": [{"name": "SE_TEST_VAR", "value": "alpha42"}],
+                "env": [{"name": "TEST_TERM_VAR", "value": "alpha42"}],
             }),
         )
         .await?;
@@ -640,6 +640,94 @@ async fn enforces_max_concurrent_terminals_bound() -> Check {
     assert!(
         replacement.pointer("/result/terminalId").is_some(),
         "slot should open after release: {replacement}"
+    );
+
+    fx.close().await
+}
+
+#[tokio::test]
+async fn refuses_reserved_env_overrides() -> Check {
+    let mut fx = Fixture::start(true).await?;
+    let (cmd, args) = echo_command("echo hi");
+    for key in [
+        "SE_SESSION",
+        "STATEENGINE_HOME",
+        "LD_PRELOAD",
+        "DYLD_INSERT_LIBRARIES",
+    ] {
+        let reply = fx
+            .call_client(
+                "terminal/create",
+                json!({
+                    "sessionId": "conv_1",
+                    "command": cmd,
+                    "args": args,
+                    "env": [{"name": key, "value": "x"}],
+                }),
+            )
+            .await?;
+        assert_eq!(
+            reply.pointer("/error/code").and_then(Value::as_i64),
+            Some(-32602),
+            "reserved env key {key} must be refused: {reply}"
+        );
+    }
+    fx.close().await
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn release_kills_surviving_grandchild_after_leader_exits() -> Check {
+    let mut fx = Fixture::start(true).await?;
+    let pid_file = fx.root().join("grandchild.pid");
+    let script = format!("sleep 30 & echo $! > '{}' ; exit 0", pid_file.display());
+    let created = fx
+        .call_client(
+            "terminal/create",
+            json!({
+                "sessionId": "conv_1",
+                "command": "sh",
+                "args": ["-c", script],
+            }),
+        )
+        .await?;
+    let terminal_id = created
+        .pointer("/result/terminalId")
+        .and_then(Value::as_str)
+        .ok_or("missing terminalId")?
+        .to_owned();
+
+    let waited = fx
+        .call_client(
+            "terminal/wait_for_exit",
+            json!({"sessionId": "conv_1", "terminalId": terminal_id}),
+        )
+        .await?;
+    assert_eq!(
+        waited.pointer("/result/exitCode").and_then(Value::as_i64),
+        Some(0)
+    );
+
+    // Leader has exited and been reaped; release must still kill the surviving grandchild.
+    let released = fx
+        .call_client(
+            "terminal/release",
+            json!({"sessionId": "conv_1", "terminalId": terminal_id}),
+        )
+        .await?;
+    assert!(
+        released.get("result").is_some(),
+        "release failed: {released}"
+    );
+
+    let pid_text = std::fs::read_to_string(&pid_file)?;
+    let grandchild_pid: u32 = pid_text.trim().parse()?;
+    let probe = std::process::Command::new("kill")
+        .args(["-0", &grandchild_pid.to_string()])
+        .status()?;
+    assert!(
+        !probe.success(),
+        "grandchild pid {grandchild_pid} must not survive terminal/release"
     );
 
     fx.close().await
