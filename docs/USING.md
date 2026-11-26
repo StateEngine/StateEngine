@@ -123,9 +123,9 @@ hooks, models, permissions and settings text. Codex adoption installs its hooks 
 `config.toml` and trusts only those exact definitions through the provider's discovery
 hashes. For Claude, review and trust the new hooks in the provider's own prompt.
 Status keeps capture and mail unconfirmed until an authenticated hook runs.
-Running `se init --adopt` again after an upgrade adds only hooks for events the
-installation has never had, such as the Atlas context hook, and leaves edited entries
-as they are.
+Only the first adoption writes provider settings. Running `se init --adopt` again on
+an existing adoption checks its hooks and leaves the settings as they are; it does not
+add hooks that a newer version introduced, such as the Atlas context hook.
 
 Only explicitly registered project roots participate. Adopted sessions appear with the
 `observed` surface in status. Incoming mail uses the provider's native wake or input
@@ -150,12 +150,13 @@ contains before you read it. JSON retains the full span and byte offsets. An ext
 that was not measured shows no byte count; stale revisions stay labelled.
 
 Launched agents are told to use Atlas before editing shared code. With `hooks = true`
-in `[atlas]` (the default), a search or single-file read also receives a few lines of
-indexed context first, for launched agents and for sessions adopted with
-`se init --adopt` (an adoption made by an earlier version keeps its hooks unchanged
-until you run `se init --adopt` again). A hook that has no confident answer within its
-deadline (75 ms, or 100 ms on Windows) adds nothing and never blocks the tool call.
-Set `hooks = false` to turn this off.
+in `[atlas]` (the default), managed Claude Code and Codex sessions, and sessions first
+adopted with `se init --adopt`, run a hook before a search or single-file read. When
+Atlas has a confident answer for that lookup, the agent receives a few lines of indexed
+context first. ACP protocol agents don't get this hook, and an existing adoption keeps
+the hooks it was created with. A hook with no confident answer within its deadline
+(75 ms, or 100 ms on Windows) adds nothing and never blocks the tool call. Set
+`hooks = false` to turn this off.
 
 ## Messages, captain and assignments
 

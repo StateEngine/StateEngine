@@ -162,10 +162,10 @@ se atlas changes --since 10m         # what changed recently
 ```
 
 Results are compact pointers (file and line range, with size when verified), so agents
-read only the source they need. Agents get the same queries as MCP tools, and before an
-edit their searches and file reads also receive a few lines of indexed context
-(`hooks = false` in `[atlas]` turns that off). Atlas is on by default and runs on Linux,
-macOS and Windows.
+read only the source they need. Agents get the same queries as MCP tools. Before a
+search or file read, managed Claude Code and Codex sessions can also receive a few lines
+of indexed context when Atlas has a confident answer (`hooks = false` in `[atlas]` turns
+that off). Atlas is on by default and runs on Linux, macOS and Windows.
 
 ## Adopt sessions you already run
 
