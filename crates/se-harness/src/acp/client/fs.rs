@@ -59,7 +59,7 @@ impl Workspace {
     /// Resolve an optional working directory strictly inside this held workspace,
     /// verifying that neither the workspace root nor any intermediate directory
     /// is a symlink or Windows reparse point.
-    pub(super) fn resolve_dir(&self, cwd: Option<&str>) -> Result<PathBuf, Refusal> {
+    pub(crate) fn resolve_dir(&self, cwd: Option<&str>) -> Result<PathBuf, Refusal> {
         self.held.check().map_err(|err| {
             Refusal::failed(format!(
                 "the workspace {} could not be verified ({err}); start a new conversation there",

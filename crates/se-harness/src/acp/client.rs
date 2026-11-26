@@ -17,7 +17,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// The most bytes of encoded result one reply may carry, leaving room in the
 /// protocol's frame for the reply's envelope and request identity.
-const RESPONSE_BYTES: usize = super::wire::MAX_FRAME - 4096;
+pub(crate) const RESPONSE_BYTES: usize = super::wire::MAX_FRAME - 4096;
 /// The most client calls one conversation runs at once.
 const MAX_CALLS: u32 = 16;
 /// Client filesystem methods StateEngine answers.
@@ -26,28 +26,28 @@ const WRITE: &str = "fs/write_text_file";
 
 /// A refused client call, answered as a JSON-RPC error with this code and message.
 #[derive(Debug)]
-pub(super) struct Refusal {
+pub(crate) struct Refusal {
     pub code: i64,
     pub message: String,
 }
 
 impl Refusal {
     /// The call names something malformed, absent, outside the workspace or too large.
-    fn invalid(message: impl Into<String>) -> Self {
+    pub(crate) fn invalid(message: impl Into<String>) -> Self {
         Self {
             code: -32602,
             message: message.into(),
         }
     }
     /// A named file does not exist.
-    fn missing(message: impl Into<String>) -> Self {
+    pub(crate) fn missing(message: impl Into<String>) -> Self {
         Self {
             code: -32002,
             message: message.into(),
         }
     }
     /// The call was well formed but could not be carried out.
-    fn failed(message: impl Into<String>) -> Self {
+    pub(crate) fn failed(message: impl Into<String>) -> Self {
         Self {
             code: -32603,
             message: message.into(),
@@ -55,7 +55,7 @@ impl Refusal {
     }
 }
 
-type Outcome = Result<Value, Refusal>;
+pub(crate) type Outcome = Result<Value, Refusal>;
 
 /// The client side of one ACP conversation.
 pub(super) struct Client {

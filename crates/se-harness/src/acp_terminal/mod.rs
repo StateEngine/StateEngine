@@ -7,7 +7,7 @@
 //! threads with explicit error propagation, and deterministic tree kill on
 //! `terminal/kill`, `terminal/release`, and session close.
 mod custody;
-use super::{Outcome, RESPONSE_BYTES, Refusal, fs::Workspace};
+use crate::acp::client::{Outcome, RESPONSE_BYTES, Refusal, fs::Workspace};
 use custody::{MAX_TERMINALS, PendingSlot, ReleasingSlot, TerminalTable};
 use se_proc::{ContainedChild, ContainedChildSpec, ContainedExit, ContainedKiller};
 use serde_json::{Value, json};
@@ -54,7 +54,7 @@ pub(super) const WAIT_FOR_EXIT: &str = "terminal/wait_for_exit";
 pub(super) const KILL: &str = "terminal/kill";
 pub(super) const RELEASE: &str = "terminal/release";
 
-pub(super) fn is_terminal_method(method: &str) -> bool {
+pub(crate) fn is_terminal_method(method: &str) -> bool {
     matches!(method, CREATE | OUTPUT | WAIT_FOR_EXIT | KILL | RELEASE)
 }
 
@@ -190,7 +190,7 @@ impl TerminalEntry {
 
 /// Owned terminal table for one ACP conversation.
 #[derive(Default)]
-pub(super) struct Terminals {
+pub(crate) struct Terminals {
     next_id: AtomicU64,
     table: Arc<Mutex<TerminalTable>>,
     settled: Arc<Notify>,
@@ -218,7 +218,7 @@ impl Drop for Terminals {
 }
 
 impl Terminals {
-    pub(super) async fn call(
+    pub(crate) async fn call(
         &self,
         workspace: Arc<Workspace>,
         method: &str,
@@ -241,7 +241,7 @@ impl Terminals {
     /// `until` expires before all terminals settle, returns an explicit
     /// deadline error while detached blocking workers retain custody and any
     /// unresolved errors remain recorded in `TerminalTable::unsettled`.
-    pub(super) async fn close_all(&self, until: tokio::time::Instant) -> Result<(), String> {
+    pub(crate) async fn close_all(&self, until: tokio::time::Instant) -> Result<(), String> {
         let entries: Vec<(Arc<TerminalEntry>, ReleasingSlot)> = {
             let mut table = self
                 .table
