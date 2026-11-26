@@ -38,6 +38,8 @@ pub fn provider_ancestor(
         }
         chain.push((pid, started, stored));
         if let Some(candidate) = matched {
+            // Reobserve every retained birth and edge; a stale parent PID is
+            // not ancestry, even when it now names the configured image.
             for (index, (orig_pid, orig_started, orig_peer)) in chain.iter().enumerate() {
                 let birth_ok = match orig_peer {
                     _ if index + 1 == chain.len() => same_birth(
@@ -217,7 +219,8 @@ fn parent(pid: u32) -> IpcNativeResult<u32> {
 }
 
 /// Liveness of the exact retained provider birth, without granting ownership.
-/// Executable updates/renames change a running provider's path without ending it.
+/// The image is not compared: an in-place update or rename of the executable
+/// changes the path a running provider reports without ending it.
 pub fn provider_is_live(provider: &NativeIpcPeer, bound: &IpcIoBound) -> IpcNativeResult<bool> {
     match observe_birth(provider.pid(), provider.principal(), bound) {
         Ok(started) => Ok(&started == provider.started()),

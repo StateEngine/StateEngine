@@ -31,7 +31,8 @@ pub(super) fn peer(
 pub(super) fn self_peer(bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
     observe(std::process::id(), bound)
 }
-/// Keep a writer-excluding pin only when both live processes map this file.
+/// Keep a writer-excluding pin only when both live processes map this exact
+/// file object. Any missing native fact leaves the ordinary full proof in use.
 pub(super) fn shared_mapped_image(expected: &ProcessInstance) -> Option<File> {
     let fields = expected.fields();
     let StartIdentity::Windows { creation_filetime } = fields.started else {
@@ -128,6 +129,9 @@ fn process_identity(pid: u32) -> IpcNativeResult<(OwnedHandle, String, NonZeroU6
     let process =
         crate::windows_process::open_query_process(pid, "pin IPC peer process").map_err(|e| {
             let mut cause = error(e.operation, e.source);
+            // A positive PID supplied by the connected pipe can cease to be
+            // pinnable before this call. This invalid selector is a stale peer,
+            // not proof that its process exited or that a PID is absent.
             if pid != 0 && cause.source.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
                 cause.code = IpcNativeErrorCode::PeerChanged;
             }

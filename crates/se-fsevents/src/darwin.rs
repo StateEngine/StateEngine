@@ -74,10 +74,13 @@ struct Queue {
     signal: Option<Signal>,
 }
 impl Queue {
-    fn loss(&mut self) -> Option<Signal> {
+    fn mark_lost(&mut self) {
         self.records.clear();
         self.bytes = 0;
         self.lost = true;
+    }
+    fn loss(&mut self) -> Option<Signal> {
+        self.mark_lost();
         self.signal.clone()
     }
     fn push(&mut self, id: u32, action: u8, directory: bool, name: &[u8]) -> Option<Signal> {
@@ -362,25 +365,40 @@ unsafe extern "C" fn callback(
                         notify = queue.loss();
                         break;
                     };
-                    let a = u8::from(flags & REMOVED_OR_RENAMED != 0);
-                    let d = flags & IS_DIRECTORY != 0;
-                    notify = queue.push(context.id, a, d, rel.as_bytes()).or(notify);
+                    let action = u8::from(flags & REMOVED_OR_RENAMED != 0);
+                    let dir = flags & IS_DIRECTORY != 0;
+                    notify = queue
+                        .push(context.id, action, dir, rel.as_bytes())
+                        .or(notify);
                 }
                 notify
             }
         });
         match result {
-            Some(Some(s)) if run_no_unwind(|| s()).is_none() => {
-                let _ = run_no_unwind(|| context.queue.lock().ok().map(|mut q| q.loss()));
+            Some(Some(signal)) => {
+                let panicked = run_no_unwind(|| signal()).is_none();
+                // Drop the callback's Arc clone in its own panic boundary before
+                // recording loss so no two signal drops can overlap on unwind.
+                let _ = run_no_unwind(move || drop(signal));
+                if panicked {
+                    // Record loss without re-invoking the panicked signal; later callbacks re-signal.
+                    let _ = run_no_unwind(|| {
+                        if let Ok(mut queue) = context.queue.lock() {
+                            queue.mark_lost();
+                        }
+                    });
+                }
             }
             None => {
-                let _ = run_no_unwind(|| {
-                    if let Some(s) = context.queue.lock().ok().and_then(|mut q| q.loss()) {
-                        s();
-                    }
-                });
+                let signal =
+                    run_no_unwind(|| context.queue.lock().ok().and_then(|mut queue| queue.loss()))
+                        .flatten();
+                if let Some(signal) = signal {
+                    let _ = run_no_unwind(|| signal());
+                    let _ = run_no_unwind(move || drop(signal));
+                }
             }
-            _ => {}
+            Some(None) => {}
         }
     });
 }
