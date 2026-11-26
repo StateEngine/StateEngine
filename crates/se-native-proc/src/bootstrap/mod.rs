@@ -359,6 +359,40 @@ pub fn spawn_runtime(spec: RuntimeLaunchSpec) -> Result<RuntimeLaunch, Box<Runti
             remaining: None,
         })
     })?;
+    #[cfg(windows)]
+    let lifetime = if matches!(
+        detachment,
+        RuntimeDetachment::SessionOnly {
+            inherited_cgroup: true
+        }
+    ) {
+        match windows::enclosing_job_close() {
+            windows::EnclosingJobClose::KillOnClose => RuntimeLifetime {
+                user_scope: None,
+                session_reason: Some(
+                    "This host stayed inside an enclosing Windows job; the launcher's immediate enclosing job has KILL_ON_JOB_CLOSE set. Closing the last handle to a containing job configured with KILL_ON_JOB_CLOSE can stop this runtime and its agents."
+                        .into(),
+                ),
+            },
+            windows::EnclosingJobClose::Unknown(code) => RuntimeLifetime {
+                user_scope: None,
+                session_reason: Some(format!(
+                    "This host stayed inside an enclosing Windows job, and the launcher's immediate job close limit could not be queried (Windows error {code}). If any containing job has KILL_ON_JOB_CLOSE, closing its last handle can stop this runtime and its agents."
+                )),
+            },
+            windows::EnclosingJobClose::NoKillOnClose => RuntimeLifetime {
+                user_scope: None,
+                session_reason: Some(
+                    "This host stayed inside an enclosing Windows job. The launcher's immediate job did not report KILL_ON_JOB_CLOSE, but outer nested jobs were not inspected; if an outer containing job has KILL_ON_JOB_CLOSE, closing its last handle can stop this runtime and its agents."
+                        .into(),
+                ),
+            },
+        }
+    } else {
+        RuntimeLifetime::default()
+    };
+    #[cfg(not(windows))]
+    let lifetime = RuntimeLifetime::default();
     let mut child = RuntimeChild {
         state: Parent {
             native,
@@ -368,7 +402,7 @@ pub fn spawn_runtime(spec: RuntimeLaunchSpec) -> Result<RuntimeLaunch, Box<Runti
             deadline: spec.deadline,
             identity: None,
             detachment,
-            lifetime: RuntimeLifetime::default(),
+            lifetime,
             endpoint_notified: false,
             commit_sent: false,
             released: false,

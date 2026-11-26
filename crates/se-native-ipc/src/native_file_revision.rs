@@ -42,11 +42,16 @@ pub(super) fn pin(file: &File) -> Option<File> {
 }
 
 /// Qualify every key capture, including hint publication outside hash_image.
-/// A full hash performed while a writer lives must not publish that writer's
-/// coalesced revision as reusable. Zero and unsupported journals also miss.
+/// Returns a qualified NTFS USN journal revision when the caller can query the
+/// volume; returns `None` for non-admin callers or unsupported filesystems so
+/// `hash_image` hashes directly instead of trusting a mutable timestamp.
 pub(super) fn revision(file: &File) -> Option<(i64, u64)> {
     let pin = pin(file)?;
-    let volume = volume(&pin)?;
+    usn_revision(&pin)
+}
+
+fn usn_revision(pin: &File) -> Option<(i64, u64)> {
+    let volume = volume(pin)?;
     let before = journal(&volume)?;
     let mut output = RecordBuffer([0; 4096]);
     let mut returned = 0;

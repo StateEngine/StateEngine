@@ -7,6 +7,12 @@ use super::*;
 pub(super) fn create_claim(path: &Path) -> Result<()> {
     create(path, None, true, |_| Ok(())).map(drop)
 }
+pub(super) fn create_exclusive(
+    path: &Path,
+    write: impl FnOnce(&mut File) -> Result<()>,
+) -> Result<()> {
+    create(path, None, false, write).map(drop)
+}
 pub(super) fn create_profile(
     path: &Path,
     source: &File,
@@ -62,6 +68,8 @@ fn create(
         write(held)?;
         if let Some(source) = protection_source {
             copy_profile_protection(source, held, path)?;
+        } else {
+            ensure_private_file_mode(held, &source_path)?;
         }
         held.sync_all()
             .map_err(|error| io_error("sync private file", &source_path, error))?;
@@ -150,6 +158,24 @@ fn remove_unpublished(
         }
         Err(error) if absent(&error) => (),
         Err(error) => return Err(error),
+    }
+    Ok(())
+}
+
+fn ensure_private_file_mode(held: &File, source_path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    held.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|error| io_error("protect private file", source_path, error))?;
+    let mode = held
+        .metadata()
+        .map_err(|error| io_error("inspect private file", source_path, error))?
+        .mode()
+        & 0o777;
+    if mode != 0o600 {
+        return Err(unsafe_path(
+            "created private file is not mode 0600",
+            source_path,
+        ));
     }
     Ok(())
 }

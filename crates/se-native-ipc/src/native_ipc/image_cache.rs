@@ -102,6 +102,16 @@ fn publish(root: &Path, name: &str, expected: Sha256, bound: &IpcIoBound) -> Ipc
             "current executable differs from the runtime's measured image",
         ));
     }
+    #[cfg(windows)]
+    // SAFETY: current-process pseudo handle and retained file handle verified above.
+    if unsafe {
+        crate::windows_process::maps_executable(
+            windows_sys::Win32::System::Threading::GetCurrentProcess(),
+            &held,
+        )
+    } {
+        super::image::remember_self_mapped(stamp.clone(), digest)?;
+    }
     store(
         &files,
         name,
@@ -259,20 +269,24 @@ fn restore_from_files(
     if entry.digest != expected {
         return Ok(ImageCacheRead::Stale);
     };
-    // The kernel binds both running images to this held file. Running image
-    // sections exclude in-place content writes since the host published its
-    // digest. The stored native key must still match the held volume/file ID,
-    // size, write time and any journal revision; a pathname is never a key.
+    // Keep the global cache handle-free and never promote an unqualified/legacy
+    // digest across arbitrary files: when an unqualified hint is read with a
+    // live peer on Windows, compare the live mapped executable's native key
+    // (volume/file ID, size, write time) — its running image section blocks
+    // in-place writes — and cache the digest handle-free without re-hashing.
     #[cfg(windows)]
-    if !entry.image.reusable()
-        && let Some(file) = peer.and_then(super::windows_peer::shared_mapped_image)
-        && let Ok(metadata) = file.metadata()
-        && key(&file, &metadata).ok().as_ref() == Some(&entry.image)
-    {
-        bound
-            .remaining()
-            .map_err(|e| error("finish executable cache restore", e))?;
-        super::image::remember_held(entry.image, entry.digest, Some(file))?;
+    if !entry.image.reusable() {
+        let Some(file) = peer.and_then(super::windows_peer::shared_mapped_image) else {
+            return Ok(ImageCacheRead::Current);
+        };
+        let meta = file
+            .metadata()
+            .map_err(|e| error("read live mapped executable metadata", e))?;
+        let live = key(&file, &meta)?;
+        if !live.same_mapped_image(&entry.image) {
+            return Ok(ImageCacheRead::Stale);
+        }
+        super::image::remember_self_mapped(live, entry.digest)?;
         return Ok(ImageCacheRead::Current);
     }
     #[cfg(not(windows))]

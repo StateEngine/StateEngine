@@ -123,15 +123,7 @@ fn write_document(
         writable(path, &pin)?;
         pin.replace(digest(before), &bytes).map_err(native)?;
     } else {
-        let parent = path.parent().ok_or_else(|| invalid("settings parent"))?;
-        let files = se_proc::NativeStateFiles::create(parent).map_err(native)?;
-        let mut staged = files.create_staging(parent).map_err(native)?;
-        staged.file.write_all(&bytes).map_err(io)?;
-        // Publication flushes the staged data before moving its name.
-        drop(staged.file);
-        files
-            .publish_no_replace(&staged.path, path)
-            .map_err(native)?;
+        se_proc::OwnedFile::create_new(path, &bytes).map_err(access_error)?;
     }
     let (_, actual, _) = read_document(path)?;
     if actual != bytes {
@@ -379,7 +371,7 @@ pub(crate) fn prepare(home: &Path, path: &Path) -> Result<()> {
     if let (Some(file), _, _) = read_document(path)? {
         writable(path, &file)?;
     } else {
-        se_proc::NativeStateFiles::create(home).map_err(access_error)?;
+        se_proc::OwnedFile::ensure_parent_directory(home).map_err(access_error)?;
     }
     Ok(())
 }

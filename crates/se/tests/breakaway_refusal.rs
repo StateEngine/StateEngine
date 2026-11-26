@@ -178,7 +178,9 @@ impl Fixture {
         }
         let output = command.output_executable()?;
         // This outside reader runs only after the strict-job shell has exited.
-        self.host = self.read_host()?;
+        if !refuse {
+            self.host = self.read_host()?;
+        }
         assert!(
             output.status.success(),
             "strict-job fixture failed; retained {}: {output:?}",
@@ -229,6 +231,42 @@ impl Fixture {
                 Ok(live.state == se_proc::NativeState::ExitedAwaitingReap)
             }
             _ => Err("runtime identity changed; refusing another process".into()),
+        }
+    }
+    fn assert_killed_on_job_close(&self, expected_pid: u32, expected_birth: u64) -> Result {
+        let path = self.home.join("endpoint.json");
+        let endpoint = se_host::client::endpoint::decode_endpoint(&fs::read(&path)?)?;
+        let fields = endpoint.epoch.owner.fields();
+        assert_eq!(fields.pid.get(), expected_pid);
+        let se_types::StartIdentity::Windows { creation_filetime } = &fields.started else {
+            return Err("endpoint does not carry a Windows process birth".into());
+        };
+        assert_eq!(creation_filetime.get(), expected_birth);
+        let pid = se_proc::ProcessId(fields.pid.get());
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            match se_proc::NativeProcessRuntime::read_process(fields.machine.clone(), pid)
+                .map_err(|e| format!("outside KILL_ON_JOB_CLOSE read: {e:?}"))?
+            {
+                se_proc::ProcessRead::Absent { .. } | se_proc::ProcessRead::ExitedRecord { .. } => {
+                    return Ok(());
+                }
+                se_proc::ProcessRead::Present(live)
+                    if live.state == se_proc::NativeState::ExitedAwaitingReap =>
+                {
+                    return Ok(());
+                }
+                se_proc::ProcessRead::Present(_) => {
+                    if Instant::now() >= until {
+                        return Err(format!(
+                            "KILL_ON_JOB_CLOSE host pid {} survived job closure",
+                            pid.0
+                        )
+                        .into());
+                    }
+                    std::thread::park_timeout(Duration::from_millis(10));
+                }
+            }
         }
     }
     fn stop(&mut self) -> Result {
@@ -317,7 +355,7 @@ fn eligible_broker_runtime_outlives_strict_job_and_public_down_closes_it() -> Re
         }
     }
     let witness: serde_json::Value = serde_json::from_slice(&fs::read(f.root.join("job.json"))?)?;
-    assert_eq!(witness["runtime_outside_all_jobs"], true);
+    assert_eq!(witness["runtime_in_job"], true);
     assert_eq!(witness["runtime_pid"], identity.pid.0);
     let birth = witness["runtime_creation_filetime"]
         .as_str()
@@ -331,52 +369,79 @@ fn eligible_broker_runtime_outlives_strict_job_and_public_down_closes_it() -> Re
     );
     let status = f.ok(&["status"])?;
     assert_eq!(status["runtime"]["state"], "running");
+    assert_eq!(status["runtime"]["detachment"], "session-only");
+    assert!(
+        status["runtime"]["detachment_notice"]
+            .as_str()
+            .is_some_and(|text| text.contains("outer nested jobs were not inspected")),
+        "missing session-only enclosing-job detachment notice: {status}"
+    );
     assert_eq!(status["runtime"]["process"]["pid"], identity.pid.0);
     f.stop()?;
     println!(
-        "PASS broker: JSON/plain CLI success; caller stayed in strict job; exact runtime outside all jobs survived job exit; public down closed it"
+        "PASS enclosing-job: JSON/plain CLI success; caller stayed in strict job; exact runtime in enclosing job reported session-only and survived job exit; public down closed it"
     );
     f.finish()
 }
 
 #[test]
 fn no_eligible_broker_uses_reported_foreground_until_public_down() -> Result {
-    let mut f = Fixture::new("no-broker")?;
+    let mut f = Fixture::new("enclosing-job")?;
     f.run_strict(true)?;
-    assert!(
-        f.host.is_none(),
-        "foreground host survived its joined public down"
-    );
     let witness: serde_json::Value = serde_json::from_slice(&fs::read(f.root.join("job.json"))?)?;
-    let cases = witness["foreground_cases"]
+    let cases = witness["enclosing_job_cases"]
         .as_array()
-        .ok_or("missing foreground cases")?;
+        .ok_or("missing enclosing-job cases")?;
     assert_eq!(cases.len(), 2);
     for mode in ["json", "plain"] {
         let (exit, stdout, stderr) = f.result(mode)?;
-        assert_eq!(exit, "0", "foreground startup/down failed: {stderr}");
+        assert_eq!(exit, "0", "enclosing-job startup/down failed: {stderr}");
         assert!(
-            stderr.contains("starting in the foreground")
-                && stderr.contains("Keep this terminal open")
-                && stderr.contains("same home"),
-            "foreground lifetime was hidden: {stderr}"
+            stderr.contains("KILL_ON_JOB_CLOSE")
+                && stderr.contains("launcher's immediate enclosing job")
+                && stderr.contains("Closing the last handle to a containing job")
+                && stderr.contains("up --foreground"),
+            "KILL_ON_JOB_CLOSE lifetime notice was hidden: {stderr}"
         );
         let observed = cases
             .iter()
             .find(|row| row["mode"] == mode)
             .ok_or("missing mode witness")?;
         assert_eq!(observed["in_job"], true);
-        assert_eq!(observed["down_exit"], 0);
+        assert_ne!(observed["pid"], observed["cli_pid"]);
+        assert_eq!(observed["detachment"], "session-only");
+        assert!(
+            observed["detachment_notice"].as_str().is_some_and(|text| {
+                text.contains("KILL_ON_JOB_CLOSE")
+                    && text.contains("launcher's immediate enclosing job")
+                    && text.contains("Closing the last handle to a containing job")
+            }),
+            "missing KILL_ON_JOB_CLOSE status notice: {observed}"
+        );
         if mode == "json" {
+            assert_eq!(observed["down_exit"], 0);
+            assert_eq!(observed["left_for_job_close"], false);
             let value: serde_json::Value = serde_json::from_slice(&stdout)?;
             assert_eq!(value["state"], "running");
             assert_eq!(value["process"]["pid"], observed["pid"]);
         } else {
+            assert!(observed["down_exit"].is_null());
+            assert_eq!(observed["left_for_job_close"], true);
+            let pid = u32::try_from(
+                observed["pid"]
+                    .as_u64()
+                    .ok_or("missing plain enclosing-job pid")?,
+            )?;
+            let birth = observed["creation_filetime"]
+                .as_str()
+                .ok_or("missing plain enclosing-job birth")?
+                .parse::<u64>()?;
+            f.assert_killed_on_job_close(pid, birth)?;
             let text = String::from_utf8(stdout)?;
             assert!(
                 text.contains("Runtime running")
                     && text.contains(&format!("PID {}", observed["pid"])),
-                "wrong foreground output: {text}"
+                "wrong enclosing-job output: {text}"
             );
         }
     }

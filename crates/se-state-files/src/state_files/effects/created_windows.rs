@@ -127,13 +127,107 @@ pub(in crate::state_files) fn prepare_created_directory(
 /// `FILE_CREATED`, so `path` may now exist and must be preserved.
 ///
 /// # Safety
-/// `descriptor` must hold a valid security descriptor for the whole call.
+/// `descriptor`, when `Some`, must hold a valid security descriptor for the whole call.
 pub unsafe fn create_directory_at(
     parent: &File,
     leaf: &std::ffi::OsStr,
     path: &Path,
     descriptor: &se_native_path::windows::allocation::Allocation,
     access: u32,
+) -> Result<File> {
+    // SAFETY: caller guarantees `descriptor` is valid for the duration of the call.
+    unsafe {
+        create_directory_at_optional(
+            parent,
+            leaf,
+            path,
+            Some(descriptor),
+            access,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        )
+    }
+}
+
+/// Opens an existing directory `leaf` relative to the held `parent` handle
+/// using `NtCreateFile` (`FILE_OPEN`), without re-traversing any absolute path.
+pub(in crate::state_files) fn open_directory_at(
+    parent: &File,
+    leaf: &std::ffi::OsStr,
+    path: &Path,
+    access: u32,
+    share: u32,
+    open_reparse_point: bool,
+) -> Result<File> {
+    let mut units = literal_leaf(leaf, path)?;
+    let mut unicode = UNICODE_STRING {
+        Length: (units.len() * 2) as u16,
+        MaximumLength: (units.len() * 2) as u16,
+        Buffer: units.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: parent.as_raw_handle(),
+        ObjectName: &mut unicode,
+        Attributes: 0x40,
+        SecurityDescriptor: ptr::null_mut(),
+        SecurityQualityOfService: ptr::null_mut(),
+    };
+    let mut raw = ptr::null_mut();
+    // SAFETY: native POD completion output initialized to zero.
+    let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
+    let options = FILE_DIRECTORY_FILE
+        | FILE_SYNCHRONOUS_IO_NONALERT
+        | if open_reparse_point {
+            FILE_OPEN_REPARSE_POINT
+        } else {
+            0
+        };
+    // SAFETY: held verified predecessor handle, one validated relative leaf,
+    // initialized outputs; FILE_OPEN never creates.
+    let code = unsafe {
+        NtCreateFile(
+            &mut raw,
+            access,
+            &attributes,
+            &mut status,
+            ptr::null(),
+            0,
+            share,
+            FILE_OPEN,
+            options,
+            ptr::null(),
+            0,
+        )
+    };
+    if code < 0 {
+        // SAFETY: native NTSTATUS-to-Win32 translation has no pointer inputs.
+        let cause = io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(code) } as i32);
+        return Err(io_error(
+            "pin directory relative to verified parent",
+            path,
+            cause,
+        ));
+    }
+    if raw.is_null() || raw == INVALID_HANDLE_VALUE {
+        return Err(changed("relative directory open returned no handle", path));
+    }
+    // SAFETY: successful NtCreateFile transferred unique ownership of `raw`.
+    Ok(unsafe { File::from_raw_handle(raw) })
+}
+
+/// Exclusively creates `leaf` beneath the held `parent` handle, optionally
+/// applying an explicit security descriptor (or inheriting the parent's normal
+/// user DACL when `descriptor` is `None`).
+///
+/// # Safety
+/// `descriptor`, when `Some`, must hold a valid security descriptor for the whole call.
+pub(in crate::state_files) unsafe fn create_directory_at_optional(
+    parent: &File,
+    leaf: &std::ffi::OsStr,
+    path: &Path,
+    descriptor: Option<&se_native_path::windows::allocation::Allocation>,
+    access: u32,
+    share: u32,
 ) -> Result<File> {
     let mut units = literal_leaf(leaf, path)?;
     let mut unicode = UNICODE_STRING {
@@ -146,7 +240,7 @@ pub unsafe fn create_directory_at(
         RootDirectory: parent.as_raw_handle(),
         ObjectName: &mut unicode,
         Attributes: 0x40, // OBJ_CASE_INSENSITIVE; no inherited handle or namespace escape.
-        SecurityDescriptor: descriptor.as_ptr().cast(),
+        SecurityDescriptor: descriptor.map_or(ptr::null_mut(), |d| d.as_ptr().cast()),
         SecurityQualityOfService: ptr::null_mut(),
     };
     let mut raw = ptr::null_mut();
@@ -163,7 +257,7 @@ pub unsafe fn create_directory_at(
             &mut status,
             ptr::null(),
             FILE_ATTRIBUTE_DIRECTORY,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            share,
             FILE_CREATE,
             FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
             ptr::null(),
@@ -268,4 +362,125 @@ pub(in crate::state_files) fn validate_creation_target(path: &Path) -> Result<()
     let file = open(&physical, true, 0, false)?;
     metadata(&file, path, true, false)?;
     security::verify_no_foreign_writer(&file, path)
+}
+
+/// Stage a new regular file handle-relatively beneath the pinned `parent`,
+/// write and flush it while holding exclusive custody, and publish atomically
+/// without replacement by handle (`FileRenameInfo`). Preserves any staging
+/// disposal failure as a separate fact.
+pub(in crate::state_files) fn create_and_publish_file_at(
+    parent: &File,
+    leaf: &std::ffi::OsStr,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use windows_sys::Wdk::Storage::FileSystem::FILE_NON_DIRECTORY_FILE;
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    // Validate the destination leaf before creating any staging object.
+    let leaf_units = literal_leaf(leaf, path)?;
+    let staged_name = format!(
+        ".se-new-{}-{}.tmp",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let mut staged_units = literal_leaf(std::ffi::OsStr::new(&staged_name), path)?;
+    let mut unicode = UNICODE_STRING {
+        Length: (staged_units.len() * 2) as u16,
+        MaximumLength: (staged_units.len() * 2) as u16,
+        Buffer: staged_units.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: parent.as_raw_handle(),
+        ObjectName: &mut unicode,
+        Attributes: 0x40,
+        SecurityDescriptor: ptr::null_mut(),
+        SecurityQualityOfService: ptr::null_mut(),
+    };
+    let mut raw = ptr::null_mut();
+    // SAFETY: native POD completion output initialized to zero.
+    let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
+    // SAFETY: pinned parent handle, validated relative staging name, exclusive
+    // share=0, FILE_CREATE, null SD inheriting parent's normal user DACL.
+    let code = unsafe {
+        NtCreateFile(
+            &mut raw,
+            DELETE | GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE,
+            &attributes,
+            &mut status,
+            ptr::null(),
+            FILE_ATTRIBUTE_NORMAL,
+            0,
+            FILE_CREATE,
+            FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            ptr::null(),
+            0,
+        )
+    };
+    if code < 0 {
+        // SAFETY: native NTSTATUS-to-Win32 translation has no pointer inputs.
+        let cause = io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(code) } as i32);
+        return Err(io_error("create staged user file", path, cause));
+    }
+    if raw.is_null() || raw == INVALID_HANDLE_VALUE {
+        return Err(changed("staged user file returned no handle", path));
+    }
+    // SAFETY: successful NtCreateFile transferred unique ownership of `raw`.
+    let mut file = unsafe { File::from_raw_handle(raw) };
+    if let Err(error) = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| io_error("write new user file", path, e))
+    {
+        if let Err(cleanup) = dispose(&file, path) {
+            return Err(io_error(
+                "write new user file (staging cleanup also failed)",
+                path,
+                io::Error::other(format!("{error}; staging cleanup failed: {cleanup}")),
+            ));
+        }
+        return Err(error);
+    }
+    if let Err(error) = rename_no_replace_at(&file, parent, &leaf_units, path) {
+        if let Err(cleanup) = dispose(&file, path) {
+            return Err(io_error(
+                "publish new user file (staging cleanup also failed)",
+                path,
+                io::Error::other(format!("{error}; staging cleanup failed: {cleanup}")),
+            ));
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn rename_no_replace_at(file: &File, parent: &File, leaf_units: &[u16], path: &Path) -> Result<()> {
+    let name_bytes = leaf_units.len() * 2;
+    let header_size = size_of::<FILE_RENAME_INFO>();
+    let total = header_size + name_bytes;
+    let mut buf = vec![0u64; total.div_ceil(size_of::<u64>())];
+    // SAFETY: `buf` is 8-byte aligned and sized for FILE_RENAME_INFO + UTF-16 name.
+    unsafe {
+        let info = buf.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+        (*info).Anonymous.ReplaceIfExists = false;
+        (*info).RootDirectory = parent.as_raw_handle();
+        (*info).FileNameLength = name_bytes as u32;
+        ptr::copy_nonoverlapping(
+            leaf_units.as_ptr(),
+            ptr::addr_of_mut!((*info).FileName).cast::<u16>(),
+            leaf_units.len(),
+        );
+        if SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileRenameInfo,
+            buf.as_ptr().cast(),
+            total as u32,
+        ) == 0
+        {
+            return Err(last("publish new user file", path));
+        }
+    }
+    Ok(())
 }

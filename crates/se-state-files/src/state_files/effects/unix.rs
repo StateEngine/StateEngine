@@ -310,6 +310,8 @@ impl Pin {
 #[path = "file_mutation_unix.rs"]
 mod file_mutation;
 
+pub(in crate::state_files) use created::{create_new_file, ensure_user_directory};
+
 pub(in crate::state_files) fn remove_empty_directory(path: &Path) -> Result<DirectoryRemoval> {
     let (parent_pin, name) = match parent(path) {
         Ok(v) => v,

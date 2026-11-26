@@ -652,3 +652,29 @@ pub(in crate::state_files) use created::{
     CreatedDirectory, prepare_created_directory, validate_creation_target,
 };
 pub use created::{create_directory_at, dispose_created_directory};
+
+/// Ensure a user-owned external directory exists without requiring StateEngine's
+/// strict private DACL on pre-existing provider-owned directories. Verifies
+/// every pinned ancestor before creating any missing directory beneath it and
+/// refuses reparse points at the final directory.
+pub(in crate::state_files) fn ensure_user_directory(path: &Path) -> Result<()> {
+    let _ = Parent::open_external(path, false, true)?;
+    Ok(())
+}
+
+/// Exclusively create a new regular file in a user-owned external directory
+/// using default inherited user security, staging and flushing handle-relatively
+/// under the verified parent before atomic no-replace publication by handle.
+pub(in crate::state_files) fn create_new_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| unsafe_path("user file parent missing", path))?;
+    let leaf = path
+        .file_name()
+        .ok_or_else(|| unsafe_path("user file name missing", path))?;
+    literal_leaf(leaf, path)?;
+    let parent = Parent::open_external(dir, true, true)?;
+    created::create_and_publish_file_at(parent.file()?, leaf, path, bytes)?;
+    parent.sync(path)?;
+    Ok(())
+}
