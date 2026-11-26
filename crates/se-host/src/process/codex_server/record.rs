@@ -9,6 +9,8 @@ pub(super) struct Record {
     pub version: u16,
     pub login: NativePath,
     pub checkpoint: Checkpoint,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windows_sandbox: Option<String>,
 }
 
 impl LaunchCoordinator {

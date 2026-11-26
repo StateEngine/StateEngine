@@ -100,6 +100,13 @@ pub struct ProcessConfiguration {
     pub restore_deadline_ms: u64,
     pub stop_grace_ms: Option<u32>,
 }
+type AgentLaunchLocks = std::sync::Mutex<
+    std::collections::BTreeMap<
+        (se_types::ProjectId, se_types::AgentId),
+        Arc<tokio::sync::Mutex<()>>,
+    >,
+>;
+
 pub struct LaunchCoordinator {
     #[cfg(any(windows, target_os = "macos"))]
     repository_watches: std::sync::Mutex<Vec<se_repository::RepositoryWatch>>,
@@ -129,6 +136,7 @@ pub struct LaunchCoordinator {
     orphans: std::sync::Mutex<std::collections::BTreeSet<se_types::LifecycleId>>,
     ephemeral_ttl: Arc<ephemeral::TtlTimer>,
     delegate_create_lock: tokio::sync::Mutex<()>,
+    agent_launch_locks: AgentLaunchLocks,
 }
 struct ProviderHarnesses {
     claude: Arc<ClaudeHarness>,
@@ -269,7 +277,29 @@ impl LaunchCoordinator {
             orphans: std::sync::Mutex::default(),
             ephemeral_ttl: Arc::new(ephemeral::TtlTimer::new()),
             delegate_create_lock: tokio::sync::Mutex::new(()),
+            agent_launch_locks: std::sync::Mutex::default(),
         }))
+    }
+
+    /// Serialize concurrent launches and `--force` takeovers targeting the
+    /// same `(project, agent)` so a competing launch cannot race the gap
+    /// between stopping the old lifecycle and launching its successor.
+    pub(super) async fn lock_agent_launch(
+        &self,
+        project: &se_types::ProjectId,
+        agent: &se_types::AgentId,
+        deadline: &crate::client::lease::Deadline,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>> {
+        let lock = {
+            let mut locks = self.agent_launch_locks.lock().map_err(|_| {
+                se_core::scope::unreadable("agent launch lock", "coordinator lock poisoned")
+            })?;
+            locks
+                .entry((project.clone(), agent.clone()))
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        crate::runtime::pool::within(deadline, lock.lock_owned()).await
     }
 
     /// Compose the process configuration from the runtime and requested options.

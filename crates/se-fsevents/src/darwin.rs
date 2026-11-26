@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-const MAX_QUEUE: usize = 16_384;
+const MAX_QUEUE: usize = 256 * 1024;
 const MAX_STREAMS: usize = 3;
 const FILE_EVENTS: u32 = 0x10;
 const WATCH_ROOT: u32 = 0x04;
@@ -334,7 +334,12 @@ unsafe extern "C" fn callback(
             let Ok(mut queue) = context.queue.lock() else {
                 return None;
             };
-            if count > 128 || paths.is_null() || flags.is_null() {
+            if count == 0 {
+                None
+            } else if count > (isize::MAX as usize) / std::mem::size_of::<*const c_char>()
+                || paths.is_null()
+                || flags.is_null()
+            {
                 queue.loss()
             } else {
                 // SAFETY: FSEvents supplies count valid paths and flags for this callback.
@@ -353,6 +358,9 @@ unsafe extern "C" fn callback(
                     }
                     if flags & ROOT_OR_MOUNT != 0 || name.is_null() {
                         notify = queue.push(context.id, 4, false, b"").or(notify);
+                        if queue.lost {
+                            break;
+                        }
                         continue;
                     }
                     // SAFETY: FSEvents supplies each path as a NUL-terminated string.
@@ -370,6 +378,9 @@ unsafe extern "C" fn callback(
                     notify = queue
                         .push(context.id, action, dir, rel.as_bytes())
                         .or(notify);
+                    if queue.lost {
+                        break;
+                    }
                 }
                 notify
             }

@@ -128,8 +128,10 @@ impl CodexHarness {
                 })?,
         )?;
         #[cfg(windows)]
-        let windows_sandbox =
-            windows_sandbox::selection(request, login)?.map(windows_sandbox::Implementation::key);
+        let windows_sandbox = {
+            let _ = request;
+            Some(windows_sandbox::server_choice(login)?.key())
+        };
         #[cfg(not(windows))]
         let windows_sandbox = {
             let _ = request;

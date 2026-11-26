@@ -119,17 +119,38 @@ impl LaunchCoordinator {
         // for it: a first start on a fresh login can outlast that launch's
         // deadline, and the server must still finish starting for the next one.
         let deadline = &Deadline::idle()?.stage(READY)?;
-        let record = self.read_codex_record(&path, deadline).await?;
+        let mut record = self.read_codex_record(&path, deadline).await?;
         if served(&control).await? {
-            match record {
+            match record.take() {
                 // Someone else's server on this login: use it, never stop it.
                 None => return Ok(()),
                 Some(record) => {
-                    if !slot.contains_key(&login) {
-                        let owner = self.adopt_codex_server(&path, record, deadline).await?;
-                        slot.insert(login.clone(), owner);
+                    let mismatch = launch.windows_sandbox.is_some()
+                        && record.windows_sandbox.as_deref() != launch.windows_sandbox;
+                    if mismatch {
+                        if self.live_codex_agents()? {
+                            return Err(crate::codex_rpc::incompatible(
+                                &format!(
+                                    "the shared Codex app-server for {} is running with Windows sandbox {:?}, not {:?}",
+                                    login.display(),
+                                    record.windows_sandbox.as_deref().unwrap_or("none"),
+                                    launch.windows_sandbox.unwrap_or("none"),
+                                ),
+                                "Stop running Codex agents on this login before switching windows.sandbox, then retry.",
+                            ));
+                        }
+                        let owner = match slot.remove(&login) {
+                            Some(owner) => owner,
+                            None => self.adopt_codex_server(&path, record, deadline).await?,
+                        };
+                        self.stop_and_remove_codex(owner, &path, deadline).await?;
+                    } else {
+                        if !slot.contains_key(&login) {
+                            let owner = self.adopt_codex_server(&path, record, deadline).await?;
+                            slot.insert(login.clone(), owner);
+                        }
+                        return Ok(());
                     }
-                    return Ok(());
                 }
             }
         }
@@ -462,6 +483,7 @@ impl LaunchCoordinator {
             version: RECORD_VERSION,
             login: NativePath::from_local(login.to_owned())?,
             checkpoint: self.codex_checkpoint(CheckpointKind::Reservation(reservation.clone()))?,
+            windows_sandbox: launch.windows_sandbox.map(str::to_owned),
         };
         self.save_codex_record(path, &record, deadline).await?;
         let scratch = path.with_extension("tmp");

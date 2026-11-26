@@ -70,6 +70,15 @@ impl LaunchCoordinator {
             .replan_launch(&plan, &admission, deadline)
             .await
             .map_err(|failure| successor_failure(&report, failure))?;
+        if !next.control.processes.is_empty() || !next.control.sessions.is_empty() {
+            return Err(successor_failure(
+                &report,
+                error(
+                    "takeover race",
+                    "another lifecycle or session appeared while stopping the original selection; inspect and retry",
+                ),
+            ));
+        }
         next.prepare_replacement(&plan, fallback, report.new_conversation)
             .map_err(|failure| successor_failure(&report, failure))?;
         let successor_admission = next.successor_admission(admission);
