@@ -289,6 +289,16 @@ unchanged. Otherwise your `[providers.acp].profile` and its settings are kept,
 and init prints the profile the agent will use.
 A protocol mode or saved StateEngine profile does not establish OS containment.
 
+Agents that read through their client instead of the disk can read text files
+through StateEngine. The path must lie inside the folder the conversation opened
+in, and every part of it is opened without following a link, so links and `..`
+are refused even when they point back inside. One protocol message carries at
+most 1 MiB: a read whose text would not fit is refused and names the `line` and
+`limit` that read it in parts, and files over 4 MiB are not read. StateEngine
+does not offer file writes or terminals to protocol agents; those calls get the
+standard unavailable reply. This is a limit on what StateEngine does for the
+agent, not a sandbox around the agent.
+
 After installing and configuring a protocol agent, add these sections to the
 existing configuration. Replace `protocol-agent` with its native executable and
 replace `YOUR_MODEL` with your configured model. Use the agent's documented

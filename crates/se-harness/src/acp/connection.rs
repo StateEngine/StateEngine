@@ -241,6 +241,29 @@ impl Connection {
         )
         .await
     }
+    /// Answers a client call with its result or a JSON-RPC error. An error message
+    /// is cut to a bounded length, and an answer too large for one message becomes
+    /// a bounded error under the same request ID, so no answer fails the conversation.
+    pub async fn answer(
+        self: &Arc<Self>,
+        id: Value,
+        outcome: std::result::Result<Value, (i64, String)>,
+        cx: CallContext,
+    ) -> Result<()> {
+        let error = |code: i64, message: &str| json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":bounded(message)}});
+        let reply = match outcome {
+            Ok(result) => json!({"jsonrpc":"2.0","id":id,"result":result}),
+            Err((code, message)) => error(code, &message),
+        };
+        let bytes = match wire::encode(&reply) {
+            Ok(bytes) => bytes,
+            Err(_) => wire::encode(&error(
+                -32603,
+                "the answer was larger than one protocol message, so StateEngine sent this error instead",
+            ))?,
+        };
+        self.send(bytes, until(&cx)?).await
+    }
     pub async fn unsupported(self: &Arc<Self>, id: Value, cx: CallContext) -> Result<()> {
         self.send(wire::encode(&json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Client capability unavailable"}}))?, until(&cx)?).await
     }
@@ -566,4 +589,17 @@ pub(super) fn context(generation: Generation, until: Instant) -> Result<CallCont
         .checked_duration_since(Instant::now())
         .ok_or_else(|| failure("ACP deadline", "original wait bound expired"))?;
     Ok(CallContext::new(generation, remaining))
+}
+
+/// An error message cut at a character boundary to at most 4 KiB, ellipsis included.
+fn bounded(message: &str) -> String {
+    const MAX: usize = 4096;
+    if message.len() <= MAX {
+        return message.to_owned();
+    }
+    let mut end = MAX - '…'.len_utf8();
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &message[..end])
 }

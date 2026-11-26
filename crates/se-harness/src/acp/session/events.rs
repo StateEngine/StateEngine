@@ -9,7 +9,22 @@ impl Session {
                 value = receiver.recv() => {
                     let Some(value)=value else { break; };
                     let notify = !matches!(&value.message, Message::Update(_));
-                    if let Err(error) = self.event(value.message).await { let _=self.fail(error.body); }
+                    let handled = match value.message {
+                        // A file read never holds up this pump; it changes no conversation
+                        // state, so it counts as processed once admitted. It is admitted here, in order, only for the
+                        // established conversation; calls beyond the bound are refused.
+                        Message::Request { id, method, params } if Client::handles(&method) => {
+                            match self.admit(&params) {
+                                Ok(permit) => {
+                                    tokio::spawn(self.clone().client_call(permit, id, params));
+                                    Ok(())
+                                }
+                                Err(refusal) => self.connection.answer(id, Err((refusal.code, refusal.message)), CallContext::new(self.connection.generation(), std::time::Duration::from_secs(10))).await,
+                            }
+                        }
+                        message => self.event(message).await,
+                    };
+                    if let Err(error) = handled { let _=self.fail(error.body); }
                     if let Ok(mut state)=self.lock() { state.processed=value.sequence; }
                     self.signal();
                     if notify { self.notify_owner(); }
@@ -20,6 +35,46 @@ impl Session {
                     if self.connection.diagnostics().is_ok_and(|v| v.failure.is_some() || v.stdout_terminal) { self.notify_owner(); }
                 },
             }
+        }
+    }
+    /// Admits a client call that names the established conversation exactly.
+    fn admit(
+        &self,
+        params: &Value,
+    ) -> std::result::Result<tokio::sync::OwnedSemaphorePermit, Refusal> {
+        self.lock()
+            .and_then(|state| {
+                ready(&state)?;
+                established(&state, params)
+            })
+            .map_err(|error| Refusal {
+                code: -32602,
+                message: error.body.message(),
+            })?;
+        self.client.admit()
+    }
+    /// Answers one admitted client call from the agent.
+    async fn client_call(
+        self: Arc<Self>,
+        _permit: tokio::sync::OwnedSemaphorePermit,
+        id: Value,
+        params: Value,
+    ) {
+        let outcome = self
+            .client
+            .call(params)
+            .await
+            .map_err(|refusal| (refusal.code, refusal.message));
+        let cx = CallContext::new(
+            self.connection.generation(),
+            std::time::Duration::from_secs(10),
+        );
+        let sent = self.connection.answer(id, outcome, cx).await;
+        if let Err(error) = sent
+            && !self.closing.load(Ordering::Acquire)
+        {
+            let _ = self.fail(error.body);
+            self.signal();
         }
     }
     async fn event(&self, message: Message) -> Result<()> {
