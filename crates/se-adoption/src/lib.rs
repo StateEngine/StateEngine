@@ -244,22 +244,35 @@ pub struct Project {
     #[serde(default)]
     pub discovery: Option<[u8; 32]>,
 }
-#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UpgradePhase {
-    /// Settings write was journaled; whether it landed is unknown if interrupted,
-    /// so retries never re-write provider settings for these entries.
-    #[default]
-    Writing,
-    /// Settings write completed; awaiting provider discovery/trust confirmation.
-    AwaitingDiscovery,
-}
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpgradeJournal {
-    pub entries: Vec<(String, serde_json::Value)>,
-    #[serde(default)]
-    pub phase: UpgradePhase,
+    /// Hooks whose settings write was journaled; whether it landed is unknown
+    /// if interrupted, so retries never re-write provider settings for them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writing: Vec<(String, serde_json::Value)>,
+    /// Hooks whose settings write completed and are awaiting provider
+    /// discovery/trust confirmation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub awaiting_discovery: Vec<(String, serde_json::Value)>,
+}
+impl UpgradeJournal {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.writing.is_empty() && self.awaiting_discovery.is_empty()
+    }
+    pub(crate) fn entries(&self) -> impl Iterator<Item = &(String, serde_json::Value)> {
+        self.writing.iter().chain(&self.awaiting_discovery)
+    }
+    pub(crate) fn contains(&self, entry: &(String, serde_json::Value)) -> bool {
+        self.writing.contains(entry) || self.awaiting_discovery.contains(entry)
+    }
+    pub(crate) fn mark_written(&mut self) {
+        for entry in self.writing.drain(..) {
+            if !self.awaiting_discovery.contains(&entry) {
+                self.awaiting_discovery.push(entry);
+            }
+        }
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

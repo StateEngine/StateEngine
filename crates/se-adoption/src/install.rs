@@ -104,7 +104,7 @@ pub fn install(
         WritePlan::Upgrade(planned) => {
             let changed = super::settings::commit(&path, planned)?;
             if let Some(upgrade) = registration.upgrade.as_mut() {
-                upgrade.phase = super::UpgradePhase::AwaitingDiscovery;
+                upgrade.mark_written();
                 super::publish_for(home, kind, &registration)?;
             }
             changed
@@ -116,8 +116,7 @@ pub fn install(
     let unfinished = !registration.installed
         || registration.discovery_refusal.is_some()
         || registration.upgrade.as_ref().is_some_and(|u| {
-            u.entries
-                .iter()
+            u.entries()
                 .any(|entry| plan.required.contains(entry) && absent.contains(entry))
         });
     if unfinished && !installed {
@@ -187,12 +186,11 @@ fn confirm_discovery(
     let adapter = kind.adapter();
     let pending_upgrade = match &registration.upgrade {
         Some(upgrade) if installed => {
-            let absent = super::settings::missing(path, &upgrade.entries)?;
-            upgrade
-                .entries
-                .iter()
+            let entries: Vec<_> = upgrade.entries().cloned().collect();
+            let absent = super::settings::missing(path, &entries)?;
+            entries
+                .into_iter()
                 .filter(|entry| !absent.contains(entry))
-                .cloned()
                 .collect()
         }
         _ => Vec::new(),
@@ -265,7 +263,7 @@ fn registration(
                 let absent = super::settings::missing(&path, &saved.hooks)?;
                 saved
                     .hooks
-                    .retain(|entry| plan.entries.contains(entry) || !absent.contains(entry));
+                    .retain(|entry| contains_hook(&plan.entries, entry) || !absent.contains(entry));
                 let hooks = &saved.hooks;
                 saved
                     .layout
@@ -317,42 +315,55 @@ fn registration(
     Ok((registration, write_plan))
 }
 
-/// Plan appending only hooks never previously journaled on an active existing
-/// adoption. Previously journaled hooks (including any from an interrupted
-/// upgrade) are never re-appended, preserving owner removals.
-fn plan_upgrade(path: &Path, plan: &Plan, saved: &mut super::Registration) -> Result<WritePlan> {
-    if let Some(upgrade) = saved.upgrade.as_mut() {
-        let absent = super::settings::missing(path, &upgrade.entries)?;
-        let dropped: Vec<_> = upgrade
-            .entries
-            .iter()
-            .filter(|entry| !plan.entries.contains(entry) && absent.contains(entry))
-            .cloned()
-            .collect();
-        if !dropped.is_empty() {
-            upgrade.entries.retain(|entry| !dropped.contains(entry));
-            saved.hooks.retain(|entry| !dropped.contains(entry));
-            let hooks = &saved.hooks;
-            saved
-                .layout
-                .created_events
-                .retain(|event| hooks.iter().any(|(known, _)| known == event));
-        }
-        if upgrade.entries.is_empty() {
-            saved.upgrade = None;
-        }
+/// Retire pending upgrade entries that are absent and no longer requested.
+/// Published `awaiting_discovery` entries remain in `saved.hooks` to preserve
+/// owner-removal custody; unpublished `writing` entries leave custody.
+fn prune_upgrade_journal(path: &Path, plan: &Plan, saved: &mut super::Registration) -> Result<()> {
+    let Some(upgrade) = saved.upgrade.as_mut() else {
+        return Ok(());
+    };
+    let entries: Vec<_> = upgrade.entries().cloned().collect();
+    let absent = super::settings::missing(path, &entries)?;
+    upgrade
+        .awaiting_discovery
+        .retain(|entry| contains_hook(&plan.entries, entry) || !absent.contains(entry));
+    let dropped: Vec<_> = upgrade
+        .writing
+        .iter()
+        .filter(|entry| !contains_hook(&plan.entries, entry) && absent.contains(entry))
+        .cloned()
+        .collect();
+    if !dropped.is_empty() {
+        upgrade.writing.retain(|entry| !dropped.contains(entry));
+        saved.hooks.retain(|entry| !dropped.contains(entry));
+        let hooks = &saved.hooks;
+        saved
+            .layout
+            .created_events
+            .retain(|event| hooks.iter().any(|(known, _)| known == event));
     }
+    if upgrade.is_empty() {
+        saved.upgrade = None;
+    }
+    Ok(())
+}
+
+/// Plan appending only hooks whose logical key was never previously journaled
+/// on an active existing adoption. Changed paths or option values on an owned
+/// key are never treated as new hooks, preserving owner edits and removals.
+fn plan_upgrade(path: &Path, plan: &Plan, saved: &mut super::Registration) -> Result<WritePlan> {
+    prune_upgrade_journal(path, plan, saved)?;
     // Apply removal preservation only to previously owned required hooks; a
     // newly introduced required hook not yet in `saved.hooks` is still owed.
     let owned_required: Vec<_> = plan
         .required
         .iter()
         .filter(|entry| {
-            saved.hooks.contains(entry)
+            contains_hook(&saved.hooks, entry)
                 && !saved
                     .upgrade
                     .as_ref()
-                    .is_some_and(|u| u.entries.contains(entry))
+                    .is_some_and(|u| u.entries().any(|pending| same_hook(pending, entry)))
         })
         .cloned()
         .collect();
@@ -362,7 +373,7 @@ fn plan_upgrade(path: &Path, plan: &Plan, saved: &mut super::Registration) -> Re
     let owed: Vec<_> = plan
         .entries
         .iter()
-        .filter(|entry| !saved.hooks.contains(entry))
+        .filter(|entry| !contains_hook(&saved.hooks, entry))
         .cloned()
         .collect();
     if owed.is_empty() {
@@ -377,20 +388,10 @@ fn plan_upgrade(path: &Path, plan: &Plan, saved: &mut super::Registration) -> Re
             saved.hooks.push(entry.clone());
         }
     }
-    match saved.upgrade.as_mut() {
-        Some(upgrade) => {
-            for entry in &planned.entries {
-                if !upgrade.entries.contains(entry) {
-                    upgrade.entries.push(entry.clone());
-                }
-            }
-            upgrade.phase = super::UpgradePhase::Writing;
-        }
-        None => {
-            saved.upgrade = Some(super::UpgradeJournal {
-                entries: planned.entries.clone(),
-                phase: super::UpgradePhase::Writing,
-            });
+    let upgrade = saved.upgrade.get_or_insert_with(Default::default);
+    for entry in &planned.entries {
+        if !upgrade.contains(entry) {
+            upgrade.writing.push(entry.clone());
         }
     }
     saved.layout.created_file |= planned.layout.created_file;
@@ -402,6 +403,112 @@ fn plan_upgrade(path: &Path, plan: &Plan, saved: &mut super::Registration) -> Re
         }
     }
     Ok(WritePlan::Upgrade(planned))
+}
+
+#[derive(PartialEq, Eq)]
+enum HookKey<'a> {
+    Logical {
+        event: &'a str,
+        marker: &'static str,
+        role: String,
+    },
+    Exact(&'a (String, serde_json::Value)),
+}
+
+fn same_hook(a: &(String, serde_json::Value), b: &(String, serde_json::Value)) -> bool {
+    hook_key(a) == hook_key(b)
+}
+
+fn contains_hook(
+    entries: &[(String, serde_json::Value)],
+    target: &(String, serde_json::Value),
+) -> bool {
+    let key = hook_key(target);
+    entries.iter().any(|entry| hook_key(entry) == key)
+}
+
+/// Stable logical identity for a StateEngine hook entry: event plus marker
+/// argument and role/action, ignoring the executable path and option values.
+fn hook_key(entry: &(String, serde_json::Value)) -> HookKey<'_> {
+    let Some(spec) = entry
+        .1
+        .get("hooks")
+        .and_then(serde_json::Value::as_array)
+        .filter(|hooks| hooks.len() == 1)
+        .and_then(|hooks| hooks.first())
+    else {
+        return HookKey::Exact(entry);
+    };
+    if let Some(args) = spec.get("args").and_then(serde_json::Value::as_array) {
+        let strs: Option<Vec<&str>> = args.iter().map(serde_json::Value::as_str).collect();
+        if let Some([marker, _home, role]) = strs.as_deref()
+            && let Some(marker) = known_marker(marker)
+        {
+            return HookKey::Logical {
+                event: &entry.0,
+                marker,
+                role: (*role).to_owned(),
+            };
+        }
+    } else if let Some(command) = spec.get("command").and_then(serde_json::Value::as_str) {
+        let words = split_posix_words(command);
+        if let [_exe, marker, _home, role] = words.as_slice()
+            && let Some(marker) = known_marker(marker)
+        {
+            return HookKey::Logical {
+                event: &entry.0,
+                marker,
+                role: role.clone(),
+            };
+        }
+    }
+    HookKey::Exact(entry)
+}
+
+fn known_marker(value: &str) -> Option<&'static str> {
+    match value {
+        "__se-claude-adopt" => Some("__se-claude-adopt"),
+        "__se-codex-adopt" => Some("__se-codex-adopt"),
+        "--stateengine-private-atlas-hook" => Some("--stateengine-private-atlas-hook"),
+        _ => None,
+    }
+}
+
+fn split_posix_words(input: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut in_word = false;
+    let mut in_single = false;
+    let mut chars = input.chars();
+    while let Some(ch) = chars.next() {
+        if in_single {
+            if ch == '\'' {
+                in_single = false;
+            } else {
+                current.push(ch);
+            }
+        } else if ch == '\'' {
+            in_single = true;
+            in_word = true;
+        } else if ch == '\\' {
+            if let Some(next) = chars.next() {
+                current.push(next);
+                in_word = true;
+            }
+        } else if ch.is_ascii_whitespace() {
+            if in_word {
+                words.push(std::mem::take(&mut current));
+                in_word = false;
+            }
+        } else {
+            current.push(ch);
+            in_word = true;
+        }
+    }
+    if in_word {
+        words.push(current);
+    }
+    words
 }
 
 fn integration(
@@ -536,3 +643,6 @@ fn now_us() -> Result<i64> {
         }
     })
 }
+
+#[cfg(test)]
+mod tests;
