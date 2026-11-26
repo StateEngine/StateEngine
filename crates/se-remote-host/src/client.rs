@@ -1,0 +1,75 @@
+//! Native forwarding and authorization adapter for the shared source client.
+use super::*;
+use std::sync::Arc;
+
+#[derive(Clone)]
+pub struct ClientConnector {
+    inner: se_remote::client::ClientConnector,
+    native: Arc<NativePeer>,
+}
+
+struct NativePeer {
+    blocking: Arc<dyn BlockingRunner>,
+    forwards: Arc<ssh::Forwards>,
+}
+
+impl ClientConnector {
+    pub fn new(blocking: Arc<dyn BlockingRunner>) -> Self {
+        Self::with_forwards(blocking, Arc::new(ssh::Forwards::default()))
+    }
+    pub fn with_forwards(blocking: Arc<dyn BlockingRunner>, forwards: Arc<ssh::Forwards>) -> Self {
+        let native = Arc::new(NativePeer { blocking, forwards });
+        Self {
+            inner: se_remote::client::ClientConnector::new(native.clone()),
+            native,
+        }
+    }
+    pub fn forwards(&self) -> Arc<ssh::Forwards> {
+        self.native.forwards.clone()
+    }
+    pub fn connect(
+        &self,
+        route: RemoteRoute,
+        device: MachineSession,
+        signer: Arc<dyn CredentialSource>,
+    ) -> RemoteFuture<'_, Arc<dyn RemoteClient>> {
+        self.inner.connect(route, device, signer)
+    }
+}
+
+impl RemoteConnector for ClientConnector {
+    fn connect(
+        &self,
+        route: RemoteRoute,
+        device: MachineSession,
+        signer: Arc<dyn CredentialSource>,
+    ) -> RemoteFuture<'_, Arc<dyn RemoteClient>> {
+        ClientConnector::connect(self, route, device, signer)
+    }
+}
+
+impl se_remote::channel::PeerIo for NativePeer {
+    fn open<'a>(
+        &'a self,
+        mut route: RemoteRoute,
+        device: &'a MachineSession,
+        signer: Arc<dyn CredentialSource>,
+    ) -> RemoteFuture<'a, se_remote::channel::Socket> {
+        Box::pin(async move {
+            if let Some(config) = &route.forward {
+                route.address = self
+                    .forwards
+                    .ensure(config.clone(), signer.clone(), self.blocking.as_ref())
+                    .await?;
+            }
+            super::native_channel::open(
+                &route,
+                device,
+                signer,
+                self.blocking.as_ref(),
+                &self.forwards,
+            )
+            .await
+        })
+    }
+}

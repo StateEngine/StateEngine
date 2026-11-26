@@ -3,6 +3,7 @@ use super::read::SecurityStoreRead;
 use super::*;
 use se_types::{Result, SeError};
 use std::{sync::Arc, time::Duration};
+mod destination;
 mod launch;
 mod list;
 mod send;

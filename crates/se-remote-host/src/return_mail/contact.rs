@@ -3,24 +3,19 @@ use super::*;
 use se_core::ops::Validate;
 use sha2::{Digest, Sha256};
 
-impl RemoteBroker {
-    pub(crate) async fn prepare_contact(
+impl Mailboxes {
+    pub async fn prepare_contact(
         self: &Arc<Self>,
-        context: &ExecutionContext,
+        host: &dyn ReturnMailHost,
+        courier_host: &Arc<dyn ReturnMailHost>,
         source: &VerifiedSourceSession,
         input: &mut RemoteSendCall,
         terminal: &HumanTerminal,
-        deadline: &crate::client::lease::Deadline,
     ) -> Result<()> {
         input.validate()?;
-        let binding = self
-            .resolve(
-                &input.host,
-                source.context(),
-                &source_admission(source),
-                terminal,
-                deadline,
-            )
+        let admission = source_admission(source);
+        let binding = host
+            .resolve_binding(&input.host, source.context(), &admission, terminal)
             .await?;
         if !binding
             .device()
@@ -51,16 +46,16 @@ impl RemoteBroker {
             original_grant: binding.device().grant.clone(),
             local_reply: None,
         };
-        self.persist_pending(context, source, record).await?;
+        self.persist_pending(host, source, record).await?;
         // Existing route failures stay visible on resume and do not block this
         // independent send. The durable pending receipt will also be retried.
-        let _retained_status = self.start_mail(context, source.clone()).await?;
+        let _retained_status = self.start_mail(courier_host, source.clone()).await?;
         Ok(())
     }
 
     pub(super) async fn persist_pending(
         &self,
-        context: &ExecutionContext,
+        host: &dyn ReturnMailHost,
         source: &VerifiedSourceSession,
         record: PendingContact,
     ) -> Result<()> {
@@ -70,7 +65,7 @@ impl RemoteBroker {
         ));
         let key = IdempotencyKey::new(format!("remote-contact-pending-{digest}"))?;
         write::commit(
-            context,
+            host,
             source_admission(source),
             key,
             "remote.contact.pending",
@@ -80,13 +75,13 @@ impl RemoteBroker {
             }],
         )
         .await?;
-        context.mail_waits.enable_return_mail();
+        host.enable_return_mail();
         Ok(())
     }
 
-    pub(crate) async fn remember_send(
+    pub async fn remember_send(
         self: &Arc<Self>,
-        context: &ExecutionContext,
+        host: &dyn ReturnMailHost,
         source: &VerifiedSourceSession,
         input: &RemoteSendCall,
         result: &RemoteSendBody,
@@ -106,21 +101,20 @@ impl RemoteBroker {
             original_grant: result.attribution.grant.clone(),
             local_reply: None,
         };
-        self.record_contact(context, source, pending, original)
-            .await
+        self.record_contact(host, source, pending, original).await
     }
 
     pub(super) async fn record_contact(
         &self,
-        context: &ExecutionContext,
+        host: &dyn ReturnMailHost,
         source: &VerifiedSourceSession,
         pending: PendingContact,
         original: se_types::MessageId,
     ) -> Result<()> {
-        let _write = self.mailbox.writes.lock().await;
+        let _write = self.writes.lock().await;
         let lookup = pending.clone();
         let message = original.clone();
-        let old = read(context, move |phase| {
+        let old = read(host, move |phase| {
             phase.remote_mail_contact(&lookup.source, lookup.peer, &lookup.target, &message)
         })
         .await?;
@@ -132,7 +126,7 @@ impl RemoteBroker {
             return Ok(());
         }
         let lookup = pending.clone();
-        let route = read(context, move |phase| {
+        let route = read(host, move |phase| {
             phase.remote_mail_route(&lookup.source, lookup.peer, &lookup.target)
         })
         .await?;
@@ -161,7 +155,7 @@ impl RemoteBroker {
             local_reply: pending.local_reply,
         };
         write::commit(
-            context,
+            host,
             source_admission(source),
             key,
             "remote.contact.record",

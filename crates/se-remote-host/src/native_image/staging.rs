@@ -1,6 +1,6 @@
 //! Fixed, account-owned runtime paths; partial uploads never become executable.
 // All substituted paths are generated from hexadecimal hashes and nonces.
-pub(in crate::remote) fn prepare_windows(directory: &str) -> String {
+pub(crate) fn prepare_windows(directory: &str) -> String {
     // Refusals print one fixed marker line naming the failing check and
     // the path; the caller parses it. Unhandled errors still exit
     // nonzero without a marker, which the caller reports generally.
@@ -46,7 +46,7 @@ Check $p
     script.replace("@DIR@", directory)
 }
 
-pub(in crate::remote) fn prepare(directory: &str, windows: bool, apple: bool) -> String {
+pub(crate) fn prepare(directory: &str, windows: bool, apple: bool) -> String {
     if windows {
         powershell(&prepare_windows(directory))
     } else {
@@ -106,7 +106,7 @@ if ($r.AccessControlType -eq 'Allow' -and ($r.FileSystemRights -band $writes) -a
 /// byte-preserving rename of an upload whose bytes were just hash-verified
 /// re-proves identity, because only the destination account itself can
 /// write inside its own 0700 runtime directory.
-pub(in crate::remote) fn check(path: &str, windows: bool, apple: bool) -> String {
+pub(crate) fn check(path: &str, windows: bool, apple: bool) -> String {
     if windows {
         powershell(&format!(
             r#"{identity}exit 0
@@ -120,7 +120,7 @@ pub(in crate::remote) fn check(path: &str, windows: bool, apple: bool) -> String
 
 /// The identity checks plus the digest proof, for paths whose bytes have not
 /// already been hash-verified in this same pairing.
-pub(in crate::remote) fn verify(path: &str, digest: &str, windows: bool, apple: bool) -> String {
+pub(crate) fn verify(path: &str, digest: &str, windows: bool, apple: bool) -> String {
     if windows {
         powershell(&format!(
             r#"{identity}if ((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant() -ne '{digest}') {{exit 1}}; exit 0
@@ -136,7 +136,7 @@ hash=$({hash} {path}) && test "${{hash%% *}}" = {digest}"#
         )
     }
 }
-pub(in crate::remote) fn publish(upload: &str, path: &str, windows: bool) -> String {
+pub(crate) fn publish(upload: &str, path: &str, windows: bool) -> String {
     if windows {
         powershell(&format!(
             r#"$ErrorActionPreference='Stop'; try {{
@@ -157,7 +157,7 @@ $s=Join-Path $HOME '{upload}'; $d=Join-Path $HOME '{path}';
         )
     }
 }
-pub(in crate::remote) fn remove(upload: &str, windows: bool) -> String {
+pub(crate) fn remove(upload: &str, windows: bool) -> String {
     if windows {
         powershell(&format!(
             "$ErrorActionPreference='Stop'; try {{$p=Join-Path $HOME '{upload}'; if (Test-Path -LiteralPath $p -ErrorAction Stop) {{Remove-Item -LiteralPath $p -Force -ErrorAction Stop}}; exit 0}} catch {{exit 1}}"
@@ -172,10 +172,10 @@ pub(in crate::remote) fn remove(upload: &str, windows: bool) -> String {
 /// /bin/sh always reads the same POSIX script. Embedded single quotes
 /// round-trip as `\'\''`; csh/tcsh are unsupported because their multi-line
 /// single-quoted arguments break the wrapper.
-pub(in crate::remote) fn sh(script: &str) -> String {
+pub(crate) fn sh(script: &str) -> String {
     format!("/bin/sh -c '{}'", script.replace('\'', r"'\''"))
 }
-pub(in crate::remote) fn powershell(script: &str) -> String {
+pub(crate) fn powershell(script: &str) -> String {
     use base64::Engine as _;
     // Both command-interpreter and PowerShell SSH shells must pass the script
     // unchanged. Quoted -Command text expands variables in the outer shell.

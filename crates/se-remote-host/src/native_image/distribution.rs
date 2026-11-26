@@ -1,6 +1,6 @@
 //! Native runtime discovery and hashing shared by staging and pairing.
 use super::staging;
-use crate::remote::{channel::unavailable, ssh::command::ssh};
+use crate::{channel::unavailable, ssh::command::ssh};
 use se_proc::canonicalize_path;
 use se_remote::ssh::validate_destination;
 use se_types::{Detail, Result, SeError, details};
@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncReadExt;
 
-pub(in crate::remote) struct Image {
+pub(crate) struct Image {
     pub path: PathBuf,
     pub expected: u64,
     pub digest: String,
@@ -27,7 +27,7 @@ impl Image {
         )
     }
 }
-pub(in crate::remote) async fn describe(destination: &str, distribution: &Path) -> Result<Image> {
+pub(crate) async fn describe(destination: &str, distribution: &Path) -> Result<Image> {
     validate_destination(destination)?;
     // Probe fixed commands, not caller-controlled shell fragments. Neither probe
     // mutates the remote host or stops an incompatible incumbent.

@@ -8,7 +8,7 @@ use se_store::{EventBody, ProjectionRecord, RecordedIdentity, remote::TargetFact
 use se_types::{AgentId, Read, Result};
 use std::time::Instant;
 
-pub(crate) trait SecurityStoreRead {
+pub trait SecurityStoreRead {
     fn watch_position(
         &self,
         request: &view_request::ViewRequest,
@@ -103,9 +103,13 @@ impl SecurityStoreRead for SecurityStore {
                 .map(|target| request.target(phase, target, request.verb(), now))
                 .collect::<se_store::StoreResult<Vec<_>>>()
         })?;
+        let command_home = self
+            .command_home
+            .as_ref()
+            .map(|(home, reader)| (home.as_path(), *reader));
         facts
             .into_iter()
-            .map(|facts| observe(facts, deadline, self.home.as_deref()))
+            .map(|facts| observe(facts, deadline, command_home))
             .collect()
     }
     fn target_page(
@@ -123,9 +127,13 @@ impl SecurityStoreRead for SecurityStore {
                 .map(|target| request.target(phase, target, RemoteVerb::List, now))
                 .collect::<se_store::StoreResult<Vec<_>>>()
         })?;
+        let command_home = self
+            .command_home
+            .as_ref()
+            .map(|(home, reader)| (home.as_path(), *reader));
         facts
             .into_iter()
-            .map(|facts| observe(facts, deadline, self.home.as_deref()))
+            .map(|facts| observe(facts, deadline, command_home))
             .collect()
     }
 }
@@ -272,7 +280,7 @@ fn status_of(
 fn observe(
     facts: TargetFacts,
     deadline: Instant,
-    home: Option<&std::path::Path>,
+    command_home: Option<(&std::path::Path, session::store::MachineIdentityReader)>,
 ) -> Result<RemoteAgentView> {
     if Instant::now() >= deadline {
         return Err(scope::unreadable(
@@ -347,19 +355,19 @@ fn observe(
         Read::Present { value } => Some(value),
         _ => None,
     };
-    let plan = crate::AgentObservationPlan::remote(
+    let plan = se_agent_observation::AgentObservationPlan::remote(
         facts.target.project.clone(),
         row.clone(),
         process,
         recorded_exit,
         recorded_session,
     );
-    let plan = if let Some(home) = home {
-        plan.with_command_home(home, crate::state_files::machine_identity_in)
+    let plan = if let Some((home, read_machine_identity)) = command_home {
+        plan.with_command_home(home, read_machine_identity)
     } else {
         plan
     };
-    crate::observe_agent(plan, deadline)?.apply(&mut row)?;
+    se_agent_observation::observe_agent(plan, deadline)?.apply(&mut row)?;
     let status = status_of(recovering, &row, lifecycle);
     Ok(RemoteAgentView {
         target: facts.target,

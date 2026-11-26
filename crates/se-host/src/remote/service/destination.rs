@@ -1,6 +1,7 @@
 //! Destination receipt recovery and authenticated return-mail pagination.
 use super::*;
-use crate::remote::{auth, service::Service, view_request};
+use crate::remote::{auth, view_request};
+use se_core::store_error::store_error;
 impl Service {
     pub(crate) async fn contact(
         &self,

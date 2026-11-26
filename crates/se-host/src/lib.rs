@@ -13,15 +13,9 @@ mod acp_transport_independent;
 pub mod adoption;
 #[cfg(feature = "channels")]
 pub mod channels;
-#[cfg(feature = "remote")]
-pub(crate) use se_harness::child_io;
 pub mod client;
 pub mod host_process;
 pub mod remote;
-#[cfg(feature = "remote")]
-mod return_mail;
-#[cfg(feature = "remote")]
-use se_ssh_transport as ssh_transport;
 #[cfg(test)]
 #[path = "../../test-support/directory.rs"]
 mod test_directory;

@@ -8,6 +8,9 @@ use se_store::{
 use se_types::{EventId, HumanId, IdempotencyKey, Read, Result, remote::*};
 use sha2::{Digest, Sha256};
 
+/// Read-only machine-identity lookup for a command home, supplied by the host.
+pub type MachineIdentityReader = fn(&std::path::Path) -> Result<se_types::MachineId>;
+
 pub struct SecurityStore {
     pub reader: SqliteReader,
     reads: Option<se_store::ReadPhasePool>,
@@ -15,7 +18,7 @@ pub struct SecurityStore {
     pub info: StoreInfo,
     pub generation: u64,
     pub owner: HumanId,
-    pub home: Option<std::path::PathBuf>,
+    pub(crate) command_home: Option<(std::path::PathBuf, MachineIdentityReader)>,
     owner_fault: Option<std::sync::Arc<dyn crate::WriterFaultObserver>>,
 }
 impl SecurityStore {
@@ -39,9 +42,17 @@ impl SecurityStore {
             info,
             generation,
             owner,
-            home: None,
+            command_home: None,
             owner_fault: None,
         })
+    }
+    pub fn with_command_home(
+        mut self,
+        home: std::path::PathBuf,
+        machine_identity: MachineIdentityReader,
+    ) -> Self {
+        self.command_home = Some((home, machine_identity));
+        self
     }
     pub fn with_reads(mut self, reads: se_store::ReadPhasePool) -> Self {
         self.reads = Some(reads);

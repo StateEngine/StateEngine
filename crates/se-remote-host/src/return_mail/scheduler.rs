@@ -8,10 +8,10 @@ enum Job {
     Exchange(Route),
 }
 
-impl RemoteBroker {
+impl Mailboxes {
     pub(super) async fn courier(
         self: Arc<Self>,
-        context: ExecutionContext,
+        host: Arc<dyn ReturnMailHost>,
         source: VerifiedSourceSession,
         status: Arc<Mutex<Option<se_types::ErrorBody>>>,
     ) -> Result<()> {
@@ -21,12 +21,12 @@ impl RemoteBroker {
         let mut routes_done = false;
         let mut pending_done = false;
         loop {
-            if self.check_open().is_err() || source.context().check_current().is_err() {
+            if host.check_open().is_err() || source.context().check_current().is_err() {
                 return Ok(());
             }
             let address = source.source().address();
             let after = route_cursor.clone();
-            let pages = background_read(&context, move |p| {
+            let pages = background_read(host.as_ref(), move |p| {
                 Ok((
                     if routes_done {
                         (Vec::new(), false)
@@ -78,7 +78,7 @@ impl RemoteBroker {
                     jobs.push(Job::Exchange(route));
                 }
             }
-            if let Some(body) = self.run_mail_jobs(&context, &source, jobs).await? {
+            if let Some(body) = self.run_mail_jobs(&host, &source, jobs).await? {
                 *status.lock().map_err(|_| poisoned())? = Some(body.clone());
                 if scan_failure.is_none() {
                     scan_failure = Some(body);
@@ -99,10 +99,10 @@ impl RemoteBroker {
     }
 }
 
-impl RemoteBroker {
+impl Mailboxes {
     async fn run_mail_jobs(
         self: &Arc<Self>,
-        context: &ExecutionContext,
+        host: &Arc<dyn ReturnMailHost>,
         source: &VerifiedSourceSession,
         jobs: Vec<Job>,
     ) -> Result<Option<se_types::ErrorBody>> {
@@ -112,15 +112,15 @@ impl RemoteBroker {
         loop {
             while running.len() < 4 {
                 let Some(job) = queued.next() else { break };
-                let broker = self.clone();
-                let context = context.clone();
+                let mailboxes = self.clone();
+                let host = host.clone();
                 let source = source.clone();
                 running.spawn(async move {
                         tokio::time::timeout(Duration::from_secs(10), async {
                             source.context().check_current()?;
                             match job {
-                                Job::Recover(contact) => broker.recover_contact(&context, &source, contact).await,
-                                Job::Exchange(route) => broker.mail_cycle(&context, &source, &route).await,
+                                Job::Recover(contact) => mailboxes.recover_contact(host.as_ref(), &source, contact).await,
+                                Job::Exchange(route) => mailboxes.mail_cycle(host.as_ref(), &source, &route).await,
                             }
                         }).await.unwrap_or_else(|_| Err(refused(
                             "return-mail contact timed out; saved messages and original send keys remain available for retry",

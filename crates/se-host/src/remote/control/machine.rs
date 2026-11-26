@@ -15,13 +15,7 @@ struct PendingSession {
     grant: GrantRecord,
     secret: LinkSecret,
 }
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BootstrapSession {
-    pub device: MachineSession,
-    pub secret: LinkSecret,
-    pub port: u16,
-}
+pub use se_remote_host::ssh::BootstrapSession;
 
 impl Control {
     pub(super) async fn bootstrap(
