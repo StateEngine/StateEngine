@@ -319,6 +319,14 @@ fn identity(descriptor: &HarnessDescriptor) -> Result<serde_json::Value> {
 fn resolve_command(configuration: &ConfigFile, name: &str) -> Result<()> {
     se_host::resolve_provider_executable(configuration, se_types::Provider::Acp, None, Some(name))
         .map(drop)
+        // The launch-time remedy edits a saved entry; this one was never written.
+        .map_err(|mut error| {
+            error.body = error.body.with_remedy(se_types::Remedy {
+                text: "Install the command, or pass its absolute path (or an interpreter with the script as the first --arg) to --command, then run se harness add again; nothing was written.".into(),
+                command: Some(se_types::Cmd::Manual),
+            });
+            error
+        })
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]

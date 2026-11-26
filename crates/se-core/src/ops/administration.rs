@@ -171,11 +171,7 @@ impl Validate for HarnessAdd {
 /// owner's environment and never enters `config.toml`. A rejected argument may
 /// hold a secret, so a refusal never repeats it: at most a valid name before `=`.
 fn environment_name(name: &str) -> Result<()> {
-    let valid = |text: &str| {
-        !text.is_empty()
-            && text.len() <= 128
-            && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-    };
+    use se_config::config_policy::{reserved_environment_name, valid_environment_name as valid};
     if let Some((before, _)) = name.split_once('=') {
         let shown = if valid(before) {
             format!("pass {before} without =value")
@@ -198,8 +194,7 @@ fn environment_name(name: &str) -> Result<()> {
             ),
         ));
     }
-    let upper = name.to_ascii_uppercase();
-    if upper == "SE_SESSION" || upper.starts_with("STATEENGINE_") || upper.starts_with("SECODE_") {
+    if reserved_environment_name(name) {
         return Err(SeError::invalid(
             "--env",
             &format!(

@@ -14,7 +14,7 @@ mod acp;
 pub mod delegation;
 pub mod harness;
 mod providers;
-pub use acp::AcpConfig;
+pub use acp::{AcpConfig, reserved_environment_name, valid_environment_name};
 pub use delegation::{
     DEFAULT_MAX_ACTIVE_PER_PARENT, DEFAULT_TTL_SECONDS, DelegationAllowEntry, DelegationConfig,
     MAX_ACTIVE_PER_PARENT, MAX_TTL_SECONDS,
