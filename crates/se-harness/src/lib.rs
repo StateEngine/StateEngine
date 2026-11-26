@@ -37,5 +37,9 @@ pub use ports::{AtlasHookConfigFn, BellRegistry, LivePublisher, LiveTurnRole};
 pub use process_io::UnixProviderIo;
 #[cfg(all(windows, feature = "listener"))]
 pub use process_io::WindowsProviderIo;
+#[cfg(feature = "listener")]
+pub use se_local_socket::{
+    PeerProcess as LocalSocketPeer, probe_peer_identity as probe_local_socket_peer,
+};
 pub use session::*;
 pub use sign_in::SignIn;

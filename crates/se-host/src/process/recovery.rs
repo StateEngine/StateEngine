@@ -430,6 +430,18 @@ impl LaunchCoordinator {
     pub(super) fn retain_recovered(&self, work: Work) -> Result<Arc<Job>> {
         let key = format!("recovered/{}", work.meta.lifecycle);
         let wake = work.wake.clone();
+        let codex_login = if work.meta.provider == se_store::Provider::Codex {
+            match self.codex.agent_login(&work.meta.session) {
+                Ok(se_types::Read::Present { value }) => Some(super::supervisor::CodexBinding {
+                    canonical_login: se_proc::canonicalize_path(&value).ok(),
+                    raw_login: value,
+                    server: None,
+                }),
+                _ => None,
+            }
+        } else {
+            None
+        };
         let job = Arc::new(Job {
             ended_by_reboot: work
                 .last_witness
@@ -446,6 +458,7 @@ impl LaunchCoordinator {
             session: work.meta.session.clone(),
             lifecycle: work.meta.lifecycle.clone(),
             provider: work.meta.provider,
+            codex_login: Mutex::new(codex_login),
             plan: None,
             takeover: None,
             state: AsyncMutex::new(work),

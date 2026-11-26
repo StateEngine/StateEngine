@@ -107,16 +107,30 @@ impl LaunchPlan {
         fallback: Option<Read<ProviderSessionId>>,
         new_conversation: bool,
     ) -> Result<()> {
+        if original.agent.id != self.agent.id {
+            return Err(se_types::SeError::invalid(
+                "takeover target",
+                "the selected agent identity changed during takeover; inspect and retry",
+            ));
+        }
         if original.profile != self.profile || original.resolved != self.resolved {
             return Err(se_types::SeError::invalid(
                 "takeover profile",
                 "the saved launch profile changed during takeover; retry with its current profile",
             ));
         }
+        self.remote = original.remote.clone();
+        self.channel_resume = original.channel_resume.clone();
         if new_conversation {
             self.start_new_conversation("Forced relaunch preserved the previous history and starts a new conversation because the previous service was forcibly retired or final capture remained unavailable.".into());
         } else if let Some(Read::Absent { checked }) = fallback {
             self.start_new_conversation(checked);
+        }
+        if self.channel_resume.is_some() && self.conversation != original.conversation {
+            return Err(se_types::SeError::invalid(
+                "takeover channel resume",
+                "the confirmed channel resume conversation changed during takeover; reconfirm before retrying",
+            ));
         }
         Ok(())
     }

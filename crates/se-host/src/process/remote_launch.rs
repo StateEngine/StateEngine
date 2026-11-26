@@ -33,7 +33,7 @@ impl LaunchCoordinator {
         self.harness_for(plan.profile.provider)?;
         self.preflight_relaunch(&mut plan, &admission, deadline)
             .await?;
-        self.launch_prepared(plan, admission, deadline, None, Some(permit))
+        self.launch_prepared(plan, admission, deadline, None, None, Some(permit))
             .await
     }
 }

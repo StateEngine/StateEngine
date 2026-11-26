@@ -27,26 +27,119 @@ type Listener = std::os::unix::net::UnixListener;
 #[cfg(windows)]
 type Listener = uds_windows::UnixListener;
 
-/// `se ENTRY <private socket> <control socket>`. Returns when the agent's
-/// provider has ended.
+#[derive(Clone, Copy)]
+struct ExpectedPeer {
+    pid: u32,
+    birth: Option<u64>,
+}
+
+fn parse_expected_peer(flags: &[OsString]) -> io::Result<Option<ExpectedPeer>> {
+    let mut pid: Option<u32> = None;
+    let mut birth: Option<u64> = None;
+    for flag in flags {
+        let text = flag
+            .to_str()
+            .ok_or_else(|| io::Error::other("non-UTF-8 forwarder argument"))?;
+        if let Some(raw) = text.strip_prefix("--expected-peer-pid=") {
+            if pid.is_some() {
+                return Err(io::Error::other("duplicate --expected-peer-pid argument"));
+            }
+            let parsed = raw
+                .parse::<u32>()
+                .ok()
+                .filter(|&v| v != 0)
+                .ok_or_else(|| io::Error::other("invalid --expected-peer-pid argument"))?;
+            pid = Some(parsed);
+        } else if let Some(raw) = text.strip_prefix("--expected-peer-birth=") {
+            if birth.is_some() {
+                return Err(io::Error::other("duplicate --expected-peer-birth argument"));
+            }
+            let parsed = raw
+                .parse::<u64>()
+                .ok()
+                .ok_or_else(|| io::Error::other("invalid --expected-peer-birth argument"))?;
+            birth = Some(parsed);
+        } else {
+            return Err(io::Error::other(
+                "the forwarder takes a downstream socket, a control socket, and optional expected peer flags",
+            ));
+        }
+    }
+    match (pid, birth) {
+        (None, None) => Ok(None),
+        (Some(pid), birth) => Ok(Some(ExpectedPeer { pid, birth })),
+        (None, Some(_)) => Err(io::Error::other(
+            "--expected-peer-birth requires --expected-peer-pid",
+        )),
+    }
+}
+
+/// `se ENTRY <private socket> <control socket> [--expected-peer-pid=<pid>] [--expected-peer-birth=<filetime>]`.
+/// Returns when the agent's provider has ended.
 pub fn private_entry(args: &[OsString]) -> io::Result<()> {
-    let [_, _, downstream, control] = args else {
-        return Err(io::Error::other(
-            "the forwarder takes a downstream socket and a control socket",
-        ));
+    let (downstream, control, expected_peer) = match args {
+        [_, _, downstream, control, rest @ ..] => (downstream, control, parse_expected_peer(rest)?),
+        _ => {
+            return Err(io::Error::other(
+                "the forwarder takes a downstream socket and a control socket",
+            ));
+        }
     };
     let control = PathBuf::from(control);
     if !control.is_absolute() {
         return Err(io::Error::other("the control socket path must be absolute"));
     }
     // Refuse at once, rather than at the first host connection, when the
-    // login's server is not there to forward to.
-    drop(Upstream::connect(&control)?);
-    pipe_socket(Path::new(downstream), control)
+    // login's server is not there (or does not match the verified peer identity).
+    let initial = Upstream::connect(&control)?;
+    verify_upstream_peer(&initial, expected_peer)?;
+    drop(initial);
+    pipe_socket(Path::new(downstream), control, expected_peer)
+}
+
+fn verify_upstream_peer(stream: &Upstream, expected_peer: Option<ExpectedPeer>) -> io::Result<()> {
+    let Some(expected) = expected_peer else {
+        return Ok(());
+    };
+    #[cfg(windows)]
+    let observed = {
+        use std::os::windows::io::AsRawSocket;
+        crate::ready::peer_identity(stream.as_raw_socket())
+    };
+    #[cfg(not(windows))]
+    let observed: Option<(u32, u64)> = {
+        let _ = stream;
+        None
+    };
+    match observed {
+        Some((actual_pid, actual_birth))
+            if actual_pid == expected.pid && expected.birth.is_none_or(|b| b == actual_birth) =>
+        {
+            Ok(())
+        }
+        Some((actual_pid, actual_birth)) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "Codex control socket peer ({actual_pid}, birth {actual_birth}) does not match verified server ({}, birth {:?})",
+                expected.pid, expected.birth
+            ),
+        )),
+        None => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "could not verify Codex control socket peer identity against PID {}",
+                expected.pid
+            ),
+        )),
+    }
 }
 
 /// Serve the private socket until the server closes a connection first.
-fn pipe_socket(path: &Path, control: PathBuf) -> io::Result<()> {
+fn pipe_socket(
+    path: &Path,
+    control: PathBuf,
+    expected_peer: Option<ExpectedPeer>,
+) -> io::Result<()> {
     use std::net::Shutdown;
     use std::sync::{
         Arc,
@@ -73,7 +166,14 @@ fn pipe_socket(path: &Path, control: PathBuf) -> io::Result<()> {
                     .name("se-codex-forward-connection".into())
                     .spawn(move || {
                         let server = match Upstream::connect(&control) {
-                            Ok(server) => server,
+                            Ok(server) => {
+                                if let Err(mismatch) = verify_upstream_peer(&server, expected_peer)
+                                {
+                                    let _ = ended.send(mismatch);
+                                    return;
+                                }
+                                server
+                            }
                             // Only an absent or refusing socket means the server is gone;
                             // any other failure ends this one connection.
                             Err(e)

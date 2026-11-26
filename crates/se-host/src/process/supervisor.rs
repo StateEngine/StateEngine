@@ -23,6 +23,16 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 
+#[derive(Clone, Debug)]
+pub(super) struct CodexBinding {
+    /// Raw login path used to key the durable server record.
+    pub raw_login: PathBuf,
+    /// Canonical physical login directory when proved at launch/recovery.
+    pub canonical_login: Option<PathBuf>,
+    /// Exact OS process identity of the shared Codex server bound to this job, when known.
+    pub server: Option<se_proc::ProcessIdentity>,
+}
+
 #[derive(Default)]
 pub(super) struct Jobs(pub Mutex<BTreeMap<String, Arc<Job>>>);
 pub(super) struct Job {
@@ -32,6 +42,8 @@ pub(super) struct Job {
     pub lifecycle: se_types::LifecycleId,
     /// Fixed for the lifecycle; lets a login's shared server count its agents.
     pub provider: se_store::Provider,
+    /// Login and shared-server binding for this Codex job (for per-server accounting).
+    pub codex_login: Mutex<Option<CodexBinding>>,
     pub ended_by_reboot: bool,
     /// Immutable metadata shared with Work; pending replies never wait on its lock.
     pub plan: Option<Arc<LaunchPlan>>,
@@ -189,6 +201,7 @@ impl LaunchCoordinator {
             session: work.meta.session.clone(),
             lifecycle,
             provider: work.meta.provider,
+            codex_login: Mutex::new(None),
             plan: Some(plan),
             takeover,
             state: AsyncMutex::new(work),
@@ -209,6 +222,7 @@ impl LaunchCoordinator {
         self: &Arc<Self>,
         job: &Arc<Job>,
         retained_deadline: Deadline,
+        launch_guard: tokio::sync::OwnedMutexGuard<()>,
     ) -> Result<()> {
         let (coordinator, owned) = (self.clone(), job.clone());
         let sign_in = crate::launch_sign_in::current(); // `None` for a host restore.
@@ -216,9 +230,16 @@ impl LaunchCoordinator {
             let completed = crate::runtime::tasks::caught(async {
                 let deadline = retained_deadline;
                 let mut state = owned.state.lock().await;
-                let start = crate::launch_sign_in::scope(sign_in, coordinator.start(&mut state, &deadline));
+                let mut launch_guard = Some(launch_guard);
+                let start = crate::launch_sign_in::scope(
+                    sign_in,
+                    coordinator.start(&mut state, &mut launch_guard, &deadline),
+                );
                 let started = crate::runtime::tasks::caught(start, false).await
                     .unwrap_or_else(|()| Err(error("launch session task", "panicked with its original key and partial custody retained; reconcile before retry")));
+                // Drop any still-held pre-C1 launch guard unconditionally on
+                // every failure or panic path before cleanup/caching.
+                drop(launch_guard);
                 let mut timing = state.startup_timing.take();
                 match started {
                     Ok(output) => {
@@ -285,6 +306,7 @@ impl LaunchCoordinator {
         admission: Admission,
         deadline: &Deadline,
         takeover: Option<se_core::ops::agent_launch::TakeoverReport>,
+        launch_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
         #[cfg(feature = "remote")] permit: Option<crate::remote::auth::AdmissionPermit>,
     ) -> Result<LaunchReply> {
         if self.stopping.load(Ordering::Acquire) {
@@ -312,6 +334,16 @@ impl LaunchCoordinator {
         } else {
             deadline.clone()
         };
+        // Serialize job-slot admission with any active takeover for this agent
+        // through C1 reservation; the guard drops immediately after C1 (or on
+        // any pre-C1 error/panic) inside the retained launch task.
+        let launch_guard = match launch_guard {
+            Some(guard) => guard,
+            None => {
+                self.lock_agent_launch(&plan.project.id, &plan.agent.id, deadline)
+                    .await?
+            }
+        };
         let admitted = self.admit_job(
             plan,
             admission,
@@ -320,7 +352,9 @@ impl LaunchCoordinator {
             permit,
         )?;
         if admitted.created {
-            self.spawn_launch_task(&admitted.job, retained_deadline)?;
+            self.spawn_launch_task(&admitted.job, retained_deadline, launch_guard)?;
+        } else {
+            drop(launch_guard);
         }
         let job = &admitted.job;
         let mut ready = job.ready.subscribe();

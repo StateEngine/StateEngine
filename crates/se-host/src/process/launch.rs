@@ -122,7 +122,19 @@ impl LaunchCoordinator {
                 environment: server.environment.entries,
                 windows_sandbox,
             };
-            self.ensure_codex_server(login, launch, deadline).await?;
+            if let Some(verified) = self
+                .ensure_codex_server(login, launch, &plan.lifecycle, deadline)
+                .await?
+            {
+                invocation
+                    .arguments
+                    .push(format!("--expected-peer-pid={}", verified.pid.0).into());
+                if let se_proc::StartIdentity::Windows { creation_filetime } = verified.start {
+                    invocation
+                        .arguments
+                        .push(format!("--expected-peer-birth={creation_filetime}").into());
+                }
+            }
         } else {
             #[cfg(unix)]
             {
@@ -383,7 +395,12 @@ impl LaunchCoordinator {
         Ok((request, ticket, transport, argv))
     }
 
-    pub(super) async fn start(&self, work: &mut Work, deadline: &Deadline) -> Result<LaunchResult> {
+    pub(super) async fn start(
+        &self,
+        work: &mut Work,
+        launch_guard: &mut Option<tokio::sync::OwnedMutexGuard<()>>,
+        deadline: &Deadline,
+    ) -> Result<LaunchResult> {
         work.startup_timing = (work.meta.provider == se_store::Provider::Codex)
             .then(|| crate::startup_timing::Timing::new(&work.meta.conversation));
         let plan = work.plan.clone().ok_or_else(|| {
@@ -462,7 +479,11 @@ impl LaunchCoordinator {
             .await?;
         let reservation = self
             .commit_reservation(work, &plan, &hashes, deadline)
-            .await?;
+            .await;
+        // Release the per-agent launch serialization guard immediately after C1
+        // so provider readiness waits remain interruptible.
+        drop(launch_guard.take());
+        let reservation = reservation?;
         let scope = self
             .prepare_native_scope(work, &plan, invocation, qualified, reservation, deadline)
             .await?;

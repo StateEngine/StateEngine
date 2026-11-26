@@ -9,6 +9,9 @@ impl LaunchCoordinator {
         stopped: Stopped,
         fallback: Option<se_types::Read<se_types::ProviderSessionId>>,
     ) -> Result<AnyOutput> {
+        let agent_guard = self
+            .lock_agent_launch(&plan.project.id, &plan.agent.id, deadline)
+            .await?;
         let mut reports = stopped.lock().await;
         let mut checked = self.replan_launch(&plan, &admission, deadline).await?;
         checked.prepare_replacement(&plan, None, false)?;
@@ -70,6 +73,15 @@ impl LaunchCoordinator {
             .replan_launch(&plan, &admission, deadline)
             .await
             .map_err(|failure| successor_failure(&report, failure))?;
+        if !next.control.processes.is_empty() || !next.control.sessions.is_empty() {
+            return Err(successor_failure(
+                &report,
+                error(
+                    "takeover race",
+                    "another lifecycle or session appeared while stopping the original selection; inspect and retry",
+                ),
+            ));
+        }
         next.prepare_replacement(&plan, fallback, report.new_conversation)
             .map_err(|failure| successor_failure(&report, failure))?;
         let successor_admission = next.successor_admission(admission);
@@ -78,6 +90,7 @@ impl LaunchCoordinator {
             successor_admission,
             deadline,
             Some(report.clone()),
+            Some(agent_guard),
             #[cfg(feature = "remote")]
             None,
         )

@@ -71,21 +71,13 @@ impl Readiness {
     }
 }
 
-/// The implementation this launch names: the user's own value first, otherwise
-/// the default. Only a workspace-write launch names one, because a read-only
-/// launch writes nothing and needs no sandbox.
+/// The implementation the login's shared Windows app-server starts with: the
+/// user's configured value first, otherwise the default. Starting every shared
+/// server with this choice ensures a workspace-write agent that joins after a
+/// read-only agent never inherits an unsandboxed shared server.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub fn selection(
-    request: &crate::HarnessRequest,
-    login: &std::path::Path,
-) -> Result<Option<Implementation>> {
-    if !matches!(
-        request.policy.writes,
-        se_proc::WritePolicy::Workspace { .. }
-    ) {
-        return Ok(None);
-    }
-    Ok(Some(user_choice(login)?.unwrap_or(Implementation::DEFAULT)))
+pub fn server_choice(login: &std::path::Path) -> Result<Implementation> {
+    Ok(user_choice(login)?.unwrap_or(Implementation::DEFAULT))
 }
 
 /// The `windows.sandbox` the user set in their own Codex file, if any. The host
