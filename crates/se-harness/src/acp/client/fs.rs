@@ -54,11 +54,21 @@ pub(super) fn read(workspace: &Workspace, params: &Value) -> Outcome {
     let line = count(params, "line")?;
     let limit = count(params, "limit")?;
     let held = &workspace.held;
-    let unreadable = |error: std::io::Error| match error.kind() {
-        std::io::ErrorKind::NotFound => Refusal::missing(format!("{path} does not exist")),
-        _ => Refusal::failed(format!(
-            "{path} could not be read from the held workspace, which follows no links: {error}"
-        )),
+    // A moved or replaced workspace is not a missing file, even when the lookup
+    // saw "not found", so the held folder is checked before naming the cause.
+    let unreadable = |error: std::io::Error| {
+        if let Err(moved) = held.check() {
+            return Refusal::failed(format!(
+                "the workspace {} was moved or replaced ({moved}); start a new conversation there",
+                workspace.told.display()
+            ));
+        }
+        match error.kind() {
+            std::io::ErrorKind::NotFound => Refusal::missing(format!("{path} does not exist")),
+            _ => Refusal::failed(format!(
+                "{path} could not be read from the held workspace, which follows no links: {error}"
+            )),
+        }
     };
     let mut file = held
         .open_relative(&relative)

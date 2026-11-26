@@ -102,9 +102,10 @@ impl Client {
         })?
         .unwrap_or_else(|_| Err("opening the workspace stopped before it finished".into()))
         .map(Arc::new);
-        if let Ok(mut workspace) = self.workspace.lock() {
-            *workspace = Some(opened);
-        }
+        *self.workspace.lock().map_err(|_| {
+            "the workspace record was left unusable by an earlier failure; start the agent again"
+                .to_owned()
+        })? = Some(opened);
         Ok(())
     }
 

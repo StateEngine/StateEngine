@@ -573,9 +573,13 @@ impl Session {
     }
     pub async fn close(&self, cx: CallContext) -> Result<()> {
         let until = super::connection::until(&cx)?;
-        // No call starts from here on, and admitted calls get until the bound to
-        // answer before the connection closes; a late answer is then discarded.
-        self.client.close(until).await;
+        // No call starts from here on. Admitted calls get at most half the bound
+        // to answer, so a stalled read cannot starve the connection's own close;
+        // a late answer is then discarded.
+        let now = tokio::time::Instant::now();
+        self.client
+            .close(now + until.saturating_duration_since(now) / 2)
+            .await;
         self.connection.close(remaining(&cx, until)?).await?;
         self.synchronize(until).await?;
         self.closing.store(true, Ordering::Release);
