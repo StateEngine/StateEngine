@@ -82,7 +82,7 @@ pub(crate) fn execute<H: OwnerCommands + 'static>(
     })
 }
 
-async fn request<H: OwnerCommands + 'static>(
+pub(crate) async fn request<H: OwnerCommands + 'static>(
     host: &'static H,
     context: &H::Context,
     input: OwnerInput,
@@ -96,7 +96,7 @@ async fn request<H: OwnerCommands + 'static>(
     .map_err(|_| SeError::invalid("remote setup admission", "a joined native Owner request"))?
 }
 
-fn interruption() -> Result<impl std::future::Future<Output = Result<()>>> {
+pub(crate) fn interruption() -> Result<impl std::future::Future<Output = Result<()>>> {
     #[cfg(unix)]
     let mut signals = {
         use tokio::signal::unix::{SignalKind, signal};

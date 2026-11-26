@@ -149,10 +149,12 @@ agent tools. A request key or an identity label is not permission to run them.
         name: "remote",
         title: "Work with agents on another machine",
         summary: "Connect over SSH, discover allowed agents, watch and send safely.",
-        body: r#"With a remote-enabled build, the owner runs se remote add DESTINATION --name NAME
-to configure and verify a connection over system SSH. Read se help remote add
-for setup options. se remote list --host NAME discovers allowed destination
-agents; se remote watch --host NAME --target PROJECT-ID/AGENT-ID watches one.
+        body: r#"With a remote-enabled build, the owner runs se remote init HOST:PATH [--alias NAME] [--agent WORKER] [--allow-launch]
+to pair over system SSH, stage the verified executable, initialize a remote project,
+and optionally register an agent or grant launch consent (off unless --allow-launch).
+Or run se remote add DESTINATION --name NAME to pair a machine without remote project init.
+Read se help remote init or se help remote add for setup options. se remote list --host NAME
+discovers allowed destination agents; se remote watch --host NAME --target PROJECT-ID/AGENT-ID watches one.
 On the destination, se watch --target PROJECT-ID/AGENT-ID uses the same view.
 
 Agents use stateengine_remote_list, stateengine_remote_watch and

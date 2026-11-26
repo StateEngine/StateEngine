@@ -14,7 +14,10 @@ pub use authorization::{
     PermissionsRequest, PermissionsResult, Request as SshRequest, SourcePermissionChange,
     StartResult, launch_permissions, permissions,
 };
-pub use bootstrap::{BootstrapSession, connect};
+pub use bootstrap::{
+    BootstrapSession, build_remote_se_command, connect, posix_single_quote,
+    powershell_single_quote, run_verified_se_command,
+};
 use se_types::Result;
 use std::{collections::BTreeMap, net::SocketAddr, process::Stdio, sync::Arc, time::Duration};
 use tokio::{sync::Mutex, time::timeout};
@@ -64,6 +67,8 @@ impl Forward {
                     "LogLevel=INFO",
                     "-o",
                     "BatchMode=yes",
+                    "-o",
+                    "StrictHostKeyChecking=yes",
                     "-o",
                     "ExitOnForwardFailure=yes",
                     "-o",

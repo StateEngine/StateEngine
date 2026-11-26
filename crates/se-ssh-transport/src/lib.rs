@@ -76,7 +76,15 @@ async fn run(
     validate_destination(destination)?;
     let mut child = se_harness::child_io::spawn(
         client(program)
-            .args(["-T", "-o", "BatchMode=yes", destination, &command])
+            .args([
+                "-T",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "StrictHostKeyChecking=yes",
+                destination,
+                &command,
+            ])
             .stdin(Stdio::null()),
         se_harness::child_io::Pipes {
             stdin: false,

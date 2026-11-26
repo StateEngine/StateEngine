@@ -18,7 +18,15 @@ pub async fn upload(
     let (sftp, ssh) = super::sftp::clients()?;
     let mut child = se_harness::child_io::spawn(
         super::client(sftp)
-            .args(["-b", "-", "-o", "BatchMode=yes", "-S"])
+            .args([
+                "-b",
+                "-",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "StrictHostKeyChecking=yes",
+                "-S",
+            ])
             .arg(ssh)
             .arg(destination),
         se_harness::child_io::Pipes {
