@@ -43,30 +43,39 @@ pub(crate) async fn execute(
             let delivery = tokio::select! {
                 biased;
                 _ = shutdown.changed() => {
-                    router.execution.external.cancel_pending_claim(&claim_id);
+                    close_bridge_and_revoke(router, Some(&claim_id), active_binding, "host is shutting down").await;
                     return Err(SeError::invalid("external claim wait", "host is shutting down"));
                 }
                 _ = tokio::time::sleep_until(until) => {
-                    router.execution.external.cancel_pending_claim(&claim_id);
+                    close_bridge_and_revoke(
+                        router,
+                        Some(&claim_id),
+                        active_binding,
+                        "external claim expired before bridge received capability",
+                    )
+                    .await;
                     return Err(SeError::invalid(
                         "external claim wait",
                         "approval before claim expiry; reconnect to open a fresh claim",
                     ));
                 }
-                res = rx => res.map_err(|_| {
-                    SeError::invalid("external claim wait", "owner approval before the claim closed")
-                })?,
+                res = rx => match res {
+                    Ok(delivery) => delivery,
+                    Err(_) => {
+                        close_bridge_and_revoke(
+                            router,
+                            Some(&claim_id),
+                            active_binding,
+                            "external claim closed before capability delivery",
+                        )
+                        .await;
+                        return Err(SeError::invalid(
+                            "external claim wait",
+                            "owner approval before the claim closed",
+                        ));
+                    }
+                },
             };
-            // Bind this approved lease to the bridge connection so EOF/drop
-            // triggers lease-generation-fenced cleanup.
-            if let Ok(mut guard) = active_binding.lock() {
-                *guard = Some((
-                    delivery.project_id.clone(),
-                    delivery.agent_id.clone(),
-                    delivery.session_id.clone(),
-                    delivery.lease_generation,
-                ));
-            }
             let capability = std::str::from_utf8(delivery.secret.expose())
                 .map_err(|_| SeError::invalid("external capability", "UTF-8 token"))?
                 .to_owned();
@@ -84,7 +93,7 @@ pub(crate) async fn execute(
             )
         }
         ExternalCall::List { project } => {
-            let _ = lifecycle::reconcile_expired_leases(router, project.as_ref()).await;
+            lifecycle::reconcile_expired_leases(router, project.as_ref()).await?;
             let now_us = crate::runtime::start::now_unix_micros()?;
             let output = router.execution.external.list(project.as_ref(), now_us)?;
             encode("se.external-list/v1", &output)
@@ -115,17 +124,34 @@ pub(crate) async fn execute(
     }
 }
 
-/// Clean up any pending claim or active external lease owned by a disconnecting bridge.
-pub(crate) async fn release_connection(
+/// Atomically mark the bridge closed, take any bound active seat, cancel any
+/// pending claim, and durably revoke any seat owned by this connection.
+async fn close_bridge_and_revoke(
     router: &HostedRouter,
-    claim: Option<PendingClaimHandle>,
+    claim_id: Option<&str>,
     active_binding: &Arc<Mutex<ActiveConnectionBinding>>,
+    reason: &str,
 ) {
-    if let Some(handle) = claim
-        && let Some(undelivered) = router
-            .execution
-            .external
-            .cancel_pending_claim(&handle.claim_id)
+    let active = active_binding.lock().ok().and_then(|mut b| {
+        b.closed = true;
+        b.active.take()
+    });
+    let undelivered = claim_id.and_then(|id| router.execution.external.cancel_pending_claim(id));
+    if let Some((project_id, agent_id, session_id, lease_generation)) = &active {
+        let _ = lifecycle::fenced_disconnect_with_retry(
+            router,
+            project_id,
+            agent_id,
+            session_id,
+            *lease_generation,
+            reason,
+        )
+        .await;
+    }
+    if let Some(undelivered) = undelivered
+        && active.as_ref().is_none_or(|(_, _, s, g)| {
+            *s != undelivered.session_id || *g != undelivered.lease_generation
+        })
     {
         let _ = lifecycle::fenced_disconnect_with_retry(
             router,
@@ -133,22 +159,25 @@ pub(crate) async fn release_connection(
             &undelivered.agent_id,
             &undelivered.session_id,
             undelivered.lease_generation,
-            "external bridge disconnected before capability delivery",
+            reason,
         )
         .await;
     }
-    let active = active_binding.lock().ok().and_then(|mut g| g.take());
-    if let Some((project_id, agent_id, session_id, lease_generation)) = active {
-        let _ = lifecycle::fenced_disconnect_with_retry(
-            router,
-            &project_id,
-            &agent_id,
-            &session_id,
-            lease_generation,
-            "external bridge disconnected",
-        )
-        .await;
-    }
+}
+
+/// Clean up any pending claim or active external lease owned by a disconnecting bridge.
+pub(crate) async fn release_connection(
+    router: &HostedRouter,
+    claim: Option<PendingClaimHandle>,
+    active_binding: &Arc<Mutex<ActiveConnectionBinding>>,
+) {
+    close_bridge_and_revoke(
+        router,
+        claim.as_ref().map(|h| h.claim_id.as_str()),
+        active_binding,
+        "external bridge disconnected",
+    )
+    .await;
 }
 
 fn encode<T: serde::Serialize>(schema: &str, value: &T) -> Result<OperationOutput> {

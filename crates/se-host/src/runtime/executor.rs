@@ -193,6 +193,20 @@ async fn finish_complete(
         output = custody.observe_output(output, &deadline).await?;
         output = custody.observe_peers(output, &admission, &deadline).await?;
     }
+    if matches!(
+        &output,
+        AnyOutput::ProjectStatus(_) | AnyOutput::AgentShow(_)
+    ) && let se_store::Scope::Project(project) = &admission.scope
+    {
+        crate::external::lifecycle::reconcile_expired_on_execution(
+            &context,
+            &context.owner,
+            Some(project),
+            None,
+            &deadline,
+        )
+        .await?;
+    }
     enrich_external_seats(&context, &admission, &mut output);
     Ok(ExecutedCall {
         host_phases,
@@ -228,6 +242,8 @@ fn enrich_external_seats(
             view.state = "expired".into();
             view.lease_generation = None;
             view.expires_at = None;
+            view.revocation_reason = Some(crate::external::lifecycle::EXPIRED_LEASE_REASON.into());
+            row.session.recorded_state = Some("revoked".into());
         }
     };
     match output {

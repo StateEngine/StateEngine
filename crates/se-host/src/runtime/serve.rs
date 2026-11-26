@@ -381,9 +381,11 @@ async fn serve_external_exchange(
                     closed?;
                     return Ok(None);
                 }
-                joined = handle => joined.map_err(|e| {
-                    se_core::scope::unreadable("external lifecycle task", &e.to_string())
-                })?,
+                joined = super::pool::within(deadline, handle) => {
+                    joined?.map_err(|e| {
+                        se_core::scope::unreadable("external lifecycle task", &e.to_string())
+                    })?
+                }
             }
         }
         other => tokio::select! {

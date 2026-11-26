@@ -271,6 +271,44 @@ fn approve_events(
     ])
 }
 
+pub(crate) async fn session_is_active(
+    execution: &crate::runtime::ExecutionContext,
+    owner: &se_types::HumanId,
+    project: &ProjectId,
+    session_id: &SessionId,
+    deadline: &Deadline,
+) -> Result<bool> {
+    let reads = execution.reads.clone();
+    let generation = execution.generation;
+    let project = project.clone();
+    let owner = owner.clone();
+    let target = session_id.clone();
+    execution
+        .blocking
+        .run_owned(deadline, move || {
+            let phase = reads.read_phase().map_err(|e| store_error(&e))?;
+            let admission = Admission {
+                scope: Scope::Project(project),
+                actor: Actor::Human(owner),
+                session: None,
+                generation: generation.get(),
+            };
+            let mut snap = phase
+                .into_snapshot(se_core::admission::read_scope(&admission))
+                .map_err(|e| store_error(&e))?;
+            let active = match snap.session(target).map_err(|e| store_error(&e)) {
+                Ok(se_types::Read::Present { value }) => Ok(matches!(
+                    value.current.body,
+                    EventBody::SessionPrepared { .. } | EventBody::SessionActivated { .. }
+                )),
+                Ok(_) => Ok(false),
+                Err(err) => Err(err),
+            };
+            crate::runtime::executor::close_read(active, snap.close())
+        })
+        .await
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn commit_revocation(
     router: &HostedRouter,
@@ -281,25 +319,171 @@ pub(crate) async fn commit_revocation(
     reason: &str,
     deadline: &Deadline,
 ) -> Result<()> {
+    commit_revocation_on_execution(
+        &router.execution,
+        &router.context.owner,
+        project,
+        session_id,
+        session_rev,
+        cred,
+        reason,
+        deadline,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn commit_revocation_on_store(
+    store: &crate::runtime::store::Store,
+    owner: &se_types::HumanId,
+    project: &ProjectId,
+    session_id: &SessionId,
+    session_rev: Revision,
+    cred: Option<(RecordId, Revision)>,
+    reason: &str,
+    deadline: &Deadline,
+) -> Result<()> {
     let now_us = now_unix_micros()?;
     let (batch, key) = {
-        let context = router.context.clone();
+        let reads = store.reads.clone();
+        let generation = store.generation;
+        let owner = owner.clone();
         let project = project.clone();
         let session_id = session_id.clone();
         let reason = reason.to_owned();
-        router
-            .execution
-            .blocking
+        store
+            .pool
             .run_owned(deadline, move || {
-                let phase = context.reads.read_phase().map_err(|e| store_error(&e))?;
-                if let Err(error) = context.check_generation(&phase) {
-                    return crate::runtime::executor::close_read(Err(error), phase.close());
+                let phase = reads.read_phase().map_err(|e| store_error(&e))?;
+                let current_owner = phase.runtime_owner().map_err(|e| store_error(&e))?;
+                if !matches!(current_owner, se_types::Read::Present { value } if value.generation == generation)
+                {
+                    return crate::runtime::executor::close_read(
+                        Err(se_core::scope::unreadable(
+                            "external revoke generation",
+                            "host generation changed",
+                        )),
+                        phase.close(),
+                    );
                 }
                 let admission = Admission {
                     scope: Scope::Project(project.clone()),
-                    actor: Actor::Human(context.owner.clone()),
+                    actor: Actor::Human(owner),
                     session: None,
-                    generation: context.generation.get(),
+                    generation: generation.get(),
+                };
+                let snap = phase
+                    .into_snapshot(se_core::admission::read_scope(&admission))
+                    .map_err(|e| store_error(&e))?;
+                let info = snap.info();
+                let res = (|| {
+                    let nonce = crate::client::auth::fresh_nonce()?;
+                    let key = IdempotencyKey::new(format!(
+                        "external-revoke-{}-{}",
+                        session_id,
+                        se_types::hex_lower(&nonce[..8])
+                    ))?;
+                    let intent = serde_json::json!({
+                        "session": session_id,
+                        "reason": reason,
+                    });
+                    let intent_bytes = serde_json::to_vec(&intent)
+                        .map_err(|_| SeError::invalid("external revoke intent", "valid JSON"))?;
+                    let mut events = Vec::new();
+                    if let Some((cred_id, cred_rev)) = cred {
+                        events.push(make_event(
+                            &admission,
+                            &info.id,
+                            now_us,
+                            EventBody::CredentialRevoked {
+                                credential: cred_id,
+                                expected: Expected::Revision(cred_rev),
+                                reason: InputText::Inline(reason.clone()),
+                            },
+                        )?);
+                    }
+                    events.push(make_event(
+                        &admission,
+                        &info.id,
+                        now_us,
+                        EventBody::SessionRevoked {
+                            session: session_id.clone(),
+                            expected: Expected::Revision(session_rev),
+                            reason: InputText::Inline(reason),
+                        },
+                    )?);
+                    let batch = AtomicBatch {
+                        expected_incarnation: info.incarnation,
+                        admission,
+                        request: Some(RequestIdentity {
+                            key: key.clone(),
+                            intent: se_store::IntentDigest {
+                                operation: "external.revoke",
+                                codec_version: 1,
+                                sha256: Sha256::digest(&intent_bytes).into(),
+                            },
+                        }),
+                        import_checkpoint: None,
+                        events,
+                    };
+                    Ok((batch, key))
+                })();
+                crate::runtime::executor::close_read(res, snap.close())
+            })
+            .await?
+    };
+    let _ = key;
+    store.commit("external.revoke", batch, deadline).await?;
+    let mut revocations = crate::runtime::mail::Revocations::default();
+    revocations
+        .sessions
+        .push((project.clone(), session_id.clone()));
+    if let Some((cred_id, _)) = cred {
+        revocations.credentials.push((project.clone(), cred_id));
+    }
+    let _ = store.mail_waits.revoked(&revocations);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn commit_revocation_on_execution(
+    execution: &crate::runtime::ExecutionContext,
+    owner: &se_types::HumanId,
+    project: &ProjectId,
+    session_id: &SessionId,
+    session_rev: Revision,
+    cred: Option<(RecordId, Revision)>,
+    reason: &str,
+    deadline: &Deadline,
+) -> Result<()> {
+    let now_us = now_unix_micros()?;
+    let (batch, key) = {
+        let reads = execution.reads.clone();
+        let generation = execution.generation;
+        let owner = owner.clone();
+        let project = project.clone();
+        let session_id = session_id.clone();
+        let reason = reason.to_owned();
+        execution
+            .blocking
+            .run_owned(deadline, move || {
+                let phase = reads.read_phase().map_err(|e| store_error(&e))?;
+                let current_owner = phase.runtime_owner().map_err(|e| store_error(&e))?;
+                if !matches!(current_owner, se_types::Read::Present { value } if value.generation == generation)
+                {
+                    return crate::runtime::executor::close_read(
+                        Err(se_core::scope::unreadable(
+                            "external revoke generation",
+                            "host generation changed",
+                        )),
+                        phase.close(),
+                    );
+                }
+                let admission = Admission {
+                    scope: Scope::Project(project.clone()),
+                    actor: Actor::Human(owner),
+                    session: None,
+                    generation: generation.get(),
                 };
                 let snap = phase
                     .into_snapshot(se_core::admission::read_scope(&admission))
@@ -368,7 +552,7 @@ pub(crate) async fn commit_revocation(
         natural_key: None,
         natural_events: Vec::new(),
     };
-    submit::submit(&router.execution, batch, &identity, deadline).await?;
+    submit::submit(execution, batch, &identity, deadline).await?;
 
     // Immediately wake any parked wait channel for this session/credential.
     let mut revocations = crate::runtime::mail::Revocations::default();
@@ -378,7 +562,7 @@ pub(crate) async fn commit_revocation(
     if let Some((cred_id, _)) = cred {
         revocations.credentials.push((project.clone(), cred_id));
     }
-    let _ = router.execution.mail_waits.revoked(&revocations);
+    let _ = execution.mail_waits.revoked(&revocations);
     Ok(())
 }
 

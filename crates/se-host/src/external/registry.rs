@@ -50,6 +50,7 @@ struct PendingClaimEntry {
     expires_at: Instant,
     expires_at_us: i64,
     delivery: oneshot::Sender<ClaimApprovalDelivery>,
+    bridge: Arc<Mutex<crate::runtime::admission::external::BridgeBinding>>,
 }
 
 struct ClaimReceiver {
@@ -75,6 +76,7 @@ pub(crate) struct ConsumedClaim {
     pub agent_name: String,
     pub peer_pid: u32,
     pub delivery: oneshot::Sender<ClaimApprovalDelivery>,
+    pub bridge: Arc<Mutex<crate::runtime::admission::external::BridgeBinding>>,
 }
 
 #[derive(Clone, Debug)]
@@ -101,6 +103,7 @@ struct RegistryState {
     pending: BTreeMap<String, PendingClaimEntry>,
     active: BTreeMap<(ProjectId, AgentId), ActiveLease>,
     receivers: BTreeMap<String, ClaimReceiver>,
+    agent_locks: BTreeMap<(ProjectId, AgentId), Arc<tokio::sync::Mutex<()>>>,
 }
 
 impl Default for ExternalRegistry {
@@ -122,9 +125,26 @@ pub(crate) struct NewClaim {
     pub connection_nonce: [u8; 32],
     pub host_generation: Generation,
     pub now_us: i64,
+    pub bridge: Arc<Mutex<crate::runtime::admission::external::BridgeBinding>>,
 }
 
 impl ExternalRegistry {
+    /// Per-`(project_id, agent_id)` async mutex serializing approve, revoke,
+    /// expiry reconciliation, and fenced disconnect from preflight through publication.
+    pub(crate) fn agent_lock(
+        &self,
+        project_id: &ProjectId,
+        agent_id: &AgentId,
+    ) -> Result<Arc<tokio::sync::Mutex<()>>> {
+        let mut guard = self.state.lock().map_err(|_| poisoned())?;
+        Ok(Arc::clone(
+            guard
+                .agent_locks
+                .entry((project_id.clone(), agent_id.clone()))
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        ))
+    }
+
     pub(crate) fn allocate_lease_generation(&self) -> u64 {
         self.next_lease_generation.fetch_add(1, Ordering::AcqRel)
     }
@@ -139,6 +159,7 @@ impl ExternalRegistry {
             connection_nonce,
             host_generation,
             now_us,
+            bridge,
         } = new;
         let mut guard = self.state.lock().map_err(|_| poisoned())?;
         prune_expired(&mut guard);
@@ -166,6 +187,7 @@ impl ExternalRegistry {
             expires_at,
             expires_at_us,
             delivery: tx,
+            bridge,
         };
         let receiver = ClaimReceiver {
             peer_binding: peer_binding.clone(),
@@ -292,6 +314,7 @@ impl ExternalRegistry {
             agent_name: entry.agent_name,
             peer_pid: entry.peer_pid,
             delivery: entry.delivery,
+            bridge: entry.bridge,
         })
     }
 

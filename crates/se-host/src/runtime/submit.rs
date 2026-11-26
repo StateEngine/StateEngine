@@ -6,6 +6,84 @@ use se_store::{AtomicBatch, CommitReceipt, WriterClient};
 use se_types::Result;
 use std::{sync::Arc, time::Instant};
 
+pub(crate) enum RetainedCommit {
+    /// The writer durably committed the batch (even if a secondary observer step warned).
+    Committed(CommitReceipt),
+    /// The writer reported an indeterminate commit outcome; caller must reconcile.
+    OutcomeUnknown(se_types::SeError),
+}
+
+/// Submit a batch under `enqueue_deadline`, then await the writer's authoritative
+/// durable outcome without cutting off an already-accepted write on a short request deadline.
+pub(crate) async fn submit_retained(
+    context: &ExecutionContext,
+    batch: AtomicBatch,
+    identity: &WriteIdentity,
+    enqueue_deadline: &Deadline,
+) -> Result<RetainedCommit> {
+    let recipients = super::mail::recipients(&batch);
+    let revocations = super::mail::revocations(&batch);
+    let custody = context.custody.get().cloned();
+    let mail_waits = Arc::clone(&context.mail_waits);
+    let writer = context.writer.clone();
+    let submit_deadline = enqueue_deadline.clone();
+    let submitted = identity.clone();
+    let pending = context.pending_writes.clone();
+    let runtime = context.blocking.handle();
+    let fault = context.ownership_fault.clone();
+    let record_feed = context.atlas.records.clone();
+    let (completion, _submission) = timings::blocking(
+        &context.blocking,
+        Mode::Owned,
+        enqueue_deadline,
+        move || {
+            submit_deadline.remaining()?;
+            let record_write = record_feed.before_scoped_write(&batch.admission.scope)?;
+            pending.register(&submitted)?;
+            mail_waits.fence_remote(&revocations)?;
+            match writer.submit(batch) {
+                Ok(completion) => Ok(CommitObserver {
+                    completion,
+                    record_write,
+                    fault,
+                    pending,
+                    submitted,
+                    mail_waits,
+                    revocations,
+                    recipients,
+                    custody,
+                }
+                .spawn(&runtime)),
+                Err(error) => {
+                    fault.observe_writer(&error);
+                    let error = submitted.store_error(&error);
+                    pending.failed_attempt(&submitted)?;
+                    Err(se_core::store_error::retain_write_identity(
+                        error,
+                        submitted.operation,
+                        submitted.key.as_ref(),
+                        &submitted.natural_events,
+                    ))
+                }
+            }
+        },
+    )
+    .await?;
+    let (receipt, _settled) = completion.await.map_err(|error| {
+        identity.wait_error(se_core::scope::unreadable(
+            "write completion observer",
+            &error.to_string(),
+        ))
+    })?;
+    match receipt {
+        Ok(receipt) => Ok(RetainedCommit::Committed(receipt)),
+        Err(error) if error.code == se_store::StoreErrorCode::CommitOutcomeUnknown => {
+            Ok(RetainedCommit::OutcomeUnknown(identity.store_error(&error)))
+        }
+        Err(error) => Err(identity.store_error(&error)),
+    }
+}
+
 pub(crate) async fn submit(
     context: &ExecutionContext,
     batch: AtomicBatch,

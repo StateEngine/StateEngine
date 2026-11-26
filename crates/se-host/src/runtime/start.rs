@@ -420,6 +420,7 @@ fn launch(options: HostStart, blocking: BlockingPool, owned: Owned) -> Result<Ho
         atlas: Arc::default(),
         mail_waits,
         external: Arc::default(),
+        owner: options.owner.clone(),
         http_proofs: Arc::default(),
         state_directory: options.state_directory.clone(),
         reader: Arc::new(owned.reader),

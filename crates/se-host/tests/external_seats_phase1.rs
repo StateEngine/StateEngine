@@ -281,14 +281,9 @@ impl LiveHost {
         Ok((conn, opened))
     }
 
-    fn approve_with_bridge(
-        &self,
-        mut bridge_conn: BlockingConnection,
-        claim_id: String,
-    ) -> Result<(BridgeWaiter, ExternalApproveOutput), Box<dyn std::error::Error>> {
+    fn spawn_wait(&self, mut bridge_conn: BlockingConnection, claim_id: String) -> BridgeWaiter {
         let generation = self.endpoint.generation;
-        let cid = claim_id.clone();
-        let waiter = std::thread::spawn(move || {
+        std::thread::spawn(move || {
             let opts = ClientOptions {
                 expected_generation: Some(generation),
                 timeout: Duration::from_secs(15),
@@ -304,7 +299,7 @@ impl LiveHost {
                         presence: None,
                         cli_selections: None,
                         request: IpcRequest::External(Box::new(ExternalRequest::ClaimWait {
-                            claim_id: cid,
+                            claim_id,
                         })),
                     },
                     &opts,
@@ -313,7 +308,15 @@ impl LiveHost {
             let approved: ExternalClaimApproved =
                 serde_json::from_value(out.value).map_err(|e| e.to_string())?;
             Ok((bridge_conn, approved))
-        });
+        })
+    }
+
+    fn approve_with_bridge(
+        &self,
+        bridge_conn: BlockingConnection,
+        claim_id: String,
+    ) -> Result<(BridgeWaiter, ExternalApproveOutput), Box<dyn std::error::Error>> {
+        let waiter = self.spawn_wait(bridge_conn, claim_id.clone());
         // Give ClaimWait a brief moment to attach its oneshot receiver on the host.
         std::thread::sleep(Duration::from_millis(60));
         let approved_out = self.owner_external(ExternalRequest::Approve { claim_id })?;
@@ -544,35 +547,53 @@ fn verify_external_mcp_tools(h: &LiveHost) -> Check {
 #[test]
 fn simultaneous_external_claims_and_managed_launch_exclusivity() -> Check {
     let h = LiveHost::start_fresh()?;
-    // Open two simultaneous claims for the same external agent.
+    // Open two simultaneous claims for the same external agent and approve them
+    // concurrently from two Owner threads to exercise per-agent serialization.
     let (conn1, claim1) = h.open_claim(h.external_agent.as_str())?;
     let (conn2, claim2) = h.open_claim(h.external_agent.as_str())?;
 
-    let (w1, approve1) = h.approve_with_bridge(conn1, claim1.claim_id)?;
-    let (_held1, delivered1) = w1
-        .join()
-        .map_err(|_| "w1 panicked")?
-        .map_err(|e| format!("w1 failed: {e}"))?;
-    assert_eq!(delivered1.session_id, approve1.session_id);
+    let w1 = h.spawn_wait(conn1, claim1.claim_id.clone());
+    let w2 = h.spawn_wait(conn2, claim2.claim_id.clone());
+    std::thread::sleep(Duration::from_millis(60));
 
-    // Second claim must be refused with a typed remedy naming `se external revoke`
-    // (never a raw SQLite UNIQUE error) and must NOT consume claim2!
-    let Err(second_err) = h.owner_external(ExternalRequest::Approve {
-        claim_id: claim2.claim_id.clone(),
-    }) else {
-        panic!("second simultaneous external claim must be refused");
+    let cid1 = claim1.claim_id.clone();
+    let cid2 = claim2.claim_id.clone();
+    let barrier = std::sync::Barrier::new(2);
+    let (r1, r2) = std::thread::scope(|s| {
+        let t1 = s.spawn(|| {
+            barrier.wait();
+            h.owner_external(ExternalRequest::Approve { claim_id: cid1 })
+        });
+        let t2 = s.spawn(|| {
+            barrier.wait();
+            h.owner_external(ExternalRequest::Approve { claim_id: cid2 })
+        });
+        (t1.join(), t2.join())
+    });
+    let r1 = r1.map_err(|_| "t1 panicked")?;
+    let r2 = r2.map_err(|_| "t2 panicked")?;
+    let (winner_waiter, loser_waiter, loser_claim_id, loser_err) = match (r1, r2) {
+        (Ok(_), Err(err)) => (w1, w2, claim2.claim_id, err),
+        (Err(err), Ok(_)) => (w2, w1, claim1.claim_id, err),
+        (Ok(_), Ok(_)) => panic!("at most one concurrent external approval may succeed"),
+        (Err(e1), Err(e2)) => panic!("one concurrent approval must win: e1={e1}, e2={e2}"),
     };
-    let err_msg = second_err.to_string();
+    let err_msg = loser_err.to_string();
     assert!(
         err_msg.contains("se external revoke"),
-        "second approval refusal must name `se external revoke`: {err_msg}"
+        "concurrent second approval refusal must name `se external revoke`: {err_msg}"
     );
     assert!(
         !err_msg.contains("UNIQUE constraint"),
-        "second approval refusal must not leak raw SQLite UNIQUE error: {err_msg}"
+        "concurrent second approval refusal must not leak raw SQLite UNIQUE error: {err_msg}"
     );
+    let (_held_winner, _delivered_winner) = winner_waiter
+        .join()
+        .map_err(|_| "winner waiter panicked")?
+        .map_err(|e| format!("winner waiter failed: {e}"))?;
 
-    // Revoke external seat 1, then verify claim2 was NOT consumed and can now be approved!
+    // Revoke the winning external seat, then verify the losing claim was NOT
+    // consumed and now approves cleanly and delivers to its still-waiting bridge!
     let rev: ExternalRevokeOutput = serde_json::from_value(
         h.owner_external(ExternalRequest::Revoke {
             project: Some(h.home.project.clone()),
@@ -582,13 +603,18 @@ fn simultaneous_external_claims_and_managed_launch_exclusivity() -> Check {
     )?;
     assert!(rev.revoked);
 
-    let (w2, approve2) = h.approve_with_bridge(conn2, claim2.claim_id)?;
-    let (held2, delivered2) = w2
+    let approve_loser: ExternalApproveOutput = serde_json::from_value(
+        h.owner_external(ExternalRequest::Approve {
+            claim_id: loser_claim_id,
+        })?
+        .value,
+    )?;
+    let (held_loser, delivered_loser) = loser_waiter
         .join()
-        .map_err(|_| "w2 panicked")?
-        .map_err(|e| format!("w2 failed: {e}"))?;
-    assert_eq!(delivered2.session_id, approve2.session_id);
-    drop(held2);
+        .map_err(|_| "loser waiter panicked")?
+        .map_err(|e| format!("loser waiter failed: {e}"))?;
+    assert_eq!(delivered_loser.session_id, approve_loser.session_id);
+    drop(held_loser);
 
     h.shutdown()?;
     verify_store_exclusivity()

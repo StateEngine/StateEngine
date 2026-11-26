@@ -51,6 +51,19 @@ impl LaunchCoordinator {
         if !plan.replayed {
             self.require_force_selection(&plan)?;
             plan = crate::reboot::after_reboot(self, plan, &admission, deadline).await?;
+            if !plan.control.sessions.is_empty()
+                && crate::external::lifecycle::reconcile_external_for_launch_on_store(
+                    &self.store,
+                    &self.capability_admission.external,
+                    &self.human,
+                    &plan.project,
+                    &plan.agent,
+                    deadline,
+                )
+                .await?
+            {
+                plan = self.replan_launch(&plan, &admission, deadline).await?;
+            }
         }
         if plan.replayed || (plan.control.processes.is_empty() && plan.control.sessions.is_empty())
         {

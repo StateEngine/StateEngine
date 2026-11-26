@@ -120,6 +120,7 @@ impl AdmissionContext {
             true,
         )?;
         let now_us = super::super::start::now_unix_micros()?;
+        let bridge = Arc::new(std::sync::Mutex::new(BridgeBinding::default()));
         let handle = self
             .external
             .open_claim(crate::external::registry::NewClaim {
@@ -131,12 +132,13 @@ impl AdmissionContext {
                 connection_nonce: claim.connection_nonce,
                 host_generation: self.generation,
                 now_us,
+                bridge: Arc::clone(&bridge),
             })?;
         Ok(ConnectionGrant {
             owner_key: None,
             guest: None,
             external_claim: Some(handle),
-            external_active: Default::default(),
+            external_active: bridge,
         })
     }
 
@@ -481,5 +483,14 @@ impl AdmissionContext {
     }
 }
 
+/// Shared bridge connection binding state, serialized under one mutex so
+/// `Approve` handoff and connection-close/timeout cleanup can never race
+/// into stranding a committed seat.
+#[derive(Default)]
+pub(crate) struct BridgeBinding {
+    pub closed: bool,
+    pub active: Option<(ProjectId, AgentId, SessionId, u64)>,
+}
+
 /// Active external lease binding attached to a bridge's connection grant.
-pub(crate) type ActiveConnectionBinding = Option<(ProjectId, AgentId, SessionId, u64)>;
+pub(crate) type ActiveConnectionBinding = BridgeBinding;

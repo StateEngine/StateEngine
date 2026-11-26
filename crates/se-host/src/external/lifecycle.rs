@@ -4,11 +4,11 @@ use super::{commit, *};
 use crate::{
     HostedRouter,
     client::lease::Deadline,
-    runtime::{WriteIdentity, start::now_unix_micros, submit},
+    runtime::{ExecutionContext, WriteIdentity, start::now_unix_micros, submit},
 };
 use se_core::store_error::store_error;
 use se_store::{Actor, Admission, EventBody, Scope, Snapshot};
-use se_types::{AgentId, ProjectId, Read, Result, SeError, Secret, SessionId};
+use se_types::{AgentId, HumanId, ProjectId, Read, Result, SeError, Secret, SessionId};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ pub(crate) const EXPIRED_LEASE_REASON: &str = "external seat lease expired";
 pub(crate) fn resolve_external_agent(
     phase: se_store::ReadPhase,
     project: &ProjectId,
-    owner: &se_types::HumanId,
+    owner: &HumanId,
     generation: u64,
     selector: &str,
     require_external: bool,
@@ -103,24 +103,54 @@ pub(crate) fn resolve_external_agent(
 }
 
 /// Durably revoke any expired external leases still tracked in this host's registry.
+/// Propagates reconciliation failures so callers never conceal a still-active row.
 pub(crate) async fn reconcile_expired_leases(
     router: &HostedRouter,
     project: Option<&ProjectId>,
 ) -> Result<usize> {
+    let deadline = crate::runtime::serve::options(std::time::Duration::from_secs(10))?;
+    reconcile_expired_on_execution(
+        &router.execution,
+        &router.context.owner,
+        project,
+        None,
+        &deadline,
+    )
+    .await
+}
+
+/// Shared durable expiry reconciliation usable by external RPCs, `se status`/`agent show`,
+/// and managed `se launch` before checking live sessions.
+pub(crate) async fn reconcile_expired_on_execution(
+    execution: &ExecutionContext,
+    owner: &HumanId,
+    project: Option<&ProjectId>,
+    agent_filter: Option<&AgentId>,
+    deadline: &Deadline,
+) -> Result<usize> {
     let now_us = now_unix_micros()?;
-    let expired = router.execution.external.expired_leases(project, now_us)?;
+    let expired = execution.external.expired_leases(project, now_us)?;
     let mut reconciled = 0usize;
     for lease in expired {
-        if fenced_disconnect(
-            router,
+        if agent_filter.is_some_and(|a| a != &lease.agent_id) {
+            continue;
+        }
+        let _guard = execution
+            .external
+            .agent_lock(&lease.project_id, &lease.agent_id)?
+            .lock_owned()
+            .await;
+        if fenced_disconnect_locked_on_execution(
+            execution,
+            owner,
             &lease.project_id,
             &lease.agent_id,
             &lease.session_id,
             lease.lease_generation,
             EXPIRED_LEASE_REASON,
+            deadline,
         )
-        .await
-        .unwrap_or(false)
+        .await?
         {
             reconciled += 1;
         }
@@ -128,13 +158,135 @@ pub(crate) async fn reconcile_expired_leases(
     Ok(reconciled)
 }
 
-async fn ensure_agent_clear_for_external(
+/// Reconcile any expired or stale-generation external seat for one agent before
+/// a managed `se launch` evaluates whether live takeover is required.
+pub(crate) async fn reconcile_external_for_launch_on_store(
+    store: &crate::runtime::store::Store,
+    external: &ExternalRegistry,
+    owner: &HumanId,
+    project_id: &ProjectId,
+    agent_id: &AgentId,
+    deadline: &Deadline,
+) -> Result<bool> {
+    let _guard = external
+        .agent_lock(project_id, agent_id)?
+        .lock_owned()
+        .await;
+    let now_us = now_unix_micros()?;
+    let mut changed = false;
+    for lease in external.expired_leases(Some(project_id), now_us)? {
+        if lease.agent_id != *agent_id {
+            continue;
+        }
+        let reads = store.reads.clone();
+        let generation = store.generation;
+        let owner_cloned = owner.clone();
+        let project = project_id.clone();
+        let target_session = lease.session_id.clone();
+        let rev_info = store
+            .pool
+            .run_owned(deadline, move || {
+                let phase = reads.read_phase().map_err(|e| store_error(&e))?;
+                let admission = Admission {
+                    scope: Scope::Project(project),
+                    actor: Actor::Human(owner_cloned),
+                    session: None,
+                    generation: generation.get(),
+                };
+                let mut snap = phase
+                    .into_snapshot(se_core::admission::read_scope(&admission))
+                    .map_err(|e| store_error(&e))?;
+                let res = match snap.session(target_session).map_err(|e| store_error(&e)) {
+                    Ok(Read::Present { value })
+                        if matches!(
+                            value.current.body,
+                            EventBody::SessionPrepared { .. } | EventBody::SessionActivated { .. }
+                        ) =>
+                    {
+                        Ok(Some(value.revision))
+                    }
+                    Ok(_) => Ok(None),
+                    Err(e) => Err(e),
+                };
+                crate::runtime::executor::close_read(res, snap.close())
+            })
+            .await?;
+        if let Some(session_rev) = rev_info {
+            commit::commit_revocation_on_store(
+                store,
+                owner,
+                project_id,
+                &lease.session_id,
+                session_rev,
+                Some((lease.credential_id, commit::rev(2))),
+                EXPIRED_LEASE_REASON,
+                deadline,
+            )
+            .await?;
+            changed = true;
+        }
+        let _ = external.remove_if_matching(
+            project_id,
+            agent_id,
+            &lease.session_id,
+            lease.lease_generation,
+        )?;
+    }
+    let reads = store.reads.clone();
+    let generation = store.generation.get();
+    let project = project_id.clone();
+    let agent = agent_id.clone();
+    let owner_cloned = owner.clone();
+    let check = store
+        .pool
+        .run_owned(deadline, move || {
+            let phase = reads.read_phase().map_err(|e| store_error(&e))?;
+            commit::inspect_live_seat(phase, &project, &owner_cloned, generation, &agent)
+        })
+        .await?;
+    if let commit::LiveSeatCheck::StaleExternal(stale, reason) = check {
+        commit::commit_revocation_on_store(
+            store,
+            owner,
+            project_id,
+            &stale.session_id,
+            stale.session_rev,
+            stale.cred,
+            reason,
+            deadline,
+        )
+        .await?;
+        changed = true;
+    }
+    Ok(changed)
+}
+
+async fn ensure_agent_clear_locked(
     router: &HostedRouter,
     project_id: &ProjectId,
     agent_id: &AgentId,
     deadline: &Deadline,
 ) -> Result<()> {
-    let _ = reconcile_expired_leases(router, Some(project_id)).await;
+    let now_us = now_unix_micros()?;
+    for lease in router
+        .execution
+        .external
+        .expired_leases(Some(project_id), now_us)?
+    {
+        if lease.agent_id == *agent_id {
+            fenced_disconnect_locked_on_execution(
+                &router.execution,
+                &router.context.owner,
+                &lease.project_id,
+                &lease.agent_id,
+                &lease.session_id,
+                lease.lease_generation,
+                EXPIRED_LEASE_REASON,
+                deadline,
+            )
+            .await?;
+        }
+    }
     let context = router.context.clone();
     let project = project_id.clone();
     let agent = agent_id.clone();
@@ -175,9 +327,9 @@ async fn ensure_agent_clear_for_external(
     }
 }
 
-/// Owner approves a pending claim once. Atomically commits the external session
-/// and credential in the host writer (arbitrated by per-agent exclusivity),
-/// then delivers the capability exclusively to the waiting bridge connection.
+/// Owner approves a pending claim once. Serialized per `(project_id, agent_id)`
+/// from preflight through registry publication and bridge handoff, and retained
+/// through the writer's authoritative durable outcome.
 pub(crate) async fn approve_claim(
     router: &HostedRouter,
     claim_id: &str,
@@ -185,12 +337,17 @@ pub(crate) async fn approve_claim(
 ) -> Result<ExternalApproveOutput> {
     router.check_open()?;
     let host_generation = router.context.generation;
-    // Peek BEFORE consuming so a live-seat refusal leaves the pending claim intact.
     let peeked = router
         .execution
         .external
         .peek_claim(claim_id, host_generation)?;
-    ensure_agent_clear_for_external(router, &peeked.project_id, &peeked.agent_id, deadline).await?;
+    let _agent_guard = router
+        .execution
+        .external
+        .agent_lock(&peeked.project_id, &peeked.agent_id)?
+        .lock_owned()
+        .await;
+    ensure_agent_clear_locked(router, &peeked.project_id, &peeked.agent_id, deadline).await?;
     let consumed = router
         .execution
         .external
@@ -201,7 +358,6 @@ pub(crate) async fn approve_claim(
         .checked_add((EXTERNAL_LEASE_TTL_SECS as i64) * 1_000_000)
         .ok_or_else(|| SeError::invalid("external lease expiry", "clock overflow"))?;
 
-    // Mint fresh in-memory capability bytes (never persisted in plaintext).
     let raw_nonce = crate::client::auth::fresh_nonce()?;
     let token_str = format!("sext1.{}", se_types::hex_lower(&raw_nonce));
     let secret = Arc::new(Secret::new(token_str.as_bytes().to_vec())?);
@@ -224,7 +380,24 @@ pub(crate) async fn approve_claim(
         natural_key: None,
         natural_events: Vec::new(),
     };
-    submit::submit(&router.execution, batch, &identity, deadline).await?;
+    match submit::submit_retained(&router.execution, batch, &identity, deadline).await? {
+        submit::RetainedCommit::Committed(_) => {}
+        submit::RetainedCommit::OutcomeUnknown(err) => {
+            let check_deadline =
+                crate::runtime::serve::options(std::time::Duration::from_secs(10))?;
+            if !commit::session_is_active(
+                &router.execution,
+                &router.context.owner,
+                &consumed.project_id,
+                &session_id,
+                &check_deadline,
+            )
+            .await?
+            {
+                return Err(err);
+            }
+        }
+    }
 
     let active = ActiveLease {
         project_id: consumed.project_id.clone(),
@@ -238,37 +411,81 @@ pub(crate) async fn approve_claim(
         expires_at_us,
     };
     router.execution.external.record_active_lease(active)?;
+    handoff_to_bridge_locked(
+        router,
+        consumed,
+        session_id,
+        lease_generation,
+        expires_at_us,
+        secret,
+    )
+    .await
+}
 
-    // Deliver the capability exclusively to the waiting bridge connection.
-    // If the bridge disconnected before delivery, immediately revoke the just-minted seat.
-    let delivered = consumed
-        .delivery
-        .send(ClaimApprovalDelivery {
-            project_id: consumed.project_id.clone(),
-            agent_id: consumed.agent_id.clone(),
-            agent_name: consumed.agent_name.clone(),
-            session_id: session_id.clone(),
-            lease_generation,
-            expires_at_us,
-            secret,
-        })
-        .is_ok();
+async fn handoff_to_bridge_locked(
+    router: &HostedRouter,
+    consumed: registry::ConsumedClaim,
+    session_id: SessionId,
+    lease_generation: u64,
+    expires_at_us: i64,
+    secret: Arc<Secret>,
+) -> Result<ExternalApproveOutput> {
+    // Atomically bind cleanup ownership onto the bridge BEFORE sending on the
+    // oneshot so EOF/timeout on the bridge can never strand the committed seat.
+    let handoff_ok = {
+        let mut bridge = consumed
+            .bridge
+            .lock()
+            .map_err(|_| se_core::scope::unreadable("external bridge binding", "lock poisoned"))?;
+        if bridge.closed {
+            false
+        } else {
+            bridge.active = Some((
+                consumed.project_id.clone(),
+                consumed.agent_id.clone(),
+                session_id.clone(),
+                lease_generation,
+            ));
+            true
+        }
+    };
+    let delivered = handoff_ok
+        && consumed
+            .delivery
+            .send(ClaimApprovalDelivery {
+                project_id: consumed.project_id.clone(),
+                agent_id: consumed.agent_id.clone(),
+                agent_name: consumed.agent_name.clone(),
+                session_id: session_id.clone(),
+                lease_generation,
+                expires_at_us,
+                secret,
+            })
+            .is_ok();
     if !delivered {
-        let _ = fenced_disconnect_with_retry(
-            router,
-            &consumed.project_id,
-            &consumed.agent_id,
-            &session_id,
-            lease_generation,
-            "external bridge disconnected before capability delivery",
-        )
-        .await;
+        let should_revoke = !handoff_ok
+            || consumed
+                .bridge
+                .lock()
+                .ok()
+                .and_then(|mut b| b.active.take())
+                .is_some();
+        if should_revoke {
+            let _ = fenced_disconnect_locked_with_retry(
+                router,
+                &consumed.project_id,
+                &consumed.agent_id,
+                &session_id,
+                lease_generation,
+                "external bridge disconnected before capability delivery",
+            )
+            .await;
+        }
         return Err(SeError::invalid(
             "external claim approval",
             "a still-connected bridge waiting on this claim; the bridge disconnected so the seat was revoked",
         ));
     }
-
     Ok(ExternalApproveOutput {
         claim_id: consumed.claim_id,
         project_id: consumed.project_id,
@@ -280,7 +497,7 @@ pub(crate) async fn approve_claim(
     })
 }
 
-/// Owner revokes an active external seat by agent name or ID.
+/// Owner revokes an active external seat by agent name or ID, serialized per agent.
 pub(crate) async fn revoke_seat(
     router: &HostedRouter,
     project: ProjectId,
@@ -289,7 +506,7 @@ pub(crate) async fn revoke_seat(
     deadline: &Deadline,
 ) -> Result<ExternalRevokeOutput> {
     router.check_open()?;
-    let (agent_id, active) = {
+    let agent_id = {
         let context = router.context.clone();
         let project = project.clone();
         let selector = agent_selector.to_owned();
@@ -309,22 +526,39 @@ pub(crate) async fn revoke_seat(
                     &selector,
                     false,
                 )?;
-                let phase2 = context.reads.read_phase().map_err(|e| store_error(&e))?;
-                let active = commit::find_active_external_session(
-                    phase2,
+                Ok(agent_id)
+            })
+            .await?
+    };
+    let _agent_guard = router
+        .execution
+        .external
+        .agent_lock(&project, &agent_id)?
+        .lock_owned()
+        .await;
+    let active = {
+        let context = router.context.clone();
+        let project = project.clone();
+        let agent = agent_id.clone();
+        router
+            .execution
+            .blocking
+            .run_owned(deadline, move || {
+                let phase = context.reads.read_phase().map_err(|e| store_error(&e))?;
+                if let Err(error) = context.check_generation(&phase) {
+                    return crate::runtime::executor::close_read(Err(error), phase.close());
+                }
+                commit::find_active_external_session(
+                    phase,
                     &project,
                     &context.owner,
                     context.generation.get(),
-                    &agent_id,
-                )?;
-                Ok((agent_id, active))
+                    &agent,
+                )
             })
             .await?
     };
 
-    // Commit durable revocation BEFORE mutating in-memory registry state, and
-    // fence removal by exact `(session_id, lease_generation)` so a newer
-    // replacement lease can never be wiped.
     commit::commit_revocation(
         router,
         &project,
@@ -364,9 +598,33 @@ pub(crate) async fn revoke_seat(
     })
 }
 
-/// Bounded retry wrapper for connection-drop and rollback cleanup so transient
-/// writer errors do not silently strand an active external session.
+/// Bounded retry wrapper for connection-drop and rollback cleanup.
 pub(crate) async fn fenced_disconnect_with_retry(
+    router: &HostedRouter,
+    project_id: &ProjectId,
+    agent_id: &AgentId,
+    session_id: &SessionId,
+    lease_generation: u64,
+    reason: &str,
+) -> Result<bool> {
+    let _agent_guard = router
+        .execution
+        .external
+        .agent_lock(project_id, agent_id)?
+        .lock_owned()
+        .await;
+    fenced_disconnect_locked_with_retry(
+        router,
+        project_id,
+        agent_id,
+        session_id,
+        lease_generation,
+        reason,
+    )
+    .await
+}
+
+async fn fenced_disconnect_locked_with_retry(
     router: &HostedRouter,
     project_id: &ProjectId,
     agent_id: &AgentId,
@@ -376,13 +634,16 @@ pub(crate) async fn fenced_disconnect_with_retry(
 ) -> Result<bool> {
     let mut last_err = None;
     for attempt in 0..3u64 {
-        match fenced_disconnect(
-            router,
+        let deadline = crate::runtime::serve::options(std::time::Duration::from_secs(10))?;
+        match fenced_disconnect_locked_on_execution(
+            &router.execution,
+            &router.context.owner,
             project_id,
             agent_id,
             session_id,
             lease_generation,
             reason,
+            &deadline,
         )
         .await
         {
@@ -400,53 +661,58 @@ pub(crate) async fn fenced_disconnect_with_retry(
     }))
 }
 
-/// Lease-generation-fenced disconnect cleanup. A delayed close from an old
-/// connection can NEVER revoke a successor lease, and the in-memory lease entry
-/// is retained until the durable writer outcome settles.
-pub(crate) async fn fenced_disconnect(
-    router: &HostedRouter,
+#[allow(clippy::too_many_arguments)]
+async fn fenced_disconnect_locked_on_execution(
+    execution: &ExecutionContext,
+    owner: &HumanId,
     project_id: &ProjectId,
     agent_id: &AgentId,
     session_id: &SessionId,
     lease_generation: u64,
     reason: &str,
+    deadline: &Deadline,
 ) -> Result<bool> {
-    let Some(lease) = router.execution.external.matching_lease(
-        project_id,
-        agent_id,
-        session_id,
-        lease_generation,
-    )?
+    let Some(lease) =
+        execution
+            .external
+            .matching_lease(project_id, agent_id, session_id, lease_generation)?
     else {
-        // Already superseded by a newer lease or already revoked by Owner.
         return Ok(false);
     };
-    let deadline = crate::runtime::serve::options(std::time::Duration::from_secs(10))?;
     let rev_info = {
-        let context = router.context.clone();
+        let reads = execution.reads.clone();
+        let generation = execution.generation;
+        let owner = owner.clone();
         let project = project_id.clone();
         let target_session = session_id.clone();
         let target_cred = lease.credential_id;
-        router
-            .execution
+        execution
             .blocking
-            .run_owned(&deadline, move || {
-                let phase = context.reads.read_phase().map_err(|e| store_error(&e))?;
-                if let Err(error) = context.check_generation(&phase) {
-                    return crate::runtime::executor::close_read(Err(error), phase.close());
+            .run_owned(deadline, move || {
+                let phase = reads.read_phase().map_err(|e| store_error(&e))?;
+                let current_owner = phase.runtime_owner().map_err(|e| store_error(&e))?;
+                if !matches!(current_owner, Read::Present { value } if value.generation == generation)
+                {
+                    return crate::runtime::executor::close_read(
+                        Err(se_core::scope::unreadable(
+                            "external disconnect generation",
+                            "host generation changed",
+                        )),
+                        phase.close(),
+                    );
                 }
                 let admission = Admission {
-                    scope: Scope::Project(project.clone()),
-                    actor: Actor::Human(context.owner.clone()),
+                    scope: Scope::Project(project),
+                    actor: Actor::Human(owner),
                     session: None,
-                    generation: context.generation.get(),
+                    generation: generation.get(),
                 };
                 let mut snap = phase
                     .into_snapshot(se_core::admission::read_scope(&admission))
                     .map_err(|e| store_error(&e))?;
                 let res = (|| {
                     let Read::Present { value: session_rec } = snap
-                        .session(target_session.clone())
+                        .session(target_session)
                         .map_err(|e| store_error(&e))?
                     else {
                         return Ok(None);
@@ -464,8 +730,7 @@ pub(crate) async fn fenced_disconnect(
             .await?
     };
     let Some((session_rev, cred_id, cred_rev)) = rev_info else {
-        // Durable state is already settled (revoked/ended/absent); safe to clear registry entry.
-        let _ = router.execution.external.remove_if_matching(
+        let _ = execution.external.remove_if_matching(
             project_id,
             agent_id,
             session_id,
@@ -473,17 +738,18 @@ pub(crate) async fn fenced_disconnect(
         )?;
         return Ok(false);
     };
-    commit::commit_revocation(
-        router,
+    commit::commit_revocation_on_execution(
+        execution,
+        owner,
         project_id,
         session_id,
         session_rev,
         Some((cred_id, cred_rev)),
         reason,
-        &deadline,
+        deadline,
     )
     .await?;
-    let _ = router.execution.external.remove_if_matching(
+    let _ = execution.external.remove_if_matching(
         project_id,
         agent_id,
         session_id,
