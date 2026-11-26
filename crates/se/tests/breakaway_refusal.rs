@@ -317,7 +317,7 @@ fn eligible_broker_runtime_outlives_strict_job_and_public_down_closes_it() -> Re
         }
     }
     let witness: serde_json::Value = serde_json::from_slice(&fs::read(f.root.join("job.json"))?)?;
-    assert_eq!(witness["runtime_outside_all_jobs"], true);
+    assert_eq!(witness["runtime_in_job"], true);
     assert_eq!(witness["runtime_pid"], identity.pid.0);
     let birth = witness["runtime_creation_filetime"]
         .as_str()
@@ -331,41 +331,61 @@ fn eligible_broker_runtime_outlives_strict_job_and_public_down_closes_it() -> Re
     );
     let status = f.ok(&["status"])?;
     assert_eq!(status["runtime"]["state"], "running");
+    assert_eq!(status["runtime"]["detachment"], "session-only");
+    assert!(
+        status["runtime"]["detachment_notice"]
+            .as_str()
+            .is_some_and(|text| {
+                text.contains(
+                    "Background survival after logout is not guaranteed on this platform.",
+                )
+            }),
+        "missing session-only detachment notice: {status}"
+    );
     assert_eq!(status["runtime"]["process"]["pid"], identity.pid.0);
     f.stop()?;
     println!(
-        "PASS broker: JSON/plain CLI success; caller stayed in strict job; exact runtime outside all jobs survived job exit; public down closed it"
+        "PASS enclosing-job: JSON/plain CLI success; caller stayed in strict job; exact runtime in enclosing job reported session-only and survived job exit; public down closed it"
     );
     f.finish()
 }
 
 #[test]
-fn no_eligible_broker_uses_reported_foreground_until_public_down() -> Result {
-    let mut f = Fixture::new("no-broker")?;
+fn enclosing_job_detaches_with_session_only_until_public_down() -> Result {
+    let mut f = Fixture::new("enclosing-job")?;
     f.run_strict(true)?;
     assert!(
         f.host.is_none(),
-        "foreground host survived its joined public down"
+        "enclosing-job host survived its public down"
     );
     let witness: serde_json::Value = serde_json::from_slice(&fs::read(f.root.join("job.json"))?)?;
-    let cases = witness["foreground_cases"]
+    let cases = witness["enclosing_job_cases"]
         .as_array()
-        .ok_or("missing foreground cases")?;
+        .ok_or("missing enclosing-job cases")?;
     assert_eq!(cases.len(), 2);
     for mode in ["json", "plain"] {
         let (exit, stdout, stderr) = f.result(mode)?;
-        assert_eq!(exit, "0", "foreground startup/down failed: {stderr}");
+        assert_eq!(exit, "0", "enclosing-job startup/down failed: {stderr}");
         assert!(
-            stderr.contains("starting in the foreground")
-                && stderr.contains("Keep this terminal open")
-                && stderr.contains("same home"),
-            "foreground lifetime was hidden: {stderr}"
+            stderr.contains("Background survival after logout is not guaranteed on this platform.")
+                && stderr.contains("up --foreground"),
+            "session-only lifetime notice was hidden: {stderr}"
         );
         let observed = cases
             .iter()
             .find(|row| row["mode"] == mode)
             .ok_or("missing mode witness")?;
         assert_eq!(observed["in_job"], true);
+        assert_ne!(observed["pid"], observed["cli_pid"]);
+        assert_eq!(observed["detachment"], "session-only");
+        assert!(
+            observed["detachment_notice"].as_str().is_some_and(|text| {
+                text.contains(
+                    "Background survival after logout is not guaranteed on this platform.",
+                )
+            }),
+            "missing session-only status notice: {observed}"
+        );
         assert_eq!(observed["down_exit"], 0);
         if mode == "json" {
             let value: serde_json::Value = serde_json::from_slice(&stdout)?;
@@ -376,7 +396,7 @@ fn no_eligible_broker_uses_reported_foreground_until_public_down() -> Result {
             assert!(
                 text.contains("Runtime running")
                     && text.contains(&format!("PID {}", observed["pid"])),
-                "wrong foreground output: {text}"
+                "wrong enclosing-job output: {text}"
             );
         }
     }

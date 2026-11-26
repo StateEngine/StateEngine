@@ -103,7 +103,7 @@ function Invoke-OwnedCli([string]$Verb) {
 }
 $job = [StrictJobFixture]::Enter()
 try {
-  $witness = @{caller_in_job_before=[StrictJobFixture]::CallerInJob($job); privilege_removed=($null -ne $removedPrivilege); removed_privilege=$removedPrivilege; home_readable_after_restriction=$true; restricting_sids=[StrictJobFixture]::CallerRestricted(); foreground_cases=@()}
+  $witness = @{caller_in_job_before=[StrictJobFixture]::CallerInJob($job); privilege_removed=($null -ne $removedPrivilege); removed_privilege=$removedPrivilege; home_readable_after_restriction=$true; restricting_sids=[StrictJobFixture]::CallerRestricted(); enclosing_job_cases=@()}
   foreach ($mode in @('json','plain')) {
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = $Se
@@ -114,50 +114,39 @@ try {
     $child = [System.Diagnostics.Process]::Start($info)
     $stdout = $child.StandardOutput.ReadToEndAsync()
     $stderr = $child.StandardError.ReadToEndAsync()
-    if ($NoEligibleBroker) {
-      # A working foreground fallback stays alive until this independent client
-      # witnesses the same root and requests public shutdown.
-      $until = [DateTime]::UtcNow.AddSeconds(30)
-      $ready = $false
-      while (!$child.HasExited -and [DateTime]::UtcNow -lt $until) {
-        if (Test-Path (Join-Path $HomePath 'endpoint.json')) {
-          $status = Invoke-OwnedCli 'status'
-          if ($status.exit -eq 0) {
-            $view = $status.stdout | ConvertFrom-Json
-            if ($view.runtime.state -eq 'running') {
-              if ([int]$view.runtime.process.pid -ne $child.Id) { throw 'foreground fallback detached a different owner' }
-              $member = [StrictJobFixture]::InJob($child.Handle,[IntPtr]::Zero)
-              if (!$member) { throw 'no-broker arm did not exercise an in-job foreground host' }
-              $stopped = Invoke-OwnedCli 'down'
-              if ($stopped.exit -ne 0) { throw "public foreground down failed: $($stopped.stderr)" }
-              $witness.foreground_cases += @{mode=$mode; pid=$child.Id; creation_filetime=$child.StartTime.ToFileTimeUtc().ToString(); in_job=$member; down_exit=$stopped.exit}
-              $ready = $true
-              break
-            }
-          }
-        }
-        Start-Sleep -Milliseconds 30
-      }
-      if (!$ready -and !$child.HasExited) {
-        # Preserve the refusal below, but request normal owned-home cleanup first.
-        if (Test-Path (Join-Path $HomePath 'endpoint.json')) { $null = Invoke-OwnedCli 'down' }
-      }
-    }
     if (!$child.WaitForExit(30000)) {
       # This exact Process object pins the CLI child created here; no name/pattern signaling.
       $child.Kill(); $child.WaitForExit()
+      if ($NoEligibleBroker -and (Test-Path (Join-Path $HomePath 'endpoint.json'))) {
+        $null = Invoke-OwnedCli 'down'
+      }
       throw 'exact strict-job CLI child exceeded its original bound'
     }
     [IO.File]::WriteAllText((Join-Path $Out "$mode.stdout"), $stdout.Result)
     [IO.File]::WriteAllText((Join-Path $Out "$mode.stderr"), $stderr.Result)
     [IO.File]::WriteAllText((Join-Path $Out "$mode.exit"), [string]$child.ExitCode)
-    if (!$NoEligibleBroker -and $mode -eq 'json' -and $child.ExitCode -eq 0) {
+    if ($NoEligibleBroker -and $child.ExitCode -eq 0) {
+      $status = Invoke-OwnedCli 'status'
+      if ($status.exit -ne 0) { throw "public status failed: $($status.stderr)" }
+      $view = $status.stdout | ConvertFrom-Json
+      if ($view.runtime.state -ne 'running') { throw "expected running host in enclosing job, saw $($view.runtime.state)" }
+      $runtimePid = [int]$view.runtime.process.pid
+      if ($runtimePid -eq $child.Id) { throw 'enclosing-job launch did not detach a distinct host process' }
+      $runtime = [Diagnostics.Process]::GetProcessById($runtimePid)
+      try {
+        $member = [StrictJobFixture]::InJob($runtime.Handle,[IntPtr]::Zero)
+        $creationFiletime = $runtime.StartTime.ToFileTimeUtc().ToString()
+      } finally { $runtime.Dispose() }
+      $stopped = Invoke-OwnedCli 'down'
+      if ($stopped.exit -ne 0) { throw "public enclosing-job down failed: $($stopped.stderr)" }
+      $witness.enclosing_job_cases += @{mode=$mode; cli_pid=$child.Id; pid=$runtimePid; creation_filetime=$creationFiletime; in_job=$member; detachment=$view.runtime.detachment; detachment_notice=$view.runtime.detachment_notice; down_exit=$stopped.exit}
+    } elseif (!$NoEligibleBroker -and $mode -eq 'json' -and $child.ExitCode -eq 0) {
       $started = $stdout.Result | ConvertFrom-Json
       $runtime = [Diagnostics.Process]::GetProcessById([int]$started.process.pid)
       try {
         $witness.runtime_pid = $runtime.Id
         $witness.runtime_creation_filetime = $runtime.StartTime.ToFileTimeUtc().ToString()
-        $witness.runtime_outside_all_jobs = ![StrictJobFixture]::InJob($runtime.Handle,[IntPtr]::Zero)
+        $witness.runtime_in_job = [StrictJobFixture]::InJob($runtime.Handle,[IntPtr]::Zero)
       } finally { $runtime.Dispose() }
     }
     $child.Dispose()
