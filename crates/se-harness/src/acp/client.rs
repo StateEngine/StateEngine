@@ -10,7 +10,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -65,8 +65,11 @@ pub(super) struct Client {
     workspace: Mutex<Option<Result<Arc<fs::Workspace>, String>>>,
     /// One permit per running call.
     calls: Arc<Semaphore>,
-    /// Set once the conversation closes; no call is admitted after it.
-    closed: AtomicBool,
+    /// Set once the conversation closes; no call is admitted and no queued
+    /// workspace write starts after it.
+    closed: Arc<AtomicBool>,
+    /// Count of workspace writes currently in flight on blocking workers.
+    active_writes: Arc<AtomicUsize>,
 }
 
 impl Default for Client {
@@ -81,7 +84,8 @@ impl Client {
             access,
             workspace: Mutex::new(None),
             calls: Arc::new(Semaphore::new(MAX_CALLS as usize)),
-            closed: AtomicBool::new(false),
+            closed: Arc::new(AtomicBool::new(false)),
+            active_writes: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -141,12 +145,22 @@ impl Client {
         Ok(permit)
     }
 
-    /// Admits no more calls, then waits until `until` for admitted ones to answer.
-    /// A read changes nothing, so one still running afterwards only loses its
-    /// answer. Calling this again waits again.
-    pub(super) async fn close(&self, until: tokio::time::Instant) {
+    /// Admits no more calls, cancels queued workspace writes before they begin,
+    /// then waits until `until` for admitted ones to finish. Reports an error
+    /// if an in-flight workspace write outlives the close deadline.
+    pub(super) async fn close(&self, until: tokio::time::Instant) -> Result<(), String> {
         self.closed.store(true, Ordering::Release);
-        let _ = tokio::time::timeout_at(until, self.calls.acquire_many(MAX_CALLS)).await;
+        if tokio::time::timeout_at(until, self.calls.acquire_many(MAX_CALLS))
+            .await
+            .is_err()
+            && self.active_writes.load(Ordering::Acquire) > 0
+        {
+            return Err(
+                "an admitted workspace write is still running after the close deadline; its final persistence outcome is uncertain"
+                    .into(),
+            );
+        }
+        Ok(())
     }
 
     /// Answers one admitted call. File I/O blocks, so it runs off the async workers.
@@ -170,7 +184,22 @@ impl Client {
                         "this session's profile does not permit workspace writes",
                     ));
                 }
-                tokio::task::spawn_blocking(move || fs::write(&workspace, &params))
+                if self.closed.load(Ordering::Acquire) {
+                    return Err(Refusal::invalid(
+                        "this conversation is closing, so no new workspace write was started",
+                    ));
+                }
+                let closed = self.closed.clone();
+                let active = self.active_writes.clone();
+                active.fetch_add(1, Ordering::AcqRel);
+                struct ActiveWrite(Arc<AtomicUsize>);
+                impl Drop for ActiveWrite {
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, Ordering::AcqRel);
+                    }
+                }
+                let _guard = ActiveWrite(active);
+                tokio::task::spawn_blocking(move || fs::write(&workspace, &params, &closed))
                     .await
                     .map_err(|_| Refusal::failed("the call stopped before it finished"))?
             }

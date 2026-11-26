@@ -589,7 +589,8 @@ impl Session {
         // to answer, so a stalled read cannot starve the connection's own close;
         // a late answer is then discarded.
         let now = tokio::time::Instant::now();
-        self.client
+        let client_close = self
+            .client
             .close(now + until.saturating_duration_since(now) / 2)
             .await;
         self.connection.close(remaining(&cx, until)?).await?;
@@ -606,6 +607,9 @@ impl Session {
                 .map_err(|_| failure("ACP close", "update task panicked"))?;
         }
         *pump = None;
+        if let Err(reason) = client_close {
+            return Err(failure("ACP close", reason));
+        }
         Ok(())
     }
     async fn synchronize(&self, until: tokio::time::Instant) -> Result<()> {

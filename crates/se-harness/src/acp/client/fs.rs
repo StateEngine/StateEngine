@@ -7,7 +7,10 @@ use serde_json::{Value, json};
 use std::{
     io::Read,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 /// The largest file read, in bytes. What one reply carries is smaller still, so a
@@ -137,9 +140,12 @@ pub(super) fn read(workspace: &Workspace, params: &Value) -> Outcome {
     Ok(json!({ "content": selected }))
 }
 
-/// `fs/write_text_file`: atomically writes UTF-8 `content` to `path` beneath
-/// the held workspace without following links or writing into `.git` metadata.
-pub(super) fn write(workspace: &Workspace, params: &Value) -> Outcome {
+/// `fs/write_text_file`: bounded atomic full-file replacement beneath the held
+/// workspace. Writes are serialized per session (last-writer-wins with O(1)
+/// target metadata inspection, never hashing unbounded existing files), stay
+/// strictly relative to `workspace.held`, and distinguish refusals before
+/// publication from post-publication durability uncertainty.
+pub(super) fn write(workspace: &Workspace, params: &Value, closed: &AtomicBool) -> Outcome {
     let path = text(params, "path")?;
     let content = text(params, "content")?;
     if content.len() > MAX_WRITE_BYTES {
@@ -149,103 +155,52 @@ pub(super) fn write(workspace: &Workspace, params: &Value) -> Outcome {
         )));
     }
     let relative = beneath(&workspace.told, &workspace.physical, path)?;
-    if relative
-        .split('/')
-        .any(|part| part.eq_ignore_ascii_case(".git"))
-    {
-        return Err(Refusal::invalid(format!(
-            "{path} is inside .git metadata, which StateEngine does not write"
-        )));
+    if closed.load(Ordering::Acquire) {
+        return Err(Refusal::invalid(
+            "this conversation is closing, so no new workspace write was started",
+        ));
     }
     let _serial = workspace.write_lock.lock().map_err(|_| {
         Refusal::failed("the workspace write lock was left unusable by an earlier failure")
     })?;
-    check_workspace(workspace)?;
-    ensure_parents(workspace, path, &relative)?;
-    check_workspace(workspace)?;
-    let target = workspace.physical.join(&relative);
-    let bytes = content.as_bytes();
-    match se_proc::OwnedFile::open(&target).map_err(|e| write_error(workspace, path, e))? {
-        Some(mut owned) => {
-            let expected = owned
-                .sha256()
-                .map_err(|e| write_error(workspace, path, e))?;
-            owned
-                .replace(expected, bytes)
-                .map_err(|e| write_error(workspace, path, e))?;
-        }
-        None => {
-            se_proc::OwnedFile::create_new(&target, bytes)
-                .map_err(|e| write_error(workspace, path, e))?;
-        }
+    if closed.load(Ordering::Acquire) {
+        return Err(Refusal::invalid(
+            "this conversation is closing, so no new workspace write was started",
+        ));
     }
-    check_workspace(workspace)?;
+    workspace
+        .held
+        .write_relative(&relative, content.as_bytes())
+        .map_err(|error| map_write_error(workspace, path, error))?;
     Ok(json!({}))
 }
 
-/// Verifies every existing parent component beneath the held workspace without
-/// following links, creating any missing subdirectories one component at a time.
-fn ensure_parents(workspace: &Workspace, path: &str, relative: &str) -> Result<(), Refusal> {
-    let Some((parent_prefix, _)) = relative.rsplit_once('/') else {
-        return Ok(());
-    };
-    let mut prefix = String::new();
-    for part in parent_prefix.split('/') {
-        if !prefix.is_empty() {
-            prefix.push('/');
-        }
-        prefix.push_str(part);
-        match workspace.held.open_directory(&prefix) {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                check_workspace(workspace)?;
-                se_proc::OwnedFile::ensure_parent_directory(&workspace.physical.join(&prefix))
-                    .map_err(|e| write_error(workspace, path, e))?;
-                match workspace.held.open_directory(&prefix) {
-                    Ok(Some(_)) => {}
-                    Ok(None) => {
-                        return Err(Refusal::failed(format!(
-                            "parent directory for {path} disappeared after creation"
-                        )));
-                    }
-                    Err(error) => {
-                        check_workspace(workspace)?;
-                        return Err(Refusal::failed(format!(
-                            "parent directory for {path} could not be verified without following links: {error}"
-                        )));
-                    }
-                }
+fn map_write_error(
+    workspace: &Workspace,
+    path: &str,
+    error: se_proc::WorkspaceWriteError,
+) -> Refusal {
+    match error {
+        se_proc::WorkspaceWriteError::PublishedUncertain(detail) => Refusal::failed(format!(
+            "{path} was written, but final durability or workspace verification failed ({detail}); inspect the file on disk before retrying"
+        )),
+        se_proc::WorkspaceWriteError::BeforePublish(refusal) => {
+            if let Err(root_err) = check_workspace(workspace) {
+                return root_err;
             }
-            Err(error) => {
-                check_workspace(workspace)?;
-                return Err(Refusal::invalid(format!(
-                    "parent directory for {path} cannot be traversed safely in the held workspace, which follows no links: {error}"
-                )));
+            match refusal {
+                se_proc::WorkspaceWriteRefusal::RootUnverified(err) => Refusal::failed(format!(
+                    "the workspace {} could not be verified ({err}); no bytes were written to {path}",
+                    workspace.told.display()
+                )),
+                se_proc::WorkspaceWriteRefusal::InvalidTarget(reason) => Refusal::invalid(format!(
+                    "{path} cannot be written safely in the held workspace: {reason}"
+                )),
+                se_proc::WorkspaceWriteRefusal::Io(err) => Refusal::failed(format!(
+                    "{path} could not be written in the held workspace before publication: {err}"
+                )),
             }
         }
-    }
-    Ok(())
-}
-
-fn write_error(workspace: &Workspace, path: &str, error: se_proc::StateFileError) -> Refusal {
-    if let Err(refusal) = check_workspace(workspace) {
-        return refusal;
-    }
-    match error.code {
-        se_proc::StateFileErrorCode::AlreadyExists => Refusal::failed(format!(
-            "{path} appeared while it was being created; write it again"
-        )),
-        se_proc::StateFileErrorCode::SourceChanged => Refusal::failed(format!(
-            "{path} changed while it was being written; write it again"
-        )),
-        se_proc::StateFileErrorCode::LocationUnsafe | se_proc::StateFileErrorCode::Unsupported => {
-            Refusal::invalid(format!(
-                "{path} cannot be written safely in the held workspace, which follows no links: {error}"
-            ))
-        }
-        se_proc::StateFileErrorCode::Unreadable => Refusal::failed(format!(
-            "{path} could not be written in the held workspace: {error}"
-        )),
     }
 }
 

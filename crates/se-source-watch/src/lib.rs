@@ -4,6 +4,7 @@
 //! notification live in a focused OS crate without process-supervision coupling.
 
 mod source_root;
+mod workspace_write;
 
 #[cfg(target_os = "linux")]
 pub use source_root::NativeWatchWake;
@@ -16,3 +17,4 @@ pub use source_root::{
     NativeSourceWatch, NativeWatchAction, NativeWatchDirectory, NativeWatchEvent,
     NativeWatchEvents, NativeWatchRegistration,
 };
+pub use workspace_write::{WorkspaceWriteError, WorkspaceWriteRefusal};
