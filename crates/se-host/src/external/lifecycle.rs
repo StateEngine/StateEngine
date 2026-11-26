@@ -71,6 +71,79 @@ pub(crate) async fn reconcile_expired_on_execution(
     Ok(reconciled)
 }
 
+async fn revoke_expired_lease_on_store(
+    store: &crate::runtime::store::Store,
+    external: &ExternalRegistry,
+    owner: &HumanId,
+    lease: &ActiveLease,
+    deadline: &Deadline,
+) -> Result<bool> {
+    let reads = store.reads.clone();
+    let generation = store.generation;
+    let owner_cloned = owner.clone();
+    let project = lease.project_id.clone();
+    let target_session = lease.session_id.clone();
+    let rev_info = store
+        .pool
+        .run_owned(deadline, move || {
+            let phase = reads.read_phase().map_err(|e| store_error(&e))?;
+            let admission = Admission {
+                scope: Scope::Project(project),
+                actor: Actor::Human(owner_cloned),
+                session: None,
+                generation: generation.get(),
+            };
+            let mut snap = phase
+                .into_snapshot(se_core::admission::read_scope(&admission))
+                .map_err(|e| store_error(&e))?;
+            let res = match snap.session(target_session).map_err(|e| store_error(&e)) {
+                Ok(Read::Present { value })
+                    if matches!(
+                        value.current.body,
+                        EventBody::SessionPrepared { .. } | EventBody::SessionActivated { .. }
+                    ) =>
+                {
+                    Ok(Some(value.revision))
+                }
+                Ok(_) => Ok(None),
+                Err(e) => Err(e),
+            };
+            crate::runtime::executor::close_read(res, snap.close())
+        })
+        .await?;
+    if let Some(session_rev) = rev_info {
+        let warn = commit::commit_revocation_on_store(
+            store,
+            owner,
+            &lease.project_id,
+            &lease.session_id,
+            session_rev,
+            Some((lease.credential_id, commit::rev(2))),
+            EXPIRED_LEASE_REASON,
+            deadline,
+        )
+        .await?;
+        let _ = external.remove_if_matching(
+            &lease.project_id,
+            &lease.agent_id,
+            &lease.session_id,
+            lease.lease_generation,
+        )?;
+        if let Some(err) = warn {
+            return Err(err);
+        }
+        Ok(true)
+    } else {
+        let _ = external.remove_if_matching(
+            &lease.project_id,
+            &lease.agent_id,
+            &lease.session_id,
+            lease.lease_generation,
+        )?;
+        Ok(false)
+    }
+}
+
 /// Reconcile any expired or stale-generation external seat for one agent before
 /// a managed `se launch` evaluates whether live takeover is required.
 pub(crate) async fn reconcile_external_for_launch_on_store(
@@ -88,71 +161,10 @@ pub(crate) async fn reconcile_external_for_launch_on_store(
     let now_us = now_unix_micros()?;
     let mut changed = false;
     for lease in external.expired_leases(Some(project_id), now_us)? {
-        if lease.agent_id != *agent_id {
-            continue;
-        }
-        let reads = store.reads.clone();
-        let generation = store.generation;
-        let owner_cloned = owner.clone();
-        let project = project_id.clone();
-        let target_session = lease.session_id.clone();
-        let rev_info = store
-            .pool
-            .run_owned(deadline, move || {
-                let phase = reads.read_phase().map_err(|e| store_error(&e))?;
-                let admission = Admission {
-                    scope: Scope::Project(project),
-                    actor: Actor::Human(owner_cloned),
-                    session: None,
-                    generation: generation.get(),
-                };
-                let mut snap = phase
-                    .into_snapshot(se_core::admission::read_scope(&admission))
-                    .map_err(|e| store_error(&e))?;
-                let res = match snap.session(target_session).map_err(|e| store_error(&e)) {
-                    Ok(Read::Present { value })
-                        if matches!(
-                            value.current.body,
-                            EventBody::SessionPrepared { .. } | EventBody::SessionActivated { .. }
-                        ) =>
-                    {
-                        Ok(Some(value.revision))
-                    }
-                    Ok(_) => Ok(None),
-                    Err(e) => Err(e),
-                };
-                crate::runtime::executor::close_read(res, snap.close())
-            })
-            .await?;
-        if let Some(session_rev) = rev_info {
-            let warn = commit::commit_revocation_on_store(
-                store,
-                owner,
-                project_id,
-                &lease.session_id,
-                session_rev,
-                Some((lease.credential_id, commit::rev(2))),
-                EXPIRED_LEASE_REASON,
-                deadline,
-            )
-            .await?;
-            let _ = external.remove_if_matching(
-                project_id,
-                agent_id,
-                &lease.session_id,
-                lease.lease_generation,
-            )?;
-            if let Some(err) = warn {
-                return Err(err);
-            }
+        if lease.agent_id == *agent_id
+            && revoke_expired_lease_on_store(store, external, owner, &lease, deadline).await?
+        {
             changed = true;
-        } else {
-            let _ = external.remove_if_matching(
-                project_id,
-                agent_id,
-                &lease.session_id,
-                lease.lease_generation,
-            )?;
         }
     }
     let reads = store.reads.clone();
@@ -310,42 +322,6 @@ pub(crate) async fn approve_claim(
         natural_key: None,
         natural_events: Vec::new(),
     };
-    let observer_warning =
-        match submit::submit_retained(&router.execution, batch, &identity, deadline).await? {
-            submit::RetainedCommit::Committed { observer_warning } => observer_warning,
-            submit::RetainedCommit::OutcomeUnknown(err) => {
-                let check_deadline =
-                    crate::runtime::serve::options(std::time::Duration::from_secs(10))?;
-                match commit::session_is_active(
-                    &router.execution,
-                    &router.context.owner,
-                    &consumed.project_id,
-                    &session_id,
-                    &check_deadline,
-                )
-                .await
-                {
-                    Ok(true) => None,
-                    Ok(false) => return Err(err),
-                    Err(read_err) => {
-                        let _ = router.execution.external.record_active_lease(ActiveLease {
-                            project_id: consumed.project_id.clone(),
-                            agent_id: consumed.agent_id.clone(),
-                            agent_name: consumed.agent_name.clone(),
-                            session_id: session_id.clone(),
-                            credential_id,
-                            lease_generation,
-                            peer_pid: consumed.peer_pid,
-                            host_generation,
-                            expires_at_us,
-                            reconcile_required: true,
-                        });
-                        return Err(err.with_cause(read_err));
-                    }
-                }
-            }
-        };
-
     let active = ActiveLease {
         project_id: consumed.project_id.clone(),
         agent_id: consumed.agent_id.clone(),
@@ -358,6 +334,8 @@ pub(crate) async fn approve_claim(
         expires_at_us,
         reconcile_required: false,
     };
+    let observer_warning =
+        settle_approve_commit(router, batch, &identity, &active, deadline).await?;
     router.execution.external.record_active_lease(active)?;
     let output = handoff_to_bridge_locked(
         router,
@@ -372,6 +350,40 @@ pub(crate) async fn approve_claim(
         return Err(warn);
     }
     Ok(output)
+}
+
+async fn settle_approve_commit(
+    router: &HostedRouter,
+    batch: se_store::AtomicBatch,
+    identity: &WriteIdentity,
+    active: &ActiveLease,
+    deadline: &Deadline,
+) -> Result<Option<SeError>> {
+    match submit::submit_retained(&router.execution, batch, identity, deadline).await? {
+        submit::RetainedCommit::Committed { observer_warning } => Ok(observer_warning),
+        submit::RetainedCommit::OutcomeUnknown(err) => {
+            let check_deadline =
+                crate::runtime::serve::options(std::time::Duration::from_secs(10))?;
+            match commit::session_is_active(
+                &router.execution,
+                &router.context.owner,
+                &active.project_id,
+                &active.session_id,
+                &check_deadline,
+            )
+            .await
+            {
+                Ok(true) => Ok(None),
+                Ok(false) => Err(err),
+                Err(read_err) => {
+                    let mut pending = active.clone();
+                    pending.reconcile_required = true;
+                    let _ = router.execution.external.record_active_lease(pending);
+                    Err(err.with_cause(read_err))
+                }
+            }
+        }
+    }
 }
 
 async fn handoff_to_bridge_locked(
