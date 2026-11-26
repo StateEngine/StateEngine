@@ -1,5 +1,7 @@
 # Standalone Windows installation. All uninstall effects belong to `se uninstall`.
-param([switch]$Recover, [switch]$NoModifyPath)
+param([switch]$Recover, [switch]$NoModifyPath, [string]$InheritPathEdits = '')
+# Recovery re-reads the saved plan's flag, so the runtime uses one plain boolean.
+$noModifyPath = $NoModifyPath.IsPresent
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 # A PowerShell 7 parent exports a PSModulePath that Windows PowerShell 5.1
@@ -270,7 +272,7 @@ try {
     # this script's normal fresh-install journal; no old executable is invoked.
     if (-not $Recover -and (Test-Path -LiteralPath $record)) {
         $replaceArgs = @('__install-replace', $data)
-        if ($NoModifyPath) { $replaceArgs += '--no-modify-path' }
+        if ($noModifyPath) { $replaceArgs += '--no-modify-path' }
         & (Join-Path $bundle 'se.exe') @replaceArgs
         if ($LASTEXITCODE -ne 0) { throw 'current-archive replacement did not complete; preserve the reported paths and resolve its refusal before retrying' }
         exit 0
@@ -307,8 +309,18 @@ try {
     if ([IO.Directory]::Exists($data)) { Assert-ProtectedDataHome $data $ownerSid }
     $priorDigest = if ($hadPath) { Get-TextDigest ([string]$before) } else { $null }
     $edits = @()
-    if (-not $alreadyPresent -and -not $NoModifyPath) {
+    if (-not $alreadyPresent -and -not $noModifyPath) {
         $edits += @{target = 'HKCU\Environment\Path'; before_sha256 = $priorDigest; block = $bin}
+    }
+    # A no-modify replacement of a PATH-owning install carries the prior registry
+    # custody here; a recovery re-reads the journal instead, so this cannot double-add.
+    $inherited = $InheritPathEdits
+    if ($null -ne $inherited -and $inherited -ne '') {
+        $extra = $inherited | ConvertFrom-Json
+        # ConvertFrom-Json unwraps a single-element JSON array, so the usual
+        # one-edit custody record arrives as a bare object, not an array.
+        if (($null -eq $extra) -or ($extra -isnot [array] -and $extra -isnot [pscustomobject])) { throw 'inherited PATH custody is malformed' }
+        $edits += $extra
     }
     # All checks above are read-only. Record only directories this install creates.
     New-OwnedDirectory $bin $ownerSid
@@ -352,15 +364,23 @@ try {
                 $copy.stage = $stage
             }
             $edits = @($partial.path_edits)
-            $noModify = [bool]$partial.PSObject.Properties['no_modify_path'].Value
-            if ($NoModifyPath -ne $noModify) { throw 'recovery PATH flag differs from the original installation' }
+            # The saved plan drives recovery; accept journals from both the plain-boolean
+            # and switch-serialized flag shapes.
+            $noModifyProp = $partial.PSObject.Properties['no_modify_path']
+            if ($null -eq $noModifyProp) { $noModifyPath = $false }
+            else {
+                $noModifyValue = $noModifyProp.Value
+                if ($noModifyValue -is [bool]) { $noModifyPath = $noModifyValue }
+                elseif ($null -ne $noModifyValue -and $null -ne $noModifyValue.PSObject.Properties['IsPresent']) { $noModifyPath = [bool]$noModifyValue.PSObject.Properties['IsPresent'].Value }
+                else { $noModifyPath = [bool]$noModifyValue }
+            }
             if ($edits.Count -gt 1 -or ($edits.Count -eq 1 -and ($edits[0].target -cne 'HKCU\Environment\Path' -or $edits[0].block -cne $bin -or
                 ($null -ne $edits[0].before_sha256 -and $edits[0].before_sha256 -cnotmatch '^[0-9a-f]{64}$')))) { throw 'partial PATH edit differs from the original bin entry' }
             if ($partial.had_path -isnot [bool] -or $partial.path_kind -notin @('String', 'ExpandString')) { throw 'partial PATH type is invalid' }
             $hadPath = $partial.had_path
             $kind = [Enum]::Parse([Microsoft.Win32.RegistryValueKind], [string]$partial.path_kind)
             $alreadyPresent = $edits.Count -eq 0
-            if (-not $noModify -and $alreadyPresent -and -not $currentAlreadyPresent) { throw 'original PATH entry changed; partial state preserved' }
+            if (-not $noModifyPath -and $alreadyPresent -and -not $currentAlreadyPresent) { throw 'original PATH entry changed; partial state preserved' }
             if (-not $alreadyPresent) {
                 $prior = $edits[0].before_sha256
                 $unchanged = if ($null -eq $prior) { -not $currentHadPath } else { $currentHadPath -and (Get-TextDigest ([string]$before)) -ceq $prior }
@@ -394,7 +414,7 @@ try {
         archive_sha256 = Get-Digest (Join-Path $bundle 'manifest.json'); planned_files = $files;
         staged_files = @($copies | ForEach-Object { [ordered]@{target = $_.to; path = $_.stage} });
         created_directories = $created.ToArray(); path_edits = @($edits); had_path = $hadPath; path_kind = $kind.ToString();
-        no_modify_path = $NoModifyPath}
+        no_modify_path = $noModifyPath}
     if (-not $resumePending) {
         $pendingBytes = $utf8.GetBytes(($pendingPlan | ConvertTo-Json -Depth 12) + "`n")
         $pendingStream.Position = 0
@@ -439,7 +459,7 @@ try {
     $registry = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
     $now = $registry.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
     if ($now -cne $before) { throw 'the user PATH changed during installation' }
-    if (-not $alreadyPresent -and -not $NoModifyPath) {
+    if (-not $alreadyPresent -and -not $noModifyPath) {
         $after = if ([string]::IsNullOrEmpty($before)) { $bin } else { [string]$before + ';' + $bin }
         $registry.SetValue('Path', $after, $kind)
         Initialize-NativeTypes
@@ -485,7 +505,7 @@ try {
     Write-Output "Installed se at $binary"
     Write-Output 'Run this command now in this PowerShell terminal to verify the installation:'
     Write-Output ("  & '" + $binary.Replace("'", "''") + "' --version")
-    if ($NoModifyPath) {
+    if ($noModifyPath) {
         Write-Output 'No PATH change was made. To use se by name in this terminal, run:'
         Write-Output ('  $env:Path = "' + $bin + ';$env:Path"')
     } else {

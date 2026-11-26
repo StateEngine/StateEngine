@@ -167,13 +167,13 @@ pub(in crate::remote) fn remove(upload: &str, windows: bool) -> String {
     }
 }
 /// Wrap a Unix script for SSH execution: the command line reaches the
-/// destination's login shell, and zsh (OCTAL_ZEROES off), fish, csh and
-/// nushell each misparse the script's octal `$(( ))` arithmetic or quoting,
-/// while /bin/sh always reads the same POSIX script. The wrapper argument
-/// stays literal under every login shell because the script carries no
-/// single quote.
+/// destination's login shell, and zsh (OCTAL_ZEROES off), fish and nushell
+/// each misparse the script's octal `$(( ))` arithmetic or quoting, while
+/// /bin/sh always reads the same POSIX script. Embedded single quotes
+/// round-trip as `\'\''`; csh/tcsh are unsupported because their multi-line
+/// single-quoted arguments break the wrapper.
 pub(in crate::remote) fn sh(script: &str) -> String {
-    format!("/bin/sh -c '{script}'")
+    format!("/bin/sh -c '{}'", script.replace('\'', r"'\''"))
 }
 pub(in crate::remote) fn powershell(script: &str) -> String {
     use base64::Engine as _;

@@ -2,16 +2,22 @@
 //! it, the record, created directories and the recovery rescan after it.
 use super::*;
 
-/// Reconciles PATH and removes every owned file except the running image.
-/// Reports whether all of them and the recovery rescan resolved.
+/// Reconciles PATH (or preserves it for a `--no-modify-path` replacement)
+/// and removes every owned file except the running image. Reports whether all
+/// of them and the recovery rescan resolved.
 pub(super) fn remove_owned_files(
     plan: &ValidatedUninstallPlan,
     installed: &UninstallFile,
     parents: &[PathBuf],
     effects: &mut UninstallEffects,
+    preserve: bool,
 ) -> bool {
     let mut safe = true;
-    reconcile_paths(plan, effects);
+    if preserve {
+        preserve_paths(plan, effects);
+    } else {
+        reconcile_paths(plan, effects);
+    }
     safe &= effects.path_complete;
     for file in plan
         .files()

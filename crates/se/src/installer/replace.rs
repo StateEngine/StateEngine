@@ -9,6 +9,7 @@ fn unix_command(
     home: &std::path::Path,
     archive: &std::path::Path,
     no_modify_path: bool,
+    inherited: Option<&str>,
 ) -> Result<Vec<OsString>> {
     let mut command = vec![
         program.clone(),
@@ -41,6 +42,10 @@ fn unix_command(
     if no_modify_path {
         command.push("--no-modify-path".into());
     }
+    if let Some(inherited) = inherited {
+        command.push("--inherit-path-edits".into());
+        command.push(inherited.into());
+    }
     Ok(command)
 }
 
@@ -53,7 +58,6 @@ pub fn replace_installation(arguments: &[OsString]) -> Result<i32> {
     if home != crate::bootstrap::state_home(None)? {
         return Err(args::invalid("the selected platform data home"));
     }
-    #[cfg(any(unix, windows))]
     let no_modify_path = if arguments.len() == 4 {
         if arguments[3] != std::ffi::OsStr::new("--no-modify-path") {
             return Err(args::invalid(USAGE));
@@ -89,10 +93,22 @@ pub fn replace_installation(arguments: &[OsString]) -> Result<i32> {
         stderr.write_all(text.as_bytes())?;
         stderr.flush()
     };
-    let _lease = crate::runtime::remove_for_reinstall(&context, &claim, &image, &mut diagnostic)?;
+    let (_lease, inherited) = crate::runtime::remove_for_reinstall(
+        &context,
+        &claim,
+        &image,
+        no_modify_path,
+        &mut diagnostic,
+    )?;
     #[cfg(unix)]
     {
-        let command = unix_command(&arguments[0], &home, archive, no_modify_path)?;
+        let command = unix_command(
+            &arguments[0],
+            &home,
+            archive,
+            no_modify_path,
+            inherited.as_deref(),
+        )?;
         super::run_claimed(&command, &claim)
     }
     #[cfg(windows)]
@@ -109,6 +125,10 @@ pub fn replace_installation(arguments: &[OsString]) -> Result<i32> {
         ];
         if no_modify_path {
             child_args.push("-NoModifyPath".into());
+        }
+        if let Some(inherited) = &inherited {
+            child_args.push("-InheritPathEdits".into());
+            child_args.push(inherited.into());
         }
         claim
             .run_child(powershell.as_os_str(), &child_args)

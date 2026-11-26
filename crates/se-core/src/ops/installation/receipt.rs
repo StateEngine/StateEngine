@@ -194,7 +194,7 @@ fn outcome_completes(effects: &UninstallEffects) -> (bool, bool, bool, bool) {
     let integrations_complete = effects.integrations.iter().all(|entry| {
         matches!(
             entry.action,
-            FileOutcome::Removed | FileOutcome::AlreadyAbsent
+            FileOutcome::Removed | FileOutcome::AlreadyAbsent | FileOutcome::Unchanged
         ) && entry.witness.state == WitnessState::Witnessed
     });
     let recovery_complete = effects.recovery.iter().all(|entry| {

@@ -159,7 +159,7 @@ fn fresh_destination_guard(expected: &BTreeMap<PathBuf, Sha256>, home: &Path) ->
             }
         }
     }
-    println!("fresh\n\n");
+    println!("fresh 0\n\n");
     Ok(())
 }
 
@@ -211,46 +211,33 @@ fn resume_plan(
         ));
     }
     let block = required(&stage.join("path-block"), 8192)?;
-    let zdot = std::env::var_os("ZDOTDIR")
-        .filter(|value| !value.is_empty())
-        .map(|value| args::path(&value))
-        .transpose()?;
+    // The saved plan is the only eligibility source: recovery resumes the
+    // exact full target paths from the verified journal, never names
+    // recomputed from this run's flags or environment.
     let mut profiles = Vec::<String>::new();
+    let mut bases = Vec::<String>::new();
     for edit in &record.path_edits {
-        let target = Path::new(&edit.target);
-        // A zsh profile may have been journaled under an eligible ZDOTDIR.
-        // A ZDOTDIR that changed since the original run refuses honestly.
-        let name = std::iter::once(user)
-            .chain(zdot.as_deref())
-            .filter_map(|root| {
-                target
-                    .strip_prefix(root)
-                    .ok()
-                    .and_then(|path| path.to_str())
-            })
-            .find(|name| {
-                matches!(
-                    *name,
-                    ".profile"
-                        | ".bash_profile"
-                        | ".bash_login"
-                        | ".zprofile"
-                        | ".bashrc"
-                        | ".zshrc"
-                )
-            })
+        let base = Path::new(&edit.target)
+            .file_name()
+            .and_then(|name| name.to_str())
             .ok_or_else(|| args::invalid("the original profile paths"))?;
-        if profiles.iter().any(|prior| prior == name) || edit.block.as_bytes() != block {
+        if !matches!(
+            base,
+            ".profile" | ".bash_profile" | ".bash_login" | ".zprofile" | ".bashrc" | ".zshrc"
+        ) {
+            return Err(args::invalid("the original profile paths"));
+        }
+        if bases.iter().any(|prior| prior == base) || edit.block.as_bytes() != block {
             return Err(args::invalid(
                 "unique original login profiles and PATH block",
             ));
         }
-        let digest = required(&stage.join(format!("{name}.digest")), 128)?;
+        let digest = required(&stage.join(format!("{base}.digest")), 128)?;
         let expected_digest = edit
             .before_sha256
             .as_ref()
             .map_or_else(|| "absent".into(), Sha256::hex);
-        let bytes = required(&stage.join(format!("{name}.bytes")), 64)?;
+        let bytes = required(&stage.join(format!("{base}.bytes")), 64)?;
         if std::str::from_utf8(&digest).ok().map(str::trim) != Some(expected_digest.as_str())
             || std::str::from_utf8(&bytes)
                 .ok()
@@ -261,13 +248,18 @@ fn resume_plan(
                 "the original profile prefix digest and length",
             ));
         }
-        profiles.push(name.to_owned());
+        bases.push(base.to_owned());
+        profiles.push(edit.target.clone());
     }
     Installation {
         record_path: home.join("standalone-install.json"),
         record,
     }
     .plan()?;
-    println!("resume\n{}\n{fish}", profiles.join(" "));
+    if profiles.is_empty() {
+        println!("resume 0\n{fish}");
+    } else {
+        println!("resume {}\n{}\n{fish}", profiles.len(), profiles.join("\n"));
+    }
     Ok(0)
 }

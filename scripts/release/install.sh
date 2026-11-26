@@ -62,11 +62,17 @@ if [ "$#" -ge 1 ] && [ "$1" = --native-held ]; then
 fi
 recover=0
 no_modify_path=0
+inherit_path_edits=''
 while [ "$#" -ge 1 ]; do
     case "$1" in
     --recover) recover=1 ;;
     --no-modify-path) no_modify_path=1 ;;
-    *) fail 'usage: sh ./install.sh [--recover] [--no-modify-path]' ;;
+    --inherit-path-edits)
+        [ "$#" -ge 2 ] || fail 'usage: sh ./install.sh [--recover] [--no-modify-path] [--inherit-path-edits JSON]'
+        inherit_path_edits=$2
+        shift
+        ;;
+    *) fail 'usage: sh ./install.sh [--recover] [--no-modify-path] [--inherit-path-edits JSON]' ;;
     esac
     shift
 done
@@ -125,9 +131,12 @@ manual_path=0
 profiles=''
 fish_file=''
 zdot=''
+# A profile entry is a fresh-run profile name or a resume's saved full target path.
+profile_base() { printf '%s' "${1##*/}"; }
 # zsh dotfiles live under an eligible ZDOTDIR when one is exported.
 profile_path() {
     case "$1" in
+    /*) printf '%s' "$1"; return 0 ;;
     .zprofile|.zshrc)
         if [ -n "$zdot" ]; then printf '%s' "$zdot/$1"; else printf '%s' "$HOME/$1"; fi
         return 0
@@ -151,15 +160,25 @@ else
         ;;
     ''|*/sh|*/bash|*/dash|*/ksh|*/zsh)
         profiles='.profile'
-        if [ -e "$HOME/.bash_profile" ] || [ -L "$HOME/.bash_profile" ]; then profiles="$profiles .bash_profile"
-        elif [ -e "$HOME/.bash_login" ] || [ -L "$HOME/.bash_login" ]; then profiles="$profiles .bash_login"; fi
+        if [ -e "$HOME/.bash_profile" ] || [ -L "$HOME/.bash_profile" ]; then profiles="$profiles
+.bash_profile"
+        elif [ -e "$HOME/.bash_login" ] || [ -L "$HOME/.bash_login" ]; then profiles="$profiles
+.bash_login"; fi
         case ${SHELL-} in
-        */bash) profiles="$profiles .bashrc" ;;
+        */bash) profiles="$profiles
+.bashrc" ;;
         */zsh)
-            if [ -n "${ZDOTDIR-}" ]; then
-                if zdot_plain "$ZDOTDIR"; then zdot=$ZDOTDIR; else manual_path=1; fi
+            if [ -n "${ZDOTDIR-}" ] && [ "${ZDOTDIR-}" != "$HOME" ]; then
+                case "$ZDOTDIR" in
+                "$HOME"/*)
+                    if zdot_plain "$ZDOTDIR"; then zdot=$ZDOTDIR; else manual_path=1; fi
+                    ;;
+                *) manual_path=1 ;;
+                esac
             fi
-            profiles="$profiles .zprofile .zshrc"
+            profiles="$profiles
+.zprofile
+.zshrc"
             ;;
         esac
         ;;
@@ -168,15 +187,19 @@ else
         ;;
     esac
     if [ "$manual_path" -eq 0 ]; then
-        for name in $profiles; do
+        while IFS= read -r name; do
+            [ -n "$name" ] || continue
             if [ -L "$(profile_path "$name")" ]; then manual_path=1; break; fi
-        done
+        done <<PROFILES
+$profiles
+PROFILES
     fi
     if [ "$manual_path" -eq 1 ]; then profiles=''; fish_file=''; fi
 fi
 profile_metadata() {
 profile_digests=''
-for name in $profiles; do
+while IFS= read -r name; do
+    [ -n "$name" ] || continue
     profile=$(profile_path "$name")
     plain_path "$profile"
     if [ -e "$profile" ]; then
@@ -185,9 +208,11 @@ for name in $profiles; do
         prior=$(file_digest "$profile")
         prior_bytes=$(wc -c < "$profile")
     else prior=absent; prior_bytes=0; fi
-    profile_digests="$profile_digests$name $prior $prior_bytes
+    profile_digests="$profile_digests$profile $prior $prior_bytes
 "
-done
+done <<PROFILES
+$profiles
+PROFILES
 }
 if [ "$recover" -eq 0 ]; then profile_metadata; fi
 # The inventory contains only safe relative names, so this list needs no path splitting.
@@ -201,7 +226,12 @@ asset_destination() {
 # the same protection as init, and retains the account-wide installation claim.
 if [ "$native_held" -eq 0 ]; then
     set -- __install-hold --prepare-program --home "$data"
-    for name in $profiles; do set -- "$@" --profile "$(profile_path "$name")"; done
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        set -- "$@" --profile "$(profile_path "$name")"
+    done <<PROFILES
+$profiles
+PROFILES
     if [ -n "$fish_file" ]; then set -- "$@" --fish-directory "$(dirname "$fish_file")"; fi
     if [ -n "${XDG_STATE_HOME-}" ]; then set -- "$@" --xdg-state-home "$XDG_STATE_HOME"; fi
     if [ -n "${XDG_CONFIG_HOME-}" ]; then set -- "$@" --xdg-config-home "$XDG_CONFIG_HOME"; fi
@@ -266,8 +296,8 @@ prefix_digest() {
 profile_append_matches() {
     profile=$(profile_path "$1")
     [ ! -L "$profile" ] && [ -f "$profile" ] || return 1
-    prior=$(cat "$stage/$1.digest") || return 1
-    prior_bytes=$(cat "$stage/$1.bytes") || return 1
+    prior=$(cat "$stage/$(profile_base "$1").digest") || return 1
+    prior_bytes=$(cat "$stage/$(profile_base "$1").bytes") || return 1
     current_bytes=$(wc -c < "$profile") || return 1
     block_bytes=$(wc -c < "$stage/path-block") || return 1
     appended_bytes=$((current_bytes - prior_bytes))
@@ -321,7 +351,7 @@ if [ "$manual_path" -eq 1 ]; then
     */zsh) if [ -n "${ZDOTDIR-}" ]; then printf 'File: %s/.zshrc\n  export PATH="$HOME/.local/bin:$PATH"\n' "$ZDOTDIR"; else printf 'File: ~/.zshrc\n  export PATH="$HOME/.local/bin:$PATH"\n'; fi ;;
     */csh|*/tcsh) printf 'File: ~/.tcshrc (or ~/.cshrc)\n  set path = ($HOME/.local/bin $path)\n' ;;
     */elvish) printf 'File: ~/.config/elvish/rc.elv\n  use builtin; var builtin:paths = ($env:HOME + "/.local/bin" +~ $builtin:paths)\n' ;;
-    */nu) printf 'File: ~/.config/nushell/config.nu\n  $env.PATH = ($env.PATH | split row (char esep) | prepend $home/.local/bin)\n' ;;
+    */nu) printf "File: \$nu.env-path (Nushell env config, e.g. ~/.config/nushell/env.nu)\n  \$env.PATH = (\$env.PATH | split row (char esep) | prepend (\$home | path join '.local' 'bin'))\n" ;;
     */xonsh) printf 'File: ~/.config/xonsh/rc.xsh\n  import os; os.environ["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + os.environ.get("PATH", "")\n' ;;
     *) printf 'File: ~/.profile (interactive bash: ~/.bashrc)\n  export PATH="$HOME/.local/bin:$PATH"\n' ;;
     esac
@@ -372,18 +402,35 @@ stage=$partial
 resume=0
 if [ "$recover" -eq 1 ]; then
     recovery=$("$bundle/se" __install-recovery-check "$data" && printf 'end\n') || fail 'partial journal or matching archive is unreadable'
-    {
-        IFS= read -r mode
-        IFS= read -r saved_profiles
-        IFS= read -r saved_fish
-        IFS= read -r end_marker
-    } <<RECOVERY
+    mode=''; count=0; targets=0; saved_profiles=''; saved_fish=''; end_marker=''
+    while IFS= read -r line; do
+        if [ "$line" = end ]; then end_marker=end; break; fi
+        if [ -z "$mode" ]; then
+            case $line in
+            'fresh 0') mode=fresh; count=0 ;;
+            'resume '*)
+                count=${line#resume }
+                case $count in ''|*[!0-9]*) mode=unknown; count=0 ;; *) mode=resume ;; esac
+                ;;
+            *) mode=unknown; count=0 ;;
+            esac
+            continue
+        fi
+        if [ "$targets" -lt "$count" ]; then
+            targets=$((targets + 1))
+            saved_profiles="${saved_profiles}${line}
+"
+            continue
+        fi
+        [ -n "$saved_fish" ] || saved_fish=$line
+    done <<RECOVERY
 $recovery
 RECOVERY
+    [ "$mode" = fresh ] || [ "$mode" = resume ] || fail 'native recovery response is invalid'
     [ "$end_marker" = end ] || fail 'native recovery response is incomplete'
     if [ "$mode" = resume ]; then
         # Resume follows the saved plan; flags on this run never re-select it.
-        resume=1; profiles=$saved_profiles; fish_file=$saved_fish
+        resume=1; profiles="$saved_profiles"; fish_file="$saved_fish"
         if [ -n "$saved_profiles" ] || [ -n "$saved_fish" ]; then manual_path=0
         else manual_path=1; fi
     elif [ "$mode" = fresh ]; then
@@ -402,11 +449,14 @@ case ":$PATH:" in
 esac
 # <<< StateEngine PATH <<<
 BLOCK
-while read -r name prior prior_bytes; do
-    if [ -n "$name" ]; then
-        printf '%s\n' "$prior" > "$stage/$name.digest"
-        printf '%s\n' "$prior_bytes" > "$stage/$name.bytes"
-    fi
+while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    prior_bytes=${line##* }
+    rest=${line% *}
+    prior=${rest##* }
+    name=${rest% *}
+    printf '%s\n' "$prior" > "$stage/$(profile_base "$name").digest"
+    printf '%s\n' "$prior_bytes" > "$stage/$(profile_base "$name").bytes"
 done <<DIGESTS
 $profile_digests
 DIGESTS
@@ -439,19 +489,38 @@ $created_directories
 DIRECTORIES
     printf '],\n  "path_edits": ['
     comma=''
-    for name in $profiles; do
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
         printf '%s\n    {"target": ' "$comma"; json_string "$(profile_path "$name")"; printf ', "before_sha256": '
-        prior=$(cat "$stage/$name.digest")
+        prior=$(cat "$stage/$(profile_base "$name").digest")
         if [ "$prior" != absent ]; then json_string "$prior"; else printf null; fi
-        prior_bytes=$(cat "$stage/$name.bytes")
+        prior_bytes=$(cat "$stage/$(profile_base "$name").bytes")
         printf ', "before_bytes": %s, "block": ' "$prior_bytes"; json_block "$stage/path-block"; printf '}'
         comma=','
-    done
+    done <<PROFILES
+$profiles
+PROFILES
+    inherited=$inherit_path_edits
+    if [ -n "$inherited" ]; then
+        case "$inherited" in
+        '['*']')
+            elements=${inherited#[}
+            elements=${elements%]}
+            printf '%s%s' "$comma" "$elements"
+            ;;
+        *) fail 'inherited PATH custody is malformed' ;;
+        esac
+    fi
     printf '\n  ]}\n'
 } > "$stage/install.json"
 file_digest "$bundle/manifest.json" > "$stage/.manifest-ready"
 set -- "$stage/install.json" "$stage/.manifest-ready" "$stage/path-block"
-for name in $profiles; do set -- "$@" "$stage/$name.digest" "$stage/$name.bytes"; done
+while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    set -- "$@" "$stage/$(profile_base "$name").digest" "$stage/$(profile_base "$name").bytes"
+done <<PROFILES
+$profiles
+PROFILES
 if [ -n "$fish_file" ]; then set -- "$@" "$stage/fish-config"; fi
 flush "$@" "$stage" "$data"
 # Publish readiness only after the entire original journal is durable.
@@ -475,9 +544,10 @@ publish_file "$bundle/se" "$bin/se" 755
 if [ -n "$fish_file" ]; then
     publish_file "$stage/fish-config" "$fish_file" 600
 fi
-for name in $profiles; do
+while IFS= read -r name; do
+    [ -n "$name" ] || continue
     profile=$(profile_path "$name")
-    prior=$(cat "$stage/$name.digest")
+    prior=$(cat "$stage/$(profile_base "$name").digest")
     if [ ! -e "$profile" ] && [ ! -L "$profile" ]; then
         [ "$prior" = absent ] || fail "original login profile is absent: $profile"
         (set -C; : > "$profile") || fail "login profile appeared during installation: $profile"
@@ -486,7 +556,9 @@ for name in $profiles; do
     dd if="$stage/path-block" bs=1 skip="$appended_bytes" conv=notrunc >> "$profile" 2>/dev/null
     flush "$profile" "$(dirname "$profile")"
     profile_append_matches "$name" && [ "$appended_bytes" -eq "$block_bytes" ] || fail "login profile append readback failed: $profile"
-done
+done <<PROFILES
+$profiles
+PROFILES
 for relative in $asset_files; do cmp -s "$(asset_destination "$relative")" "$bundle/$relative" || fail "installed asset readback failed: $relative"; done
 cmp -s "$bin/se" "$bundle/se" || fail 'installed binary readback failed'
 set -- "$bundle/se" __install-files-check "$bin/se"
