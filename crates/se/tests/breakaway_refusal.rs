@@ -373,12 +373,8 @@ fn eligible_broker_runtime_outlives_strict_job_and_public_down_closes_it() -> Re
     assert!(
         status["runtime"]["detachment_notice"]
             .as_str()
-            .is_some_and(|text| {
-                text.contains(
-                    "Background survival after logout is not guaranteed on this platform.",
-                )
-            }),
-        "missing session-only detachment notice: {status}"
+            .is_some_and(|text| text.contains("outer nested jobs were not inspected")),
+        "missing session-only enclosing-job detachment notice: {status}"
     );
     assert_eq!(status["runtime"]["process"]["pid"], identity.pid.0);
     f.stop()?;
@@ -402,7 +398,8 @@ fn no_eligible_broker_uses_reported_foreground_until_public_down() -> Result {
         assert_eq!(exit, "0", "enclosing-job startup/down failed: {stderr}");
         assert!(
             stderr.contains("KILL_ON_JOB_CLOSE")
-                && stderr.contains("closing the last handle to that enclosing job")
+                && stderr.contains("launcher's immediate enclosing job")
+                && stderr.contains("Closing the last handle to a containing job")
                 && stderr.contains("up --foreground"),
             "KILL_ON_JOB_CLOSE lifetime notice was hidden: {stderr}"
         );
@@ -416,7 +413,8 @@ fn no_eligible_broker_uses_reported_foreground_until_public_down() -> Result {
         assert!(
             observed["detachment_notice"].as_str().is_some_and(|text| {
                 text.contains("KILL_ON_JOB_CLOSE")
-                    && text.contains("closing the last handle to that enclosing job")
+                    && text.contains("launcher's immediate enclosing job")
+                    && text.contains("Closing the last handle to a containing job")
             }),
             "missing KILL_ON_JOB_CLOSE status notice: {observed}"
         );

@@ -15,16 +15,17 @@ pub(super) fn in_job(process: HANDLE) -> ProcResult<bool> {
     Ok(member != 0)
 }
 
-/// Result of querying the calling process's enclosing Windows Job Object for
-/// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Never collapses query failure to false.
+/// Result of querying the launcher's immediate enclosing Windows Job Object for
+/// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Outer nested jobs are not inspected,
+/// and query failure is never collapsed to false.
 pub(in crate::bootstrap) enum EnclosingJobClose {
     KillOnClose,
     NoKillOnClose,
     Unknown(u32),
 }
 
-/// Query the current process's enclosing job limits. Passing NULL queries the
-/// job associated with the calling process.
+/// Query the launcher's immediate enclosing job limits (passing NULL queries
+/// only the job directly associated with the calling process).
 pub(in crate::bootstrap) fn enclosing_job_close() -> EnclosingJobClose {
     // SAFETY: POD native output buffer initialized to zero.
     let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };

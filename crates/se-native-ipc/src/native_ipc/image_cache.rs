@@ -260,16 +260,23 @@ fn restore_from_files(
         return Ok(ImageCacheRead::Stale);
     };
     // Keep the global cache handle-free and never promote an unqualified/legacy
-    // digest across keys: when an unqualified hint is read with a live peer,
-    // rehash the shared mapped image once (caching only if the live image has a
-    // qualified USN revision) and verify it matches `expected`.
+    // digest across arbitrary files: when an unqualified hint is read with a
+    // live peer on Windows, compare the live mapped executable's native key
+    // (volume/file ID, size, write time) — its running image section blocks
+    // in-place writes — and cache the digest handle-free without re-hashing.
     #[cfg(windows)]
     if !entry.image.reusable() {
-        if let Some(file) = peer.and_then(super::windows_peer::shared_mapped_image)
-            && hash_image(file, bound)? != expected
-        {
+        let Some(file) = peer.and_then(super::windows_peer::shared_mapped_image) else {
+            return Ok(ImageCacheRead::Current);
+        };
+        let meta = file
+            .metadata()
+            .map_err(|e| error("read live mapped executable metadata", e))?;
+        let live = key(&file, &meta)?;
+        if !live.same_mapped_image(&entry.image) {
             return Ok(ImageCacheRead::Stale);
         }
+        super::image::remember_live_mapped(live, entry.digest)?;
         return Ok(ImageCacheRead::Current);
     }
     #[cfg(not(windows))]

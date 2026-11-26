@@ -42,10 +42,18 @@ impl ImageKey {
             true
         }
     }
+    #[cfg(windows)]
+    pub(super) fn same_mapped_image(&self, other: &Self) -> bool {
+        self.identity == other.identity
+            && self.size == other.size
+            && self.modified == other.modified
+    }
 }
 // Never retain open file handles in the global cache; on Windows a pinned
 // handle with write-sharing denied blocks upgrades, renames, and uninstalls.
-type Cache = VecDeque<(ImageKey, Sha256)>;
+// The third tuple field marks entries validated against a live mapped Windows
+// image (whose running image section blocks in-place writes).
+type Cache = VecDeque<(ImageKey, Sha256, bool)>;
 static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
 pub(super) fn key(file: &File, metadata: &std::fs::Metadata) -> IpcNativeResult<ImageKey> {
     #[cfg(unix)]
@@ -143,20 +151,30 @@ pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeRe
     }
     Ok(digest)
 }
-/// A reusable key's cached digest.
+/// A reusable key's cached digest (or on Windows, a digest validated against a
+/// live mapped executable image without retaining any file handle).
 fn cached(stamp: &ImageKey) -> IpcNativeResult<Option<Sha256>> {
-    if !stamp.reusable() {
-        return Ok(None);
-    }
     let cache = cache().lock().map_err(|_| {
         refuse(
             IpcNativeErrorCode::Unreadable,
             "executable cache poisoned; restart the host",
         )
     })?;
-    Ok(cache
-        .iter()
-        .find_map(|(stored, digest)| (stored == stamp).then_some(*digest)))
+    if stamp.reusable() {
+        return Ok(cache
+            .iter()
+            .find_map(|(stored, digest, _)| (stored == stamp).then_some(*digest)));
+    }
+    #[cfg(windows)]
+    {
+        Ok(cache.iter().find_map(|(stored, digest, live_mapped)| {
+            (*live_mapped && stored.same_mapped_image(stamp)).then_some(*digest)
+        }))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(None)
+    }
 }
 /// Stream the pinned file under the original deadline and byte cap.
 fn read_content(file: &mut File, bound: &IpcIoBound) -> IpcNativeResult<(u64, Sha256)> {
@@ -230,18 +248,33 @@ pub(super) fn remember(stamp: ImageKey, digest: Sha256) -> IpcNativeResult<()> {
     if !stamp.reusable() {
         return Ok(());
     }
+    insert_cached(stamp, digest, false)
+}
+
+/// Record a digest validated against a live mapped Windows executable image
+/// (whose running image section blocks in-place writes) without retaining any
+/// open file handle in the global cache.
+#[cfg(windows)]
+pub(super) fn remember_live_mapped(stamp: ImageKey, digest: Sha256) -> IpcNativeResult<()> {
+    insert_cached(stamp, digest, true)
+}
+
+fn insert_cached(stamp: ImageKey, digest: Sha256, live_mapped: bool) -> IpcNativeResult<()> {
     let mut cache = cache().lock().map_err(|_| {
         refuse(
             IpcNativeErrorCode::Unreadable,
             "executable cache poisoned; restart the host",
         )
     })?;
-    if cache.iter().any(|(stored, _)| *stored == stamp) {
+    if cache
+        .iter()
+        .any(|(stored, _, stored_live)| *stored == stamp && *stored_live == live_mapped)
+    {
         return Ok(());
     }
     if cache.len() == 64 {
         cache.pop_front();
     }
-    cache.push_back((stamp, digest));
+    cache.push_back((stamp, digest, live_mapped));
     Ok(())
 }
