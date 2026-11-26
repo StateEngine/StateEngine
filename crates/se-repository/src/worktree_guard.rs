@@ -1,6 +1,9 @@
-//! Handle-anchored non-following link/junction/mount guard and bottom-up
-//! deletion for [`crate::worktree::remove_worktree`].
-use crate::worktree::{VerifiedWorktree, WorktreeRemoveError};
+//! Handle-anchored non-following link/junction/mount/nested-repo guard and
+//! bottom-up deletion for [`crate::worktree::remove_worktree`].
+use crate::worktree_types::{
+    VerifiedWorktree, WorktreeRemoveError, format_delete_child_err, format_dir_op_err,
+    map_delete_err,
+};
 use se_native_path::dir_ops::{
     ChildInfo, ChildKind, DeleteChildError, DirHandle, DirOpError, NodeId,
 };
@@ -12,12 +15,50 @@ use std::{
 
 /// Maximum offending paths retained per category in a refusal report.
 const MAX_REPORTED_PATHS: usize = 64;
-/// Maximum `.git` pointer file size backed up in memory for final-rmdir recovery.
+/// Maximum `.git` pointer file size read for submodule check or final-rmdir recovery.
 const MAX_DOT_GIT_BYTES: usize = 64 * 1024;
+
+/// Anchored parent-to-root binding checked across mutation boundaries so a
+/// concurrent rename/move of the target root stops deletion immediately.
+struct Anchor<'a> {
+    parent: &'a DirHandle,
+    name: &'a OsStr,
+    id: NodeId,
+    path: &'a Path,
+}
+
+impl Anchor<'_> {
+    fn verify(&self) -> Result<(), WorktreeRemoveError> {
+        let info = self.parent.inspect_child(self.name).map_err(|err| {
+            WorktreeRemoveError::CustodyChanged {
+                path: self.path.to_path_buf(),
+                reason: format!(
+                    "anchored directory moved or vanished during removal: {}",
+                    format_dir_op_err(&err)
+                ),
+            }
+        })?;
+        if let ChildKind::Link(kind) = info.kind {
+            return Err(WorktreeRemoveError::single_link(
+                self.path.to_path_buf(),
+                kind,
+            ));
+        }
+        if info.is_mount_root || info.id != self.id {
+            return Err(WorktreeRemoveError::CustodyChanged {
+                path: self.path.to_path_buf(),
+                reason: "anchored directory was replaced or moved during removal".to_owned(),
+            });
+        }
+        Ok(())
+    }
+}
 
 struct WalkFindings {
     links: Vec<(PathBuf, String)>,
     total_links: usize,
+    nested_repos: Vec<(PathBuf, String)>,
+    total_nested_repos: usize,
     unreadable: Vec<(PathBuf, String)>,
     total_unreadable: usize,
 }
@@ -27,6 +68,8 @@ impl WalkFindings {
         Self {
             links: Vec::new(),
             total_links: 0,
+            nested_repos: Vec::new(),
+            total_nested_repos: 0,
             unreadable: Vec::new(),
             total_unreadable: 0,
         }
@@ -39,6 +82,13 @@ impl WalkFindings {
         }
     }
 
+    fn record_nested_repo(&mut self, path: PathBuf, kind: String) {
+        self.total_nested_repos += 1;
+        if self.nested_repos.len() < MAX_REPORTED_PATHS {
+            self.nested_repos.push((path, kind));
+        }
+    }
+
     fn record_unreadable(&mut self, path: PathBuf, reason: String) {
         self.total_unreadable += 1;
         if self.unreadable.len() < MAX_REPORTED_PATHS {
@@ -48,6 +98,7 @@ impl WalkFindings {
 
     fn into_result(mut self) -> Result<(), WorktreeRemoveError> {
         self.links.sort_by(|a, b| a.0.cmp(&b.0));
+        self.nested_repos.sort_by(|a, b| a.0.cmp(&b.0));
         self.unreadable.sort_by(|a, b| a.0.cmp(&b.0));
         if self.total_links > 0 {
             return Err(WorktreeRemoveError::LinksDetected {
@@ -55,6 +106,12 @@ impl WalkFindings {
                 total_links: self.total_links,
                 unreadable: self.unreadable,
                 total_unreadable: self.total_unreadable,
+            });
+        }
+        if self.total_nested_repos > 0 {
+            return Err(WorktreeRemoveError::NestedGitRepositories {
+                paths: self.nested_repos,
+                total: self.total_nested_repos,
             });
         }
         if self.total_unreadable > 0 {
@@ -110,9 +167,6 @@ fn unescape_mountinfo_path(raw: &str) -> String {
 fn live_mountinfo_contains(path: &Path, root_id: NodeId) -> Result<bool, WorktreeRemoveError> {
     #[cfg(target_os = "linux")]
     {
-        // Live `statx` `STATX_MNT_ID` + `STATX_ATTR_MOUNT_ROOT` already covers
-        // same-filesystem bind mounts on every modern Linux kernel. Only read
-        // `/proc/self/mountinfo` if the kernel did not report `mount_id`.
         if root_id.mount_id.is_some() {
             return Ok(false);
         }
@@ -148,87 +202,159 @@ fn check_child_guard(
     Ok(None)
 }
 
-/// Handle-anchored non-following pre-removal scan starting from the verified
-/// worktree root handle. Never descends into symlinks, Windows reparse points,
-/// or mounts (verified live per opened handle via `statx` / `FileIdInfo`).
+/// Classify a `.git` entry found below the worktree root.
+/// Exempts only submodule gitfiles whose `gitdir:` target resolves inside this
+/// repository's own `<common_dir>/modules`. Any nested `.git` directory or
+/// non-submodule `.git` file (such as a nested linked worktree) is refused.
+fn nested_git_kind(
+    dir_handle: &DirHandle,
+    dir_path: &Path,
+    info: ChildInfo,
+    own_modules_dir: Option<&Path>,
+) -> Option<&'static str> {
+    match info.kind {
+        ChildKind::Dir => Some("nested Git repository"),
+        ChildKind::File => {
+            if let Some(modules_dir) = own_modules_dir
+                && let Ok(bytes) = dir_handle.read_child_file(OsStr::new(".git"), MAX_DOT_GIT_BYTES)
+                && let Ok(text) = std::str::from_utf8(&bytes)
+                && let Some(raw_target) = text.trim().strip_prefix("gitdir:")
+            {
+                let target = Path::new(raw_target.trim());
+                let resolved = if target.is_absolute() {
+                    target.to_path_buf()
+                } else {
+                    dir_path.join(target)
+                };
+                if let Ok(canon) = se_proc::canonicalize_path(&resolved)
+                    && canon.starts_with(modules_dir)
+                {
+                    return None;
+                }
+            }
+            Some("nested linked worktree or Git repository")
+        }
+        _ => Some("nested Git entry"),
+    }
+}
+
+/// Handle-anchored non-following pre-removal scan holding only `O(depth)` open
+/// directory handles (the active ancestor chain), never opening sibling
+/// directories simultaneously.
 pub(crate) fn scan_tree_for_links(
     verified: &VerifiedWorktree,
 ) -> Result<HashMap<PathBuf, NodeId>, WorktreeRemoveError> {
     let root_handle = open_verified_root(verified)?;
+    let own_modules = se_proc::canonicalize_path(verified.common_dir.join("modules")).ok();
     let mut findings = WalkFindings::new();
     let mut identities = HashMap::new();
     identities.insert(verified.canonical_root.clone(), verified.root_id);
 
-    let mut stack = vec![(verified.canonical_root.clone(), root_handle)];
-    while let Some((dir_path, dir_handle)) = stack.pop() {
-        let names = match dir_handle.read_entries() {
-            Ok(names) => names,
-            Err(err) => {
-                findings.record_unreadable(dir_path, err.to_string());
-                continue;
-            }
-        };
-        for name in names {
-            let entry_path = dir_path.join(&name);
-            let info = match dir_handle.inspect_child(&name) {
-                Ok(info) => info,
-                Err(DirOpError::Link(kind)) => {
-                    findings.record_link(entry_path, kind.to_owned());
-                    continue;
-                }
-                Err(err) => {
-                    findings.record_unreadable(entry_path, format_dir_op_err(&err));
-                    continue;
-                }
-            };
-            if let Some(kind) = check_child_guard(&entry_path, info, verified.root_id)? {
-                findings.record_link(entry_path, kind.to_owned());
-                continue;
-            }
-            if info.kind == ChildKind::Dir {
-                match dir_handle.open_child_dir(&name) {
-                    Ok(child_handle) => {
-                        let (actual_id, is_mount_root) = match child_handle.stat_self() {
-                            Ok(v) => v,
-                            Err(err) => {
-                                findings.record_unreadable(entry_path, err.to_string());
-                                continue;
-                            }
-                        };
-                        if is_mount_root || actual_id.crosses_mount_from(verified.root_id) {
-                            findings.record_link(entry_path, "mount point / bind mount".to_owned());
-                            continue;
-                        }
-                        if actual_id != info.id {
-                            return Err(WorktreeRemoveError::CustodyChanged {
-                                path: entry_path,
-                                reason: "directory changed identity during link scan".to_owned(),
-                            });
-                        }
-                        identities.insert(entry_path.clone(), actual_id);
-                        stack.push((entry_path, child_handle));
-                    }
-                    Err(DirOpError::Link(kind)) => {
-                        findings.record_link(entry_path, kind.to_owned());
-                    }
-                    Err(err) => {
-                        findings.record_unreadable(entry_path, format_dir_op_err(&err));
-                    }
-                }
-            }
-        }
-    }
+    scan_dir_recursive(
+        &root_handle,
+        &verified.canonical_root,
+        0,
+        verified.root_id,
+        own_modules.as_deref(),
+        &mut identities,
+        &mut findings,
+    )?;
     findings.into_result()?;
     Ok(identities)
 }
 
+fn scan_dir_recursive(
+    dir_handle: &DirHandle,
+    dir_path: &Path,
+    depth: usize,
+    root_id: NodeId,
+    own_modules_dir: Option<&Path>,
+    identities: &mut HashMap<PathBuf, NodeId>,
+    findings: &mut WalkFindings,
+) -> Result<(), WorktreeRemoveError> {
+    let names = match dir_handle.read_entries() {
+        Ok(names) => names,
+        Err(err) => {
+            findings.record_unreadable(dir_path.to_path_buf(), err.to_string());
+            return Ok(());
+        }
+    };
+    for name in names {
+        let entry_path = dir_path.join(&name);
+        let info = match dir_handle.inspect_child(&name) {
+            Ok(info) => info,
+            Err(DirOpError::Link(kind)) => {
+                findings.record_link(entry_path, kind.to_owned());
+                continue;
+            }
+            Err(err) => {
+                findings.record_unreadable(entry_path, format_dir_op_err(&err));
+                continue;
+            }
+        };
+        if let Some(kind) = check_child_guard(&entry_path, info, root_id)? {
+            findings.record_link(entry_path, kind.to_owned());
+            continue;
+        }
+        if depth > 0
+            && name == OsStr::new(".git")
+            && let Some(kind) = nested_git_kind(dir_handle, dir_path, info, own_modules_dir)
+        {
+            findings.record_nested_repo(dir_path.to_path_buf(), kind.to_owned());
+            continue;
+        }
+        if info.kind == ChildKind::Dir {
+            match dir_handle.open_child_dir(&name) {
+                Ok(child_handle) => {
+                    let (actual_id, is_mount_root) = match child_handle.stat_self() {
+                        Ok(v) => v,
+                        Err(err) => {
+                            findings.record_unreadable(entry_path, err.to_string());
+                            continue;
+                        }
+                    };
+                    if is_mount_root || actual_id.crosses_mount_from(root_id) {
+                        findings.record_link(entry_path, "mount point / bind mount".to_owned());
+                        continue;
+                    }
+                    if actual_id != info.id {
+                        return Err(WorktreeRemoveError::CustodyChanged {
+                            path: entry_path,
+                            reason: "directory changed identity during link scan".to_owned(),
+                        });
+                    }
+                    identities.insert(entry_path.clone(), actual_id);
+                    scan_dir_recursive(
+                        &child_handle,
+                        &entry_path,
+                        depth + 1,
+                        root_id,
+                        own_modules_dir,
+                        identities,
+                        findings,
+                    )?;
+                    // `child_handle` drops here before opening the next sibling (`O(depth)` FDs).
+                }
+                Err(DirOpError::Link(kind)) => {
+                    findings.record_link(entry_path, kind.to_owned());
+                }
+                Err(err) => {
+                    findings.record_unreadable(entry_path, format_dir_op_err(&err));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Handle-anchored bottom-up deletion of the verified linked worktree.
 ///
-/// Pre-checks parent writability, deletes every non-`.git` entry relative to
-/// retained directory handles, backs up `.git` bytes before unlinking `.git`,
+/// Pre-checks parent writability, verifies the root's parent binding across
+/// every mutation boundary, backs up `.git` bytes before unlinking `.git`,
 /// drops the root handle, and removes the root via its retained parent handle.
-/// If the final root removal fails, `.git` is restored into the verified root
-/// so retrying `se worktree remove` remains safe.
+/// Any failure on the final root removal attempts to restore `.git` and always
+/// reports `DeleteFailed` carrying `partial`, `dot_git_preserved`, and full
+/// recovery detail.
 pub(crate) fn remove_tree_no_follow(
     verified: &VerifiedWorktree,
     dir_identities: &HashMap<PathBuf, NodeId>,
@@ -250,6 +376,13 @@ pub(crate) fn remove_tree_no_follow(
         });
     }
 
+    let own_modules = se_proc::canonicalize_path(verified.common_dir.join("modules")).ok();
+    let anchor = Anchor {
+        parent: &verified.root_parent,
+        name: &verified.root_name,
+        id: verified.root_id,
+        path: &verified.canonical_root,
+    };
     let root_handle = open_verified_root(verified)?;
     let dot_git_bytes = root_handle
         .read_child_file(OsStr::new(".git"), MAX_DOT_GIT_BYTES)
@@ -262,15 +395,23 @@ pub(crate) fn remove_tree_no_follow(
         })?;
 
     let mut removed_any = false;
+    let ctx = DeleteCtx {
+        root_id: verified.root_id,
+        anchor: &anchor,
+        expected_dirs: Some(dir_identities),
+        own_modules_dir: own_modules.as_deref(),
+        guard_nested_git: true,
+    };
     delete_dir_contents(
         &root_handle,
         &verified.canonical_root,
-        verified.root_id,
-        Some(dir_identities),
+        0,
+        &ctx,
         true,
         &mut removed_any,
     )?;
 
+    anchor.verify()?;
     let dot_git_path = verified.canonical_root.join(".git");
     root_handle
         .unlink_child_file(OsStr::new(".git"), Some(verified.dot_git_id))
@@ -281,41 +422,43 @@ pub(crate) fn remove_tree_no_follow(
         .root_parent
         .remove_child_dir(&verified.root_name, Some(verified.root_id))
     {
-        let mut restored = false;
-        let mut restore_note = String::new();
-        match verified.root_parent.open_child_dir(&verified.root_name) {
-            Ok(reopened) => match reopened.stat_self() {
-                Ok((id, _)) if id == verified.root_id => {
-                    match reopened.create_child_file_exclusive(OsStr::new(".git"), &dot_git_bytes) {
-                        Ok(()) => restored = true,
-                        Err(restore_err) => {
-                            restore_note = format!("; failed to restore .git: {restore_err}");
-                        }
-                    }
-                }
-                Ok(_) => {
-                    restore_note = "; root changed identity before .git restore".to_owned();
-                }
-                Err(stat_err) => {
-                    restore_note = format!("; cannot stat root for .git restore: {stat_err}");
-                }
-            },
-            Err(open_err) => {
-                restore_note = format!(
-                    "; cannot reopen root for .git restore: {}",
-                    format_dir_op_err(&open_err)
-                );
-            }
-        }
-        return Err(map_delete_err_with_note(
-            err,
-            &verified.canonical_root,
-            true,
-            restored,
-            &restore_note,
-        ));
+        let (restored, restore_note) = restore_dot_git(verified, &dot_git_bytes);
+        return Err(WorktreeRemoveError::DeleteFailed {
+            path: verified.canonical_root.clone(),
+            reason: format!("{}{restore_note}", format_delete_child_err(&err)),
+            partial: true,
+            dot_git_preserved: restored,
+        });
     }
     Ok(())
+}
+
+fn restore_dot_git(verified: &VerifiedWorktree, dot_git_bytes: &[u8]) -> (bool, String) {
+    match verified.root_parent.open_child_dir(&verified.root_name) {
+        Ok(reopened) => match reopened.stat_self() {
+            Ok((id, _)) if id == verified.root_id => {
+                match reopened.create_child_file_exclusive(OsStr::new(".git"), dot_git_bytes) {
+                    Ok(()) => (true, String::new()),
+                    Err(restore_err) => (false, format!("; failed to restore .git: {restore_err}")),
+                }
+            }
+            Ok(_) => (
+                false,
+                "; root changed identity before .git restore".to_owned(),
+            ),
+            Err(stat_err) => (
+                false,
+                format!("; cannot stat root for .git restore: {stat_err}"),
+            ),
+        },
+        Err(open_err) => (
+            false,
+            format!(
+                "; cannot reopen root for .git restore: {}",
+                format_dir_op_err(&open_err)
+            ),
+        ),
+    }
 }
 
 /// Handle-anchored deletion of a verified Git worktree admin directory
@@ -323,6 +466,12 @@ pub(crate) fn remove_tree_no_follow(
 pub(crate) fn prune_verified_admin_dir(
     verified: &VerifiedWorktree,
 ) -> Result<(), WorktreeRemoveError> {
+    let admin_anchor = Anchor {
+        parent: &verified.worktrees_parent,
+        name: OsStr::new(&verified.worktree_name),
+        id: verified.admin_dir_id,
+        path: &verified.admin_dir,
+    };
     let admin_handle = verified
         .worktrees_parent
         .open_child_dir(OsStr::new(&verified.worktree_name))
@@ -372,11 +521,18 @@ pub(crate) fn prune_verified_admin_dir(
     }
 
     let mut removed_any = false;
+    let ctx = DeleteCtx {
+        root_id: actual_id,
+        anchor: &admin_anchor,
+        expected_dirs: None,
+        own_modules_dir: None,
+        guard_nested_git: false,
+    };
     delete_dir_contents(
         &admin_handle,
         &verified.admin_dir,
-        actual_id,
-        None,
+        0,
+        &ctx,
         false,
         &mut removed_any,
     )
@@ -415,12 +571,9 @@ fn open_verified_root(verified: &VerifiedWorktree) -> Result<DirHandle, Worktree
         .root_parent
         .open_child_dir(&verified.root_name)
         .map_err(|err| match err {
-            DirOpError::Link(kind) => WorktreeRemoveError::LinksDetected {
-                links: vec![(verified.canonical_root.clone(), kind.to_owned())],
-                total_links: 1,
-                unreadable: Vec::new(),
-                total_unreadable: 0,
-            },
+            DirOpError::Link(kind) => {
+                WorktreeRemoveError::single_link(verified.canonical_root.clone(), kind)
+            }
             other => WorktreeRemoveError::CustodyChanged {
                 path: verified.canonical_root.clone(),
                 reason: format!(
@@ -437,15 +590,10 @@ fn open_verified_root(verified: &VerifiedWorktree) -> Result<DirHandle, Worktree
                 reason: format!("cannot stat verified worktree root: {err}"),
             })?;
     if is_mount_root || live_mountinfo_contains(&verified.canonical_root, verified.root_id)? {
-        return Err(WorktreeRemoveError::LinksDetected {
-            links: vec![(
-                verified.canonical_root.clone(),
-                "mount point / bind mount".to_owned(),
-            )],
-            total_links: 1,
-            unreadable: Vec::new(),
-            total_unreadable: 0,
-        });
+        return Err(WorktreeRemoveError::single_link(
+            verified.canonical_root.clone(),
+            "mount point / bind mount",
+        ));
     }
     if actual_id != verified.root_id {
         return Err(WorktreeRemoveError::CustodyChanged {
@@ -456,14 +604,23 @@ fn open_verified_root(verified: &VerifiedWorktree) -> Result<DirHandle, Worktree
     Ok(handle)
 }
 
+struct DeleteCtx<'a> {
+    root_id: NodeId,
+    anchor: &'a Anchor<'a>,
+    expected_dirs: Option<&'a HashMap<PathBuf, NodeId>>,
+    own_modules_dir: Option<&'a Path>,
+    guard_nested_git: bool,
+}
+
 fn delete_dir_contents(
     dir_handle: &DirHandle,
     dir_path: &Path,
-    root_id: NodeId,
-    expected_dirs: Option<&HashMap<PathBuf, NodeId>>,
+    depth: usize,
+    ctx: &DeleteCtx<'_>,
     skip_root_dot_git: bool,
     removed_any: &mut bool,
 ) -> Result<(), WorktreeRemoveError> {
+    ctx.anchor.verify()?;
     let names = dir_handle
         .read_entries()
         .map_err(|err| WorktreeRemoveError::DeleteFailed {
@@ -476,14 +633,10 @@ fn delete_dir_contents(
         if skip_root_dot_git && name == OsStr::new(".git") {
             continue;
         }
+        ctx.anchor.verify()?;
         let entry_path = dir_path.join(&name);
         let info = dir_handle.inspect_child(&name).map_err(|err| match err {
-            DirOpError::Link(kind) => WorktreeRemoveError::LinksDetected {
-                links: vec![(entry_path.clone(), kind.to_owned())],
-                total_links: 1,
-                unreadable: Vec::new(),
-                total_unreadable: 0,
-            },
+            DirOpError::Link(kind) => WorktreeRemoveError::single_link(entry_path.clone(), kind),
             other => WorktreeRemoveError::DeleteFailed {
                 path: entry_path.clone(),
                 reason: format_dir_op_err(&other),
@@ -491,12 +644,17 @@ fn delete_dir_contents(
                 dot_git_preserved: true,
             },
         })?;
-        if let Some(kind) = check_child_guard(&entry_path, info, root_id)? {
-            return Err(WorktreeRemoveError::LinksDetected {
-                links: vec![(entry_path, kind.to_owned())],
-                total_links: 1,
-                unreadable: Vec::new(),
-                total_unreadable: 0,
+        if let Some(kind) = check_child_guard(&entry_path, info, ctx.root_id)? {
+            return Err(WorktreeRemoveError::single_link(entry_path, kind));
+        }
+        if ctx.guard_nested_git
+            && depth > 0
+            && name == OsStr::new(".git")
+            && let Some(kind) = nested_git_kind(dir_handle, dir_path, info, ctx.own_modules_dir)
+        {
+            return Err(WorktreeRemoveError::NestedGitRepositories {
+                paths: vec![(dir_path.to_path_buf(), kind.to_owned())],
+                total: 1,
             });
         }
         if info.kind == ChildKind::Dir {
@@ -504,9 +662,9 @@ fn delete_dir_contents(
                 dir_handle,
                 &name,
                 &entry_path,
+                depth + 1,
                 info.id,
-                root_id,
-                expected_dirs,
+                ctx,
                 removed_any,
             )?;
         } else {
@@ -523,12 +681,12 @@ fn delete_child_dir_recursive(
     parent_handle: &DirHandle,
     name: &OsString,
     entry_path: &Path,
+    child_depth: usize,
     inspected_id: NodeId,
-    root_id: NodeId,
-    expected_dirs: Option<&HashMap<PathBuf, NodeId>>,
+    ctx: &DeleteCtx<'_>,
     removed_any: &mut bool,
 ) -> Result<(), WorktreeRemoveError> {
-    let expected_id = if let Some(map) = expected_dirs {
+    let expected_id = if let Some(map) = ctx.expected_dirs {
         let Some(&scanned) = map.get(entry_path) else {
             return Err(WorktreeRemoveError::CustodyChanged {
                 path: entry_path.to_path_buf(),
@@ -549,12 +707,9 @@ fn delete_child_dir_recursive(
     let child_handle = parent_handle
         .open_child_dir(name)
         .map_err(|err| match err {
-            DirOpError::Link(kind) => WorktreeRemoveError::LinksDetected {
-                links: vec![(entry_path.to_path_buf(), kind.to_owned())],
-                total_links: 1,
-                unreadable: Vec::new(),
-                total_unreadable: 0,
-            },
+            DirOpError::Link(kind) => {
+                WorktreeRemoveError::single_link(entry_path.to_path_buf(), kind)
+            }
             other => WorktreeRemoveError::DeleteFailed {
                 path: entry_path.to_path_buf(),
                 reason: format_dir_op_err(&other),
@@ -570,18 +725,13 @@ fn delete_child_dir_recursive(
                 reason: format!("cannot stat opened directory handle: {err}"),
             })?;
     if is_mount_root
-        || actual_id.crosses_mount_from(root_id)
-        || live_mountinfo_contains(entry_path, root_id)?
+        || actual_id.crosses_mount_from(ctx.root_id)
+        || live_mountinfo_contains(entry_path, ctx.root_id)?
     {
-        return Err(WorktreeRemoveError::LinksDetected {
-            links: vec![(
-                entry_path.to_path_buf(),
-                "mount point / bind mount".to_owned(),
-            )],
-            total_links: 1,
-            unreadable: Vec::new(),
-            total_unreadable: 0,
-        });
+        return Err(WorktreeRemoveError::single_link(
+            entry_path.to_path_buf(),
+            "mount point / bind mount",
+        ));
     }
     if actual_id != expected_id {
         return Err(WorktreeRemoveError::CustodyChanged {
@@ -593,8 +743,8 @@ fn delete_child_dir_recursive(
     delete_dir_contents(
         &child_handle,
         entry_path,
-        root_id,
-        expected_dirs,
+        child_depth,
+        ctx,
         false,
         removed_any,
     )?;
@@ -602,62 +752,10 @@ fn delete_child_dir_recursive(
     // (required on Windows so the directory is not held open during delete).
     drop(child_handle);
 
+    ctx.anchor.verify()?;
     parent_handle
         .remove_child_dir(name, Some(expected_id))
         .map_err(|err| map_delete_err(err, entry_path, *removed_any, true))?;
     *removed_any = true;
     Ok(())
-}
-
-fn map_delete_err(
-    err: DeleteChildError,
-    path: &Path,
-    partial: bool,
-    dot_git_preserved: bool,
-) -> WorktreeRemoveError {
-    map_delete_err_with_note(err, path, partial, dot_git_preserved, "")
-}
-
-fn map_delete_err_with_note(
-    err: DeleteChildError,
-    path: &Path,
-    partial: bool,
-    dot_git_preserved: bool,
-    note: &str,
-) -> WorktreeRemoveError {
-    match err {
-        DeleteChildError::Link(kind) => WorktreeRemoveError::LinksDetected {
-            links: vec![(path.to_path_buf(), kind.to_owned())],
-            total_links: 1,
-            unreadable: Vec::new(),
-            total_unreadable: 0,
-        },
-        DeleteChildError::IdentityMismatch => WorktreeRemoveError::CustodyChanged {
-            path: path.to_path_buf(),
-            reason: format!("entry identity changed before deletion{note}"),
-        },
-        DeleteChildError::ClearReadonlyFailed(io_err) => WorktreeRemoveError::DeleteFailed {
-            path: path.to_path_buf(),
-            reason: format!(
-                "failed to clear read-only attribute on verified handle: {io_err}{note}"
-            ),
-            partial,
-            dot_git_preserved,
-        },
-        DeleteChildError::Io(io_err) => WorktreeRemoveError::DeleteFailed {
-            path: path.to_path_buf(),
-            reason: format!("{io_err}{note}"),
-            partial,
-            dot_git_preserved,
-        },
-    }
-}
-
-pub(crate) fn format_dir_op_err(err: &DirOpError) -> String {
-    match err {
-        DirOpError::NotFound => "entry not found".to_owned(),
-        DirOpError::Link(kind) => (*kind).to_owned(),
-        DirOpError::NotDir => "not a directory".to_owned(),
-        DirOpError::Io(io_err) => io_err.to_string(),
-    }
 }

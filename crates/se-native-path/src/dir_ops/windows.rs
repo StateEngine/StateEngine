@@ -31,11 +31,10 @@ use windows_sys::{
             CreateFileW, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
             FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO,
             FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-            FILE_FULL_DIR_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-            FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
-            FileBasicInfo, FileDispositionInfo, FileFullDirectoryInfo,
-            FileFullDirectoryRestartInfo, GetFileInformationByHandleEx, OPEN_EXISTING, SYNCHRONIZE,
-            SetFileInformationByHandle,
+            FILE_FULL_DIR_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FileBasicInfo,
+            FileDispositionInfo, FileFullDirectoryInfo, FileFullDirectoryRestartInfo,
+            GetFileInformationByHandleEx, OPEN_EXISTING, SYNCHRONIZE, SetFileInformationByHandle,
         },
         System::IO::IO_STATUS_BLOCK,
     },
@@ -77,6 +76,7 @@ fn nt_open_relative(
     parent: &File,
     name: &OsStr,
     access: u32,
+    share: u32,
     disposition: u32,
     options: u32,
 ) -> io::Result<File> {
@@ -108,7 +108,7 @@ fn nt_open_relative(
             &mut iosb,
             ptr::null(),
             FILE_ATTRIBUTE_NORMAL,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            share,
             disposition,
             options,
             ptr::null(),
@@ -193,10 +193,12 @@ fn delete_on_verified_handle(
     } else {
         FILE_NON_DIRECTORY_FILE
     };
+    let share = FILE_SHARE_READ | FILE_SHARE_WRITE;
     let handle = nt_open_relative(
         parent,
         name,
         DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        share,
         FILE_OPEN,
         FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT | type_opt,
     )
@@ -219,6 +221,7 @@ fn delete_on_verified_handle(
             parent,
             name,
             DELETE | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
+            share,
             FILE_OPEN,
             FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT | type_opt,
         )
@@ -260,11 +263,12 @@ impl DirHandle {
     pub(super) fn open_root(path: &Path) -> Result<Self, DirOpError> {
         let wide = wide_path_nul(path).map_err(DirOpError::Io)?;
         // SAFETY: `wide` is NUL-terminated; opens existing directory without following reparse points.
+        // Omit `FILE_SHARE_DELETE` so the OS prevents displacing a held directory during traversal/deletion.
         let raw = unsafe {
             CreateFileW(
                 wide.as_ptr(),
                 FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
                 ptr::null(),
                 OPEN_EXISTING,
                 FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
@@ -293,6 +297,7 @@ impl DirHandle {
             &self.file,
             name,
             FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
             FILE_OPEN,
             FILE_OPEN_REPARSE_POINT | FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
         )
@@ -378,6 +383,7 @@ impl DirHandle {
             &self.file,
             name,
             FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
             FILE_OPEN,
             FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
         )
@@ -397,6 +403,7 @@ impl DirHandle {
             &self.file,
             name,
             GENERIC_READ | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
             FILE_OPEN,
             FILE_OPEN_REPARSE_POINT | FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
         )
@@ -427,6 +434,7 @@ impl DirHandle {
             &self.file,
             name,
             FILE_WRITE_DATA | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
             FILE_CREATE,
             FILE_OPEN_REPARSE_POINT | FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
         )?;

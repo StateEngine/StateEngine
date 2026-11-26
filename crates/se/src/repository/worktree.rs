@@ -47,6 +47,14 @@ fn map_error(error: WorktreeRemoveError) -> SeError {
             unreadable,
             total_unreadable,
         } => links_refusal(&links, total_links, &unreadable, total_unreadable),
+        WorktreeRemoveError::NestedGitRepositories { paths, total } => refusal(
+            "nested Git repository",
+            &format!(
+                "refusing to delete nested Git repository or worktree(s): {}",
+                format_entries(&paths, total)
+            ),
+            "Remove or commit the nested worktree/repository first (for example `se worktree remove <nested-path>`), then retry `se worktree remove`; `--force` never deletes nested Git repositories or worktrees.",
+        ),
         WorktreeRemoveError::CustodyChanged { path, reason } => refusal(
             "worktree custody",
             &format!("{}: {reason}", path.display()),
@@ -140,17 +148,24 @@ fn delete_refusal(
     partial: bool,
     dot_git_preserved: bool,
 ) -> SeError {
-    let status = match (partial, dot_git_preserved) {
-        (true, true) => {
-            "partial deletion occurred, but root .git was preserved so retry remains safe"
-        }
-        (true, false) => "partial deletion occurred after removing root .git",
-        (false, _) => "no files were removed",
+    let (status, next_step) = match (partial, dot_git_preserved) {
+        (true, true) => (
+            "partial deletion occurred, but root .git was preserved so retry remains safe",
+            "Close any processes holding open handles and fix directory permissions, then retry `se worktree remove`.",
+        ),
+        (true, false) => (
+            "partial deletion occurred and root .git could not be restored",
+            "Inspect the surviving directory, remove it manually once handles/permissions are resolved, and run `git worktree prune` in the primary repository.",
+        ),
+        (false, _) => (
+            "no files were removed",
+            "Close any processes holding open handles and fix directory permissions, then retry `se worktree remove`.",
+        ),
     };
     refusal(
         "worktree deletion",
         &format!("failed to remove {}: {reason} ({status})", path.display()),
-        "Close any processes holding open handles and fix directory permissions, then retry `se worktree remove`.",
+        next_step,
     )
 }
 

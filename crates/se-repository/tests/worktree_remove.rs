@@ -70,6 +70,64 @@ fn removes_clean_linked_worktree_and_prunes_metadata() -> TestResult {
 }
 
 #[test]
+fn removes_wide_worktree_without_exhausting_file_descriptors() -> TestResult {
+    let case = TempCase::new("wide")?;
+    let (main_dir, wt_dir) = case.init_repo_with_worktree("wt-wide")?;
+    for i in 0..1200 {
+        fs::create_dir(wt_dir.join(format!("dir-{i:04}")))?;
+    }
+    let report = remove_worktree(&wt_dir, true)
+        .map_err(|err| format!("wide worktree removal must not exhaust FDs: {err:?}"))?;
+    assert!(report.pruned);
+    assert!(!wt_dir.exists());
+    let repo = Repository::open(&main_dir)?;
+    assert!(repo.find_worktree("wt-wide").is_err());
+    Ok(())
+}
+
+#[test]
+fn refuses_nested_git_repo_and_nested_worktree_even_with_force() -> TestResult {
+    let case = TempCase::new("nested-git")?;
+    let (main_dir, wt_dir) = case.init_repo_with_worktree("wt-outer")?;
+
+    // 1. Nested standalone Git repository inside the worktree.
+    let nested_repo_dir = wt_dir.join("sub-repo");
+    fs::create_dir_all(&nested_repo_dir)?;
+    let _nested_repo = Repository::init(&nested_repo_dir)?;
+    let nested_file = nested_repo_dir.join("work.txt");
+    fs::write(&nested_file, "other agent work\n")?;
+
+    // 2. Nested linked Git worktree inside the worktree.
+    let main_repo = Repository::open(&main_dir)?;
+    let nested_wt_dir = wt_dir.join("nested-wt");
+    main_repo.worktree("wt-nested", &nested_wt_dir, None)?;
+    let nested_wt_file = nested_wt_dir.join("wip.txt");
+    fs::write(&nested_wt_file, "nested worktree wip\n")?;
+
+    let err = remove_worktree(&wt_dir, true)
+        .err()
+        .ok_or("nested Git repo and nested worktree must refuse even under --force")?;
+    match err {
+        WorktreeRemoveError::NestedGitRepositories { paths, total } => {
+            assert_eq!(total, 2, "expected both nested repos reported: {paths:?}");
+        }
+        other => return Err(format!("expected NestedGitRepositories, got {other:?}").into()),
+    }
+    assert!(nested_file.exists(), "nested repo file must survive");
+    assert!(nested_wt_file.exists(), "nested worktree file must survive");
+    assert!(wt_dir.join(".git").is_file(), "outer worktree must survive");
+    assert!(
+        main_repo.find_worktree("wt-outer").is_ok(),
+        "outer registration must survive"
+    );
+    assert!(
+        main_repo.find_worktree("wt-nested").is_ok(),
+        "nested registration must survive"
+    );
+    Ok(())
+}
+
+#[test]
 fn refuses_primary_repo_unrelated_dir_subdirectory_and_absent_path() -> TestResult {
     let case = TempCase::new("not-wt")?;
     let (main_dir, wt_dir) = case.init_repo_with_worktree("wt-sub")?;

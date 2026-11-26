@@ -1,8 +1,8 @@
 //! Safe linked Git worktree removal with a non-following link/junction/mount guard.
 pub use crate::worktree_guard::parse_linux_mountinfo;
-use crate::worktree_guard::{
-    format_dir_op_err, prune_verified_admin_dir, remove_tree_no_follow, scan_tree_for_links,
-};
+use crate::worktree_guard::{prune_verified_admin_dir, remove_tree_no_follow, scan_tree_for_links};
+use crate::worktree_types::{VerifiedWorktree, format_dir_op_err};
+pub use crate::worktree_types::{WorktreeRemoveError, WorktreeRemoveReport};
 use git2::{Repository, RepositoryOpenFlags, StatusOptions, WorktreeLockStatus};
 use se_native_path::dir_ops::{ChildKind, DirHandle, DirOpError, NodeId};
 use std::{
@@ -12,76 +12,6 @@ use std::{
 
 /// Maximum dirty/untracked/ignored sample paths included in a dirty refusal.
 const MAX_DIRTY_SAMPLE: usize = 10;
-
-/// Witnessed result of a completed safe worktree removal.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WorktreeRemoveReport {
-    pub path: PathBuf,
-    pub worktree_name: String,
-    pub common_dir: PathBuf,
-    pub forced: bool,
-    pub pruned: bool,
-}
-
-/// Typed refusal or failure from [`remove_worktree`].
-/// Absent, unreadable, link/mount-guarded, custody-changed, and dirty states
-/// are never collapsed.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum WorktreeRemoveError {
-    Absent {
-        path: PathBuf,
-    },
-    Unreadable {
-        entries: Vec<(PathBuf, String)>,
-        total: usize,
-    },
-    LinksDetected {
-        links: Vec<(PathBuf, String)>,
-        total_links: usize,
-        unreadable: Vec<(PathBuf, String)>,
-        total_unreadable: usize,
-    },
-    CustodyChanged {
-        path: PathBuf,
-        reason: String,
-    },
-    NotLinkedWorktree {
-        path: PathBuf,
-        reason: String,
-    },
-    Locked {
-        path: PathBuf,
-        reason: Option<String>,
-    },
-    Dirty {
-        path: PathBuf,
-        count: usize,
-        sample: Vec<String>,
-    },
-    DeleteFailed {
-        path: PathBuf,
-        reason: String,
-        partial: bool,
-        dot_git_preserved: bool,
-    },
-    PruneFailed {
-        worktree_name: String,
-        reason: String,
-    },
-}
-
-pub(crate) struct VerifiedWorktree {
-    pub(crate) canonical_root: PathBuf,
-    pub(crate) root_parent: DirHandle,
-    pub(crate) root_name: OsString,
-    pub(crate) root_id: NodeId,
-    pub(crate) dot_git_id: NodeId,
-    pub(crate) common_dir: PathBuf,
-    pub(crate) worktrees_parent: DirHandle,
-    pub(crate) admin_dir: PathBuf,
-    pub(crate) admin_dir_id: NodeId,
-    pub(crate) worktree_name: String,
-}
 
 /// Safely remove a linked Git worktree at `path`.
 ///
@@ -118,12 +48,7 @@ fn inspect_target_root(
         DirOpError::NotFound => WorktreeRemoveError::Absent {
             path: path.to_path_buf(),
         },
-        DirOpError::Link(kind) => WorktreeRemoveError::LinksDetected {
-            links: vec![(path.to_path_buf(), kind.to_owned())],
-            total_links: 1,
-            unreadable: Vec::new(),
-            total_unreadable: 0,
-        },
+        DirOpError::Link(kind) => WorktreeRemoveError::single_link(path.to_path_buf(), kind),
         DirOpError::NotDir => WorktreeRemoveError::NotLinkedWorktree {
             path: path.to_path_buf(),
             reason: "target path is not a directory".to_owned(),
@@ -141,12 +66,10 @@ fn inspect_target_root(
                 total: 1,
             })?;
     if is_mount_root {
-        return Err(WorktreeRemoveError::LinksDetected {
-            links: vec![(path.to_path_buf(), "mount point / bind mount".to_owned())],
-            total_links: 1,
-            unreadable: Vec::new(),
-            total_unreadable: 0,
-        });
+        return Err(WorktreeRemoveError::single_link(
+            path.to_path_buf(),
+            "mount point / bind mount",
+        ));
     }
     let canonical =
         se_proc::canonicalize_path(path).map_err(|err| WorktreeRemoveError::Unreadable {
@@ -225,12 +148,7 @@ fn inspect_dot_git_file(
             });
         }
         Err(DirOpError::Link(kind)) => {
-            return Err(WorktreeRemoveError::LinksDetected {
-                links: vec![(dot_git, kind.to_owned())],
-                total_links: 1,
-                unreadable: Vec::new(),
-                total_unreadable: 0,
-            });
+            return Err(WorktreeRemoveError::single_link(dot_git, kind));
         }
         Err(err) => {
             return Err(WorktreeRemoveError::Unreadable {
@@ -240,12 +158,7 @@ fn inspect_dot_git_file(
         }
     };
     match info.kind {
-        ChildKind::Link(kind) => Err(WorktreeRemoveError::LinksDetected {
-            links: vec![(dot_git, kind.to_owned())],
-            total_links: 1,
-            unreadable: Vec::new(),
-            total_unreadable: 0,
-        }),
+        ChildKind::Link(kind) => Err(WorktreeRemoveError::single_link(dot_git, kind)),
         ChildKind::Dir => Err(WorktreeRemoveError::NotLinkedWorktree {
             path: canonical_root.to_path_buf(),
             reason: "target has a physical .git directory (primary repository root, not a linked worktree)".to_owned(),
