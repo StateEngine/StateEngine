@@ -169,7 +169,7 @@ impl LaunchCoordinator {
             // independent targets selected by --all.
             let agent=row.target.agent.id.clone();
             let current=self.store.read(admission.clone(),deadline,move |cx| se_core::scope::require_present(cx.read.control_target(agent).map_err(|e|se_core::store_error::store_error(&e))?,"current stop control","Restore the current create grant or use the owner's terminal.")).await?;
-            if let Some(expected) = &expected { expected.check(&current)?; }
+            if scoped_ended(expected.as_ref(), &current, &mut row)? { return Ok(()); }
             external = self.retire_embedded_bindings(&current, &row.target.agent.id, key, &admission, deadline).await?;
             if !external.is_empty() && current.processes.is_empty() {
                 let changed = external.iter().any(|binding| binding.changed);
@@ -186,14 +186,12 @@ impl LaunchCoordinator {
             let job=match retained? {Some(job)=>Some(job),None=>self.cold_stop_job(&current,&row.target.project.id,deadline).await?};
             let Some(job)=job else {
                 if current.processes.is_empty() && current.sessions.is_empty() && matches!(current.latest_process,se_types::Read::Absent {..}) {
-                    row.result="already-stopped".into();row.population="empty".into();row.enumeration="not-applicable".into();
-                    row.witness=StopWitness {state:"witnessed".into(),method:Some("not-applicable".into()),observed_at:Some(se_core::ops::receipt::timestamp(crate::runtime::start::now_unix_micros()?)?),detail:Some("The complete admitted control snapshot contains no recorded managed lifecycle or live session.".into())};
-                    return Ok(());
+                    return already_stopped(&mut row, "The complete admitted control snapshot contains no recorded managed lifecycle or live session.");
                 }
                 return Err(se_core::scope::unreadable("cold stop custody","this host has no retained native reference; protected-record recovery is required before claiming an exit"));
             };
             if expected.as_ref().is_some_and(|expected| expected.lifecycle != job.lifecycle) {
-                return Err(error("remote stop lifecycle", "the retained job is not the recorded remote launch"));
+                return Err(error("scoped stop lifecycle", "the retained job is not the recorded lifecycle"));
             }
             if !release { self.interrupt_startup(&job,key,admission.clone(),deadline).await?; }
             let mut work=if release {
@@ -303,6 +301,40 @@ impl LaunchCoordinator {
             })
             .cloned())
     }
+}
+/// A scoped stop refuses other live work. When nothing live is its own and a
+/// newer lifecycle exists, its lifecycle already ended: report that, touch nothing.
+fn scoped_ended(
+    expected: Option<&se_core::ops::stop_plan::ExpectedLifecycle>,
+    current: &se_store::ControlTarget,
+    row: &mut AgentStopResult,
+) -> Result<bool> {
+    let Some(expected) = expected else {
+        return Ok(false);
+    };
+    expected.check(current)?;
+    if !expected.superseded(current) {
+        return Ok(false);
+    }
+    already_stopped(
+        row,
+        "The recorded lifecycle has no live process or session; newer work on this agent was left untouched.",
+    )?;
+    Ok(true)
+}
+fn already_stopped(row: &mut AgentStopResult, detail: &str) -> Result<()> {
+    row.result = "already-stopped".into();
+    row.population = "empty".into();
+    row.enumeration = "not-applicable".into();
+    row.witness = StopWitness {
+        state: "witnessed".into(),
+        method: Some("not-applicable".into()),
+        observed_at: Some(se_core::ops::receipt::timestamp(
+            crate::runtime::start::now_unix_micros()?,
+        )?),
+        detail: Some(detail.into()),
+    };
+    Ok(())
 }
 /// Receipt fields carry public failure text rather than an error envelope.
 /// Keep its recovery advice too, without exposing a private error cause chain.

@@ -10,10 +10,10 @@ use std::{num::NonZeroU32, time::Duration};
 pub struct ControlAgent {
     pub target: StopTarget,
     pub control: ControlTarget,
-    /// Set by remote stop: only this lifecycle may stop; other live work refuses.
+    /// A stop scoped to one recorded lifecycle; other live work refuses.
     pub expected: Option<ExpectedLifecycle>,
 }
-/// One recorded launch. A stop scoped to it never touches later or foreign work.
+/// One recorded lifecycle. A stop scoped to it never touches later or other work.
 #[derive(Clone, Debug)]
 pub struct ExpectedLifecycle {
     pub session: SessionId,
@@ -44,13 +44,27 @@ impl ExpectedLifecycle {
         if foreign_session || foreign_process {
             return Err(SeError::new(se_types::Detail::StateConflict(
                 se_types::details::StateConflict {
-                    subject: "remote stop".into(),
-                    reason: "the agent now runs work this paired machine did not launch".into(),
-                    next_step: "Ask the destination Owner to run se stop AGENT in a terminal on that machine.".into(),
+                    subject: "scoped stop".into(),
+                    reason: "the agent now runs work outside the lifecycle this stop may end"
+                        .into(),
+                    next_step:
+                        "Ask the Owner of that machine to run se stop AGENT in a terminal there."
+                            .into(),
                 },
             )));
         }
         Ok(())
+    }
+    /// Nothing live and a newer lifecycle recorded: this lifecycle already ended,
+    /// and the newer one belongs to someone else.
+    pub fn superseded(&self, control: &ControlTarget) -> bool {
+        control.sessions.is_empty()
+            && control.processes.is_empty()
+            && matches!(&control.latest_process, se_types::Read::Present { value }
+                if !matches!(&value.current.body,
+                    EventBody::ProcessRegistered { identity, .. }
+                    | EventBody::ProcessTransition { identity, .. }
+                        if identity.record == self.lifecycle))
     }
 }
 #[derive(Clone)]

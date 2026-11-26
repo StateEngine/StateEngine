@@ -37,6 +37,22 @@ impl RemoteAdmission {
         &self.verb
     }
 }
+/// The native call must be this exact grant's one-target, sessionless project call.
+fn admitted<R: se_store::Snapshot>(
+    admission: &RemoteAdmission,
+    verb: RemoteVerb,
+    target: &RemoteTarget,
+    attribution: &RemoteAttribution,
+    cx: &crate::commit::Cx<'_, R>,
+) -> bool {
+    admission.verb == verb
+        && admission.targets.as_slice() == std::slice::from_ref(target)
+        && cx.admission.actor == Actor::Remote(admission.grant.principal.clone())
+        && cx.admission.scope == Scope::Project(target.project.clone())
+        && cx.admission.session.is_none()
+        && attribution.grant == admission.grant.grant
+        && attribution.principal == admission.grant.principal
+}
 pub fn authorize(
     grant: GrantRecord,
     verb: RemoteVerb,

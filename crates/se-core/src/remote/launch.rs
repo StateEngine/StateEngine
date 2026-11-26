@@ -32,14 +32,13 @@ pub fn plan_launch<R: Snapshot>(
     configuration: &se_config::config_policy::ConfigFile,
     cx: &mut Cx<'_, R>,
 ) -> Result<LaunchPlan> {
-    if admission.verb != RemoteVerb::Launch
-        || admission.targets.as_slice() != std::slice::from_ref(&input.target)
-        || cx.admission.actor != Actor::Remote(admission.grant.principal.clone())
-        || cx.admission.scope != Scope::Project(input.target.project.clone())
-        || cx.admission.session.is_some()
-        || attribution.grant != admission.grant.grant
-        || attribution.principal != admission.grant.principal
-    {
+    if !admitted(
+        &admission,
+        RemoteVerb::Launch,
+        &input.target,
+        &attribution,
+        cx,
+    ) {
         return Err(scope::unreadable(
             "remote launch authority",
             "the native admission differs from this exact Owner-approved destination identity",
