@@ -569,14 +569,19 @@ fn publish_replace(ctx: &ReplaceCtx<'_>) -> Result<(), WorkspaceWriteError> {
         // (inode, size, mtime, mode), so a later in-place edit is never lost.
         match stat_entry_at(ctx.parent, ctx.leaf, libc::AT_SYMLINK_NOFOLLOW) {
             Ok(Some(m)) if TargetBaseline::from_meta(m) == ctx.stage_baseline => {}
-            Ok(_) => {
+            Ok(Some(_)) => {
                 return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                    "target changed after exchange ({reason}); both versions retained"
+                    "target changed after exchange ({reason}); rollback skipped to preserve the newer target"
+                )));
+            }
+            Ok(None) => {
+                return Err(WorkspaceWriteError::PublishedUncertain(format!(
+                    "target is absent after exchange ({reason}); rollback skipped"
                 )));
             }
             Err(stat_err) => {
                 return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                    "rollback inspection after exchange conflict ({reason}) failed: {stat_err}; both versions retained"
+                    "rollback inspection after exchange conflict ({reason}) failed: {stat_err}; rollback skipped"
                 )));
             }
         }
@@ -594,9 +599,14 @@ fn publish_replace(ctx: &ReplaceCtx<'_>) -> Result<(), WorkspaceWriteError> {
         // before unlinking it.
         match stat_entry_at(ctx.parent, ctx.stage, libc::AT_SYMLINK_NOFOLLOW) {
             Ok(Some(m)) if TargetBaseline::from_meta(m) == ctx.stage_baseline => {}
-            Ok(_) => {
+            Ok(Some(_)) => {
                 return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                    "original restored after exchange conflict ({reason}), but staging sibling changed before cleanup and was retained"
+                    "original restored after exchange conflict ({reason}), but staging sibling changed before cleanup and was left on disk"
+                )));
+            }
+            Ok(None) => {
+                return Err(WorkspaceWriteError::PublishedUncertain(format!(
+                    "original restored after exchange conflict ({reason}), but staging sibling was already absent before cleanup"
                 )));
             }
             Err(stat_err) => {
@@ -734,8 +744,11 @@ pub(super) fn write_relative(
                         ))
                     }
                 }
-                Ok(_) => WorkspaceWriteError::PublishedUncertain(format!(
-                    "parent displaced during create ({reason}); created target changed before rollback and was retained"
+                Ok(Some(_)) => WorkspaceWriteError::PublishedUncertain(format!(
+                    "parent displaced during create ({reason}); created target was modified before rollback and was left on disk"
+                )),
+                Ok(None) => WorkspaceWriteError::PublishedUncertain(format!(
+                    "parent displaced during create ({reason}); created target was already absent before rollback"
                 )),
                 Err(stat_err) => WorkspaceWriteError::PublishedUncertain(format!(
                     "parent displaced during create ({reason}); rollback inspection failed: {stat_err}"

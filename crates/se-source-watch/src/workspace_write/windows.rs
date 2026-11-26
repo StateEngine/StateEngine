@@ -135,15 +135,30 @@ pub(super) fn describe_siblings(parent: &File, candidates: &[(&str, &Path)]) -> 
 
 fn is_reserved_dos_name(part: &str) -> bool {
     let stem = part.split('.').next().unwrap_or(part);
-    stem.eq_ignore_ascii_case("CON")
+    if stem.eq_ignore_ascii_case("CON")
         || stem.eq_ignore_ascii_case("PRN")
         || stem.eq_ignore_ascii_case("AUX")
         || stem.eq_ignore_ascii_case("NUL")
-        || matches!(
-            stem.as_bytes(),
-            [b'C' | b'c', b'O' | b'o', b'M' | b'm', b'1'..=b'9']
-                | [b'L' | b'l', b'P' | b'p', b'T' | b't', b'1'..=b'9']
-        )
+    {
+        return true;
+    }
+    let mut chars = stem.chars();
+    let (Some(a), Some(b), Some(c), Some(d), None) = (
+        chars.next(),
+        chars.next(),
+        chars.next(),
+        chars.next(),
+        chars.next(),
+    ) else {
+        return false;
+    };
+    let is_port_prefix = (a.eq_ignore_ascii_case(&'C')
+        && b.eq_ignore_ascii_case(&'O')
+        && c.eq_ignore_ascii_case(&'M'))
+        || (a.eq_ignore_ascii_case(&'L')
+            && b.eq_ignore_ascii_case(&'P')
+            && c.eq_ignore_ascii_case(&'T'));
+    is_port_prefix && matches!(d, '1'..='9' | '\u{00B9}' | '\u{00B2}' | '\u{00B3}')
 }
 
 fn matches_revision(
@@ -529,6 +544,33 @@ mod replace;
 
 use replace::{ReplaceCtx, publish_replace};
 
+/// Close the write-capable staging handle so Windows finalizes its last-write
+/// time and `ReplaceFileW` can open it exclusively, then re-open read-only to
+/// capture the finalized post-close baseline while verifying object identity.
+fn finalize_stage_baseline(
+    parent: &File,
+    stage: File,
+    stage_str: &str,
+    stage_key: NativeObjectKey,
+) -> Result<TargetBaseline, WorkspaceWriteError> {
+    drop(stage);
+    let mut reopened_units = utf16_component(stage_str)?;
+    let reopened = nt_open_relative(
+        parent,
+        &mut reopened_units,
+        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE,
+    )
+    .map_err(io_before)?;
+    if se_state_files::observe_object_key(&reopened).map_err(io_before)? != stage_key {
+        return Err(invalid("staged file identity changed after close"));
+    }
+    let rev = se_state_files::observe_file_revision(&reopened).map_err(io_before)?;
+    Ok(TargetBaseline::from_revision(rev))
+}
+
 pub(super) fn write_relative(
     root: &File,
     root_path: &Path,
@@ -585,12 +627,6 @@ pub(super) fn write_relative(
         dispose_stage(&stage);
         io_before(error)
     })?;
-    let stage_baseline = se_state_files::observe_file_revision(&stage)
-        .map(TargetBaseline::from_revision)
-        .map_err(|error| {
-            dispose_stage(&stage);
-            io_before(error)
-        })?;
     let pre_publish = (|| -> Result<(), WorkspaceWriteError> {
         root_check().map_err(|error| {
             WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::RootUnverified(error))
@@ -604,8 +640,7 @@ pub(super) fn write_relative(
     }
 
     if let Some((held_file, expected)) = held_target {
-        // Close staging handle so ReplaceFileW can open it exclusively.
-        drop(stage);
+        let stage_baseline = finalize_stage_baseline(parent, stage, &stage_str, stage_key)?;
         return publish_replace(
             &ReplaceCtx {
                 root,

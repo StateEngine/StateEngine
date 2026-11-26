@@ -122,13 +122,13 @@ fn restore_displaced_backup(
         Ok(false) => {
             let status = describe_siblings(ctx.parent, &[(backup_str, backup_path)]);
             return WorkspaceWriteError::PublishedUncertain(format!(
-                "target changed again after replacement; current target kept ({status})"
+                "target changed again after replacement; rollback skipped ({status})"
             ));
         }
         Err(err) => {
             let status = describe_siblings(ctx.parent, &[(backup_str, backup_path)]);
             return WorkspaceWriteError::PublishedUncertain(format!(
-                "rollback target inspection failed ({err}); current target kept ({status})"
+                "rollback target inspection failed ({err}); rollback skipped ({status})"
             ));
         }
     }
@@ -335,7 +335,7 @@ pub(super) fn publish_replace(
             drop(held_target);
             let status = describe_siblings(ctx.parent, &[(&backup_str, &backup_path)]);
             return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                "replacement completed but target did not match staged revision; backup retained ({status})"
+                "replacement completed but target did not match staged revision; {status}"
             )));
         }
         Err(err) => {
@@ -343,7 +343,7 @@ pub(super) fn publish_replace(
             drop(held_target);
             let status = describe_siblings(ctx.parent, &[(&backup_str, &backup_path)]);
             return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                "replacement completed but target verification failed ({err}); backup retained ({status})"
+                "replacement completed but target verification failed ({err}); {status}"
             )));
         }
     }
