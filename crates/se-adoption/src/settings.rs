@@ -397,6 +397,32 @@ pub fn trust(path: &Path, entries: &[(String, String)]) -> Result<()> {
     Ok(())
 }
 
+/// How the owner restores these trust entries by hand: tables to add where the
+/// file has none, and tables to replace where it holds a different decision.
+pub fn trust_repair(path: &Path, entries: &[(String, String)]) -> Result<String> {
+    let (_, _, document) = read_document(path)?;
+    let state = document.get("hooks").and_then(|h| h.get("state"));
+    let (existing, absent): (Vec<_>, Vec<_>) = entries
+        .iter()
+        .cloned()
+        .partition(|(key, _)| state.and_then(|s| s.get(key)).is_some());
+    let mut steps = Vec::new();
+    if !absent.is_empty() {
+        steps.push(format!(
+            "Add these tables to {}:\n\n{}",
+            path.display(),
+            toml::trust_tables(&absent)
+        ));
+    }
+    if !existing.is_empty() {
+        steps.push(format!(
+            "Replace each of these existing tables in {} with:\n\n{}",
+            path.display(),
+            toml::trust_tables(&existing)
+        ));
+    }
+    Ok(steps.join("\n"))
+}
 pub fn missing_trust(path: &Path, entries: &[(String, String)]) -> Result<Vec<(String, String)>> {
     let (_, _, document) = read_document(path)?;
     let mut missing = Vec::new();

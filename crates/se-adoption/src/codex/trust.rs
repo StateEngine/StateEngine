@@ -183,14 +183,21 @@ pub(crate) fn verify(
     let untrusted: Vec<_> = select(registration, &rows, &lifecycle, required)?
         .into_iter()
         .filter(|entry| !trusted(&rows, entry))
-        .map(|(key, hash)| format!("[hooks.state.{key:?}] trusted_hash = {hash:?}"))
         .collect();
     if !untrusted.is_empty() {
-        return Err(invalid(&format!(
-            "Codex trust for these StateEngine hooks in {}; it may have been removed there, so it was not added again. Add it back in that file, then run this command again: {}",
-            registration.settings.to_local()?.display(),
-            untrusted.join("; ")
-        )));
+        let settings = registration.settings.to_local()?;
+        let mut error = invalid(&format!(
+            "Codex trust for these StateEngine hooks in {}; it may have been removed or changed there, so it was not written again",
+            settings.display()
+        ));
+        error.body = error.body.with_remedy(se_types::Remedy {
+            text: format!(
+                "{}\nThen run this command again.",
+                crate::settings::trust_repair(&settings, &untrusted)?
+            ),
+            command: None,
+        });
+        return Err(error);
     }
     record(home, registration, root, stamp)
 }
