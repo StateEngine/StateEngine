@@ -125,18 +125,12 @@ if [ "$recover" -eq 1 ]; then
         fi
     fi
 else [ ! -e "$partial" ] || fail "partial installation at $partial; resume with: sh \"$bundle/install.sh\" --recover"; fi
-# A current archive can remove a proved older installation without asking the
-# old image to read newer data. Native owner, file custody and quiet-runtime
-# checks precede effects; the claims span removal and this fresh installer.
-plain_path "$record"
-if [ "$recover" -eq 0 ] && [ "$native_held" -eq 0 ] && [ -e "$record" ]; then
-    replace_flags=''
-    if [ "$no_modify_path" -eq 1 ]; then replace_flags=' --no-modify-path'; fi
-    "$bundle/se" __install-replace "$data"$replace_flags || fail 'current-archive replacement did not complete; preserve the reported paths and resolve its refusal before retrying'
-    exit 0
-fi
+# Read any durable replacement custody BEFORE invoking __install-replace so a
+# crash between persisting replace.json and removing the old record preserves
+# no_modify_path and inherited file/directory custody on --recover.
 inherited_fish_path=''
 inherited_fish_sha256=''
+inherited_dirs=''
 if [ -f "$replace_state" ]; then
     custody=$("$bundle/se" __install-replace-custody "$data") || fail 'invalid or foreign replacement custody record'
     if [ -n "$custody" ]; then
@@ -148,11 +142,28 @@ if [ -f "$replace_state" ]; then
             2) [ -n "$inherit_path_edits" ] || inherit_path_edits=$line ;;
             3) inherited_fish_path=$line ;;
             4) inherited_fish_sha256=$line ;;
+            *)
+                if [ -n "$line" ]; then
+                    if [ -n "$inherited_dirs" ]; then inherited_dirs="$inherited_dirs
+$line"
+                    else inherited_dirs=$line; fi
+                fi
+                ;;
             esac
         done <<CUSTODY
 $custody
 CUSTODY
     fi
+fi
+# A current archive can remove a proved older installation without asking the
+# old image to read newer data. Native owner, file custody and quiet-runtime
+# checks precede effects; the claims span removal and this fresh installer.
+plain_path "$record"
+if [ "$recover" -eq 0 ] && [ "$native_held" -eq 0 ] && [ -e "$record" ]; then
+    replace_flags=''
+    if [ "$no_modify_path" -eq 1 ]; then replace_flags=' --no-modify-path'; fi
+    "$bundle/se" __install-replace "$data"$replace_flags || fail 'current-archive replacement did not complete; preserve the reported paths and resolve its refusal before retrying'
+    exit 0
 fi
 for destination in "$bin/se" "$assets" "$record"; do
     plain_path "$destination"
@@ -522,10 +533,25 @@ fi
     fi
     printf '\n  ],\n  "created_directories": ['
     comma=''
+    seen_dirs=''
     while IFS= read -r directory; do
-        if [ -n "$directory" ]; then printf '%s' "$comma"; json_string "$directory"; comma=','; fi
+        if [ -n "$directory" ]; then
+            case "
+$seen_dirs
+" in
+            *"
+$directory
+"*) ;;
+            *)
+                printf '%s' "$comma"; json_string "$directory"; comma=','
+                seen_dirs="$seen_dirs
+$directory"
+                ;;
+            esac
+        fi
     done <<DIRECTORIES
 $created_directories
+$inherited_dirs
 DIRECTORIES
     printf '],\n  "path_edits": ['
     comma=''

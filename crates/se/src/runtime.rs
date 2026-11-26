@@ -36,6 +36,8 @@ pub struct ReplaceCustody {
     pub inherited_path_edits: Vec<UninstallPathEdit>,
     #[serde(default)]
     pub inherited_files: Vec<UninstallFile>,
+    #[serde(default)]
+    pub inherited_directories: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

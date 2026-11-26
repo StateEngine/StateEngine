@@ -272,6 +272,30 @@ try {
         }
     } elseif (Test-Path -LiteralPath $pending) { throw "partial installation at $pending; rerun this archive's install.ps1 -Recover" }
     foreach ($path in @($root, $bin, $assets, $record)) { Assert-PlainPath $path }
+    $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $owner = $ownerSid.Value
+    if ([IO.Directory]::Exists($data)) { Assert-ProtectedDataHome $data $ownerSid }
+    # Read any durable replacement custody BEFORE invoking __install-replace so a
+    # crash between persisting replace.json and removing the old record preserves
+    # NoModifyPath and inherited PATH custody on -Recover.
+    $inheritedEdits = @()
+    if ([IO.File]::Exists($replaceState)) {
+        if ((Get-Acl -LiteralPath $replaceState).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $owner) { throw 'replacement custody has a different native owner' }
+        & (Join-Path $bundle 'se.exe') __install-files-check $replaceState
+        if ($LASTEXITCODE -ne 0) { throw 'replacement custody native file custody refused' }
+        $replaceObj = Get-Content -LiteralPath $replaceState -Raw | ConvertFrom-Json
+        if ($replaceObj.schema -ne 'stateengine-install-replace/v1' -or $replaceObj.owner -ne $owner) { throw 'replacement custody has an invalid schema or owner' }
+        if ($replaceObj.no_modify_path -is [bool] -and $replaceObj.no_modify_path) { $skipPathEdits = $true }
+        $repProp = $replaceObj.PSObject.Properties['inherited_path_edits']
+        if ($null -ne $repProp -and $null -ne $repProp.Value) {
+            $inheritedEdits = @($repProp.Value)
+            foreach ($edit in @($inheritedEdits)) {
+                $target = $edit.PSObject.Properties['target']
+                if ($null -eq $target -or [string]$target.Value -cne 'HKCU\Environment\Path') { throw 'inherited PATH custody differs from the original registry target' }
+            }
+            if ($inheritedEdits.Count -gt 1) { throw 'inherited PATH custody differs from the original registry target' }
+        }
+    }
     # Current native code reads the retained schema and validates the exact old
     # installation. It refuses a live runtime and retains both claims through
     # this script's normal fresh-install journal; no old executable is invoked.
@@ -308,27 +332,6 @@ try {
     }
     foreach ($copy in $copies) {
         $copy.stage = Join-Path ([IO.Path]::GetDirectoryName($copy.to)) ('.se-publish-' + [Guid]::NewGuid().ToString('N'))
-    }
-    $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-    $owner = $ownerSid.Value
-    if ([IO.Directory]::Exists($data)) { Assert-ProtectedDataHome $data $ownerSid }
-    $inheritedEdits = @()
-    if ([IO.File]::Exists($replaceState)) {
-        if ((Get-Acl -LiteralPath $replaceState).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $owner) { throw 'replacement custody has a different native owner' }
-        & (Join-Path $bundle 'se.exe') __install-files-check $replaceState
-        if ($LASTEXITCODE -ne 0) { throw 'replacement custody native file custody refused' }
-        $replaceObj = Get-Content -LiteralPath $replaceState -Raw | ConvertFrom-Json
-        if ($replaceObj.schema -ne 'stateengine-install-replace/v1' -or $replaceObj.owner -ne $owner) { throw 'replacement custody has an invalid schema or owner' }
-        if ($replaceObj.no_modify_path -is [bool] -and $replaceObj.no_modify_path) { $skipPathEdits = $true }
-        $repProp = $replaceObj.PSObject.Properties['inherited_path_edits']
-        if ($null -ne $repProp -and $null -ne $repProp.Value) {
-            $inheritedEdits = @($repProp.Value)
-            foreach ($edit in @($inheritedEdits)) {
-                $target = $edit.PSObject.Properties['target']
-                if ($null -eq $target -or [string]$target.Value -cne 'HKCU\Environment\Path') { throw 'inherited PATH custody differs from the original registry target' }
-            }
-            if ($inheritedEdits.Count -gt 1) { throw 'inherited PATH custody differs from the original registry target' }
-        }
     }
     $priorDigest = if ($hadPath) { Get-TextDigest ([string]$before) } else { $null }
     $edits = @()

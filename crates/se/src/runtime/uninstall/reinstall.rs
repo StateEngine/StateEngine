@@ -57,12 +57,23 @@ pub(super) fn persist_custody(home: &Path, plan: &ValidatedUninstallPlan) -> Res
             inherited_files.push(file.clone());
         }
     }
+    let mut inherited_directories = Vec::new();
+    for dir in plan.created_directories() {
+        let dir_path = Path::new(dir);
+        if inherited_files
+            .iter()
+            .any(|file| Path::new(&file.path).starts_with(dir_path))
+        {
+            inherited_directories.push(dir.clone());
+        }
+    }
     let custody = crate::runtime::ReplaceCustody {
         schema: "stateengine-install-replace/v1".into(),
         owner: plan.owner().to_owned(),
         no_modify_path: true,
         inherited_path_edits: plan.path_edits().to_vec(),
         inherited_files,
+        inherited_directories,
     };
     let bytes = serde_json::to_vec(&custody)
         .map_err(|e| se_core::scope::unreadable("replacement custody record", &e.to_string()))?;

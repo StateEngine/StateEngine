@@ -101,10 +101,7 @@ impl<'p> Achieved<'p> {
         } else {
             format!("{what} refused: {error}")
         };
-        let achieved_revocation = revoked
-            .iter()
-            .any(|entry| entry.witness.state == WitnessState::Witnessed);
-        match (self.any() || achieved_revocation).then(|| {
+        match (self.any() || !revoked.is_empty()).then(|| {
             let mut receipt = self.receipt(&reason);
             receipt.integrations.splice(0..0, revoked);
             receipt

@@ -60,7 +60,7 @@ pub fn replace_installation(arguments: &[OsString]) -> Result<i32> {
     if home != crate::bootstrap::state_home(None)? {
         return Err(args::invalid("the selected platform data home"));
     }
-    let no_modify_path = if arguments.len() == 4 {
+    let mut no_modify_path = if arguments.len() == 4 {
         if arguments[3] != std::ffi::OsStr::new("--no-modify-path") {
             return Err(args::invalid(USAGE));
         }
@@ -68,6 +68,10 @@ pub fn replace_installation(arguments: &[OsString]) -> Result<i32> {
     } else {
         false
     };
+    if !no_modify_path && load_replace_custody(&home)?.is_some_and(|custody| custody.no_modify_path)
+    {
+        no_modify_path = true;
+    }
     // Verify the replacement before removal. This does not prepare directories
     // or open a writer/migrate the retained database.
     manifest::verify()?;
@@ -143,6 +147,44 @@ pub fn replace_installation(arguments: &[OsString]) -> Result<i32> {
     ))
 }
 
+fn load_replace_custody(home: &std::path::Path) -> Result<Option<crate::runtime::ReplaceCustody>> {
+    se_proc::NativeStateFiles::open(home).map_err(native)?;
+    let path = home.join("standalone-install.replace.json");
+    let Some(mut file) = se_proc::OwnedFile::open(&path).map_err(native)? else {
+        return Ok(None);
+    };
+    let bytes = file.read(1024 * 1024).map_err(native)?;
+    let custody: crate::runtime::ReplaceCustody = serde_json::from_slice(&bytes)
+        .map_err(|e| args::invalid("a valid replacement custody record").with_cause(e))?;
+    if custody.schema != "stateengine-install-replace/v1"
+        || custody.owner != crate::route::owner::observe(&[])?.os_owner()
+    {
+        return Err(args::invalid("the native-owned replacement custody record"));
+    }
+    Ok(Some(custody))
+}
+
+fn validate_inherited_directories(custody: &crate::runtime::ReplaceCustody) -> Result<&[String]> {
+    let mut seen = Vec::<&str>::new();
+    for dir in &custody.inherited_directories {
+        let path = std::path::Path::new(dir);
+        if dir.is_empty()
+            || !path.is_absolute()
+            || seen.contains(&dir.as_str())
+            || !custody
+                .inherited_files
+                .iter()
+                .any(|file| std::path::Path::new(&file.path).starts_with(path))
+        {
+            return Err(args::invalid(
+                "unique absolute ancestor directories of inherited files",
+            ));
+        }
+        seen.push(dir.as_str());
+    }
+    Ok(&custody.inherited_directories)
+}
+
 /// Read and natively validate any durable replacement custody left by a
 /// `--no-modify-path` replacement before the child installer wrote its journal.
 pub fn read_replace_custody(arguments: &[OsString]) -> Result<i32> {
@@ -155,19 +197,9 @@ pub fn read_replace_custody(arguments: &[OsString]) -> Result<i32> {
     if home != crate::bootstrap::state_home(None)? {
         return Err(args::invalid("the selected platform data home"));
     }
-    se_proc::NativeStateFiles::open(&home).map_err(native)?;
-    let path = home.join("standalone-install.replace.json");
-    let Some(mut file) = se_proc::OwnedFile::open(&path).map_err(native)? else {
+    let Some(custody) = load_replace_custody(&home)? else {
         return Ok(0);
     };
-    let bytes = file.read(1024 * 1024).map_err(native)?;
-    let custody: crate::runtime::ReplaceCustody = serde_json::from_slice(&bytes)
-        .map_err(|e| args::invalid("a valid replacement custody record").with_cause(e))?;
-    if custody.schema != "stateengine-install-replace/v1"
-        || custody.owner != crate::route::owner::observe(&[])?.os_owner()
-    {
-        return Err(args::invalid("the native-owned replacement custody record"));
-    }
     let mut seen_bases = Vec::<&str>::new();
     for edit in &custody.inherited_path_edits {
         #[cfg(windows)]
@@ -212,6 +244,7 @@ pub fn read_replace_custody(arguments: &[OsString]) -> Result<i32> {
         fish_path = entry.path.clone();
         fish_sha = entry.sha256.clone();
     }
+    let dirs = validate_inherited_directories(&custody)?;
     let edits_json = if custody.inherited_path_edits.is_empty() {
         String::new()
     } else {
@@ -225,5 +258,8 @@ pub fn read_replace_custody(arguments: &[OsString]) -> Result<i32> {
         fish_path,
         fish_sha
     );
+    for dir in dirs {
+        println!("{dir}");
+    }
     Ok(0)
 }
