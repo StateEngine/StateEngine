@@ -23,6 +23,16 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 
+#[derive(Clone, Debug)]
+pub(super) struct CodexBinding {
+    /// Raw login path used to key the durable server record.
+    pub raw_login: PathBuf,
+    /// Canonical physical login directory when proved at launch/recovery.
+    pub canonical_login: Option<PathBuf>,
+    /// Exact OS process identity of the shared Codex server bound to this job, when known.
+    pub server: Option<se_proc::ProcessIdentity>,
+}
+
 #[derive(Default)]
 pub(super) struct Jobs(pub Mutex<BTreeMap<String, Arc<Job>>>);
 pub(super) struct Job {
@@ -32,8 +42,8 @@ pub(super) struct Job {
     pub lifecycle: se_types::LifecycleId,
     /// Fixed for the lifecycle; lets a login's shared server count its agents.
     pub provider: se_store::Provider,
-    /// Login directory bound to this Codex job once resolved (for per-login server accounting).
-    pub codex_login: Mutex<Option<PathBuf>>,
+    /// Login and shared-server binding for this Codex job (for per-server accounting).
+    pub codex_login: Mutex<Option<CodexBinding>>,
     pub ended_by_reboot: bool,
     /// Immutable metadata shared with Work; pending replies never wait on its lock.
     pub plan: Option<Arc<LaunchPlan>>,

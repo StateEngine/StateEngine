@@ -104,6 +104,7 @@ impl LaunchCoordinator {
     fn check_sandbox_restart(
         &self,
         login: &Path,
+        server: &se_proc::ProcessIdentity,
         record: &Record,
         launch: &ServerLaunch,
         requester: &se_types::LifecycleId,
@@ -114,7 +115,7 @@ impl LaunchCoordinator {
         if !mismatch {
             return Ok(false);
         }
-        if self.other_live_codex_agents(login, Some(requester))? {
+        if self.other_live_codex_agents(login, server, Some(requester))? {
             return Err(crate::codex_rpc::incompatible(
                 &format!(
                     "the shared Codex app-server for {} is {state} with Windows sandbox {:?}, not {:?}",
@@ -138,7 +139,7 @@ impl LaunchCoordinator {
         requester: &se_types::LifecycleId,
         deadline: &Deadline,
     ) -> Result<Option<se_proc::ProcessIdentity>> {
-        self.set_codex_login(requester, &login)?;
+        self.set_codex_login(requester, &login, None)?;
         let require_verified = launch.windows_sandbox.is_some();
         let control = crate::harness::codex_input::control_socket(&login);
         socket_fits(&control)?;
@@ -172,9 +173,12 @@ impl LaunchCoordinator {
                 slot.insert(login.clone(), (owner, verified));
                 return Err(err);
             }
-            match self.check_sandbox_restart(&login, &record, &launch, requester, "running") {
+            match self
+                .check_sandbox_restart(&login, &verified, &record, &launch, requester, "running")
+            {
                 Ok(true) => self.stop_and_remove_codex(owner, &path, deadline).await?,
                 Ok(false) => {
+                    self.set_codex_login(requester, &login, Some(verified.clone()))?;
                     slot.insert(login.clone(), (owner, verified.clone()));
                     return Ok(require_verified.then_some(verified));
                 }
@@ -187,14 +191,15 @@ impl LaunchCoordinator {
         if let Some(record) = record {
             match self.recover_codex_server(&path, &record, deadline).await? {
                 Recovered::Started(owner, verified) => {
-                    match self
-                        .check_sandbox_restart(&login, &record, &launch, requester, "starting")
-                    {
+                    match self.check_sandbox_restart(
+                        &login, &verified, &record, &launch, requester, "starting",
+                    ) {
                         Ok(true) => {
                             self.stop_and_remove_codex(owner, &path, deadline).await?;
                             slot.remove(&login);
                         }
                         Ok(false) => {
+                            self.set_codex_login(requester, &login, Some(verified.clone()))?;
                             slot.insert(login.clone(), (owner, verified.clone()));
                             wait_served(&login, &control, &verified, require_verified, deadline)
                                 .await?;
@@ -219,6 +224,7 @@ impl LaunchCoordinator {
         let (owner, verified) = self
             .start_codex_server(&login, &path, launch, deadline)
             .await?;
+        self.set_codex_login(requester, &login, Some(verified.clone()))?;
         slot.insert(login.clone(), (owner, verified.clone()));
         wait_served(&login, &control, &verified, require_verified, deadline).await?;
         Ok(require_verified.then_some(verified))
@@ -436,7 +442,12 @@ impl LaunchCoordinator {
             .await
     }
 
-    fn set_codex_login(&self, lifecycle: &se_types::LifecycleId, login: &Path) -> Result<()> {
+    fn set_codex_login(
+        &self,
+        lifecycle: &se_types::LifecycleId,
+        login: &Path,
+        server: Option<se_proc::ProcessIdentity>,
+    ) -> Result<()> {
         let jobs = self
             .jobs
             .0
@@ -445,7 +456,11 @@ impl LaunchCoordinator {
         if let Some(job) = jobs.values().find(|job| &job.lifecycle == lifecycle)
             && let Ok(mut bound) = job.codex_login.lock()
         {
-            *bound = se_proc::canonicalize_path(login).ok();
+            *bound = Some(super::supervisor::CodexBinding {
+                raw_login: login.to_owned(),
+                canonical_login: se_proc::canonicalize_path(login).ok(),
+                server,
+            });
         }
         Ok(())
     }
@@ -465,6 +480,7 @@ impl LaunchCoordinator {
     fn other_live_codex_agents(
         &self,
         login: &Path,
+        server: &se_proc::ProcessIdentity,
         exclude: Option<&se_types::LifecycleId>,
     ) -> Result<bool> {
         let target = se_proc::canonicalize_path(login).ok();
@@ -480,13 +496,18 @@ impl LaunchCoordinator {
             {
                 return false;
             }
-            // Jobs bound to a proved different login do not share this login's
-            // server; an uncanonicalized/unknown login on either side stays conservative.
-            match (
-                &target,
-                job.codex_login.lock().ok().and_then(|guard| guard.clone()),
-            ) {
-                (Some(target), Some(bound)) => bound == *target,
+            // Preserve the selected server whenever another live job matches its
+            // exact ProcessIdentity, shares its durable record login spelling
+            // (covering retargeted symlinks), matches its canonical directory, or
+            // has an unknown/uncanonicalized login on either side.
+            let Some(binding) = job.codex_login.lock().ok().and_then(|guard| guard.clone()) else {
+                return true;
+            };
+            if binding.server.as_ref() == Some(server) || binding.raw_login == login {
+                return true;
+            }
+            match (&target, &binding.canonical_login) {
+                (Some(target), Some(bound)) => bound == target,
                 _ => true,
             }
         }))

@@ -432,7 +432,11 @@ impl LaunchCoordinator {
         let wake = work.wake.clone();
         let codex_login = if work.meta.provider == se_store::Provider::Codex {
             match self.codex.agent_login(&work.meta.session) {
-                Ok(se_types::Read::Present { value }) => se_proc::canonicalize_path(&value).ok(),
+                Ok(se_types::Read::Present { value }) => Some(super::supervisor::CodexBinding {
+                    canonical_login: se_proc::canonicalize_path(&value).ok(),
+                    raw_login: value,
+                    server: None,
+                }),
                 _ => None,
             }
         } else {
