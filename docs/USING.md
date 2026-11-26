@@ -123,9 +123,10 @@ hooks, models, permissions and settings text. Codex adoption installs its hooks 
 `config.toml` and trusts only those exact definitions through the provider's discovery
 hashes. For Claude, review and trust the new hooks in the provider's own prompt.
 Status keeps capture and mail unconfirmed until an authenticated hook runs.
-Only the first adoption writes provider settings. Running `se init --adopt` again on
-an existing adoption checks its hooks and leaves the settings as they are; it does not
-add hooks that a newer version introduced, such as the Atlas context hook.
+Running `se init --adopt` again on an existing adoption preserves any edits or
+removals you made to hooks StateEngine already installed, and adds newly
+introduced hooks (such as the Atlas context hook) when enabled. If the provider
+settings file is unreadable or malformed, setup refuses without changing it.
 
 Only explicitly registered project roots participate. Adopted sessions appear with the
 `observed` surface in status. Incoming mail uses the provider's native wake or input
@@ -153,8 +154,8 @@ Launched agents are told to use Atlas before editing shared code. With `hooks = 
 in `[atlas]` (the default), managed Claude Code and Codex sessions, and sessions first
 adopted with `se init --adopt`, run a hook before a search or single-file read. When
 Atlas has a confident answer for that lookup, the agent receives a few lines of indexed
-context first. ACP protocol agents don't get this hook, and an existing adoption keeps
-the hooks it was created with. A hook with no confident answer within its deadline
+context first. ACP protocol agents don't get this hook; re-run `se init --adopt`
+on an existing adoption to add it. A hook with no confident answer within its deadline
 (75 ms, or 100 ms on Windows) adds nothing and never blocks the tool call. Set
 `hooks = false` to turn this off.
 

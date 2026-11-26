@@ -89,6 +89,18 @@ pub(crate) trait Adapter: Send + Sync {
     ) -> Result<()> {
         self.discover(home, saved, root, required)
     }
+    /// Upgrade setup for hooks newly added to an existing adoption; it may
+    /// write provider trust only for `added`, then confirms discovery.
+    fn upgrade(
+        &self,
+        home: &Path,
+        saved: &mut Registration,
+        root: &Path,
+        _added: &[(String, serde_json::Value)],
+        required: &[(String, serde_json::Value)],
+    ) -> Result<()> {
+        self.discover(home, saved, root, required)
+    }
     /// Read-only confirmation that the provider sees the required lifecycle
     /// hooks; it never writes provider files.
     fn discover(
@@ -191,6 +203,16 @@ mod codex_adapter {
         ) -> Result<()> {
             codex::trust(home, saved, root, required)
         }
+        fn upgrade(
+            &self,
+            home: &Path,
+            saved: &mut Registration,
+            root: &Path,
+            added: &[(String, serde_json::Value)],
+            required: &[(String, serde_json::Value)],
+        ) -> Result<()> {
+            codex::upgrade(home, saved, root, added, required)
+        }
         fn discover(
             &self,
             home: &Path,
@@ -239,6 +261,11 @@ pub struct Registration {
     pub discovery_refusal: Option<String>,
     #[serde(default)]
     pub installation: Option<String>,
+    /// Hooks newly added to an existing adoption whose write or provider trust
+    /// has not yet completed. Retained in `hooks` for uninstall and removal
+    /// custody while pending and cleared only once discovery succeeds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upgrade: Vec<(String, serde_json::Value)>,
 }
 impl Registration {
     pub fn project(&self, cwd: &Path) -> Result<Option<&Project>> {
