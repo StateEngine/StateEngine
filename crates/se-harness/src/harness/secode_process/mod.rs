@@ -43,10 +43,16 @@ pub fn private_profile(
 }
 
 /// The provider's supported login variables survive both runtime detachment
-/// and its second child filter. Launcher identity is never inherited.
+/// and its second child filter. Claude cloud credentials and launcher identity
+/// are never inherited.
 pub fn provider_environment() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
-    let mut entries = crate::provider_environment();
-    for name in ["OPENAI_API_KEY", "OPENAI_BASE_URL"] {
+    let mut entries = crate::harness::claude::shared_base_environment();
+    for name in [
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_BASE_URL",
+    ] {
         if let Some(value) = std::env::var_os(name) {
             entries.push((name.into(), value));
         }

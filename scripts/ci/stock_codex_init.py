@@ -244,7 +244,8 @@ stream_max_retries = 0
                  "--agent", "Worker", "--provider", "codex", "--model", model)
         saved = self.config.read_bytes()
         entry = tomllib.loads(saved.decode())["mcp_servers"]["stateengine"]
-        require(entry["command"] == "se" and entry["args"] == ["--home", str(self.state), "mcp"],
+        expected_command = "se" if case == "existing" else str(self.se.resolve())
+        require(entry["command"] == expected_command and entry["args"] == ["--home", str(self.state), "mcp"],
                 "se init did not leave a usable saved stdio registration")
         if case == "existing":
             require(before == saved, "se init rewrote the existing Codex registration")

@@ -12,6 +12,7 @@ pub mod json_wire;
 #[cfg(feature = "secode")]
 pub mod linked;
 pub mod model;
+pub mod network_env;
 #[cfg(feature = "runtime")]
 pub mod pool;
 pub mod ports;
@@ -24,6 +25,7 @@ pub mod startup_timing;
 #[cfg(test)]
 #[path = "../../test-support/directory.rs"]
 mod test_directory;
+pub mod version;
 
 pub use deadline::{
     CALL_TIMEOUT, ClientOptions, Deadline, HELLO_TIMEOUT, IDLE_TIMEOUT, WRITE_TIMEOUT,

@@ -45,25 +45,29 @@ fn provider(root: &Path) -> Result<PathBuf, Box<dyn Error>> {
             return;
         }
         let Some(config) = std::env::var_os("CLAUDE_CONFIG_DIR") else { std::process::exit(91) };
-        let path = std::path::PathBuf::from(config).join("synthetic-mcp-entry");
+        let path = std::path::PathBuf::from(&config).join("synthetic-mcp-entry");
+        let cmd_path = std::path::PathBuf::from(config).join("synthetic-mcp-command");
         if args == ["mcp", "get", "stateengine"] {
-            match std::fs::read_to_string(path) {
-                Ok(entry) => println!("stateengine:\n  Scope: Local config (private to you in this project)\n  Status: Connected\n  Type: stdio\n  Command: se\n  Args: {entry}\n  Environment:\n"),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match (std::fs::read_to_string(cmd_path), std::fs::read_to_string(path)) {
+                (Ok(command), Ok(entry)) => println!("stateengine:\n  Scope: Local config (private to you in this project)\n  Status: Connected\n  Type: stdio\n  Command: {command}\n  Args: {entry}\n  Environment:\n"),
+                (Err(error), _) | (_, Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                     eprintln!("No MCP server named \"stateengine\".");
                     std::process::exit(1);
                 }
-                Err(_) => std::process::exit(91),
+                _ => std::process::exit(91),
             }
             return;
         }
         if let [mcp, add, scope, local, name, separator, command, rest @ ..] = args.as_slice()
-            && [mcp.as_str(), add, scope, local, name, separator, command] == ["mcp", "add", "--scope", "local", "stateengine", "--", "se"]
+            && [mcp.as_str(), add, scope, local, name, separator] == ["mcp", "add", "--scope", "local", "stateengine", "--"]
+            && (command == "se" || std::path::Path::new(command).is_absolute())
             && (matches!(rest, [only] if only == "mcp")
                 || matches!(rest, [flag, home, end] if flag == "--home" && std::path::Path::new(home).is_absolute() && end == "mcp"))
         {
             use std::io::Write;
-            if let Ok(mut file) = std::fs::OpenOptions::new().write(true).create_new(true).open(path)
+            if let Ok(mut cmd_file) = std::fs::OpenOptions::new().write(true).create_new(true).open(cmd_path)
+                && cmd_file.write_all(command.as_bytes()).is_ok()
+                && let Ok(mut file) = std::fs::OpenOptions::new().write(true).create_new(true).open(path)
                 && file.write_all(rest.join(" ").as_bytes()).is_ok() { return; }
         }
         std::process::exit(91);

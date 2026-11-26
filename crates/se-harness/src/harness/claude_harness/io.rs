@@ -249,11 +249,6 @@ async fn probe_output(
     })
 }
 
-pub(super) fn parse_version(text: &str) -> Option<(u16, u16, u16)> {
-    let mut parts = text.split('.').map(|part| part.parse::<u16>().ok());
-    Some((parts.next()??, parts.next()??, parts.next()??))
-}
-
 pub(super) fn poisoned() -> SeError {
     SeError::invalid(
         "Claude harness",

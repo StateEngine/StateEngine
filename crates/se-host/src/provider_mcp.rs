@@ -87,14 +87,92 @@ pub fn configure(
     Ok(changed)
 }
 
+fn current_se_command() -> Result<String> {
+    let current = std::env::current_exe().map_err(|error| {
+        failure(&format!(
+            "could not locate the running se executable: {error}"
+        ))
+    })?;
+    let canonical = se_proc::canonicalize_path(&current).map_err(|error| {
+        failure(&format!(
+            "could not resolve the running se executable: {error}"
+        ))
+    })?;
+    if !std::fs::metadata(&canonical)
+        .map_err(|error| {
+            failure(&format!(
+                "could not inspect the running se executable: {error}"
+            ))
+        })?
+        .is_file()
+    {
+        return Err(failure("the resolved se executable is not a regular file"));
+    }
+    canonical
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| failure("the resolved se executable path is not valid UTF-8"))
+}
+
+enum CommandMatch {
+    Current,
+    StaleOwned(String),
+}
+
+fn is_se_binary_name(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            if cfg!(windows) {
+                name.eq_ignore_ascii_case("se.exe") || name.eq_ignore_ascii_case("se")
+            } else {
+                name == "se"
+            }
+        })
+}
+
+fn classify_se_command(registered: &str, expected: &str) -> Option<CommandMatch> {
+    if registered == expected || registered == "se" {
+        return Some(CommandMatch::Current);
+    }
+    let path = Path::new(registered);
+    if !path.is_absolute() {
+        return None;
+    }
+    if se_proc::canonicalize_path(path).ok().as_deref() == Some(Path::new(expected)) {
+        return Some(CommandMatch::Current);
+    }
+    if is_se_binary_name(path) && matches!(path.try_exists(), Ok(false)) {
+        return Some(CommandMatch::StaleOwned(registered.to_owned()));
+    }
+    None
+}
+
+fn stale_se_entry(kind: Kind, stale: &str, expected: &str, entry: &[&str]) -> se_types::SeError {
+    let step = missing(kind, entry).unwrap_or_else(|_| {
+        format!(
+            "update the command path to {expected} in your {} MCP configuration",
+            kind.label()
+        )
+    });
+    failure(&format!(
+        "the existing stateengine MCP entry points to a missing se binary ({stale}); StateEngine did not remove it automatically so any custom MCP settings are preserved. Update its command path to {expected} in your {} MCP configuration, or remove the stale entry and re-register ({step})",
+        kind.label()
+    ))
+}
+
 fn missing(kind: Kind, args: &[&str]) -> Result<String> {
     manual(kind, args, &format!("Install {}, then", kind.label()))
 }
 
 fn manual(kind: Kind, args: &[&str], lead: &str) -> Result<String> {
+    let command = current_se_command()
+        .ok()
+        .and_then(|path| se_core::ops::AgentCommand::quoted_word(&path))
+        .unwrap_or_else(|| "se".into());
     let prefix = match kind {
-        Kind::Claude => "claude mcp add --scope local stateengine -- se",
-        Kind::Codex => "codex mcp add stateengine -- se",
+        Kind::Claude => format!("claude mcp add --scope local stateengine -- {command}"),
+        Kind::Codex => format!("codex mcp add stateengine -- {command}"),
     };
     let words = args
         .iter()
@@ -121,6 +199,7 @@ pub fn install(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) -> Re
     // Resolved once: the same checked bindings go to listing, registration and readback.
     let config = provider_config_dirs().map_err(|reason| failure(&reason))?;
     usable_config_dir(kind, &config)?;
+    let se_command = current_se_command()?;
     let setup = Setup {
         root,
         executable,
@@ -128,19 +207,27 @@ pub fn install(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) -> Re
         config: &config,
     };
     runtime.block_on(async {
-        if configured(setup, entry).await? {
+        if configured(setup, &se_command, entry).await? {
             return Ok(false);
         }
         let mut args: Vec<&str> = match kind {
-            Kind::Claude => vec!["mcp", "add", "--scope", "local", "stateengine", "--", "se"],
-            Kind::Codex => vec!["mcp", "add", "stateengine", "--", "se"],
+            Kind::Claude => vec![
+                "mcp",
+                "add",
+                "--scope",
+                "local",
+                "stateengine",
+                "--",
+                &se_command,
+            ],
+            Kind::Codex => vec!["mcp", "add", "stateengine", "--", &se_command],
         };
         args.extend_from_slice(entry);
         let output = run(setup, &args).await?;
         if !output.status.success() {
             return Err(refused(kind, "mcp add", &output));
         }
-        if !configured(setup, entry).await? {
+        if !configured(setup, &se_command, entry).await? {
             return Err(failure("the harness did not confirm the saved MCP entry"));
         }
         Ok(true)
@@ -170,89 +257,108 @@ struct Setup<'a> {
     kind: Kind,
     config: &'a [(Provider, &'static str, std::path::PathBuf)],
 }
-async fn configured(setup: Setup<'_>, entry: &[&str]) -> Result<bool> {
+async fn configured(setup: Setup<'_>, se_command: &str, entry: &[&str]) -> Result<bool> {
+    match setup.kind {
+        Kind::Claude => configured_claude(setup, se_command, entry).await,
+        Kind::Codex => configured_codex(setup, se_command, entry).await,
+    }
+}
+
+async fn configured_claude(setup: Setup<'_>, se_command: &str, entry: &[&str]) -> Result<bool> {
     let kind = setup.kind;
-    match kind {
-        Kind::Claude => {
-            let output = run(setup, &["mcp", "get", "stateengine"]).await?;
-            if !output.status.success() {
-                if output
-                    .stderr
-                    .starts_with(b"No MCP server named \"stateengine\".")
-                {
-                    return Ok(false);
-                }
-                return Err(refused(kind, "mcp get", &output));
-            }
-            let text = std::str::from_utf8(&output.stdout)
-                .map_err(|_| failure("the harness returned unreadable MCP configuration"))?;
-            let field = |name: &str| text.lines().find_map(|line| line.trim().strip_prefix(name));
-            if field("Status: ").is_some_and(|status| {
-                status.contains("Rejected")
-                    || status.contains("Disabled")
-                    || status.contains("Blocked")
-            }) {
-                return Err(failure(
-                    "the existing stateengine server is rejected or disabled; preserve that choice",
-                ));
-            }
-            if field("Type: ") != Some("stdio")
-                || field("Command: ") != Some("se")
-                || field("Args: ") != Some(entry.join(" ").as_str())
-            {
-                return Err(failure(
-                    "a different stateengine MCP entry already exists; preserve or remove it before retrying",
-                ));
-            }
-            let mut lines = text.lines();
-            let environment = lines.find(|line| line.trim() == "Environment:");
-            if environment.is_some() && lines.next().is_some_and(|line| !line.trim().is_empty()) {
-                return Err(failure(
-                    "the existing stateengine entry has an environment; preserve or remove it before retrying",
-                ));
-            }
-            match field("Scope: ") {
-                Some(scope) if scope.starts_with("Project config") => Ok(false),
-                Some(scope)
-                    if scope.starts_with("Local config") || scope.starts_with("User config") =>
-                {
-                    Ok(true)
-                }
-                _ => Err(failure(
-                    "the harness did not report the existing entry's scope",
-                )),
-            }
+    let output = run(setup, &["mcp", "get", "stateengine"]).await?;
+    if !output.status.success() {
+        if output
+            .stderr
+            .starts_with(b"No MCP server named \"stateengine\".")
+        {
+            return Ok(false);
         }
-        Kind::Codex => {
-            let output = run(setup, &["mcp", "list", "--json"]).await?;
-            if !output.status.success() {
-                return Err(refused(kind, "mcp list", &output));
-            }
-            let rows: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
-                .map_err(|_| failure("the harness returned unreadable MCP configuration"))?;
-            let mut matches = rows
-                .iter()
-                .filter(|row| row.get("name").and_then(|v| v.as_str()) == Some("stateengine"));
-            let Some(row) = matches.next() else {
-                return Ok(false);
-            };
-            let transport = &row["transport"];
-            if matches.next().is_some()
-                || row["enabled"] != true
-                || transport["type"] != "stdio"
-                || transport["command"] != "se"
-                || transport["args"] != serde_json::json!(entry)
-                || !transport["cwd"].is_null()
-                || !transport["env"].is_null()
-                || !(transport["env_vars"].is_null()
-                    || transport["env_vars"] == serde_json::json!([]))
-            {
-                return Err(failure(
-                    "a different stateengine MCP entry already exists; preserve or remove it before retrying",
-                ));
-            }
-            Ok(true)
-        }
+        return Err(refused(kind, "mcp get", &output));
+    }
+    let text = std::str::from_utf8(&output.stdout)
+        .map_err(|_| failure("the harness returned unreadable MCP configuration"))?;
+    let field = |name: &str| text.lines().find_map(|line| line.trim().strip_prefix(name));
+    if field("Status: ").is_some_and(|status| {
+        status.contains("Rejected") || status.contains("Disabled") || status.contains("Blocked")
+    }) {
+        return Err(failure(
+            "the existing stateengine server is rejected or disabled; preserve that choice",
+        ));
+    }
+    let command_match =
+        field("Command: ").and_then(|command| classify_se_command(command, se_command));
+    let Some(command_match) = command_match else {
+        return Err(failure(
+            "a different stateengine MCP entry already exists; preserve or remove it before retrying",
+        ));
+    };
+    if field("Type: ") != Some("stdio") || field("Args: ") != Some(entry.join(" ").as_str()) {
+        return Err(failure(
+            "a different stateengine MCP entry already exists; preserve or remove it before retrying",
+        ));
+    }
+    let mut lines = text.lines();
+    let environment = lines.find(|line| line.trim() == "Environment:");
+    if environment.is_some() && lines.next().is_some_and(|line| !line.trim().is_empty()) {
+        return Err(failure(
+            "the existing stateengine entry has an environment; preserve or remove it before retrying",
+        ));
+    }
+    match field("Scope: ") {
+        Some(scope) if scope.starts_with("Project config") => Ok(false),
+        Some(scope) if scope.starts_with("Local config") => match command_match {
+            CommandMatch::Current => Ok(true),
+            CommandMatch::StaleOwned(stale) => Err(stale_se_entry(kind, &stale, se_command, entry)),
+        },
+        Some(scope) if scope.starts_with("User config") => match command_match {
+            CommandMatch::Current => Ok(true),
+            CommandMatch::StaleOwned(_) => Ok(false),
+        },
+        _ => Err(failure(
+            "the harness did not report the existing entry's scope",
+        )),
+    }
+}
+
+async fn configured_codex(setup: Setup<'_>, se_command: &str, entry: &[&str]) -> Result<bool> {
+    let kind = setup.kind;
+    let output = run(setup, &["mcp", "list", "--json"]).await?;
+    if !output.status.success() {
+        return Err(refused(kind, "mcp list", &output));
+    }
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
+        .map_err(|_| failure("the harness returned unreadable MCP configuration"))?;
+    let mut matches = rows
+        .iter()
+        .filter(|row| row.get("name").and_then(|v| v.as_str()) == Some("stateengine"));
+    let Some(row) = matches.next() else {
+        return Ok(false);
+    };
+    let transport = &row["transport"];
+    let command_match = transport["command"]
+        .as_str()
+        .and_then(|command| classify_se_command(command, se_command));
+    let Some(command_match) = command_match else {
+        return Err(failure(
+            "a different stateengine MCP entry already exists; preserve or remove it before retrying",
+        ));
+    };
+    if matches.next().is_some()
+        || row["enabled"] != true
+        || transport["type"] != "stdio"
+        || transport["args"] != serde_json::json!(entry)
+        || !transport["cwd"].is_null()
+        || !transport["env"].is_null()
+        || !(transport["env_vars"].is_null() || transport["env_vars"] == serde_json::json!([]))
+    {
+        return Err(failure(
+            "a different stateengine MCP entry already exists; preserve or remove it before retrying",
+        ));
+    }
+    match command_match {
+        CommandMatch::Current => Ok(true),
+        CommandMatch::StaleOwned(stale) => Err(stale_se_entry(kind, &stale, se_command, entry)),
     }
 }
 

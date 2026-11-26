@@ -1,10 +1,7 @@
 //! Resolve installed package data without shell shims, installation or credential reads.
 use se_core::harness_selection::catalog::NodePackage;
 use se_types::{Result, SeError};
-use std::{
-    io::ErrorKind,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 fn unreadable(error: impl std::fmt::Display) -> SeError {
     se_core::scope::unreadable("installed harness package", &error.to_string())
@@ -77,13 +74,11 @@ fn installed_root(package: &NodePackage, executable: &Path) -> Result<PathBuf> {
         .unwrap_or(executable)
         .parent()
         .ok_or_else(|| unreadable("the installed command has no directory"))?;
-    let searched: Vec<PathBuf> = package_roots(directory)?
-        .into_iter()
-        .map(|modules| modules.join(&package.name))
-        .collect();
+    let searched = se_provider_image::package_roots::global_package_roots(directory, &package.name)
+        .map_err(unreadable)?;
     let mut holding = Vec::new();
     for root in &searched {
-        if holds(root)? {
+        if se_provider_image::package_roots::holds_package_manifest(root).map_err(unreadable)? {
             let canonical = se_proc::canonicalize_path(root).map_err(unreadable)?;
             if !holding.contains(&canonical) {
                 holding.push(canonical);
@@ -144,88 +139,6 @@ fn command_in(search_path: &std::ffi::OsStr, bin: &str) -> Option<PathBuf> {
 fn runnable(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
         && se_proc::file_access::require_executable_access(path).is_ok()
-}
-
-/// Whether a candidate package directory has a manifest. A missing path is
-/// absence; any other failure to look refuses rather than reading as absent.
-fn holds(root: &Path) -> Result<bool> {
-    let manifest = root.join("package.json");
-    match std::fs::metadata(&manifest) {
-        Ok(meta) if meta.is_file() => Ok(true),
-        Ok(_) => Err(unreadable(format!(
-            "{} is not a regular file",
-            manifest.display()
-        ))),
-        Err(error) if absent(&error) => Ok(false),
-        Err(error) => Err(unreadable(format!("{}: {error}", manifest.display()))),
-    }
-}
-
-/// A missing path, or one whose parent is a file, holds nothing.
-fn absent(error: &std::io::Error) -> bool {
-    matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory)
-}
-
-/// The `node_modules` folders a global install from `directory` can use: npm
-/// (beside Windows `.cmd`/`.ps1` shims, `lib/node_modules` elsewhere), pnpm
-/// (`global/<layout>/node_modules`, or pnpm 11's `global/v<layout>/<group>/
-/// node_modules`, under its home or the home above a `bin` directory), Bun
-/// (`install/global/node_modules` under `~/.bun`) and Yarn on Windows
-/// (`Data/global/node_modules`). Listings are sorted and bounded, and an
-/// unreadable or oversized one refuses by name.
-fn package_roots(directory: &Path) -> Result<Vec<PathBuf>> {
-    let parent = directory.parent().unwrap_or(directory);
-    let mut modules = vec![
-        directory.join("node_modules"),
-        parent.join("lib/node_modules"),
-        parent.join("install/global/node_modules"),
-        parent.join("Data/global/node_modules"),
-    ];
-    for home in [directory, parent] {
-        for layout in sorted_entries(&home.join("global"))? {
-            let Some(name) = layout.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if is_layout(name) {
-                modules.push(layout.join("node_modules"));
-            } else if name.strip_prefix('v').is_some_and(is_layout) {
-                modules.extend(
-                    sorted_entries(&layout)?
-                        .into_iter()
-                        .map(|group| group.join("node_modules")),
-                );
-            }
-        }
-    }
-    Ok(modules)
-}
-
-/// A directory's entries in name order; absent is empty, unreadable refuses.
-fn sorted_entries(directory: &Path) -> Result<Vec<PathBuf>> {
-    let listing = match std::fs::read_dir(directory) {
-        Ok(listing) => listing,
-        Err(error) if absent(&error) => return Ok(Vec::new()),
-        Err(error) => return Err(unreadable(format!("{}: {error}", directory.display()))),
-    };
-    let mut entries = Vec::new();
-    for entry in listing {
-        let entry =
-            entry.map_err(|error| unreadable(format!("{}: {error}", directory.display())))?;
-        if entries.len() == 256 {
-            return Err(unreadable(format!(
-                "{} lists more than 256 entries; discovery is incomplete",
-                directory.display()
-            )));
-        }
-        entries.push(entry.path());
-    }
-    entries.sort();
-    Ok(entries)
-}
-
-/// pnpm names each global store layout with a version number.
-fn is_layout(name: &str) -> bool {
-    !name.is_empty() && name.len() <= 4 && name.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 #[cfg(all(test, unix))]

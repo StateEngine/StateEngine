@@ -33,13 +33,9 @@ pub fn qualify(command: &Path) -> Result<()> {
             std::time::Duration::from_secs(5),
         )
         .await?;
-        let parts = version
-            .version
-            .split('.')
-            .map(str::parse::<u16>)
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|_| invalid("a stable supported Codex version"))?;
-        if parts.as_slice() < [0, 166, 0].as_slice() {
+        let parsed = se_harness::version::parse_semver(&version.version)
+            .ok_or_else(|| invalid("a stable supported Codex version"))?;
+        if !parsed.meets_minimum((0, 166, 0)) {
             return Err(invalid(
                 "Codex 0.166.0 or newer; update Codex and repeat se init --adopt --provider codex",
             ));
@@ -135,59 +131,17 @@ pub fn hooks(executable: &Path, home: &Path) -> Result<Vec<(String, Value)>> {
     Ok(entries)
 }
 
-/// Resolve the standard package launcher to its native executable.
-/// Version qualification and native ancestry remain separate checks.
+/// Resolve the standard package launcher (npm, pnpm, Bun, Yarn, Volta) to its
+/// native executable. Version qualification and native ancestry remain separate
+/// checks.
 #[cfg(target_os = "linux")]
 pub fn native_executable(command: &Path) -> Result<std::path::PathBuf> {
-    let path = se_proc::canonicalize_path(command).map_err(io)?;
-    if path.file_name().is_none_or(|name| name != "codex.js") {
-        return Ok(command.to_owned());
-    }
-    let Some(package) = path.parent().and_then(Path::parent) else {
-        return Err(invalid("the native Codex package executable"));
-    };
-    let mut bytes = Vec::new();
-    std::fs::File::open(package.join("package.json"))
+    match se_provider_image::native_executable(command, Some(se_types::Provider::Codex))
         .map_err(io)?
-        .take(65537)
-        .read_to_end(&mut bytes)
-        .map_err(io)?;
-    let manifest: Value = se_mcp::wire::decode_json(&bytes, 65536)?;
-    if manifest.get("name").and_then(Value::as_str) != Some("@openai/codex") {
-        return Err(invalid("the Codex package identity"));
+    {
+        Some(executable) => Ok(executable),
+        None => Err(invalid(
+            "the installed native Codex optional package; repair the Codex installation and retry se init --adopt --provider codex",
+        )),
     }
-    let (platform, target) = if cfg!(target_arch = "x86_64") {
-        ("codex-linux-x64", "x86_64-unknown-linux-musl")
-    } else if cfg!(target_arch = "aarch64") {
-        ("codex-linux-arm64", "aarch64-unknown-linux-musl")
-    } else {
-        return Err(invalid("a supported native Codex architecture"));
-    };
-    let sibling = package
-        .parent()
-        .ok_or_else(|| invalid("the Codex package directory"))?;
-    for vendor in [
-        package
-            .join("node_modules/@openai")
-            .join(platform)
-            .join("vendor"),
-        sibling.join(platform).join("vendor"),
-        package.join("vendor"),
-    ] {
-        let native = vendor.join(target).join("bin/codex");
-        let mut file = match std::fs::File::open(&native) {
-            Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(io(e)),
-        };
-        let mut header = [0; 4];
-        file.read_exact(&mut header).map_err(io)?;
-        if header != *b"\x7fELF" {
-            return Err(invalid("a native Codex package image"));
-        }
-        return Ok(native);
-    }
-    Err(invalid(
-        "the installed native Codex optional package; repair the Codex installation and retry se init --adopt --provider codex",
-    ))
 }

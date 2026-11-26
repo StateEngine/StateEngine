@@ -84,6 +84,16 @@ pub fn private_startup_serves_and_retires() -> Check {
         "DISPLAY",
         "WAYLAND_DISPLAY",
         "XAUTHORITY",
+        "SSH_AUTH_SOCK",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLOUD_ML_REGION",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "AWS_REGION",
+        "ANTHROPIC_BEDROCK_BASE_URL",
+        "ANTHROPIC_VERTEX_PROJECT_ID",
+        "GOOGLE_CLOUD_PROJECT",
+        "VERTEX_REGION_CLAUDE_3_7_SONNET",
     ] {
         command.env(name, "detached-host-provider-canary");
     }
@@ -148,57 +158,80 @@ fn seed_owner_principal(f: &Fixture) -> Check {
 }
 
 #[cfg(target_os = "linux")]
+// Independent contract list: do not ask the production collector what
+// it decided to forward. Values are compared without printing secrets.
+const APPROVED_HOST_ENV: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LANG",
+    "TZ",
+    "TERM",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "XDG_RUNTIME_DIR",
+    "CODEX_HOME",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "CLAUDE_CONFIG_DIR",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "ComSpec",
+    "PATHEXT",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramW6432",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "SSH_AUTH_SOCK",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLOUD_ML_REGION",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    // Network context for protocol agents; matched case-insensitively,
+    // so the lower-case proxy spellings are covered as well.
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+];
+
+#[cfg(target_os = "linux")]
+const APPROVED_HOST_ENV_PREFIXES: &[&str] = &[
+    "LC_",
+    "AWS_",
+    "ANTHROPIC_BEDROCK_",
+    "ANTHROPIC_VERTEX_",
+    "GOOGLE_CLOUD_",
+    "VERTEX_REGION_",
+];
+
+#[cfg(target_os = "linux")]
 fn verify_linux_host_environment(ready: &host::StartedHost, temporary: &std::path::Path) -> Check {
     use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
     assert_eq!(std::fs::metadata(temporary)?.mode() & 0o777, 0o700);
     let environment = std::fs::read(format!("/proc/{}/environ", ready.ready.identity.pid.0))?;
-    // Independent contract list: do not ask the production collector what
-    // it decided to forward. Values are compared without printing secrets.
-    const APPROVED: &[&str] = &[
-        "PATH",
-        "HOME",
-        "USER",
-        "LOGNAME",
-        "SHELL",
-        "LANG",
-        "TZ",
-        "TERM",
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-        "XDG_CACHE_HOME",
-        "XDG_STATE_HOME",
-        "XDG_RUNTIME_DIR",
-        "CODEX_HOME",
-        "OPENAI_API_KEY",
-        "OPENAI_BASE_URL",
-        "CLAUDE_CONFIG_DIR",
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_BASE_URL",
-        "ComSpec",
-        "PATHEXT",
-        "USERPROFILE",
-        "APPDATA",
-        "LOCALAPPDATA",
-        "ProgramData",
-        "ProgramFiles",
-        "ProgramW6432",
-        "DISPLAY",
-        "WAYLAND_DISPLAY",
-        "XAUTHORITY",
-        // Network context for protocol agents; matched case-insensitively,
-        // so the lower-case proxy spellings are covered as well.
-        "HTTPS_PROXY",
-        "HTTP_PROXY",
-        "ALL_PROXY",
-        "NO_PROXY",
-        "SSL_CERT_FILE",
-        "SSL_CERT_DIR",
-        "NODE_EXTRA_CA_CERTS",
-    ];
     let mut expected = std::collections::BTreeMap::new();
     for (name, value) in std::env::vars_os() {
         let text = name.to_string_lossy();
-        if APPROVED.iter().any(|key| key.eq_ignore_ascii_case(&text)) || text.starts_with("LC_") {
+        if APPROVED_HOST_ENV
+            .iter()
+            .any(|key| key.eq_ignore_ascii_case(&text))
+            || APPROVED_HOST_ENV_PREFIXES
+                .iter()
+                .any(|prefix| text.starts_with(prefix))
+        {
             expected.insert(name.as_bytes().to_vec(), value.as_bytes().to_vec());
         }
     }
@@ -221,7 +254,13 @@ fn verify_linux_host_environment(ready: &host::StartedHost, temporary: &std::pat
             !upper.starts_with(b"STATEENGINE_")
                 && upper != b"SE_SESSION"
                 && (!upper.starts_with(b"CODEX_") || upper == b"CODEX_HOME")
-                && (!upper.starts_with(b"CLAUDE_") || upper == b"CLAUDE_CONFIG_DIR"),
+                && (!upper.starts_with(b"CLAUDE_")
+                    || matches!(
+                        upper.as_slice(),
+                        b"CLAUDE_CONFIG_DIR"
+                            | b"CLAUDE_CODE_USE_BEDROCK"
+                            | b"CLAUDE_CODE_USE_VERTEX"
+                    )),
             "fleet/session environment leaked through {}",
             String::from_utf8_lossy(name)
         );

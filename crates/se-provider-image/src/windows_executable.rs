@@ -84,7 +84,7 @@ pub(crate) fn resolve_package(
     }
     let mut launcher = file(path)?;
     if path.extension().is_none() {
-        for extension in ["cmd", "ps1"] {
+        for extension in ["cmd", "bat", "ps1"] {
             launcher |= file(&path.with_extension(extension))?;
         }
     }
@@ -94,11 +94,10 @@ pub(crate) fn resolve_package(
     let Some(prefix) = path.parent() else {
         return Ok(None);
     };
-    let package = prefix.join(format!("node_modules/{package_name}"));
-    let manifest = package.join("package.json");
-    if !file(&manifest)? {
+    let Some(package) = crate::package_roots::unique_installed_root(prefix, package_name)? else {
         return Ok(None);
-    }
+    };
+    let manifest = package.join("package.json");
     let bytes = se_proc::file_access::read_bounded_regular_file(&manifest, 65536)?;
     let metadata: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -109,7 +108,7 @@ pub(crate) fn resolve_package(
         ));
     }
     let image = match layout {
-        PackageImage::Vendor => codex_image(prefix, &package)?,
+        PackageImage::Vendor => codex_image(&package)?,
         PackageImage::DeclaredBin => declared_image(&package, command, &metadata)?,
     };
     Ok(image.map(|image| (image, Some(package))))
@@ -162,7 +161,7 @@ fn declared_image(
     Ok(None)
 }
 
-fn codex_image(prefix: &Path, package: &Path) -> io::Result<Option<PathBuf>> {
+fn codex_image(package: &Path) -> io::Result<Option<PathBuf>> {
     let (platform, target) = if cfg!(target_arch = "x86_64") {
         ("codex-win32-x64", "x86_64-pc-windows-msvc")
     } else if cfg!(target_arch = "aarch64") {
@@ -170,17 +169,17 @@ fn codex_image(prefix: &Path, package: &Path) -> io::Result<Option<PathBuf>> {
     } else {
         return Ok(None);
     };
-    for vendor in [
+    let mut vendors = vec![
         package
             .join("node_modules/@openai")
             .join(platform)
             .join("vendor"),
-        prefix
-            .join("node_modules/@openai")
-            .join(platform)
-            .join("vendor"),
-        package.join("vendor"),
-    ] {
+    ];
+    if let Some(scope) = package.parent() {
+        vendors.push(scope.join(platform).join("vendor"));
+    }
+    vendors.push(package.join("vendor"));
+    for vendor in vendors {
         let candidate = vendor.join(target).join("bin/codex.exe");
         if native_image(&candidate)? {
             #[cfg(windows)]

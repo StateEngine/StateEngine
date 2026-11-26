@@ -333,9 +333,9 @@ fn file(path: &Path, value: &Value) -> Result<OwnedLaunchFile> {
     })
 }
 
-/// Host-environment names a provider legitimately needs: OS transport, the
-/// user's home and the provider's own login. Never fleet or session names.
-const ENVIRONMENT: &[&str] = &[
+/// Shared OS, terminal, XDG, and SSH transport names without any provider
+/// credentials or cloud-backend configuration.
+const SHARED_ENVIRONMENT: &[&str] = &[
     "PATH",
     "HOME",
     "USER",
@@ -345,6 +345,7 @@ const ENVIRONMENT: &[&str] = &[
     "TZ",
     "TMPDIR",
     "TERM",
+    "SSH_AUTH_SOCK",
     "DISPLAY",
     "XAUTHORITY",
     "WAYLAND_DISPLAY",
@@ -353,10 +354,6 @@ const ENVIRONMENT: &[&str] = &[
     "XDG_CACHE_HOME",
     "XDG_STATE_HOME",
     "XDG_RUNTIME_DIR",
-    "CLAUDE_CONFIG_DIR",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_BASE_URL",
     "SystemRoot",
     "windir",
     "ComSpec",
@@ -368,6 +365,19 @@ const ENVIRONMENT: &[&str] = &[
     "TMP",
     "ProgramData",
     "ProgramFiles",
+];
+
+/// Claude-specific login and cloud-backend (Bedrock / Vertex) names.
+/// Never shared with SE Code or other providers.
+const CLAUDE_ENVIRONMENT: &[&str] = &[
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLOUD_ML_REGION",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
 ];
 
 /// A new conversation reuses the session's own UUID, so its identity is fixed
@@ -408,15 +418,53 @@ pub fn launch_environment(sign_in: Option<&crate::sign_in::SignIn>) -> Vec<(OsSt
     }
     environment
 }
-/// The base environment handed to the provider, built from an allowlist.
+const CLAUDE_PREFIXES: &[&str] = &[
+    "AWS_",
+    "ANTHROPIC_BEDROCK_",
+    "ANTHROPIC_VERTEX_",
+    "GOOGLE_CLOUD_",
+    "VERTEX_REGION_",
+];
+
+fn matches_prefix(name: &str, prefix: &str) -> bool {
+    if cfg!(windows) {
+        name.len() >= prefix.len()
+            && name.is_char_boundary(prefix.len())
+            && name[..prefix.len()].eq_ignore_ascii_case(prefix)
+    } else {
+        name.starts_with(prefix)
+    }
+}
+
+/// Shared OS/transport/locale/proxy base environment without Claude-specific
+/// credentials or Bedrock/Vertex cloud configuration.
+pub fn shared_base_environment() -> Vec<(OsString, OsString)> {
+    std::env::vars_os()
+        .filter(|(name, _)| {
+            let name = name.to_string_lossy();
+            SHARED_ENVIRONMENT
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(&name))
+                || crate::network_env::is_network_environment(&name)
+                || matches_prefix(&name, "LC_")
+        })
+        .collect()
+}
+
+/// The base environment handed to Claude, built from an allowlist.
 pub fn provider_environment() -> Vec<(OsString, OsString)> {
     std::env::vars_os()
         .filter(|(name, _)| {
             let name = name.to_string_lossy();
-            ENVIRONMENT
+            SHARED_ENVIRONMENT
                 .iter()
+                .chain(CLAUDE_ENVIRONMENT.iter())
                 .any(|allowed| allowed.eq_ignore_ascii_case(&name))
-                || name.starts_with("LC_")
+                || crate::network_env::is_network_environment(&name)
+                || matches_prefix(&name, "LC_")
+                || CLAUDE_PREFIXES
+                    .iter()
+                    .any(|prefix| matches_prefix(&name, prefix))
         })
         .collect()
 }
