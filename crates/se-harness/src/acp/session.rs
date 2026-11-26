@@ -263,7 +263,12 @@ impl Session {
                 None => ("session/new", json!({"cwd":cwd,"mcpServers":mcp_servers})),
             }
         };
-        self.client.bind(cwd).await;
+        self.client.bind(cwd, until).await.map_err(|reason| {
+            failure(
+                "ACP workspace",
+                format!("{reason}; no session was requested"),
+            )
+        })?;
         self.connection
             .request(method, params, remaining(&cx, until)?)
             .await?;

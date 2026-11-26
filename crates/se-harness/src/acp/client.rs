@@ -86,17 +86,26 @@ impl Client {
         method == READ
     }
 
-    /// Opens and holds the directory the conversation opens in as the workspace.
-    /// If it cannot be held, every read refuses with that reason.
-    pub(super) async fn bind(&self, cwd: &str) {
+    /// Opens and holds the directory the conversation opens in as the workspace,
+    /// within the session-open bound `until`. If it cannot be held, every read
+    /// refuses with that reason. An open that misses the bound changes nothing:
+    /// its late result is discarded, and the caller refuses the session open.
+    pub(super) async fn bind(&self, cwd: &str, until: tokio::time::Instant) -> Result<(), String> {
         let told = PathBuf::from(cwd);
-        let opened = tokio::task::spawn_blocking(move || fs::Workspace::open(told))
-            .await
-            .unwrap_or_else(|_| Err("opening the workspace stopped before it finished".into()))
-            .map(Arc::new);
+        let opened = tokio::time::timeout_at(
+            until,
+            tokio::task::spawn_blocking(move || fs::Workspace::open(told)),
+        )
+        .await
+        .map_err(|_| {
+            "opening the workspace did not finish before the session-open deadline".to_owned()
+        })?
+        .unwrap_or_else(|_| Err("opening the workspace stopped before it finished".into()))
+        .map(Arc::new);
         if let Ok(mut workspace) = self.workspace.lock() {
             *workspace = Some(opened);
         }
+        Ok(())
     }
 
     /// Admits one call, or names why it cannot run now.
