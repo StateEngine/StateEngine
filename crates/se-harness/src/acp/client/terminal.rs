@@ -121,22 +121,42 @@ struct TerminalEntry {
     exit: Arc<Mutex<Option<Result<ContainedExit, String>>>>,
     notify: Arc<Notify>,
     released: AtomicBool,
-    workers: Mutex<Vec<JoinHandle<()>>>,
+    wait_worker: Mutex<Option<JoinHandle<ContainedChild>>>,
+    io_workers: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl TerminalEntry {
     fn terminate_and_join(&self) -> Result<(), String> {
-        let kill_res = self.killer.kill_tree().map_err(|e| e.to_string());
+        let mut errors = Vec::new();
+        if let Err(err) = self.killer.kill_tree() {
+            errors.push(err.to_string());
+        }
         self.notify.notify_waiters();
+        if let Some(wait_handle) = self.wait_worker.lock().ok().and_then(|mut w| w.take()) {
+            match wait_handle.join() {
+                Ok(mut child) => {
+                    if let Err(err) = child.terminate_and_reap() {
+                        errors.push(err.to_string());
+                    }
+                }
+                Err(_) => errors.push("terminal exit waiter thread panicked".to_owned()),
+            }
+        }
         let handles: Vec<JoinHandle<()>> = self
-            .workers
+            .io_workers
             .lock()
             .map(|mut w| std::mem::take(&mut *w))
             .unwrap_or_default();
         for handle in handles {
-            let _ = handle.join();
+            if handle.join().is_err() {
+                errors.push("terminal output reader thread panicked".to_owned());
+            }
         }
-        kill_res
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 }
 
@@ -144,7 +164,9 @@ impl TerminalEntry {
 struct TerminalTable {
     closed: bool,
     pending: usize,
+    releasing: usize,
     active: BTreeMap<String, Arc<TerminalEntry>>,
+    cleanup_errors: Vec<String>,
 }
 
 /// Owned terminal table for one ACP conversation.
@@ -152,20 +174,66 @@ struct TerminalTable {
 pub(super) struct Terminals {
     next_id: AtomicU64,
     table: Arc<Mutex<TerminalTable>>,
-    pending_done: Arc<Notify>,
+    settled: Arc<Notify>,
+}
+
+/// RAII custody guard for a terminal currently undergoing kill/reap/join.
+/// Keeps the terminal counted against `MAX_TERMINALS` and visible to `close_all`
+/// until settlement is witnessed, and preserves any cleanup error.
+struct ReleasingSlot {
+    table: Arc<Mutex<TerminalTable>>,
+    settled: Arc<Notify>,
+    armed: bool,
+}
+
+impl ReleasingSlot {
+    fn finish(mut self, result: Result<(), String>, record_error: bool) -> Result<(), String> {
+        self.armed = false;
+        if let Ok(mut table) = self.table.lock() {
+            table.releasing = table.releasing.saturating_sub(1);
+            if let Err(err) = &result
+                && (record_error || table.closed)
+            {
+                table.cleanup_errors.push(err.clone());
+            }
+        }
+        self.settled.notify_waiters();
+        result
+    }
+}
+
+impl Drop for ReleasingSlot {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Ok(mut table) = self.table.lock() {
+                table.releasing = table.releasing.saturating_sub(1);
+                table
+                    .cleanup_errors
+                    .push("terminal cleanup aborted before settlement".to_owned());
+            }
+            self.settled.notify_waiters();
+        }
+    }
 }
 
 /// RAII reservation of one slot in `TerminalTable::pending`. Ensures concurrent
 /// `terminal/create` calls never spawn more than `MAX_TERMINALS` processes and
-/// `close_all` can wait for any in-flight spawn to settle.
+/// `close_all` waits for every in-flight spawn and cleanup to settle.
 struct PendingSlot {
     table: Arc<Mutex<TerminalTable>>,
-    pending_done: Arc<Notify>,
+    settled: Arc<Notify>,
     armed: bool,
 }
 
 impl PendingSlot {
-    fn commit(mut self, id: String, entry: Arc<TerminalEntry>) -> Result<(), Refusal> {
+    /// Atomically commit `entry` to `active`, or—if the session closed while
+    /// spawning—transfer custody to a `ReleasingSlot` so cleanup runs off the
+    /// async executor while staying counted and visible to `close_all`.
+    fn commit(
+        mut self,
+        id: String,
+        entry: Arc<TerminalEntry>,
+    ) -> Result<Option<ReleasingSlot>, Refusal> {
         let mut table = self
             .table
             .lock()
@@ -173,18 +241,19 @@ impl PendingSlot {
         table.pending = table.pending.saturating_sub(1);
         self.armed = false;
         if table.closed {
+            table.releasing += 1;
+            let releasing = ReleasingSlot {
+                table: Arc::clone(&self.table),
+                settled: Arc::clone(&self.settled),
+                armed: true,
+            };
             drop(table);
-            self.pending_done.notify_waiters();
-            entry.released.store(true, Ordering::Release);
-            let _ = entry.terminate_and_join();
-            return Err(Refusal::invalid(
-                "this conversation is closing, so StateEngine takes no more terminals",
-            ));
+            return Ok(Some(releasing));
         }
         table.active.insert(id, entry);
         drop(table);
-        self.pending_done.notify_waiters();
-        Ok(())
+        self.settled.notify_waiters();
+        Ok(None)
     }
 }
 
@@ -194,7 +263,7 @@ impl Drop for PendingSlot {
             if let Ok(mut table) = self.table.lock() {
                 table.pending = table.pending.saturating_sub(1);
             }
-            self.pending_done.notify_waiters();
+            self.settled.notify_waiters();
         }
     }
 }
@@ -237,57 +306,72 @@ impl Terminals {
     }
 
     /// Deterministically kill and release every terminal owned by this session,
-    /// waiting up to `until` for any in-flight `create` to settle. Returns an
-    /// error if any terminal's process tree could not be witnessed empty.
+    /// bounded by `until`. If `until` expires before all terminals settle,
+    /// returns an explicit deadline error while detached blocking workers retain
+    /// custody until settlement.
     pub(super) async fn close_all(&self, until: tokio::time::Instant) -> Result<(), String> {
-        let entries: Vec<Arc<TerminalEntry>> = {
+        let entries: Vec<(Arc<TerminalEntry>, ReleasingSlot)> = {
             let mut table = self
                 .table
                 .lock()
                 .map_err(|_| "terminal table is poisoned".to_owned())?;
             table.closed = true;
-            let drained = table.active.values().cloned().collect();
+            let drained: Vec<Arc<TerminalEntry>> = table.active.values().cloned().collect();
             table.active.clear();
+            table.releasing += drained.len();
             drained
+                .into_iter()
+                .map(|entry| {
+                    (
+                        entry,
+                        ReleasingSlot {
+                            table: Arc::clone(&self.table),
+                            settled: Arc::clone(&self.settled),
+                            armed: true,
+                        },
+                    )
+                })
+                .collect()
         };
 
-        let mut errors = Vec::new();
-        if !entries.is_empty() {
-            let cleanup = tokio::task::spawn_blocking(move || {
-                let mut errs = Vec::new();
-                for entry in entries {
-                    entry.released.store(true, Ordering::Release);
-                    if let Err(err) = entry.terminate_and_join() {
-                        errs.push(err);
-                    }
-                }
-                errs
-            })
-            .await
-            .map_err(|_| "terminal cleanup task stopped before finishing".to_owned())?;
-            errors.extend(cleanup);
+        for (entry, slot) in entries {
+            entry.released.store(true, Ordering::Release);
+            entry.notify.notify_waiters();
+            tokio::task::spawn_blocking(move || {
+                let res = entry.terminate_and_join();
+                let _ = slot.finish(res, true);
+            });
         }
 
-        // Wait for any in-flight `create` reservations to observe `closed = true`
-        // and clean up their child before returning.
         loop {
-            let notified = self.pending_done.notified();
-            let pending = self.table.lock().map(|t| t.pending).unwrap_or(0);
-            if pending == 0 {
-                break;
-            }
+            let notified = self.settled.notified();
+            let remaining = {
+                let mut table = self
+                    .table
+                    .lock()
+                    .map_err(|_| "terminal table is poisoned".to_owned())?;
+                let remaining = table.pending + table.releasing;
+                if remaining == 0 {
+                    let errors = std::mem::take(&mut table.cleanup_errors);
+                    return if errors.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(errors.join("; "))
+                    };
+                }
+                remaining
+            };
             if tokio::time::timeout_at(until, notified).await.is_err() {
+                let mut errors = self
+                    .table
+                    .lock()
+                    .map(|mut t| std::mem::take(&mut t.cleanup_errors))
+                    .unwrap_or_default();
                 errors.push(format!(
-                    "{pending} in-flight terminal start(s) did not settle before close deadline"
+                    "{remaining} terminal(s) did not settle before close deadline"
                 ));
-                break;
+                return Err(errors.join("; "));
             }
-        }
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors.join("; "))
         }
     }
 
@@ -301,7 +385,7 @@ impl Terminals {
                 "this conversation is closing, so StateEngine takes no more terminals",
             ));
         }
-        if table.active.len() + table.pending >= MAX_TERMINALS {
+        if table.active.len() + table.pending + table.releasing >= MAX_TERMINALS {
             return Err(Refusal::failed(format!(
                 "this conversation already has {MAX_TERMINALS} active terminals; release one before creating another"
             )));
@@ -309,7 +393,7 @@ impl Terminals {
         table.pending += 1;
         Ok(PendingSlot {
             table: Arc::clone(&self.table),
-            pending_done: Arc::clone(&self.pending_done),
+            settled: Arc::clone(&self.settled),
             armed: true,
         })
     }
@@ -344,7 +428,17 @@ impl Terminals {
 
         let seq = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let id = format!("term_{seq}");
-        slot.commit(id.clone(), entry)?;
+        if let Some(releasing) = slot.commit(id.clone(), Arc::clone(&entry))? {
+            entry.released.store(true, Ordering::Release);
+            entry.notify.notify_waiters();
+            tokio::task::spawn_blocking(move || {
+                let res = entry.terminate_and_join();
+                let _ = releasing.finish(res, true);
+            });
+            return Err(Refusal::invalid(
+                "this conversation is closing, so StateEngine takes no more terminals",
+            ));
+        }
         Ok(json!({ "terminalId": id }))
     }
 
@@ -415,22 +509,36 @@ impl Terminals {
 
     async fn release(&self, params: &Value) -> Outcome {
         let id = required_str(params, "terminalId", 128)?.to_owned();
-        let entry = self
-            .table
-            .lock()
-            .map_err(|_| Refusal::failed("terminal table is poisoned"))?
-            .active
-            .remove(&id)
-            .ok_or_else(|| Refusal::missing(format!("terminal {id} does not exist")))?;
+        let (entry, releasing) = {
+            let mut table = self
+                .table
+                .lock()
+                .map_err(|_| Refusal::failed("terminal table is poisoned"))?;
+            let entry = table
+                .active
+                .remove(&id)
+                .ok_or_else(|| Refusal::missing(format!("terminal {id} does not exist")))?;
+            table.releasing += 1;
+            let releasing = ReleasingSlot {
+                table: Arc::clone(&self.table),
+                settled: Arc::clone(&self.settled),
+                armed: true,
+            };
+            (entry, releasing)
+        };
         entry.released.store(true, Ordering::Release);
-        tokio::task::spawn_blocking(move || entry.terminate_and_join())
-            .await
-            .map_err(|_| Refusal::failed("terminal release cleanup stopped before finishing"))?
-            .map_err(|err| {
-                Refusal::failed(format!(
-                    "terminal {id} was removed from table, but cleanup was uncertain: {err}"
-                ))
-            })?;
+        entry.notify.notify_waiters();
+        tokio::task::spawn_blocking(move || {
+            let res = entry.terminate_and_join();
+            releasing.finish(res, false)
+        })
+        .await
+        .map_err(|_| Refusal::failed("terminal release cleanup stopped before finishing"))?
+        .map_err(|err| {
+            Refusal::failed(format!(
+                "terminal {id} was removed from table, but cleanup was uncertain: {err}"
+            ))
+        })?;
         Ok(json!({}))
     }
 
@@ -487,6 +595,7 @@ fn start_entry(
                 *slot = Some(outcome);
             }
             exit_notify.notify_waiters();
+            child
         }) {
         Ok(h) => h,
         Err(err) => {
@@ -505,7 +614,8 @@ fn start_entry(
         exit,
         notify,
         released: AtomicBool::new(false),
-        workers: Mutex::new(vec![stdout_handle, stderr_handle, wait_handle]),
+        wait_worker: Mutex::new(Some(wait_handle)),
+        io_workers: Mutex::new(vec![stdout_handle, stderr_handle]),
     }))
 }
 
