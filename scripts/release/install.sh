@@ -116,6 +116,8 @@ partial=$data/standalone-install.partial
 replace_state=$data/standalone-install.replace.json
 plain_path "$partial"
 plain_path "$replace_state"
+orig_recover=$recover
+orig_no_modify=$no_modify_path
 if [ "$recover" -eq 1 ]; then
     if [ ! -d "$partial" ]; then
         if [ -f "$replace_state" ]; then
@@ -132,27 +134,30 @@ inherited_fish_path=''
 inherited_fish_sha256=''
 inherited_dirs=''
 if [ -f "$replace_state" ]; then
-    custody=$("$bundle/se" __install-replace-custody "$data") || fail 'invalid or foreign replacement custody record'
+    custody=$("$bundle/se" __install-replace-custody "$data") || fail "replacement custody at $replace_state is invalid or stale; remove '$replace_state' if no replacement is in progress, then retry"
     if [ -n "$custody" ]; then
-        custody_line=0
         while IFS= read -r line; do
-            custody_line=$((custody_line + 1))
-            case "$custody_line" in
-            1) [ "$line" = 1 ] && no_modify_path=1 ;;
-            2) [ -n "$inherit_path_edits" ] || inherit_path_edits=$line ;;
-            3) inherited_fish_path=$line ;;
-            4) inherited_fish_sha256=$line ;;
-            *)
-                if [ -n "$line" ]; then
+            case "$line" in
+            no_modify_path=1) no_modify_path=1 ;;
+            no_modify_path=0) ;;
+            inherited_path_edits=*) [ -n "$inherit_path_edits" ] || inherit_path_edits=${line#inherited_path_edits=} ;;
+            inherited_fish_path=*) inherited_fish_path=${line#inherited_fish_path=} ;;
+            inherited_fish_sha256=*) inherited_fish_sha256=${line#inherited_fish_sha256=} ;;
+            inherited_dir=*)
+                dir_val=${line#inherited_dir=}
+                if [ -n "$dir_val" ]; then
                     if [ -n "$inherited_dirs" ]; then inherited_dirs="$inherited_dirs
-$line"
-                    else inherited_dirs=$line; fi
+$dir_val"
+                    else inherited_dirs=$dir_val; fi
                 fi
                 ;;
             esac
         done <<CUSTODY
 $custody
 CUSTODY
+        if [ "$orig_recover" -eq 0 ] && [ "$native_held" -eq 0 ] && [ "$orig_no_modify" -eq 0 ] && [ "$no_modify_path" -eq 1 ]; then
+            printf 'Note: preserving --no-modify-path from prior interrupted replacement (%s)\n' "$replace_state" >&2
+        fi
     fi
 fi
 # A current archive can remove a proved older installation without asking the

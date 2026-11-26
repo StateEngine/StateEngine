@@ -265,6 +265,8 @@ try {
     $replaceState = Join-Path $data 'standalone-install.replace.json'
     Assert-PlainPath $pending
     Assert-PlainPath $replaceState
+    $origRecover = [bool]$Recover.IsPresent
+    $origSkipPathEdits = $skipPathEdits
     if ($Recover) {
         if (-not [IO.File]::Exists($pending)) {
             if ([IO.File]::Exists($replaceState)) { $Recover = $false }
@@ -280,20 +282,26 @@ try {
     # NoModifyPath and inherited PATH custody on -Recover.
     $inheritedEdits = @()
     if ([IO.File]::Exists($replaceState)) {
-        if ((Get-Acl -LiteralPath $replaceState).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $owner) { throw 'replacement custody has a different native owner' }
+        if ((Get-Acl -LiteralPath $replaceState).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $owner) { throw "replacement custody at '$replaceState' has a different native owner; remove '$replaceState' if no replacement is in progress, then retry" }
         & (Join-Path $bundle 'se.exe') __install-files-check $replaceState
-        if ($LASTEXITCODE -ne 0) { throw 'replacement custody native file custody refused' }
-        $replaceObj = Get-Content -LiteralPath $replaceState -Raw | ConvertFrom-Json
-        if ($replaceObj.schema -ne 'stateengine-install-replace/v1' -or $replaceObj.owner -ne $owner) { throw 'replacement custody has an invalid schema or owner' }
-        if ($replaceObj.no_modify_path -is [bool] -and $replaceObj.no_modify_path) { $skipPathEdits = $true }
+        if ($LASTEXITCODE -ne 0) { throw "replacement custody at '$replaceState' failed native file custody; remove '$replaceState' if no replacement is in progress, then retry" }
+        try { $replaceObj = Get-Content -LiteralPath $replaceState -Raw | ConvertFrom-Json }
+        catch { throw "replacement custody at '$replaceState' is malformed; remove '$replaceState' if no replacement is in progress, then retry" }
+        if ($null -eq $replaceObj -or $replaceObj.schema -ne 'stateengine-install-replace/v1' -or $replaceObj.owner -ne $owner) { throw "replacement custody at '$replaceState' has an invalid schema or owner; remove '$replaceState' if no replacement is in progress, then retry" }
+        if ($replaceObj.no_modify_path -is [bool] -and $replaceObj.no_modify_path) {
+            $skipPathEdits = $true
+            if (-not $origRecover -and -not $origSkipPathEdits) {
+                [Console]::Error.WriteLine("Note: preserving -NoModifyPath from prior interrupted replacement ($replaceState)")
+            }
+        }
         $repProp = $replaceObj.PSObject.Properties['inherited_path_edits']
         if ($null -ne $repProp -and $null -ne $repProp.Value) {
             $inheritedEdits = @($repProp.Value)
             foreach ($edit in @($inheritedEdits)) {
                 $target = $edit.PSObject.Properties['target']
-                if ($null -eq $target -or [string]$target.Value -cne 'HKCU\Environment\Path') { throw 'inherited PATH custody differs from the original registry target' }
+                if ($null -eq $target -or [string]$target.Value -cne 'HKCU\Environment\Path') { throw "replacement custody at '$replaceState' has an invalid registry target; remove '$replaceState' if no replacement is in progress, then retry" }
             }
-            if ($inheritedEdits.Count -gt 1) { throw 'inherited PATH custody differs from the original registry target' }
+            if ($inheritedEdits.Count -gt 1) { throw "replacement custody at '$replaceState' has multiple registry targets; remove '$replaceState' if no replacement is in progress, then retry" }
         }
     }
     # Current native code reads the retained schema and validates the exact old

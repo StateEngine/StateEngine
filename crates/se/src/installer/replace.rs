@@ -147,6 +147,19 @@ pub fn replace_installation(arguments: &[OsString]) -> Result<i32> {
     ))
 }
 
+fn stale_custody(path: &std::path::Path, reason: impl Into<String>) -> se_types::SeError {
+    se_types::SeError::new(se_types::Detail::StateConflict(
+        se_types::details::StateConflict {
+            subject: path.display().to_string(),
+            reason: reason.into(),
+            next_step: format!(
+                "Remove '{}' if no replacement is in progress, then retry the installer",
+                path.display()
+            ),
+        },
+    ))
+}
+
 fn load_replace_custody(home: &std::path::Path) -> Result<Option<crate::runtime::ReplaceCustody>> {
     se_proc::NativeStateFiles::open(home).map_err(native)?;
     let path = home.join("standalone-install.replace.json");
@@ -155,29 +168,36 @@ fn load_replace_custody(home: &std::path::Path) -> Result<Option<crate::runtime:
     };
     let bytes = file.read(1024 * 1024).map_err(native)?;
     let custody: crate::runtime::ReplaceCustody = serde_json::from_slice(&bytes)
-        .map_err(|e| args::invalid("a valid replacement custody record").with_cause(e))?;
+        .map_err(|e| stale_custody(&path, format!("invalid replacement custody JSON: {e}")))?;
     if custody.schema != "stateengine-install-replace/v1"
         || custody.owner != crate::route::owner::observe(&[])?.os_owner()
     {
-        return Err(args::invalid("the native-owned replacement custody record"));
+        return Err(stale_custody(
+            &path,
+            "replacement custody has an invalid schema or owner",
+        ));
     }
     Ok(Some(custody))
 }
 
-fn validate_inherited_directories(custody: &crate::runtime::ReplaceCustody) -> Result<&[String]> {
+fn validate_inherited_directories<'a>(
+    path: &std::path::Path,
+    custody: &'a crate::runtime::ReplaceCustody,
+) -> Result<&'a [String]> {
     let mut seen = Vec::<&str>::new();
     for dir in &custody.inherited_directories {
-        let path = std::path::Path::new(dir);
+        let dir_path = std::path::Path::new(dir);
         if dir.is_empty()
-            || !path.is_absolute()
+            || !dir_path.is_absolute()
             || seen.contains(&dir.as_str())
             || !custody
                 .inherited_files
                 .iter()
-                .any(|file| std::path::Path::new(&file.path).starts_with(path))
+                .any(|file| std::path::Path::new(&file.path).starts_with(dir_path))
         {
-            return Err(args::invalid(
-                "unique absolute ancestor directories of inherited files",
+            return Err(stale_custody(
+                path,
+                "replacement custody names invalid inherited directories",
             ));
         }
         seen.push(dir.as_str());
@@ -197,6 +217,7 @@ pub fn read_replace_custody(arguments: &[OsString]) -> Result<i32> {
     if home != crate::bootstrap::state_home(None)? {
         return Err(args::invalid("the selected platform data home"));
     }
+    let custody_path = home.join("standalone-install.replace.json");
     let Some(custody) = load_replace_custody(&home)? else {
         return Ok(0);
     };
@@ -205,7 +226,10 @@ pub fn read_replace_custody(arguments: &[OsString]) -> Result<i32> {
         #[cfg(windows)]
         {
             if edit.target != r"HKCU\Environment\Path" || !seen_bases.is_empty() {
-                return Err(args::invalid("the original registry PATH target"));
+                return Err(stale_custody(
+                    &custody_path,
+                    "inherited PATH custody differs from the original registry target",
+                ));
             }
             seen_bases.push(r"HKCU\Environment\Path");
         }
@@ -214,13 +238,16 @@ pub fn read_replace_custody(arguments: &[OsString]) -> Result<i32> {
             let base = std::path::Path::new(&edit.target)
                 .file_name()
                 .and_then(|n| n.to_str())
-                .ok_or_else(|| args::invalid("inherited profile paths"))?;
+                .ok_or_else(|| stale_custody(&custody_path, "invalid inherited profile path"))?;
             if !matches!(
                 base,
                 ".profile" | ".bash_profile" | ".bash_login" | ".zprofile" | ".bashrc" | ".zshrc"
             ) || seen_bases.contains(&base)
             {
-                return Err(args::invalid("unique inherited login profiles"));
+                return Err(stale_custody(
+                    &custody_path,
+                    "duplicate or unsupported inherited login profile",
+                ));
             }
             seen_bases.push(base);
         }
@@ -228,38 +255,52 @@ pub fn read_replace_custody(arguments: &[OsString]) -> Result<i32> {
     let mut fish_path = String::new();
     let mut fish_sha = String::new();
     if custody.inherited_files.len() > 1 {
-        return Err(args::invalid("at most one inherited Fish PATH file"));
+        return Err(stale_custody(
+            &custody_path,
+            "replacement custody lists more than one Fish PATH file",
+        ));
     }
     if let Some(entry) = custody.inherited_files.first() {
         if !se_core::ops::installation::is_fish_path_file(&entry.path) {
-            return Err(args::invalid("an inherited Fish PATH file"));
+            return Err(stale_custody(
+                &custody_path,
+                "replacement custody lists a non-Fish inherited file",
+            ));
         }
         let mut owned = se_proc::OwnedFile::open(std::path::Path::new(&entry.path))
             .map_err(native)?
-            .ok_or_else(|| args::invalid("the preserved Fish PATH file on disk"))?;
+            .ok_or_else(|| {
+                stale_custody(
+                    &custody_path,
+                    format!("preserved Fish PATH file is absent: {}", entry.path),
+                )
+            })?;
         let actual = se_types::Sha256::from_bytes(owned.sha256().map_err(native)?);
         if actual.hex() != entry.sha256 {
-            return Err(args::invalid("unchanged preserved Fish PATH file"));
+            return Err(stale_custody(
+                &custody_path,
+                format!("preserved Fish PATH file changed: {}", entry.path),
+            ));
         }
         fish_path = entry.path.clone();
         fish_sha = entry.sha256.clone();
     }
-    let dirs = validate_inherited_directories(&custody)?;
-    let edits_json = if custody.inherited_path_edits.is_empty() {
-        String::new()
-    } else {
-        serde_json::to_string(&custody.inherited_path_edits)
-            .map_err(|e| se_core::scope::unreadable("inherited PATH custody", &e.to_string()))?
-    };
+    let dirs = validate_inherited_directories(&custody_path, &custody)?;
     println!(
-        "{}\n{}\n{}\n{}",
-        if custody.no_modify_path { 1 } else { 0 },
-        edits_json,
-        fish_path,
-        fish_sha
+        "no_modify_path={}",
+        if custody.no_modify_path { 1 } else { 0 }
     );
+    if !custody.inherited_path_edits.is_empty() {
+        let edits_json = serde_json::to_string(&custody.inherited_path_edits)
+            .map_err(|e| se_core::scope::unreadable("inherited PATH custody", &e.to_string()))?;
+        println!("inherited_path_edits={edits_json}");
+    }
+    if !fish_path.is_empty() {
+        println!("inherited_fish_path={fish_path}");
+        println!("inherited_fish_sha256={fish_sha}");
+    }
     for dir in dirs {
-        println!("{dir}");
+        println!("inherited_dir={dir}");
     }
     Ok(0)
 }

@@ -119,6 +119,7 @@ pub(super) fn settle(
     held: &mut HeldRecord,
     safe: bool,
     preserve: bool,
+    clear_replace_custody: bool,
     effects: &mut UninstallEffects,
 ) {
     let image_removed = effects
@@ -127,8 +128,56 @@ pub(super) fn settle(
         .all(|file| file_settled(file, preserve));
     let settled = safe && image_removed;
     effects.integrations.push(remove_record(held, settled));
+    if settled && clear_replace_custody {
+        if let Some(effect) = remove_stale_replace_custody(plan.state_home()) {
+            effects.integrations.push(effect);
+        }
+    }
     remove_directories(plan, settled, effects);
     reconcile_recovery(plan, parents, effects);
+}
+
+fn remove_stale_replace_custody(state_home: &Path) -> Option<IntegrationEffect> {
+    let path = state_home.join("standalone-install.replace.json");
+    let (action, proof) = match OwnedFile::open(&path) {
+        Ok(None) => return None,
+        Ok(Some(mut file)) => match file
+            .sha256()
+            .and_then(|digest| file.remove(digest))
+            .map_err(native_error)
+        {
+            Ok(()) => (
+                FileOutcome::Removed,
+                witness(
+                    WitnessState::Witnessed,
+                    "stale replacement custody removed on plain uninstall",
+                    None,
+                ),
+            ),
+            Err(error) => (
+                FileOutcome::Unreadable,
+                witness(
+                    WitnessState::Failed,
+                    "stale replacement custody removal failed",
+                    Some(error.to_string()),
+                ),
+            ),
+        },
+        Err(error) => (
+            FileOutcome::Unreadable,
+            witness(
+                WitnessState::Failed,
+                "stale replacement custody inspection failed",
+                Some(error.to_string()),
+            ),
+        ),
+    };
+    Some(IntegrationEffect {
+        path: path.display().to_string(),
+        entry: "stale replacement custody".into(),
+        action,
+        witness: proof,
+    })
 }
 
 fn remove_record(held: &mut HeldRecord, settled: bool) -> IntegrationEffect {

@@ -249,7 +249,15 @@ fn execute_inner(
             "installed image preserved so unresolved effects can be retried",
         ));
     }
-    settle(plan, &parents, &mut held, safe, preserve, &mut effects);
+    settle(
+        plan,
+        &parents,
+        &mut held,
+        safe,
+        preserve,
+        reinstall.is_none(),
+        &mut effects,
+    );
     Ok((owned_plan, effects, Some(runtime_lease)))
 }
 
