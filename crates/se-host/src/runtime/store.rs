@@ -111,6 +111,28 @@ impl Store {
             None => Ok(None),
         }
     }
+    /// A remote stop's remote-actor batches enqueue under its original grant
+    /// fences, so a revoked pairing admits no new stop; owner cleanup does not.
+    pub async fn commit_fenced(
+        &self,
+        admission: Admission,
+        deadline: &Deadline,
+        fence: &StopFence,
+        work: impl FnOnce(&Kernel, &mut Cx<'_, SqliteSnapshot>) -> Result<AtomicBatch> + Send + 'static,
+    ) -> Result<CommitReceipt> {
+        let batch = self.prepare_batch(admission, deadline, None, work).await?;
+        #[cfg(feature = "remote")]
+        if let Some(permit) = fence
+            && matches!(batch.admission.actor, se_store::Actor::Remote(_))
+        {
+            return self
+                .submit_lifecycle(batch, deadline, Some(permit.clone()))
+                .await;
+        }
+        #[cfg(not(feature = "remote"))]
+        let _ = fence;
+        self.submit_unpermitted(batch, deadline).await
+    }
     #[cfg(feature = "remote")]
     pub async fn commit_remote(
         &self,
@@ -121,7 +143,8 @@ impl Store {
         work: impl FnOnce(&Kernel, &mut Cx<'_, SqliteSnapshot>) -> Result<AtomicBatch> + Send + 'static,
     ) -> Result<CommitReceipt> {
         let batch = self.prepare_batch(admission, deadline, seed, work).await?;
-        self.submit_lifecycle(batch, deadline, Some(permit)).await
+        self.submit_lifecycle(batch, deadline, Some(std::sync::Arc::new(permit)))
+            .await
     }
     async fn prepare_batch<T: Send + 'static>(
         &self,
@@ -143,7 +166,9 @@ impl Store {
         &self,
         batch: AtomicBatch,
         deadline: &Deadline,
-        #[cfg(feature = "remote")] permit: Option<crate::remote::auth::AdmissionPermit>,
+        #[cfg(feature = "remote")] permit: Option<
+            std::sync::Arc<crate::remote::auth::AdmissionPermit>,
+        >,
         #[cfg(not(feature = "remote"))] _permit: Option<()>,
     ) -> Result<CommitReceipt> {
         let request = batch.request.as_ref().ok_or_else(|| {
@@ -164,7 +189,7 @@ impl Store {
             let submitted = identity.clone();
             return self
                 .submit_with(batch, identity, deadline, move |writer, batch| {
-                    permit.submit_with(writer, batch, |error| {
+                    permit.submit_ref(writer, batch, |error| {
                         fault.observe_writer(error);
                         submitted.store_error(error)
                     })
@@ -304,3 +329,10 @@ impl Store {
 fn error(subject: &str, cause: impl std::fmt::Display) -> se_types::SeError {
     se_core::scope::unreadable(subject, &cause.to_string())
 }
+
+/// A remote stop's boundary permit, shared by each remote-actor commit of that
+/// one stop. Absent for every local or owner-admitted stop.
+#[cfg(feature = "remote")]
+pub type StopFence = Option<std::sync::Arc<crate::remote::auth::AdmissionPermit>>;
+#[cfg(not(feature = "remote"))]
+pub type StopFence = Option<std::convert::Infallible>;

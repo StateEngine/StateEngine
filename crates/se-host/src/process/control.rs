@@ -19,6 +19,17 @@ impl LaunchCoordinator {
         admission: Admission,
         deadline: &Deadline,
     ) -> Result<StopResult> {
+        self.stop_fenced(plan, admission, None, deadline).await
+    }
+    /// A remote stop carries its boundary permit into each remote-actor commit.
+    /// A same-key retry replays its retained receipt before any new selection.
+    pub async fn stop_fenced(
+        self: &Arc<Self>,
+        plan: StopPlan,
+        admission: Admission,
+        fence: crate::runtime::store::StopFence,
+        deadline: &Deadline,
+    ) -> Result<StopResult> {
         let key = format!(
             "{:?}/{:?}/{}",
             admission.scope, admission.actor, plan.input.idempotency_key
@@ -30,11 +41,12 @@ impl LaunchCoordinator {
                 let coordinator = coordinator.clone();
                 let plan = plan.clone();
                 let admission = admission.clone();
+                let fence = fence.clone();
                 async move {
                     coordinator
                         .upgrade()
                         .ok_or_else(|| error("stop retry", "the original host has retired"))?
-                        .stop_selected(plan, admission, &deadline)
+                        .stop_selected(plan, admission, fence, &deadline)
                         .await
                         .map(se_core::ops::AnyOutput::from)
                 }
@@ -52,35 +64,18 @@ impl LaunchCoordinator {
         self: &Arc<Self>,
         mut plan: StopPlan,
         admission: Admission,
+        fence: crate::runtime::store::StopFence,
         deadline: &Deadline,
     ) -> Result<StopResult> {
-        let mut selection_failures = Vec::new();
-        if plan.input.all && plan.targets.is_empty() {
-            for project in plan.projects {
-                let mut admitted = admission.clone();
-                admitted.scope = se_store::Scope::Project(project.id.clone());
-                let project_id = project.id.clone();
-                let result = self
-                    .store
-                    .read(admitted, deadline, move |cx| {
-                        se_core::ops::stop_plan::agents(project, cx)
-                    })
-                    .await;
-                match result {
-                    Ok(mut targets) => plan.targets.append(&mut targets),
-                    Err(error) => {
-                        let cx = se_types::RenderCx {
-                            project: Some(&project_id),
-                            ..Default::default()
-                        };
-                        selection_failures.push(format!(
-                            "project {project_id}: {}",
-                            refusal_detail(&error, &cx)
-                        ));
-                    }
-                }
-            }
-        }
+        let selection_failures = if plan.input.all && plan.targets.is_empty() {
+            let projects = std::mem::take(&mut plan.projects);
+            self.select_all(projects, &mut plan.targets, &admission, deadline)
+                .await
+        } else {
+            Vec::new()
+        };
+        self.refuse_foreign_work(&plan.targets, &admission, deadline)
+            .await?;
         let mut stops = Vec::with_capacity(plan.targets.len());
         for target in plan.targets {
             let mut admitted = admission.clone();
@@ -91,6 +86,7 @@ impl LaunchCoordinator {
                     &plan.input.idempotency_key,
                     plan.input.release,
                     admitted,
+                    &fence,
                     deadline,
                 )
                 .await,
@@ -158,6 +154,7 @@ impl LaunchCoordinator {
         key: &IdempotencyKey,
         release: bool,
         admission: Admission,
+        fence: &crate::runtime::store::StopFence,
         deadline: &Deadline,
     ) -> AgentStopResult {
         let expected = target.expected.clone();
@@ -169,8 +166,8 @@ impl LaunchCoordinator {
             // independent targets selected by --all.
             let agent=row.target.agent.id.clone();
             let current=self.store.read(admission.clone(),deadline,move |cx| se_core::scope::require_present(cx.read.control_target(agent).map_err(|e|se_core::store_error::store_error(&e))?,"current stop control","Restore the current create grant or use the owner's terminal.")).await?;
-            if scoped_ended(expected.as_ref(), &current, &mut row)? { return Ok(()); }
-            external = self.retire_embedded_bindings(&current, &row.target.agent.id, key, &admission, deadline).await?;
+            if self.scoped_ended(expected.as_ref(), &current, &admission, &mut row, deadline).await? { return Ok(()); }
+            external = self.retire_embedded_bindings(&current, &row.target.agent.id, key, &admission, fence, deadline).await?;
             if !external.is_empty() && current.processes.is_empty() {
                 let changed = external.iter().any(|binding| binding.changed);
                 row.result = if changed { "stopped" } else { "already-stopped" }.into();
@@ -193,7 +190,7 @@ impl LaunchCoordinator {
             if expected.as_ref().is_some_and(|expected| expected.lifecycle != job.lifecycle) {
                 return Err(error("scoped stop lifecycle", "the retained job is not the recorded lifecycle"));
             }
-            if !release { self.interrupt_startup(&job,key,admission.clone(),deadline).await?; }
+            if !release { self.interrupt_startup(&job,key,admission.clone(),fence,deadline).await?; }
             let mut work=if release {
                 job.control_state(deadline).await?
             } else {
@@ -221,9 +218,11 @@ impl LaunchCoordinator {
             }
             work.stop_key=Some(key.clone());
             work.admission=admission;
+            work.stop_fence=fence.clone();
             let witness=self.stop_native(&mut work,deadline).await?;
             work.last_witness=Some(witness.clone());
             work.admission=work.cleanup_admission.clone();
+            work.stop_fence=None;
             self.finish(&mut work,witness,deadline).await?;
             if !job.settled.swap(true,Ordering::AcqRel){self.activity.send_modify(|count|*count=count.saturating_sub(1));}
             fill_stopped(&mut row,&work,false,&self.options.home)?;Ok(())
@@ -302,25 +301,107 @@ impl LaunchCoordinator {
             .cloned())
     }
 }
-/// A scoped stop refuses other live work. When nothing live is its own and a
-/// newer lifecycle exists, its lifecycle already ended: report that, touch nothing.
-fn scoped_ended(
-    expected: Option<&se_core::ops::stop_plan::ExpectedLifecycle>,
-    current: &se_store::ControlTarget,
-    row: &mut AgentStopResult,
-) -> Result<bool> {
-    let Some(expected) = expected else {
-        return Ok(false);
-    };
-    expected.check(current)?;
-    if !expected.superseded(current) {
-        return Ok(false);
+impl LaunchCoordinator {
+    /// `--all` selects every agent of each project; one unreadable project is a
+    /// named selection failure, never an empty scope.
+    async fn select_all(
+        &self,
+        projects: Vec<se_types::Named<se_types::ProjectId>>,
+        targets: &mut Vec<ControlAgent>,
+        admission: &Admission,
+        deadline: &Deadline,
+    ) -> Vec<String> {
+        let mut selection_failures = Vec::new();
+        for project in projects {
+            let mut admitted = admission.clone();
+            admitted.scope = se_store::Scope::Project(project.id.clone());
+            let project_id = project.id.clone();
+            let result = self
+                .store
+                .read(admitted, deadline, move |cx| {
+                    se_core::ops::stop_plan::agents(project, cx)
+                })
+                .await;
+            match result {
+                Ok(mut selected) => targets.append(&mut selected),
+                Err(error) => {
+                    let cx = se_types::RenderCx {
+                        project: Some(&project_id),
+                        ..Default::default()
+                    };
+                    selection_failures.push(format!(
+                        "project {project_id}: {}",
+                        refusal_detail(&error, &cx)
+                    ));
+                }
+            }
+        }
+        selection_failures
     }
-    already_stopped(
-        row,
-        "The recorded lifecycle has no live process or session; newer work on this agent was left untouched.",
-    )?;
-    Ok(true)
+    /// A new scoped attempt refuses other live work as a refusal, not a row.
+    /// Runs inside the supervised request, after a same-key retry could replay.
+    async fn refuse_foreign_work(
+        &self,
+        targets: &[ControlAgent],
+        admission: &Admission,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        for target in targets {
+            if let Some(expected) = target.expected.clone() {
+                let mut admitted = admission.clone();
+                admitted.scope = se_store::Scope::Project(target.target.project.id.clone());
+                let agent = target.target.agent.id.clone();
+                let next =
+                    "Ask the Owner of that machine to run se stop AGENT in a terminal there.";
+                self.store
+                    .read(admitted, deadline, move |cx| {
+                        let current = cx
+                            .read
+                            .control_target(agent)
+                            .map_err(|e| se_core::store_error::store_error(&e))?;
+                        let current =
+                            se_core::scope::require_present(current, "scoped stop control", next)?;
+                        expected.check(&current)
+                    })
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+    /// A scoped stop refuses other live work. When nothing live is its own and
+    /// newer work exists, its lifecycle counts as stopped only with its own exit
+    /// record: report that and touch nothing.
+    async fn scoped_ended(
+        &self,
+        expected: Option<&se_core::ops::stop_plan::ExpectedLifecycle>,
+        current: &se_store::ControlTarget,
+        admission: &Admission,
+        row: &mut AgentStopResult,
+        deadline: &Deadline,
+    ) -> Result<bool> {
+        let Some(expected) = expected else {
+            return Ok(false);
+        };
+        expected.check(current)?;
+        if !expected.superseded(current) {
+            return Ok(false);
+        }
+        let lifecycle = expected.lifecycle.clone();
+        let head = self
+            .store
+            .read(admission.clone(), deadline, move |cx| {
+                cx.read
+                    .process(lifecycle)
+                    .map_err(|e| se_core::store_error::store_error(&e))
+            })
+            .await?;
+        expected.exited(&head)?;
+        already_stopped(
+            row,
+            "The recorded lifecycle's exit is recorded and it has no live session; newer work on this agent was left untouched.",
+        )?;
+        Ok(true)
+    }
 }
 fn already_stopped(row: &mut AgentStopResult, detail: &str) -> Result<()> {
     row.result = "already-stopped".into();

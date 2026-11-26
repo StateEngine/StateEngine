@@ -157,6 +157,24 @@ pub trait CustodyExecutor: Send + Sync {
         })
     }
 
+    /// A remote stop of one recorded launch; its boundary permit fences each
+    /// remote-actor commit. This does not admit general remote custody plans.
+    #[cfg(feature = "remote")]
+    fn stop_remote<'a>(
+        &'a self,
+        _plan: se_core::ops::stop_plan::StopPlan,
+        _admission: Admission,
+        _permit: crate::remote::auth::AdmissionPermit,
+        _deadline: &'a Deadline,
+    ) -> crate::HostFuture<'a, se_core::ops::StopResult> {
+        Box::pin(async {
+            Err(se_core::scope::unreadable(
+                "remote stop",
+                "the native process coordinator does not support stops of recorded remote launches",
+            ))
+        })
+    }
+
     /// One finite live-work sweep, under the host's original timer budget.
     fn catch_up<'a>(&'a self, _deadline: &'a Deadline) -> crate::HostFuture<'a, ()> {
         Box::pin(async {

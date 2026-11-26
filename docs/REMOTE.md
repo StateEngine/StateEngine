@@ -119,7 +119,8 @@ Agents use `stateengine_remote_stop` with the same fields. The destination refus
 other session, including a later session of the same agent started by its Owner or by
 another machine. To stop that work, the destination Owner runs `se stop AGENT` in a
 terminal on that machine. Stop needs no extra permission: the recorded launch is the
-authority, so it still works after launch consent is revoked. The destination's own stop
+authority, so it still works after launch consent is revoked. Removing the pairing
+does refuse it, including a stop that is already in progress. The destination's own stop
 path ends the session and reports its witness. If closure is not proved, the command
 exits 2; repeat it with the same key.
 

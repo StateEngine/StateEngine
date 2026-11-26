@@ -109,8 +109,9 @@ pub fn plan_stop<R: Snapshot>(
         .filter(|_| projects.len() == 1)
         .ok_or_else(|| se_types::SeError::invalid("remote stop project", "one project"))?
         .clone();
+    // Live-work selection is checked inside native custody, after a same-key
+    // retry has had the chance to replay its retained receipt.
     let mut target = stop_plan::control(project.clone(), input.target.agent.clone(), cx)?;
-    expected.check(&target.control)?;
     target.expected = Some(expected);
     let idempotency_key = stop_key(attribution, &input)?;
     Ok(StopPlan {

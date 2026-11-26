@@ -1,6 +1,5 @@
 //! Stop one recorded remote launch through the ordinary native stop path.
 use super::*;
-use se_core::{ops::AnyOutput, ports::CustodyPlan};
 use se_store::{Actor, Admission, Scope};
 
 impl Service {
@@ -9,8 +8,8 @@ impl Service {
         request: auth::AuthorizedRemoteRequest,
     ) -> Result<RemoteStopResult> {
         self.router.check_open()?;
-        // Stop submits through native custody, not this boundary permit.
-        let (authority, request, attribution, _permit) = request.into_parts();
+        // Native custody consumes the permit at each remote-actor stop commit.
+        let (authority, request, attribution, permit) = request.into_parts();
         let RemoteRequest::Stop(input) = request else {
             return Err(SeError::invalid(
                 "remote stop",
@@ -47,18 +46,11 @@ impl Service {
             })
             .await?;
         let stopped = custody
-            .execute(CustodyPlan::Stop(Box::new(plan)), admission, &deadline)
+            .stop_remote(plan, admission, permit, &deadline)
             .await
             .map_err(|error| {
                 super::failure::original_key(error, "remote.stop", &input.idempotency_key)
             })?;
-        let AnyOutput::AgentStop(stopped) = stopped else {
-            return Err(se_core::scope::unreadable(
-                "remote stop receipt",
-                "native custody returned another operation",
-            ));
-        };
-        let stopped = stopped.value;
         let witness = match stopped.witness {
             Some(witness) => RemoteStopWitness {
                 state: witness.state,

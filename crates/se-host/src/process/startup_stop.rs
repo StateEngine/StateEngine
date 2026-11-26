@@ -30,6 +30,7 @@ impl LaunchCoordinator {
                         session: None,
                         generation: self.store.generation.get(),
                     },
+                    &None,
                     deadline,
                 )
                 .await;
@@ -44,6 +45,7 @@ impl LaunchCoordinator {
         job: &Arc<Job>,
         key: &IdempotencyKey,
         admission: Admission,
+        fence: &crate::runtime::store::StopFence,
         deadline: &Deadline,
     ) -> Result<()> {
         loop {
@@ -96,7 +98,7 @@ impl LaunchCoordinator {
             let request = key.clone();
             let committed = self
                 .store
-                .commit(admission.clone(), deadline, None, move |kernel, cx| {
+                .commit_fenced(admission.clone(), deadline, fence, move |kernel, cx| {
                     process_commit::advance(
                         kernel,
                         process_commit::ProcessChange {

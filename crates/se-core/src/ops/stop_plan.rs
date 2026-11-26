@@ -3,7 +3,7 @@
 //! snapshot separately, never promotes an agent to an owner.
 use super::{AgentStop, agent_stop::StopTarget, inputs::Validate, process_plan};
 use crate::{commit::Cx, scope, store_error::store_error};
-use se_store::{Actor, ControlTarget, EventBody, ReadBudget, Scope, Snapshot};
+use se_store::{Actor, ControlTarget, EventBody, ProjectionRecord, ReadBudget, Scope, Snapshot};
 use se_types::{AgentId, LifecycleId, Named, PageRequest, ProjectId, Result, SeError, SessionId};
 use std::{num::NonZeroU32, time::Duration};
 #[derive(Clone)]
@@ -54,6 +54,33 @@ impl ExpectedLifecycle {
             )));
         }
         Ok(())
+    }
+    /// A superseded lifecycle counts as stopped only with its own exit record;
+    /// released ownership or an unproved stop may leave its processes running.
+    pub fn exited(&self, head: &se_types::Read<ProjectionRecord>) -> Result<()> {
+        match head {
+            se_types::Read::Present { value } => match &value.current.body {
+                EventBody::ProcessTransition { identity, to, .. }
+                    if identity.record == self.lifecycle && *to == se_store::ProcessState::Exited =>
+                {
+                    Ok(())
+                }
+                _ => Err(SeError::new(se_types::Detail::StateConflict(
+                    se_types::details::StateConflict {
+                        subject: "scoped stop".into(),
+                        reason: "the recorded lifecycle has no exit record, and newer work now runs on this agent".into(),
+                        next_step: "Ask the Owner of that machine to run se stop AGENT in a terminal there and check its processes.".into(),
+                    },
+                ))),
+            },
+            se_types::Read::Absent { checked } => {
+                Err(scope::unreadable("recorded lifecycle", checked))
+            }
+            se_types::Read::Unknown { what } => Err(scope::unreadable("recorded lifecycle", what)),
+            se_types::Read::Unreadable { reason, .. } => {
+                Err(scope::unreadable("recorded lifecycle", reason))
+            }
+        }
     }
     /// Nothing live and a newer lifecycle or session recorded: this lifecycle
     /// already ended, and the newer work belongs to someone else.
