@@ -262,34 +262,16 @@ pub struct AssignmentThen {
 }
 
 pub(crate) fn current_captain<R: Snapshot>(cx: &mut Cx<'_, R>) -> Result<se_store::Actor> {
-    match cx.read.project_captain().map_err(|e| store_error(&e))? {
-        se_types::Read::Present { value } => match value.current.body {
-            EventBody::ProjectCaptainChanged {
-                captain: Some(actor),
-                ..
-            } => Ok(actor),
-            EventBody::ProjectCaptainChanged { captain: None, .. } => Err(SeError::invalid(
-                "captain",
-                "set a project captain with se captain set, or specify a recipient",
-            )),
-            _ => Err(scope::unreadable(
-                "captain",
-                "designation event has the wrong kind",
-            )),
-        },
-        se_types::Read::Absent { .. } => Err(SeError::invalid(
+    super::captain::active_captain(
+        cx,
+        "Run se up or restore access to the project store, then retry.",
+    )?
+    .ok_or_else(|| {
+        SeError::invalid(
             "captain",
-            "set a project captain with se captain set, or specify a recipient",
-        )),
-        other => {
-            scope::require_present(
-                other,
-                "captain",
-                "Run se up or restore access to the project store, then retry.",
-            )?;
-            Err(scope::unreadable("captain", "unexpected present value"))
-        }
-    }
+            "set an active project captain with se captain set, or specify a recipient",
+        )
+    })
 }
 fn existing<R: Snapshot>(cx: &mut Cx<'_, R>, id: EventId) -> Result<(AgentId, se_store::Expected)> {
     let record = scope::require_present(

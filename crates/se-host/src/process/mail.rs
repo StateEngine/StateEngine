@@ -19,10 +19,7 @@ pub(super) struct State {
     pub seen: Vec<se_types::MessageId>,
     pub backlog: bool,
     pub reoffer: bool,
-    /// When this agent was last woken for mail, on the monotonic clock.
     pub last_offer: Option<tokio::time::Instant>,
-    /// Since when this agent has been idle, and when the engine last
-    /// considered nudging it, both on the monotonic clock.
     pub idle_since: Option<tokio::time::Instant>,
     pub last_nudge: Option<tokio::time::Instant>,
 }
@@ -120,8 +117,7 @@ impl LaunchCoordinator {
                 .and_then(|b| b.get::<crate::harness::ClaudeBinding>())
                 .is_some_and(|b| b.attended)
         {
-            // The attended mod consumes the same durable unread view. Never
-            // fabricate a console write or record its notification as a read.
+            // Attended mode consumes the same durable unread view.
             return Ok(());
         }
         if (!secode && !work.mail.idle) || work.mail.flight.is_some() {
@@ -144,13 +140,8 @@ impl LaunchCoordinator {
             return Ok(());
         };
         let text = if secode {
-            Body::new(crate::harness::secode_process::notice_text(
-                &reserved
-                    .ids
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>(),
-            )?)?
+            let ids: Vec<String> = reserved.ids.iter().map(ToString::to_string).collect();
+            Body::new(crate::harness::secode_process::notice_text(&ids)?)?
         } else {
             self.mail_notice_text(&target, &reserved, deadline).await?
         };
@@ -291,7 +282,10 @@ impl LaunchCoordinator {
             .await;
         let (report, failure) = match offered {
             Ok(report) => (report, None),
-            Err(OfferFailure::Retired(error)) => return Err(error),
+            Err(OfferFailure::Retired(error)) => {
+                work.mail.flight = None;
+                return Err(error);
+            }
             Err(OfferFailure::Transport(error, Some(0))) => (
                 se_store::mail::OfferReport::Failed {
                     code: "zero-byte-write".into(),

@@ -235,9 +235,6 @@ fn build_notice<S: MailSnapshot>(
     let mut bodies = Vec::new();
     for record in notices.items() {
         let (effect, old) = intent(record)?;
-        if !matches_target(old, &request.target) {
-            continue;
-        }
         let mut unresolved = Vec::new();
         for id in &old.ids {
             let message = scope::require_present(
@@ -252,18 +249,23 @@ fn build_notice<S: MailSnapshot>(
                 unresolved.push(id);
             }
         }
-        if !unresolved.is_empty() && unresolved.iter().all(|id| ids.contains(id)) {
+        if unresolved.is_empty() || unresolved.iter().all(|id| ids.contains(id)) {
             let attempts = u32::try_from(record.revision.value.get().saturating_sub(1))
                 .map_err(|_| SeError::invalid("mail attempts", "bounded revision"))?;
+            let reason = if unresolved.is_empty() {
+                "all reserved messages already resolved".to_owned()
+            } else {
+                format!(
+                    "folded into notice {}",
+                    se_types::hex_lower(request.notice_id.as_bytes())
+                )
+            };
             bodies.push(EventBody::EffectSettled {
                 effect,
                 expected: Expected::Revision(record.revision),
                 outcome: EffectOutcome::Abandoned,
                 evidence: vec![],
-                failure: Some(format!(
-                    "folded into notice {}",
-                    se_types::hex_lower(request.notice_id.as_bytes())
-                )),
+                failure: Some(reason),
                 attempts,
             });
         }

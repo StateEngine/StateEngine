@@ -10,7 +10,7 @@ use crate::{
     scope,
     store_error::store_error,
 };
-use se_store::{Actor, Door, EventBody, MailDirection, MessageQuery, ReadBudget, Snapshot};
+use se_store::{Actor, Door, MailDirection, MessageQuery, ReadBudget, Snapshot};
 use se_types::{AgentId, EventId, IdempotencyKey, PageRequest, Read, Result, SeError};
 use std::{num::NonZeroU32, time::Duration};
 
@@ -55,9 +55,16 @@ fn decide<R: Snapshot>(
     owner: &Actor,
     cx: &mut Cx<'_, R>,
 ) -> Result<Option<(AgentId, MessageSend)>> {
-    let Some(captain) = captain(cx)? else {
+    let Some(captain) = super::captain::active_captain(cx, scope::COMMITTED_READ_RECOVERY)? else {
         return Ok(None);
     };
+    if cx
+        .read
+        .principal_retired(agent.clone())
+        .map_err(|e| store_error(&e))?
+    {
+        return Ok(None);
+    }
     let me = Actor::Agent(agent.clone());
     if captain == me {
         return Ok(None);
@@ -185,26 +192,6 @@ fn key(what: &str, agent: &AgentId, progress: i64, attempt: usize) -> Result<Ide
         "captain-{what}-{agent}-{}-{attempt}",
         progress.max(0)
     ))
-}
-
-fn captain<R: Snapshot>(cx: &mut Cx<'_, R>) -> Result<Option<Actor>> {
-    match cx.read.project_captain().map_err(|e| store_error(&e))? {
-        Read::Absent { .. } => Ok(None),
-        Read::Present { value } => match value.current.body {
-            EventBody::ProjectCaptainChanged { captain, .. } => Ok(captain),
-            _ => Err(scope::unreadable(
-                "captain",
-                "designation event has the wrong kind",
-            )),
-        },
-        other => {
-            scope::require_present(other, "captain", scope::COMMITTED_READ_RECOVERY)?;
-            Err(scope::unreadable(
-                "captain read",
-                "unexpected present value",
-            ))
-        }
-    }
 }
 
 /// This agent's open and working assignments with each one's latest event.

@@ -203,4 +203,52 @@ impl<H: HostPort> Coordinator<'_, H> {
         service.journal.notice = None;
         service.persist(self.0, deadline).await
     }
+    /// Persist journal retirement for an already-settled notice effect while
+    /// the host still retains `work.mail.flight` for retryability.
+    pub async fn retire_settled_secode_notice(
+        &self,
+        work: &impl SecodeWork,
+        notice: &se_types::NoticeId,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        if work.secode().is_none() {
+            return Ok(());
+        }
+        let slot = self
+            .0
+            .services()
+            .get(work.project_id(), work.agent_id(), deadline)
+            .await?
+            .ok_or_else(|| error("SE Code notice retirement", "original service absent"))?;
+        let mut service = lock_service(&slot, deadline).await?;
+        service
+            .retire_settled_notice(self.0, notice, deadline)
+            .await
+    }
+}
+
+impl Service {
+    /// Persist journal retirement for an already-settled notice on this
+    /// retained service. If a prior retirement cleared the in-memory notice
+    /// before failing publication, a retry still reconciles and persists the
+    /// retired journal state before returning `Ok`.
+    pub async fn retire_settled_notice<H: HostPort>(
+        &mut self,
+        host: &H,
+        notice: &se_types::NoticeId,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        match self.journal.notice.as_ref() {
+            None => return self.persist(host, deadline).await,
+            Some(value) if value.input == input(notice) => {}
+            Some(_) => {
+                return Err(error(
+                    "SE Code notice retirement",
+                    "original coordinates differ from captured delivery",
+                ));
+            }
+        }
+        self.journal.notice = None;
+        self.persist(host, deadline).await
+    }
 }
