@@ -11,7 +11,8 @@ use windows_sys::Wdk::{
     Foundation::OBJECT_ATTRIBUTES,
     Storage::FileSystem::{
         FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
-        FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT, NtCreateFile,
+        FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT,
+        FileRenameInformation, FileRenameInformationEx, NtCreateFile, NtSetInformationFile,
     },
 };
 use windows_sys::Win32::{Foundation::*, Storage::FileSystem::*, System::IO::IO_STATUS_BLOCK};
@@ -286,15 +287,18 @@ fn rename_at(
     leaf_units: &[u16],
     replace_if_exists: bool,
 ) -> Result<(), io::Error> {
-    // Win32 FILE_RENAME_INFO::Flags values for FileRenameInfoEx.
+    // NT FILE_RENAME_INFORMATION::Flags values for FileRenameInformationEx.
     const RENAME_REPLACE_IF_EXISTS: u32 = 0x0000_0001;
     const RENAME_POSIX_SEMANTICS: u32 = 0x0000_0002;
     let name_bytes = leaf_units.len() * 2;
-    let total = size_of::<FILE_RENAME_INFO>() + name_bytes;
+    let total = (std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName) + name_bytes)
+        .max(size_of::<FILE_RENAME_INFORMATION>());
     let mut buf = vec![0u64; total.div_ceil(size_of::<u64>())];
-    // SAFETY: `buf` is 8-byte aligned and sized for FILE_RENAME_INFO + UTF-16 name.
+    // SAFETY: `buf` is 8-byte aligned and sized for FILE_RENAME_INFORMATION + UTF-16 name.
+    // NtSetInformationFile natively supports non-null RootDirectory (unlike Win32
+    // SetFileInformationByHandle, which rejects non-null RootDirectory with error 87).
     unsafe {
-        let info = buf.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+        let info = buf.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
         (*info).Anonymous.Flags = if replace_if_exists {
             RENAME_REPLACE_IF_EXISTS | RENAME_POSIX_SEMANTICS
         } else {
@@ -307,31 +311,39 @@ fn rename_at(
             ptr::addr_of_mut!((*info).FileName).cast::<u16>(),
             leaf_units.len(),
         );
-        if SetFileInformationByHandle(
+        let mut status: IO_STATUS_BLOCK = zeroed();
+        let code = NtSetInformationFile(
             file.as_raw_handle(),
-            FileRenameInfoEx,
+            &mut status,
             buf.as_ptr().cast(),
             total as u32,
-        ) != 0
-        {
+            FileRenameInformationEx,
+        );
+        if code >= 0 {
             return Ok(());
         }
-        let first_err = io::Error::last_os_error();
         if !matches!(
-            first_err.raw_os_error(),
-            Some(c) if c == ERROR_INVALID_PARAMETER as i32 || c == ERROR_NOT_SUPPORTED as i32
+            code,
+            STATUS_INVALID_INFO_CLASS | STATUS_NOT_SUPPORTED | STATUS_INVALID_PARAMETER
         ) {
-            return Err(first_err);
+            return Err(io::Error::from_raw_os_error(
+                RtlNtStatusToDosError(code) as i32
+            ));
         }
+        (*info).Anonymous.Flags = 0;
         (*info).Anonymous.ReplaceIfExists = replace_if_exists;
-        if SetFileInformationByHandle(
+        let mut fallback_status: IO_STATUS_BLOCK = zeroed();
+        let fallback_code = NtSetInformationFile(
             file.as_raw_handle(),
-            FileRenameInfo,
+            &mut fallback_status,
             buf.as_ptr().cast(),
             total as u32,
-        ) == 0
-        {
-            return Err(io::Error::last_os_error());
+            FileRenameInformation,
+        );
+        if fallback_code < 0 {
+            return Err(io::Error::from_raw_os_error(
+                RtlNtStatusToDosError(fallback_code) as i32,
+            ));
         }
     }
     Ok(())
@@ -407,4 +419,71 @@ pub(super) fn write_relative(
         ))
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::source_root::NativeSourceRoot;
+    use std::path::PathBuf;
+
+    type Check = Result<(), Box<dyn std::error::Error>>;
+
+    struct Scratch(PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scratch(label: &str) -> Result<Scratch, Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!(
+            "se-workspace-write-win-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        Ok(Scratch(dir))
+    }
+
+    #[test]
+    fn write_relative_creates_replaces_and_refuses_concurrent_create() -> Check {
+        let dir = scratch("nt-rename")?;
+        let root = NativeSourceRoot::open(&dir.0)?;
+
+        // Create new file under nested directory via handle-relative NtSetInformationFile.
+        root.write_relative("nested/note.txt", b"v1")?;
+        assert_eq!(std::fs::read(dir.0.join("nested").join("note.txt"))?, b"v1");
+
+        // Replace existing file atomically.
+        root.write_relative("nested/note.txt", b"v2-updated")?;
+        assert_eq!(
+            std::fs::read(dir.0.join("nested").join("note.txt"))?,
+            b"v2-updated"
+        );
+
+        // Non-replacing rename must refuse overwriting an existing target.
+        let mut stage_units = utf16_component("stage.tmp")?;
+        let leaf_units = utf16_component("existing.txt")?;
+        std::fs::write(dir.0.join("existing.txt"), b"other-writer")?;
+        let mut stage = nt_open_relative(
+            &root.directory,
+            &mut stage_units,
+            DELETE | GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE,
+            0,
+            FILE_CREATE,
+            FILE_NON_DIRECTORY_FILE,
+        )?;
+        stage.write_all(b"stale-create")?;
+        let err = rename_at(&stage, &root.directory, &leaf_units, false)
+            .err()
+            .ok_or("expected non-replacing rename to fail on existing target")?;
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        dispose_stage(&stage);
+        drop(stage);
+        assert_eq!(std::fs::read(dir.0.join("existing.txt"))?, b"other-writer");
+        Ok(())
+    }
 }
