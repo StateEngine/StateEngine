@@ -74,6 +74,7 @@ def prepare(release_directory, output):
             name = "@stateengine/cli-" + platform
             operating_system, cpu = platform.split("-")
             metadata = {"name": name, "version": release["version"], "private": False,
+                        "license": "MIT OR Apache-2.0",
                         "description": "Native StateEngine payload", "os": [operating_system],
                         "cpu": [cpu], "files": ["payload"],
                         "repository": REPOSITORY}
@@ -90,6 +91,7 @@ def prepare(release_directory, output):
         (wrapper / "LICENSE").write_bytes(license_bytes)
         document(wrapper / "package.json", {
             "name": "@stateengine/cli", "version": release["version"], "type": "module",
+            "license": "MIT OR Apache-2.0",
             "description": "StateEngine native command-line interface", "bin": {"se": "bin/se.mjs"},
             "engines": {"node": ">=18"}, "files": ["bin", "platforms.json", "LICENSE", "README.md"],
             "repository": REPOSITORY,

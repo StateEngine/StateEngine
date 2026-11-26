@@ -19,12 +19,17 @@ TARGETS = {"linux": "x86_64-unknown-linux-gnu", "arm": "aarch64-apple-darwin",
            "intel": "x86_64-apple-darwin"}
 
 
-def license_identifier(repository, source):
+def license_expression(repository, source):
     cargo = subprocess.check_output(["git", "-C", str(repository), "show", source + ":Cargo.toml"], text=True)
     license_id = tomllib.loads(cargo)["workspace"]["package"]["license"]
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+-]*", license_id):
-        raise ValueError("source license requires an explicit Homebrew expression; no license is inferred")
-    return license_id
+    token = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]*")
+    if token.fullmatch(license_id):
+        return f'"{license_id}"'
+    arms = license_id.split(" OR ")
+    if len(arms) > 1 and all(token.fullmatch(arm) for arm in arms):
+        rendered = ", ".join(f'"{arm}"' for arm in arms)
+        return f"any_of: [{rendered}]"
+    raise ValueError("source license requires an explicit Homebrew expression; no license is inferred")
 
 
 def prepare(release_directory, output, repository):
@@ -52,13 +57,13 @@ def prepare(release_directory, output, repository):
                 raise ValueError("archive reference differs from the exact release target")
             extract(release_directory / name, scratch / architecture, entry, release, target)
             entries[architecture] = entry
-        license_id = license_identifier(repository, release["source_commit"])
+        license_expr = license_expression(repository, release["source_commit"])
         formula = f'''# Generated from verified release source {release["source_commit"]}.
 class Stateengine < Formula
   desc "Run coding assistants with persistent conversations and messages"
   homepage "https://stateengine.ai"
   version "{release["version"]}"
-  license "{license_id}"
+  license {license_expr}
 
   on_macos do
     on_arm do
