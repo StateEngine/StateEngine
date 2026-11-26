@@ -117,6 +117,10 @@ fn installed_root(package: &NodePackage, executable: &Path) -> Result<PathBuf> {
 /// `.ps1` shim. A directory, broken link or non-executable file of that name,
 /// and an entry that cannot be read, are passed over.
 fn command_on_path(bin: &str) -> Option<PathBuf> {
+    command_in(&std::env::var_os("PATH")?, bin)
+}
+
+fn command_in(search_path: &std::ffi::OsStr, bin: &str) -> Option<PathBuf> {
     let names: Vec<String> = if cfg!(windows) {
         ["exe", "cmd", "bat", "ps1"]
             .iter()
@@ -125,7 +129,7 @@ fn command_on_path(bin: &str) -> Option<PathBuf> {
     } else {
         vec![bin.to_owned()]
     };
-    std::env::split_paths(&std::env::var_os("PATH")?)
+    std::env::split_paths(search_path)
         .filter(|directory| directory.is_absolute())
         .find_map(|directory| {
             names
@@ -135,19 +139,11 @@ fn command_on_path(bin: &str) -> Option<PathBuf> {
         })
 }
 
+/// A regular file the caller may execute with its effective identity, as the
+/// operating system decides: owner, group and other classes, and ACLs.
 fn runnable(path: &Path) -> bool {
-    let Ok(meta) = std::fs::metadata(path) else {
-        return false;
-    };
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        meta.is_file() && meta.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        meta.is_file()
-    }
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
+        && se_proc::file_access::require_executable_access(path).is_ok()
 }
 
 /// Whether a candidate package directory has a manifest. A missing path is
@@ -230,4 +226,39 @@ fn sorted_entries(directory: &Path) -> Result<Vec<PathBuf>> {
 /// pnpm names each global store layout with a version number.
 fn is_layout(name: &str) -> bool {
     !name.is_empty() && name.len() <= 4 && name.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Execute permission for another class does not make a file runnable for
+    /// its owner; the search moves on to a copy the caller can execute.
+    #[test]
+    fn execute_bit_for_another_class_falls_through() -> Result<(), Box<dyn std::error::Error>> {
+        let base = std::env::temp_dir().join(format!(
+            "se-command-in-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        let (first, second) = (base.join("first"), base.join("second"));
+        for (directory, mode) in [(&first, 0o001), (&second, 0o755)] {
+            std::fs::create_dir_all(directory)?;
+            let command = directory.join("tool");
+            std::fs::write(&command, b"#!/bin/sh\n")?;
+            std::fs::set_permissions(&command, std::fs::Permissions::from_mode(mode))?;
+        }
+        let search = std::env::join_paths([&first, &second])?;
+        let found = super::command_in(&search, "tool");
+        // A superuser may execute any file with an execute bit; the selection
+        // still follows the operating system's effective answer.
+        let owner_may_run =
+            se_proc::file_access::require_executable_access(&first.join("tool")).is_ok();
+        std::fs::remove_dir_all(&base)?;
+        let expected = if owner_may_run { first } else { second };
+        assert_eq!(found, Some(expected.join("tool")));
+        Ok(())
+    }
 }
