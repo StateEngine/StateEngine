@@ -58,7 +58,7 @@
   "crates/se-host/src/process": 15596,
   "crates/se-harness/src/harness": 12242,
   "crates/se-host/src/remote": 6921,
-  "crates/se/src/route": 11240,
+  "crates/se/src/route": 11251,
   "crates/se-state-files/src/state_files": 9009,
   "crates/se-native-proc/src/platform": 7233,
   "crates/se-atlas-index/src/extract": 3950,

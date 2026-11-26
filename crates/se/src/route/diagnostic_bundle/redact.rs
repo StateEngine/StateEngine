@@ -92,6 +92,7 @@ impl Redactor {
         let mut prefixes = self.sensitive_prefix.find_iter(text).peekable();
         let mut remaining = text;
         let mut decoded = String::new();
+        let mut next_fragment: Option<Option<usize>> = None;
         loop {
             let offset = text.len() - remaining.len();
             // JSON consumed on the previous iteration owns its internal labels;
@@ -99,7 +100,17 @@ impl Redactor {
             while prefixes.peek().is_some_and(|prefix| prefix.end() < offset) {
                 prefixes.next();
             }
-            let fragment = remaining.find(['{', '[', '"']).map(|at| offset + at);
+            // Cache the next structured opener so dense credential assignments
+            // never re-scan the remaining suffix.
+            let fragment = match next_fragment {
+                Some(Some(at)) if at >= offset => Some(at),
+                Some(None) => None,
+                _ => {
+                    let found = remaining.find(['{', '[', '"']).map(|at| offset + at);
+                    next_fragment = Some(found);
+                    found
+                }
+            };
             let assigned = prefixes
                 .peek()
                 .filter(|prefix| fragment.is_none_or(|at| prefix.start() <= at))
