@@ -3,30 +3,61 @@
 //! message. These calls block, so the client runs them off the async workers.
 use super::{Outcome, RESPONSE_BYTES, Refusal};
 use serde_json::{Value, json};
-use std::{io::Read, path::Path};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 /// The largest file read, in bytes. What one reply carries is smaller still, so a
 /// larger file is read in parts with `line` and `limit`.
 const MAX_FILE: usize = 4 * 1024 * 1024;
 
+/// The folder a conversation opened in, held open from then on. Every read is
+/// opened beneath this one handle, and a read refuses once the folder's name no
+/// longer leads to it.
+pub(super) struct Workspace {
+    /// The folder as the agent was told it.
+    told: PathBuf,
+    /// The same folder with its links resolved.
+    physical: PathBuf,
+    held: se_proc::NativeSourceRoot,
+}
+
+impl Workspace {
+    pub(super) fn open(told: PathBuf) -> Result<Self, String> {
+        let physical = se_proc::canonicalize_path(&told).map_err(|error| {
+            format!(
+                "the workspace {} could not be resolved: {error}",
+                told.display()
+            )
+        })?;
+        let held = se_proc::NativeSourceRoot::open(&physical).map_err(|error| {
+            format!(
+                "the workspace {} could not be opened: {error}",
+                told.display()
+            )
+        })?;
+        Ok(Self {
+            told,
+            physical,
+            held,
+        })
+    }
+}
+
 /// `fs/read_text_file`: the whole file, or `limit` lines from 1-based `line`. The
-/// workspace root stays open through the read, the file is opened beneath it
-/// without following any link, and the bytes come from that same open file.
-pub(super) fn read(workspace: &Path, root: &Path, params: &Value) -> Outcome {
+/// file is opened beneath the held workspace without following any link, and the
+/// bytes come from that same open file.
+pub(super) fn read(workspace: &Workspace, params: &Value) -> Outcome {
     let path = text(params, "path")?;
-    let relative = beneath(workspace, root, path)?;
+    let relative = beneath(&workspace.told, &workspace.physical, path)?;
     let line = count(params, "line")?;
     let limit = count(params, "limit")?;
-    let held = se_proc::NativeSourceRoot::open(root).map_err(|error| {
-        Refusal::failed(format!(
-            "the workspace {} could not be opened: {error}",
-            root.display()
-        ))
-    })?;
+    let held = &workspace.held;
     let unreadable = |error: std::io::Error| match error.kind() {
         std::io::ErrorKind::NotFound => Refusal::missing(format!("{path} does not exist")),
         _ => Refusal::failed(format!(
-            "{path} could not be read inside the workspace without following a link: {error}"
+            "{path} could not be read from the held workspace, which follows no links: {error}"
         )),
     };
     let mut file = held

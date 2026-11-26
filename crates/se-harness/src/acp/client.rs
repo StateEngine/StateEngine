@@ -56,8 +56,8 @@ type Outcome = Result<Value, Refusal>;
 
 /// The client side of one ACP conversation.
 pub(super) struct Client {
-    /// The conversation's directory, as the agent was told it.
-    root: Mutex<Option<PathBuf>>,
+    /// The workspace held since the conversation opened, or why it could not be.
+    workspace: Mutex<Option<Result<Arc<fs::Workspace>, String>>>,
     /// One permit per running call.
     calls: Arc<Semaphore>,
     /// Set once the conversation closes; no call is admitted after it.
@@ -67,7 +67,7 @@ pub(super) struct Client {
 impl Default for Client {
     fn default() -> Self {
         Self {
-            root: Mutex::new(None),
+            workspace: Mutex::new(None),
             calls: Arc::new(Semaphore::new(MAX_CALLS as usize)),
             closed: AtomicBool::new(false),
         }
@@ -86,23 +86,27 @@ impl Client {
         method == READ
     }
 
-    /// Records the directory the conversation opens in as the workspace. It is
-    /// resolved on each call, so a workspace that cannot be resolved refuses only
-    /// that call.
-    pub(super) fn bind(&self, cwd: &str) {
-        if let Ok(mut root) = self.root.lock() {
-            *root = Some(PathBuf::from(cwd));
+    /// Opens and holds the directory the conversation opens in as the workspace.
+    /// If it cannot be held, every read refuses with that reason.
+    pub(super) async fn bind(&self, cwd: &str) {
+        let told = PathBuf::from(cwd);
+        let opened = tokio::task::spawn_blocking(move || fs::Workspace::open(told))
+            .await
+            .unwrap_or_else(|_| Err("opening the workspace stopped before it finished".into()))
+            .map(Arc::new);
+        if let Ok(mut workspace) = self.workspace.lock() {
+            *workspace = Some(opened);
         }
     }
 
     /// Admits one call, or names why it cannot run now.
+    /// The permit is taken before the closed check, so once `close` holds every
+    /// permit no call can slip in after it.
     pub(super) fn admit(&self) -> Result<OwnedSemaphorePermit, Refusal> {
         let closing =
             || Refusal::invalid("this conversation is closing, so StateEngine takes no more calls");
-        if self.closed.load(Ordering::Acquire) {
-            return Err(closing());
-        }
-        self.calls
+        let permit = self
+            .calls
             .clone()
             .try_acquire_owned()
             .map_err(|error| match error {
@@ -110,7 +114,11 @@ impl Client {
                 tokio::sync::TryAcquireError::NoPermits => Refusal::failed(format!(
                     "this conversation already has {MAX_CALLS} calls running; retry when one finishes"
                 )),
-            })
+            })?;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(closing());
+        }
+        Ok(permit)
     }
 
     /// Admits no more calls, then waits until `until` for admitted ones to answer.
@@ -121,27 +129,19 @@ impl Client {
         let _ = tokio::time::timeout_at(until, self.calls.acquire_many(MAX_CALLS)).await;
     }
 
-    /// Answers one admitted call. Resolution and file I/O block, so they run off
-    /// the async workers.
+    /// Answers one admitted call. File I/O blocks, so it runs off the async workers.
     pub(super) async fn call(&self, params: Value) -> Outcome {
         let workspace = self
-            .root
+            .workspace
             .lock()
             .ok()
-            .and_then(|root| root.clone())
+            .and_then(|workspace| workspace.clone())
             .ok_or_else(|| {
                 Refusal::invalid("no conversation is open yet, so there is no workspace to use")
-            })?;
-        tokio::task::spawn_blocking(move || {
-            let root = se_proc::canonicalize_path(&workspace).map_err(|error| {
-                Refusal::failed(format!(
-                    "the workspace {} could not be resolved: {error}",
-                    workspace.display()
-                ))
-            })?;
-            fs::read(&workspace, &root, &params)
-        })
-        .await
-        .map_err(|_| Refusal::failed("the call stopped before it finished"))?
+            })?
+            .map_err(Refusal::failed)?;
+        tokio::task::spawn_blocking(move || fs::read(&workspace, &params))
+            .await
+            .map_err(|_| Refusal::failed("the call stopped before it finished"))?
     }
 }

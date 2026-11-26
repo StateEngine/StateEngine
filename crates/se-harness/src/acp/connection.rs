@@ -591,13 +591,13 @@ pub(super) fn context(generation: Generation, until: Instant) -> Result<CallCont
     Ok(CallContext::new(generation, remaining))
 }
 
-/// An error message cut at a character boundary to at most 4 KiB.
+/// An error message cut at a character boundary to at most 4 KiB, ellipsis included.
 fn bounded(message: &str) -> String {
     const MAX: usize = 4096;
     if message.len() <= MAX {
         return message.to_owned();
     }
-    let mut end = MAX;
+    let mut end = MAX - '…'.len_utf8();
     while !message.is_char_boundary(end) {
         end -= 1;
     }

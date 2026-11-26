@@ -263,7 +263,7 @@ impl Session {
                 None => ("session/new", json!({"cwd":cwd,"mcpServers":mcp_servers})),
             }
         };
-        self.client.bind(cwd);
+        self.client.bind(cwd).await;
         self.connection
             .request(method, params, remaining(&cx, until)?)
             .await?;
