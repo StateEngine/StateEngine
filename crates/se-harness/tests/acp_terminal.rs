@@ -336,7 +336,7 @@ async fn readonly_profile_advertises_false_and_refuses_terminal_create() -> Chec
 }
 
 #[tokio::test]
-async fn workspace_write_terminal_lifecycle_and_env() -> Check {
+async fn bypass_never_ask_terminal_lifecycle_and_env() -> Check {
     let mut fx = Fixture::start(true).await?;
     assert_eq!(
         fx.init_request

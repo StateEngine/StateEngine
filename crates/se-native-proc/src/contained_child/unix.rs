@@ -59,9 +59,37 @@ fn exit_from_siginfo(info: &libc::siginfo_t) -> ContainedExit {
     }
 }
 
+/// Non-blocking, non-reaping check whether the leader process has exited.
+/// Uses `waitid(P_PID, pgid, ..., WEXITED | WNOHANG | WNOWAIT)` so the leader's
+/// zombie and `pgid` remain pinned in the kernel until `terminate_and_reap`.
+fn leader_is_exited_no_reap(pgid: libc::pid_t) -> io::Result<bool> {
+    loop {
+        // SAFETY: Zero initialization is the documented `waitid` no-event state.
+        let mut info: libc::siginfo_t = unsafe { zeroed() };
+        // SAFETY: Exact unreaped child owned by this process; `WNOWAIT` retains
+        // the PID/PGID pin and `WNOHANG` never blocks.
+        let rc = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pgid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if rc < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        return Ok(siginfo_pid(&info) != 0);
+    }
+}
+
 /// On Darwin/XNU, `kill(-pgid, sig)` returns `EPERM` when every remaining
 /// member of the process group is already a zombie waiting to be reaped.
-fn is_darwin_zombie_group_err(err: &io::Error) -> bool {
+fn is_darwin_eperm(err: &io::Error) -> bool {
     #[cfg(target_os = "macos")]
     {
         err.raw_os_error() == Some(libc::EPERM)
@@ -83,6 +111,12 @@ pub(super) struct KillerState {
 }
 
 impl KillerState {
+    /// Signal `-pgid` with `SIGKILL` while the unreaped leader pins `pgid`.
+    /// Containment boundary: POSIX process-group signalling reaches every
+    /// descendant remaining in `-pgid`; a descendant that calls `setsid` or
+    /// `setpgid` leaves this process group and cannot be targeted by `-pgid`.
+    /// On Darwin, `EPERM` is only accepted when `waitid(WNOWAIT)` independently
+    /// witnesses that the leader has already exited.
     fn signal_group_while_pinned(&self) -> io::Result<()> {
         // SAFETY: Negative `pgid` targets only this child's isolated group,
         // and the caller holds `leader_reaped` with value `false`, proving
@@ -90,7 +124,10 @@ impl KillerState {
         let rc = unsafe { libc::kill(-self.pgid, libc::SIGKILL) };
         if rc < 0 {
             let err = io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::ESRCH) || is_darwin_zombie_group_err(&err) {
+            if err.raw_os_error() == Some(libc::ESRCH) {
+                return Ok(());
+            }
+            if is_darwin_eperm(&err) && leader_is_exited_no_reap(self.pgid)? {
                 return Ok(());
             }
             return Err(err);
@@ -98,6 +135,10 @@ impl KillerState {
         Ok(())
     }
 
+    /// Signal `-pgid` with `SIGKILL` and wait (bounded by `KILL_DRAIN_TIMEOUT`)
+    /// until `waitid(WNOWAIT)` witnesses that the leader has terminated, while
+    /// keeping the leader unreaped so output/exit status and `pgid` identity
+    /// remain intact for subsequent calls and `terminate_and_reap`.
     pub(super) fn kill_tree(&self) -> io::Result<()> {
         let reaped = self
             .leader_reaped
@@ -106,7 +147,20 @@ impl KillerState {
         if *reaped {
             return Ok(());
         }
-        self.signal_group_while_pinned()
+        let deadline = Instant::now() + KILL_DRAIN_TIMEOUT;
+        loop {
+            self.signal_group_while_pinned()?;
+            if leader_is_exited_no_reap(self.pgid)? {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::other(format!(
+                    "contained leader {} did not exit after SIGKILL",
+                    self.pgid
+                )));
+            }
+            std::thread::sleep(KILL_POLL_INTERVAL);
+        }
     }
 }
 
@@ -248,7 +302,7 @@ impl Inner {
                 if err.raw_os_error() == Some(libc::ESRCH) {
                     return Ok(());
                 }
-                if !is_darwin_zombie_group_err(&err) {
+                if !is_darwin_eperm(&err) {
                     return Err(err);
                 }
             }

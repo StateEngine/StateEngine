@@ -603,6 +603,22 @@ impl Session {
             .client
             .close(now + until.saturating_duration_since(now) / 2)
             .await;
+        let transport_close = self.finish_transport_close(cx, until).await;
+        match (client_cleanup, transport_close) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(reason), Ok(())) => Err(failure("ACP close", reason)),
+            (Ok(()), Err(err)) => Err(err),
+            (Err(reason), Err(err)) => Err(failure(
+                "ACP close",
+                format!("{err}; terminal cleanup also failed: {reason}"),
+            )),
+        }
+    }
+    async fn finish_transport_close(
+        &self,
+        cx: CallContext,
+        until: tokio::time::Instant,
+    ) -> Result<()> {
         self.connection.close(remaining(&cx, until)?).await?;
         self.synchronize(until).await?;
         self.closing.store(true, Ordering::Release);
