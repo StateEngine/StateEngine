@@ -62,6 +62,7 @@ pub struct AdmittedExchange {
     pub(super) adopted: Option<crate::adoption::NativeCall>,
     #[cfg(feature = "remote")]
     owner: Option<crate::remote::OwnerCall>,
+    external: Option<super::admission::external::ExternalCall>,
     admission: Option<se_core::ops::HostPhaseSpan>,
     admitted_at: Instant,
 }
@@ -271,6 +272,7 @@ impl HostedRouter {
                 #[cfg(feature = "remote")]
                 let mut owner = None;
                 let mut adopted = None;
+                let mut external = None;
                 let call = match call {
                     Ok(RouteChoice::Adopt(call)) => {
                         adopted = Some(*call);
@@ -279,6 +281,10 @@ impl HostedRouter {
                     #[cfg(feature = "remote")]
                     Ok(RouteChoice::Owner(call)) => {
                         owner = Some(*call);
+                        None
+                    }
+                    Ok(RouteChoice::External(call)) => {
+                        external = Some(*call);
                         None
                     }
                     Ok(RouteChoice::Core(call)) => Some(Ok(*call)),
@@ -292,6 +298,7 @@ impl HostedRouter {
                     adopted,
                     #[cfg(feature = "remote")]
                     owner,
+                    external,
                     admission: None,
                     admitted_at,
                 }))
@@ -315,6 +322,23 @@ impl AdmittedExchange {
     }
     #[cfg(feature = "remote")]
     pub(crate) async fn reply_owner(
+        self,
+        result: Result<OperationOutput>,
+        deadline: &Deadline,
+    ) -> Result<HostedConnection> {
+        self.reply_output(result, deadline).await
+    }
+    pub(crate) fn take_external(&mut self) -> Option<super::admission::external::ExternalCall> {
+        self.external.take()
+    }
+    pub(crate) async fn reply_external(
+        self,
+        result: Result<OperationOutput>,
+        deadline: &Deadline,
+    ) -> Result<HostedConnection> {
+        self.reply_output(result, deadline).await
+    }
+    async fn reply_output(
         mut self,
         result: Result<OperationOutput>,
         deadline: &Deadline,
@@ -457,6 +481,7 @@ enum RouteChoice {
     #[cfg(feature = "remote")]
     Owner(Box<crate::remote::OwnerCall>),
     Core(Box<RoutedCall>),
+    External(Box<super::admission::external::ExternalCall>),
 }
 /// The authenticated frame fields shared by the terminal-scoped routes.
 /// Each resolves to its own call kind and never reaches the core decoder.
@@ -528,6 +553,17 @@ fn route(
         IpcRequest::Adopt(input) => return scoped.adopt(input),
         #[cfg(feature = "remote")]
         IpcRequest::RemoteOwner(input) => return scoped.owner(*input),
+        IpcRequest::External(input) => {
+            let call = context.admit_external(
+                connection.connection.peer(),
+                connection.connection.connection_authority(),
+                wire.authority.as_ref(),
+                &connection.grant,
+                wire.presence.as_ref(),
+                *input,
+            )?;
+            return Ok(RouteChoice::External(Box::new(call)));
+        }
         IpcRequest::Operation(raw) => {
             if raw.name == "hook.claude" {
                 return Err(SeError::invalid(

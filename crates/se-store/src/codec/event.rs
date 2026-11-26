@@ -24,7 +24,7 @@ use se_types::StoreId;
 pub(crate) fn load_event(c: &Connection, seq: i64, info: &StoreInfo) -> StoreResult<StoredEvent> {
     let (id,p,actor_id,session,origin,door,kind,version,inc,rev,mode,generation,durability,occurred,recorded,cause,supersedes):EnvelopeRow=c.prepare_cached("SELECT event_id,project_id,actor_id,session_id,origin_id,door,kind,schema_version,recorded_incarnation,entity_revision,writer_mode,host_generation,durability,occurred_at_us,recorded_at_us,cause_event_id,supersedes_event_id FROM events WHERE seq=?").map_err(sql)?.query_row([seq],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?,crate::sql_value::value(r,5)?,crate::sql_value::value(r,6)?,crate::sql_value::value(r,7)?,crate::sql_value::value(r,8)?,crate::sql_value::value(r,9)?,crate::sql_value::value(r,10)?,crate::sql_value::value(r,11)?,crate::sql_value::value(r,12)?,crate::sql_value::value(r,13)?,crate::sql_value::value(r,14)?,crate::sql_value::value(r,15)?,crate::sql_value::value(r,16)?))).map_err(sql)?;
     if version != 1
-        && !(matches!(version, 2 | 3) && kind == "profile.saved")
+        && !(matches!(version, 2..=4) && kind == "profile.saved")
         && !(version == 2 && kind == "credential.activated")
     {
         return Err(fail(
@@ -102,6 +102,9 @@ fn validate_schema_version(body: &EventBody<StoredText>, version: u32) -> StoreR
         }
         (EventBody::ProfileSaved { profile, .. }, 3) if profile.provider_settings.is_empty() => {
             "version 3 profile is missing its provider settings"
+        }
+        (EventBody::ProfileSaved { profile, .. }, 4) if !profile.external => {
+            "version 4 profile is missing its external seat flag"
         }
         (EventBody::CredentialActivated { first_request, .. }, 1) if first_request.is_none() => {
             "version 1 credential activation is missing its first request"

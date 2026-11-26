@@ -109,6 +109,7 @@ fn seed_noise_session(
                         harness: None,
                         named_profile: "default".into(),
                         effort: None,
+                        external: false,
                     },
                     expected: Expected::Absent,
                 },

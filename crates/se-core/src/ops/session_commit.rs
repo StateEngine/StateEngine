@@ -45,12 +45,18 @@ pub fn prepare(input: SessionPreparation) -> Result<EventBody<InputText>> {
     })
 }
 pub fn activate(input: SessionActivation) -> Result<EventBody<InputText>> {
-    if input.witnesses.len() > 16
-        || (input.process.is_none() && !matches!(input.containment, ContainmentFact::NotLaunched))
-    {
+    let valid_process_free = matches!(
+        input.containment,
+        ContainmentFact::NotLaunched
+            | ContainmentFact::ExternalSeat {
+                lease_generation: 1..,
+                ..
+            }
+    );
+    if input.witnesses.len() > 16 || (input.process.is_none() && !valid_process_free) {
         return Err(se_types::SeError::invalid(
             "session activation",
-            "at most sixteen witnesses; a process-free embedded bind has no native containment",
+            "at most sixteen witnesses; a process-free session requires NotLaunched or ExternalSeat witness",
         ));
     }
     Ok(EventBody::SessionActivated {

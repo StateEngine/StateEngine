@@ -193,6 +193,7 @@ async fn finish_complete(
         output = custody.observe_output(output, &deadline).await?;
         output = custody.observe_peers(output, &admission, &deadline).await?;
     }
+    enrich_external_seats(&context, &admission, &mut output);
     Ok(ExecutedCall {
         host_phases,
         output,
@@ -201,6 +202,46 @@ async fn finish_complete(
         capture_commits: Vec::new(),
         capture_keys: Vec::new(),
     })
+}
+
+fn enrich_external_seats(
+    context: &ExecutionContext,
+    admission: &Admission,
+    output: &mut AnyOutput,
+) {
+    let se_store::Scope::Project(project) = &admission.scope else {
+        return;
+    };
+    let update = |row: &mut se_core::ops::AgentRow| {
+        let Some(view) = row.external_seat.as_mut() else {
+            return;
+        };
+        if let Ok(Some(lease)) = context.external.active_lease(project, &row.id) {
+            view.state = "active".into();
+            view.session_id = Some(lease.session_id);
+            view.lease_generation = Some(lease.lease_generation);
+            view.expires_at = se_core::ops::receipt::timestamp(lease.expires_at_us).ok();
+            view.revocation_reason = None;
+        } else if view.state == "active" {
+            // Host restarted or lease expired without an active connection in this generation.
+            view.state = "expired".into();
+        }
+    };
+    match output {
+        AnyOutput::ProjectStatus(status) => {
+            if let Some(agents) = &mut status.value.agents {
+                for row in agents.items_mut() {
+                    update(row);
+                }
+            }
+        }
+        AnyOutput::AgentShow(status) => {
+            if let se_types::Read::Present { value } = &mut status.value.agent {
+                update(value);
+            }
+        }
+        _ => (),
+    }
 }
 /// Submit the batch and run the committed continuation on a pooled read phase.
 async fn finish_commit(

@@ -251,6 +251,7 @@ fn make_request(cwd: &Path, seed: u8) -> Check<HarnessRequest> {
             harness: None,
             named_profile: "default".into(),
             effort: None,
+            external: false,
         },
         policy: LaunchPolicy {
             containment: ContainmentRequirement::BestAvailable,

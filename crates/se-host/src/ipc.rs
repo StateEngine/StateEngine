@@ -122,6 +122,10 @@ pub enum PresentedAuthority {
     SessionBootstrap(Secret),
     /// A short-lived ticket issued for this native connection.
     Lease(Secret),
+    /// Open a pending external seat claim bound to native peer/birth, nonce, and generation.
+    ExternalClaim(Box<crate::external::ExternalClaimBootstrap>),
+    /// An owner-approved external seat capability, strictly held in transport process memory.
+    ExternalSession(Secret),
 }
 #[derive(Clone, Debug)]
 pub struct ConnectionTicket {
@@ -159,6 +163,7 @@ pub enum IpcRequest {
     Adopt(crate::adoption::Input),
     #[cfg(feature = "remote")]
     RemoteOwner(Box<crate::remote::OwnerInput>),
+    External(Box<crate::external::ExternalRequest>),
     Operation(RawOperation),
     Hook(ClaudeHookInput),
 }

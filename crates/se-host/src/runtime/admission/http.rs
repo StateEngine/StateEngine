@@ -9,15 +9,23 @@ use std::time::Duration;
 
 impl AdmissionContext {
     pub(crate) fn mail_page(&self, secret: &se_types::Secret) -> Result<crate::http::mail::Page> {
+        self.mail_page_for_purpose(secret, crate::MCP_BEARER_PURPOSE)
+    }
+
+    pub(crate) fn mail_page_for_purpose(
+        &self,
+        secret: &se_types::Secret,
+        purpose: &'static str,
+    ) -> Result<crate::http::mail::Page> {
         let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let admitted = (|| {
             self.check_generation(&phase)?;
-            let admission = self.credential(&phase, secret, crate::MCP_BEARER_PURPOSE)?;
+            let admission = self.credential(&phase, secret, purpose)?;
             let hash: [u8; 32] = Hasher::digest(secret.expose()).into();
             let credential = se_core::scope::require_present(
                 phase.credential(hash).map_err(|e| store_error(&e))?,
                 "parked wait credential",
-                "Use the active session bearer.",
+                "Use the active session capability.",
             )?;
             Ok((admission, credential.credential))
         })();
@@ -25,85 +33,115 @@ impl AdmissionContext {
             Ok(admission) => admission,
             Err(error) => return super::super::executor::close_read(Err(error), phase.close()),
         };
-        let Actor::Agent(agent) = &admission.actor else {
-            return super::super::executor::close_read(
-                Err(SeError::invalid(
-                    "mail authority",
-                    "an active recipient session",
-                )),
-                phase.close(),
-            );
-        };
-        let Scope::Project(project) = &admission.scope else {
-            return super::super::executor::close_read(
-                Err(SeError::invalid(
-                    "mail authority",
-                    "one bound recipient project",
-                )),
-                phase.close(),
-            );
-        };
-        let recipient = super::super::mail::MailRecipient {
-            project: project.clone(),
-            agent: agent.clone(),
-        };
-        let session = admission
-            .session
-            .clone()
-            .ok_or_else(|| SeError::invalid("mail session", "present"))?;
-        let mut read = phase
-            .into_snapshot(se_core::admission::read_scope(&admission))
-            .map_err(|e| store_error(&e))?;
-        let result = (|| {
-            let page = read
-                .mail_pending(
-                    agent.clone(),
-                    crate::read_budget(None, 32, 262_144, Duration::from_secs(1)),
-                )
-                .map_err(|e| store_error(&e))?;
-            let window = page.window().fields().ok_or_else(|| {
-                se_core::scope::unreadable("mail wait", "the query has no measured window")
-            })?;
-            if page.items().is_empty() && !page.window().complete() {
-                return Err(se_core::scope::unreadable(
-                    "mail wait",
-                    "an empty incomplete page is not an empty inbox",
-                ));
-            }
-            let info = read.info();
-            let cursor = read
-                .mail_cursor(&MailThrough {
-                    store: info.id,
-                    incarnation: info.incarnation,
-                    sequence: window.to.get(),
-                })
-                .map_err(|e| store_error(&e))?;
-            let output = crate::http::mail::Page {
-                session,
-                recipient,
-                credential,
-                ids: page
-                    .items()
-                    .iter()
-                    .map(|item| item.message.clone())
-                    .collect(),
-                cursor,
-                complete: page.window().complete(),
-            };
-            let encoded = serde_json::to_vec(&output)
-                .map_err(|e| se_core::scope::unreadable("mail wait encoding", &e.to_string()))?;
-            if encoded.len() > 8192 {
-                return Err(SeError::too_large(
-                    "complete mail IDs notification; use paginated msg list",
-                    8192,
-                    encoded.len(),
-                ));
-            }
-            Ok(output)
-        })();
-        super::super::executor::close_read(result, read.close())
+        read_mail_page(phase, admission, credential)
     }
 
+    pub(crate) fn mail_page_for_active_external(
+        &self,
+        project: &se_types::ProjectId,
+        agent: &se_types::AgentId,
+        session: &se_types::SessionId,
+        credential: se_store::RecordId,
+    ) -> Result<crate::http::mail::Page> {
+        let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
+        let admission = Admission {
+            scope: Scope::Project(project.clone()),
+            actor: Actor::Agent(agent.clone()),
+            session: Some(session.clone()),
+            generation: self.generation.get(),
+        };
+        if let Err(error) = self.check_generation(&phase) {
+            return super::super::executor::close_read(Err(error), phase.close());
+        }
+        read_mail_page(phase, admission, credential)
+    }
+}
+
+fn read_mail_page(
+    phase: se_store::ReadPhase,
+    admission: Admission,
+    credential: se_store::RecordId,
+) -> Result<crate::http::mail::Page> {
+    let Actor::Agent(agent) = &admission.actor else {
+        return super::super::executor::close_read(
+            Err(SeError::invalid(
+                "mail authority",
+                "an active recipient session",
+            )),
+            phase.close(),
+        );
+    };
+    let Scope::Project(project) = &admission.scope else {
+        return super::super::executor::close_read(
+            Err(SeError::invalid(
+                "mail authority",
+                "one bound recipient project",
+            )),
+            phase.close(),
+        );
+    };
+    let recipient = super::super::mail::MailRecipient {
+        project: project.clone(),
+        agent: agent.clone(),
+    };
+    let session = admission
+        .session
+        .clone()
+        .ok_or_else(|| SeError::invalid("mail session", "present"))?;
+    let mut read = phase
+        .into_snapshot(se_core::admission::read_scope(&admission))
+        .map_err(|e| store_error(&e))?;
+    let result = (|| {
+        let page = read
+            .mail_pending(
+                agent.clone(),
+                crate::read_budget(None, 32, 262_144, Duration::from_secs(1)),
+            )
+            .map_err(|e| store_error(&e))?;
+        let window = page.window().fields().ok_or_else(|| {
+            se_core::scope::unreadable("mail wait", "the query has no measured window")
+        })?;
+        if page.items().is_empty() && !page.window().complete() {
+            return Err(se_core::scope::unreadable(
+                "mail wait",
+                "an empty incomplete page is not an empty inbox",
+            ));
+        }
+        let info = read.info();
+        let cursor = read
+            .mail_cursor(&MailThrough {
+                store: info.id,
+                incarnation: info.incarnation,
+                sequence: window.to.get(),
+            })
+            .map_err(|e| store_error(&e))?;
+        let output = crate::http::mail::Page {
+            session,
+            recipient,
+            credential,
+            ids: page
+                .items()
+                .iter()
+                .map(|item| item.message.clone())
+                .collect(),
+            cursor,
+            complete: page.window().complete(),
+        };
+        let encoded = serde_json::to_vec(&output)
+            .map_err(|e| se_core::scope::unreadable("mail wait encoding", &e.to_string()))?;
+        if encoded.len() > 8192 {
+            return Err(SeError::too_large(
+                "complete mail IDs notification; use paginated msg list",
+                8192,
+                encoded.len(),
+            ));
+        }
+        Ok(output)
+    })();
+    super::super::executor::close_read(result, read.close())
+}
+
+impl AdmissionContext {
     pub(crate) fn http_proof(
         &self,
         nonce: [u8; 32],

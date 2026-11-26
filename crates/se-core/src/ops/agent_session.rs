@@ -192,6 +192,9 @@ fn current_head<'a>(
                     session.containment = Some("uncontained".into());
                     session.containment_cause = Some(super::containment_cause_code(cause).into());
                 }
+                se_store::ContainmentFact::ExternalSeat { .. } => {
+                    session.containment = Some("external-seat".into());
+                }
                 se_store::ContainmentFact::NotLaunched
                 | se_store::ContainmentFact::Unknown { .. } => (),
             }

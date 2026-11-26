@@ -62,6 +62,7 @@ fn setup() -> Outcome<(Fixture, SqliteDirect, Arc<Lease>)> {
                     harness: None,
                     named_profile: "workspace-write".into(),
                     effort: None,
+                    external: false,
                 },
                 expected: Expected::Absent,
             }],
@@ -137,6 +138,7 @@ fn receipt_case(family: &str) -> Check {
             model: None,
             profile: None,
             idempotency_key: key.clone(),
+            external: false,
         }),
         "config" => AnyOp::ConfigSet(ConfigSet {
             key: format!("agent.{}.can-create", f.a),

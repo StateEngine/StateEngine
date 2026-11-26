@@ -10,6 +10,43 @@ pub enum HumanTerminal {
     Refused { reason: String },
 }
 
+/// Exact Phase 1 operation allowlist for owner-approved external seats.
+/// Enforced at host admission independently of MCP tool listing.
+pub const EXTERNAL_SEAT_ALLOWLIST: &[&str] = &[
+    "identity.whoami",
+    "message.list",
+    "message.read",
+    "message.ack",
+    "message.dismiss",
+    "message.send",
+    "working_state.get",
+    "working_state.set",
+];
+
+/// Enforce the narrow Phase 1 command allowlist for an external seat lease.
+pub fn authorize_external_seat(meta: &OpMeta, admission: &Admission) -> Result<()> {
+    authorize(meta, admission)?;
+    if !matches!(
+        (&admission.actor, &admission.scope, &admission.session),
+        (Actor::Agent(_), Scope::Project(_), Some(_))
+    ) {
+        return Err(SeError::invalid(
+            "external seat authority",
+            "an active project-scoped external agent session",
+        ));
+    }
+    if !EXTERNAL_SEAT_ALLOWLIST.contains(&meta.name) {
+        return Err(SeError::invalid(
+            "external seat operation",
+            &format!(
+                "an operation permitted for external seats (whoami, inbox list/read/ack/dismiss, send, working_state); `{}` is refused for external leases",
+                meta.name
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Check principal, session and scope binding. Kernel::plan separately applies
 /// the operation's presence policy to the verified HumanTerminal observation.
 pub fn authorize(meta: &OpMeta, admission: &Admission) -> Result<()> {

@@ -200,22 +200,34 @@ fn edit_distance(left: &str, right: &str) -> usize {
     row[right.len()]
 }
 
+pub struct McpOptions {
+    pub home: Option<std::path::PathBuf>,
+    pub external_as: Option<String>,
+    pub project: Option<String>,
+}
+
 /// Streaming transport entry uses the same generated clap tree and global
 /// syntax. Metadata/help stays on the ordinary store-free presentation path.
-pub fn mcp_options(args: &[OsString]) -> Option<se_types::Result<Option<std::path::PathBuf>>> {
+pub fn mcp_options(args: &[OsString]) -> Option<se_types::Result<McpOptions>> {
     let matches = cli_spec::cli_command().try_get_matches_from(args).ok()?;
     let m = matches.subcommand_matches("mcp")?;
     if m.get_flag("help") || m.get_flag("version") {
         return None;
     }
     let result = (|| {
-        for (id, long) in [("project", "--project"), ("key", "--key")] {
-            if m.get_one::<String>(id).is_some() {
-                return Err(SeError::invalid(
-                    long,
-                    "MCP session identity and request keys come from each protocol call",
-                ));
-            }
+        let external_as = m.get_one::<String>("as").cloned();
+        let project = m.get_one::<String>("project").cloned();
+        if project.is_some() && external_as.is_none() {
+            return Err(SeError::invalid(
+                "--project",
+                "MCP session identity and request keys come from each protocol call; pass `--as <agent>` for an external seat",
+            ));
+        }
+        if m.get_one::<String>("key").is_some() {
+            return Err(SeError::invalid(
+                "--key",
+                "MCP session identity and request keys come from each protocol call",
+            ));
         }
         if m.get_flag("json") || m.get_flag("quiet") {
             return Err(SeError::invalid(
@@ -223,7 +235,11 @@ pub fn mcp_options(args: &[OsString]) -> Option<se_types::Result<Option<std::pat
                 "MCP owns its JSON-RPC stdout; use se mcp --stdio",
             ));
         }
-        Ok(m.get_one::<String>("home").map(std::path::PathBuf::from))
+        Ok(McpOptions {
+            home: m.get_one::<String>("home").map(std::path::PathBuf::from),
+            external_as,
+            project,
+        })
     })();
     Some(result)
 }

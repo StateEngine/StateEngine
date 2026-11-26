@@ -279,6 +279,9 @@ fn encode_containment(
                     .transpose()?,
             })
         }
+        ContainmentFact::ExternalSeat { .. } => Err(invalid(
+            "external seat containment is only valid for process-free external sessions",
+        )),
     }
 }
 #[derive(Default)]

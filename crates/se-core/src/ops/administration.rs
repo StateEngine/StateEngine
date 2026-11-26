@@ -20,6 +20,9 @@ pub struct AgentCreate {
     /// Optional named permission profile; validated against `[delegation].allow` for agent callers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// Whether this agent is eligible for owner-approved external seat leases.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub external: bool,
     pub idempotency_key: IdempotencyKey,
 }
 fn provider_settings_empty(settings: &se_types::ProviderSettings) -> bool {

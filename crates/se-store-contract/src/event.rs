@@ -67,6 +67,7 @@ pub enum SessionSurface {
     Window,
     #[serde(rename = "secode")]
     SeCode,
+    External,
 }
 impl SessionSurface {
     pub fn as_str(self) -> &'static str {
@@ -75,6 +76,7 @@ impl SessionSurface {
             Self::Headless => "headless",
             Self::Window => "window",
             Self::SeCode => "secode",
+            Self::External => "external",
         }
     }
 }
@@ -96,6 +98,9 @@ pub struct Profile {
     pub permission: PermissionProfile,
     pub named_profile: String,
     pub effort: Option<String>,
+    /// Whether this agent is eligible for owner-approved external seat leases.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub external: bool,
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Root {
@@ -250,6 +255,11 @@ pub enum ContainmentFact {
         cause: ContainmentCause,
         observed_at_us: i64,
         probe: Option<EventId>,
+    },
+    /// Distinct witness for an owner-approved external seat with no managed OS process.
+    ExternalSeat {
+        lease_generation: u64,
+        observed_at_us: i64,
     },
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]

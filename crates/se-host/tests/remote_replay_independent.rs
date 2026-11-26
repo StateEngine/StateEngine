@@ -78,6 +78,7 @@ fn setup(
                     harness: None,
                     named_profile: "workspace-write".into(),
                     effort: None,
+                    external: false,
                 },
                 expected: Expected::Absent,
             }],

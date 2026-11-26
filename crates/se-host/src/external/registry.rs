@@ -1,0 +1,341 @@
+//! In-memory pending claim and active external lease registry for one host generation.
+//! Claims are bound to exact native peer/birth, connection nonce, host generation,
+//! expiry, and (project_id, agent_id, scope), and are consumed at most once.
+use super::*;
+use se_types::{AgentId, Generation, ProjectId, Result, SeError, Secret, SessionId};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
+use tokio::sync::oneshot;
+
+const MAX_PENDING_CLAIMS: usize = 64;
+
+/// Delivered to the exact waiting bridge connection once approved by the Owner.
+pub(crate) struct ClaimApprovalDelivery {
+    pub project_id: ProjectId,
+    pub agent_id: AgentId,
+    pub agent_name: String,
+    pub session_id: SessionId,
+    pub lease_generation: u64,
+    pub expires_at_us: i64,
+    pub secret: Arc<Secret>,
+}
+
+/// Handle retained on the bridge's `ConnectionGrant` for its lifetime.
+#[derive(Clone, Debug)]
+pub(crate) struct PendingClaimHandle {
+    pub claim_id: String,
+    pub project_id: ProjectId,
+    pub agent_id: AgentId,
+    pub agent_name: String,
+    pub peer_binding: Vec<u8>,
+    pub connection_nonce: [u8; 32],
+    pub host_generation: Generation,
+    pub expires_at_us: i64,
+}
+
+struct PendingClaimEntry {
+    claim_id: String,
+    project_id: ProjectId,
+    agent_id: AgentId,
+    agent_name: String,
+    scope: String,
+    peer_binding: Vec<u8>,
+    peer_pid: u32,
+    connection_nonce: [u8; 32],
+    host_generation: Generation,
+    expires_at: Instant,
+    expires_at_us: i64,
+    delivery: Option<oneshot::Sender<ClaimApprovalDelivery>>,
+}
+
+/// One consumed claim ready for atomic store commit and secret delivery.
+pub(crate) struct ConsumedClaim {
+    pub claim_id: String,
+    pub project_id: ProjectId,
+    pub agent_id: AgentId,
+    pub agent_name: String,
+    pub peer_pid: u32,
+    pub delivery: Option<oneshot::Sender<ClaimApprovalDelivery>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ActiveLease {
+    pub project_id: ProjectId,
+    pub agent_id: AgentId,
+    pub agent_name: String,
+    pub session_id: SessionId,
+    pub credential_id: se_store::RecordId,
+    pub lease_generation: u64,
+    pub peer_pid: u32,
+    pub host_generation: Generation,
+    pub expires_at_us: i64,
+}
+
+/// Tracks pending claims and active external seat leases for this host generation.
+pub(crate) struct ExternalRegistry {
+    next_lease_generation: AtomicU64,
+    state: Mutex<RegistryState>,
+}
+
+#[derive(Default)]
+struct RegistryState {
+    pending: BTreeMap<String, PendingClaimEntry>,
+    active: BTreeMap<(ProjectId, AgentId), ActiveLease>,
+    waiters: BTreeMap<String, oneshot::Sender<ClaimApprovalDelivery>>,
+}
+
+impl Default for ExternalRegistry {
+    fn default() -> Self {
+        Self {
+            next_lease_generation: AtomicU64::new(1),
+            state: Mutex::new(RegistryState::default()),
+        }
+    }
+}
+
+/// Inputs required to open a pending external seat claim.
+pub(crate) struct NewClaim {
+    pub project_id: ProjectId,
+    pub agent_id: AgentId,
+    pub agent_name: String,
+    pub peer_binding: Vec<u8>,
+    pub peer_pid: u32,
+    pub connection_nonce: [u8; 32],
+    pub host_generation: Generation,
+    pub now_us: i64,
+}
+
+impl ExternalRegistry {
+    pub(crate) fn allocate_lease_generation(&self) -> u64 {
+        self.next_lease_generation.fetch_add(1, Ordering::AcqRel)
+    }
+
+    pub(crate) fn open_claim(&self, new: NewClaim) -> Result<PendingClaimHandle> {
+        let NewClaim {
+            project_id,
+            agent_id,
+            agent_name,
+            peer_binding,
+            peer_pid,
+            connection_nonce,
+            host_generation,
+            now_us,
+        } = new;
+        let mut guard = self.state.lock().map_err(|_| poisoned())?;
+        prune_expired(&mut guard);
+        if guard.pending.len() >= MAX_PENDING_CLAIMS {
+            return Err(SeError::invalid(
+                "external seat claims",
+                "fewer pending claims; approve or let stale claims expire before opening another",
+            ));
+        }
+        let nonce = crate::client::auth::fresh_nonce()?;
+        let claim_id = format!("claim_{}", se_types::hex_lower(&nonce[..16]));
+        let expires_at = Instant::now() + Duration::from_secs(CLAIM_TTL_SECS);
+        let expires_at_us = now_us
+            .checked_add((CLAIM_TTL_SECS as i64) * 1_000_000)
+            .ok_or_else(|| SeError::invalid("claim expiry", "clock overflow"))?;
+        let entry = PendingClaimEntry {
+            claim_id: claim_id.clone(),
+            project_id: project_id.clone(),
+            agent_id: agent_id.clone(),
+            agent_name: agent_name.clone(),
+            scope: EXTERNAL_SEAT_SCOPE.to_owned(),
+            peer_binding: peer_binding.clone(),
+            peer_pid,
+            connection_nonce,
+            host_generation,
+            expires_at,
+            expires_at_us,
+            delivery: None,
+        };
+        guard.pending.insert(claim_id.clone(), entry);
+        Ok(PendingClaimHandle {
+            claim_id,
+            project_id,
+            agent_id,
+            agent_name,
+            peer_binding,
+            connection_nonce,
+            host_generation,
+            expires_at_us,
+        })
+    }
+
+    /// Attach the waiting bridge's oneshot receiver, verifying exact peer/nonce/generation binding.
+    pub(crate) fn attach_waiter(
+        &self,
+        claim_id: &str,
+        peer_binding: &[u8],
+        connection_nonce: &[u8; 32],
+        host_generation: Generation,
+    ) -> Result<(oneshot::Receiver<ClaimApprovalDelivery>, Instant)> {
+        let mut guard = self.state.lock().map_err(|_| poisoned())?;
+        prune_expired(&mut guard);
+        let entry = guard.pending.get_mut(claim_id).ok_or_else(|| {
+            SeError::invalid(
+                "external claim",
+                "an open unexpired pending claim for this connection",
+            )
+        })?;
+        if entry.peer_binding != peer_binding
+            || entry.connection_nonce != *connection_nonce
+            || entry.host_generation != host_generation
+        {
+            return Err(SeError::invalid(
+                "external claim binding",
+                "the exact bridge process, nonce, and host generation that opened this claim",
+            ));
+        }
+        let (tx, rx) = oneshot::channel();
+        entry.delivery = Some(tx);
+        Ok((rx, entry.expires_at))
+    }
+
+    /// Consume a pending claim at most once. Fails closed on absence, expiry, or generation mismatch.
+    pub(crate) fn consume_claim(
+        &self,
+        claim_id: &str,
+        host_generation: Generation,
+    ) -> Result<ConsumedClaim> {
+        let mut guard = self.state.lock().map_err(|_| poisoned())?;
+        prune_expired(&mut guard);
+        let entry = guard.pending.remove(claim_id).ok_or_else(|| {
+            SeError::invalid(
+                "external claim",
+                "an existing unexpired pending claim; run `se external list` to inspect open claims",
+            )
+        })?;
+        if entry.host_generation != host_generation {
+            return Err(SeError::invalid(
+                "external claim generation",
+                "a claim opened against the current host generation",
+            ));
+        }
+        if Instant::now() >= entry.expires_at {
+            return Err(SeError::invalid(
+                "external claim",
+                "an unexpired pending claim; reconnect the bridge to open a fresh claim",
+            ));
+        }
+        Ok(ConsumedClaim {
+            claim_id: entry.claim_id,
+            project_id: entry.project_id,
+            agent_id: entry.agent_id,
+            agent_name: entry.agent_name,
+            peer_pid: entry.peer_pid,
+            delivery: entry.delivery,
+        })
+    }
+
+    pub(crate) fn cancel_pending_claim(&self, claim_id: &str) {
+        if let Ok(mut guard) = self.state.lock() {
+            guard.pending.remove(claim_id);
+            guard.waiters.remove(claim_id);
+        }
+    }
+
+    pub(crate) fn record_active_lease(&self, lease: ActiveLease) -> Result<()> {
+        let mut guard = self.state.lock().map_err(|_| poisoned())?;
+        guard
+            .active
+            .insert((lease.project_id.clone(), lease.agent_id.clone()), lease);
+        Ok(())
+    }
+
+    /// Fenced removal: removes the active lease ONLY if `(session_id, lease_generation)` matches.
+    /// Returns `Some(lease)` if this call won the fence, or `None` if already superseded/revoked.
+    pub(crate) fn remove_if_matching(
+        &self,
+        project_id: &ProjectId,
+        agent_id: &AgentId,
+        session_id: &SessionId,
+        lease_generation: u64,
+    ) -> Result<Option<ActiveLease>> {
+        let mut guard = self.state.lock().map_err(|_| poisoned())?;
+        let key = (project_id.clone(), agent_id.clone());
+        let matches = guard.active.get(&key).is_some_and(|lease| {
+            lease.session_id == *session_id && lease.lease_generation == lease_generation
+        });
+        if matches {
+            Ok(guard.active.remove(&key))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub(crate) fn remove_active(
+        &self,
+        project_id: &ProjectId,
+        agent_id: &AgentId,
+    ) -> Result<Option<ActiveLease>> {
+        let mut guard = self.state.lock().map_err(|_| poisoned())?;
+        Ok(guard.active.remove(&(project_id.clone(), agent_id.clone())))
+    }
+
+    pub(crate) fn active_lease(
+        &self,
+        project_id: &ProjectId,
+        agent_id: &AgentId,
+    ) -> Result<Option<ActiveLease>> {
+        let guard = self.state.lock().map_err(|_| poisoned())?;
+        Ok(guard
+            .active
+            .get(&(project_id.clone(), agent_id.clone()))
+            .cloned())
+    }
+
+    pub(crate) fn list(&self, project: Option<&ProjectId>) -> Result<ExternalListOutput> {
+        let mut guard = self.state.lock().map_err(|_| poisoned())?;
+        prune_expired(&mut guard);
+        let pending_claims = guard
+            .pending
+            .values()
+            .filter(|entry| project.is_none_or(|p| &entry.project_id == p))
+            .map(|entry| PendingClaimView {
+                claim_id: entry.claim_id.clone(),
+                project_id: entry.project_id.clone(),
+                agent_id: entry.agent_id.clone(),
+                agent_name: entry.agent_name.clone(),
+                scope: entry.scope.clone(),
+                peer_pid: entry.peer_pid,
+                host_generation: entry.host_generation,
+                expires_at_us: entry.expires_at_us,
+            })
+            .collect();
+        let active_leases = guard
+            .active
+            .values()
+            .filter(|lease| project.is_none_or(|p| &lease.project_id == p))
+            .map(|lease| ActiveExternalLeaseView {
+                project_id: lease.project_id.clone(),
+                agent_id: lease.agent_id.clone(),
+                agent_name: lease.agent_name.clone(),
+                session_id: lease.session_id.clone(),
+                lease_generation: lease.lease_generation,
+                peer_pid: lease.peer_pid,
+                host_generation: lease.host_generation,
+                expires_at_us: lease.expires_at_us,
+            })
+            .collect();
+        Ok(ExternalListOutput {
+            pending_claims,
+            active_leases,
+        })
+    }
+}
+
+fn prune_expired(state: &mut RegistryState) {
+    let now = Instant::now();
+    state.pending.retain(|_, entry| now < entry.expires_at);
+}
+
+fn poisoned() -> SeError {
+    se_core::scope::unreadable("external seat registry", "internal lock was poisoned")
+}

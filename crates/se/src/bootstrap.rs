@@ -75,20 +75,26 @@ impl Bootstrap {
             matches!(operation, se_core::ops::AnyOp::DiagnosticBundle(_)),
         )
     }
+    pub(crate) fn resolve_owner(
+        home: Option<PathBuf>,
+        no_color: bool,
+        json: bool,
+        op: &str,
+    ) -> Result<Self> {
+        if std::env::var_os("SE_SESSION").is_some() {
+            return Err(SeError::new(Detail::OwnerRequired(
+                details::OwnerRequired { op: op.into() },
+            )));
+        }
+        Self::resolve_mode(home, None, no_color, json, false, false)
+    }
     #[cfg(feature = "remote")]
     pub(crate) fn resolve_remote_owner(
         home: Option<PathBuf>,
         no_color: bool,
         json: bool,
     ) -> Result<Self> {
-        if std::env::var_os("SE_SESSION").is_some() {
-            return Err(SeError::new(Detail::OwnerRequired(
-                details::OwnerRequired {
-                    op: "remote authority control".into(),
-                },
-            )));
-        }
-        Self::resolve_mode(home, None, no_color, json, false, false)
+        Self::resolve_owner(home, no_color, json, "remote authority control")
     }
     fn resolve_mode(
         home: Option<PathBuf>,

@@ -101,6 +101,7 @@ pub fn create<R: Snapshot>(
                 harness,
                 named_profile: named_profile.to_owned(),
                 effort: None,
+                external: input.external,
             },
             expected: Expected::Absent,
         },

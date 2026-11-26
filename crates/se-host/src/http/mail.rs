@@ -37,16 +37,16 @@ pub(crate) struct Waits {
         )>,
     >,
 }
-struct Signal {
-    changed: Notify,
-    cancelled: AtomicBool,
+pub(crate) struct Signal {
+    pub(crate) changed: Notify,
+    pub(crate) cancelled: AtomicBool,
     recipient: crate::runtime::MailRecipient,
     credential: se_store::RecordId,
 }
-struct Wait {
+pub(crate) struct Wait {
     registry: Arc<Waits>,
     key: (ProjectId, SessionId),
-    signal: Arc<Signal>,
+    pub(crate) signal: Arc<Signal>,
     _permit: OwnedSemaphorePermit,
 }
 impl Waits {
@@ -136,7 +136,7 @@ impl Waits {
             native: Mutex::new(Vec::new()),
         })
     }
-    fn register(
+    pub(crate) fn register(
         self: &Arc<Self>,
         session: SessionId,
         recipient: crate::runtime::MailRecipient,

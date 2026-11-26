@@ -231,7 +231,10 @@ pub fn cli_command() -> Command {
             .disable_help_flag(true)
             .disable_version_flag(true)
             .disable_help_subcommand(true)
-            .arg(toggle("stdio").help("Read JSON-RPC on stdin and write replies on stdout")),
+            .arg(toggle("stdio").help("Read JSON-RPC on stdin and write replies on stdout"))
+            .arg(value("as").long("as").help(
+                "Connect as an external-eligible agent seat awaiting out-of-band Owner approval",
+            )),
     )
 }
 fn insert(command: Command, path: &[&'static str], name: &str, hidden: bool) -> Command {
@@ -368,7 +371,8 @@ fn input_command_agent(name: &str, c: Command) -> Command {
             .arg(value("base-url").help("Non-secret provider endpoint; requires --model-provider"))
             .arg(value("wire-api").help("Provider wire protocol: responses"))
             .arg(value("reasoning-effort").help("Per-agent reasoning effort"))
-            .arg(value("context-window").help("Per-agent positive token count")),
+            .arg(value("context-window").help("Per-agent positive token count"))
+            .arg(toggle("external").help("Mark this agent eligible for owner-approved external seat leases")),
         "delegate.start" => c
             .subcommand_negates_reqs(true)
             .arg(value("task").required(true).help("Initial task prompt for the temporary agent"))

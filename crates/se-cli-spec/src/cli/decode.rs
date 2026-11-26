@@ -241,6 +241,7 @@ fn decode_agent(
                 .transpose()?,
             model: text(m, "model"),
             profile: text(m, "profile"),
+            external: flag(m, "external"),
             idempotency_key: key()?,
         }),
         "delegate.start" => decode_delegate_start(m, key)?,

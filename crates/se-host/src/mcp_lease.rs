@@ -46,6 +46,8 @@ impl AdmissionContext {
                 peer: peer.native().binding(),
                 original: Some(Hasher::digest(secret.expose()).into()),
             }),
+            external_claim: None,
+            external_active: Default::default(),
         })
     }
 
@@ -105,10 +107,12 @@ impl AdmissionContext {
                 peer: peer.native().binding(),
                 original: None,
             }),
+            external_claim: None,
+            external_active: Default::default(),
         })
     }
 
-    fn guest_project(&self, cwd: &std::path::Path) -> Result<se_types::ProjectId> {
+    pub(crate) fn guest_project(&self, cwd: &std::path::Path) -> Result<se_types::ProjectId> {
         let phase = self
             .reads
             .read_phase()

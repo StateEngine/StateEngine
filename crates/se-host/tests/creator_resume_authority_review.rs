@@ -51,6 +51,7 @@ fn use_codex(h: &Harness) -> Check {
             harness: None,
             named_profile: "default".into(),
             effort: None,
+            external: false,
         },
         expected: revision(1)?,
     }])?;

@@ -198,6 +198,7 @@ fn seed_discovery_session(f: &Fixture, session: &se_types::SessionId, capability
                 harness: None,
                 named_profile: "default".into(),
                 effort: None,
+                external: false,
             },
             expected: Expected::Absent,
         },

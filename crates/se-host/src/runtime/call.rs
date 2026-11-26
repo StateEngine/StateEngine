@@ -35,6 +35,7 @@ pub struct HostedCall {
 pub struct ExecutionContext {
     pub atlas: Arc<crate::atlas_runtime::read_port::AtlasOwnerPort>,
     pub(crate) mail_waits: Arc<crate::http::mail::Waits>,
+    pub(crate) external: Arc<crate::external::ExternalRegistry>,
     pub(crate) http_proofs: Arc<crate::http::proof::Challenges>,
     pub(crate) state_directory: std::path::PathBuf,
     pub reader: Arc<SqliteReader>,

@@ -1,7 +1,7 @@
 //! Native CLI routing. Startup is called at process entry, before Bootstrap
 //! reads configuration and before a worker or store is opened.
 #[path = "route/admit.rs"]
-mod admit;
+pub(crate) mod admit;
 #[path = "route/adoption.rs"]
 pub(crate) mod adoption;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -50,7 +50,7 @@ mod retained;
 #[path = "route/runtime.rs"]
 mod runtime_control;
 #[path = "route/select.rs"]
-mod select;
+pub(crate) mod select;
 mod session_observation;
 #[path = "route/setup.rs"]
 pub mod setup;

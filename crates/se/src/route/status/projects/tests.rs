@@ -96,6 +96,7 @@ fn partial_agent_page_refuses_a_running_total() -> fixture::Check {
                         harness: None,
                         named_profile: "default".into(),
                         effort: None,
+                        external: false,
                     },
                     expected: Expected::Absent,
                 }],

@@ -3,6 +3,7 @@ mod atlas_hook;
 mod bootstrap;
 mod compat;
 mod config;
+mod external;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod foreground;
 mod grammar;
@@ -41,6 +42,9 @@ pub fn run(
 ) -> io::Result<u8> {
     #[cfg(feature = "remote")]
     if let Some(result) = remote_owner::entry(&args) {
+        return result;
+    }
+    if let Some(result) = external::entry(&args) {
         return result;
     }
     let mut stdout = io::stdout().lock();

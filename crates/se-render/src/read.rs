@@ -155,6 +155,25 @@ pub(super) fn agent_badge(agent: &se_core::ops::AgentRow) -> &'static str {
         (false, false) => "",
     }
 }
+fn render_external_seat(
+    indent: &str,
+    ext: &se_core::ops::ExternalSeatView,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    write!(out, "    {indent}External seat: {}", ext.state)?;
+    if let Some(session_id) = &ext.session_id {
+        write!(out, " (session {session_id}")?;
+        if let Some(expires_at) = &ext.expires_at {
+            write!(out, ", expires {expires_at}")?;
+        }
+        write!(out, ")")?;
+    }
+    if let Some(reason) = &ext.revocation_reason {
+        write!(out, " — {reason}")?;
+    }
+    writeln!(out)
+}
+
 fn agents_section(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     let names = named::Names::of(value);
     if let Some(agents) = &value.agents {
@@ -171,6 +190,9 @@ fn agents_section(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> 
                 agent_badge(agent),
                 count(agent.unread)
             )?;
+            if let Some(ext) = &agent.external_seat {
+                render_external_seat(indent, ext, out)?;
+            }
             if let Some(question) = agent.state.as_ref().and_then(|s| s.waiting_on.as_ref()) {
                 writeln!(
                     out,

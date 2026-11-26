@@ -256,21 +256,41 @@ async fn connection(
     else {
         return Ok(ConnectionEnd::Cancelled);
     };
-    let mut connection = match peer {
+    let connection = match peer {
         AcceptedPeer::Stop(stop) => return Ok(ConnectionEnd::Stop(stop)),
         AcceptedPeer::Rebound => return Ok(ConnectionEnd::Closed),
         AcceptedPeer::Operation(connection) => *connection,
     };
+    let ext_claim = connection.grant.external_claim.clone();
+    let ext_active = Arc::clone(&connection.grant.external_active);
+    let outcome = connection_loop(&router, connection, &mut shutdown).await;
+    crate::external::dispatch::release_connection(&router, ext_claim, &ext_active).await;
+    outcome
+}
+
+async fn connection_loop(
+    router: &HostedRouter,
+    mut connection: HostedConnection,
+    shutdown: &mut watch::Receiver<Option<Deadline>>,
+) -> Result<ConnectionEnd> {
     loop {
         let idle = Deadline::idle()?;
-        let Some(next) =
-            until_shutdown(router.read_call_idle(connection, &idle), &mut shutdown).await?
+        let Some(next) = until_shutdown(router.read_call_idle(connection, &idle), shutdown).await?
         else {
             return Ok(ConnectionEnd::Cancelled);
         };
         let Some((mut exchange, deadline)) = next else {
             return Ok(ConnectionEnd::Closed);
         };
+        if let Some(call) = exchange.take_external() {
+            let Some(returned) =
+                serve_external_exchange(router, exchange, call, &deadline, shutdown).await?
+            else {
+                return Ok(ConnectionEnd::Closed);
+            };
+            connection = returned;
+            continue;
+        }
         if let Some(input) = exchange.adopted.take() {
             let output = router.execute_adoption(input, &deadline).await;
             connection = exchange.reply_adoption(output, &deadline).await?;
@@ -278,7 +298,7 @@ async fn connection(
         }
         #[cfg(feature = "remote")]
         if let Some(call) = exchange.take_owner_call() {
-            let result = crate::remote::control::execute(&router, call, &deadline).await;
+            let result = crate::remote::control::execute(router, call, &deadline).await;
             connection = exchange.reply_owner(result, &deadline).await?;
             continue;
         }
@@ -294,7 +314,7 @@ async fn connection(
             };
             let input = input.clone();
             let selections = admitted.selections.clone();
-            super::mail_follow::serve(&router, exchange, input, selections, &mut shutdown).await?;
+            super::mail_follow::serve(router, exchange, input, selections, shutdown).await?;
             return Ok(ConnectionEnd::Closed);
         }
         let output = match call {
@@ -328,6 +348,35 @@ async fn connection(
         };
     }
 }
+async fn serve_external_exchange(
+    router: &HostedRouter,
+    exchange: AdmittedExchange,
+    call: super::admission::external::ExternalCall,
+    deadline: &Deadline,
+    shutdown: &mut watch::Receiver<Option<Deadline>>,
+) -> Result<Option<HostedConnection>> {
+    let active_binding = Arc::clone(&exchange.connection.grant.external_active);
+    let result = tokio::select! {
+        biased;
+        closed = exchange.wait_for_peer_close() => {
+            closed?;
+            return Ok(None);
+        }
+        result = crate::external::dispatch::execute(
+            router,
+            call,
+            &active_binding,
+            deadline,
+            shutdown,
+        ) => result,
+    };
+    let reply_deadline = options(CALL_TIMEOUT)?;
+    exchange
+        .reply_external(result, &reply_deadline)
+        .await
+        .map(Some)
+}
+
 // The authenticated caller's clock already includes connection/authentication.
 // Starting another thirty seconds here loses the stop reply at the client.
 fn shutdown_bound(stop: Option<&AuthorizedStop>) -> Result<Deadline> {
@@ -344,7 +393,7 @@ fn shutdown_bound(stop: Option<&AuthorizedStop>) -> Result<Deadline> {
     options(timeout)
 }
 
-pub(super) fn options(timeout: std::time::Duration) -> Result<Deadline> {
+pub(crate) fn options(timeout: std::time::Duration) -> Result<Deadline> {
     Deadline::from_options(&ClientOptions {
         expected_generation: None,
         timeout,

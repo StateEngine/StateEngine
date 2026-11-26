@@ -44,6 +44,7 @@ fn profile(f: &Fixture, provider: Provider) -> se_types::Result<EventBody<InputT
             harness: None,
             named_profile: "default".into(),
             effort: None,
+            external: false,
         },
         expected: Expected::Absent,
     })
