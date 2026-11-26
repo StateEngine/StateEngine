@@ -111,6 +111,23 @@ pub(crate) fn generation_ids(
     let (index, _) = read_index(files, &home.join("backups"), store, deadline)?;
     Ok(index.generations.iter().map(|entry| entry.id).collect())
 }
+/// Indexed generations whose copy ends before sequence `seq` of this incarnation.
+/// One from another incarnation cannot be ordered against `seq`, so it counts as earlier.
+pub(crate) fn generations_before(
+    files: &dyn StateFiles,
+    home: &Path,
+    info: &StoreInfo,
+    seq: u64,
+    deadline: Instant,
+) -> StoreResult<Vec<RecordId>> {
+    let (index, _) = read_index(files, &home.join("backups"), &info.id, deadline)?;
+    Ok(index
+        .generations
+        .iter()
+        .filter(|entry| entry.incarnation != info.incarnation || entry.through < seq)
+        .map(|entry| entry.id)
+        .collect())
+}
 fn read_index(
     files: &dyn StateFiles,
     root: &Path,

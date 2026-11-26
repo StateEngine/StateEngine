@@ -129,3 +129,32 @@ pub(super) fn pinned_generations(
         .collect::<StoreResult<_>>()
         .map(Some)
 }
+/// The generations an unfinished erasure replaces: the ones its request pinned, or,
+/// for a request recorded before pinning, the indexed copies that end before the
+/// request committed. Copies taken after it never held the erased bodies.
+pub(super) fn committed_generations(
+    c: &Connection,
+    erasure: &RecordId,
+    pinned: Option<Vec<RecordId>>,
+    lease: &dyn RuntimeLease,
+    options: &StoreOptions,
+    info: &StoreInfo,
+) -> StoreResult<Vec<RecordId>> {
+    if let Some(pinned) = pinned {
+        return Ok(pinned);
+    }
+    let requested: u64 = c
+        .query_row(
+            "SELECT requested_seq FROM erasures WHERE erasure_id=?",
+            [erasure.as_bytes().to_vec()],
+            |r| crate::sql_value::value(r, 0),
+        )
+        .map_err(sql)?;
+    crate::backup::generations_before(
+        lease.files(),
+        &options.state_directory,
+        info,
+        requested,
+        super::deadline(options.busy_timeout)?,
+    )
+}

@@ -8,7 +8,7 @@ mod residuals;
 mod resume;
 use crate::{connection, error::*, open::SqliteHost, *};
 use residuals::{inventory, recipient_transcripts, residual, same_inventory};
-use resume::{open_manifest, pinned_generations, unfinished};
+use resume::{committed_generations, open_manifest, pinned_generations, unfinished};
 use rusqlite::{Connection, OptionalExtension};
 use se_types::{EventId, HumanId};
 use sha2::{Digest, Sha256};
@@ -219,12 +219,6 @@ pub(crate) fn plan(
     let c = reader.connect()?;
     let info = connection::info_at(&c, &reader.path)?;
     crate::open::validate_lease(&info, lease, LeaseMode::Host)?;
-    let owned_generations = crate::backup::generation_ids(
-        lease.files(),
-        &options.state_directory,
-        &info.id,
-        deadline(options.busy_timeout)?,
-    )?;
     let se_types::Read::Present { value: database } =
         lease.files().inspect_metadata(&reader.path)?
     else {
@@ -235,16 +229,20 @@ pub(crate) fn plan(
     };
     // Rebuilding the database and each replaced backup each needs a full copy,
     // for a resumed erasure as much as a fresh one.
-    let required_bytes = database
-        .len()
-        .saturating_mul(1 + owned_generations.len() as u64);
+    let required =
+        |generations: &[RecordId]| database.len().saturating_mul(1 + generations.len() as u64);
+    // A committed erasure is planned from its own record before any live inventory.
     if let Some((resumed, pinned)) = unfinished(&c, &targets)? {
+        let owned_generations =
+            committed_generations(&c, &resumed.id, pinned, lease, options, &info)?;
         return Ok(ErasurePlan {
-            owned_generations: pinned.unwrap_or(owned_generations),
-            required_bytes,
+            required_bytes: required(&owned_generations),
+            owned_generations,
             ..resumed
         });
     }
+    let owned_generations = generations(lease, options, &info)?;
+    let required_bytes = required(&owned_generations);
     let observed = observe(&c, &targets, &options.state_directory)?;
     let mut random = [0u8; 10];
     random.copy_from_slice(&se_proc::random_secret().map_err(invalid)?.expose()[..10]);
@@ -531,11 +529,20 @@ pub(crate) fn erase(
     };
     // No backup copies or publishes while this is held: one already running finishes
     // first, and none starts until the bodies are gone. The final residual check and
-    // the generations to replace are both read under it, before anything commits.
-    let fence = host
-        .context
-        .fence(deadline(options.busy_timeout.max(BACKUP_WAIT))?)?;
-    let owned = if requested(host, &plan.id)?.is_none() {
+    // the generations to replace are both read under it, before anything commits. A
+    // committed erasure that cannot take it yet still reports its bodies as gone.
+    let committed = requested(host, &plan.id)?.is_some();
+    let fence = match deadline(options.busy_timeout.max(BACKUP_WAIT))
+        .and_then(|until| host.context.fence(until))
+    {
+        Ok(fence) => fence,
+        Err(error) if committed => {
+            report.cleanup_failure = Some(error.cause);
+            return Ok(report);
+        }
+        Err(error) => return Err(error),
+    };
+    let owned = if !committed {
         let observed = observe(&host.engine.db, &plan.targets, &options.state_directory)?;
         let residuals = inventory(
             lease.files(),
@@ -590,8 +597,7 @@ fn generations(
         deadline(options.busy_timeout)?,
     )
 }
-/// The generations a committed request pinned. A request recorded before pinning
-/// falls back to those present now, still read under the backup fence.
+/// The generations a committed request replaces, read under the backup fence.
 fn resumed_generations(
     host: &SqliteHost,
     lease: &dyn RuntimeLease,
@@ -601,10 +607,8 @@ fn resumed_generations(
 ) -> StoreResult<Vec<RecordId>> {
     let (_, manifest) = open_manifest(&host.engine.db, erasure.as_bytes())?
         .ok_or_else(|| invalid("the unfinished erasure has no manifest"))?;
-    match pinned_generations(&manifest)? {
-        Some(pinned) => Ok(pinned),
-        None => generations(lease, options, info),
-    }
+    let pinned = pinned_generations(&manifest)?;
+    committed_generations(&host.engine.db, erasure, pinned, lease, options, info)
 }
 /// Physical cleanup after the request committed: rewrite, replace the pinned backups,
 /// then record completion.
