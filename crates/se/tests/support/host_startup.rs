@@ -88,10 +88,12 @@ pub fn private_startup_serves_and_retires() -> Check {
         "CLAUDE_CODE_USE_BEDROCK",
         "CLAUDE_CODE_USE_VERTEX",
         "CLOUD_ML_REGION",
+        "GOOGLE_APPLICATION_CREDENTIALS",
         "AWS_REGION",
         "ANTHROPIC_BEDROCK_BASE_URL",
         "ANTHROPIC_VERTEX_PROJECT_ID",
         "GOOGLE_CLOUD_PROJECT",
+        "VERTEX_REGION_CLAUDE_3_7_SONNET",
     ] {
         command.env(name, "detached-host-provider-canary");
     }
@@ -193,6 +195,7 @@ const APPROVED_HOST_ENV: &[&str] = &[
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
     "CLOUD_ML_REGION",
+    "GOOGLE_APPLICATION_CREDENTIALS",
     // Network context for protocol agents; matched case-insensitively,
     // so the lower-case proxy spellings are covered as well.
     "HTTPS_PROXY",
@@ -211,6 +214,7 @@ const APPROVED_HOST_ENV_PREFIXES: &[&str] = &[
     "ANTHROPIC_BEDROCK_",
     "ANTHROPIC_VERTEX_",
     "GOOGLE_CLOUD_",
+    "VERTEX_REGION_",
 ];
 
 #[cfg(target_os = "linux")]

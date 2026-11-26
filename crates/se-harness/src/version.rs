@@ -28,7 +28,7 @@ pub fn parse_semver(text: &str) -> Option<Semver> {
         None => (text, None),
     };
     if let Some(build) = build
-        && !valid_dotted_identifiers(build)
+        && !valid_build_identifiers(build)
     {
         return None;
     }
@@ -37,7 +37,7 @@ pub fn parse_semver(text: &str) -> Option<Semver> {
         None => (without_build, None),
     };
     if let Some(pre) = prerelease
-        && !valid_dotted_identifiers(pre)
+        && !valid_prerelease_identifiers(pre)
     {
         return None;
     }
@@ -66,7 +66,22 @@ fn parse_numeric_part(part: &str) -> Option<u16> {
     part.parse::<u16>().ok()
 }
 
-fn valid_dotted_identifiers(text: &str) -> bool {
+/// SemVer 2.0.0 §9: numeric prerelease identifiers MUST NOT include leading zeroes.
+fn valid_prerelease_identifiers(text: &str) -> bool {
+    !text.is_empty()
+        && text.split('.').all(|ident| {
+            !ident.is_empty()
+                && ident
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && !(ident.len() > 1
+                    && ident.starts_with('0')
+                    && ident.bytes().all(|byte| byte.is_ascii_digit()))
+        })
+}
+
+/// SemVer 2.0.0 §10: build metadata identifiers MAY include leading zeroes.
+fn valid_build_identifiers(text: &str) -> bool {
     !text.is_empty()
         && text.split('.').all(|ident| {
             !ident.is_empty()

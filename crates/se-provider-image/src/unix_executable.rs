@@ -19,7 +19,7 @@ pub(crate) fn packaged_codex(launcher: &Path) -> io::Result<Option<(PathBuf, Pat
             return Ok(None);
         };
         package.to_path_buf()
-    } else if launcher.file_name().is_some_and(|name| name == "codex")
+    } else if is_codex_dispatcher(launcher, &entry)?
         && let Some(directory) = launcher.parent()
         && let Some(package) =
             crate::package_roots::unique_installed_root(directory, "@openai/codex")?
@@ -83,6 +83,25 @@ fn platform() -> Option<(&'static str, &'static str)> {
         ("macos", "aarch64") => Some(("codex-darwin-arm64", "aarch64-apple-darwin")),
         _ => None,
     }
+}
+
+/// Only real package-manager dispatchers (Volta's `volta-shim` native binary or
+/// a `#!` shell shim named `codex`) resolve to a neighboring global package.
+/// A standalone ELF/Mach-O `codex` binary stays untouched.
+fn is_codex_dispatcher(launcher: &Path, canonical: &Path) -> io::Result<bool> {
+    if !launcher.file_name().is_some_and(|name| name == "codex") {
+        return Ok(false);
+    }
+    if canonical
+        .file_name()
+        .is_some_and(|name| name == "volta-shim")
+    {
+        return Ok(true);
+    }
+    let mut header = [0u8; 2];
+    let mut file = fs::File::open(canonical)?;
+    let read = file.read(&mut header)?;
+    Ok(read == 2 && header == *b"#!")
 }
 
 fn native_image(path: &Path) -> io::Result<bool> {
