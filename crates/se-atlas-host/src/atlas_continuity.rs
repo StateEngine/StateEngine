@@ -1,6 +1,10 @@
 //! Optional code context borrows the same admitted snapshot as core continuity.
 //! Consumers without an acknowledgement discard the offer and may see it again.
-use crate::atlas_runtime::{read_port::AtlasOwnerPort, record_fence::RecordFeedTicket};
+use crate::atlas_runtime::{
+    read_port::{AtlasOwnerPort, AtlasReadPort},
+    read_slot::Bounded,
+    record_fence::RecordFeedTicket,
+};
 use se_store::{Actor, Admission, Scope, SqliteSnapshot};
 use se_types::{Read, Result, SeError, code::*};
 use std::time::{Duration, Instant};
@@ -133,8 +137,8 @@ fn short_circuit_state(state: &IndexState) -> Option<ResumeCodeState> {
         _ => None,
     }
 }
-/// The map may take this long on top of the code context; its query is
-/// interrupted there, and the orientation says so rather than slowing resume.
+/// The map may take this long on top of the code context. The resume stops
+/// waiting there and says so; the late read is interrupted and ends alone.
 const MAP_DEADLINE: Duration = Duration::from_millis(15);
 /// Open assignments read to find this agent's; more are reported as cut short.
 const ASSIGNMENT_PAGE: u16 = 50;
@@ -157,9 +161,34 @@ fn orientation(
         };
     };
     let deadline = Instant::now() + MAP_DEADLINE;
-    let (map, map_note) = match owner.summary(project, None) {
+    let bound = project.clone();
+    let (map, map_note) = match owner.within(deadline, move |port| read_map(port, &bound, deadline))
+    {
+        Bounded::Done(found) => found,
+        Bounded::Late => (None, Some("over its 15 ms time budget".into())),
+        Bounded::Busy => (
+            None,
+            Some("skipped while an earlier map read finishes".into()),
+        ),
+        Bounded::Failed(reason) => (None, Some(format!("unreadable: {reason}"))),
+    };
+    let (assignments, more_assignments) = assignments(read, admission, viewer);
+    Orientation {
+        map,
+        map_note,
+        assignments,
+        more_assignments,
+    }
+}
+/// The project's map, or a note saying why there is none.
+fn read_map(
+    port: &dyn AtlasReadPort,
+    project: &se_types::ProjectId,
+    deadline: Instant,
+) -> (Option<RepoMap>, Option<String>) {
+    match port.summary(project, None) {
         Ok(summary) if crate::atlas_queries::readable(&summary) => {
-            match owner
+            match port
                 .engine(project, Some(&summary.root))
                 .and_then(|engine| engine.repo_map(deadline))
             {
@@ -176,13 +205,6 @@ fn orientation(
             }),
         ),
         Err(error) => (None, Some(format!("unreadable: {}", error.body.message()))),
-    };
-    let (assignments, more_assignments) = assignments(read, admission, viewer);
-    Orientation {
-        map,
-        map_note,
-        assignments,
-        more_assignments,
     }
 }
 /// This agent's open assignments from the first page of the project's.
