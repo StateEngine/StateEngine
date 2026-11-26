@@ -55,16 +55,24 @@ impl ExpectedLifecycle {
         }
         Ok(())
     }
-    /// Nothing live and a newer lifecycle recorded: this lifecycle already ended,
-    /// and the newer one belongs to someone else.
+    /// Nothing live and a newer lifecycle or session recorded: this lifecycle
+    /// already ended, and the newer work belongs to someone else.
     pub fn superseded(&self, control: &ControlTarget) -> bool {
+        let newer_process = matches!(&control.latest_process, se_types::Read::Present { value }
+            if !matches!(&value.current.body,
+                EventBody::ProcessRegistered { identity, .. }
+                | EventBody::ProcessTransition { identity, .. }
+                    if identity.record == self.lifecycle));
+        let newer_session = matches!(&control.latest_session, se_types::Read::Present { value }
+            if !matches!(&value.current.body,
+                EventBody::SessionPrepared { session, .. }
+                | EventBody::SessionActivated { session, .. }
+                | EventBody::SessionEnded { session, .. }
+                | EventBody::SessionRevoked { session, .. }
+                    if session == &self.session));
         control.sessions.is_empty()
             && control.processes.is_empty()
-            && matches!(&control.latest_process, se_types::Read::Present { value }
-                if !matches!(&value.current.body,
-                    EventBody::ProcessRegistered { identity, .. }
-                    | EventBody::ProcessTransition { identity, .. }
-                        if identity.record == self.lifecycle))
+            && (newer_process || newer_session)
     }
 }
 #[derive(Clone)]
