@@ -13,6 +13,8 @@ use std::io::{self, Write};
 #[cfg(feature = "remote")]
 mod grammar;
 #[cfg(feature = "remote")]
+mod init;
+#[cfg(feature = "remote")]
 mod launch_permissions;
 #[cfg(feature = "remote")]
 mod owner;
@@ -27,6 +29,8 @@ mod progress;
 #[cfg(feature = "remote")]
 mod source_permissions;
 
+#[cfg(feature = "remote")]
+pub use init::{derive_alias, parse_remote_spec, validate_agent_name, validate_remote_path};
 #[cfg(feature = "remote")]
 pub use owner::{Input, entry, help};
 #[cfg(feature = "remote")]

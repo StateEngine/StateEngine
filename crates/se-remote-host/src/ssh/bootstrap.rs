@@ -88,6 +88,92 @@ pub async fn connect(
     Ok((session, invoke("remote __authorize --json")))
 }
 
+/// POSIX single-quote escaping: neutralizes every shell metacharacter.
+pub fn posix_single_quote(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('\'');
+    for ch in value.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// PowerShell single-quote escaping (used inside UTF-16LE `-EncodedCommand`).
+pub fn powershell_single_quote(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('\'');
+    for ch in value.chars() {
+        if ch == '\'' {
+            out.push_str("''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Build an injection-safe remote `se` invocation for Unix or Windows.
+pub fn build_remote_se_command(remote_bin: &str, windows: bool, args: &[&str]) -> String {
+    if windows {
+        let quoted: Vec<String> = args
+            .iter()
+            .map(|arg| powershell_single_quote(arg))
+            .collect();
+        staging::powershell(&format!(
+            "& (Join-Path $HOME {}) {}; exit $LASTEXITCODE",
+            powershell_single_quote(remote_bin),
+            quoted.join(" ")
+        ))
+    } else {
+        let quoted: Vec<String> = args.iter().map(|arg| posix_single_quote(arg)).collect();
+        format!("./{remote_bin} {}", quoted.join(" "))
+    }
+}
+
+/// Run one verified remote `se` command over strict `BatchMode=yes` SSH after
+/// confirming the staged executable's account ownership and permissions.
+pub async fn run_verified_se_command(
+    destination: &str,
+    distribution: &std::path::Path,
+    args: &[&str],
+) -> Result<Vec<u8>> {
+    validate_destination(destination)?;
+    let img = super::image::describe(destination, distribution).await?;
+    let remote_bin = img.remote();
+    let windows = img.windows;
+    let identity = staging::check(&remote_bin, windows, img.apple);
+    let invocation = build_remote_se_command(&remote_bin, windows, args);
+    let command = if windows {
+        let check = ssh(destination, identity).await?;
+        if !check.success {
+            return Err(super::command::verification_error(&check.stdout));
+        }
+        invocation
+    } else {
+        image_commands::accept(&identity, &invocation)
+    };
+    let outcome = ssh(destination, command).await?;
+    if !outcome.success {
+        if outcome
+            .stdout
+            .starts_with(format!("{}\n", image_commands::VERIFY_FAILED).as_bytes())
+        {
+            return Err(super::command::verification_error(&outcome.stdout));
+        }
+        if let Ok(envelope) = serde_json::from_slice::<se_types::ErrorEnvelope>(&outcome.stdout) {
+            return Err(envelope.body().clone().with_far_origin().into());
+        }
+        return Err(refused_setup(&outcome.stdout));
+    }
+    Ok(outcome.stdout)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

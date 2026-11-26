@@ -1,5 +1,5 @@
 //! Native human controls use a separate IPC branch, never a core/MCP data verb.
-use crate::{OwnerCommands, Presentation, grammar, pair, permissions, progress};
+use crate::{OwnerCommands, Presentation, grammar, init, pair, permissions, progress};
 use clap::ArgMatches;
 use se_core::ops::{AnyOp, AnyOutput, HelpOutput, Validate};
 use se_host::remote::OwnerInput;
@@ -98,6 +98,9 @@ fn run<H: OwnerCommands + Presentation + 'static>(
     let json = m.get_flag("json") || name == "__authorize";
     if name == "permissions" && !m.get_flag("help") {
         return permissions::command(m, json, &mut stdout, &mut stderr, host);
+    }
+    if name == "init" && !m.get_flag("help") {
+        return init::run(m, json, &mut stdout, &mut stderr, host);
     }
     let result = (|| {
         if m.get_flag("help") {

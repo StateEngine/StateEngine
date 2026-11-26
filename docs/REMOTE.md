@@ -6,7 +6,21 @@ StateEngine can list, watch, message and launch agents on another machine over S
 ## Connect
 
 From your own terminal, use an SSH destination that already works with your normal
-SSH configuration and host-key verification:
+SSH configuration and host-key verification.
+
+To pair a machine and initialize a remote project in one Owner-driven command:
+
+```sh
+se remote init my-server:/srv/repo --alias build --agent worker
+```
+
+Pass `--allow-launch` only when you explicitly want to grant remote launch consent
+for the initialized agent; without it, launch permission stays off by default. If
+any phase fails (SSH host-key check, staging, pairing, remote project init, or
+launch consent), `se remote init` reports every completed phase alongside the
+failed phase rather than claiming success.
+
+To pair a machine without initializing a remote project:
 
 ```sh
 se remote add my-server --name build

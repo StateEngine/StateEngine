@@ -2,6 +2,7 @@ use super::*;
 use clap::{Arg, Command};
 pub(super) const CONTROLS: &[&str] = &[
     "add",
+    "init",
     "permissions",
     "disconnect",
     "forget",
@@ -42,6 +43,34 @@ pub(super) fn command() -> Command {
                 leaf("add", "Connect to a machine using your SSH configuration")
                     .arg(Arg::new("destination").index(1).required(true))
                     .arg(value("name").required(true)),
+            )
+            .subcommand(
+                leaf(
+                    "init",
+                    "Connect over SSH, initialize a remote project, and optionally register an agent or grant launch consent",
+                )
+                .arg(
+                    Arg::new("target")
+                        .index(1)
+                        .required(true)
+                        .value_name("HOST:REMOTE_PATH")
+                        .help("SSH destination and remote project path, e.g. my-server:/srv/repo"),
+                )
+                .arg(
+                    value("alias")
+                        .alias("name")
+                        .help("Local alias for this machine (defaults to the SSH host)"),
+                )
+                .arg(
+                    value("agent")
+                        .help("Optional remote agent name to register in the project"),
+                )
+                .arg(
+                    Arg::new("allow_launch")
+                        .long("allow-launch")
+                        .action(clap::ArgAction::SetTrue)
+                        .help("Explicitly grant remote launch consent for the initialized agent"),
+                ),
             )
             .subcommand(leaf("permissions", "Review source access or launch consent as the native Owner")
                 .arg(value("name"))
