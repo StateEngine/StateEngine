@@ -1,3 +1,5 @@
+#[path = "context.rs"]
+pub(super) mod context;
 #[path = "named.rs"]
 mod named;
 #[path = "notification.rs"]
@@ -229,6 +231,14 @@ fn agents_section(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> 
                 matches!(activity, Read::Present { .. } | Read::Unreadable { .. })
             }) {
                 provider::activity(activity, "    ", out)?;
+            }
+            // Only a reading belongs in the overview; agent show and JSON keep the reason.
+            if let Some(context) = agent
+                .context
+                .as_ref()
+                .filter(|context| matches!(context, Read::Present { .. } | Read::Unreadable { .. }))
+            {
+                context::window(context, "    ", out)?;
             }
             if let Some(login) = &agent.codex_login {
                 provider::codex_login(login, "    ", out)?;

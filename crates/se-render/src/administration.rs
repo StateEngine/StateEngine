@@ -141,6 +141,9 @@ pub fn agent_status(value: &AgentStatusOutput, out: &mut impl Write) -> io::Resu
             if let Some(runtime) = &value.acp_runtime {
                 super::acp::runtime(runtime, "", out)?;
             }
+            if let Some(context) = &value.context {
+                super::read::context::window(context, "", out)?;
+            }
             writeln!(out, "Conversation: {}", value.conversation.state)?;
             if let Some(conversation) = &value.conversation.id {
                 writeln!(out, "Conversation ID: {conversation}")?;

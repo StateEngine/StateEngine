@@ -178,8 +178,10 @@ impl Session {
         let update = params
             .get("update")
             .ok_or_else(|| failure("ACP update", "update absent"))?;
-        if update.get("sessionUpdate").and_then(Value::as_str) == Some("current_mode_update") {
-            update_mode(&mut state, update)?;
+        match update.get("sessionUpdate").and_then(Value::as_str) {
+            Some("current_mode_update") => update_mode(&mut state, update)?,
+            Some("usage_update") => update_usage(&mut state, update),
+            _ => {}
         }
         if state.loading.is_some() {
             update_history(&mut state, update)?;
@@ -231,6 +233,20 @@ fn update_mode(state: &mut State, update: &Value) -> Result<()> {
     }
     state.current_mode = mode.map(str::to_owned);
     Ok(())
+}
+
+/// `used` is what the session's context holds and `size` its whole window; both
+/// are required, so an update missing either reports nothing.
+fn update_usage(state: &mut State, update: &Value) {
+    if let (Some(used), Some(size)) = (
+        update.get("used").and_then(Value::as_u64),
+        update.get("size").and_then(Value::as_u64),
+    ) {
+        state.context = Some(crate::harness::context_usage::ContextUsage::now(
+            used,
+            Some(size),
+        ));
+    }
 }
 
 fn update_history(state: &mut State, update: &Value) -> Result<()> {

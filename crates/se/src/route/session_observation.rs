@@ -91,6 +91,31 @@ fn rows(output: &AnyOutput) -> Vec<&AgentRow> {
         _ => vec![],
     }
 }
+/// The owning runtime's token usage for this exact session, or why it is
+/// missing. SE Code sessions report none, so their rows keep what they had.
+fn joined_context(
+    row: &AgentRow,
+    observed: &std::result::Result<Vec<&AgentRow>, &SeError>,
+) -> Option<Read<se_core::ops::ContextWindowView>> {
+    if row.provider == se_types::Provider::SeCode {
+        return row.context.clone();
+    }
+    Some(match observed {
+        Ok(rows) => rows
+            .iter()
+            .find(|other| other.id == row.id && other.session.session_id == row.session.session_id)
+            .and_then(|other| other.context.clone())
+            .unwrap_or_else(|| Read::Unknown {
+                what: "The owning runtime did not report token usage for this exact session."
+                    .into(),
+            }),
+        Err(error) => Read::Unreadable {
+            source: "provider token usage".into(),
+            reason: error.to_string(),
+            error: Some(Box::new(error.body.clone())),
+        },
+    })
+}
 /// Preserve the CLI's independent native observation and join only the same
 /// session's authenticated runtime facts after its store snapshot has closed.
 pub(super) fn merge_runtime_observation(
@@ -99,6 +124,7 @@ pub(super) fn merge_runtime_observation(
 ) -> Result<AnyOutput> {
     let observed = live.as_ref().map(rows);
     let mut apply = |row: &mut AgentRow| -> Result<()> {
+        row.context = joined_context(row, &observed);
         if matches!(
             row.provider,
             se_types::Provider::Claude | se_types::Provider::Codex
