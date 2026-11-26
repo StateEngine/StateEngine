@@ -76,9 +76,24 @@ omitting `--resume`. Sign in and select a model using that agent's own setup.
 The native agent owns its permissions and sandboxing. StateEngine does not add an
 execution sandbox or network restriction to the protocol, so choose the agent's
 native permission level explicitly. The saved `approval = "never"` setting allows
-protocol permission requests; other approval settings refuse them with a reason,
-because a headless approval interface is not implemented yet. A protocol mode or
-saved StateEngine profile does not establish OS containment.
+each protocol permission request once; it never selects a persistent "always allow"
+option. Other approval settings refuse them with a reason, because a headless
+approval interface is not implemented yet. `se init --harness` for a catalogue agent
+saves a `[profiles.protocol]` profile with `approval = "never"` and prints it when it
+is the first protocol agent and the shared profile is unchanged. Otherwise your
+`[providers.acp].profile` and its settings are kept, and init prints the profile the
+agent will use. A protocol mode or saved StateEngine profile does not establish OS
+containment.
+
+Agents that read files through their client instead of the disk can read text files
+through StateEngine. The path must lie inside the folder the conversation opened in,
+and every part of it is opened without following a link, so links and `..` are
+refused even when they point back inside. One protocol message carries at most
+1 MiB: a read whose text would not fit is refused and names the `line` and `limit`
+that read it in parts, and files over 4 MiB are not read. StateEngine does not offer
+file writes or terminals to protocol agents; those calls get the standard
+unavailable reply. This limits what StateEngine does for the agent; it is not a
+sandbox around the agent.
 
 After installing and configuring a protocol agent, add these sections to the
 existing configuration. Replace `protocol-agent` with its native executable,
@@ -121,26 +136,54 @@ se launch main --resume --detach
 Launch and status disclose that the native agent owns its policy. Status shows
 current activity and any permission refusal; streamed text is explicitly provisional
 until the completed turn appears in saved history. Resume loads the same conversation
-and compares its complete text with captured history before offering new input. A
-missing, changed, erased or oversized history refuses resume instead of silently
-starting over. If capture was disabled, omit `--resume` for a fresh conversation.
+and, before offering new input, checks that it ends with the latest captured exchange
+(the last user message and every reply after it). Earlier messages, such as a banner
+or a compaction summary, are not compared. A missing, changed, erased or oversized
+latest exchange refuses resume instead of silently starting over. If capture was
+disabled, omit `--resume` for a fresh conversation.
 
 ## Named harnesses
 
 `se init --harness NAME` selects `claude`, `codex` or `secode` without a
-configuration edit. For an installed, signed-in `qwen-code`, `goose` or `hermes`,
-init detects the installed executable and any package entrypoint, then saves the
-shared protocol descriptor automatically. Missing or unreadable installations refuse
+configuration edit. For an installed, signed-in `qwen-code`, `goose`, `hermes`,
+`opencode`, `gemini`, `kimi`, `auggie` or `cline`, init detects the installed
+executable and any package entrypoint, then saves the shared protocol descriptor
+automatically. Missing or unreadable installations refuse
 with their actual cause and a native setup link. Init does not install software or
 sign in to a provider, and saving the descriptor does not establish a successful
 launch: the normal launch still verifies native capabilities and readiness. Existing
 named entries take precedence over catalogue names and keep their original command
 and permission choices.
 
-Several installed protocol agents can share the same adapter. Give each one a named
-entry in `config.toml`, with an explicit mapping for every launch profile it uses.
-This example maps `protocol-work` to the agent's announced native mode; replace the
-command and arguments with the installed agent's documented values:
+A catalogue descriptor's `environment` lists only that agent's own documented variable
+names (for example `GEMINI_API_KEY` for `gemini`). StateEngine saves the names, never
+values, and you can add or remove names there. Every protocol agent also inherits the
+proxy and TLS trust variables (`HTTPS_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`,
+`NODE_EXTRA_CA_CERTS` and related), including through the background runtime.
+
+For any other installed protocol agent, register it from your own terminal without
+editing the file by hand:
+
+```sh
+se down
+se harness add my-agent --command protocol-agent --arg=--acp --env OPENAI_API_KEY
+se up
+se agent add helper --harness my-agent
+```
+
+`se harness add` appends `[harnesses.my-agent]` to `config.toml`, keeping the existing
+contents, and maps the `[providers.acp].profile` launch profile to the agent's native
+default. A running host keeps the configuration it started with, so registration
+refuses while one runs. `se down` stops the host and the agents it manages; their
+saved conversations stay, and `se up` starts it again with the new entry.
+Registration also works before `se init`. `--env` lists variable names only; values
+stay in your environment. The command must already be installed, built-in provider
+names are refused, and an existing entry is never replaced.
+
+To write the entry yourself, or to give several installed protocol agents the same
+adapter, add a named entry to `config.toml` with an explicit mapping for every launch
+profile it uses. This example maps `protocol-work` to the agent's announced native
+mode; replace the command and arguments with the installed agent's documented values:
 
 ```toml
 [harnesses.my-agent]

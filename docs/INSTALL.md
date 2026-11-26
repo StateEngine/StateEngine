@@ -59,6 +59,26 @@ works.
 Run the installer as your normal user, without privilege elevation. Installation
 neither starts a service nor configures a provider.
 
+To put `se` on PATH, the installer saves a marked block in your login shell's startup
+files (`~/.profile` and your bash or zsh files, or a fish `conf.d` file) on Linux and
+macOS, or in your user PATH on Windows. Shells it can't edit safely, and links in
+place of those files, get the exact line to add yourself instead. To change no
+startup file or PATH at all, pass the opt-out flag; the installer then prints the line
+to add:
+
+```sh
+curl --proto '=https' --proto-redir '=https' -fsSL https://github.com/StateEngine/StateEngine/releases/latest/download/install.sh | sh -s -- --no-modify-path
+```
+
+```powershell
+& ([scriptblock]::Create((irm https://github.com/StateEngine/StateEngine/releases/latest/download/install.ps1))) -NoModifyPath
+```
+
+The extracted archive's installers take the same flags:
+`sh ./install.sh --no-modify-path` or `.\install.ps1 -NoModifyPath`. Retrying an
+interrupted upgrade keeps the PATH choice it started with. `se uninstall` removes only
+the block it added and keeps a block you have edited, naming it in its report.
+
 After it finishes, run the absolute `se --version` command the installer prints. Then
 add the printed folder to PATH for the current terminal (see the PATH lines under the
 manual install below) or open a fresh login terminal, which loads the installer's saved

@@ -14,7 +14,8 @@ It ships as one native `se` binary for Linux, macOS and Windows.
 - **Conversations that survive.** Every agent's work is saved. `se stop main` today,
   `se launch main --resume` tomorrow, and the same provider conversation continues.
 - **Any agent, one workflow.** Claude Code and Codex out of the box, plus Qwen Code,
-  Goose, Hermes or any agent that speaks the Agent Client Protocol (ACP).
+  Goose, Hermes, OpenCode, Gemini, Kimi, Auggie, Cline or any agent that speaks the
+  Agent Client Protocol (ACP).
 - **One-line MCP server.** `se mcp` gives any MCP-capable tool StateEngine's tools
   over stdio: status, mail, resume, assignments, Atlas code navigation and more.
 - **A crew, not a single chat.** Saved agents send each other mail, a captain receives
@@ -161,8 +162,10 @@ se atlas changes --since 10m         # what changed recently
 ```
 
 Results are compact pointers (file and line range, with size when verified), so agents
-read only the source they need. Agents get the same queries as MCP tools. Atlas is on by
-default and runs on Linux, macOS and Windows.
+read only the source they need. Agents get the same queries as MCP tools, and before an
+edit their searches and file reads also receive a few lines of indexed context
+(`hooks = false` in `[atlas]` turns that off). Atlas is on by default and runs on Linux,
+macOS and Windows.
 
 ## Adopt sessions you already run
 
@@ -180,11 +183,12 @@ Details: [docs/USING.md](docs/USING.md#adopting-sessions-you-start-yourself).
 ## Other agents and custom harnesses
 
 ```sh
-se init --harness qwen-code          # or goose, hermes; detected when installed and signed in
+se init --harness qwen-code   # or goose, hermes, opencode, gemini, kimi, auggie, cline
 ```
 
-Other agents that speak ACP version 1 over stdio can be added as a named harness in
-`config.toml`, then selected with `se agent add NAME --harness HARNESS`. StateEngine
+Catalogue agents are detected when installed and signed in. Register any other agent
+that speaks ACP version 1 over stdio with `se harness add NAME --command COMMAND`, then
+select it with `se agent add NAME --harness HARNESS`. StateEngine
 gives them its tools over HTTP MCP when the agent supports it, and otherwise through
 `se mcp --stdio`. Resuming a saved conversation also requires the agent
 to support loading sessions. Saved agents can also pin their own model, endpoint and

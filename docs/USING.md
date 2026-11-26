@@ -123,6 +123,9 @@ hooks, models, permissions and settings text. Codex adoption installs its hooks 
 `config.toml` and trusts only those exact definitions through the provider's discovery
 hashes. For Claude, review and trust the new hooks in the provider's own prompt.
 Status keeps capture and mail unconfirmed until an authenticated hook runs.
+Running `se init --adopt` again after an upgrade adds only hooks for events the
+installation has never had, such as the Atlas context hook, and leaves edited entries
+as they are.
 
 Only explicitly registered project roots participate. Adopted sessions appear with the
 `observed` surface in status. Incoming mail uses the provider's native wake or input
@@ -138,12 +141,21 @@ printed by `se status` (or the file selected by `SE_CONFIG`), set `enabled = tru
 `[atlas]`, then run `se down` and `se up` with the same `--home` you normally use.
 `se config set` changes saved agent settings only.
 
-Run `se atlas` for the find, refs, impact, changes and outline commands; `se status`
-reports preparation and partial coverage. `se atlas changes` takes `--since` with a
+Run `se atlas` for the find, refs, impact, changes and outline commands; they start
+the host if it is not running, and `se status` reports preparation and partial
+coverage. `se atlas changes` takes `--since` with a
 duration (`10m`), an ISO UTC time, a commit SHA, a cursor or Unix milliseconds.
 Answers are compact pointers: a line range and byte count show how much source a target
-contains before you read it. JSON retains the full span and byte offsets. Unverified or
-unavailable extents say `size unavailable`; stale revisions stay labelled.
+contains before you read it. JSON retains the full span and byte offsets. An extent
+that was not measured shows no byte count; stale revisions stay labelled.
+
+Launched agents are told to use Atlas before editing shared code. With `hooks = true`
+in `[atlas]` (the default), a search or single-file read also receives a few lines of
+indexed context first, for launched agents and for sessions adopted with
+`se init --adopt` (an adoption made by an earlier version keeps its hooks unchanged
+until you run `se init --adopt` again). A hook that has no confident answer within its
+deadline (75 ms, or 100 ms on Windows) adds nothing and never blocks the tool call.
+Set `hooks = false` to turn this off.
 
 ## Messages, captain and assignments
 
@@ -177,9 +189,10 @@ schema atlas.refs --json`; without `--json` it prints only the operation names. 
   Launch starts fresh with StateEngine context. `resume: true` reopens the latest saved
   provider conversation; `resume: "session-id"` selects a saved session. `force`
   explicitly consents to stopping the existing lifecycle and jobs.
-- Atlas targets retain their tagged JSON shape, such as
-  `{"Symbol":{"Name":{"name":"authenticate"}}}` or `{"File":"src/auth.rs"}`. Its
-  `root` selects a registered worktree, and `regex` searches live source with a
+- An Atlas `target` is a plain path, `path:line` or symbol name, such as
+  `"src/auth.rs"` or `"authenticate"`. The tagged forms
+  `{"Symbol":{"Name":{"name":"authenticate"}}}` and `{"File":"src/auth.rs"}` narrow a
+  symbol or force a file. Its `root` selects a registered worktree, and `regex` searches live source with a
   case-sensitive expression (`(?i)` ignores case). Remote watch's `measure` reports
   producer age at release, not a guaranteed delivery-latency bound.
 
