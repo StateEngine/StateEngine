@@ -5,13 +5,15 @@ use crate::{connection::payload, error::*, identity::key, *};
 use rusqlite::{Connection, OptionalExtension};
 use se_types::EventId;
 
-/// The canonical manifest an erasure commits to before any body is removed.
+/// The canonical manifest an erasure commits to before any body is removed,
+/// with the backup generations its cleanup replaces once they were pinned.
 pub(crate) fn manifest(
     erasure: &RecordId,
     targets: &[EraseTarget],
     residuals: &[ResidualCopy],
+    generations: Option<&[RecordId]>,
 ) -> String {
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "erasure": uuid::Uuid::from_bytes(*erasure.as_bytes()).to_string(),
         "targets": targets.iter().map(|t| serde_json::json!({
             "event": t.event.as_str(),
@@ -22,8 +24,16 @@ pub(crate) fn manifest(
             "location": r.location,
             "reason": r.reason,
         })).collect::<Vec<_>>(),
-    })
-    .to_string()
+    });
+    if let Some(generations) = generations {
+        value["generations"] = serde_json::json!(
+            generations
+                .iter()
+                .map(|id| uuid::Uuid::from_bytes(*id.as_bytes()).to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+    value.to_string()
 }
 fn erasure_key(erasure: &RecordId) -> StoreResult<Vec<u8>> {
     Ok(erasure.as_bytes().to_vec())
@@ -34,13 +44,23 @@ pub(crate) fn requested(
     erasure: &RecordId,
     targets: &[EraseTarget],
     residuals: &[ResidualCopy],
+    generations: Option<&[RecordId]>,
 ) -> StoreResult<()> {
-    if targets.is_empty() || targets.len() > 60 || residuals.len() > super::MAX_RESIDUALS {
+    if targets.is_empty()
+        || targets.len() > 60
+        || residuals.len() > super::MAX_RESIDUALS
+        || generations.is_some_and(|g| g.len() > super::MAX_RESIDUALS)
+    {
         return Err(invalid(
-            "erasure needs 1..60 targets and at most 64 residuals",
+            "erasure needs 1..60 targets and at most 64 residuals and backup generations",
         ));
     }
-    let manifest = payload(c, seq, "manifest", &manifest(erasure, targets, residuals))?;
+    let manifest = payload(
+        c,
+        seq,
+        "manifest",
+        &manifest(erasure, targets, residuals, generations),
+    )?;
     c.execute(
         "INSERT INTO erasures(erasure_id,requested_seq,completed_seq,manifest_payload) VALUES(?,?,NULL,?)",
         crate::sql_value::sql_params![erasure_key(erasure)?, seq, manifest],

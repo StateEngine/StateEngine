@@ -107,10 +107,15 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
             erasure,
             targets,
             residuals,
-        } => (
-            "erasure.requested",
-            json!({"erasure":erasure,"targets":targets.iter().map(|v|json!({"event":v.event,"expected":v.expected})).collect::<Vec<_>>(),"residuals":residuals.iter().map(|v|json!({"custodian":v.custodian,"location":v.location,"reason":v.reason})).collect::<Vec<_>>()}),
-        ),
+            generations,
+        } => {
+            let mut value = json!({"erasure":erasure,"targets":targets.iter().map(|v|json!({"event":v.event,"expected":v.expected})).collect::<Vec<_>>(),"residuals":residuals.iter().map(|v|json!({"custodian":v.custodian,"location":v.location,"reason":v.reason})).collect::<Vec<_>>()});
+            // Requests recorded before generations were pinned keep their exact form.
+            if let Some(generations) = generations {
+                value["generations"] = json!(generations);
+            }
+            ("erasure.requested", value)
+        }
         ErasureCompleted {
             erasure,
             manifest_sha256,
@@ -246,7 +251,14 @@ fn erasure_requested(v: &Value) -> StoreResult<EventBody<StoredText>> {
     use EventBody::*;
     let targets: Vec<Value> = field(v, "targets")?;
     let residuals: Vec<Value> = field(v, "residuals")?;
-    if targets.len() > 60 || residuals.len() > 64 {
+    let generations: Option<Vec<RecordId>> = v
+        .get("generations")
+        .map(|_| field(v, "generations"))
+        .transpose()?;
+    if targets.len() > 60
+        || residuals.len() > 64
+        || generations.as_ref().is_some_and(|g| g.len() > 64)
+    {
         return Err(invalid("stored erasure inventory exceeds bounds"));
     }
     Ok(ErasureRequested {
@@ -270,6 +282,7 @@ fn erasure_requested(v: &Value) -> StoreResult<EventBody<StoredText>> {
                 })
             })
             .collect::<StoreResult<_>>()?,
+        generations,
     })
 }
 

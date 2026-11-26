@@ -5,7 +5,9 @@ use crate::client::lease::Deadline;
 use se_core::{
     ops::{
         AnyOutput, ErasureReceipt, StoreForget,
-        store_forget::{ForgetNext, ForgetResidual, ForgetTarget, confirm, plan_digest},
+        store_forget::{
+            BoundCopy, ForgetNext, ForgetResidual, ForgetTarget, confirm, exact_path, plan_digest,
+        },
     },
     scope,
     store_error::store_error,
@@ -23,22 +25,48 @@ fn receipt(input: &StoreForget, plan: &ErasurePlan, outcome: &str) -> Result<Era
             revision: t.expected.value.get(),
         })
         .collect();
+    let shown: Vec<String> = plan
+        .residuals
+        .iter()
+        .map(|r| Ok(r.location.to_local()?.display().to_string()))
+        .collect::<Result<_>>()?;
+    // A path shown like a different one also names its exact form, so the owner
+    // can tell apart the copies the digest binds.
     let residuals: Vec<ForgetResidual> = plan
         .residuals
         .iter()
-        .map(|r| {
-            Ok(ForgetResidual {
+        .zip(&shown)
+        .map(|(r, text)| {
+            let alike = plan
+                .residuals
+                .iter()
+                .zip(&shown)
+                .any(|(other, other_text)| other_text == text && other.location != r.location);
+            ForgetResidual {
                 custodian: r.custodian.clone(),
-                location: r.location.to_local()?.display().to_string(),
+                location: if alike {
+                    format!("{text} (exact path {})", exact_path(&r.location))
+                } else {
+                    text.clone()
+                },
                 reason: r.reason.clone(),
-            })
+            }
         })
-        .collect::<Result<_>>()?;
+        .collect();
+    let bound: Vec<BoundCopy<'_>> = plan
+        .residuals
+        .iter()
+        .map(|r| BoundCopy {
+            custodian: &r.custodian,
+            location: &r.location,
+            reason: &r.reason,
+        })
+        .collect();
     Ok(ErasureReceipt {
         idempotency_key: input.idempotency_key.clone(),
         outcome: outcome.into(),
         erasure: se_types::hex_lower(plan.id.as_bytes()),
-        plan: plan_digest(&targets, &residuals),
+        plan: plan_digest(&targets, &bound),
         targets,
         backups_replaced: plan.owned_generations.len(),
         required_bytes: plan.required_bytes,

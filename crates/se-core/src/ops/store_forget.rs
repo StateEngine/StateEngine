@@ -87,12 +87,29 @@ impl ErasureReceipt {
 }
 /// What no residual list can cover, stated on every plan and receipt.
 pub const UNLISTED: &str = "Text already shown or relayed elsewhere, such as a phone channel, a remote device or a provider's own records, is not listed and cannot be erased here.";
-/// What a confirmation binds: each target revision and every copy that will remain.
-pub fn plan_digest(targets: &[ForgetTarget], residuals: &[ForgetResidual]) -> String {
+/// One copy a confirmation binds, located by its exact native path.
+pub struct BoundCopy<'a> {
+    pub custodian: &'a str,
+    pub location: &'a se_types::NativePath,
+    pub reason: &'a str,
+}
+/// A lossless text form of a native path: its exact bytes, or UTF-16 units, in hex.
+pub fn exact_path(path: &se_types::NativePath) -> String {
+    match path.encoded() {
+        se_types::PathEncoding::UnixBytes(bytes) => format!("unix:{}", se_types::hex_lower(bytes)),
+        se_types::PathEncoding::WindowsUtf16(units) => {
+            let bytes: Vec<u8> = units.iter().flat_map(|unit| unit.to_be_bytes()).collect();
+            format!("windows:{}", se_types::hex_lower(&bytes))
+        }
+    }
+}
+/// What a confirmation binds: each target revision and every copy that will remain,
+/// by exact path, so two paths that display alike never share a digest.
+pub fn plan_digest(targets: &[ForgetTarget], residuals: &[BoundCopy<'_>]) -> String {
     use sha2::{Digest, Sha256};
     let mut copies: Vec<_> = residuals
         .iter()
-        .map(|r| (&r.custodian, &r.location, &r.reason))
+        .map(|r| (r.custodian, exact_path(r.location), r.reason))
         .collect();
     copies.sort();
     let mut hash = Sha256::new();

@@ -353,7 +353,15 @@ fn recorded(x: Ctx<'_>, body: EventBody<InputText>, lease: &LeaseIdentity) -> St
             erasure,
             targets,
             residuals,
-        } => crate::erasure::apply::requested(c, seq, &erasure, &targets, &residuals)?,
+            generations,
+        } => crate::erasure::apply::requested(
+            c,
+            seq,
+            &erasure,
+            &targets,
+            &residuals,
+            generations.as_deref(),
+        )?,
         TurnErased {
             target,
             erasure,
