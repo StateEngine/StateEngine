@@ -279,7 +279,7 @@ fn startup_failure(
             let until = bound
                 .at()
                 .min(std::time::Instant::now() + Duration::from_millis(100));
-            let (observed, no_reported_failure) = match child.startup_stderr(until) {
+            let (observed, no_reported_failure, changed) = match child.startup_stderr(until) {
                 Ok(stderr) => (
                     format!(
                         "child startup stderr (complete={}, truncated={}, read_failure={:?}): {}",
@@ -292,16 +292,17 @@ fn startup_failure(
                         && !stderr.truncated
                         && stderr.failure.is_none()
                         && !stderr.complete,
+                    stderr.reports_stage(super::child::CONFIGURATION_CHANGED_STAGE),
                 ),
                 Err(failure) => (
                     format!("child startup stderr unreadable: {failure:?}"),
                     false,
+                    false,
                 ),
             };
-            // The child's typed configuration conflict keeps its kind and remedy.
-            if !no_reported_failure
-                && observed.contains(&format!("[{}] ", super::child::CONFIGURATION_CHANGED_STAGE))
-            {
+            // The child's typed configuration conflict keeps its kind and remedy;
+            // only its framed stage decides that, never text inside a refusal.
+            if changed {
                 super::child::configuration_changed().with_cause(error)
             } else {
                 let timed_out = matches!(

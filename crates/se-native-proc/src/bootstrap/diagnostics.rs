@@ -17,6 +17,23 @@ pub struct RuntimeStartupStderr {
     /// A read failure preserves the collected tail and remains distinct from EOF.
     pub failure: Option<ProcError>,
 }
+impl RuntimeStartupStderr {
+    /// Whether the last complete public refusal was framed with `stage`. Refusal
+    /// text keeps every continuation line indented, so neither it nor earlier
+    /// stderr output can start the final record; only the frame itself can.
+    pub fn reports_stage(&self, stage: &str) -> bool {
+        let Some(text) = self.bytes.strip_suffix(b"\n") else {
+            return false;
+        };
+        text.split(|byte| *byte == b'\n')
+            .rev()
+            .find(|line| !line.starts_with(CONTINUATION.as_bytes()))
+            .is_some_and(|frame| frame.starts_with(format!("[{stage}] ").as_bytes()))
+    }
+}
+
+/// The indent each refusal line after the first carries inside its frame.
+const CONTINUATION: &str = "  ";
 
 pub(super) enum ReadResult {
     Bytes(usize),
@@ -154,23 +171,29 @@ pub(super) fn public_line(stage: &str, refusal: &str) -> ProcResult<Vec<u8>> {
             "1..128 printable ASCII bytes required",
         ));
     }
+    let mut body = String::with_capacity(refusal.len());
+    for character in refusal.chars() {
+        match character {
+            '\n' => {
+                body.push('\n');
+                body.push_str(CONTINUATION);
+            }
+            '\t' => body.push('\t'),
+            character if character.is_control() => body.push('?'),
+            character => body.push(character),
+        }
+    }
     let mut text = format!("[{stage}] ");
     let remaining = CAPACITY - text.len() - 1;
     let mut start = 0;
-    if refusal.len() > remaining {
+    if body.len() > remaining {
         text.push_str("[earlier public refusal text omitted] ");
-        start = refusal.len().saturating_sub(CAPACITY - text.len() - 1);
-        while !refusal.is_char_boundary(start) {
+        start = body.len().saturating_sub(CAPACITY - text.len() - 1);
+        while !body.is_char_boundary(start) {
             start += 1;
         }
     }
-    for character in refusal[start..].chars() {
-        if character.is_control() && character != '\n' && character != '\t' {
-            text.push('?');
-        } else {
-            text.push(character);
-        }
-    }
+    text.push_str(&body[start..]);
     text.push('\n');
     Ok(text.into_bytes())
 }
