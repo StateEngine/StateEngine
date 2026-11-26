@@ -372,32 +372,74 @@ pub(in crate::state_files) fn ensure_user_directory(path: &Path) -> Result<()> {
 }
 
 /// Exclusively create a new regular file in a user-owned external directory
-/// without requiring `0700` on the parent directory.
+/// without requiring `0700` on the parent directory. Stages and syncs under
+/// the pinned parent before publishing atomically without replacement so a
+/// mid-write failure never leaves an incomplete final file behind.
 pub(in crate::state_files) fn create_new_file(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
     let dir = path
         .parent()
         .ok_or_else(|| unsafe_path("cannot create file at filesystem root", path))?;
     ensure_user_directory(dir)?;
     let (parent_dir, leaf) = parent(path)?;
+    let staging_name = std::ffi::CString::new(format!(
+        ".se-new-{}-{}.tmp",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ))
+    .map_err(|_| unsafe_path("invalid staging name", path))?;
     let mut file = owned(
-        // SAFETY: held parent directory fd and literal NUL-terminated leaf name;
-        // O_CREAT | O_EXCL | O_NOFOLLOW refuses existing files and symlinks.
+        // SAFETY: held parent directory fd and literal NUL-terminated staging
+        // name; O_CREAT | O_EXCL | O_NOFOLLOW refuses collisions and symlinks.
         unsafe {
             libc::openat(
                 parent_dir.as_raw_fd(),
-                leaf.as_ptr(),
+                staging_name.as_ptr(),
                 libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
                 0o600,
             )
         },
-        "create user file",
+        "create staged user file",
         path,
     )?;
-    file.write_all(bytes)
-        .map_err(|e| io_error("write new user file", path, e))?;
-    file.sync_all()
-        .map_err(|e| io_error("sync new user file", path, e))?;
+    let write_res = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| io_error("write new user file", path, e));
+    drop(file);
+    if let Err(error) = write_res {
+        // SAFETY: held parent directory fd and literal staging name we created.
+        unsafe {
+            libc::unlinkat(parent_dir.as_raw_fd(), staging_name.as_ptr(), 0);
+        }
+        return Err(error);
+    }
+    // SAFETY: held parent directory fd and literal staging/leaf names; linkat
+    // publishes atomically and fails with EEXIST if leaf already exists.
+    let linked = unsafe {
+        libc::linkat(
+            parent_dir.as_raw_fd(),
+            staging_name.as_ptr(),
+            parent_dir.as_raw_fd(),
+            leaf.as_ptr(),
+            0,
+        )
+    };
+    let link_err = if linked < 0 {
+        Some(io::Error::last_os_error())
+    } else {
+        None
+    };
+    // SAFETY: remove the temporary staging link regardless of linkat outcome.
+    unsafe {
+        libc::unlinkat(parent_dir.as_raw_fd(), staging_name.as_ptr(), 0);
+    }
+    if let Some(err) = link_err {
+        return Err(io_error("publish new user file", path, err));
+    }
     parent_dir
         .sync_all()
         .map_err(|e| io_error("sync user file parent", dir, e))?;

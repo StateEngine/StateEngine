@@ -351,7 +351,7 @@ fn eligible_broker_runtime_outlives_strict_job_and_public_down_closes_it() -> Re
 }
 
 #[test]
-fn enclosing_job_detaches_with_session_only_until_public_down() -> Result {
+fn no_eligible_broker_uses_reported_foreground_until_public_down() -> Result {
     let mut f = Fixture::new("enclosing-job")?;
     f.run_strict(true)?;
     assert!(

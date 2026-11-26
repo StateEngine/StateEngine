@@ -101,14 +101,14 @@ mod judge {
             use windows_sys::Win32::System::{
                 JobObjects::IsProcessInJob, Threading::GetCurrentProcess,
             };
-            let mut member = 1;
+            let mut member = 0;
             // SAFETY: current-process query and writable BOOL; null tests every job.
             require(
                 // SAFETY: retained process reference and writable native membership output.
                 unsafe { IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &mut member) }
                     != 0
-                    && member == 0,
-                "broker child still belongs to a Windows job",
+                    && member != 0,
+                "enclosing-job child did not remain inside the caller Windows job",
             )?;
             std::thread::sleep(Duration::from_millis(500));
         }

@@ -64,10 +64,25 @@ public static class StrictJobFixture {
       throw new Exception("fixture has no removable non-filesystem privilege; refusing to remove SeChangeNotifyPrivilege");
     } finally { CloseHandle(token); }
   }
-  public static IntPtr Enter() {
+  [DllImport("kernel32.dll", SetLastError=true)]
+  static extern bool SetInformationJobObject(IntPtr job, int infoClass, IntPtr info, uint length);
+  public static IntPtr Enter(bool killOnClose) {
     // No BREAKAWAY_OK/SILENT_BREAKAWAY_OK. Only this dedicated shell and children enter.
     IntPtr job = CreateJobObjectW(IntPtr.Zero, null);
     Require(job!=IntPtr.Zero,"create private strict job");
+    if (killOnClose) {
+      // JOBOBJECT_EXTENDED_LIMIT_INFORMATION (class 9): BasicLimitInformation.LimitFlags
+      // sits at offset 16 (on 64-bit) with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000.
+      int size = 144;
+      IntPtr buf = Marshal.AllocHGlobal(size);
+      try {
+        for (int i = 0; i < size; i++) Marshal.WriteByte(buf, i, 0);
+        Marshal.WriteInt32(buf, 16, 0x2000);
+        if (!SetInformationJobObject(job, 9, buf, (uint)size)) {
+          int code = Marshal.GetLastWin32Error(); CloseHandle(job); throw new System.ComponentModel.Win32Exception(code, "configure kill-on-job-close");
+        }
+      } finally { Marshal.FreeHGlobal(buf); }
+    }
     if (!AssignProcessToJobObject(job, GetCurrentProcess())) {
       int code=Marshal.GetLastWin32Error(); CloseHandle(job); throw new System.ComponentModel.Win32Exception(code);
     }
@@ -101,7 +116,7 @@ function Invoke-OwnedCli([string]$Verb) {
     return @{exit=$process.ExitCode; stdout=$output.Result; stderr=$errors.Result}
   } finally { $process.Dispose() }
 }
-$job = [StrictJobFixture]::Enter()
+$job = [StrictJobFixture]::Enter([bool]$NoEligibleBroker)
 try {
   $witness = @{caller_in_job_before=[StrictJobFixture]::CallerInJob($job); privilege_removed=($null -ne $removedPrivilege); removed_privilege=$removedPrivilege; home_readable_after_restriction=$true; restricting_sids=[StrictJobFixture]::CallerRestricted(); enclosing_job_cases=@()}
   foreach ($mode in @('json','plain')) {

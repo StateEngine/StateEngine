@@ -135,7 +135,7 @@ pub(super) unsafe fn die_in_child(error_fd: i32, number: i32) -> ! {
     }
 }
 /// Close every descriptor >= 3 outside `kept` using close_range with fallback.
-unsafe fn close_unkept_fds(kept: &[i32], fd_limit: i32, error_fd: i32) {
+unsafe fn close_unkept_fds(kept: &[i32], _fd_limit: i32, error_fd: i32) {
     // SAFETY: fork child uses only async-signal-safe syscalls on prepared slice.
     unsafe {
         let mut low = 3;
@@ -153,15 +153,68 @@ unsafe fn close_unkept_fds(kept: &[i32], fd_limit: i32, error_fd: i32) {
                 if err != libc::ENOSYS && err != libc::EPERM && err != libc::EINVAL {
                     die_in_child(error_fd, err);
                 }
-                for descriptor in 3..fd_limit {
-                    if !kept.contains(&descriptor) {
-                        libc::close(descriptor);
-                    }
-                }
+                close_unkept_from_proc(kept, error_fd);
                 break;
             }
             low = high.saturating_add(2);
         }
+    }
+}
+/// Async-signal-safe fallback when `close_range` is unavailable or blocked by
+/// container seccomp (`EPERM`/`ENOSYS`/`EINVAL`): enumerate `/proc/self/fd` via
+/// `getdents64` on a stack buffer so every open descriptor—including any above
+/// a lowered `RLIMIT_NOFILE` soft limit—is closed, or refuse if unprovable.
+unsafe fn close_unkept_from_proc(kept: &[i32], error_fd: i32) {
+    // SAFETY: pure async-signal-safe syscalls with a stack buffer; no allocator.
+    unsafe {
+        let dir_fd = libc::open(
+            c"/proc/self/fd".as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        );
+        if dir_fd < 0 {
+            die_in_child(error_fd, *libc::__errno_location());
+        }
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = libc::syscall(libc::SYS_getdents64, dir_fd, buf.as_mut_ptr(), buf.len());
+            if n < 0 {
+                let err = *libc::__errno_location();
+                libc::close(dir_fd);
+                die_in_child(error_fd, err);
+            }
+            if n == 0 {
+                break;
+            }
+            let total = n as usize;
+            let mut pos = 0usize;
+            while pos + 19 <= total {
+                let reclen = u16::from_ne_bytes([buf[pos + 16], buf[pos + 17]]) as usize;
+                if reclen < 19 || pos + reclen > total {
+                    libc::close(dir_fd);
+                    die_in_child(error_fd, libc::EIO);
+                }
+                let name = &buf[pos + 19..pos + reclen];
+                let mut fd: i32 = 0;
+                let mut valid = false;
+                for &b in name {
+                    if b == 0 {
+                        break;
+                    }
+                    if b.is_ascii_digit() {
+                        valid = true;
+                        fd = fd.saturating_mul(10).saturating_add((b - b'0') as i32);
+                    } else {
+                        valid = false;
+                        break;
+                    }
+                }
+                if valid && fd >= 3 && fd != dir_fd && !kept.contains(&fd) {
+                    libc::close(fd);
+                }
+                pos += reclen;
+            }
+        }
+        libc::close(dir_fd);
     }
 }
 /// Unblock all signals and restore default handlers in the fork child.

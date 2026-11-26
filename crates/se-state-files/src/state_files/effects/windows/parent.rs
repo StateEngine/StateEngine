@@ -29,28 +29,87 @@ impl Parent {
         Self::open_with_access(path, true)
     }
     pub(super) fn open_with_access(path: &Path, writable: bool) -> Result<Self> {
-        Self::walk(path, writable, true)
+        Self::walk(path, writable, true, true, false)
     }
     pub(super) fn open_for_permission_repair(path: &Path) -> Result<Self> {
-        Self::walk(path, false, false)
+        Self::walk(path, false, false, false, false)
     }
-    fn walk(path: &Path, writable: bool, allow_reparse: bool) -> Result<Self> {
+    /// Open (and optionally create missing tail directories of) an external
+    /// user-owned directory, verifying every pinned ancestor before creating
+    /// beneath it and always refusing a reparse point at the final directory.
+    pub(super) fn open_external(path: &Path, writable: bool, create_missing: bool) -> Result<Self> {
+        Self::walk(path, writable, true, false, create_missing)
+    }
+    fn open_component(
+        pins: &[File],
+        prefix: &Path,
+        normal_leaf: Option<&std::ffi::OsStr>,
+        create_missing: bool,
+    ) -> Result<File> {
+        match open(prefix, true, 0, false) {
+            Ok(file) => Ok(file),
+            Err(err) if create_missing && absent(&err) => {
+                let Some(leaf) = normal_leaf else {
+                    return Err(err);
+                };
+                let parent_handle = pins
+                    .last()
+                    .ok_or_else(|| unsafe_path("external ancestor pin missing", prefix))?;
+                let access = GENERIC_READ | GENERIC_WRITE | READ_CONTROL | SYNCHRONIZE;
+                // SAFETY: `None` security descriptor inherits the verified
+                // parent user directory's normal DACL under `parent_handle`.
+                match unsafe {
+                    created::create_directory_at_optional(parent_handle, leaf, prefix, None, access)
+                } {
+                    Ok(created_dir) => {
+                        created_dir
+                            .sync_all()
+                            .map_err(|e| io_error("flush created user directory", prefix, e))?;
+                        Ok(created_dir)
+                    }
+                    Err(mk_err)
+                        if mk_err
+                            .source
+                            .as_ref()
+                            .is_some_and(|cause| cause.kind() == io::ErrorKind::AlreadyExists) =>
+                    {
+                        open(prefix, true, 0, false)
+                    }
+                    Err(mk_err) => Err(mk_err),
+                }
+            }
+            Err(err) => Err(err),
+        }
+    }
+    fn walk(
+        path: &Path,
+        writable: bool,
+        allow_reparse: bool,
+        allow_final_reparse: bool,
+        create_missing: bool,
+    ) -> Result<Self> {
         wide(path)?;
+        let components: Vec<_> = path.components().collect();
         let mut prefix = PathBuf::new();
         let mut pins = Vec::new();
-        for component in path.components() {
-            match component {
+        for (index, component) in components.iter().enumerate() {
+            let final_component = index + 1 == components.len();
+            let normal_leaf = match component {
                 Component::Prefix(p) => {
                     prefix.push(p.as_os_str());
                     continue;
                 }
-                Component::RootDir => prefix.push(component.as_os_str()),
+                Component::RootDir => {
+                    prefix.push(component.as_os_str());
+                    None
+                }
                 Component::Normal(n) => {
                     prefix.push(n);
+                    Some(*n)
                 }
                 _ => return Err(unsafe_path("normalized installation parent required", path)),
-            }
-            let file = open(&prefix, true, 0, false)?;
+            };
+            let file = Self::open_component(&pins, &prefix, normal_leaf, create_missing)?;
             // SAFETY: native POD output and retained file handle.
             let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
             // SAFETY: correctly typed writable metadata buffer for this live handle.
@@ -58,9 +117,9 @@ impl Parent {
                 return Err(last("inspect installation ancestor", &prefix));
             }
             let file = if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-                if !allow_reparse {
+                if !allow_reparse || (final_component && !allow_final_reparse) {
                     return Err(unsafe_path(
-                        "permission repair refuses reparse ancestors",
+                        "directory custody refuses reparse point",
                         &prefix,
                     ));
                 }

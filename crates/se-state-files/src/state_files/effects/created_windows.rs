@@ -127,12 +127,29 @@ pub(in crate::state_files) fn prepare_created_directory(
 /// `FILE_CREATED`, so `path` may now exist and must be preserved.
 ///
 /// # Safety
-/// `descriptor` must hold a valid security descriptor for the whole call.
+/// `descriptor`, when `Some`, must hold a valid security descriptor for the whole call.
 pub unsafe fn create_directory_at(
     parent: &File,
     leaf: &std::ffi::OsStr,
     path: &Path,
     descriptor: &se_native_path::windows::allocation::Allocation,
+    access: u32,
+) -> Result<File> {
+    // SAFETY: caller guarantees `descriptor` is valid for the duration of the call.
+    unsafe { create_directory_at_optional(parent, leaf, path, Some(descriptor), access) }
+}
+
+/// Exclusively creates `leaf` beneath the held `parent` handle, optionally
+/// applying an explicit security descriptor (or inheriting the parent's normal
+/// user DACL when `descriptor` is `None`).
+///
+/// # Safety
+/// `descriptor`, when `Some`, must hold a valid security descriptor for the whole call.
+pub(in crate::state_files) unsafe fn create_directory_at_optional(
+    parent: &File,
+    leaf: &std::ffi::OsStr,
+    path: &Path,
+    descriptor: Option<&se_native_path::windows::allocation::Allocation>,
     access: u32,
 ) -> Result<File> {
     let mut units = literal_leaf(leaf, path)?;
@@ -146,7 +163,7 @@ pub unsafe fn create_directory_at(
         RootDirectory: parent.as_raw_handle(),
         ObjectName: &mut unicode,
         Attributes: 0x40, // OBJ_CASE_INSENSITIVE; no inherited handle or namespace escape.
-        SecurityDescriptor: descriptor.as_ptr().cast(),
+        SecurityDescriptor: descriptor.map_or(ptr::null_mut(), |d| d.as_ptr().cast()),
         SecurityQualityOfService: ptr::null_mut(),
     };
     let mut raw = ptr::null_mut();

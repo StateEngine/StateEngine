@@ -259,19 +259,17 @@ fn restore_from_files(
     if entry.digest != expected {
         return Ok(ImageCacheRead::Stale);
     };
-    // Verify running image continuity without retaining an open handle in the
-    // global cache; reusable keys (USN or NTFS ChangeTime) populate the cache.
+    // Keep the global cache handle-free and never promote an unqualified/legacy
+    // digest across keys: when an unqualified hint is read with a live peer,
+    // rehash the shared mapped image once (caching only if the live image has a
+    // qualified USN revision) and verify it matches `expected`.
     #[cfg(windows)]
-    if !entry.image.reusable()
-        && let Some(file) = peer.and_then(super::windows_peer::shared_mapped_image)
-        && let Ok(metadata) = file.metadata()
-        && let Ok(live_key) = key(&file, &metadata)
-        && live_key.reusable()
-    {
-        bound
-            .remaining()
-            .map_err(|e| error("finish executable cache restore", e))?;
-        remember(live_key, entry.digest)?;
+    if !entry.image.reusable() {
+        if let Some(file) = peer.and_then(super::windows_peer::shared_mapped_image)
+            && hash_image(file, bound)? != expected
+        {
+            return Ok(ImageCacheRead::Stale);
+        }
         return Ok(ImageCacheRead::Current);
     }
     #[cfg(not(windows))]
