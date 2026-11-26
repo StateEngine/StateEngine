@@ -18,8 +18,17 @@ pub(super) fn receive(guard: se_proc::RuntimeBootstrap) -> Result<u8> {
             Ok(remedy) => format!("{error}\n  fix: {}", remedy.text),
             Err(render_error) => format!("{error}\n  remedy unreadable: {render_error}"),
         };
+        let changed = matches!(
+            error.body.detail(),
+            se_types::Detail::StateConflict(conflict) if conflict.subject == "host configuration"
+        );
+        let stage = if changed {
+            CONFIGURATION_CHANGED_STAGE
+        } else {
+            "host preparation"
+        };
         bootstrap
-            .report_startup_failure("host preparation", &diagnostic)
+            .report_startup_failure(stage, &diagnostic)
             .map_err(native_error)?;
     }
     result
@@ -283,15 +292,21 @@ fn reselect(
     };
     let (config, jobs) = configure(home, configuration)?;
     if jobs != blocking_jobs || super::environment::selection(&config.value)? != expected {
-        return Err(se_types::SeError::new(se_types::Detail::StateConflict(
-            se_types::details::StateConflict {
-                subject: "host configuration".into(),
-                reason: "config.toml changed while the host was starting, so it would not run the saved file".into(),
-                next_step: "Run the command again; the host then starts from the saved configuration".into(),
-            },
-        )));
+        return Err(configuration_changed());
     }
     Ok(config)
+}
+/// The startup stage a detached host reports for [`configuration_changed`], so
+/// its starter returns the same typed conflict and remedy as a foreground host.
+pub(super) const CONFIGURATION_CHANGED_STAGE: &str = "host configuration changed";
+pub(super) fn configuration_changed() -> se_types::SeError {
+    se_types::SeError::new(se_types::Detail::StateConflict(
+        se_types::details::StateConflict {
+            subject: "host configuration".into(),
+            reason: "config.toml changed while the host was starting, so it would not run the saved file".into(),
+            next_step: "Run the command again; the host then starts from the saved configuration".into(),
+        },
+    ))
 }
 /// Loads and validates the selected configuration and resolves the blocking
 /// job budget before any native identity or runtime work begins.

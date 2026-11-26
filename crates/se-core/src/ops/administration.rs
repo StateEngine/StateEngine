@@ -168,24 +168,33 @@ impl Validate for HarnessAdd {
 }
 
 /// `--env` names a variable the agent may read; its value stays in the
-/// owner's environment and never enters `config.toml`.
+/// owner's environment and never enters `config.toml`. A rejected argument may
+/// hold a secret, so a refusal never repeats it: at most a valid name before `=`.
 fn environment_name(name: &str) -> Result<()> {
-    if name.contains('=') {
+    let valid = |text: &str| {
+        !text.is_empty()
+            && text.len() <= 128
+            && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    };
+    if let Some((before, _)) = name.split_once('=') {
+        let shown = if valid(before) {
+            format!("pass {before} without =value")
+        } else {
+            "pass only the variable name".to_owned()
+        };
         return Err(SeError::invalid(
             "--env",
             &format!(
-                "a variable name such as OPENAI_API_KEY, not NAME=value; {name:?} includes a value. Values stay in your environment, so pass only the name"
+                "a variable name such as OPENAI_API_KEY, not NAME=value; values stay in your environment, so {shown}. The value given was not saved or shown"
             ),
         ));
     }
-    if name.is_empty()
-        || name.len() > 128
-        || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-    {
+    if !valid(name) {
         return Err(SeError::invalid(
             "--env",
             &format!(
-                "a variable name of letters, digits and underscores, at most 128 bytes; {name:?} is not one"
+                "a variable name of letters, digits and underscores, at most 128 bytes; the {}-byte argument given is not one and was not saved or shown",
+                name.len()
             ),
         ));
     }

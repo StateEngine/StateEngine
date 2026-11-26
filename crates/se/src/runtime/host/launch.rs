@@ -298,20 +298,27 @@ fn startup_failure(
                     false,
                 ),
             };
-            let timed_out = matches!(
-                error.code(),
-                se_types::Code::DeadlineExceeded | se_types::Code::RuntimeStartPending
-            );
-            let diagnostic =
-                se_core::scope::unreadable("runtime startup", &format!("{error}; {observed}"))
-                    .with_cause(error);
-            if timed_out && no_reported_failure {
-                SeError::new(se_types::Detail::RuntimeStartPending(
-                    se_types::details::RuntimeStartPending { waited_ms: 0 },
-                ))
-                .with_cause(diagnostic)
+            // The child's typed configuration conflict keeps its kind and remedy.
+            if !no_reported_failure
+                && observed.contains(&format!("[{}] ", super::child::CONFIGURATION_CHANGED_STAGE))
+            {
+                super::child::configuration_changed().with_cause(error)
             } else {
-                diagnostic
+                let timed_out = matches!(
+                    error.code(),
+                    se_types::Code::DeadlineExceeded | se_types::Code::RuntimeStartPending
+                );
+                let diagnostic =
+                    se_core::scope::unreadable("runtime startup", &format!("{error}; {observed}"))
+                        .with_cause(error);
+                if timed_out && no_reported_failure {
+                    SeError::new(se_types::Detail::RuntimeStartPending(
+                        se_types::details::RuntimeStartPending { waited_ms: 0 },
+                    ))
+                    .with_cause(diagnostic)
+                } else {
+                    diagnostic
+                }
             }
         }
         None => error,
