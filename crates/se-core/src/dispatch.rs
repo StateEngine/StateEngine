@@ -1,19 +1,24 @@
 //! Owned planning facts and typed continuations; no writer, clock, RNG or read lease is retained.
-use crate::{
-    commit::*,
-    ops::{inputs::Validate, receipt::receipt_key},
-    scope,
-    store_error::store_error,
-};
+use crate::{commit::*, scope};
 use se_store::{
-    Actor, AtomicBatch, CommitReceipt, Door, EventBody, EventHeader, Expected, InputText,
-    IntentDigest, NewEvent, RequestIdentity, Revision, Snapshot,
+    Actor, AtomicBatch, CommitReceipt, Door, EventBody, EventHeader, InputText, IntentDigest,
+    NewEvent, RequestIdentity, Snapshot,
 };
 use se_types::{AgentId, EventId, IdempotencyKey, MessageId, Result, SeError};
 use sha2::{Digest, Sha256};
-use std::num::NonZeroU64;
+
+mod agents;
+mod core_ops;
+mod queries;
 mod refusals;
+
+use agents::*;
+use core_ops::*;
+use queries::*;
 use refusals::*;
+
+/// The step, continuation and custody plan shared by every dispatched operation.
+type PlanStep = OpStep<crate::ops::AnyOutput, crate::ports::Then, crate::ports::CustodyPlan>;
 
 /// The adapter allocates fresh IDs/time per invocation, before entering the pure planner.
 /// These observations are excluded from the normalized intent digest.
@@ -177,132 +182,7 @@ impl Kernel {
         let identity = self.request_identity(operation, key, &intent)?;
         self.batch_with_identity(identity, event, cx)
     }
-}
-pub(crate) fn admitted<R: Snapshot>(cx: &Cx<'_, R>) -> Result<()> {
-    scope::project(cx.admission)?;
-    match (&cx.admission.actor, &cx.admission.session) {
-        (Actor::Agent(_), Some(_)) | (Actor::Human(_), None) => Ok(()),
-        _ => Err(scope::unreadable(
-            "admitted write",
-            "actor and session binding disagree",
-        )),
-    }
-}
-impl CoreOps for Kernel {
-    fn message_send<R: Snapshot>(
-        &self,
-        input: MessageSend,
-        cx: &mut Cx<'_, R>,
-    ) -> Result<OpStep<MessageSendOutput, MessageSendThen>> {
-        crate::ops::message_send_plan::send(self, input, cx)
-    }
-    fn message_committed<R: Snapshot>(
-        &self,
-        then: MessageSendThen,
-        receipt: CommitReceipt,
-        cx: &mut Cx<'_, R>,
-    ) -> Result<MessageSendOutput> {
-        receipt_key(&receipt, &then.request, "commit receipt")?;
-        let event = scope::require_present(
-            cx.read
-                .event(receipt.primary_event.clone())
-                .map_err(|e| store_error(&e))?,
-            "committed message event",
-            scope::COMMITTED_READ_RECOVERY,
-        )?;
-        if event.header.scope != cx.admission.scope || event.header.actor != cx.admission.actor {
-            return Err(scope::unreadable(
-                "committed message",
-                "receipt resolved outside the admitted scope/actor",
-            ));
-        }
-        match event.body {
-            EventBody::MessageSent { message, .. } | EventBody::WorkMessageSent { message, .. } => {
-                Ok(MessageSendOutput {
-                    message,
-                    commit: receipt,
-                })
-            }
-            _ => Err(scope::unreadable(
-                "message receipt",
-                "primary event is not message.sent",
-            )),
-        }
-    }
-    fn working_state_set<R: Snapshot>(
-        &self,
-        input: WorkingStateSet,
-        cx: &mut Cx<'_, R>,
-    ) -> Result<OpStep<WorkingStateSetOutput, WorkingStateSetThen>> {
-        input.validate()?;
-        admitted(cx)?;
-        let agent = scope::working_agent(
-            cx.admission,
-            input.owner_agent.as_ref(),
-            "working_state.set",
-        )?;
-        let expected = match input.expect {
-            ExpectedRevision::Absent(_) => Expected::Absent,
-            ExpectedRevision::Revision(revision) => Expected::Revision(Revision {
-                value: NonZeroU64::new(revision)
-                    .ok_or_else(|| SeError::invalid("expect", "a positive revision"))?,
-            }),
-        };
-        let key = input.idempotency_key;
-        let intent = serde_json::json!({"agent":agent,"text":input.text,"expect":input.expect});
-        let event = self.event(
-            EventBody::WorkingStateSet {
-                agent: agent.clone(),
-                text: InputText::Inline(input.text),
-                expected,
-            },
-            cx,
-        )?;
-        let batch = self.batch("working_state.set", key.clone(), intent, event, cx)?;
-        Ok(OpStep::Commit {
-            batch,
-            then: WorkingStateSetThen {
-                request: key,
-                agent,
-            },
-        })
-    }
-    fn working_state_committed<R: Snapshot>(
-        &self,
-        then: WorkingStateSetThen,
-        receipt: CommitReceipt,
-        cx: &mut Cx<'_, R>,
-    ) -> Result<WorkingStateSetOutput> {
-        receipt_key(&receipt, &then.request, "commit receipt")?;
-        let event = scope::require_present(
-            cx.read
-                .event(receipt.primary_event.clone())
-                .map_err(|e| store_error(&e))?,
-            "committed working-state event",
-            scope::COMMITTED_READ_RECOVERY,
-        )?;
-        if event.header.scope != cx.admission.scope || event.header.actor != cx.admission.actor {
-            return Err(scope::unreadable(
-                "committed working state",
-                "receipt resolved outside the admitted scope/actor",
-            ));
-        }
-        match event.body {
-            EventBody::WorkingStateSet { agent, .. } if agent == then.agent => {
-                Ok(WorkingStateSetOutput {
-                    agent,
-                    commit: receipt,
-                })
-            }
-            _ => Err(scope::unreadable(
-                "working-state receipt",
-                "primary event is not this agent's working_state.set",
-            )),
-        }
-    }
-}
 
-impl Kernel {
     /// The host releases the finite snapshot/worker after this returns, awaits
     /// only the store completion, then opens a fresh admitted continuation read.
     pub fn plan<R: Snapshot>(
@@ -310,7 +190,7 @@ impl Kernel {
         op: crate::ops::AnyOp,
         cx: &mut Cx<'_, R>,
         terminal: &crate::admission::HumanTerminal,
-    ) -> Result<OpStep<crate::ops::AnyOutput, crate::ports::Then, crate::ports::CustodyPlan>> {
+    ) -> Result<PlanStep> {
         use crate::{ops::AnyOp, ports::CustodyPlan};
         if let Some(output) = crate::ops::metadata_output(&op)? {
             return Ok(OpStep::Complete(output));
@@ -394,6 +274,7 @@ impl Kernel {
             | AnyOp::MetaSchema(_) => Err(metadata_refused()),
         }
     }
+
     pub fn committed<R: Snapshot>(
         &self,
         then: crate::ports::Then,
@@ -430,339 +311,20 @@ impl Kernel {
     }
 }
 
-/// The step, continuation and custody plan shared by every dispatched operation.
-type PlanStep = OpStep<crate::ops::AnyOutput, crate::ports::Then, crate::ports::CustodyPlan>;
+pub(crate) fn admitted<R: Snapshot>(cx: &Cx<'_, R>) -> Result<()> {
+    scope::project(cx.admission)?;
+    match (&cx.admission.actor, &cx.admission.session) {
+        (Actor::Agent(_), Some(_)) | (Actor::Human(_), None) => Ok(()),
+        _ => Err(scope::unreadable(
+            "admitted write",
+            "actor and session binding disagree",
+        )),
+    }
+}
 
 fn complete_step<T>(result: Result<T>) -> Result<PlanStep>
 where
     T: Into<crate::ops::AnyOutput>,
 {
     result.map(|value| OpStep::Complete(value.into()))
-}
-
-fn plan_atlas_read(read: crate::ops::AtlasRead) -> Result<PlanStep> {
-    Ok(OpStep::Custody(crate::ports::CustodyPlan::AtlasRead(
-        Box::new(read),
-    )))
-}
-
-fn plan_resume<R: Snapshot>(
-    kernel: &Kernel,
-    input: crate::ops::Resume,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    Ok(OpStep::Complete(
-        crate::ops::continuity::resume_at_home(
-            input,
-            kernel.observed_at()?,
-            kernel.command_home.as_deref(),
-            cx,
-        )?
-        .into(),
-    ))
-}
-
-fn plan_session_context<R: Snapshot>(
-    kernel: &Kernel,
-    input: crate::ops::SessionContextRequest,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    Ok(OpStep::Complete(
-        crate::ops::continuity::context_at_home(
-            input,
-            kernel.observed_at()?,
-            kernel.command_home.as_deref(),
-            cx,
-        )?
-        .into(),
-    ))
-}
-
-fn plan_agent_list<R: Snapshot>(
-    input: crate::ops::AgentList,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    Ok(OpStep::Complete(
-        crate::ops::listing::agents(input, cx)?.into(),
-    ))
-}
-
-fn plan_agent_launch<R: Snapshot>(
-    kernel: &Kernel,
-    input: crate::ops::AgentLaunch,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    let configuration = kernel.configuration.as_ref().ok_or_else(|| {
-        scope::unreadable(
-            "launch configuration",
-            "adapter-resolved ConfigFile is not bound",
-        )
-    })?;
-    Ok(OpStep::Custody(crate::ports::CustodyPlan::Launch(
-        Box::new(crate::ops::process_plan::launch(
-            kernel,
-            input,
-            configuration,
-            cx,
-        )?),
-    )))
-}
-
-fn plan_agent_stop<R: Snapshot>(
-    input: crate::ops::AgentStop,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    Ok(OpStep::Custody(crate::ports::CustodyPlan::Stop(Box::new(
-        crate::ops::stop_plan::plan(input, cx)?,
-    ))))
-}
-
-fn plan_agent_wake<R: Snapshot>(
-    input: crate::ops::AgentWake,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    Ok(OpStep::Custody(crate::ports::CustodyPlan::AgentWake(
-        crate::ops::agent_wake::plan(input, cx)?,
-    )))
-}
-
-fn plan_project_remove<R: Snapshot>(
-    input: crate::ops::ProjectRemove,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    Ok(OpStep::Custody(crate::ports::CustodyPlan::Remove(
-        Box::new(crate::ops::project_remove::plan(input, cx)?),
-    )))
-}
-
-fn plan_agent_show<R: Snapshot>(
-    input: crate::ops::AgentShow,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    Ok(OpStep::Complete(
-        crate::ops::agent_status::show(input, cx)?.into(),
-    ))
-}
-
-fn plan_assignment_list<R: Snapshot>(
-    input: crate::ops::AssignmentList,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    Ok(OpStep::Complete(
-        crate::ops::assignment::list(input, cx)?.into(),
-    ))
-}
-
-fn plan_captain_set<R: Snapshot>(
-    kernel: &Kernel,
-    input: crate::ops::CaptainSet,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    crate::ops::captain::step(kernel, Some(input.captain), input.idempotency_key, cx)
-}
-
-fn plan_captain_clear<R: Snapshot>(
-    kernel: &Kernel,
-    input: crate::ops::CaptainClear,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    crate::ops::captain::step(kernel, None, input.idempotency_key, cx)
-}
-
-fn plan_config_get<R: Snapshot>(
-    input: crate::ops::ConfigGet,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    Ok(OpStep::Complete(
-        crate::ops::agent_config::get(input, cx)?.into(),
-    ))
-}
-
-fn plan_config_set<R: Snapshot>(
-    kernel: &Kernel,
-    input: crate::ops::ConfigSet,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    let configuration = kernel.configuration.as_ref().ok_or_else(|| {
-        scope::unreadable(
-            "saved agent configuration",
-            "adapter-resolved ConfigFile must be bound using Kernel::with_configuration",
-        )
-    })?;
-    let (batch, then) = crate::ops::agent_config::set(kernel, input, configuration, cx)?;
-    Ok(OpStep::Commit {
-        batch,
-        then: crate::ports::Then::AgentConfig(then),
-    })
-}
-
-fn plan_config_list(kernel: &Kernel, input: crate::ops::ConfigList) -> Result<PlanStep> {
-    let configuration = kernel.configuration.as_ref().ok_or_else(|| {
-        scope::unreadable(
-            "configuration",
-            "adapter-resolved ConfigFile must be bound using Kernel::with_configuration",
-        )
-    })?;
-    Ok(OpStep::Complete(
-        crate::ops::config_listing::list(configuration, kernel.config_origin.as_deref(), input)?
-            .into(),
-    ))
-}
-
-fn plan_agent_create<R: Snapshot>(
-    kernel: &Kernel,
-    input: crate::ops::AgentCreate,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    let configuration = kernel.configuration.as_ref().ok_or_else(|| {
-        SeError::new(se_types::Detail::Internal(se_types::details::Internal {
-            report_id: "agent-configuration-not-bound".into(),
-            location: "Kernel::with_configuration".into(),
-        }))
-    })?;
-    let (batch, then) = crate::ops::agent::create(kernel, input, configuration, cx)?;
-    Ok(OpStep::Commit {
-        batch,
-        then: crate::ports::Then::AgentCreate(then),
-    })
-}
-
-fn plan_agent_rename<R: Snapshot>(
-    kernel: &Kernel,
-    input: crate::ops::AgentRename,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    let (batch, then) = crate::ops::agent::rename(kernel, input, cx)?;
-    Ok(OpStep::Commit {
-        batch,
-        then: crate::ports::Then::AgentRename(then),
-    })
-}
-
-fn plan_message_read<R: Snapshot>(
-    kernel: &Kernel,
-    input: crate::ops::MessageRead,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    crate::ops::message_mark::map_mark(crate::ops::message_mark::read(kernel, cx, input)?)
-}
-
-fn plan_message_ack<R: Snapshot>(
-    kernel: &Kernel,
-    input: crate::ops::MessageAck,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    crate::ops::message_mark::map_mark(crate::ops::message_mark::plan(
-        kernel,
-        cx,
-        input.msg_id,
-        crate::ops::message_mark::Mark::Read,
-        None,
-    )?)
-}
-
-fn plan_message_dismiss<R: Snapshot>(
-    kernel: &Kernel,
-    input: crate::ops::MessageDismiss,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    crate::ops::message_mark::map_mark(crate::ops::message_mark::plan(
-        kernel,
-        cx,
-        input.msg_id,
-        crate::ops::message_mark::Mark::Dismiss,
-        None,
-    )?)
-}
-
-fn message_send_step<R: Snapshot>(
-    kernel: &Kernel,
-    input: MessageSend,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    Ok(match kernel.message_send(input, cx)? {
-        OpStep::Complete(raw) => OpStep::Complete(crate::ops::receipt::message(raw, cx)?.into()),
-        OpStep::Commit { batch, then } => OpStep::Commit {
-            batch,
-            then: crate::ports::Then::MessageSend(then),
-        },
-        OpStep::Custody(never) => match never {},
-    })
-}
-
-fn working_state_set_step<R: Snapshot>(
-    kernel: &Kernel,
-    input: WorkingStateSet,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    Ok(match kernel.working_state_set(input, cx)? {
-        OpStep::Complete(raw) => {
-            OpStep::Complete(crate::ops::receipt::working_state(raw, cx)?.into())
-        }
-        OpStep::Commit { batch, then } => OpStep::Commit {
-            batch,
-            then: crate::ports::Then::WorkingStateSet(then),
-        },
-        OpStep::Custody(never) => match never {},
-    })
-}
-
-fn plan_working_state_get<R: Snapshot>(
-    input: crate::ops::WorkingStateGet,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    Ok(OpStep::Complete(
-        crate::ops::receipt::working_state_get(
-            scope::working_agent(
-                cx.admission,
-                input.owner_agent.as_ref(),
-                "working_state.get",
-            )?,
-            cx,
-        )?
-        .into(),
-    ))
-}
-
-fn plan_identity_whoami<R: Snapshot>(
-    input: crate::ops::IdentityWhoami,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    Ok(OpStep::Complete(
-        crate::ops::identity::whoami(input, cx)?.into(),
-    ))
-}
-
-fn plan_history_list<R: Snapshot>(
-    input: crate::ops::HistoryList,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    Ok(OpStep::Complete(
-        crate::ops::history::list(input, cx)?.into(),
-    ))
-}
-
-fn plan_history_search<R: Snapshot>(
-    input: crate::ops::HistorySearch,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    Ok(OpStep::Complete(
-        crate::ops::history::search(input, cx)?.into(),
-    ))
-}
-
-fn plan_message_list<R: Snapshot>(
-    input: crate::ops::MessageList,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    Ok(OpStep::Complete(
-        crate::ops::message::list(input, cx)?.into(),
-    ))
-}
-
-fn plan_message_inbox<R: Snapshot>(
-    input: crate::ops::MessageInbox,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    Ok(OpStep::Complete(crate::ops::inbox::read(input, cx)?.into()))
 }
