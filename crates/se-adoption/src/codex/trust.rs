@@ -38,17 +38,18 @@ fn listed(registration: &Registration, root: &Path) -> Result<(Vec<Value>, [u8; 
     }
     Ok((rows, before))
 }
-/// The discovery key and hash of each installed hook Codex lists. A required
+/// The discovery key and hash of each of `entries` Codex lists. A required
 /// lifecycle hook must be listed and enabled; an optional one, such as the
 /// Atlas hook, is skipped when the owner has removed it.
 fn select(
     registration: &Registration,
     rows: &[Value],
+    entries: &[(String, Value)],
     required: &[(String, Value)],
 ) -> Result<Vec<(String, String)>> {
     let path = registration.settings.to_local()?;
     let mut selected = Vec::new();
-    for entry @ (event, group) in &registration.hooks {
+    for entry @ (event, group) in entries {
         let event = format!("{}{}", event[..1].to_ascii_lowercase(), &event[1..]);
         let handler = group
             .get("hooks")
@@ -89,31 +90,57 @@ fn select(
     }
     Ok(selected)
 }
+/// Whether Codex reports this exact hook hash as trusted.
+fn trusted(rows: &[Value], (key, hash): &(String, String)) -> bool {
+    rows.iter().any(|r| {
+        r.get("key").and_then(Value::as_str) == Some(key)
+            && r.get("currentHash").and_then(Value::as_str) == Some(hash)
+            && r.get("trustStatus").and_then(Value::as_str) == Some("trusted")
+    })
+}
+/// Discovery already confirmed this configuration for this project.
+fn current(registration: &Registration, root: &Path) -> Result<bool> {
+    Ok(
+        registration.discovery == Some(crate::discovery_stamp(registration)?)
+            && registration
+                .project(root)?
+                .is_some_and(|p| p.discovery == registration.discovery),
+    )
+}
+fn record(
+    home: &Path,
+    registration: &mut Registration,
+    root: &Path,
+    stamp: [u8; 32],
+) -> Result<()> {
+    registration.discovery = Some(stamp);
+    let root = NativePath::from_local(root.to_owned())?;
+    if let Some(project) = registration.projects.iter_mut().find(|p| p.root == root) {
+        project.discovery = Some(stamp);
+    }
+    crate::publish_for(home, Kind::Codex, registration)
+}
+/// Fresh setup: trust every installed hook Codex lists, the optional Atlas hook
+/// included, then require the provider to read them back as trusted. Only the
+/// run that created the registration calls this.
 pub(crate) fn install(
     home: &Path,
     registration: &mut Registration,
     root: &Path,
-    discovery: crate::Discovery<'_>,
+    required: &[(String, Value)],
 ) -> Result<()> {
-    if registration.discovery == Some(crate::discovery_stamp(registration)?)
-        && registration
-            .project(root)?
-            .is_some_and(|p| p.discovery == registration.discovery)
-    {
+    if current(registration, root)? {
         return Ok(());
     }
+    let hooks = registration.hooks.clone();
     let discovered = select(
         registration,
         &listed(registration, root)?.0,
-        discovery.required,
+        &hooks,
+        required,
     )?;
-    let mut missing =
-        crate::settings::missing_trust(&registration.settings.to_local()?, &discovered)?;
-    if discovery.resumed {
-        // A journaled trust entry may have been written and then removed by
-        // the owner; only entries no run ever journaled are written now.
-        missing.retain(|entry| !registration.layout.trust.contains(entry));
-    }
+    let settings = registration.settings.to_local()?;
+    let missing = crate::settings::missing_trust(&settings, &discovered)?;
     // Journal before writing trust, so an interrupted installation remains
     // reversible. A pre-existing owner decision is never replaced.
     for entry in &missing {
@@ -122,41 +149,48 @@ pub(crate) fn install(
         }
     }
     crate::publish_for(home, Kind::Codex, registration)?;
-    let settings = registration.settings.to_local()?;
     crate::settings::trust(&settings, &missing)?;
-    if discovery.resumed {
-        let untrusted = crate::settings::missing_trust(&settings, &discovered)?;
-        if !untrusted.is_empty() {
-            let entries: Vec<_> = untrusted
-                .iter()
-                .map(|(key, hash)| format!("[hooks.state.{key:?}] trusted_hash = {hash:?}"))
-                .collect();
-            return Err(invalid(&format!(
-                "trust for these StateEngine hooks that an unfinished earlier install recorded in {}; it may have been removed there, so it was not added again. Add it back in that file, then run this command again: {}",
-                settings.display(),
-                entries.join("; ")
-            )));
-        }
-    }
     let (rows, stamp) = listed(registration, root)?;
-    if select(registration, &rows, discovery.required)? != discovered
-        || discovered.iter().any(|(key, hash)| {
-            !rows.iter().any(|r| {
-                r.get("key").and_then(Value::as_str) == Some(key)
-                    && r.get("currentHash").and_then(Value::as_str) == Some(hash)
-                    && r.get("trustStatus").and_then(Value::as_str) == Some("trusted")
-            })
-        })
+    if select(registration, &rows, &hooks, required)? != discovered
+        || !discovered.iter().all(|entry| trusted(&rows, entry))
     {
         return Err(invalid(
             "provider readback of trusted installed hooks; capture and mail are unconfirmed",
         ));
     }
-    registration.discovery = Some(stamp);
-    let root = NativePath::from_local(root.to_owned())?;
-    if let Some(project) = registration.projects.iter_mut().find(|p| p.root == root) {
-        project.discovery = Some(stamp);
+    record(home, registration, root, stamp)
+}
+/// Every other run: read only. Codex must list, enable and trust each required
+/// lifecycle hook StateEngine installed; the optional Atlas hook's state never
+/// decides this. Trust is never written here, because an absent entry may be
+/// one the owner removed.
+pub(crate) fn verify(
+    home: &Path,
+    registration: &mut Registration,
+    root: &Path,
+    required: &[(String, Value)],
+) -> Result<()> {
+    if current(registration, root)? {
+        return Ok(());
     }
-    crate::publish_for(home, Kind::Codex, registration)?;
-    Ok(())
+    let lifecycle: Vec<_> = registration
+        .hooks
+        .iter()
+        .filter(|entry| required.contains(entry))
+        .cloned()
+        .collect();
+    let (rows, stamp) = listed(registration, root)?;
+    let untrusted: Vec<_> = select(registration, &rows, &lifecycle, required)?
+        .into_iter()
+        .filter(|entry| !trusted(&rows, entry))
+        .map(|(key, hash)| format!("[hooks.state.{key:?}] trusted_hash = {hash:?}"))
+        .collect();
+    if !untrusted.is_empty() {
+        return Err(invalid(&format!(
+            "Codex trust for these StateEngine hooks in {}; it may have been removed there, so it was not added again. Add it back in that file, then run this command again: {}",
+            registration.settings.to_local()?.display(),
+            untrusted.join("; ")
+        )));
+    }
+    record(home, registration, root, stamp)
 }

@@ -97,6 +97,8 @@ pub fn install(
     // Journal before changing provider files: a partial install always retains
     // the exact entries that uninstall must remove, never a whole-file backup.
     super::publish_for(home, kind, &registration)?;
+    // Only the run that created the registration writes provider files.
+    let fresh = planned.is_some();
     let changed = match planned {
         Some(planned) => {
             let changed = super::settings::commit(&path, planned)?;
@@ -128,11 +130,11 @@ pub fn install(
         }
     }
     let discovery = if installed {
-        let discovery = super::Discovery {
-            required: &plan.required,
-            resumed,
-        };
-        adapter.discover(home, &mut registration, root, discovery)
+        if fresh {
+            adapter.setup(home, &mut registration, root, &plan.required)
+        } else {
+            adapter.discover(home, &mut registration, root, &plan.required)
+        }
     } else {
         Ok(())
     };
@@ -145,7 +147,7 @@ pub fn install(
     discovery?;
     if resumed {
         // Finished only once discovery confirmed it, so a refused retry stays
-        // a resumed one and still writes nothing an earlier run journaled.
+        // a resumed one.
         registration.installed = true;
         super::publish_for(home, kind, &registration)?;
     }

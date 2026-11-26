@@ -5,7 +5,7 @@ mod queue;
 mod rpc;
 mod trust;
 pub use queue::offer;
-pub(crate) use trust::install as trust;
+pub(crate) use trust::{install as trust, verify};
 #[cfg(not(target_os = "linux"))]
 pub fn native_executable(command: &Path) -> Result<std::path::PathBuf> {
     Ok(command.to_owned())

@@ -78,12 +78,25 @@ pub(crate) trait Adapter: Send + Sync {
         home: &Path,
         atlas: bool,
     ) -> Result<Vec<(String, serde_json::Value)>>;
+    /// Fresh setup, run once by the install that created the registration;
+    /// it may write what provider discovery needs, such as Codex trust.
+    fn setup(
+        &self,
+        home: &Path,
+        saved: &mut Registration,
+        root: &Path,
+        required: &[(String, serde_json::Value)],
+    ) -> Result<()> {
+        self.discover(home, saved, root, required)
+    }
+    /// Read-only confirmation that the provider sees the required lifecycle
+    /// hooks; it never writes provider files.
     fn discover(
         &self,
         _home: &Path,
         _saved: &mut Registration,
         _root: &Path,
-        _discovery: Discovery<'_>,
+        _required: &[(String, serde_json::Value)],
     ) -> Result<()> {
         Ok(())
     }
@@ -93,16 +106,6 @@ pub(crate) trait Adapter: Send + Sync {
     fn notice(&self) -> Option<String> {
         None
     }
-}
-/// What provider discovery must confirm for one installation run.
-#[cfg(feature = "listener")]
-#[derive(Clone, Copy)]
-pub(crate) struct Discovery<'a> {
-    /// The lifecycle hooks capture and mail need; any other entry is optional.
-    pub required: &'a [(String, serde_json::Value)],
-    /// This run finishes an install that stopped part-way, so nothing an
-    /// earlier run journaled may be written again.
-    pub resumed: bool,
 }
 #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
 pub(crate) struct ProviderSetup {
@@ -179,14 +182,23 @@ mod codex_adapter {
         ) -> Result<Vec<(String, serde_json::Value)>> {
             codex::hooks(executable, home, atlas)
         }
+        fn setup(
+            &self,
+            home: &Path,
+            saved: &mut Registration,
+            root: &Path,
+            required: &[(String, serde_json::Value)],
+        ) -> Result<()> {
+            codex::trust(home, saved, root, required)
+        }
         fn discover(
             &self,
             home: &Path,
             saved: &mut Registration,
             root: &Path,
-            discovery: Discovery<'_>,
+            required: &[(String, serde_json::Value)],
         ) -> Result<()> {
-            codex::trust(home, saved, root, discovery)
+            codex::verify(home, saved, root, required)
         }
         fn active(&self, home: &Path, project: &ProjectId) -> Result<bool> {
             status::witnessed(home, Kind::Codex, project)
