@@ -1,6 +1,8 @@
 #![cfg(unix)]
 
-use se_state_files::{NativeDirectoryCreation, OwnedFile, StateFileErrorCode};
+#[cfg(target_os = "linux")]
+use se_state_files::StateFileErrorCode;
+use se_state_files::{NativeDirectoryCreation, OwnedFile};
 use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
@@ -66,7 +68,16 @@ fn assert_no_stage_residue(dir: &Path) -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[cfg(target_os = "linux")]
-fn supports_anonymous_tmpfile_publish(dir: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+enum AnonymousPublishSupport {
+    Supported,
+    NamedFallback,
+    PublishError,
+}
+
+#[cfg(target_os = "linux")]
+fn probe_anonymous_tmpfile_publish(
+    dir: &Path,
+) -> Result<AnonymousPublishSupport, Box<dyn std::error::Error>> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     let dir_file = std::fs::File::open(dir)?;
     let dot = c".";
@@ -85,7 +96,7 @@ fn supports_anonymous_tmpfile_publish(dir: &Path) -> Result<bool, Box<dyn std::e
             err.raw_os_error(),
             Some(libc::EOPNOTSUPP | libc::EISDIR | libc::EINVAL | libc::ENOSYS | libc::EACCES)
         ) {
-            return Ok(false);
+            return Ok(AnonymousPublishSupport::NamedFallback);
         }
         return Err(err.into());
     }
@@ -103,19 +114,16 @@ fn supports_anonymous_tmpfile_publish(dir: &Path) -> Result<bool, Box<dyn std::e
             libc::AT_SYMLINK_FOLLOW,
         )
     };
+    let link_err = (linked < 0).then(std::io::Error::last_os_error);
     drop(tmp);
-    if linked < 0 {
-        let err = std::io::Error::last_os_error();
-        if matches!(
-            err.raw_os_error(),
-            Some(libc::ENOENT | libc::EXDEV | libc::EOPNOTSUPP | libc::ENOSYS | libc::EINVAL)
-        ) {
-            return Ok(false);
+    if let Some(err) = link_err {
+        if matches!(err.raw_os_error(), Some(libc::ENOENT | libc::EXDEV)) {
+            return Ok(AnonymousPublishSupport::NamedFallback);
         }
-        return Err(err.into());
+        return Ok(AnonymousPublishSupport::PublishError);
     }
     std::fs::remove_file(dir.join("probe-o-tmpfile"))?;
-    Ok(true)
+    Ok(AnonymousPublishSupport::Supported)
 }
 
 #[test]
@@ -176,24 +184,44 @@ fn create_new_under_umask_0777_matches_fs_support() -> Result<(), Box<dyn std::e
     let _lock = UMASK_LOCK.lock().map_err(|_| "umask lock poisoned")?;
     let root = ScratchDir::new("umask-0777-file")?;
     #[cfg(target_os = "linux")]
-    let expect_success = supports_anonymous_tmpfile_publish(root.path())?;
+    {
+        let support = probe_anonymous_tmpfile_publish(root.path())?;
+        let _mask = UmaskGuard::set(0o777);
+        let file_path = root.path().join("settings.json");
+        match support {
+            AnonymousPublishSupport::Supported => {
+                OwnedFile::create_new(&file_path, b"{\"ok\":true}\n")?;
+                let mode = std::fs::metadata(&file_path)?.permissions().mode() & 0o777;
+                assert_eq!(mode, 0o600);
+                let mut opened =
+                    OwnedFile::open(&file_path)?.ok_or("created file missing on readback")?;
+                assert_eq!(opened.read(4096)?, b"{\"ok\":true}\n");
+            }
+            AnonymousPublishSupport::NamedFallback => {
+                let err = OwnedFile::create_new(&file_path, b"{\"ok\":true}\n")
+                    .err()
+                    .ok_or("expected non-O_TMPFILE Linux fallback to refuse under umask 0777")?;
+                assert_eq!(err.code, StateFileErrorCode::LocationUnsafe);
+                assert!(!file_path.exists());
+            }
+            AnonymousPublishSupport::PublishError => {
+                let err = OwnedFile::create_new(&file_path, b"{\"ok\":true}\n")
+                    .err()
+                    .ok_or("expected anonymous publish error under umask 0777")?;
+                assert_ne!(err.code, StateFileErrorCode::LocationUnsafe);
+                assert!(!file_path.exists());
+            }
+        }
+    }
     #[cfg(not(target_os = "linux"))]
-    let expect_success = true;
-    let _mask = UmaskGuard::set(0o777);
-
-    let file_path = root.path().join("settings.json");
-    if expect_success {
+    {
+        let _mask = UmaskGuard::set(0o777);
+        let file_path = root.path().join("settings.json");
         OwnedFile::create_new(&file_path, b"{\"ok\":true}\n")?;
         let mode = std::fs::metadata(&file_path)?.permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         let mut opened = OwnedFile::open(&file_path)?.ok_or("created file missing on readback")?;
         assert_eq!(opened.read(4096)?, b"{\"ok\":true}\n");
-    } else {
-        let err = OwnedFile::create_new(&file_path, b"{\"ok\":true}\n")
-            .err()
-            .ok_or("expected non-O_TMPFILE Linux fallback to refuse under umask 0777")?;
-        assert_eq!(err.code, StateFileErrorCode::LocationUnsafe);
-        assert!(!file_path.exists());
     }
     assert_no_stage_residue(root.path())?;
     Ok(())
