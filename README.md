@@ -133,6 +133,9 @@ permissions and settings text. Codex adoption installs its hooks in `config.toml
 and trusts only those exact definitions through the provider's discovery hashes.
 Status keeps capture and mail unconfirmed until an authenticated hook runs.
 For Claude, review and trust the new hooks in the provider's own prompt.
+Running `se init --adopt` again after an upgrade adds only hooks for events the
+installation has never had, such as the Atlas context hook, and leaves edited
+entries as they are.
 Only explicitly registered project roots participate. Adopted sessions appear
 with the `observed` surface in status. Incoming mail uses the provider's native
 wake or input queue; an offer is not a recipient read receipt. StateEngine does
@@ -559,10 +562,19 @@ It is enabled by default. If you disabled it, edit the `config.toml` in the data
 the file selected by `SE_CONFIG`), set `enabled = true` in `[atlas]`, then run
 `se down` and `se up` with the same `--home` you normally use. `se config set`
 changes saved agent settings only. Run `se atlas` for find, references, impact,
-changes and outline commands; `se status` reports preparation and partial coverage.
+changes and outline commands; they start the host if it is not running, and
+`se status` reports preparation and partial coverage.
 Answers are compact pointers: a line range and byte count show how much source a
 target contains before you read it. JSON retains the full span and byte offsets.
-Unverified or unavailable extents say `size unavailable`; stale revisions stay labelled.
+An extent that was not measured shows no byte count; stale revisions stay labelled.
+
+Launched agents are told to use Atlas before editing shared code. With `hooks = true`
+in `[atlas]` (the default), a search or single-file read also receives a few lines of
+indexed context first, for launched agents and for sessions adopted with
+`se init --adopt` (an adoption made by an earlier version keeps its hooks
+unchanged). A hook that has no confident answer within its deadline
+(75 ms, or 100 ms on Windows) adds nothing and never blocks the tool call. Set
+`hooks = false` to turn this off.
 
 ## Assistant tool arguments
 

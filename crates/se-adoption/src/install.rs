@@ -8,6 +8,9 @@ pub struct Plan {
     provider: PathBuf,
     config_home: PathBuf,
     entries: Vec<(String, serde_json::Value)>,
+    /// The lifecycle hooks capture and mail need, whoever owns them; the
+    /// optional Atlas entry is not among them.
+    required: Vec<(String, serde_json::Value)>,
 }
 #[cfg(any(target_os = "linux", windows))]
 pub fn prepare(
@@ -46,7 +49,12 @@ pub fn prepare(
         kind,
         provider,
         config_home,
-        entries: adapter.hooks(&image, home)?,
+        entries: adapter.hooks(
+            &image,
+            home,
+            configuration.atlas.enabled && configuration.atlas.hooks,
+        )?,
+        required: adapter.hooks(&image, home, false)?,
     })
 }
 #[cfg(not(any(target_os = "linux", windows)))]
@@ -76,29 +84,29 @@ pub fn install(
     let kind = plan.kind;
     let adapter = kind.adapter();
     let path = plan.config_home.join(kind.settings());
-    let expected_hooks = plan.entries.clone();
-    let mut registration = registration(home, root, &plan, project)?;
     se_proc::native_ipc::prepare_adoption_image_cache(
         home,
-        &registration.provider.to_local()?,
+        &plan.provider,
         &se_proc::native_ipc::IpcIoBound {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
             cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
     )
     .map_err(|e| se_core::scope::unreadable("adoption executable cache", &e.to_string()))?;
+    let (mut registration, planned) = registration(home, root, &plan, project)?;
     // Journal before changing provider files: a partial install always retains
     // the exact entries that uninstall must remove, never a whole-file backup.
     super::publish_for(home, kind, &registration)?;
-    let changed = if registration.installed {
-        false
-    } else {
-        let changed = super::settings::merge(&path, &registration.hooks)?;
-        registration.installed = true;
-        super::publish_for(home, kind, &registration)?;
-        changed
+    let changed = match planned {
+        Some(planned) => {
+            let changed = super::settings::commit(&path, planned)?;
+            registration.installed = true;
+            super::publish_for(home, kind, &registration)?;
+            changed
+        }
+        None => false,
     };
-    let installed = super::settings::missing(&path, &expected_hooks)?.is_empty();
+    let installed = super::settings::missing(&path, &plan.required)?.is_empty();
     let discovery = if installed {
         adapter.discover(home, &mut registration, root)
     } else {
@@ -136,15 +144,19 @@ pub fn install(
     })
 }
 
+/// The saved registration, or a new one whose custody and layout are exactly
+/// what its planned first write adds, with that plan. A saved installation
+/// that never finished plans its journaled entries again, less absent ones
+/// the configuration no longer requests.
 fn registration(
     home: &Path,
     root: &Path,
     plan: &Plan,
     project: &se_types::ProjectId,
-) -> Result<super::Registration> {
+) -> Result<(super::Registration, Option<super::settings::Planned>)> {
     let kind = plan.kind;
     let path = plan.config_home.join(kind.settings());
-    let mut registration = match super::read_for(home, kind)? {
+    let (mut registration, planned) = match super::read_for(home, kind)? {
         Some(saved) => {
             if saved.settings.to_local()? != path || saved.provider.to_local()? != plan.provider {
                 return Err(SeError::invalid(
@@ -152,21 +164,42 @@ fn registration(
                     "the original provider and settings location; uninstall this integration before changing them",
                 ));
             }
-            saved
+            let mut saved = saved;
+            let planned = if saved.installed {
+                None
+            } else {
+                // An unfinished install never wrote what is absent, so an entry
+                // the configuration no longer requests leaves custody with it.
+                let absent = super::settings::missing(&path, &saved.hooks)?;
+                saved
+                    .hooks
+                    .retain(|entry| plan.entries.contains(entry) || !absent.contains(entry));
+                let hooks = &saved.hooks;
+                saved
+                    .layout
+                    .created_events
+                    .retain(|event| hooks.iter().any(|(known, _)| known == event));
+                Some(super::settings::plan(&path, &saved.hooks)?)
+            };
+            (saved, planned)
         }
-        None => super::Registration {
-            layout: super::settings::layout(&path, &plan.entries)?,
-            installed: false,
-            schema: 1,
-            settings: NativePath::from_local(path.clone())?,
-            provider: NativePath::from_local(plan.provider.clone())?,
-            config_home: NativePath::from_local(plan.config_home.clone())?,
-            hooks: super::settings::missing(&path, &plan.entries)?,
-            projects: vec![],
-            discovery: None,
-            discovery_refusal: None,
-            installation: Some(uuid::Uuid::new_v4().to_string()),
-        },
+        None => {
+            let planned = super::settings::plan(&path, &plan.entries)?;
+            let registration = super::Registration {
+                layout: planned.layout.clone(),
+                installed: false,
+                schema: 1,
+                settings: NativePath::from_local(path.clone())?,
+                provider: NativePath::from_local(plan.provider.clone())?,
+                config_home: NativePath::from_local(plan.config_home.clone())?,
+                hooks: planned.entries.clone(),
+                projects: vec![],
+                discovery: None,
+                discovery_refusal: None,
+                installation: Some(uuid::Uuid::new_v4().to_string()),
+            };
+            (registration, Some(planned))
+        }
     };
     let selected = super::Project {
         project: project.clone(),
@@ -186,7 +219,7 @@ fn registration(
             "at most 4096 registered projects",
         ));
     }
-    Ok(registration)
+    Ok((registration, planned))
 }
 
 fn integration(

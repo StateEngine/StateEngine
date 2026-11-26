@@ -1,7 +1,8 @@
 //! Compact discovery is an argument-shape guide, not the input validator.
-//! Only annotations and string grammars are omitted: definitions, references,
-//! unions and structural constraints retain their generated layout and meaning.
-//! Complete CLI schemas and decoding still use the original DTOs.
+//! Titles, formats and string grammars are omitted and each description keeps
+//! its first line, so a model learns what a field means without the full prose.
+//! Definitions, references, unions and structural constraints keep their
+//! generated layout. Complete CLI schemas and decoding use the original DTOs.
 use schemars::{Schema, transform::transform_subschemas};
 use serde_json::Value;
 
@@ -14,8 +15,13 @@ pub(super) fn compact(value: Value) -> se_types::Result<Value> {
 
 fn trim(schema: &mut Schema) {
     if let Some(object) = schema.as_object_mut() {
-        for key in ["$schema", "title", "description", "format"] {
+        for key in ["$schema", "title", "format"] {
             object.remove(key);
+        }
+        if let Some(Value::String(description)) = object.get_mut("description")
+            && let Some((first, _)) = description.split_once('\n')
+        {
+            *description = first.trim_end().to_owned();
         }
         if object.get("default") == Some(&Value::Null) {
             object.remove("default");

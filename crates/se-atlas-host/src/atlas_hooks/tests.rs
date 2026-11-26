@@ -18,7 +18,6 @@ fn native_inputs_are_narrow_and_output_cannot_decide_permissions() -> Result<()>
         "rg alpha | cat",
         "rg $(credential)",
         "cat ../private",
-        "rg alpha elsewhere",
     ] {
         assert!(classify(&event("Bash", serde_json::json!({"command":command}))).is_none());
     }

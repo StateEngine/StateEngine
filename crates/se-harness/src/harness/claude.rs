@@ -36,6 +36,8 @@ pub struct ClaudeLaunch<'a> {
     pub conversation: &'a ProviderSessionId,
     /// True resumes the verified saved conversation; false starts it new.
     pub resume: bool,
+    /// Adds [`crate::harness::ATLAS_GUIDANCE`] to the provider's system prompt.
+    pub atlas_guidance: bool,
 }
 
 /// The two protected launch files. The coordinator writes them owner-only
@@ -117,6 +119,13 @@ pub fn invocation(
         "--allowedTools".into(),
         format!("mcp__{MCP_SERVER}").into(),
     ]);
+    if launch.atlas_guidance {
+        // Appended, so the owner's own instructions and memory files stay in force.
+        arguments.extend([
+            "--append-system-prompt".into(),
+            super::ATLAS_GUIDANCE.into(),
+        ]);
+    }
     // Only the default workspace profile inherits native permission settings.
     // A selected read-only policy and all named profiles remain explicit.
     if request.profile.named_profile != "default"

@@ -15,10 +15,10 @@ pub(super) fn location(path: &RelativePath, span: Option<Span>) -> String {
             output.push_str(&format!("-{last}"));
         }
     }
-    // An empty byte range is an extent nobody measured, not zero bytes.
-    match span.filter(|span| span.end_byte > span.start_byte) {
-        Some(span) => output.push_str(&format!(" ({} B)", span.end_byte - span.start_byte)),
-        None => output.push_str(" (size unavailable)"),
+    // An empty byte range is an extent nobody measured, not zero bytes, so it
+    // shows no size at all; JSON keeps the raw span.
+    if let Some(span) = span.filter(|span| span.end_byte > span.start_byte) {
+        output.push_str(&format!(" ({} B)", span.end_byte - span.start_byte));
     }
     output
 }

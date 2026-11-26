@@ -6,7 +6,22 @@ use se_types::{
     code::{AtlasText, QueryText, RootId},
 };
 use serde::{Deserialize, Serialize};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+/// The whole provider hook: process start, configuration, one local IPC round
+/// trip and the host's answer. Windows process creation and named pipes are
+/// slower than Unix sockets.
+pub const HOOK_DEADLINE: Duration = if cfg!(windows) {
+    Duration::from_millis(100)
+} else {
+    Duration::from_millis(75)
+};
+/// The host's share of [`HOOK_DEADLINE`] after admitting the request, leaving
+/// the rest for the hook process around it.
+pub const HOOK_HOST_BUDGET: Duration = if cfg!(windows) {
+    Duration::from_millis(70)
+} else {
+    Duration::from_millis(50)
+};
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub enum AtlasHookTarget {

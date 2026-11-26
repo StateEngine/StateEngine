@@ -3,6 +3,8 @@
 #[cfg(any(target_os = "linux", windows))]
 use crate::{bootstrap::Bootstrap, route};
 #[cfg(any(target_os = "linux", windows))]
+pub(crate) mod context;
+#[cfg(any(target_os = "linux", windows))]
 mod mail;
 use se_host::adoption::Kind;
 #[cfg(any(target_os = "linux", windows))]
@@ -120,25 +122,9 @@ fn registered(
         .read_to_end(&mut bytes)
         .map_err(failure)?;
     let payload: serde_json::Value = se_host::client::wire::decode_json(&bytes, 1024 * 1024)?;
-    let get = |key| {
-        payload
-            .get(key)
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| {
-                SeError::invalid(
-                    "native adoption hook",
-                    "session_id, transcript_path and cwd strings",
-                )
-            })
+    let Some((conversation, transcript)) = conversation(&payload, &cwd)? else {
+        return Ok(0);
     };
-    if se_proc::canonicalize_path(Path::new(get("cwd")?)).map_err(failure)? != cwd {
-        return Ok(0);
-    }
-    let conversation = se_types::ProviderSessionId::new(get("session_id")?.to_owned())?;
-    if uuid::Uuid::parse_str(conversation.as_str()).is_err() {
-        return Ok(0);
-    }
-    let transcript = NativePath::from_local(PathBuf::from(get("transcript_path")?))?;
     let kind = kind(args)
         .ok_or_else(|| SeError::invalid("native adoption", "a supported provider entry"))?;
     let input = Input {
@@ -150,6 +136,7 @@ fn registered(
         action,
         cursor: None,
         offered: vec![],
+        context: None,
     };
     let config = crate::config::load(&home.join("config.toml"), false)?;
     let cx = Bootstrap {
@@ -183,6 +170,34 @@ fn registered(
     }
     forward_lifecycle(&cx, input)?;
     Ok(0)
+}
+/// The conversation and transcript a hook payload names, or `None` when it
+/// ran in another folder or names no provider conversation id.
+#[cfg(any(target_os = "linux", windows))]
+fn conversation(
+    payload: &serde_json::Value,
+    cwd: &Path,
+) -> Result<Option<(se_types::ProviderSessionId, NativePath)>> {
+    let get = |key| {
+        payload
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                SeError::invalid(
+                    "native adoption hook",
+                    "session_id, transcript_path and cwd strings",
+                )
+            })
+    };
+    if se_proc::canonicalize_path(Path::new(get("cwd")?)).map_err(failure)? != cwd {
+        return Ok(None);
+    }
+    let conversation = se_types::ProviderSessionId::new(get("session_id")?.to_owned())?;
+    if uuid::Uuid::parse_str(conversation.as_str()).is_err() {
+        return Ok(None);
+    }
+    let transcript = NativePath::from_local(PathBuf::from(get("transcript_path")?))?;
+    Ok(Some((conversation, transcript)))
 }
 #[cfg(any(target_os = "linux", windows))]
 fn forward_lifecycle(cx: &Bootstrap, input: Input) -> Result<serde_json::Value> {

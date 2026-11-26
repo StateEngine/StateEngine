@@ -309,7 +309,10 @@ impl Harness for AcpHarness {
                 identity: request.identity.clone(),
                 initial: Mutex::new(Some((
                     request.key.as_str().into(),
-                    request.initial_input.as_str().into(),
+                    crate::harness::with_atlas_guidance(
+                        self.configuration.atlas.enabled,
+                        request.initial_input.as_str(),
+                    ),
                 ))),
                 incarnation: Mutex::new(None),
                 capture_offset: AtomicU64::new(0),

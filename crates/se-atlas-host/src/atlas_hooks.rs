@@ -126,7 +126,8 @@ fn outline(
 }
 
 /// Classify only simple search tools and explicit single-file reads. Shell text
-/// is never executed here, and ambiguous shell syntax is intentionally ignored.
+/// is never executed here, and ambiguous shell syntax is intentionally ignored:
+/// a search names its pattern among ordinary options, quotes and paths.
 pub fn classify(payload: &serde_json::Value) -> Option<AtlasHookTarget> {
     if payload.get("hook_event_name")?.as_str()? != "PreToolUse" {
         return None;
@@ -179,17 +180,9 @@ pub fn classify(payload: &serde_json::Value) -> Option<AtlasHookTarget> {
                 .get("command")
                 .or_else(|| input.get("cmd"))?
                 .as_str()?;
-            if command.contains([
-                ';', '|', '&', '>', '<', '$', '`', '\n', '\r', '\\', '\'', '"',
-            ]) {
-                return None;
-            }
-            let words: Vec<_> = command.split_ascii_whitespace().take(5).collect();
-            match words.as_slice() {
-                ["rg" | "grep", query] => symbol(query),
-                ["rg" | "grep", "-n" | "-F" | "--fixed-strings", query] => symbol(query),
-                ["cat", path] => file(path),
-                _ => None,
+            match shell::command(command)? {
+                shell::Command::Search(pattern) => symbol(&pattern),
+                shell::Command::Read(path) => file(&path),
             }
         }
         _ => None,
@@ -221,5 +214,6 @@ pub fn hook_configuration(
     )
 }
 
+mod shell;
 #[cfg(test)]
 mod tests;

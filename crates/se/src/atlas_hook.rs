@@ -11,30 +11,37 @@ use std::{
     io::{Read as _, Write as _},
     path::PathBuf,
     sync::{Arc, atomic::AtomicBool},
-    time::{Duration, Instant},
+    time::Instant,
 };
 const ENTRY: &str = "--stateengine-private-atlas-hook";
 pub fn entry(args: &[OsString]) -> Option<std::process::ExitCode> {
     if args.get(1).is_none_or(|arg| arg != ENTRY) {
         return None;
     }
-    if args.len() != 3 {
+    if !(3..=4).contains(&args.len()) {
         return Some(std::process::ExitCode::SUCCESS);
     }
-    let home = PathBuf::from(&args[2]);
-    let cap = if cfg!(windows) {
-        Duration::from_millis(20)
-    } else {
-        Duration::from_millis(8)
+    // A managed launch passes the home; an adopted install also names its
+    // provider, which the adoption route then proves natively.
+    let adopted = match args.get(3) {
+        None => None,
+        Some(name) => match se_host::adoption::Kind::ALL
+            .into_iter()
+            .find(|kind| name.to_str() == Some(kind.name()))
+        {
+            Some(kind) => Some(kind),
+            None => return Some(std::process::ExitCode::SUCCESS),
+        },
     };
-    let end = Instant::now() + cap;
+    let home = PathBuf::from(&args[2]);
+    let end = Instant::now() + se_core::ops::atlas_hook::HOOK_DEADLINE;
     let (send, receive) = std::sync::mpsc::sync_channel(1);
     // Blocking stdin or an unavailable peer cannot delay this process's exit.
     // This thread exists only for the finite hook process, never in the host.
     let worker = std::thread::Builder::new()
         .name("atlas-hook".into())
         .spawn(move || {
-            let _ = send.send(run(home, end).ok().flatten());
+            let _ = send.send(run(home, adopted, end).ok().flatten());
         });
     if worker.is_ok()
         && let Ok(Some(output)) =
@@ -46,7 +53,11 @@ pub fn entry(args: &[OsString]) -> Option<std::process::ExitCode> {
     }
     Some(std::process::ExitCode::SUCCESS)
 }
-fn run(home: PathBuf, end: Instant) -> Result<Option<String>, Box<dyn std::error::Error>> {
+fn run(
+    home: PathBuf,
+    adopted: Option<se_host::adoption::Kind>,
+    end: Instant,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let mut input = Vec::new();
     std::io::stdin().take(16385).read_to_end(&mut input)?;
     if input.len() > 16384 || Instant::now() >= end {
@@ -66,8 +77,24 @@ fn run(home: PathBuf, end: Instant) -> Result<Option<String>, Box<dyn std::error
         return Ok(None);
     }
     let Some(secret) = context.session.as_ref() else {
+        // A provider the owner started directly takes the adoption route.
+        #[cfg(any(target_os = "linux", windows))]
+        if let (Some(kind), AnyOp::AtlasAugment(augment)) = (adopted, operation) {
+            return Ok(crate::adoption::context::lookup(
+                &context,
+                kind,
+                &payload,
+                augment.target,
+                end,
+            )?);
+        }
         return Ok(None);
     };
+    if adopted.is_some() {
+        // A managed launch installs its own hook; the account-wide adopted
+        // entry stays silent there so the context arrives once.
+        return Ok(None);
+    }
     let files = crate::route::files::Files::open(&context.home)?;
     let Read::Present { value: endpoint } = crate::route::execute::endpoint(&files)? else {
         return Ok(None);

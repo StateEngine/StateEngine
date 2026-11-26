@@ -398,6 +398,7 @@ impl LaunchCoordinator {
                 options.http_port,
             )
             .with_bells(context.mail_waits.bells.clone())
+            .with_atlas_guidance(options.configuration.atlas.enabled)
             .with_atlas_hooks(
                 (options.configuration.atlas.enabled && options.configuration.atlas.hooks)
                     .then_some(crate::atlas_hooks::hook_configuration),

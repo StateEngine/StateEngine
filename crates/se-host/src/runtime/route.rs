@@ -622,7 +622,7 @@ fn prepare_route(
         && let HostedInput::Operation(se_core::ops::AnyOp::AtlasAugment(input)) =
             &mut admitted.input
     {
-        input.deadline = Some(admitted_at + std::time::Duration::from_millis(5));
+        input.deadline = Some(admitted_at + se_core::ops::atlas_hook::HOOK_HOST_BUDGET);
     }
     // Long polls, remote exchanges and pinned-source capture retain their
     // specialized fresh checks. None may carry this finite pin across awaits.

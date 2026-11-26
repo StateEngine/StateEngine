@@ -1,6 +1,7 @@
 //! Observe user-owned sessions through explicit registration and native proof.
 //! The same bounded writer and pinned capture consumer serve managed sessions.
 use super::*;
+mod context;
 use crate::{
     adoption::{Action, NativeCall},
     client::lease::Deadline,
@@ -60,6 +61,9 @@ impl HostedRouter {
     ) -> Result<crate::OperationOutput> {
         self.check_open()?;
         let NativeCall { input, provider } = call;
+        if input.action == Action::Context {
+            return self.adopted_context(input, deadline).await;
+        }
         let identity = observed_identity(&input, &provider, self.execution.generation)?;
         let _serial = if input.action == Action::Mail {
             None
