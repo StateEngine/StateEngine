@@ -65,6 +65,10 @@ pub trait WriterFaultObserver: Send + Sync {
     fn observe_writer(&self, error: &se_store::StoreError);
 }
 
+/// Boxed read-phase closure executed by a host implementing [`ReturnMailHost`].
+pub type ReturnMailReadJob =
+    Box<dyn FnOnce(&se_store::ReadPhase) -> se_store::StoreResult<Box<dyn Any + Send>> + Send>;
+
 /// Narrow host runtime port for source-side return-mail couriers.
 pub trait ReturnMailHost: Send + Sync {
     fn generation(&self) -> u64;
@@ -83,18 +87,8 @@ pub trait ReturnMailHost: Send + Sync {
         call: &'a se_remote::RemoteCallContext,
     ) -> RemoteFuture<'a, std::sync::Arc<dyn se_remote::RemoteClient>>;
     fn store_info(&self) -> RemoteFuture<'_, se_store::StoreInfo>;
-    fn read_owned(
-        &self,
-        work: Box<
-            dyn FnOnce(&se_store::ReadPhase) -> se_store::StoreResult<Box<dyn Any + Send>> + Send,
-        >,
-    ) -> RemoteFuture<'_, Box<dyn Any + Send>>;
-    fn read_background(
-        &self,
-        work: Box<
-            dyn FnOnce(&se_store::ReadPhase) -> se_store::StoreResult<Box<dyn Any + Send>> + Send,
-        >,
-    ) -> RemoteFuture<'_, Box<dyn Any + Send>>;
+    fn read_owned(&self, work: ReturnMailReadJob) -> RemoteFuture<'_, Box<dyn Any + Send>>;
+    fn read_background(&self, work: ReturnMailReadJob) -> RemoteFuture<'_, Box<dyn Any + Send>>;
     fn submit_batch(
         &self,
         batch: se_store::AtomicBatch,

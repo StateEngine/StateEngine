@@ -416,7 +416,11 @@ mod tests {
 
     #[cfg(unix)]
     fn run_prepare(home: &std::path::Path) -> std::process::Output {
-        let script = staging::prepare(".stateengine-runtime/deadbeef", false, false);
+        let script = staging::prepare(
+            ".stateengine-runtime/deadbeef",
+            false,
+            cfg!(target_os = "macos"),
+        );
         std::process::Command::new("bash")
             .arg("-c")
             .arg(format!("cd {} && {}", home.display(), script))
@@ -433,7 +437,11 @@ mod tests {
         // The script checks the home directory itself; 755 passes the mode
         // gate regardless of this process's ambient umask.
         std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).expect("home mode");
-        let script = staging::prepare(".stateengine-runtime/deadbeef", false, false);
+        let script = staging::prepare(
+            ".stateengine-runtime/deadbeef",
+            false,
+            cfg!(target_os = "macos"),
+        );
         let output = std::process::Command::new("bash")
             .arg("-c")
             .arg(format!("cd {} && umask 002 && {}", home.display(), script))

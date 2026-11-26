@@ -17,8 +17,8 @@ pub mod ssh;
 pub mod view_request;
 
 pub use ports::{
-    BlockingRunner, ReturnMailHost, SESSION_BLOCKING_TIMEOUT, WriterFaultObserver,
-    return_mail_background_read, return_mail_read, run_foreground, run_owned,
+    BlockingRunner, ReturnMailHost, ReturnMailReadJob, SESSION_BLOCKING_TIMEOUT,
+    WriterFaultObserver, return_mail_background_read, return_mail_read, run_foreground, run_owned,
 };
 pub use se_remote::{
     ClientConnectionId, CredentialSource, RemoteCallContext, RemoteClient, RemoteConnector,

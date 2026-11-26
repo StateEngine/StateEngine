@@ -168,10 +168,7 @@ impl se_remote_host::ReturnMailHost for HostReturnMail {
     }
     fn read_owned(
         &self,
-        work: Box<
-            dyn FnOnce(&se_store::ReadPhase) -> se_store::StoreResult<Box<dyn std::any::Any + Send>>
-                + Send,
-        >,
+        work: se_remote_host::ReturnMailReadJob,
     ) -> RemoteFuture<'_, Box<dyn std::any::Any + Send>> {
         Box::pin(async move {
             let reads = self.context.reads.clone();
@@ -188,10 +185,7 @@ impl se_remote_host::ReturnMailHost for HostReturnMail {
     }
     fn read_background(
         &self,
-        work: Box<
-            dyn FnOnce(&se_store::ReadPhase) -> se_store::StoreResult<Box<dyn std::any::Any + Send>>
-                + Send,
-        >,
+        work: se_remote_host::ReturnMailReadJob,
     ) -> RemoteFuture<'_, Box<dyn std::any::Any + Send>> {
         Box::pin(async move {
             let reads = self.context.reads.clone();
