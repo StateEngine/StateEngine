@@ -3,3 +3,5 @@
 # Release inputs must retain the exact published license bytes on every host.
 scripts/release/licenses/** -text whitespace=-blank-at-eof
 LICENSE -text
+LICENSE-MIT -text
+LICENSE-APACHE -text

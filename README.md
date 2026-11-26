@@ -229,7 +229,7 @@ on Windows and `~/Library/Application Support/StateEngine` on macOS (`--home DIR
 StateEngine is a Rust workspace; see [docs/INSTALL.md](docs/INSTALL.md#build-from-source)
 to build it.
 
-The Rust workspace is licensed under the [GNU Affero General Public License, version 3 only](LICENSE).
+The Rust workspace is dual-licensed under either the [MIT License](LICENSE-MIT) or the [Apache License, Version 2.0](LICENSE-APACHE), at your option.
 Third-party components retain their own licenses.
 
 Outside pull requests require a signed [contributor agreement](CONTRIBUTING.md) before merge.

@@ -1,8 +1,8 @@
 StateEngine
 
-License identifier: AGPL-3.0-only
-StateEngine is licensed under the GNU Affero General Public License, version 3 only.
-The complete license is notices/stateengine/LICENSE inside notices.tar.
+License identifier: MIT OR Apache-2.0
+StateEngine is dual-licensed under the MIT License or the Apache License, Version 2.0, at your option.
+The complete license texts are in notices/stateengine/ inside notices.tar.
 Corresponding source: https://github.com/StateEngine/StateEngine
 The source commit for this archive is recorded in build.json.
 

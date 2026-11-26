@@ -516,6 +516,9 @@ def main():
     notices.mkdir()
     (notices / "stateengine").mkdir()
     shutil.copyfile(ROOT / "LICENSE", notices / "stateengine/LICENSE")
+    for extra in ("LICENSE-MIT", "LICENSE-APACHE"):
+        if (ROOT / extra).is_file():
+            shutil.copyfile(ROOT / extra, notices / "stateengine" / extra)
     for artifact in artifacts:
         package = packages[artifact["package_id"]]
         key = f'{package["name"]}-{package["version"]}'
