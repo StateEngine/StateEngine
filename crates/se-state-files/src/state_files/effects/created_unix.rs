@@ -295,7 +295,7 @@ fn try_create_tmpfile_and_publish(
     dir: &Path,
     bytes: &[u8],
 ) -> Result<bool> {
-    use std::io::Write;
+    use std::{io::Write, os::unix::fs::PermissionsExt};
     let dot = c".";
     // SAFETY: held parent directory fd and literal "." with O_TMPFILE creates
     // an unlinked anonymous regular file that no other writer can swap by name.
@@ -321,6 +321,21 @@ fn try_create_tmpfile_and_publish(
     file.write_all(bytes)
         .and_then(|()| file.sync_all())
         .map_err(|e| io_error("write new user file", path, e))?;
+    // Best-effort fchmod before linkat so mode is 0600 before publication even
+    // under a restrictive umask; older Linux kernels (< 6.6) may return
+    // EINVAL/EOPNOTSUPP on unlinked O_TMPFILE fds, so enforce after linkat too.
+    let pre_chmod_ok = match file.set_permissions(std::fs::Permissions::from_mode(0o600)) {
+        Ok(()) => true,
+        Err(err)
+            if matches!(
+                err.raw_os_error(),
+                Some(libc::EINVAL | libc::EOPNOTSUPP | libc::ENOENT)
+            ) =>
+        {
+            false
+        }
+        Err(err) => return Err(io_error("protect staged user file", path, err)),
+    };
     let proc_fd = std::ffi::CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
         .map_err(|_| unsafe_path("invalid proc fd path", path))?;
     // SAFETY: links the exact held open inode into (parent_dir, leaf) without
@@ -341,6 +356,10 @@ fn try_create_tmpfile_and_publish(
         }
         return Err(io_error("publish new user file", path, err));
     }
+    if !pre_chmod_ok {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| io_error("protect published user file", path, e))?;
+    }
     drop(file);
     parent_dir
         .sync_all()
@@ -348,265 +367,62 @@ fn try_create_tmpfile_and_publish(
     Ok(true)
 }
 
-fn cleanup_private_stage(
-    parent_fd: i32,
-    stage_dir: &File,
-    stage_id: (u64, u64),
-    unlink_data: bool,
-    stage_name: &std::ffi::CStr,
-) -> std::result::Result<(), io::Error> {
-    if unlink_data {
-        let data = c"data";
-        // SAFETY: held verified private 0700 stage_dir fd and "data" created by this call.
-        if unsafe { libc::unlinkat(stage_dir.as_raw_fd(), data.as_ptr(), 0) } < 0 {
-            let err = io::Error::last_os_error();
-            if err.kind() != io::ErrorKind::NotFound {
-                return Err(err);
-            }
-        }
-    }
-    // Only remove `stage_name` when positive custody of that exact directory
-    // entry is re-established; otherwise preserve it untouched.
-    // SAFETY: held parent_fd, NUL-terminated stage_name, directory + no-follow.
-    let raw = unsafe {
-        libc::openat(
-            parent_fd,
-            stage_name.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-    };
-    if raw < 0 {
-        let err = io::Error::last_os_error();
-        if matches!(
-            err.raw_os_error(),
-            Some(libc::ENOENT | libc::ENOTDIR | libc::ELOOP)
-        ) {
-            return Ok(());
-        }
-        return Err(err);
-    }
-    // SAFETY: successful openat transferred unique ownership of `raw`.
-    let reopened = unsafe { <File as std::os::unix::io::FromRawFd>::from_raw_fd(raw) };
-    let meta = reopened.metadata()?;
-    // SAFETY: geteuid has no preconditions.
-    let euid = unsafe { libc::geteuid() };
-    let matches_custody =
-        meta.is_dir() && (meta.dev(), meta.ino()) == stage_id && meta.uid() == euid;
-    drop(reopened);
-    if !matches_custody {
-        return Ok(());
-    }
-    // SAFETY: held parent_fd and verified staging directory owned by this call.
-    if unsafe { libc::unlinkat(parent_fd, stage_name.as_ptr(), libc::AT_REMOVEDIR) } < 0 {
-        let err = io::Error::last_os_error();
-        if err.kind() != io::ErrorKind::NotFound {
-            return Err(err);
-        }
-    }
-    Ok(())
-}
-
-fn attach_stage_cleanup(
-    op: &'static str,
-    path: &Path,
-    error: crate::state_files::StateFileError,
-    cleanup: std::result::Result<(), io::Error>,
-) -> crate::state_files::StateFileError {
-    match cleanup {
-        Ok(()) => error,
-        Err(cleanup_err) => io_error(
-            op,
-            path,
-            io::Error::other(format!("{error}; staging cleanup failed: {cleanup_err}")),
-        ),
-    }
-}
-
-fn open_verified_private_stage(
-    parent_dir: &File,
-    stage_name: &std::ffi::CStr,
-    path: &Path,
-) -> Result<(File, (u64, u64))> {
-    use std::os::unix::fs::PermissionsExt;
-    // SAFETY: held parent_dir fd and unpredictable random private dir name.
-    if unsafe { libc::mkdirat(parent_dir.as_raw_fd(), stage_name.as_ptr(), 0o700) } < 0 {
-        return Err(io_error(
-            "create private staging directory",
-            path,
-            io::Error::last_os_error(),
-        ));
-    }
-    // If openat fails, we have no handle proving custody of `stage_name`, so
-    // return without attempting unlinkat(AT_REMOVEDIR).
-    let stage_dir = owned(
-        // SAFETY: held parent_dir fd, literal name, O_DIRECTORY | O_NOFOLLOW.
-        unsafe {
-            libc::openat(
-                parent_dir.as_raw_fd(),
-                stage_name.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
-        },
-        "open private staging directory",
-        path,
-    )?;
-    // Prove ownership of the opened directory before mutating or removing it.
-    let stage_id = id(&stage_dir, path, true, true)?;
-    let protect_stage = || -> Result<()> {
-        stage_dir
-            .set_permissions(std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| io_error("protect private staging directory", path, e))?;
-        #[cfg(target_os = "macos")]
-        super::super::clear_created_acl(&stage_dir, path, true)?;
-        let mode = stage_dir
-            .metadata()
-            .map_err(|e| io_error("inspect private staging directory", path, e))?
-            .mode()
-            & 0o777;
-        if mode != 0o700 {
-            return Err(unsafe_path(
-                "private staging directory is not mode 0700",
-                path,
-            ));
-        }
-        Ok(())
-    };
-    if let Err(err) = protect_stage() {
-        let cleanup = cleanup_private_stage(
-            parent_dir.as_raw_fd(),
-            &stage_dir,
-            stage_id,
-            false,
-            stage_name,
-        );
-        return Err(attach_stage_cleanup(
-            "verify private staging directory (staging cleanup also failed)",
-            path,
-            err,
-            cleanup,
-        ));
-    }
-    Ok((stage_dir, stage_id))
-}
-
-fn create_via_private_staging_dir(
+fn create_direct_exclusive(
     parent_dir: &File,
     leaf: &std::ffi::CStr,
     path: &Path,
     dir: &Path,
     bytes: &[u8],
 ) -> Result<()> {
-    use std::io::Write;
-
-    let stage_name = random_name(path, ".se-stage-")?;
-    let (stage_dir, stage_id) = open_verified_private_stage(parent_dir, &stage_name, path)?;
-    let data = c"data";
-    let mut file = match owned(
-        // SAFETY: held verified mode-0700 private stage_dir fd and literal "data".
+    use std::{io::Write, os::unix::fs::PermissionsExt};
+    // Exclusively create the target directly without staging directories or
+    // name-based AT_REMOVEDIR cleanup in a potentially shared parent folder.
+    // O_CREAT|O_EXCL|O_NOFOLLOW atomically refuses existing files and symlinks,
+    // and returns a writable fd even under a restrictive umask (e.g. 0777).
+    let mut file = owned(
+        // SAFETY: held verified parent_dir fd and literal NUL-terminated leaf.
         unsafe {
             libc::openat(
-                stage_dir.as_raw_fd(),
-                data.as_ptr(),
+                parent_dir.as_raw_fd(),
+                leaf.as_ptr(),
                 libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
                 0o600,
             )
         },
-        "create staged user file",
+        "create new user file",
         path,
-    ) {
-        Ok(file) => file,
-        Err(err) => {
-            // Never unlink "data" when O_CREAT|O_EXCL did not create it.
-            let cleanup = cleanup_private_stage(
-                parent_dir.as_raw_fd(),
-                &stage_dir,
-                stage_id,
-                false,
-                &stage_name,
-            );
-            return Err(attach_stage_cleanup(
-                "create staged user file (staging cleanup also failed)",
+    )?;
+    let _ = id(&file, path, false, true)?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| {
+            io_error(
+                "protect new user file (newly created file was left in place)",
                 path,
-                err,
-                cleanup,
-            ));
-        }
-    };
-    if let Err(error) = file
-        .write_all(bytes)
+                e,
+            )
+        })?;
+    #[cfg(target_os = "macos")]
+    super::super::clear_created_acl(&file, path, false)?;
+    file.write_all(bytes)
         .and_then(|()| file.sync_all())
-        .map_err(|e| io_error("write new user file", path, e))
-    {
-        drop(file);
-        let cleanup = cleanup_private_stage(
-            parent_dir.as_raw_fd(),
-            &stage_dir,
-            stage_id,
-            true,
-            &stage_name,
-        );
-        return Err(attach_stage_cleanup(
-            "write new user file (staging cleanup also failed)",
-            path,
-            error,
-            cleanup,
-        ));
-    }
-    // SAFETY: held private 0700 stage_dir fd and held parent_dir fd; linkat
-    // publishes atomically without replacement (fails with EEXIST if leaf exists).
-    let linked = unsafe {
-        libc::linkat(
-            stage_dir.as_raw_fd(),
-            data.as_ptr(),
-            parent_dir.as_raw_fd(),
-            leaf.as_ptr(),
-            0,
-        )
-    };
-    let link_err = (linked < 0).then(io::Error::last_os_error);
+        .map_err(|e| {
+            io_error(
+                "write new user file (newly created file may be incomplete and was left in place)",
+                path,
+                e,
+            )
+        })?;
     drop(file);
-    let sync_err = if link_err.is_none() {
-        parent_dir.sync_all().err()
-    } else {
-        None
-    };
-    let cleanup_res = cleanup_private_stage(
-        parent_dir.as_raw_fd(),
-        &stage_dir,
-        stage_id,
-        true,
-        &stage_name,
-    );
-    match (link_err, sync_err, cleanup_res) {
-        (Some(err), _, Ok(())) => Err(io_error("publish new user file", path, err)),
-        (Some(err), _, Err(cleanup)) => Err(io_error(
-            "publish new user file (staging cleanup also failed)",
-            path,
-            io::Error::other(format!("{err}; staging cleanup failed: {cleanup}")),
-        )),
-        (None, Some(sync), Ok(())) => {
-            Err(io_error("sync user file parent after publish", dir, sync))
-        }
-        (None, Some(sync), Err(cleanup)) => Err(io_error(
-            "sync user file parent after publish (staging cleanup also failed)",
-            dir,
-            io::Error::other(format!("{sync}; staging cleanup failed: {cleanup}")),
-        )),
-        (None, None, Err(cleanup)) => Err(io_error(
-            "new user file published and synced, but staging cleanup failed",
-            path,
-            cleanup,
-        )),
-        (None, None, Ok(())) => Ok(()),
-    }
+    parent_dir
+        .sync_all()
+        .map_err(|e| io_error("sync user file parent after create", dir, e))
 }
 
 /// Exclusively create a new regular file in a user-owned external directory
 /// without requiring `0700` on the parent directory. Validates the destination
-/// before staging, maintains handle custody through atomic no-replace
-/// publication (`O_TMPFILE` on Linux, private `0700` staging dir otherwise),
-/// always syncs the parent after publication, and reports publication, sync,
-/// and cleanup failures distinctly.
+/// before creating, uses `O_TMPFILE` + `linkat` on Linux when supported and
+/// direct `O_CREAT|O_EXCL|O_NOFOLLOW` otherwise (avoiding staging directories
+/// or name-based `AT_REMOVEDIR` in a shared parent), and always syncs the parent.
 pub(in crate::state_files) fn create_new_file(path: &Path, bytes: &[u8]) -> Result<()> {
     let dir = path
         .parent()
@@ -617,5 +433,5 @@ pub(in crate::state_files) fn create_new_file(path: &Path, bytes: &[u8]) -> Resu
     if try_create_tmpfile_and_publish(&parent_dir, &leaf, path, dir, bytes)? {
         return Ok(());
     }
-    create_via_private_staging_dir(&parent_dir, &leaf, path, dir, bytes)
+    create_direct_exclusive(&parent_dir, &leaf, path, dir, bytes)
 }
