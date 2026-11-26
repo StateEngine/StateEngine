@@ -604,7 +604,7 @@ pub fn selected_meta(matches: &ArgMatches) -> Result<&'static se_core::registry:
     if path.is_empty() {
         return Ok(&ProjectStatus::META);
     }
-    if path.len() == 1 && path[0] == "atlas" {
+    if is_group(&path) {
         return Ok(&MetaHelp::META);
     }
     let same_path = |meta: &se_core::registry::OpMeta| {
@@ -641,6 +641,27 @@ pub fn selected_meta(matches: &ArgMatches) -> Result<&'static se_core::registry:
                     .join(" "),
             )
         })
+}
+/// A command group named without a subcommand, such as `se captain`: show its help.
+pub(crate) fn is_group(path: &[String]) -> bool {
+    let leaf = |meta: &se_core::registry::OpMeta| match meta.cli {
+        CliExposure::Leaf {
+            path: registered, ..
+        } => Some(registered),
+        _ => None,
+    };
+    let starts = |registered: &[&str]| {
+        registered.len() >= path.len() && registered.iter().zip(path).all(|(a, b)| *a == b)
+    };
+    !path.is_empty()
+        && !CATALOGUE
+            .iter()
+            .filter_map(|meta| leaf(meta))
+            .any(|registered| registered.len() == path.len() && starts(registered))
+        && CATALOGUE
+            .iter()
+            .filter_map(|meta| leaf(meta))
+            .any(|registered| registered.len() > path.len() && starts(registered))
 }
 fn number(m: &ArgMatches, id: &str) -> Result<u16> {
     required(m, id)?

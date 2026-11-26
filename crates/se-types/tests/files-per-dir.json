@@ -7,7 +7,7 @@
   "crates/se-host/src/process": 70,
   "crates/se-host/src/remote": 35,
   "crates/se-harness/src/harness": 58,
-  "crates/se/src/route": 55,
+  "crates/se/src/route": 56,
   "crates/se-state-files/src/state_files": 41,
   "crates/se-atlas-index/src/extract": 15,
   "crates/se-atlas-index/src/store": 11,

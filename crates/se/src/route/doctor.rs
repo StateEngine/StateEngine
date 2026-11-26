@@ -17,6 +17,7 @@ mod installation;
 mod lifecycle;
 pub(super) mod permissions;
 mod plan;
+mod providers;
 
 struct Observed {
     diagnosis: Diagnosis,
@@ -88,6 +89,7 @@ fn observe<R: se_store::ReadStore>(
     checks.push(endpoint_check);
     drop(lock);
     checks.extend(installation::checks(cx, &at));
+    checks.extend(providers::checks(cx, &at));
     Ok(Observed {
         diagnosis: Diagnosis::new(
             at,

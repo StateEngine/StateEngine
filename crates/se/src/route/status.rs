@@ -505,8 +505,24 @@ pub(super) fn finish<R: ReadStore>(
         value.projects = Some(projects::page(reader, admission, &cx.home)?);
     }
     if value.removal.is_none() {
-        if let Some(row) = value.agents.as_ref().and_then(|page| page.items().first()) {
-            let command = if row.session.state == "never-launched" {
+        let rows = value.agents.as_ref().map_or(&[][..], |page| page.items());
+        // A first launch is only advice while no agent has been launched; afterwards the
+        // first launched agent is the one worth inspecting. A truncated page cannot show
+        // that none was launched, so it never yields the first-launch hint.
+        let complete = value
+            .agents
+            .as_ref()
+            .is_none_or(|page| page.window().complete());
+        let fresh = complete && rows.iter().all(|row| row.session.state == "never-launched");
+        let row = if fresh {
+            rows.first()
+        } else {
+            rows.iter()
+                .find(|row| row.session.state != "never-launched")
+                .or(rows.first())
+        };
+        if let Some(row) = row {
+            let command = if fresh {
                 AgentCommand::launch_in_home(&row.id, &cx.home, &scope::project(admission)?, true)
             } else {
                 None

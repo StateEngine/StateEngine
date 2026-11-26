@@ -104,9 +104,7 @@ pub fn run(
             &mut dispatch,
         );
     }
-    if let AnyOp::MessageSend(input) = &operation {
-        remote::pending_native(&context, input, json, &mut stderr)?;
-    }
+    let pending_send = remote::PendingSend::before(&context, &operation, json, &mut stderr)?;
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if matches!(&operation, AnyOp::RuntimeUp(input) if input.foreground) {
         return foreground_takeover(&context, json, quiet, stdout, stderr);
@@ -119,6 +117,7 @@ pub fn run(
     if foreground_fallback && job_breakaway_to_foreground(&result, &mut stderr)? {
         return foreground_takeover(&context, json, quiet, stdout, stderr);
     }
+    pending_send.after(&context, &result, &mut stderr)?;
     warn_maintenance_pending(&result, &mut stderr);
     if let Some(event) = hook_event
         && !json

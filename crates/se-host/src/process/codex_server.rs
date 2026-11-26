@@ -64,6 +64,11 @@ pub(crate) fn setup_codex_login(_: &crate::adoption::FirstSetup) -> Result<PathB
     host_codex_home()
 }
 
+/// MCP setup and diagnosis read the same login's configuration that launch would choose.
+pub(crate) fn mcp_codex_home() -> Result<PathBuf> {
+    host_codex_home()
+}
+
 /// Every shared-server diagnostic names the login it concerns.
 fn for_login(failure: se_types::SeError, login: &Path) -> se_types::SeError {
     se_core::scope::unreadable(

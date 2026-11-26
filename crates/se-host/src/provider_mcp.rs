@@ -5,11 +5,15 @@ use se_types::{Result, SeError};
 use std::{path::Path, process::Stdio, time::Duration};
 use tokio::{io::AsyncReadExt, process::Command};
 
+pub mod codex_transport;
+
 const LIMIT: u64 = 65_536;
 
+/// Registers the MCP entry for the agent's own provider only; other providers' files stay untouched.
 pub fn configure(
     root: &Path,
     configuration: &se_config::config_policy::ConfigFile,
+    provider: se_types::Provider,
     alternate_home: Option<&Path>,
 ) -> Result<Vec<String>> {
     let home = alternate_home
@@ -19,38 +23,75 @@ pub fn configure(
         })
         .transpose()?;
     let args = home.map_or_else(|| vec!["mcp"], |home| vec!["--home", home, "mcp"]);
+    let kind = match provider {
+        se_types::Provider::Claude => Kind::Claude,
+        se_types::Provider::Codex => Kind::Codex,
+        // Other harnesses receive StateEngine's tools at launch; no provider file is edited.
+        _ => return Ok(Vec::new()),
+    };
     let mut changed = Vec::new();
-    for kind in Kind::ALL {
-        let command = configuration.provider_command(kind.provider().into());
-        let path = Path::new(command);
-        if !path.is_absolute()
-            && path.components().count() == 1
-            && std::env::var_os("PATH").is_none()
+    if kind == Kind::Codex {
+        // Codex has one user-wide MCP list: a custom home written to the shared login would
+        // serve every project and break once that home is gone. An explicit CODEX_HOME is a
+        // login chosen for this setup, so it is registered and checked as usual.
+        if alternate_home.is_some() && std::env::var_os("CODEX_HOME").is_none() {
+            changed.push(manual(
+                kind,
+                &args,
+                "Codex MCP settings apply to every project; to use this home with Codex",
+            )?);
+            return Ok(changed);
+        }
+        // An unusable Codex home is refused by name before its files are read, and a
+        // user entry that is broken or unknown stops here, before `codex mcp` runs.
+        usable_config_dir(
+            kind,
+            &provider_config_dirs().map_err(|reason| failure(&reason))?,
+        )?;
+        let (blocking, notes): (Vec<_>, Vec<_>) = codex_transport::observe(root)?
+            .findings()
+            .into_iter()
+            .partition(|finding| {
+                matches!(
+                    finding.severity,
+                    codex_transport::Severity::Blocking | codex_transport::Severity::UnreadableUser
+                )
+            });
+        if !blocking.is_empty() {
+            let reasons: Vec<_> = blocking.into_iter().map(|finding| finding.text).collect();
+            return Err(failure(&reasons.join(" ")));
+        }
+        changed.extend(notes.into_iter().map(|note| format!("note: {}", note.text)));
+    }
+    let command = configuration.provider_command(kind.provider().into());
+    let path = Path::new(command);
+    if !path.is_absolute() && path.components().count() == 1 && std::env::var_os("PATH").is_none() {
+        changed.push(missing(kind, &args)?);
+        return Ok(changed);
+    }
+    match crate::resolve_provider_executable(configuration, kind.provider().into(), None, None) {
+        Ok(executable) if install(root, &executable, kind, &args)? => {
+            changed.push(format!("configured {} MCP", kind.label()));
+        }
+        Ok(_) => (),
+        Err(error)
+            if matches!(
+                error.body.detail(),
+                se_types::Detail::ProviderCliNotFound(_)
+            ) =>
         {
             changed.push(missing(kind, &args)?);
-            continue;
         }
-        match crate::resolve_provider_executable(configuration, kind.provider().into(), None, None)
-        {
-            Ok(executable) if install(root, &executable, kind, &args)? => {
-                changed.push(format!("configured {} MCP", kind.label()));
-            }
-            Ok(_) => (),
-            Err(error)
-                if matches!(
-                    error.body.detail(),
-                    se_types::Detail::ProviderCliNotFound(_)
-                ) =>
-            {
-                changed.push(missing(kind, &args)?);
-            }
-            Err(error) => return Err(error),
-        }
+        Err(error) => return Err(error),
     }
     Ok(changed)
 }
 
 fn missing(kind: Kind, args: &[&str]) -> Result<String> {
+    manual(kind, args, &format!("Install {}, then", kind.label()))
+}
+
+fn manual(kind: Kind, args: &[&str], lead: &str) -> Result<String> {
     let prefix = match kind {
         Kind::Claude => "claude mcp add --scope local stateengine -- se",
         Kind::Codex => "codex mcp add stateengine -- se",
@@ -69,10 +110,7 @@ fn missing(kind: Kind, args: &[&str]) -> Result<String> {
     } else {
         "run"
     };
-    Ok(format!(
-        "Install {}, then {prompt}: {prefix} {words}",
-        kind.label()
-    ))
+    Ok(format!("{lead} {prompt}: {prefix} {words}"))
 }
 
 pub fn install(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) -> Result<bool> {
@@ -82,13 +120,7 @@ pub fn install(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) -> Re
         .map_err(|error| failure(&format!("could not start the setup runtime: {error}")))?;
     // Resolved once: the same checked bindings go to listing, registration and readback.
     let config = provider_config_dirs().map_err(|reason| failure(&reason))?;
-    for (provider, name, dir) in &config {
-        let reason =
-            (*provider == kind.policy()).then(|| unusable_config_dir(name, dir, kind.label()));
-        if let Some(reason) = reason.flatten() {
-            return Err(failure(&reason));
-        }
-    }
+    usable_config_dir(kind, &config)?;
     let setup = Setup {
         root,
         executable,
@@ -113,6 +145,21 @@ pub fn install(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) -> Re
         }
         Ok(true)
     })
+}
+
+/// Refuses, naming the setting and directory, when this harness's configuration home is unusable.
+fn usable_config_dir(
+    kind: Kind,
+    config: &[(Provider, &'static str, std::path::PathBuf)],
+) -> Result<()> {
+    for (provider, name, dir) in config {
+        let reason =
+            (*provider == kind.policy()).then(|| unusable_config_dir(name, dir, kind.label()));
+        if let Some(reason) = reason.flatten() {
+            return Err(failure(&reason));
+        }
+    }
+    Ok(())
 }
 
 /// One harness's setup commands: where they run, and the bindings `install` checked.

@@ -1,3 +1,5 @@
+#[path = "named.rs"]
+mod named;
 #[path = "notification.rs"]
 pub(super) mod notification;
 #[path = "provider.rs"]
@@ -152,6 +154,7 @@ pub(super) fn agent_badge(agent: &se_core::ops::AgentRow) -> &'static str {
     }
 }
 fn agents_section(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
+    let names = named::Names::of(value);
     if let Some(agents) = &value.agents {
         for (indent, agent) in order_with_children(agents.items()) {
             let state = match &agent.state {
@@ -221,7 +224,10 @@ fn agents_section(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> 
             if let Some(notice) = &agent.harness_policy_notice {
                 writeln!(out, "    {notice}")?;
             }
-            if let Some(activity) = &agent.provider_activity {
+            // Absent or unknown activity repeats the session state; JSON and agent show keep it.
+            if let Some(activity) = agent.provider_activity.as_ref().filter(|activity| {
+                matches!(activity, Read::Present { .. } | Read::Unreadable { .. })
+            }) {
                 provider::activity(activity, "    ", out)?;
             }
             if let Some(login) = &agent.codex_login {
@@ -233,7 +239,11 @@ fn agents_section(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> 
             if let Some(runtime) = &agent.secode_runtime {
                 secode::runtime(runtime, "    ", out)?;
             }
-            resume_advice(&agent.resume, "    ", out)?;
+            let mut resume = agent.resume.clone();
+            if let (Some(argv), Some(command)) = (&resume.argv, &resume.command) {
+                resume.command = Some(names.command(argv, command, false));
+            }
+            resume_advice(&resume, "    ", out)?;
         }
         omissions(agents, out)?;
     }
@@ -424,7 +434,10 @@ fn next_lines(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
             out,
         )
     } else {
-        next_step(&value.next, out)
+        let mut next = value.next.clone();
+        let cmd = next.text.starts_with("In cmd.exe, ");
+        next.command = named::Names::of(value).command(&next.argv, &next.command, cmd);
+        next_step(&next, out)
     }
 }
 
@@ -572,7 +585,20 @@ pub(super) fn assignments(
         writeln!(out, "No open assignments.")?;
     }
     for row in value.page.items() {
-        writeln!(out, "{}  {}  {}", row.id, row.assignee, row.state)?;
+        let assignee = row
+            .assignee_name
+            .as_deref()
+            .unwrap_or(row.assignee.as_str());
+        let preview = match &row.preview {
+            Some(Read::Present { value }) => format!("  {value}"),
+            Some(Read::Absent { checked }) => format!("  ({checked})"),
+            Some(Read::Unknown { what }) => format!("  (request text unknown: {what})"),
+            Some(Read::Unreadable { reason, .. }) => {
+                format!("  (request text unreadable: {reason})")
+            }
+            None => String::new(),
+        };
+        writeln!(out, "{}  {assignee}  {}{preview}", row.id, row.state)?;
     }
     omissions(&value.page, out)
 }

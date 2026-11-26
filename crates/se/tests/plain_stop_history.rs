@@ -474,6 +474,13 @@ fn plain_status_and_show_explain_the_actual_resume_state() -> Check {
             assert_eq!(resume["mode"], "new");
             let reason = resume["reason"].as_str().ok_or("fresh resume reason")?;
             let launch = resume["command"].as_str().ok_or("fresh launch command")?;
+            // Plain status names the agent; JSON and agent show keep exact IDs.
+            let launch = if surface[0] == "status" {
+                let agent_name = init["agent"]["name"].as_str().ok_or("agent name")?;
+                launch.replace(agent, agent_name)
+            } else {
+                launch.to_owned()
+            };
             let mut words = vec!["--project", project];
             words.extend(surface.iter().copied());
             let plain = String::from_utf8(call(&words)?.stdout)?;
@@ -483,7 +490,7 @@ fn plain_status_and_show_explain_the_actual_resume_state() -> Check {
                 "plain {surface:?} hides the actual resume reason {reason:?}: {plain}"
             );
             assert!(
-                plain.contains(launch),
+                plain.contains(&launch),
                 "plain {surface:?} hides the scoped next step {launch:?}: {plain}"
             );
             assert!(
