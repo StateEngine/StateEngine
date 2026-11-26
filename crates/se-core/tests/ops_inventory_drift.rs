@@ -286,11 +286,24 @@ fn render_block(md: &str) -> String {
         .count();
     let core_tools = tools - atlas_tools;
 
+    let planned_ops_word = if planned_ops.len() == 1 {
+        "operation"
+    } else {
+        "operations"
+    };
+    let planned_tools_word = if planned_tools.len() == 1 {
+        "MCP tool"
+    } else {
+        "MCP tools"
+    };
+
     let mut out = String::new();
     out.push_str(&format!(
-        "Registered: {ops} operations ({core_ops} core, {atlas_ops} Atlas), {tools} MCP tools ({core_tools} core, {atlas_tools} Atlas). Planned: {} operations, {} MCP tools.\n\n",
+        "Registered: {ops} operations ({core_ops} core, {atlas_ops} Atlas), {tools} MCP tools ({core_tools} core, {atlas_tools} Atlas). Planned: {} {}, {} {}.\n\n",
         planned_ops.len(),
-        planned_tools.len()
+        planned_ops_word,
+        planned_tools.len(),
+        planned_tools_word
     ));
     out.push_str("| Operation | CLI | MCP tool | Auth | Effect |\n");
     out.push_str("| --- | --- | --- | --- | --- |\n");

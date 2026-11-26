@@ -46,9 +46,8 @@ impl CommonArgs {
                 agent: text(m, "agent"),
                 launch_provider: text(m, "provider")
                     .map(|value| {
-                        serde_json::from_value(serde_json::Value::String(value)).map_err(|_| {
-                            SeError::invalid("provider", "claude, codex, secode or acp")
-                        })
+                        serde_json::from_value(serde_json::Value::String(value))
+                            .map_err(|_| SeError::invalid("provider", provider_list()))
                     })
                     .transpose()?,
                 ..CliSelections::default()
@@ -119,6 +118,24 @@ fn toggle(id: &'static str) -> Arg {
 }
 fn positional(id: &'static str, index: usize, required: bool) -> Arg {
     Arg::new(id).index(index).required(required)
+}
+/// Provider set phrasing for help text and invalid-value errors. The
+/// `--provider` value parsers keep secode accepted in every build because the
+/// public headless launch fixture pins secode admission in standard builds.
+fn provider_list() -> &'static str {
+    if cfg!(feature = "secode") {
+        "claude, codex, secode or acp"
+    } else {
+        "claude, codex or acp"
+    }
+}
+/// Harness choice phrasing for help text; named protocol harnesses stay.
+fn harness_list() -> &'static str {
+    if cfg!(feature = "secode") {
+        "claude, codex, secode"
+    } else {
+        "claude, codex"
+    }
 }
 fn deepest(mut matches: &ArgMatches) -> (Vec<String>, &ArgMatches) {
     let mut path = Vec::new();
@@ -275,14 +292,14 @@ fn input_command_meta(name: &str, c: Command) -> Command {
 fn input_command_project(name: &str, c: Command) -> Command {
     match name {
         "project.init" => c
-            .arg(value("harness").help("Choose claude, codex, secode, qwen-code, goose, hermes or a configured protocol harness"))
+            .arg(value("harness").help(format!("Choose {}, qwen-code, goose, hermes or a configured protocol harness", harness_list())))
             .arg(value("repo").help("Existing repository folder to register as this project"))
             .arg(value("name").help("Project name shown in status and listings"))
             .arg(value("agent").default_value("main").help("Name for your first saved agent"))
             .arg(
                 value("provider")
                     .value_parser(["claude", "codex", "secode", "acp"])
-                    .help("Provider for the first agent: claude, codex, secode or acp"),
+                    .help(format!("Provider for the first agent: {}", provider_list())),
             )
             .arg(value("model").help("Model for the first agent"))
             .arg(toggle("launch").hide(true))
@@ -305,7 +322,7 @@ fn input_command_agent(name: &str, c: Command) -> Command {
         "agent.launch" => c
             .arg(positional("agent", 1, true).help("Saved agent name or ID to start in a fresh conversation"))
             .arg(value("resume").num_args(0..=1).default_missing_value("latest").value_name("SESSION").help("Reopen the latest saved conversation, or the one identified by SESSION"))
-            .arg(value("provider").help("Override the saved provider for this launch: claude, codex, secode or acp"))
+            .arg(value("provider").help(format!("Override the saved provider for this launch: {}", provider_list())))
             .arg(value("model").help("Override the saved model for this launch"))
             .arg(value("task").help("Task text handed to the agent for this launch"))
             .arg(toggle("detach").help("Run headless instead of in a window"))
@@ -323,9 +340,9 @@ fn input_command_agent(name: &str, c: Command) -> Command {
             .arg(value("cursor").help("Cursor from a previous page of this same read"))
             .arg(toggle("include-temp").help("Include retired temporary agents in this page")),
         "agent.create" => c
-            .arg(value("harness").help("Choose claude, codex, secode or a configured protocol harness"))
+            .arg(value("harness").help(format!("Choose {} or a configured protocol harness", harness_list())))
             .arg(positional("name", 1, true).help("Name for the new saved agent"))
-            .arg(value("provider").value_parser(["claude", "codex", "secode", "acp"]).help("Provider for the new agent: claude, codex, secode or acp"))
+            .arg(value("provider").value_parser(["claude", "codex", "secode", "acp"]).help(format!("Provider for the new agent: {}", provider_list())))
             .arg(value("model").help("Model for the new agent"))
             .arg(value("profile").help("Named permission profile for the new agent"))
             .arg(value("model-provider").help("Per-agent Codex model provider name"))
@@ -337,7 +354,7 @@ fn input_command_agent(name: &str, c: Command) -> Command {
             .subcommand_negates_reqs(true)
             .arg(value("task").required(true).help("Initial task prompt for the temporary agent"))
             .arg(value("role").help("Short role label for the temporary name tmp-<role>-<8hex>"))
-            .arg(value("provider").value_parser(["claude", "codex", "secode", "acp"]).help("Provider for the temporary agent: claude, codex, secode or acp"))
+            .arg(value("provider").value_parser(["claude", "codex", "secode", "acp"]).help(format!("Provider for the temporary agent: {}", provider_list())))
             .arg(value("harness").help("Native provider or named declarative ACP harness"))
             .arg(value("model").help("Model override for the temporary agent"))
             .arg(value("profile").help("Named permission profile (must be in [delegation].allow for agent callers)"))

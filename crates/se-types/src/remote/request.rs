@@ -11,7 +11,7 @@ pub(super) fn validate_targets(targets: &[RemoteTarget], empty: bool) -> Result<
     {
         return Err(SeError::invalid(
             "remote targets",
-            "at most64 unique exact project/agent pairs",
+            "at most 64 unique exact project/agent pairs",
         ));
     }
     Ok(())

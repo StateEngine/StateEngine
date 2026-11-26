@@ -77,6 +77,9 @@ pub(crate) fn provider_rows(
 ) -> Vec<ConfigValueOutput> {
     let mut rows: Vec<ConfigValueOutput> = Vec::new();
     for registration in se_types::HARNESS_REGISTRY {
+        if registration.provider == Provider::SeCode && !cfg!(feature = "secode") {
+            continue;
+        }
         let name = registration.id;
         let provider = configuration.provider(registration.provider);
         push_row(
@@ -98,12 +101,14 @@ pub(crate) fn provider_rows(
             present(json!(provider.profile)),
         );
     }
-    push_row(
-        &mut rows,
-        origin,
-        "providers.secode.seed_profile",
-        option(&configuration.providers.secode.seed_profile),
-    );
+    if cfg!(feature = "secode") {
+        push_row(
+            &mut rows,
+            origin,
+            "providers.secode.seed_profile",
+            option(&configuration.providers.secode.seed_profile),
+        );
+    }
     rows
 }
 pub(crate) fn acp_profile_rows(

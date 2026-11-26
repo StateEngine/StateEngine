@@ -46,7 +46,7 @@ The terminal reports a producer-to-flush estimate, not a guaranteed upper bound:
 clock-rate drift and independent machine suspend are unbounded. An inconsistent
 clock interval is unavailable rather than zero. These records do not measure UI paint. Pending send records are also flushed before host submission;
 they imply neither durable acceptance nor recipient delivery. Performance remains
-unqualified until the matched cohorts required by design 47 and 80 are complete.
+unqualified until the matched terminal cohorts required for comparison are complete.
 
 ## Journeys and row conventions
 
@@ -121,10 +121,10 @@ Plain `se init` (including `--repo DIR`) is managed setup and writes nothing ins
 | `mcp.token` | `mcp token` | none — native header-helper output must not enter model context | either | write | protected launch/session authority or verified owner credential; no secret argv | `AuthorizationHeaders`: renewable bearer returned only to the authenticated helper, never logged; expiry/scope are recorded privately | planned J2–J4 |
 | `agent.list` | `agent list` | none — owner overview; bound agents use status for their own state | owner | read | project selection, page | `Page<AgentSummary>`: stable IDs, names, provider/session/resume facts | J2–J4 |
 | `agent.create` | `agent add NAME [--provider PROVIDER --model MODEL]` | `stateengine_agent_create` | either | write | new display name, provider/model and saved safe profile; session needs its current `agent.<A>.can-create` grant; creator comes from authority | `AgentReceipt`: new or idempotently existing identity, immutable creator ID and profile; no process-start claim | J2, J4 |
-| `agent.show` | `agent show AGENT` | `stateengine_agent_status` | either | read | owner agent selector; bound agent implicit | `Read<AgentStatus>`: identity/profile, current lifecycle, conversation, capture and resume facts | J2–J4 |
+| `agent.show` | `agent show AGENT` | none — owner CLI read of saved agent metadata | either | read | owner agent selector; bound agent implicit | `Read<AgentStatus>`: identity/profile, current lifecycle, conversation, capture and resume facts | J2–J4 |
 | `agent.rename` | `agent rename AGENT NAME` | none — owner controls identity labels | owner | write | agent selector, new display name | `AgentReceipt`: stable ID, prior/new name and readback; history remains attached | support J2–J4 |
 | `agent.launch` | `launch AGENT [--resume [SESSION] --provider PROVIDER --model MODEL --task TEXT --detach]` | `stateengine_agent_launch` — bound self or explicit creator-authorized `target_agent_id`, never an actor override | either | custody | owner selector, implicit self or direct-created target with current create grant; fresh conversation by default or explicit verified saved-conversation resume, optional provider/model/task/detach; existing-but-missing/unverifiable references refuse | `LaunchResult`: launch/session/lifecycle IDs, provider conversation, readiness/refusal, running vs finished facts and resume instruction | J2–J4 |
-| `agent.stop` | `stop AGENT [--release] \| --all` | `stateengine_agent_stop` — bound self or explicit creator-authorized `target_agent_id`; all is owner-only | either | custody | owner selector/all, implicit self or direct-created target with current create grant; exact owned lifecycle resolved and rechecked | `StopReceipt`: per-agent exact-instance witness or unknown population with reason and original-conversation resume command; release command/result: 50 A.6; native mechanics: 30; persistence/recovery: 20 | J3, J5 |
+| `agent.stop` | `stop AGENT [--release] \| --all` | `stateengine_agent_stop` — bound self or explicit creator-authorized `target_agent_id`; all is owner-only | either | custody | owner selector/all, implicit self or direct-created target with current create grant; exact owned lifecycle resolved and rechecked | `StopReceipt`: per-agent exact-instance witness or unknown population with reason and original-conversation resume command; release relinquishes ownership of an uncontained group after a stop that could not be proved, without signalling or proving exit | J3, J5 |
 | `agent.wake` | `agent wake AGENT` | `stateengine_agent_wake` — explicit `target_agent_id` and creator authorization for sessions | either | custody | explicit running agent target and observed lifecycle; owner or its direct creator with current create grant | `WakeReceipt`: offered/delivered/pending/refused facts; never a spawn or a recipient-read claim | J4 |
 | `delegate.start` | `delegate --task TEXT [--role ROLE --provider PROVIDER --harness HARNESS --model MODEL --profile PROFILE --handoff --handoff-from AGENT --handoff-budget BYTES --handoff-since CURSOR --ttl SECONDS]` | `stateengine_delegate` | either | custody | task, optional role/provider/harness/model/profile/handoff (`--handoff-from`, `--handoff-budget`, `--handoff-since`)/ttl; owner or agent with active `can-create` grant and `[delegation].allow` `(provider, profile)` allowlist | `DelegateStartOutput`: temporary agent ID, name, session ID, provider, model, profile, TTL and handoff state | J2–J4 |
 | `delegate.cancel` | `delegate cancel AGENT` | `stateengine_delegate_cancel` | either | custody | temporary agent ID or name; owner or direct creator with active `can-create` grant | `DelegateCancelOutput`: agent ID, name, retirement and lifecycle stop facts | J3, J4 |
@@ -191,7 +191,7 @@ Library lifecycle methods (`open`, capability verification, tool catalogue/call,
 
 | Name | CLI path | MCP tool or reason for none | Auth | Effect | Inputs | Output | Journey |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `store.restore` | `restore` | none — separate human-only history recovery | owner | write; custody for affected agents | required key; printed newest verified valid automatic backup, exact agents/credentials affected and events lost; human-presence check | `RestoreResult`: preserved corrupt source, independently verified restored store, lost interval/count or explicit unknown/refusal; no salvage | planned, support J3, J5 |
+| `store.restore` | `restore` | none — separate human-only history recovery | owner | write; custody for affected agents | required key; printed newest verified valid automatic backup, exact agents/credentials affected and events lost; human-presence check | `RestoreResult`: preserved corrupt source, independently verified restored store, lost interval/count or explicit unknown/refusal; no salvage | support J3, J5 |
 | `credential.rotate` | `credential rotate` | none — separate human-only credential replacement | owner | write; custody for affected sessions | required key, printed exact credential/session consequences, human-presence check | `CredentialRotation`: revoked sessions and new credential readback; never an implicit config repair | planned, support J3, J5 |
 | `installation.uninstall` | `uninstall` | none — human-only installation removal | owner | custody | required key, printed owned install/integration/PATH plan and affected agents/credentials, human-presence check | `UninstallResult`: exact stops/revocations, removed owned files/integrations and restored managed PATH, independent fresh-shell readback; repositories/history preserved | J5 |
 | `store.import_node` | `import --from-node PATH` (optional `import` build feature; not in the standard release archive) | none — explicit owner migration of historical data | owner | write | original Node state root, supported format versions, import identity; no executable callbacks | `ImportReceipt`: source provenance, imported/deduplicated/rejected counts, omissions and resume-binding results; originals retained | support J2–J4 |
@@ -212,9 +212,9 @@ Import keeps user identities, agents/profiles, messages/dispositions, decisions,
 
 General configuration resolves flag > documented environment variable > config.toml > default; no cwd/project settings layer is read. Generic config get/set/list accepts no project override. The `agent.<AGENT>.profile`, `.model`, `.can-create` selectors are explicit canonical agent-record reads/updates, not a second configuration source; these alone use owner project resolution. Apply Atlas file settings by restarting the same data home; general file-setting CLI commands remain deferred. Profiles only opt into bypass by explicit saved name.
 
-Every hazard prints a concrete plan before effects: targets, agents ended, credentials revoked/rotated, events lost and retained copies. Remove/forget/restore/rotate/uninstall/doctor-fix require owner human presence outside agent ancestry, with the same-user limitation printed; no typed-ID prompts. Import prints source/family/conflict plans and keeps originals read-only. Startup migration prints its supported additive/pre-backup plan automatically; unsupported paths refuse. See 50 §8 for the per-operation hazard table. NORMAL may lose multiple recent ordinary commits on power/OS loss, not application crash.
+Every hazard prints a concrete plan before effects: targets, agents ended, credentials revoked/rotated, events lost and retained copies. Remove/forget/restore/rotate/uninstall/doctor-fix require owner human presence outside agent ancestry, with the same-user limitation printed; no typed-ID prompts. Import prints source/family/conflict plans and keeps originals read-only. Startup migration prints its supported additive/pre-backup plan automatically; unsupported paths refuse. NORMAL may lose multiple recent ordinary commits on power/OS loss, not application crash.
 
-Default SE Code exit with live agents hands back to a detached `se up`, which exits ten minutes after its last live agent. This differs from ordinary `se down`, which stops its owned scope on every OS. Embedded binding returns an in-process session handle without credential commits. Done includes real Claude and Codex, all five journeys on Windows/Linux/macOS, standalone and embedded; Windows/Linux is intermediate and the borrowed-Mac campaign qualifies before alpha. Live handover remains before alpha.
+Default SE Code exit with live agents hands back to a detached `se up`, which exits ten minutes after its last live agent. This differs from ordinary `se down`, which stops its owned scope on every OS. Embedded binding returns an in-process session handle without credential commits. Done includes real Claude and Codex, all five journeys on Windows/Linux/macOS, standalone and embedded; Windows/Linux is intermediate and the macOS pass qualifies before alpha. Live handover remains before alpha.
 
 ### Windows installation.uninstall
 
@@ -282,7 +282,7 @@ Crew can omit the recipient for a `question`, `blocker`, or `done` message to se
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 62 operations (56 core, 6 Atlas), 32 MCP tools (27 core, 5 Atlas). Planned: 5 operations, 2 MCP tools.
+Registered: 62 operations (56 core, 6 Atlas), 32 MCP tools (27 core, 5 Atlas). Planned: 5 operations, 1 MCP tool.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -355,5 +355,5 @@ Shipped as CLI transport commands outside the registry: `mcp.serve`
 
 Planned operations (design tables, not yet registered): `credential.rotate`, `mcp.token`, `session.begin`, `session.end`, `session.turn`
 
-Planned MCP tools: `stateengine_agent_status`, `stateengine_session_turn`
+Planned MCP tools: `stateengine_session_turn`
 <!-- END GENERATED: ops-inventory -->

@@ -25,7 +25,12 @@ pub fn choices(configuration: &ConfigFile) -> Result<Vec<Choice>> {
     configuration.validate()?;
     let mut values: Vec<_> = se_types::HARNESS_REGISTRY
         .iter()
-        .filter(|registration| registration.selectable)
+        .filter(|registration| {
+            // secode stays compiled in the registry but only ships with the
+            // `secode` cargo feature, so listings hide it in standard builds.
+            registration.selectable
+                && (cfg!(feature = "secode") || registration.provider != Provider::SeCode)
+        })
         .map(|registration| Choice {
             selection: Selection::Provider {
                 provider: registration.provider,

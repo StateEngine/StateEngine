@@ -107,6 +107,55 @@ fn status(cx: &Bootstrap) -> Result<AnyOutput> {
     super::execute::dispatch(&status, op, &mut |_| Ok(()))
 }
 
+// Registered project roots join the redaction list so repository paths outside
+// ordinary home locations are removed from every exported string.
+fn project_roots(status: &Result<AnyOutput>) -> Vec<String> {
+    let Ok(AnyOutput::ProjectStatus(status)) = status else {
+        return Vec::new();
+    };
+    let mut roots: Vec<String> = status
+        .value
+        .projects
+        .as_ref()
+        .map(|page| {
+            page.items()
+                .iter()
+                .filter_map(|project| project.root.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(removal) = &status.value.removal {
+        roots.push(removal.root.clone());
+    }
+    roots
+}
+// Remote SSH destinations from the protected binding store join the redaction
+// list. Best-effort: a missing or unreadable store simply adds no redaction.
+fn remote_destinations(cx: &Bootstrap) -> Vec<String> {
+    let Ok(files) = se_proc::NativeStateFiles::open(&cx.home) else {
+        return Vec::new();
+    };
+    let Ok(entries) = files.list_owned(&cx.home.join("remote-bindings")) else {
+        return Vec::new();
+    };
+    entries
+        .into_iter()
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+                && path
+                    .file_name()
+                    .is_some_and(|name| !name.to_string_lossy().starts_with('.'))
+        })
+        .filter_map(|path| match files.readback(&path) {
+            Ok(Some(file)) => serde_json::from_reader::<_, Value>(file.take(65_537))
+                .ok()
+                .and_then(|record| record["forward"]["destination"].as_str().map(str::to_owned)),
+            _ => None,
+        })
+        .collect()
+}
+
 pub(super) fn execute(cx: &Bootstrap, _: DiagnosticBundle) -> Result<AnyOutput> {
     let op = AnyOp::DiagnosticBundle(DiagnosticBundle {});
     crate::bootstrap::check_session_route(&op)?;
@@ -117,14 +166,17 @@ pub(super) fn execute(cx: &Bootstrap, _: DiagnosticBundle) -> Result<AnyOutput> 
             },
         )));
     }
-    let redactor = Redactor::new(cx)?;
+    let status_output = status(cx);
+    let project_roots = project_roots(&status_output);
+    let remotes = remote_destinations(cx);
+    let redactor = Redactor::new(cx, &project_roots, &remotes)?;
     let version = section(
         se_core::ops::metadata_output(&AnyOp::MetaVersion(se_core::ops::MetaVersion {}))?
             .ok_or_else(|| {
                 scope::unreadable("diagnostic version", "build metadata is unavailable")
             }),
     );
-    let status = section(status(cx));
+    let status = section(status_output);
     let doctor = section(super::execute::dispatch(
         cx,
         AnyOp::DoctorInspect(DoctorInspect {}),
@@ -145,7 +197,7 @@ pub(super) fn execute(cx: &Bootstrap, _: DiagnosticBundle) -> Result<AnyOutput> 
         "generated_at":se_core::ops::receipt::timestamp(super::execute::now_us()?)?,
         "platform":std::env::consts::OS, "architecture":std::env::consts::ARCH,
         "complete":complete,
-        "redaction":"Credential fields, credential-shaped text and home paths are removed. Review before sharing; arbitrary user text cannot be certified secret-free.",
+        "redaction":"Credential fields, credential-shaped text, home paths, registered project roots and remote SSH destinations are removed. Review before sharing; arbitrary user text cannot be certified secret-free.",
         "version":version, "status":status, "doctor":doctor, "logs":logs,
     });
     redactor.value(&mut bundle);

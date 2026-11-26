@@ -156,7 +156,7 @@ fn check_depth(bytes: &[u8]) -> Result<()> {
                     if depth > 64 {
                         return Err(SeError::invalid(
                             "remote JSON depth",
-                            "at most64 nested objects/arrays",
+                            "at most 64 nested objects/arrays",
                         ));
                     }
                 }

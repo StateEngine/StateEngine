@@ -8,6 +8,7 @@ use serde_json::Value;
 // Includes both ordinary JSON nesting and JSON encoded inside string values.
 const MAX_DEPTH: usize = 32;
 const OMITTED: &str = "[redacted unparseable or deeply nested structured text]";
+const OPAQUE_REPLACEMENT: &str = "[redacted opaque value]";
 
 const SENSITIVE_LABEL: &str = r"token|secret|password|passwd|passphrase|credential|api[ _-]?key|access[ _-]?key|private[ _-]?key|authorization|cookie";
 
@@ -16,17 +17,14 @@ pub(super) struct Redactor {
     sensitive_prefix: Regex,
     replacements: Vec<(Regex, &'static str)>,
     paths: Vec<Regex>,
+    remotes: Vec<Regex>,
 }
 impl Redactor {
-    pub(super) fn new(cx: &Bootstrap) -> Result<Self> {
-        let compile = |pattern: &str| {
-            Regex::new(pattern).map_err(|_| {
-                scope::unreadable(
-                    "diagnostic redaction",
-                    "built-in redaction pattern is invalid; no export was written",
-                )
-            })
-        };
+    pub(super) fn new(
+        cx: &Bootstrap,
+        project_roots: &[String],
+        remotes: &[String],
+    ) -> Result<Self> {
         // One vocabulary covers structured fields, assignments and CLI flags.
         let assignment = format!(
             r#"(?is)(["']?[a-z0-9_-]*(?:{SENSITIVE_LABEL})[a-z0-9_-]*["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;\]}}]+)"#
@@ -62,49 +60,26 @@ impl Redactor {
                 r"\b(?:sk-[A-Za-z0-9_-]+|gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|AKIA[A-Z0-9]{16})\b",
                 "[redacted token]",
             ),
+            (
+                r"(?i)(\b(?:ssh|scp|sftp)\s+(?:-[A-Za-z0-9]+(?:\s+[^\s]+)?\s+)*)[A-Za-z0-9._-]+@[A-Za-z0-9.-]+",
+                "$1[redacted ssh destination]",
+            ),
             // Long opaque values are conservatively removed even without labels.
-            (r"\b[A-Za-z0-9_+/=-]{32,}\b", "[redacted opaque value]"),
+            (r"\b[A-Za-z0-9_+/=-]{32,}\b", OPAQUE_REPLACEMENT),
             (
                 r#"(?i)(?:[A-Z]:[\\/]+(?:Users|Documents and Settings)[\\/]+|/(?:home|Users)/)[^\r\n"'<>]+"#,
                 "[redacted home path]",
             ),
             (r#"/root\b(?:/[^\r\n"'<>]*)?"#, "[redacted home path]"),
         ] {
-            replacements.push((compile(pattern)?, replacement));
-        }
-        let mut roots = vec![cx.home.clone(), cx.cwd.clone()];
-        for key in ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"] {
-            if let Some(value) = std::env::var_os(key).filter(|value| !value.is_empty()) {
-                roots.push(value.into());
-            }
-        }
-        let mut roots: Vec<String> = roots
-            .into_iter()
-            // Compare only the displayed diagnostic text, never a native path.
-            // This also removes replacement-character renderings of non-UTF-8 homes.
-            .map(|path| path.to_string_lossy().into_owned())
-            .filter(|path| path.len() > 1)
-            .collect();
-        roots.sort_by_key(|path| std::cmp::Reverse(path.len()));
-        roots.dedup();
-        let mut paths = Vec::new();
-        for root in roots {
-            for variant in [
-                root.clone(),
-                root.replace('\\', "/"),
-                root.replace('\\', "\\\\"),
-            ] {
-                paths.push(compile(&format!(
-                    r#"(?i){}(?:[\\/]+[^\r\n"'<>]*)?"#,
-                    regex::escape(&variant)
-                ))?);
-            }
+            replacements.push((compile_pattern(pattern)?, replacement));
         }
         Ok(Self {
-            sensitive_key: compile(&format!("(?i)({SENSITIVE_LABEL})"))?,
-            sensitive_prefix: compile(&prefix)?,
+            sensitive_key: compile_pattern(&format!("(?i)({SENSITIVE_LABEL})"))?,
+            sensitive_prefix: compile_pattern(&prefix)?,
             replacements,
-            paths,
+            paths: compile_paths(cx, project_roots)?,
+            remotes: compile_remotes(remotes)?,
         })
     }
     fn text(&self, text: &str, depth: usize) -> String {
@@ -127,7 +102,7 @@ impl Redactor {
             let fragment = remaining.find(['{', '[', '"']).map(|at| offset + at);
             let assigned = prefixes
                 .peek()
-                .filter(|prefix| fragment.is_none_or(|at| prefix.end() <= at))
+                .filter(|prefix| fragment.is_none_or(|at| prefix.start() <= at))
                 .map(|prefix| prefix.end());
             if let Some(start) = assigned {
                 prefixes.next();
@@ -143,20 +118,25 @@ impl Redactor {
             decoded.push_str(&text[offset..start]);
             let fragment = &text[start..];
             let Some(end) = structured_end(fragment) else {
-                // Never export an undecodable suffix: it may contain an escaped
-                // credential label that prose patterns cannot recognize.
-                decoded.push_str(OMITTED);
-                remaining = "";
-                break;
+                // Prose legitimately opens brackets and quotes without closing them,
+                // such as [INFO] tags or timestamps. Publish the opener as literal
+                // text and let the prose patterns judge what follows.
+                decoded.push_str(&text[start..start + 1]);
+                remaining = &text[start + 1..];
+                continue;
             };
-            let replacement = match serde_json::from_str::<Value>(&fragment[..end]) {
+            let balanced = &fragment[..end];
+            match serde_json::from_str::<Value>(balanced) {
                 Ok(mut value) => {
                     self.value_at(&mut value, depth + 1);
-                    serde_json::to_string(&value).unwrap_or_else(|_| OMITTED.into())
+                    decoded.push_str(
+                        &serde_json::to_string(&value).unwrap_or_else(|_| OMITTED.into()),
+                    );
                 }
-                Err(_) => OMITTED.into(),
-            };
-            decoded.push_str(&replacement);
+                // Balanced but not JSON: keep it verbatim; the prose patterns
+                // below still redact credential-shaped text inside it.
+                Err(_) => decoded.push_str(balanced),
+            }
             remaining = &fragment[end..];
         }
         decoded.push_str(remaining);
@@ -166,8 +146,28 @@ impl Redactor {
         for path in &self.paths {
             text = path.replace_all(&text, "[redacted path]").into_owned();
         }
+        for remote in &self.remotes {
+            text = remote
+                .replace_all(&text, "[redacted remote destination]")
+                .into_owned();
+        }
         for (pattern, replacement) in &self.replacements {
-            text = pattern.replace_all(&text, *replacement).into_owned();
+            if *replacement == OPAQUE_REPLACEMENT {
+                // Known identifier shapes (commit SHAs, digests, UUIDs) keep
+                // their correlation value; other long opaque tokens stay removed.
+                text = pattern
+                    .replace_all(&text, |caps: &regex::Captures<'_>| {
+                        let token = &caps[0];
+                        if keeps_opaque(token) {
+                            token.to_owned()
+                        } else {
+                            OPAQUE_REPLACEMENT.to_owned()
+                        }
+                    })
+                    .into_owned();
+            } else {
+                text = pattern.replace_all(&text, *replacement).into_owned();
+            }
         }
         text
     }
@@ -262,4 +262,98 @@ fn assigned_end(text: &str) -> usize {
         }
     }
     text.len() - remaining.len()
+}
+
+fn compile_pattern(pattern: &str) -> Result<Regex> {
+    Regex::new(pattern).map_err(|_| {
+        scope::unreadable(
+            "diagnostic redaction",
+            "built-in redaction pattern is invalid; no export was written",
+        )
+    })
+}
+
+fn compile_paths(cx: &Bootstrap, project_roots: &[String]) -> Result<Vec<Regex>> {
+    let mut roots = vec![cx.home.clone(), cx.cwd.clone()];
+    for root in project_roots {
+        roots.push(root.into());
+    }
+    for key in ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"] {
+        if let Some(value) = std::env::var_os(key).filter(|value| !value.is_empty()) {
+            roots.push(value.into());
+        }
+    }
+    let mut roots: Vec<String> = roots
+        .into_iter()
+        // Compare only the displayed diagnostic text, never a native path.
+        // This also removes replacement-character renderings of non-UTF-8 homes.
+        .map(|path| path.to_string_lossy().into_owned())
+        .filter(|path| path.len() > 1)
+        .collect();
+    roots.sort_by_key(|path| std::cmp::Reverse(path.len()));
+    roots.dedup();
+    let mut paths = Vec::new();
+    for root in roots {
+        for variant in [
+            root.clone(),
+            root.replace('\\', "/"),
+            root.replace('\\', "\\\\"),
+        ] {
+            paths.push(compile_pattern(&format!(
+                r#"(?i){}(?:[\\/]+[^\r\n"'<>]*)?"#,
+                regex::escape(&variant)
+            ))?);
+        }
+    }
+    Ok(paths)
+}
+
+fn compile_remotes(remotes: &[String]) -> Result<Vec<Regex>> {
+    let mut remote_values = Vec::new();
+    for remote in remotes {
+        if !remote.is_empty() {
+            remote_values.push(remote.clone());
+            if let Some((_, host)) = remote.split_once('@')
+                && !host.is_empty()
+                && !matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]")
+            {
+                remote_values.push(host.to_owned());
+            }
+        }
+    }
+    remote_values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    remote_values.dedup();
+    let mut remote_patterns = Vec::new();
+    for remote in remote_values {
+        remote_patterns.push(compile_pattern(&format!("(?i){}", regex::escape(&remote)))?);
+    }
+    Ok(remote_patterns)
+}
+
+fn is_uuid(bytes: &[u8]) -> bool {
+    bytes.len() == 36
+        && [8usize, 13, 18, 23].iter().all(|at| bytes[*at] == b'-')
+        && (0..8).all(|at| bytes[at].is_ascii_hexdigit())
+        && (9..13).all(|at| bytes[at].is_ascii_hexdigit())
+        && (14..18).all(|at| bytes[at].is_ascii_hexdigit())
+        && (19..23).all(|at| bytes[at].is_ascii_hexdigit())
+        && (24..36).all(|at| bytes[at].is_ascii_hexdigit())
+}
+
+// A long token keeps its value only in known identifier shapes: a 40-char
+// commit SHA or 64-char SHA-256 digest in hex, a hyphenated 36-char UUID, or a
+// StateEngine typed ID (`<prefix>_<uuid>`). Anything else stays removed.
+fn keeps_opaque(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    if matches!(bytes.len(), 40 | 64) && bytes.iter().all(u8::is_ascii_hexdigit) {
+        return true;
+    }
+    if is_uuid(bytes) {
+        return true;
+    }
+    token.split_once('_').is_some_and(|(prefix, rest)| {
+        (2..=6).contains(&prefix.len())
+            && prefix.bytes().all(|byte| byte.is_ascii_lowercase())
+            && is_uuid(rest.as_bytes())
+    })
 }
