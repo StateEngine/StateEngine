@@ -1904,6 +1904,7 @@ dependencies = [
 name = "se-native-path"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "windows-sys 0.61.2",
 ]
 
@@ -2032,6 +2033,7 @@ name = "se-repository"
 version = "0.1.0"
 dependencies = [
  "git2",
+ "se-native-path",
  "se-proc",
  "sha1",
  "sha2",

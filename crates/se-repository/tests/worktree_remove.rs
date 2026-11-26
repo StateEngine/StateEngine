@@ -269,6 +269,60 @@ fn partial_delete_failure_preserves_dot_git_and_allows_retry() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn parent_dir_permission_failure_preserves_dot_git_and_allows_retry() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let case = TempCase::new("ro-parent")?;
+    let parent_holder = case.dir.join("parent");
+    fs::create_dir_all(&parent_holder)?;
+    let main_dir = case.dir.join("main");
+    fs::create_dir_all(&main_dir)?;
+    let repo = Repository::init(&main_dir)?;
+    fs::write(main_dir.join("README.md"), "hello\n")?;
+    let mut index = repo.index()?;
+    index.add_path(Path::new("README.md"))?;
+    index.write()?;
+    let tree_id = index.write_tree()?;
+    let tree = repo.find_tree(tree_id)?;
+    let sig = git2::Signature::now("Test", "test@example.invalid")?;
+    repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])?;
+
+    let wt_dir = parent_holder.join("wt-ro-parent");
+    repo.worktree("wt-ro-parent", &wt_dir, None)?;
+
+    fs::set_permissions(&parent_holder, fs::Permissions::from_mode(0o500))?;
+    let probe = parent_holder.join(".probe-writable");
+    if fs::write(&probe, "x").is_err() {
+        let err = remove_worktree(&wt_dir, false)
+            .err()
+            .ok_or("read-only parent directory must fail removal")?;
+        assert!(matches!(
+            err,
+            WorktreeRemoveError::DeleteFailed {
+                dot_git_preserved: true,
+                ..
+            }
+        ));
+        assert!(
+            wt_dir.join(".git").is_file(),
+            "root .git must survive when parent directory prevents rmdir"
+        );
+        fs::set_permissions(&parent_holder, fs::Permissions::from_mode(0o700))?;
+
+        let report = remove_worktree(&wt_dir, false)
+            .map_err(|e| format!("retry after restoring parent perms must succeed: {e:?}"))?;
+        assert!(report.pruned);
+        assert!(!wt_dir.exists());
+        let repo = Repository::open(&main_dir)?;
+        assert!(repo.find_worktree("wt-ro-parent").is_err());
+    } else {
+        let _ = fs::remove_file(&probe);
+        fs::set_permissions(&parent_holder, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 #[test]
 fn refuses_windows_directory_junction_even_with_force_and_preserves_target_and_registration()

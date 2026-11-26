@@ -1,16 +1,12 @@
 //! Safe linked Git worktree removal with a non-following link/junction/mount guard.
 pub use crate::worktree_guard::parse_linux_mountinfo;
 use crate::worktree_guard::{
-    NodeIdentity, collect_mount_points, link_or_reparse_kind, remove_tree_no_follow,
-    scan_tree_for_links,
+    format_dir_op_err, prune_verified_admin_dir, remove_tree_no_follow, scan_tree_for_links,
 };
-use git2::{
-    Repository, RepositoryOpenFlags, StatusOptions, WorktreeLockStatus, WorktreePruneOptions,
-};
+use git2::{Repository, RepositoryOpenFlags, StatusOptions, WorktreeLockStatus};
+use se_native_path::dir_ops::{ChildKind, DirHandle, DirOpError, NodeId};
 use std::{
-    ffi::OsStr,
-    fs,
-    io::ErrorKind,
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
 };
 
@@ -76,15 +72,15 @@ pub enum WorktreeRemoveError {
 
 pub(crate) struct VerifiedWorktree {
     pub(crate) canonical_root: PathBuf,
-    pub(crate) root_identity: NodeIdentity,
-    pub(crate) dot_git_identity: NodeIdentity,
+    pub(crate) root_parent: DirHandle,
+    pub(crate) root_name: OsString,
+    pub(crate) root_id: NodeId,
+    pub(crate) dot_git_id: NodeId,
     pub(crate) common_dir: PathBuf,
-    pub(crate) common_dir_identity: NodeIdentity,
+    pub(crate) worktrees_parent: DirHandle,
     pub(crate) admin_dir: PathBuf,
-    pub(crate) admin_dir_identity: NodeIdentity,
+    pub(crate) admin_dir_id: NodeId,
     pub(crate) worktree_name: String,
-    #[cfg(unix)]
-    pub(crate) root_dev: u64,
 }
 
 /// Safely remove a linked Git worktree at `path`.
@@ -97,21 +93,12 @@ pub fn remove_worktree(
     path: &Path,
     force: bool,
 ) -> Result<WorktreeRemoveReport, WorktreeRemoveError> {
-    let (canonical_root, root_identity, root_dev) = inspect_target_root(path)?;
-    #[cfg(not(unix))]
-    let _ = root_dev;
-    let verified = verify_linked_worktree(
-        &canonical_root,
-        root_identity,
-        #[cfg(unix)]
-        root_dev,
-        force,
-    )?;
-    let mount_points = collect_mount_points(&verified.canonical_root)?;
-    let dir_identities = scan_tree_for_links(&verified, &mount_points)?;
-    remove_tree_no_follow(&verified, &dir_identities, &mount_points)?;
-    verify_gone(&verified.canonical_root)?;
-    prune_worktree_metadata(&verified)?;
+    let (canonical_root, root_parent, root_name, root_id) = inspect_target_root(path)?;
+    let verified = verify_linked_worktree(canonical_root, root_parent, root_name, root_id, force)?;
+    let dir_identities = scan_tree_for_links(&verified)?;
+    remove_tree_no_follow(&verified, &dir_identities)?;
+    verify_gone(&verified)?;
+    prune_verified_admin_dir(&verified)?;
     Ok(WorktreeRemoveReport {
         path: verified.canonical_root,
         worktree_name: verified.worktree_name,
@@ -121,130 +108,184 @@ pub fn remove_worktree(
     })
 }
 
-/// Inspect `path` without following a final symlink or Windows reparse point.
-fn inspect_target_root(path: &Path) -> Result<(PathBuf, NodeIdentity, u64), WorktreeRemoveError> {
-    let meta = match fs::symlink_metadata(path) {
-        Ok(meta) => meta,
-        Err(err) if err.kind() == ErrorKind::NotFound => {
-            return Err(WorktreeRemoveError::Absent {
-                path: path.to_path_buf(),
-            });
-        }
-        Err(err) => {
-            return Err(WorktreeRemoveError::Unreadable {
+/// Open `path` without following a final symlink or Windows reparse point,
+/// canonicalize it, and anchor both the root and its parent directory via
+/// retained OS handles.
+fn inspect_target_root(
+    path: &Path,
+) -> Result<(PathBuf, DirHandle, OsString, NodeId), WorktreeRemoveError> {
+    let initial = DirHandle::open_root(path).map_err(|err| match err {
+        DirOpError::NotFound => WorktreeRemoveError::Absent {
+            path: path.to_path_buf(),
+        },
+        DirOpError::Link(kind) => WorktreeRemoveError::LinksDetected {
+            links: vec![(path.to_path_buf(), kind.to_owned())],
+            total_links: 1,
+            unreadable: Vec::new(),
+            total_unreadable: 0,
+        },
+        DirOpError::NotDir => WorktreeRemoveError::NotLinkedWorktree {
+            path: path.to_path_buf(),
+            reason: "target path is not a directory".to_owned(),
+        },
+        DirOpError::Io(io_err) => WorktreeRemoveError::Unreadable {
+            entries: vec![(path.to_path_buf(), io_err.to_string())],
+            total: 1,
+        },
+    })?;
+    let (root_id, is_mount_root) =
+        initial
+            .stat_self()
+            .map_err(|err| WorktreeRemoveError::Unreadable {
                 entries: vec![(path.to_path_buf(), err.to_string())],
                 total: 1,
-            });
-        }
-    };
-    if let Some(kind) = link_or_reparse_kind(&meta) {
+            })?;
+    if is_mount_root {
         return Err(WorktreeRemoveError::LinksDetected {
-            links: vec![(path.to_path_buf(), kind.to_owned())],
+            links: vec![(path.to_path_buf(), "mount point / bind mount".to_owned())],
             total_links: 1,
             unreadable: Vec::new(),
             total_unreadable: 0,
         });
     }
-    if !meta.is_dir() {
-        return Err(WorktreeRemoveError::NotLinkedWorktree {
-            path: path.to_path_buf(),
-            reason: "target path is not a directory".to_owned(),
-        });
-    }
-    let root_identity = NodeIdentity::from_meta(&meta);
-    #[cfg(unix)]
-    let root_dev = {
-        use std::os::unix::fs::MetadataExt;
-        meta.dev()
-    };
-    #[cfg(not(unix))]
-    let root_dev = 0;
     let canonical =
         se_proc::canonicalize_path(path).map_err(|err| WorktreeRemoveError::Unreadable {
             entries: vec![(path.to_path_buf(), err.to_string())],
             total: 1,
         })?;
-    let canon_meta =
-        fs::symlink_metadata(&canonical).map_err(|err| WorktreeRemoveError::Unreadable {
-            entries: vec![(canonical.clone(), err.to_string())],
+    let parent_path = canonical
+        .parent()
+        .ok_or_else(|| WorktreeRemoveError::NotLinkedWorktree {
+            path: canonical.clone(),
+            reason: "worktree path has no parent directory".to_owned(),
+        })?;
+    let root_name = canonical
+        .file_name()
+        .ok_or_else(|| WorktreeRemoveError::NotLinkedWorktree {
+            path: canonical.clone(),
+            reason: "worktree path has no final directory name".to_owned(),
+        })?
+        .to_os_string();
+    let root_parent =
+        DirHandle::open_root(parent_path).map_err(|err| WorktreeRemoveError::Unreadable {
+            entries: vec![(parent_path.to_path_buf(), format_dir_op_err(&err))],
             total: 1,
         })?;
-    if NodeIdentity::from_meta(&canon_meta) != root_identity {
+    let child_info = root_parent.inspect_child(&root_name).map_err(|err| {
+        WorktreeRemoveError::CustodyChanged {
+            path: canonical.clone(),
+            reason: format!(
+                "cannot verify canonical worktree root: {}",
+                format_dir_op_err(&err)
+            ),
+        }
+    })?;
+    if child_info.id != root_id {
         return Err(WorktreeRemoveError::CustodyChanged {
             path: canonical,
             reason: "worktree root changed identity during canonicalization".to_owned(),
         });
     }
-    Ok((canonical, root_identity, root_dev))
+    drop(initial);
+    Ok((canonical, root_parent, root_name, root_id))
 }
 
-fn inspect_dot_git_file(canonical_root: &Path) -> Result<NodeIdentity, WorktreeRemoveError> {
+fn inspect_dot_git_file(
+    canonical_root: &Path,
+    root_parent: &DirHandle,
+    root_name: &OsStr,
+    root_id: NodeId,
+) -> Result<NodeId, WorktreeRemoveError> {
+    let root_handle = root_parent.open_child_dir(root_name).map_err(|err| {
+        WorktreeRemoveError::CustodyChanged {
+            path: canonical_root.to_path_buf(),
+            reason: format!("cannot open worktree root: {}", format_dir_op_err(&err)),
+        }
+    })?;
+    let (actual_id, _) =
+        root_handle
+            .stat_self()
+            .map_err(|err| WorktreeRemoveError::Unreadable {
+                entries: vec![(canonical_root.to_path_buf(), err.to_string())],
+                total: 1,
+            })?;
+    if actual_id != root_id {
+        return Err(WorktreeRemoveError::CustodyChanged {
+            path: canonical_root.to_path_buf(),
+            reason: "worktree root changed identity before .git inspection".to_owned(),
+        });
+    }
     let dot_git = canonical_root.join(".git");
-    let dot_git_meta = match fs::symlink_metadata(&dot_git) {
-        Ok(meta) => meta,
-        Err(err) if err.kind() == ErrorKind::NotFound => {
+    let info = match root_handle.inspect_child(OsStr::new(".git")) {
+        Ok(info) => info,
+        Err(DirOpError::NotFound) => {
             return Err(WorktreeRemoveError::NotLinkedWorktree {
                 path: canonical_root.to_path_buf(),
                 reason: "directory has no .git file; not a linked Git worktree".to_owned(),
             });
         }
+        Err(DirOpError::Link(kind)) => {
+            return Err(WorktreeRemoveError::LinksDetected {
+                links: vec![(dot_git, kind.to_owned())],
+                total_links: 1,
+                unreadable: Vec::new(),
+                total_unreadable: 0,
+            });
+        }
         Err(err) => {
             return Err(WorktreeRemoveError::Unreadable {
-                entries: vec![(dot_git, err.to_string())],
+                entries: vec![(dot_git, format_dir_op_err(&err))],
                 total: 1,
             });
         }
     };
-    if let Some(kind) = link_or_reparse_kind(&dot_git_meta) {
-        return Err(WorktreeRemoveError::LinksDetected {
+    match info.kind {
+        ChildKind::Link(kind) => Err(WorktreeRemoveError::LinksDetected {
             links: vec![(dot_git, kind.to_owned())],
             total_links: 1,
             unreadable: Vec::new(),
             total_unreadable: 0,
-        });
-    }
-    if dot_git_meta.is_dir() {
-        return Err(WorktreeRemoveError::NotLinkedWorktree {
+        }),
+        ChildKind::Dir => Err(WorktreeRemoveError::NotLinkedWorktree {
             path: canonical_root.to_path_buf(),
             reason: "target has a physical .git directory (primary repository root, not a linked worktree)".to_owned(),
-        });
-    }
-    if !dot_git_meta.is_file() {
-        return Err(WorktreeRemoveError::NotLinkedWorktree {
+        }),
+        ChildKind::File => Ok(info.id),
+        ChildKind::Other => Err(WorktreeRemoveError::NotLinkedWorktree {
             path: canonical_root.to_path_buf(),
             reason: ".git entry is not a regular file".to_owned(),
-        });
+        }),
     }
-    Ok(NodeIdentity::from_meta(&dot_git_meta))
 }
 
 fn verify_linked_worktree(
-    canonical_root: &Path,
-    root_identity: NodeIdentity,
-    #[cfg(unix)] root_dev: u64,
+    canonical_root: PathBuf,
+    root_parent: DirHandle,
+    root_name: OsString,
+    root_id: NodeId,
     force: bool,
 ) -> Result<VerifiedWorktree, WorktreeRemoveError> {
-    let dot_git_identity = inspect_dot_git_file(canonical_root)?;
+    let dot_git_id = inspect_dot_git_file(&canonical_root, &root_parent, &root_name, root_id)?;
 
     let repo = Repository::open_ext(
-        canonical_root,
+        &canonical_root,
         RepositoryOpenFlags::NO_SEARCH,
         &[] as &[&OsStr],
     )
     .map_err(|err| WorktreeRemoveError::NotLinkedWorktree {
-        path: canonical_root.to_path_buf(),
+        path: canonical_root.clone(),
         reason: format!("cannot open linked Git worktree: {}", err.message()),
     })?;
 
     if !repo.is_worktree() {
         return Err(WorktreeRemoveError::NotLinkedWorktree {
-            path: canonical_root.to_path_buf(),
+            path: canonical_root,
             reason: "Git repository is not a linked worktree".to_owned(),
         });
     }
     let Some(workdir) = repo.workdir() else {
         return Err(WorktreeRemoveError::NotLinkedWorktree {
-            path: canonical_root.to_path_buf(),
+            path: canonical_root,
             reason: "Git repository has no working tree".to_owned(),
         });
     };
@@ -255,7 +296,7 @@ fn verify_linked_worktree(
         })?;
     if canonical_workdir != canonical_root {
         return Err(WorktreeRemoveError::NotLinkedWorktree {
-            path: canonical_root.to_path_buf(),
+            path: canonical_root,
             reason: format!(
                 "path is not the worktree root (resolved worktree root is {})",
                 canonical_workdir.display()
@@ -269,7 +310,7 @@ fn verify_linked_worktree(
         .and_then(OsStr::to_str)
         .filter(|name| !name.is_empty())
         .ok_or_else(|| WorktreeRemoveError::NotLinkedWorktree {
-            path: canonical_root.to_path_buf(),
+            path: canonical_root.clone(),
             reason: "cannot determine linked worktree administrative name".to_owned(),
         })?
         .to_owned();
@@ -280,48 +321,49 @@ fn verify_linked_worktree(
             total: 1,
         }
     })?;
-    let common_dir_meta =
-        fs::symlink_metadata(&common_dir).map_err(|err| WorktreeRemoveError::Unreadable {
-            entries: vec![(common_dir.clone(), err.to_string())],
-            total: 1,
-        })?;
-    let common_dir_identity = NodeIdentity::from_meta(&common_dir_meta);
 
-    let admin_dir = common_dir.join("worktrees").join(&worktree_name);
-    let admin_dir_meta =
-        fs::symlink_metadata(&admin_dir).map_err(|err| WorktreeRemoveError::Unreadable {
-            entries: vec![(admin_dir.clone(), err.to_string())],
+    let worktrees_dir = common_dir.join("worktrees");
+    let worktrees_parent =
+        DirHandle::open_root(&worktrees_dir).map_err(|err| WorktreeRemoveError::Unreadable {
+            entries: vec![(worktrees_dir.clone(), format_dir_op_err(&err))],
             total: 1,
         })?;
-    if link_or_reparse_kind(&admin_dir_meta).is_some() || !admin_dir_meta.is_dir() {
+    let admin_dir = worktrees_dir.join(&worktree_name);
+    let admin_info = worktrees_parent
+        .inspect_child(OsStr::new(&worktree_name))
+        .map_err(|err| WorktreeRemoveError::Unreadable {
+            entries: vec![(admin_dir.clone(), format_dir_op_err(&err))],
+            total: 1,
+        })?;
+    if admin_info.kind != ChildKind::Dir || admin_info.is_mount_root {
         return Err(WorktreeRemoveError::NotLinkedWorktree {
-            path: canonical_root.to_path_buf(),
+            path: canonical_root,
             reason: format!(
                 "worktree administrative entry {} is not a real directory",
                 admin_dir.display()
             ),
         });
     }
-    let admin_dir_identity = NodeIdentity::from_meta(&admin_dir_meta);
+    let admin_dir_id = admin_info.id;
 
-    verify_registered_and_unlocked(canonical_root, &common_dir, &worktree_name)?;
+    verify_registered_and_unlocked(&canonical_root, &common_dir, &worktree_name)?;
 
     if !force {
-        check_clean_working_tree(canonical_root, &repo)?;
+        check_clean_working_tree(&canonical_root, &repo)?;
     }
 
     drop(repo);
     Ok(VerifiedWorktree {
-        canonical_root: canonical_root.to_path_buf(),
-        root_identity,
-        dot_git_identity,
+        canonical_root,
+        root_parent,
+        root_name,
+        root_id,
+        dot_git_id,
         common_dir,
-        common_dir_identity,
+        worktrees_parent,
         admin_dir,
-        admin_dir_identity,
+        admin_dir_id,
         worktree_name,
-        #[cfg(unix)]
-        root_dev,
     })
 }
 
@@ -428,77 +470,23 @@ fn check_clean_working_tree(
     })
 }
 
-fn verify_gone(path: &Path) -> Result<(), WorktreeRemoveError> {
-    match fs::symlink_metadata(path) {
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
-        Ok(_) => Err(WorktreeRemoveError::DeleteFailed {
-            path: path.to_path_buf(),
+fn verify_gone(verified: &VerifiedWorktree) -> Result<(), WorktreeRemoveError> {
+    match verified.root_parent.inspect_child(&verified.root_name) {
+        Err(DirOpError::NotFound) => Ok(()),
+        Ok(_) | Err(DirOpError::Link(_)) => Err(WorktreeRemoveError::DeleteFailed {
+            path: verified.canonical_root.clone(),
             reason: "worktree directory still exists after removal".to_owned(),
             partial: true,
             dot_git_preserved: false,
         }),
         Err(err) => Err(WorktreeRemoveError::DeleteFailed {
-            path: path.to_path_buf(),
-            reason: format!("cannot verify worktree removal: {err}"),
+            path: verified.canonical_root.clone(),
+            reason: format!(
+                "cannot verify worktree removal: {}",
+                format_dir_op_err(&err)
+            ),
             partial: true,
             dot_git_preserved: false,
         }),
     }
-}
-
-/// Prune ONLY the exact verified, now-missing worktree registration.
-fn prune_worktree_metadata(verified: &VerifiedWorktree) -> Result<(), WorktreeRemoveError> {
-    let common_meta = fs::symlink_metadata(&verified.common_dir).map_err(|err| {
-        WorktreeRemoveError::PruneFailed {
-            worktree_name: verified.worktree_name.clone(),
-            reason: format!("cannot re-verify common Git directory: {err}"),
-        }
-    })?;
-    if link_or_reparse_kind(&common_meta).is_some()
-        || NodeIdentity::from_meta(&common_meta) != verified.common_dir_identity
-    {
-        return Err(WorktreeRemoveError::CustodyChanged {
-            path: verified.common_dir.clone(),
-            reason: "common Git directory changed identity before metadata prune".to_owned(),
-        });
-    }
-    let admin_meta = fs::symlink_metadata(&verified.admin_dir).map_err(|err| {
-        WorktreeRemoveError::PruneFailed {
-            worktree_name: verified.worktree_name.clone(),
-            reason: format!("cannot re-verify worktree metadata directory: {err}"),
-        }
-    })?;
-    if link_or_reparse_kind(&admin_meta).is_some()
-        || NodeIdentity::from_meta(&admin_meta) != verified.admin_dir_identity
-    {
-        return Err(WorktreeRemoveError::CustodyChanged {
-            path: verified.admin_dir.clone(),
-            reason: "worktree metadata directory changed identity before prune".to_owned(),
-        });
-    }
-
-    let common_repo = Repository::open_ext(
-        &verified.common_dir,
-        RepositoryOpenFlags::NO_SEARCH,
-        &[] as &[&OsStr],
-    )
-    .map_err(|err| WorktreeRemoveError::PruneFailed {
-        worktree_name: verified.worktree_name.clone(),
-        reason: err.message().to_owned(),
-    })?;
-    let worktree = common_repo
-        .find_worktree(&verified.worktree_name)
-        .map_err(|err| WorktreeRemoveError::PruneFailed {
-            worktree_name: verified.worktree_name.clone(),
-            reason: err.message().to_owned(),
-        })?;
-    // `valid(false)` refuses pruning if a valid worktree reappeared at the path.
-    let mut opts = WorktreePruneOptions::new();
-    opts.valid(false).working_tree(false).locked(false);
-    worktree
-        .prune(Some(&mut opts))
-        .map_err(|err| WorktreeRemoveError::PruneFailed {
-            worktree_name: verified.worktree_name.clone(),
-            reason: err.message().to_owned(),
-        })
 }
