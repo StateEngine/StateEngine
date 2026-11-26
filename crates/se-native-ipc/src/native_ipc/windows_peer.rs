@@ -1,18 +1,13 @@
 //! Native Windows peer process observations and upgrade-safe stop identity.
-use super::{windows::owned, windows_security as security, *};
+use super::{windows_security as security, *};
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     num::NonZeroU64,
-    os::windows::{
-        ffi::OsStringExt,
-        fs::OpenOptionsExt,
-        io::{AsRawHandle, OwnedHandle},
-    },
+    os::windows::io::{AsRawHandle, OwnedHandle},
     path::PathBuf,
 };
 use windows_sys::Win32::{
     Foundation::*,
-    Storage::FileSystem::{FILE_EXECUTE, FILE_SHARE_DELETE, FILE_SHARE_READ, SYNCHRONIZE},
     System::{Pipes::*, Threading::*},
 };
 pub(super) fn peer(
@@ -21,15 +16,12 @@ pub(super) fn peer(
     bound: &IpcIoBound,
 ) -> IpcNativeResult<NativeIpcPeer> {
     let mut pid = 0;
-    let ok = match side {
-        // SAFETY: borrowed connected server pipe handle and writable process-ID output.
-        IpcPeerSide::Client => unsafe {
-            GetNamedPipeClientProcessId(channel.as_raw_handle(), &mut pid)
-        },
-        // SAFETY: borrowed connected client pipe handle and writable process-ID output.
-        IpcPeerSide::Server => unsafe {
-            GetNamedPipeServerProcessId(channel.as_raw_handle(), &mut pid)
-        },
+    // SAFETY: borrowed connected pipe handle and writable process-ID output.
+    let ok = unsafe {
+        match side {
+            IpcPeerSide::Client => GetNamedPipeClientProcessId(channel.as_raw_handle(), &mut pid),
+            IpcPeerSide::Server => GetNamedPipeServerProcessId(channel.as_raw_handle(), &mut pid),
+        }
     };
     if ok == 0 {
         return Err(last("read native pipe peer process ID"));
@@ -39,7 +31,6 @@ pub(super) fn peer(
 pub(super) fn self_peer(bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
     observe(std::process::id(), bound)
 }
-
 /// Keep a writer-excluding pin only when both live processes map this exact
 /// file object. Any missing native fact leaves the ordinary full proof in use.
 pub(super) fn shared_mapped_image(expected: &ProcessInstance) -> Option<File> {
@@ -47,66 +38,52 @@ pub(super) fn shared_mapped_image(expected: &ProcessInstance) -> Option<File> {
     let StartIdentity::Windows { creation_filetime } = fields.started else {
         return None;
     };
-    // SAFETY: read-only native process query and lifetime witness rights.
-    let process =
-        unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, 0, fields.pid.get()) };
-    // SAFETY: the OpenProcess result is a newly opened handle or null, which `owned` rejects.
-    let process = unsafe { owned(process, "pin expected IPC image process") }.ok()?;
+    let process = crate::windows_process::open_query_process(
+        fields.pid.get(),
+        "pin expected IPC image process",
+    )
+    .ok()?;
     let raw = process.as_raw_handle();
     // SAFETY: `raw` is a retained query-capable process handle pinned above.
-    let start = unsafe { crate::windows_process::process_start(raw) }.ok()?;
-    // SAFETY: `raw` is a retained query-capable process handle pinned above.
-    let sid = unsafe { security::process_sid(raw) }.ok()?;
+    let (start, sid) = unsafe {
+        (
+            crate::windows_process::process_start(raw).ok()?,
+            security::process_sid(raw).ok()?,
+        )
+    };
     if start != creation_filetime.get() || sid != security::current_sid().ok()? {
         return None;
     }
-    let file = OpenOptions::new()
-        .read(true)
-        .access_mode(GENERIC_READ | FILE_EXECUTE | SYNCHRONIZE)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
-        .open(std::env::current_exe().ok()?)
-        .ok()?;
-    // SAFETY: this pseudo-handle refers to the current process throughout the query.
-    let current = unsafe { GetCurrentProcess() };
-    // SAFETY: `current` is the current-process pseudo handle and `raw` is the retained process handle.
-    let matching = unsafe {
-        crate::windows_process::maps_executable(current, &file)
+    let file = crate::windows_process::open_executable(&std::env::current_exe().ok()?).ok()?;
+    // SAFETY: current-process pseudo handle and retained query/synchronize process handle.
+    let ok = unsafe {
+        crate::windows_process::maps_executable(GetCurrentProcess(), &file)
             && crate::windows_process::maps_executable(raw, &file)
+            && crate::windows_process::process_is_live(raw).ok() == Some(true)
     };
-    // SAFETY: the original process handle remains pinned and the wait is nonblocking.
-    let live = unsafe { WaitForSingleObject(raw, 0) } == WAIT_TIMEOUT;
-    (matching && live).then_some(file)
+    ok.then_some(file)
 }
 
 pub(super) fn observe(pid: u32, bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
     let (process, sid, creation_filetime) = process_identity(pid)?;
-    let mut image = vec![0; 32768];
-    let mut length = image.len() as u32;
-    // SAFETY: retained bounded UTF-16 output buffer and native process pin.
-    if unsafe {
-        QueryFullProcessImageNameW(process.as_raw_handle(), 0, image.as_mut_ptr(), &mut length)
-    } == 0
-    {
-        return Err(process_error(&process, last("read IPC peer executable")));
-    }
-    image.truncate(length as usize);
-    let image = PathBuf::from(std::ffi::OsString::from_wide(&image));
-    let image_sha256 = hash_image(
-        File::open(&image).map_err(|e| error("pin IPC peer executable", e))?,
-        bound,
-    )?;
-    // SAFETY: the query/synchronize process handle is retained above. Native
-    // signalled state distinguishes exit code 259 from a live process.
-    match unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } {
-        WAIT_TIMEOUT => (),
-        WAIT_OBJECT_0 => {
-            return Err(refuse(
-                IpcNativeErrorCode::PeerChanged,
-                "IPC peer exited during identity readback",
-            ));
-        }
-        _ => return Err(last("reobserve IPC peer liveness")),
-    }
+    // SAFETY: `process` is a retained PROCESS_QUERY_INFORMATION handle pinned above.
+    let image = unsafe { crate::windows_process::process_image_path(process.as_raw_handle()) }
+        .map_err(|e| process_error(&process, error(e.operation, e.source)))?;
+    // SAFETY: `process` is a retained PROCESS_QUERY_INFORMATION handle pinned above.
+    let file =
+        unsafe { crate::windows_process::open_mapped_executable(process.as_raw_handle(), &image) }
+            .map_err(|e| process_error(&process, error(e.operation, e.source)))?
+            .ok_or_else(|| {
+                process_error(
+                    &process,
+                    refuse(
+                        IpcNativeErrorCode::PeerChanged,
+                        "IPC peer executable path does not match the live process image mapping; reconnect from an unmodified executable",
+                    ),
+                )
+            })?;
+    let image_sha256 = hash_image(file, bound)?;
+    check_live(&process)?;
     Ok(NativeIpcPeer {
         principal: IpcPrincipal::Windows { sid },
         pid,
@@ -116,22 +93,50 @@ pub(super) fn observe(pid: u32, bound: &IpcIoBound) -> IpcNativeResult<NativeIpc
         _process: process,
     })
 }
+pub(super) fn observe_birth(
+    pid: u32,
+    with_path: bool,
+) -> IpcNativeResult<(IpcPrincipal, StartIdentity, Option<PathBuf>)> {
+    let (process, sid, creation_filetime) = process_identity(pid)?;
+    let image = with_path
+        .then(|| {
+            // SAFETY: `process` is a retained PROCESS_QUERY_INFORMATION handle pinned above.
+            unsafe { crate::windows_process::process_image_path(process.as_raw_handle()) }
+                .map_err(|e| process_error(&process, error(e.operation, e.source)))
+        })
+        .transpose()?;
+    check_live(&process)?;
+    Ok((
+        IpcPrincipal::Windows { sid },
+        StartIdentity::Windows { creation_filetime },
+        image,
+    ))
+}
+fn check_live(process: &OwnedHandle) -> IpcNativeResult<()> {
+    // SAFETY: retained SYNCHRONIZE process handle; zero-time observation only.
+    if unsafe { crate::windows_process::process_is_live(process.as_raw_handle()) }
+        .map_err(|e| error(e.operation, e.source))?
+    {
+        return Ok(());
+    }
+    Err(refuse(
+        IpcNativeErrorCode::PeerChanged,
+        "IPC peer exited during identity readback",
+    ))
+}
 
 fn process_identity(pid: u32) -> IpcNativeResult<(OwnedHandle, String, NonZeroU64)> {
-    // SAFETY: query-only process pin, no inherited handle or native mutation.
-    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) };
-    if raw.is_null() {
-        let mut cause = last("pin IPC peer process");
-        // A positive PID supplied by the connected pipe can cease to be
-        // pinnable before this call. This invalid selector is a stale peer,
-        // not proof that its process exited or that a PID is absent.
-        if pid != 0 && cause.source.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
-            cause.code = IpcNativeErrorCode::PeerChanged;
-        }
-        return Err(cause);
-    }
-    // SAFETY: the successful OpenProcess above transferred unique ownership to `raw`.
-    let process = unsafe { owned(raw, "pin IPC peer process") }?;
+    let process =
+        crate::windows_process::open_query_process(pid, "pin IPC peer process").map_err(|e| {
+            let mut cause = error(e.operation, e.source);
+            // A positive PID supplied by the connected pipe can cease to be
+            // pinnable before this call. This invalid selector is a stale peer,
+            // not proof that its process exited or that a PID is absent.
+            if pid != 0 && cause.source.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+                cause.code = IpcNativeErrorCode::PeerChanged;
+            }
+            cause
+        })?;
     // SAFETY: `process` retains a valid query-capable process handle for this call.
     let sid = unsafe { security::process_sid(process.as_raw_handle()) }
         .map_err(|cause| process_error(&process, cause))?;
@@ -154,12 +159,11 @@ fn process_identity(pid: u32) -> IpcNativeResult<(OwnedHandle, String, NonZeroU6
     })?;
     Ok((process, sid, creation_filetime))
 }
-// An image/token read error alone never proves death. Only the original
-// retained kernel object becoming signalled turns it into a changed peer;
-// keep the actual failing operation and OS error for both outcomes.
+// An image/token read error alone never proves death; only a signalled handle does.
 fn process_error(process: &OwnedHandle, mut cause: IpcNativeError) -> IpcNativeError {
     // SAFETY: retained SYNCHRONIZE process handle, zero-time observation only.
-    if unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } == WAIT_OBJECT_0 {
+    if unsafe { crate::windows_process::process_is_live(process.as_raw_handle()) }.is_ok_and(|l| !l)
+    {
         cause.code = IpcNativeErrorCode::PeerChanged;
     }
     cause
@@ -175,17 +179,12 @@ pub(super) fn stop_server(
     }
     let (process, _sid, creation) = process_identity(pid)?;
     // SAFETY: retained query/synchronize process handle; zero timeout observes liveness without blocking.
-    let live = unsafe { WaitForSingleObject(process.as_raw_handle(), 0) };
-    if live != WAIT_TIMEOUT && live != WAIT_OBJECT_0 {
-        return Err(last("reobserve stop target liveness"));
-    }
-    if pid != expected.fields().pid.get()
-        || expected.fields().started
-            != (StartIdentity::Windows {
-                creation_filetime: creation,
-            })
-        || live != WAIT_TIMEOUT
-    {
+    let live = unsafe { crate::windows_process::process_is_live(process.as_raw_handle()) }
+        .map_err(|e| error(e.operation, e.source))?;
+    let started = StartIdentity::Windows {
+        creation_filetime: creation,
+    };
+    if pid != expected.fields().pid.get() || expected.fields().started != started || !live {
         return Err(refuse(
             IpcNativeErrorCode::PeerChanged,
             "recorded stop target PID, birth or liveness changed; rediscover the live host and retry the original stop key",

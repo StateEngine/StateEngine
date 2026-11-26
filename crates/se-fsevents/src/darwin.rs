@@ -74,21 +74,21 @@ struct Queue {
     signal: Option<Signal>,
 }
 impl Queue {
-    fn loss(&mut self) {
+    fn mark_lost(&mut self) {
         self.records.clear();
         self.bytes = 0;
         self.lost = true;
-        if let Some(signal) = &self.signal {
-            signal();
-        }
     }
-    fn push(&mut self, id: u32, action: u8, directory: bool, name: &[u8]) {
+    fn loss(&mut self) -> Option<Signal> {
+        self.mark_lost();
+        self.signal.clone()
+    }
+    fn push(&mut self, id: u32, action: u8, directory: bool, name: &[u8]) -> Option<Signal> {
         if self.lost {
-            return;
+            return self.signal.clone();
         }
         if name.len() > 4084 || self.bytes.saturating_add(12 + name.len()) > MAX_QUEUE {
-            self.loss();
-            return;
+            return self.loss();
         }
         let mut record = vec![0; 12 + name.len()];
         record[..4].copy_from_slice(&id.to_le_bytes());
@@ -98,9 +98,7 @@ impl Queue {
         record[12..].copy_from_slice(name);
         self.bytes += record.len();
         self.records.push_back(record);
-        if let Some(signal) = &self.signal {
-            signal();
-        }
+        self.signal.clone()
     }
 }
 struct Context {
@@ -157,10 +155,10 @@ impl Watcher {
             .queue
             .lock()
             .map_err(|_| io::Error::other("watch queue poisoned"))?;
-        queue.signal = Some(signal);
-        if (queue.lost || !queue.records.is_empty())
-            && let Some(signal) = &queue.signal
-        {
+        let pending = queue.lost || !queue.records.is_empty();
+        queue.signal = Some(signal.clone());
+        drop(queue);
+        if pending {
             signal();
         }
         Ok(())
@@ -305,9 +303,9 @@ impl Watcher {
             used += record.len();
             queue.bytes -= record.len();
         }
-        if !queue.records.is_empty()
-            && let Some(signal) = &queue.signal
-        {
+        let signal = queue.records.front().and_then(|_| queue.signal.clone());
+        drop(queue);
+        if let Some(signal) = signal {
             signal();
         }
         Ok(used)
@@ -329,70 +327,92 @@ unsafe extern "C" fn callback(
     flags: *const u32,
     _: *const u64,
 ) {
-    // SAFETY: the context is held until invalidation and the serial queue barrier.
-    let context = unsafe { &*(info.cast::<Context>()) };
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let Ok(mut queue) = context.queue.lock() else {
-            return;
-        };
-        if count > 128 || paths.is_null() || flags.is_null() {
-            queue.loss();
-            return;
-        }
-        // SAFETY: FSEvents supplies count valid paths and flags for this callback.
-        let names = unsafe { std::slice::from_raw_parts(paths.cast::<*const c_char>(), count) };
-        // SAFETY: FSEvents supplies count flags for this callback.
-        let flags = unsafe { std::slice::from_raw_parts(flags, count) };
-        for (&name, &flags) in names.iter().zip(flags) {
-            if flags & LOST != 0 {
-                queue.loss();
-                break;
-            }
-            if flags & 0x10 != 0 {
-                continue;
-            }
-            if flags & ROOT_OR_MOUNT != 0 || name.is_null() {
-                queue.push(context.id, 4, false, b"");
-                continue;
-            }
-            // SAFETY: FSEvents supplies each path as a NUL-terminated string.
-            let path = unsafe { CStr::from_ptr(name) };
-            let Ok(path) = std::str::from_utf8(path.to_bytes()) else {
-                queue.loss();
-                break;
+    let _ = run_no_unwind(|| {
+        // SAFETY: the context is held until invalidation and the serial queue barrier.
+        let context = unsafe { &*(info.cast::<Context>()) };
+        let result = run_no_unwind(|| {
+            let Ok(mut queue) = context.queue.lock() else {
+                return None;
             };
-            let Ok(relative) = std::path::Path::new(path).strip_prefix(&context.root) else {
-                queue.loss();
-                break;
-            };
-            let Some(relative) = relative.to_str() else {
-                queue.loss();
-                break;
-            };
-            let action = if flags & REMOVED_OR_RENAMED != 0 {
-                1
+            if count > 128 || paths.is_null() || flags.is_null() {
+                queue.loss()
             } else {
-                0
-            };
-            queue.push(
-                context.id,
-                action,
-                flags & IS_DIRECTORY != 0,
-                relative.as_bytes(),
-            );
+                // SAFETY: FSEvents supplies count valid paths and flags for this callback.
+                let names =
+                    unsafe { std::slice::from_raw_parts(paths.cast::<*const c_char>(), count) };
+                // SAFETY: FSEvents supplies count flags for this callback.
+                let flags = unsafe { std::slice::from_raw_parts(flags, count) };
+                let mut notify = None;
+                for (&name, &flags) in names.iter().zip(flags) {
+                    if flags & LOST != 0 {
+                        notify = queue.loss();
+                        break;
+                    }
+                    if flags & 0x10 != 0 {
+                        continue;
+                    }
+                    if flags & ROOT_OR_MOUNT != 0 || name.is_null() {
+                        notify = queue.push(context.id, 4, false, b"").or(notify);
+                        continue;
+                    }
+                    // SAFETY: FSEvents supplies each path as a NUL-terminated string.
+                    let path = unsafe { CStr::from_ptr(name) };
+                    let Some(rel) = std::str::from_utf8(path.to_bytes())
+                        .ok()
+                        .and_then(|p| std::path::Path::new(p).strip_prefix(&context.root).ok())
+                        .and_then(|r| r.to_str())
+                    else {
+                        notify = queue.loss();
+                        break;
+                    };
+                    let action = u8::from(flags & REMOVED_OR_RENAMED != 0);
+                    let dir = flags & IS_DIRECTORY != 0;
+                    notify = queue
+                        .push(context.id, action, dir, rel.as_bytes())
+                        .or(notify);
+                }
+                notify
+            }
+        });
+        match result {
+            Some(Some(signal)) => {
+                let panicked = run_no_unwind(|| signal()).is_none();
+                // Drop the callback's Arc clone in its own panic boundary before
+                // recording loss so no two signal drops can overlap on unwind.
+                let _ = run_no_unwind(move || drop(signal));
+                if panicked {
+                    // Record loss without re-invoking the panicked signal; later callbacks re-signal.
+                    let _ = run_no_unwind(|| {
+                        if let Ok(mut queue) = context.queue.lock() {
+                            queue.mark_lost();
+                        }
+                    });
+                }
+            }
+            None => {
+                let signal =
+                    run_no_unwind(|| context.queue.lock().ok().and_then(|mut queue| queue.loss()))
+                        .flatten();
+                if let Some(signal) = signal {
+                    let _ = run_no_unwind(|| signal());
+                    let _ = run_no_unwind(move || drop(signal));
+                }
+            }
+            Some(None) => {}
         }
-    }));
-    if result.is_err()
-        && let Ok(mut queue) = context.queue.lock()
-    {
-        queue.loss();
-    }
+    });
+}
+fn run_no_unwind<T>(f: impl FnOnce() -> T) -> Option<T> {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    catch_unwind(AssertUnwindSafe(f))
+        .map_err(|p| {
+            let _ = catch_unwind(AssertUnwindSafe(move || drop(p))).map_err(std::mem::forget);
+        })
+        .ok()
 }
 impl Drop for Watcher {
     fn drop(&mut self) {
-        let Ok(state) = self.state.get_mut() else {
-            return;
-        };
+        let state = self.state.get_mut().unwrap_or_else(|e| e.into_inner());
         for stream in &state.streams {
             // SAFETY: streams are scheduled, owned, and retired before their contexts.
             unsafe {
@@ -401,9 +421,7 @@ impl Drop for Watcher {
             }
         }
         // SAFETY: callbacks scheduled before invalidation finish before the barrier returns.
-        unsafe {
-            dispatch_sync_f(self.dispatch.0, ptr::null_mut(), barrier);
-        }
+        unsafe { dispatch_sync_f(self.dispatch.0, ptr::null_mut(), barrier) };
         for stream in state.streams.drain(..) {
             // SAFETY: no callback can use these unique stream and context allocations now.
             unsafe {
@@ -412,9 +430,7 @@ impl Drop for Watcher {
             }
         }
         // SAFETY: all streams are retired; this releases the queue's owned reference.
-        unsafe {
-            dispatch_release(self.dispatch.0);
-        }
+        unsafe { dispatch_release(self.dispatch.0) };
     }
 }
 

@@ -184,7 +184,12 @@ impl RemoteHandles<'_> {
                 failure.get_or_insert_with(|| last("close private broker handle"));
             } else {
                 // SAFETY: the successful duplication above transferred a new owned reference to `local`.
-                drop(unsafe { handle(local, "own returned broker handle") }?);
+                match unsafe { handle(local, "own returned broker handle") } {
+                    Ok(owned) => drop(owned),
+                    Err(err) => {
+                        failure.get_or_insert(err);
+                    }
+                }
             }
         }
         failure.map_or(Ok(()), Err)

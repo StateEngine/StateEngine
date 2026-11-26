@@ -5,17 +5,24 @@ pub use se_state_files::windows_attributes::{self as attributes, Error};
 mod parent;
 mod process_query;
 pub use parent::parent;
-pub use process_query::{Query, maps_executable, query};
+pub use process_query::{Query, check_mapped_executable, maps_executable, query};
 use std::{
     collections::BTreeMap,
+    fs::{File, OpenOptions},
     io,
     mem::{size_of, zeroed},
-    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    os::windows::{
+        ffi::OsStringExt,
+        fs::OpenOptionsExt,
+        io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    },
+    path::{Path, PathBuf},
     ptr,
 };
 use windows_sys::Win32::{
     Foundation::*,
     Security::*,
+    Storage::FileSystem::{FILE_EXECUTE, FILE_SHARE_DELETE, FILE_SHARE_READ, SYNCHRONIZE},
     System::{Diagnostics::ToolHelp::*, Threading::*},
 };
 
@@ -167,4 +174,70 @@ pub fn parents() -> Result<BTreeMap<u32, u32>> {
         }
     }
     Ok(result)
+}
+
+/// # Safety
+/// `process` must be a valid query-capable Windows process handle.
+pub unsafe fn process_image_path(process: HANDLE) -> Result<PathBuf> {
+    let mut image = vec![0u16; 32768];
+    let mut length = image.len() as u32;
+    // SAFETY: caller guarantees `process` is a valid query-capable handle and `image` is writable.
+    if unsafe { QueryFullProcessImageNameW(process, 0, image.as_mut_ptr(), &mut length) } == 0 {
+        return Err(last("read IPC peer executable"));
+    }
+    image.truncate(length as usize);
+    Ok(PathBuf::from(std::ffi::OsString::from_wide(&image)))
+}
+
+/// Open a Windows executable with the read/execute/synchronize rights required
+/// for `ProcessImageFileMapping` verification.
+pub fn open_executable(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .access_mode(GENERIC_READ | FILE_EXECUTE | SYNCHRONIZE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+        .open(path)
+}
+
+/// Open `path` and verify it is mapped as the live `process`'s executable section.
+/// Returns `Ok(Some(file))` when mapped, `Ok(None)` when the path does not match
+/// the mapped executable, or `Err` on an OS open/query error.
+///
+/// # Safety
+/// `process` must be a valid Windows process handle with `PROCESS_QUERY_INFORMATION`.
+pub unsafe fn open_mapped_executable(process: HANDLE, path: &Path) -> Result<Option<File>> {
+    let file = open_executable(path).map_err(|source| Error {
+        operation: "pin IPC peer executable",
+        source,
+    })?;
+    // SAFETY: caller guarantees `process` is a valid PROCESS_QUERY_INFORMATION handle.
+    let mapped = unsafe { check_mapped_executable(process, &file) }.map_err(|status| Error {
+        operation: "verify IPC peer executable mapping",
+        source: io::Error::from_raw_os_error(status),
+    })?;
+    Ok(mapped.then_some(file))
+}
+
+/// Open a Windows process handle with `PROCESS_QUERY_INFORMATION | SYNCHRONIZE`.
+pub fn open_query_process(pid: u32, operation: &'static str) -> Result<OwnedHandle> {
+    // SAFETY: query/synchronize-only process pin, no inherited handle or mutation.
+    unsafe {
+        handle(
+            OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, 0, pid),
+            operation,
+        )
+    }
+}
+
+/// Returns `Ok(true)` if the process is live, `Ok(false)` if it has exited.
+///
+/// # Safety
+/// `process` must be a valid Windows process handle with `SYNCHRONIZE` rights.
+pub unsafe fn process_is_live(process: HANDLE) -> Result<bool> {
+    // SAFETY: caller guarantees a retained SYNCHRONIZE handle; zero timeout never blocks.
+    match unsafe { WaitForSingleObject(process, 0) } {
+        WAIT_TIMEOUT => Ok(true),
+        WAIT_OBJECT_0 => Ok(false),
+        _ => Err(last("reobserve IPC peer liveness")),
+    }
 }

@@ -2,9 +2,23 @@
 //! ProcessConsoleHostProcess hint or a process's executable name.
 use super::{Error, Result, handle, invalid, last};
 use std::{io, mem::size_of, os::windows::io::AsRawHandle, ptr};
-use windows_sys::Win32::{
-    Foundation::*,
-    System::{Diagnostics::Debug::ReadProcessMemory, IO::DeviceIoControl, Threading::*},
+use windows_sys::{
+    Wdk::{
+        Foundation::{NtQueryObject, OBJECT_INFORMATION_CLASS},
+        Storage::FileSystem::{
+            FILE_MODE_INFORMATION, FILE_SYNCHRONOUS_IO_ALERT, FILE_SYNCHRONOUS_IO_NONALERT,
+            FileModeInformation, NtQueryInformationFile,
+        },
+    },
+    Win32::{
+        Foundation::*,
+        Storage::FileSystem::{FILE_TYPE_CHAR, GetFileType},
+        System::{
+            Diagnostics::Debug::ReadProcessMemory,
+            IO::{DeviceIoControl, IO_STATUS_BLOCK},
+            Threading::*,
+        },
+    },
 };
 
 fn word(process: HANDLE, address: usize, width: usize) -> Result<usize> {
@@ -125,6 +139,124 @@ fn parameters(process: HANDLE, expected_pid: u32) -> Result<(usize, usize)> {
     Ok((parameters, width))
 }
 
+/// Verifies that `connection` is a character device opened in synchronous I/O mode.
+fn verify_synchronous_mode(connection: HANDLE) -> Result<()> {
+    // SAFETY: read-only file-type query on our retained non-inheritable duplicate.
+    // Checking FILE_TYPE_CHAR first also rejects synchronous pipes before NtQueryObject.
+    if unsafe { GetFileType(connection) } != FILE_TYPE_CHAR {
+        return Err(invalid(
+            "verify console connection",
+            "duplicated console handle is not a character device",
+        ));
+    }
+    let mut iosb = IO_STATUS_BLOCK::default();
+    let mut mode = FILE_MODE_INFORMATION::default();
+    // SAFETY: `connection` is a retained character-device handle; `iosb` and `mode`
+    // are exact initialized output structs for `FileModeInformation`.
+    let mode_status = unsafe {
+        NtQueryInformationFile(
+            connection,
+            &mut iosb,
+            (&mut mode as *mut FILE_MODE_INFORMATION).cast(),
+            size_of::<FILE_MODE_INFORMATION>() as u32,
+            FileModeInformation,
+        )
+    };
+    if mode_status < 0 {
+        return Err(status("query console connection mode", mode_status));
+    }
+    if mode.Mode & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT) == 0 {
+        return Err(invalid(
+            "verify console connection",
+            "duplicated console handle is not in synchronous I/O mode",
+        ));
+    }
+    Ok(())
+}
+
+/// Verifies that a duplicated PEB handle genuinely refers to a synchronous
+/// ConDrv console device before issuing `IOCTL_CONDRV_GET_SERVER_PID`.
+fn verify_console_handle(connection: HANDLE) -> Result<()> {
+    verify_synchronous_mode(connection)?;
+    const OBJECT_NAME_INFORMATION: OBJECT_INFORMATION_CLASS = 1;
+    let mut buffer = vec![0_u64; 1024];
+    let capacity = buffer.len() * size_of::<u64>();
+    let mut returned = 0_u32;
+    // SAFETY: `connection` is a retained synchronous character-device handle and
+    // `buffer` is an 8-byte-aligned writable output buffer of byte length `capacity`.
+    let code = unsafe {
+        NtQueryObject(
+            connection,
+            OBJECT_NAME_INFORMATION,
+            buffer.as_mut_ptr().cast(),
+            capacity as u32,
+            &mut returned,
+        )
+    };
+    if code < 0 {
+        return Err(status("query console connection name", code));
+    }
+    let returned = returned as usize;
+    if returned < size_of::<UNICODE_STRING>() || returned > capacity {
+        return Err(invalid(
+            "verify console connection",
+            "invalid console object name length",
+        ));
+    }
+    // SAFETY: `buffer` is 8-byte aligned and at least `size_of::<UNICODE_STRING>()` bytes.
+    let name = unsafe { ptr::read(buffer.as_ptr().cast::<UNICODE_STRING>()) };
+    if name.Buffer.is_null() || name.Length == 0 || name.Length % 2 != 0 {
+        return Err(invalid(
+            "verify console connection",
+            "console object name is absent or malformed",
+        ));
+    }
+    let buf_start = buffer.as_ptr() as usize;
+    let name_start = name.Buffer as usize;
+    let name_len = usize::from(name.Length);
+    let Some(offset) = name_start.checked_sub(buf_start) else {
+        return Err(invalid(
+            "verify console connection",
+            "console object name pointer lies outside query buffer",
+        ));
+    };
+    let Some(offset_end) = offset.checked_add(name_len) else {
+        return Err(invalid(
+            "verify console connection",
+            "console object name address overflow",
+        ));
+    };
+    if offset < size_of::<UNICODE_STRING>() || offset % 2 != 0 || offset_end > returned {
+        return Err(invalid(
+            "verify console connection",
+            "console object name lies outside reported query length",
+        ));
+    }
+    // SAFETY: `buffer` holds `capacity` initialized bytes and `returned <= capacity`.
+    let bytes = unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), returned) };
+    let name_bytes = &bytes[offset..offset_end];
+    const CONDRV_DEVICE: &[u8] = br"\Device\ConDrv";
+    let prefix_bytes = CONDRV_DEVICE.len() * 2;
+    let is_condrv = name_bytes.len() >= prefix_bytes
+        && name_bytes[..prefix_bytes]
+            .chunks_exact(2)
+            .zip(CONDRV_DEVICE)
+            .all(|(pair, &p)| {
+                let u = u16::from_ne_bytes([pair[0], pair[1]]);
+                u <= 0x7f && (u as u8).eq_ignore_ascii_case(&p)
+            })
+        && (name_bytes.len() == prefix_bytes
+            || u16::from_ne_bytes([name_bytes[prefix_bytes], name_bytes[prefix_bytes + 1]])
+                == u16::from(b'\\'));
+    if !is_condrv {
+        return Err(invalid(
+            "verify console connection",
+            "duplicated handle is not a ConDrv console device",
+        ));
+    }
+    Ok(())
+}
+
 /// The PEB supplies only a handle selector. ConDrv itself proves the server;
 /// writable process metadata cannot turn an ordinary child into a console host.
 pub(crate) fn server(process: HANDLE, expected_pid: u32) -> Result<u32> {
@@ -166,6 +298,7 @@ pub(crate) fn server(process: HANDLE, expected_pid: u32) -> Result<u32> {
     }
     // SAFETY: DuplicateHandle transferred sole ownership of `raw` on success.
     let connection = unsafe { handle(raw, "pin console connection") }?;
+    verify_console_handle(connection.as_raw_handle())?;
     let mut pid = 0_usize;
     let mut bytes = 0;
     // IOCTL_CONDRV_GET_SERVER_PID: FILE_DEVICE_CONSOLE, function 8,

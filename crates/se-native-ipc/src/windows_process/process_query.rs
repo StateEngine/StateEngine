@@ -21,23 +21,47 @@ pub fn query() -> Option<Query> {
 }
 
 /// Positive kernel comparison with the file section used to start this process.
-/// A pathname reopened after a rename does not establish this relationship.
+/// Returns `Ok(true)` on a verified match, `Ok(false)` on a verified mismatch
+/// (`STATUS_NOT_SAME_DEVICE`), and `Err(status)` when the native query itself
+/// is unavailable or refused.
 ///
 /// # Safety
 /// `process` must be a valid query-capable Windows process handle (or current-process pseudo handle).
-pub unsafe fn maps_executable(process: HANDLE, file: &File) -> bool {
+pub unsafe fn check_mapped_executable(
+    process: HANDLE,
+    file: &File,
+) -> std::result::Result<bool, NTSTATUS> {
     const PROCESS_IMAGE_FILE_MAPPING: i32 = 44;
-    let Some(query) = query() else { return false };
+    const STATUS_NOT_SAME_DEVICE: NTSTATUS = 0xC000_00D4_u32 as NTSTATUS;
+    const STATUS_NOT_IMPLEMENTED: NTSTATUS = 0xC000_0002_u32 as NTSTATUS;
+    let Some(query) = query() else {
+        return Err(STATUS_NOT_IMPLEMENTED);
+    };
     let mut handle = file.as_raw_handle();
     // SAFETY: process and executable handles remain open for the query. This
     // information class takes a pointer to one initialized HANDLE as input.
-    unsafe {
+    let status = unsafe {
         query(
             process,
             PROCESS_IMAGE_FILE_MAPPING,
             (&mut handle as *mut HANDLE).cast(),
             std::mem::size_of::<HANDLE>() as u32,
             std::ptr::null_mut(),
-        ) == 0
+        )
+    };
+    match status {
+        0 => Ok(true),
+        STATUS_NOT_SAME_DEVICE => Ok(false),
+        other => Err(other),
     }
+}
+
+/// Positive kernel comparison with the file section used to start this process.
+/// A pathname reopened after a rename does not establish this relationship.
+///
+/// # Safety
+/// `process` must be a valid query-capable Windows process handle (or current-process pseudo handle).
+pub unsafe fn maps_executable(process: HANDLE, file: &File) -> bool {
+    // SAFETY: caller upholds the valid query-capable process handle contract.
+    unsafe { check_mapped_executable(process, file) == Ok(true) }
 }

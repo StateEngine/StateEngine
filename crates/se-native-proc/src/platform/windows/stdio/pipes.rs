@@ -105,15 +105,20 @@ fn pair(port: &NativeStdio, index: usize) -> ProcResult<File> {
     // SAFETY: the successful open above transferred unique ownership to `raw`.
     let client = unsafe { Handle::new(raw, "open provider child endpoint") }?;
     let id = state.next_id()?;
-    let mut operation = Operation::new(Kind::Connect(index), Vec::new(), None);
-    let address = operation.address();
-    state.operations.insert(id, operation);
+    let operation = Operation::new(Kind::Connect(index), Vec::new(), None);
+    let overlapped = state
+        .operations
+        .entry(id)
+        .or_insert(operation)
+        .io
+        .overlapped_ptr();
     let server = state.handles[index]
         .as_ref()
         .ok_or_else(|| input("stdio", "pipe creation lost its owner"))?;
-    // SAFETY: the boxed OVERLAPPED was installed in retained arena storage
-    // before dispatch. It remains there for any accepted completion packet.
-    let ok = unsafe { ConnectNamedPipe(server.0, address as *mut OVERLAPPED) };
+    // SAFETY: `overlapped` points into the raw `UnsafeCell` heap allocation
+    // retained in `state.operations` before dispatch. It remains pinned until
+    // its completion packet arrives or immediate non-pending rejection removes it.
+    let ok = unsafe { ConnectNamedPipe(server.0, overlapped) };
     // SAFETY: immediate thread-local status, before any other native operation.
     let code = if ok == 0 {
         // SAFETY: immediate thread-local status from the native call.

@@ -36,7 +36,7 @@ fn open_pty_pair() -> ProcResult<(File, File, CString, libc::termios)> {
     if unsafe { libc::grantpt(master.as_raw_fd()) < 0 || libc::unlockpt(master.as_raw_fd()) < 0 } {
         return Err(launch_err("unlock private PTY"));
     }
-    let mut name = [0i8; 256];
+    let mut name = [0 as std::ffi::c_char; 256];
     // SAFETY: the bounded initialized output has its exact capacity.
     let code = unsafe { libc::ptsname_r(master.as_raw_fd(), name.as_mut_ptr(), name.len()) };
     if code != 0 {
