@@ -49,7 +49,7 @@ impl Drop for Work {
         self.0.client_activity.changed.notify_waiters();
     }
 }
-/// The existing native/channel idle window restarts after client work closes.
+/// The existing native idle window restarts after client work closes.
 /// This shares the existing idle timer and adds no task or network subscription.
 pub(crate) async fn idle(waits: Arc<Waits>, activity: &mut tokio::sync::watch::Receiver<u32>) {
     loop {

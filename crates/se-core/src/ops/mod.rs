@@ -107,7 +107,7 @@ pub use cli_selections::{CliSelections, command_name, diagnostic_word, unknown_f
 pub use event::{EventOutput, EventRead, HistoryEvent};
 pub use hook::{HookClaude, HookEvent, HookResult};
 pub use inputs::*;
-pub use message::{channel_reply_instruction, remote_reply_from};
+pub use message::remote_reply_from;
 pub use meta::{
     McpTool, decode_operation, decode_tool, mcp_tools, metadata_output, schema_catalogue,
 };

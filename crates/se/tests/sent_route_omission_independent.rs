@@ -240,8 +240,9 @@ fn sender_sent_listing_omits_the_recipient_phone_route() -> Check {
             .channel_reply
             .as_ref()
             .ok_or("recipient lost its own channel route")?;
-        assert!(route.active);
-        assert!(route.instruction.contains("stateengine_msg_send"));
+        // No phone transport runs, so the saved route is history, never live.
+        assert!(!route.active);
+        assert!(route.instruction.contains("does not reach that phone"));
         assert_eq!(route.reply_to, phone);
     }
 

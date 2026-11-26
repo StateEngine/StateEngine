@@ -254,60 +254,6 @@ pub(super) fn apply(
     Ok(())
 }
 
-/// Called in the reply's own mail transaction. Only the exact approved recipient
-/// replying to the exact Owner's original channel mail creates private output.
-pub(crate) fn enqueue_reply(
-    c: &Connection,
-    h: &EventHeader,
-    message: &[u8],
-    reply: Option<&[u8]>,
-    seq: i64,
-) -> StoreResult<()> {
-    if connection::info(c)?.schema_version < 6 {
-        return Ok(());
-    }
-    let (Actor::Agent(agent), Some(original)) = (&h.actor, reply) else {
-        return Ok(());
-    };
-    let p = project_id(c, &h.scope, false)?;
-    let rows: Vec<String> = c.prepare_cached("SELECT cc.state_json FROM channel_connections cc JOIN channel_updates u ON u.connection_id=cc.id WHERE cc.project_id=? AND cc.active=1 AND u.message_id=? AND u.receipt_id IS NOT NULL").map_err(sql)?.query_map(crate::sql_value::sql_params![p,original], |r| crate::sql_value::value(r, 0)).map_err(sql)?.collect::<Result<_,_>>().map_err(sql)?;
-    for row in rows {
-        let state: ChannelConnection = serde_json::from_str(&row).map_err(invalid)?;
-        if state.target.agent != *agent || !matches!(state.pairing, Pairing::Paired { .. }) {
-            continue;
-        }
-        let owner = key(c, "human", state.owner.as_str(), &[0], false)?;
-        let correct_recipient: bool = c
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM message_data WHERE event_seq=? AND recipient_id=?)",
-                crate::sql_value::sql_params![seq, owner],
-                |r| crate::sql_value::value(r, 0),
-            )
-            .map_err(sql)?;
-        if !correct_recipient {
-            continue;
-        }
-        c.execute("UPDATE channel_updates SET status_due_at_us=NULL WHERE connection_id=? AND message_id=?",crate::sql_value::sql_params![state.id.as_str(),original]).map_err(sql)?;
-        let pending: i64 = c.query_row("SELECT count(*) FROM channel_outbox WHERE connection_id=? AND state IN ('queued','sending')", [state.id.as_str()], |r|crate::sql_value::value(r, 0)).map_err(sql)?;
-        // Retain the reply even when the transport queue is full, with a visible
-        // failed entry instead of rejecting the agent's ordinary mail commit.
-        let status = if pending >= crate::channel::MAX_PENDING as i64 {
-            "failed"
-        } else {
-            "queued"
-        };
-        enqueue(c, &state, Some(original), Some(message), "reply", seq)?;
-        if status == "failed" {
-            c.execute(
-                "UPDATE channel_outbox SET state='failed',failure=? WHERE connection_id=? AND reply_id=?",
-                crate::sql_value::sql_params![codec::encode(&se_types::MessagingChannelError::QueueFull)?,state.id.as_str(), message],
-            )
-            .map_err(sql)?;
-        }
-    }
-    Ok(())
-}
-
 pub(super) fn enqueue(
     c: &Connection,
     state: &ChannelConnection,
@@ -325,38 +271,6 @@ pub(super) fn enqueue(
     let id = format!("cho-{}", se_types::hex_lower(&hash.finalize()[..16]));
     let (status, failure) = outbox_status(c, state.id.as_str())?;
     c.execute("INSERT INTO channel_outbox(output_id,connection_id,binding_revision,kind,original_id,reply_id,queued_seq,last_seq,state,failure) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(output_id) DO NOTHING",crate::sql_value::sql_params![id,state.id.as_str(),state.revision,kind,original,reply,seq,seq,status,failure]).map_err(sql)?;
-    Ok(())
-}
-
-pub(crate) fn enqueue_mark(
-    c: &Connection,
-    h: &EventHeader,
-    message: &se_types::MessageId,
-    kind: &str,
-    seq: i64,
-) -> StoreResult<()> {
-    if connection::info(c)?.schema_version < 6 {
-        return Ok(());
-    }
-    let p = project_id(c, &h.scope, false)?;
-    let scope = scope_key(c, &h.scope, false)?;
-    let message = key(c, "message", message.as_str(), &scope, false)?;
-    let rows:Vec<String>=c.prepare_cached("SELECT cc.state_json FROM channel_updates u JOIN channel_connections cc ON cc.id=u.connection_id WHERE cc.project_id=? AND cc.active=1 AND u.message_id=? AND u.receipt_id IS NOT NULL").map_err(sql)?.query_map(crate::sql_value::sql_params![p,message],|r|r.get(0)).map_err(sql)?.collect::<Result<_,_>>().map_err(sql)?;
-    for row in rows {
-        let state: ChannelConnection = serde_json::from_str(&row).map_err(invalid)?;
-        if matches!(state.pairing, Pairing::Paired { .. }) {
-            if matches!(kind, "read" | "dismiss") {
-                c.execute(
-                    "UPDATE channel_updates SET pending=0 WHERE connection_id=? AND message_id=?",
-                    crate::sql_value::sql_params![state.id.as_str(), message],
-                )
-                .map_err(sql)?;
-            }
-            if kind != "dismiss" {
-                enqueue(c, &state, Some(&message), None, kind, seq)?;
-            }
-        }
-    }
     Ok(())
 }
 

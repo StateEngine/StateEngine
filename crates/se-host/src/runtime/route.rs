@@ -458,7 +458,7 @@ enum RouteChoice {
     Owner(Box<crate::remote::OwnerCall>),
     Core(Box<RoutedCall>),
 }
-/// The authenticated frame fields shared by the three terminal-scoped routes.
+/// The authenticated frame fields shared by the terminal-scoped routes.
 /// Each resolves to its own call kind and never reaches the core decoder.
 struct RouteScope<'a> {
     context: &'a AdmissionContext,

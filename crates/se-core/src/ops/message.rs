@@ -418,7 +418,14 @@ pub(super) fn channel_reply<R: se_store::Snapshot>(
         .read
         .channel_reply_route(id)
         .map_err(|e| se_core_store_error(&e))?;
-    Ok(route.map(|r|super::outputs::ChannelReply{instruction:if r.active {format!("This message came from the Owner's paired phone. Send your answer with stateengine_msg_send to {} and set reply_to to {}. A final turn answer alone stays local and does not reach the phone. Keep each linked reply under 1500 characters; send several linked replies when a longer answer is needed.",r.owner,r.original)}else{"The phone channel is disconnected; a new mail reply remains saved but cannot reach that phone.".into()},to:r.owner,reply_to:r.original,active:r.active}))
+    // This version runs no phone transport, so a saved pairing is history: a
+    // reply is ordinary local mail and never reaches the phone.
+    Ok(route.map(|r| super::outputs::ChannelReply {
+        instruction: "This message came from a phone channel that this version no longer runs; a mail reply stays saved locally and does not reach that phone.".into(),
+        to: r.owner,
+        reply_to: r.original,
+        active: false,
+    }))
 }
 fn se_core_store_error(error: &se_store::StoreError) -> se_types::SeError {
     crate::store_error::store_error(error)
@@ -434,14 +441,6 @@ pub fn remote_reply_from(
             to, reply_to:id.clone(),
         }
     })
-}
-
-pub fn channel_reply_instruction<R: se_store::Snapshot>(
-    cx: &mut Cx<'_, R>,
-    id: &se_types::MessageId,
-    recipient: &Actor,
-) -> se_types::Result<Option<String>> {
-    Ok(channel_reply(cx, id, recipient)?.map(|route| route.instruction))
 }
 
 /// Exit status reflects unread totals, unreadable bodies and page completeness.
