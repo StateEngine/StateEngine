@@ -1,4 +1,4 @@
-//! Continuity, messaging, history, identity, working-state and Atlas read planning.
+//! Read-only continuity, mailbox, history, identity, working-state and Atlas planning.
 use super::{Kernel, PlanStep};
 use crate::{
     commit::{Cx, OpStep},
@@ -43,42 +43,6 @@ pub(super) fn plan_session_context<R: Snapshot>(
         )?
         .into(),
     ))
-}
-
-pub(super) fn plan_message_read<R: Snapshot>(
-    kernel: &Kernel,
-    input: crate::ops::MessageRead,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    crate::ops::message_mark::map_mark(crate::ops::message_mark::read(kernel, cx, input)?)
-}
-
-pub(super) fn plan_message_ack<R: Snapshot>(
-    kernel: &Kernel,
-    input: crate::ops::MessageAck,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    crate::ops::message_mark::map_mark(crate::ops::message_mark::plan(
-        kernel,
-        cx,
-        input.msg_id,
-        crate::ops::message_mark::Mark::Read,
-        None,
-    )?)
-}
-
-pub(super) fn plan_message_dismiss<R: Snapshot>(
-    kernel: &Kernel,
-    input: crate::ops::MessageDismiss,
-    cx: &mut Cx<'_, R>,
-) -> Result<PlanStep> {
-    crate::ops::message_mark::map_mark(crate::ops::message_mark::plan(
-        kernel,
-        cx,
-        input.msg_id,
-        crate::ops::message_mark::Mark::Dismiss,
-        None,
-    )?)
 }
 
 pub(super) fn plan_working_state_get<R: Snapshot>(
