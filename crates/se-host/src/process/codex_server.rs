@@ -21,7 +21,9 @@ use sha2::{Digest, Sha256};
 use std::{ffi::OsString, path::Path, time::Duration};
 
 mod record;
+mod socket;
 use record::{Record, checkpoint_source, refusal, remove_record};
+use socket::{served, socket_fits, wait_served};
 
 const RECORD_VERSION: u16 = 1;
 const RECORD_BYTES: usize = 1024 * 1024;
@@ -108,6 +110,7 @@ impl LaunchCoordinator {
         &self,
         login: PathBuf,
         launch: ServerLaunch,
+        requester: &se_types::LifecycleId,
         deadline: &Deadline,
     ) -> Result<()> {
         let control = crate::harness::codex_input::control_socket(&login);
@@ -122,13 +125,26 @@ impl LaunchCoordinator {
         let mut record = self.read_codex_record(&path, deadline).await?;
         if served(&control).await? {
             match record.take() {
-                // Someone else's server on this login: use it, never stop it.
-                None => return Ok(()),
+                // Someone else's server on this login: never stop it; on Windows
+                // where sandbox isolation is required, refuse unknown external mode.
+                None => {
+                    if let Some(wanted) = launch.windows_sandbox {
+                        return Err(crate::codex_rpc::incompatible(
+                            &format!(
+                                "an external Codex app-server is already serving {} with an unknown Windows sandbox mode (launch requires {:?})",
+                                login.display(),
+                                wanted,
+                            ),
+                            "Stop that external Codex app-server and retry so StateEngine can start one with the configured windows.sandbox.",
+                        ));
+                    }
+                    return Ok(());
+                }
                 Some(record) => {
                     let mismatch = launch.windows_sandbox.is_some()
                         && record.windows_sandbox.as_deref() != launch.windows_sandbox;
                     if mismatch {
-                        if self.live_codex_agents()? {
+                        if self.other_live_codex_agents(Some(requester))? {
                             return Err(crate::codex_rpc::incompatible(
                                 &format!(
                                     "the shared Codex app-server for {} is running with Windows sandbox {:?}, not {:?}",
@@ -158,8 +174,27 @@ impl LaunchCoordinator {
             // Recorded but not serving: still starting, or gone.
             match self.recover_codex_server(&path, &record, deadline).await? {
                 Recovered::Started(owner) => {
-                    slot.insert(login.clone(), owner);
-                    return wait_served(&control, deadline).await;
+                    let mismatch = launch.windows_sandbox.is_some()
+                        && record.windows_sandbox.as_deref() != launch.windows_sandbox;
+                    if mismatch {
+                        if self.other_live_codex_agents(Some(requester))? {
+                            slot.insert(login.clone(), owner);
+                            return Err(crate::codex_rpc::incompatible(
+                                &format!(
+                                    "the shared Codex app-server for {} is starting with Windows sandbox {:?}, not {:?}",
+                                    login.display(),
+                                    record.windows_sandbox.as_deref().unwrap_or("none"),
+                                    launch.windows_sandbox.unwrap_or("none"),
+                                ),
+                                "Stop running Codex agents on this login before switching windows.sandbox, then retry.",
+                            ));
+                        }
+                        self.stop_and_remove_codex(owner, &path, deadline).await?;
+                        slot.remove(&login);
+                    } else {
+                        slot.insert(login.clone(), owner);
+                        return wait_served(&control, deadline).await;
+                    }
                 }
                 // A start that never reached exec will never serve: end it.
                 Recovered::Unstarted(owner) => {
@@ -388,6 +423,10 @@ impl LaunchCoordinator {
     }
 
     fn live_codex_agents(&self) -> Result<bool> {
+        self.other_live_codex_agents(None)
+    }
+
+    fn other_live_codex_agents(&self, exclude: Option<&se_types::LifecycleId>) -> Result<bool> {
         let jobs = self
             .jobs
             .0
@@ -395,6 +434,7 @@ impl LaunchCoordinator {
             .map_err(|_| error("Codex shared server", "poisoned job registry"))?;
         Ok(jobs.values().any(|job| {
             job.provider == se_store::Provider::Codex
+                && exclude.is_none_or(|lifecycle| &job.lifecycle != lifecycle)
                 && !job.settled.load(std::sync::atomic::Ordering::Acquire)
         }))
     }
@@ -722,74 +762,4 @@ fn codex_server_spec(
         deadline: deadline.at(),
         notifications: Arc::new(events::Wake::default()),
     }
-}
-
-/// A local socket address holds a short path: 104 bytes with its terminator on
-/// macOS, 108 elsewhere. The stock server refuses a longer one too.
-fn socket_fits(control: &Path) -> Result<()> {
-    const LIMIT: usize = if cfg!(target_os = "macos") { 103 } else { 107 };
-    let length = control.as_os_str().as_encoded_bytes().len();
-    if length > LIMIT {
-        return Err(crate::codex_rpc::incompatible(
-            &format!(
-                "the Codex login's control socket path is {length} bytes, longer than the {LIMIT} a local socket allows ({})",
-                control.display()
-            ),
-            "Set CODEX_HOME to a shorter folder (for example one directly under your home folder), sign in to Codex there, and relaunch.",
-        ));
-    }
-    Ok(())
-}
-
-/// Whether the login's control socket accepts a connection right now.
-async fn served(control: &Path) -> Result<bool> {
-    match std::fs::symlink_metadata(control) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => {
-            return Err(se_core::scope::unreadable(
-                "Codex control socket",
-                &e.to_string(),
-            ));
-        }
-        Ok(_) => {}
-    }
-    #[cfg(unix)]
-    let attempt = tokio::net::UnixStream::connect(control).await.map(drop);
-    #[cfg(windows)]
-    let attempt = {
-        let control = control.to_owned();
-        tokio::task::spawn_blocking(move || uds_windows::UnixStream::connect(control).map(drop))
-            .await
-            .map_err(|e| error("Codex control socket", e))?
-    };
-    match attempt {
-        Ok(()) => Ok(true),
-        // A socket file nobody listens on: refused, or on Windows WSAENETDOWN.
-        Err(e)
-            if matches!(
-                e.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-            ) || (cfg!(windows) && e.raw_os_error() == Some(10050)) =>
-        {
-            Ok(false)
-        }
-        Err(e) => Err(se_core::scope::unreadable(
-            "Codex control socket",
-            &e.to_string(),
-        )),
-    }
-}
-
-async fn wait_served(control: &Path, deadline: &Deadline) -> Result<()> {
-    let until = tokio::time::Instant::now() + READY.min(deadline.remaining()?);
-    while !served(control).await? {
-        if tokio::time::Instant::now() >= until {
-            return Err(crate::codex_rpc::incompatible(
-                &format!("the login's app-server did not open {}", control.display()),
-                "Check that `codex app-server --listen unix://` starts for this login, then relaunch.",
-            ));
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    Ok(())
 }

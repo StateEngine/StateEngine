@@ -9,6 +9,9 @@ impl LaunchCoordinator {
         stopped: Stopped,
         fallback: Option<se_types::Read<se_types::ProviderSessionId>>,
     ) -> Result<AnyOutput> {
+        let agent_guard = self
+            .lock_agent_launch(&plan.project.id, &plan.agent.id, deadline)
+            .await?;
         let mut reports = stopped.lock().await;
         let mut checked = self.replan_launch(&plan, &admission, deadline).await?;
         checked.prepare_replacement(&plan, None, false)?;
@@ -87,6 +90,7 @@ impl LaunchCoordinator {
             successor_admission,
             deadline,
             Some(report.clone()),
+            Some(agent_guard),
             #[cfg(feature = "remote")]
             None,
         )

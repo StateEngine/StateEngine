@@ -122,7 +122,8 @@ impl LaunchCoordinator {
                 environment: server.environment.entries,
                 windows_sandbox,
             };
-            self.ensure_codex_server(login, launch, deadline).await?;
+            self.ensure_codex_server(login, launch, &plan.lifecycle, deadline)
+                .await?;
         } else {
             #[cfg(unix)]
             {
@@ -460,9 +461,17 @@ impl LaunchCoordinator {
                 deadline,
             )
             .await?;
+        if work.launch_guard.is_none() {
+            work.launch_guard = Some(
+                self.lock_agent_launch(&plan.project.id, &plan.agent.id, deadline)
+                    .await?,
+            );
+        }
         let reservation = self
             .commit_reservation(work, &plan, &hashes, deadline)
-            .await?;
+            .await;
+        work.launch_guard = None;
+        let reservation = reservation?;
         let scope = self
             .prepare_native_scope(work, &plan, invocation, qualified, reservation, deadline)
             .await?;

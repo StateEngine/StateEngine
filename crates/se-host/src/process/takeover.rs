@@ -48,15 +48,6 @@ impl LaunchCoordinator {
         deadline: &Deadline,
     ) -> Result<LaunchReply> {
         self.harness_for(plan.profile.provider)?;
-        let _agent_guard = self
-            .lock_agent_launch(&plan.project.id, &plan.agent.id, deadline)
-            .await?;
-        if !plan.replayed {
-            // Re-read the store state under the per-agent launch lock so any
-            // concurrent launch or --force takeover that completed ahead of us
-            // is observed before evaluating confirmation or replacement.
-            plan = self.replan_launch(&plan, &admission, deadline).await?;
-        }
         if !plan.replayed {
             self.require_force_selection(&plan)?;
             plan = crate::reboot::after_reboot(self, plan, &admission, deadline).await?;
@@ -70,6 +61,7 @@ impl LaunchCoordinator {
                     plan,
                     admission,
                     deadline,
+                    None,
                     None,
                     #[cfg(feature = "remote")]
                     None,

@@ -56,6 +56,8 @@ pub(super) struct Work {
     pub one_shot_exit: OneShotExit,
     pub startup_timing: Option<crate::startup_timing::Timing>,
     pub takeover: Option<se_core::ops::agent_launch::TakeoverReport>,
+    /// Per-agent launch serialization guard held through C1 reservation only.
+    pub launch_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
     pub plan: Option<Arc<LaunchPlan>>,
     pub recover_provider: bool,
     pub meta: LifecycleMetadata,
@@ -129,6 +131,7 @@ impl Work {
         Self {
             one_shot_exit: OneShotExit::Natural,
             takeover: None,
+            launch_guard: None,
             startup_timing: None,
             cleanup_admission,
             meta,
