@@ -23,6 +23,14 @@ async fn ensure_agent_clear_locked(
     agent_id: &AgentId,
     deadline: &Deadline,
 ) -> Result<()> {
+    reconcile::reconcile_pending_revocations_on_execution(
+        &router.execution,
+        &router.context.owner,
+        project_id,
+        agent_id,
+        deadline,
+    )
+    .await?;
     let now_us = now_unix_micros()?;
     for lease in router
         .execution
@@ -46,14 +54,6 @@ async fn ensure_agent_clear_locked(
             }
         }
     }
-    reconcile::reconcile_pending_revocations_on_execution(
-        &router.execution,
-        &router.context.owner,
-        project_id,
-        agent_id,
-        deadline,
-    )
-    .await?;
     let context = router.context.clone();
     let project = project_id.clone();
     let agent = agent_id.clone();
@@ -93,11 +93,12 @@ async fn ensure_agent_clear_locked(
                 deadline,
             )
             .await?;
-            let _ = router.execution.external.remove_if_session_and_retire(
+            let _ = router.execution.external.settle_pending_revocation(
                 &router.execution.pending_writes,
                 project_id,
                 agent_id,
                 &stale.session_id,
+                false,
             )?;
             if let Some(warn) = warn {
                 return Err(warn);
@@ -464,21 +465,13 @@ pub(crate) async fn revoke_seat(
         .external
         .take_settled_revocation(&project, &agent_id)?;
 
-    let removed = match active.lease_generation {
-        Some(lease_gen) => router.execution.external.remove_if_matching_and_retire(
-            &router.execution.pending_writes,
-            &project,
-            &agent_id,
-            &active.session_id,
-            lease_gen,
-        )?,
-        None => router.execution.external.remove_if_session_and_retire(
-            &router.execution.pending_writes,
-            &project,
-            &agent_id,
-            &active.session_id,
-        )?,
-    };
+    let removed = router.execution.external.settle_pending_revocation(
+        &router.execution.pending_writes,
+        &project,
+        &agent_id,
+        &active.session_id,
+        false,
+    )?;
     if let Some(warn) = observer_warning {
         return Err(warn);
     }

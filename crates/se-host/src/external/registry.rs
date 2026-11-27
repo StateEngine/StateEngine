@@ -107,6 +107,7 @@ pub(crate) struct PendingRevocation {
     pub project_id: ProjectId,
     pub agent_id: AgentId,
     pub session_id: SessionId,
+    pub lease_generation: Option<u64>,
     pub identity: crate::runtime::WriteIdentity,
 }
 
@@ -370,23 +371,10 @@ impl ExternalRegistry {
     pub(crate) fn record_active_lease(&self, lease: ActiveLease) -> Result<()> {
         let mut guard = self.state.lock().map_err(|_| poisoned())?;
         let key = (lease.project_id.clone(), lease.agent_id.clone());
-        guard.settled_revocations.remove(&key);
+        if !lease.reconcile_required {
+            guard.settled_revocations.remove(&key);
+        }
         guard.active.insert(key, lease);
-        Ok(())
-    }
-
-    pub(crate) fn record_settled_revocation(
-        &self,
-        project_id: &ProjectId,
-        agent_id: &AgentId,
-        session_id: SessionId,
-        lease_generation: Option<u64>,
-    ) -> Result<()> {
-        let mut guard = self.state.lock().map_err(|_| poisoned())?;
-        guard.settled_revocations.insert(
-            (project_id.clone(), agent_id.clone()),
-            (session_id, lease_generation),
-        );
         Ok(())
     }
 
@@ -414,6 +402,11 @@ impl ExternalRegistry {
         if let Some(existing) = guard.pending_revocations.get(session_id) {
             return Ok(existing.identity.clone());
         }
+        let lease_generation = guard
+            .active
+            .get(&(project_id.clone(), agent_id.clone()))
+            .filter(|l| l.session_id == *session_id)
+            .map(|l| l.lease_generation);
         let fresh = super::commit::fresh_revoke_identity(session_id)?;
         guard.pending_revocations.insert(
             session_id.clone(),
@@ -421,6 +414,7 @@ impl ExternalRegistry {
                 project_id: project_id.clone(),
                 agent_id: agent_id.clone(),
                 session_id: session_id.clone(),
+                lease_generation,
                 identity: fresh.clone(),
             },
         );
@@ -469,8 +463,9 @@ impl ExternalRegistry {
             }))
     }
 
-    /// Remove a matching active lease and any pending revocation entry for
-    /// `session_id`, then retire all tracked write identities from `pending`.
+    /// Remove a matching active lease and retire its approval write identity,
+    /// leaving `pending_revocations` untouched so exact receipt settlement
+    /// remains owned by `reconcile_pending_revocations_on_store`.
     pub(crate) fn remove_if_matching_and_retire(
         &self,
         pending: &crate::PendingWrites,
@@ -479,31 +474,32 @@ impl ExternalRegistry {
         session_id: &SessionId,
         lease_generation: u64,
     ) -> Result<Option<ActiveLease>> {
-        let (removed, revocation) = {
+        let removed = {
             let mut guard = self.state.lock().map_err(|_| poisoned())?;
             let key = (project_id.clone(), agent_id.clone());
-            let removed = if guard.active.get(&key).is_some_and(|l| {
+            if guard.active.get(&key).is_some_and(|l| {
                 l.session_id == *session_id && l.lease_generation == lease_generation
             }) {
                 guard.active.remove(&key)
             } else {
                 None
-            };
-            let revocation = guard.pending_revocations.remove(session_id);
-            (removed, revocation)
+            }
         };
-        retire_writes(pending, removed.as_ref(), revocation.as_ref())?;
+        retire_writes(pending, removed.as_ref(), None)?;
         Ok(removed)
     }
 
-    /// Remove any session-matching active lease and any pending revocation entry
-    /// for `session_id`, then retire all tracked write identities from `pending`.
-    pub(crate) fn remove_if_session_and_retire(
+    /// Settle a pending revocation entry for `session_id`: removes the pending
+    /// revocation and any matching active lease, optionally records the verified
+    /// outcome in `settled_revocations` for Owner delivery, and retires all
+    /// tracked write identities from `pending`.
+    pub(crate) fn settle_pending_revocation(
         &self,
         pending: &crate::PendingWrites,
         project_id: &ProjectId,
         agent_id: &AgentId,
         session_id: &SessionId,
+        record_settled: bool,
     ) -> Result<Option<ActiveLease>> {
         let (removed, revocation) = {
             let mut guard = self.state.lock().map_err(|_| poisoned())?;
@@ -518,6 +514,15 @@ impl ExternalRegistry {
                 None
             };
             let revocation = guard.pending_revocations.remove(session_id);
+            if record_settled {
+                let lease_gen = removed
+                    .as_ref()
+                    .map(|l| l.lease_generation)
+                    .or_else(|| revocation.as_ref().and_then(|r| r.lease_generation));
+                guard
+                    .settled_revocations
+                    .insert(key, (session_id.clone(), lease_gen));
+            }
             (removed, revocation)
         };
         retire_writes(pending, removed.as_ref(), revocation.as_ref())?;

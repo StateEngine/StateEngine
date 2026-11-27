@@ -50,17 +50,12 @@ pub(crate) async fn reconcile_pending_revocations_on_store(
             None => false,
         };
         if receipt_committed {
-            let removed = external.remove_if_session_and_retire(
+            let _ = external.settle_pending_revocation(
                 &store.pending,
                 project_id,
                 agent_id,
                 &rev.session_id,
-            )?;
-            external.record_settled_revocation(
-                project_id,
-                agent_id,
-                rev.session_id,
-                removed.map(|l| l.lease_generation),
+                true,
             )?;
         } else if !commit::session_is_active_on_store(
             store,
@@ -71,11 +66,12 @@ pub(crate) async fn reconcile_pending_revocations_on_store(
         )
         .await?
         {
-            let _ = external.remove_if_session_and_retire(
+            let _ = external.settle_pending_revocation(
                 &store.pending,
                 project_id,
                 agent_id,
                 &rev.session_id,
+                false,
             )?;
         }
     }
@@ -139,6 +135,14 @@ pub(crate) async fn reconcile_expired_on_execution(
             .agent_lock(&lease.project_id, &lease.agent_id)?
             .lock_owned()
             .await;
+        reconcile_pending_revocations_on_execution(
+            execution,
+            owner,
+            &lease.project_id,
+            &lease.agent_id,
+            deadline,
+        )
+        .await?;
         let outcome = fenced_disconnect_locked_on_execution(
             execution,
             owner,
@@ -218,12 +222,12 @@ async fn revoke_expired_lease_on_store(
             deadline,
         )
         .await?;
-        let _ = external.remove_if_matching_and_retire(
+        let _ = external.settle_pending_revocation(
             &store.pending,
             &lease.project_id,
             &lease.agent_id,
             &lease.session_id,
-            lease.lease_generation,
+            false,
         )?;
         if let Some(err) = warn {
             return Err(err);
@@ -261,6 +265,8 @@ pub(crate) async fn reconcile_external_for_launch_on_store(
         .agent_lock(project_id, agent_id)?
         .lock_owned()
         .await;
+    reconcile_pending_revocations_on_store(store, external, owner, project_id, agent_id, deadline)
+        .await?;
     let now_us = now_unix_micros()?;
     let mut changed = false;
     for lease in external.expired_leases(Some(project_id), now_us)? {
@@ -270,8 +276,6 @@ pub(crate) async fn reconcile_external_for_launch_on_store(
             changed = true;
         }
     }
-    reconcile_pending_revocations_on_store(store, external, owner, project_id, agent_id, deadline)
-        .await?;
     let reads = store.reads.clone();
     let generation = store.generation.get();
     let project = project_id.clone();
@@ -299,11 +303,12 @@ pub(crate) async fn reconcile_external_for_launch_on_store(
             deadline,
         )
         .await?;
-        let _ = external.remove_if_session_and_retire(
+        let _ = external.settle_pending_revocation(
             &store.pending,
             project_id,
             agent_id,
             &stale.session_id,
+            false,
         )?;
         if let Some(err) = warn {
             return Err(err);
@@ -498,12 +503,12 @@ pub(crate) async fn fenced_disconnect_locked_on_execution(
         deadline,
     )
     .await?;
-    let _ = execution.external.remove_if_matching_and_retire(
+    let _ = execution.external.settle_pending_revocation(
         &execution.pending_writes,
         project_id,
         agent_id,
         session_id,
-        lease_generation,
+        false,
     )?;
     Ok(DisconnectOutcome {
         revoked: true,
