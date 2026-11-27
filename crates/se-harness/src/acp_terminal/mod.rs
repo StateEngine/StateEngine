@@ -177,6 +177,12 @@ impl TerminalEntry {
         }
     }
 
+    fn has_pending_resources(&self) -> bool {
+        self.wait_worker.lock().is_ok_and(|w| w.is_some())
+            || self.child.lock().is_ok_and(|c| c.is_some())
+            || self.io_workers.lock().is_ok_and(|w| !w.is_empty())
+    }
+
     fn disarm_retained_child(&self) {
         if let Ok(mut slot) = self.child.lock()
             && let Some(child) = slot.as_mut()
@@ -228,6 +234,7 @@ impl TerminalEntry {
             .map(|mut w| std::mem::take(&mut *w))
             .unwrap_or_default();
         let mut still_reading = Vec::new();
+        let mut reader_timed_out = false;
         for worker in workers {
             match worker.try_join(deadline) {
                 WorkerJoin::Settled(Ok(())) => {}
@@ -236,12 +243,15 @@ impl TerminalEntry {
                 }
                 WorkerJoin::TimedOut(pending) => {
                     still_reading.push(pending);
-                    errors.push(
-                        "terminal output stream did not close before cleanup deadline (an escaped descendant may still hold stdout/stderr open)"
-                            .to_owned(),
-                    );
+                    reader_timed_out = true;
                 }
             }
+        }
+        if reader_timed_out {
+            errors.push(
+                "terminal output stream did not close before cleanup deadline (an escaped descendant may still hold stdout/stderr open)"
+                    .to_owned(),
+            );
         }
         if !still_reading.is_empty()
             && let Ok(mut slot) = self.io_workers.lock()
@@ -287,10 +297,39 @@ impl Drop for Terminals {
             Err(_) => Vec::new(),
         };
         let deadline = Instant::now() + DROP_CLEANUP_TIMEOUT;
+        let mut unresolved = Vec::new();
         for entry in entries {
             entry.released.store(true, Ordering::Release);
-            let _ = entry.terminate_and_join(deadline);
-            entry.disarm_retained_child();
+            if entry.terminate_and_join(deadline).is_err() || entry.has_pending_resources() {
+                unresolved.push(entry);
+            }
+        }
+        if !unresolved.is_empty() {
+            // Transfer unresolved entries (including any retained `wait_worker`
+            // or `child`) off the destructor thread so neither `ContainedChild::drop`
+            // nor `WaitWorker::drop` restarts a fresh 2s drain on Drop's thread
+            // while still preserving a live reaper for unfinished children.
+            let handoff = Arc::new(Mutex::new(unresolved));
+            let bg = Arc::clone(&handoff);
+            if std::thread::Builder::new()
+                .name("se-acp-term-reap".into())
+                .spawn(move || {
+                    let pending = bg
+                        .lock()
+                        .map(|mut guard| std::mem::take(&mut *guard))
+                        .unwrap_or_default();
+                    let bg_deadline = Instant::now() + RELEASE_CLEANUP_TIMEOUT;
+                    for entry in pending {
+                        let _ = entry.terminate_and_join(bg_deadline);
+                    }
+                })
+                .is_err()
+                && let Ok(mut remaining) = handoff.lock()
+            {
+                for entry in remaining.drain(..) {
+                    entry.disarm_retained_child();
+                }
+            }
         }
     }
 }
