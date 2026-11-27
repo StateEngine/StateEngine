@@ -159,7 +159,8 @@ disabled, omit `--resume` for a fresh conversation.
 
 `se init --harness NAME` selects `claude`, `codex` or `secode` without a
 configuration edit. For an installed, signed-in `qwen-code`, `goose`, `hermes`,
-`opencode`, `gemini`, `kimi`, `auggie` or `cline`, init detects the installed
+`opencode`, `gemini`, `kimi`, `auggie`, `cline`, `antigravity`, `cursor`, `grok`,
+`omp` or `deepseek`, init detects the installed
 executable and any package entrypoint, then saves the shared protocol descriptor
 automatically. Missing or unreadable installations refuse
 with their actual cause and a native setup link. Init does not install software or
@@ -175,7 +176,12 @@ names: the provider keys and settings it reads, such as `ANTHROPIC_API_KEY` or
 `KIMI_MODEL_API_KEY`, `KIMI_MODEL_BASE_URL` and `KIMI_CODE_HOME` and the older
 `KIMI_API_KEY`, `KIMI_BASE_URL`, `KIMI_MODEL_NAME` and `KIMI_SHARE_DIR`. Cline keeps
 keys from its own `cline auth` sign-in, so only its configuration and data directory
-overrides, `CLINE_DIR` and `CLINE_DATA_DIR`, are listed. StateEngine saves the names,
+overrides, `CLINE_DIR` and `CLINE_DATA_DIR`, are listed. Likewise `antigravity`
+lists `GEMINI_API_KEY` and its Google Cloud project settings, `cursor` lists
+`CURSOR_API_KEY` and `CURSOR_AUTH_TOKEN`, `grok` lists `XAI_API_KEY`, `omp` lists its
+provider keys and `PI_CODING_AGENT_DIR`, and `deepseek` lists `DEEPSEEK_API_KEY` and
+`DSH_HOME`. The `deepseek` agent cannot reload a saved conversation, so it starts
+fresh and refuses `--resume`. StateEngine saves the names,
 never values, and you can add or remove names there; an entry saved by an earlier init
 keeps its names until you edit it. Every protocol agent also inherits the proxy and TLS
 trust variables (`HTTPS_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS` and
