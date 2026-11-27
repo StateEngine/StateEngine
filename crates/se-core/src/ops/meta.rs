@@ -199,6 +199,15 @@ pub fn decode_tool(name: &str, arguments: serde_json::Value) -> Result<AnyOp> {
             },
         )));
     }
+    if name == "stateengine_worktree_remove" {
+        return Err(SeError::new(Detail::FeatureUnavailable(
+            details::FeatureUnavailable {
+                subject: "worktree.remove over MCP".into(),
+                reason: "worktree removal deletes local filesystem directories and is not exposed as an MCP tool".into(),
+                next_step: "Run `se worktree remove <PATH>` directly from the CLI.".into(),
+            },
+        )));
+    }
     let meta = CATALOGUE
         .iter()
         .find(|meta| matches!(meta.mcp,McpExposure::Tool {name:registered,..} if registered==name))

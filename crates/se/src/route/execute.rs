@@ -266,6 +266,9 @@ fn route_without_store(
             super::uninstall::execute(cx, input, diagnostic)?.into(),
         ));
     }
+    if let AnyOp::WorktreeRemove(input) = op {
+        return crate::repository::worktree::remove(cx, input).map(ControlFlow::Break);
+    }
     if matches!(op, AnyOp::DoctorInspect(_) | AnyOp::DoctorRepair(_))
         && let Some(output) = super::doctor::permissions::recover(cx, &op, diagnostic)?
     {

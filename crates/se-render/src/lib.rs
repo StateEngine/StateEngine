@@ -123,6 +123,7 @@ fn render_human(value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
         },
         HumanKind::Init
         | HumanKind::ProjectMove
+        | HumanKind::WorktreeRemove
         | HumanKind::Bundle
         | HumanKind::Diagnosis
         | HumanKind::Repair
@@ -196,6 +197,14 @@ fn render_project(kind: HumanKind, value: &AnyOutput, out: &mut impl Write) -> i
         (HumanKind::Init, AnyOutput::ProjectInit(value)) => write::init(&value.value, out),
         (HumanKind::ProjectMove, AnyOutput::ProjectMove(value)) => {
             write::move_output(&value.value, out)
+        }
+        (HumanKind::WorktreeRemove, AnyOutput::WorktreeRemove(value)) => {
+            let v = &value.value;
+            writeln!(
+                out,
+                "Removed worktree {} ({}; pruned={})",
+                v.path, v.worktree_name, v.pruned
+            )
         }
         (HumanKind::Bundle, AnyOutput::DiagnosticBundle(value)) => {
             writeln!(out, "Diagnostic file: {}", value.value.path)?;

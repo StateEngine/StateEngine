@@ -102,6 +102,7 @@ MetaSchema => MetaSchema, SchemaCatalogue;
 IdentityWhoami => IdentityWhoami, PrincipalOutput;
 ProjectInit => ProjectInit, InitOutput;
 ProjectMove => ProjectMove, MoveOutput;
+WorktreeRemove => WorktreeRemove, WorktreeRemoveOutput;
 #[cfg(feature = "import")]
 ImportNode => ImportNode, ImportReceipt;
 ProjectStatus => ProjectStatus, StatusOutput;

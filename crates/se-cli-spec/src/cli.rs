@@ -318,6 +318,16 @@ fn input_command_project(name: &str, c: Command) -> Command {
             positional("root", 1, true)
                 .help("The folder the repository now lives in; verified against the git identity recorded at se init"),
         ),
+        "worktree.remove" => c
+            .arg(
+                positional("path", 1, true)
+                    .help("Path to the linked Git worktree directory to remove"),
+            )
+            .arg(
+                toggle("force").short('f').help(
+                    "Remove even with uncommitted or untracked files; never bypasses the link/junction guard",
+                ),
+            ),
         "project.status" => c.arg(toggle("all").help("Also summarize every registered project, with its owner-mail counts"))
             .arg(toggle("fresh").help("Scan the working tree now instead of using watched status"))
             .arg(toggle("include-temp").help("Include retired temporary agents in the status roster")),

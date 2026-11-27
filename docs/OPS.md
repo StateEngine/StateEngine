@@ -282,7 +282,7 @@ Crew can omit the recipient for a `question`, `blocker`, or `done` message to se
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 63 operations (57 core, 6 Atlas), 32 MCP tools (27 core, 5 Atlas). Planned: 5 operations, 1 MCP tool.
+Registered: 64 operations (58 core, 6 Atlas), 32 MCP tools (27 core, 5 Atlas). Planned: 5 operations, 1 MCP tool.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -311,6 +311,7 @@ Registered: 63 operations (57 core, 6 Atlas), 32 MCP tools (27 core, 5 Atlas). P
 | `assignment.list` | assignment list | `stateengine_assignment_list` | either | read |
 | `captain.show` | captain show | `stateengine_captain_show` | either | read |
 | `project.move` | project move | none | owner | write |
+| `worktree.remove` | worktree remove | none | either | custody |
 | `diagnostic.bundle` | diagnostic-bundle | none | owner | read |
 | `doctor.inspect` | doctor | none | owner | read |
 | `doctor.repair` | doctor --fix | none | owner | write |
@@ -358,5 +359,5 @@ Planned operations (design tables, not yet registered): `credential.rotate`, `mc
 
 Planned MCP tools: `stateengine_session_turn`
 
-Registered without a design-table row: `harness.add` (CLI `harness add`)
+Registered without a design-table row: `worktree.remove` (CLI `worktree remove`), `harness.add` (CLI `harness add`)
 <!-- END GENERATED: ops-inventory -->

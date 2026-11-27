@@ -28,3 +28,12 @@ mod runtime;
 pub use runtime::*;
 mod full_receipts;
 pub use full_receipts::*;
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct WorktreeRemoveOutput {
+    pub path: String,
+    pub worktree_name: String,
+    pub common_dir: String,
+    pub forced: bool,
+    pub pruned: bool,
+}

@@ -259,6 +259,9 @@ impl Kernel {
             // The owner CLI route performs the native git identity proof and
             // commits the roots revision directly; the kernel never plans it.
             AnyOp::ProjectMove(_) => Err(project_move_refused()),
+            // The CLI route runs the non-following link guard and deletes the
+            // local linked worktree directly without touching the store.
+            AnyOp::WorktreeRemove(_) => Err(worktree_remove_refused()),
             #[cfg(feature = "import")]
             AnyOp::ImportNode(input) => Ok(OpStep::Custody(CustodyPlan::ImportNode(input))),
             AnyOp::StoreForget(input) => Ok(OpStep::Custody(CustodyPlan::Forget(input))),

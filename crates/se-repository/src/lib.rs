@@ -6,6 +6,9 @@ mod backend;
 mod fast_scan;
 mod index_format;
 mod registered_root;
+pub mod worktree;
+mod worktree_guard;
+mod worktree_types;
 pub use registered_root::registered_worktree;
 #[cfg(any(windows, target_os = "macos"))]
 mod watch_inventory;
