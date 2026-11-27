@@ -29,9 +29,17 @@ impl Image {
 }
 pub(crate) async fn describe(destination: &str, distribution: &Path) -> Result<Image> {
     validate_destination(destination)?;
-    // Probe fixed commands, not caller-controlled shell fragments. Neither probe
+    // Probe fixed commands, not caller-controlled shell fragments. No probe
     // mutates the remote host or stops an incompatible incumbent.
-    let probe = ssh(destination, "uname -sm".into()).await?;
+    let mut probe = ssh(destination, "uname -sm".into()).await?;
+    if !probe.success {
+        // A login shell whose built-in `uname` rejects `-sm` fails the bare
+        // probe; POSIX sh runs the system `uname` instead.
+        let retry = ssh(destination, staging::sh("uname -sm")).await?;
+        if retry.success {
+            probe = retry;
+        }
+    }
     let first_tail = probe.stderr_tail;
     let (unix, platform) = (probe.success, probe.stdout);
     let platform = String::from_utf8(platform)
