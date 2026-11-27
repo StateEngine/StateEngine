@@ -364,12 +364,13 @@ async fn serve_external_exchange(
         | super::admission::external::ExternalCall::Revoke { .. } => {
             let task_router = router.clone();
             let task_deadline = deadline.clone();
+            let task_binding = Arc::clone(&active_binding);
             let mut task_shutdown = shutdown.clone();
             let handle = tokio::spawn(async move {
                 crate::external::dispatch::execute(
                     &task_router,
                     call,
-                    &active_binding,
+                    &task_binding,
                     &task_deadline,
                     &mut task_shutdown,
                 )
@@ -404,10 +405,35 @@ async fn serve_external_exchange(
         },
     };
     let reply_deadline = options(CALL_TIMEOUT)?;
-    exchange
-        .reply_external(result, &reply_deadline)
-        .await
-        .map(Some)
+    match result {
+        Ok(crate::external::dispatch::DispatchOutput {
+            output,
+            bridge_witness: Some(witness),
+        }) => {
+            let _work = router.execution.mail_waits.client_work()?;
+            let connection = exchange.reply_external(Ok(output), &reply_deadline).await?;
+            crate::external::dispatch::hold_approved_bridge(
+                router,
+                connection,
+                witness,
+                &active_binding,
+                shutdown,
+            )
+            .await?;
+            Ok(None)
+        }
+        Ok(crate::external::dispatch::DispatchOutput {
+            output,
+            bridge_witness: None,
+        }) => exchange
+            .reply_external(Ok(output), &reply_deadline)
+            .await
+            .map(Some),
+        Err(error) => exchange
+            .reply_external(Err(error), &reply_deadline)
+            .await
+            .map(Some),
+    }
 }
 
 // The authenticated caller's clock already includes connection/authentication.

@@ -165,6 +165,7 @@ pub(crate) async fn approve_claim(
         natural_key: None,
         natural_events: Vec::new(),
     };
+    let (retired_tx, retired_rx) = tokio::sync::watch::channel(false);
     let active = ActiveLease {
         project_id: consumed.project_id.clone(),
         agent_id: consumed.agent_id.clone(),
@@ -178,6 +179,7 @@ pub(crate) async fn approve_claim(
         reconcile_required: false,
         pending_write: None,
         approval_observer_lost: false,
+        retired: Arc::new(retired_tx),
     };
     let observer_warning =
         settle_approve_commit(router, batch, &identity, &active, deadline).await?;
@@ -189,6 +191,7 @@ pub(crate) async fn approve_claim(
         lease_generation,
         expires_at_us,
         secret,
+        retired_rx,
     )
     .await?;
     if let Some(warn) = observer_warning {
@@ -253,6 +256,7 @@ async fn handoff_to_bridge_locked(
     lease_generation: u64,
     expires_at_us: i64,
     secret: Arc<Secret>,
+    retired: tokio::sync::watch::Receiver<bool>,
 ) -> Result<ExternalApproveOutput> {
     let handoff_ok = {
         let mut bridge = consumed
@@ -282,6 +286,7 @@ async fn handoff_to_bridge_locked(
                 lease_generation,
                 expires_at_us,
                 secret,
+                retired,
             })
             .is_ok();
     if !delivered {

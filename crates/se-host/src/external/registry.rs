@@ -11,7 +11,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
 const MAX_PENDING_CLAIMS: usize = 64;
 
@@ -24,6 +24,9 @@ pub(crate) struct ClaimApprovalDelivery {
     pub lease_generation: u64,
     pub expires_at_us: i64,
     pub secret: Arc<Secret>,
+    /// Signalled when this exact lease is retired/revoked in `ExternalRegistry`
+    /// so the parked bridge connection releases its activity guard immediately.
+    pub retired: watch::Receiver<bool>,
 }
 
 /// Handle retained on the bridge's `ConnectionGrant` for its lifetime.
@@ -100,6 +103,8 @@ pub(crate) struct ActiveLease {
     /// writer settlement witness, so an absent snapshot cannot assume the
     /// accepted writer command never committed.
     pub approval_observer_lost: bool,
+    /// Notifies the parked bridge witness immediately when this lease is retired.
+    pub retired: Arc<watch::Sender<bool>>,
 }
 
 #[derive(Clone, Debug)]
@@ -372,10 +377,16 @@ impl ExternalRegistry {
     pub(crate) fn record_active_lease(&self, lease: ActiveLease) -> Result<()> {
         let mut guard = self.state.lock().map_err(|_| poisoned())?;
         let key = (lease.project_id.clone(), lease.agent_id.clone());
+        let new_session = lease.session_id.clone();
+        let new_gen = lease.lease_generation;
         if !lease.reconcile_required {
             guard.settled_revocations.remove(&key);
         }
-        guard.active.insert(key, lease);
+        if let Some(previous) = guard.active.insert(key, lease)
+            && (previous.session_id != new_session || previous.lease_generation != new_gen)
+        {
+            previous.retired.send_replace(true);
+        }
         Ok(())
     }
 
@@ -491,6 +502,9 @@ impl ExternalRegistry {
                 None
             }
         };
+        if let Some(removed) = removed.as_ref() {
+            removed.retired.send_replace(true);
+        }
         retire_writes(pending, removed.as_ref(), None)?;
         Ok(removed)
     }
@@ -531,6 +545,9 @@ impl ExternalRegistry {
             }
             (removed, revocation)
         };
+        if let Some(removed) = removed.as_ref() {
+            removed.retired.send_replace(true);
+        }
         retire_writes(pending, removed.as_ref(), revocation.as_ref())?;
         Ok(removed)
     }
