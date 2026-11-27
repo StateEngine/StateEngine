@@ -496,8 +496,8 @@ pub(crate) fn erase(
 ) -> StoreResult<ErasureReport> {
     host.engine
         .reopen(&host.reader.path, host.reader.timeout, lease)?;
-    connection::set_temp_store(&host.engine.db, &host.reader.path, false)?;
     host.engine.temp_store_memory = false;
+    connection::set_temp_store(&host.engine.db, &host.reader.path, false)?;
     let result = erase_with_file_temp_store(host, plan, approval, lease);
     host.engine.ensure_memory_temp_store();
     result
