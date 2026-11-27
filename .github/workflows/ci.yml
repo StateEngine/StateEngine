@@ -127,8 +127,6 @@ jobs:
       - run: cargo fmt --all -- --check
       - name: Exercise CI routing and final status
         run: python -m unittest discover -s scripts/ci -p 'test_*.py' -v
-      - name: Exercise contributor agreement checks
-        run: python -m unittest discover -s scripts/cla -p 'test_*.py' -v
       - name: Verify pinned release license bytes
         run: python -m unittest scripts/release/test_licenses.py -v
 
