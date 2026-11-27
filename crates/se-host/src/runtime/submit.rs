@@ -12,34 +12,36 @@ pub(crate) enum RetainedCommit {
     Committed {
         observer_warning: Option<se_types::SeError>,
     },
-    /// The writer reported an indeterminate commit outcome; caller must reconcile.
+    /// The writer or observer reported an indeterminate post-enqueue outcome;
+    /// caller must reconcile against durable store state and retire `identity`.
     OutcomeUnknown(se_types::SeError),
 }
 
-/// Submit a batch under `enqueue_deadline`, then await the writer's authoritative
-/// durable outcome without cutting off an already-accepted write on a short request deadline.
-pub(crate) async fn submit_retained(
-    context: &ExecutionContext,
+/// Shared retained submission path used by both `ExecutionContext` and `Store`:
+/// enqueues under `enqueue_deadline`, then awaits the writer's authoritative
+/// durable outcome without cutting off an already-accepted write. Any post-enqueue
+/// observer join failure is mapped to `RetainedCommit::OutcomeUnknown` so callers
+/// always run exact-record reconciliation instead of bypassing it.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn enqueue_and_await_retained(
+    blocking: &crate::BlockingPool,
+    writer: se_store::SqliteClient,
+    record_feed: Arc<crate::atlas_runtime::record_fence::RecordFeedFence>,
+    pending: super::failure::PendingWrites,
+    mail_waits: Arc<crate::http::mail::Waits>,
+    fault: Arc<super::tasks::OwnershipFault>,
+    custody: Option<Arc<dyn super::CustodyExecutor>>,
     batch: AtomicBatch,
     identity: &WriteIdentity,
     enqueue_deadline: &Deadline,
 ) -> Result<RetainedCommit> {
     let recipients = super::mail::recipients(&batch);
     let revocations = super::mail::revocations(&batch);
-    let custody = context.custody.get().cloned();
-    let mail_waits = Arc::clone(&context.mail_waits);
-    let writer = context.writer.clone();
     let submit_deadline = enqueue_deadline.clone();
     let submitted = identity.clone();
-    let pending = context.pending_writes.clone();
-    let runtime = context.blocking.handle();
-    let fault = context.ownership_fault.clone();
-    let record_feed = context.atlas.records.clone();
-    let (completion, _submission) = timings::blocking(
-        &context.blocking,
-        Mode::Owned,
-        enqueue_deadline,
-        move || {
+    let runtime = blocking.handle();
+    let (completion, _submission) =
+        timings::blocking(blocking, Mode::Owned, enqueue_deadline, move || {
             submit_deadline.remaining()?;
             let record_write = record_feed.before_scoped_write(&batch.admission.scope)?;
             pending.register(&submitted)?;
@@ -69,15 +71,16 @@ pub(crate) async fn submit_retained(
                     ))
                 }
             }
-        },
-    )
-    .await?;
-    let (receipt, settled) = completion.await.map_err(|error| {
-        identity.wait_error(se_core::scope::unreadable(
-            "write completion observer",
-            &error.to_string(),
-        ))
-    })?;
+        })
+        .await?;
+    let (receipt, settled) = match completion.await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            return Ok(RetainedCommit::OutcomeUnknown(identity.wait_error(
+                se_core::scope::unreadable("write completion observer", &error.to_string()),
+            )));
+        }
+    };
     match receipt {
         Ok(receipt) => {
             let observer_warning = settled.err().map(|cause| {
@@ -107,6 +110,29 @@ pub(crate) async fn submit_retained(
             })
         }
     }
+}
+
+/// Submit a batch under `enqueue_deadline`, then await the writer's authoritative
+/// durable outcome without cutting off an already-accepted write on a short request deadline.
+pub(crate) async fn submit_retained(
+    context: &ExecutionContext,
+    batch: AtomicBatch,
+    identity: &WriteIdentity,
+    enqueue_deadline: &Deadline,
+) -> Result<RetainedCommit> {
+    enqueue_and_await_retained(
+        &context.blocking,
+        context.writer.clone(),
+        context.atlas.records.clone(),
+        context.pending_writes.clone(),
+        Arc::clone(&context.mail_waits),
+        context.ownership_fault.clone(),
+        context.custody.get().cloned(),
+        batch,
+        identity,
+        enqueue_deadline,
+    )
+    .await
 }
 
 pub(crate) async fn submit(

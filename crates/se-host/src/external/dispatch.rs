@@ -176,7 +176,7 @@ async fn close_bridge_and_revoke(
             )
             .await
             {
-                Ok(_) => {
+                Ok(outcome) => {
                     if let Ok(mut b) = binding.lock()
                         && b.active.as_ref().is_some_and(|(_, _, s, g)| {
                             *s == *session_id && *g == *lease_generation
@@ -184,8 +184,16 @@ async fn close_bridge_and_revoke(
                     {
                         b.active = None;
                     }
+                    if let Some(warn) = outcome.observer_warning {
+                        eprintln!(
+                            "stateengine: external disconnect cleanup committed with observer warning: session={session_id} lease_generation={lease_generation} error={warn}"
+                        );
+                    }
                 }
-                Err(_) => {
+                Err(err) => {
+                    eprintln!(
+                        "stateengine: external disconnect cleanup failed; retaining lease for reconciliation: session={session_id} lease_generation={lease_generation} error={err}"
+                    );
                     router.execution.external.mark_reconcile_required(
                         project_id,
                         agent_id,
@@ -199,7 +207,8 @@ async fn close_bridge_and_revoke(
             && active.as_ref().is_none_or(|(_, _, s, g)| {
                 *s != undelivered.session_id || *g != undelivered.lease_generation
             })
-            && lifecycle::fenced_disconnect_with_retry(
+        {
+            match lifecycle::fenced_disconnect_with_retry(
                 &router,
                 &undelivered.project_id,
                 &undelivered.agent_id,
@@ -208,14 +217,28 @@ async fn close_bridge_and_revoke(
                 &reason,
             )
             .await
-            .is_err()
-        {
-            router.execution.external.mark_reconcile_required(
-                &undelivered.project_id,
-                &undelivered.agent_id,
-                &undelivered.session_id,
-                undelivered.lease_generation,
-            );
+            {
+                Ok(outcome) => {
+                    if let Some(warn) = outcome.observer_warning {
+                        eprintln!(
+                            "stateengine: external undelivered-claim cleanup committed with observer warning: session={} lease_generation={} error={warn}",
+                            undelivered.session_id, undelivered.lease_generation
+                        );
+                    }
+                }
+                Err(err) => {
+                    eprintln!(
+                        "stateengine: external undelivered-claim cleanup failed; retaining lease for reconciliation: session={} lease_generation={} error={err}",
+                        undelivered.session_id, undelivered.lease_generation
+                    );
+                    router.execution.external.mark_reconcile_required(
+                        &undelivered.project_id,
+                        &undelivered.agent_id,
+                        &undelivered.session_id,
+                        undelivered.lease_generation,
+                    );
+                }
+            }
         }
     });
     // Await the detached task; if the caller future is cancelled by peer EOF,

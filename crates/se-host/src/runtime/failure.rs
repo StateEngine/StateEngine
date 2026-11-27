@@ -3,7 +3,7 @@ use super::CommittedWrite;
 use se_core::store_error::write_error;
 use se_types::{Result, SeError};
 use std::sync::{Arc, Mutex};
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct WriteIdentity {
     pub(crate) operation: &'static str,
     pub(crate) natural_key: Option<String>,

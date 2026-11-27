@@ -93,6 +93,9 @@ pub(crate) struct ActiveLease {
     /// Set when an indeterminate approval or failed rollback must be reconciled
     /// against durable store state before the slot can be treated as healthy.
     pub reconcile_required: bool,
+    /// Original approval `WriteIdentity` retained while indeterminate so
+    /// subsequent reconciliation retires it from `PendingWrites` once settled.
+    pub pending_write: Option<crate::runtime::WriteIdentity>,
 }
 
 /// Tracks pending claims and active external seat leases for this host generation.
