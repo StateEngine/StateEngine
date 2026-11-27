@@ -104,12 +104,13 @@ impl JobGuard {
             if self.active_processes()? == 0 {
                 return Ok(());
             }
-            if Instant::now() >= deadline {
+            let now = Instant::now();
+            if now >= deadline {
                 return Err(io::Error::other(
                     "Windows Job Object still has active processes after TerminateJobObject",
                 ));
             }
-            std::thread::sleep(KILL_POLL_INTERVAL);
+            std::thread::sleep(KILL_POLL_INTERVAL.min(deadline.saturating_duration_since(now)));
         }
     }
 }
@@ -251,6 +252,7 @@ pub(super) struct Inner {
     process: OwnedHandle,
     killer: KillerState,
     reaped_exit: Option<ContainedExit>,
+    skip_drop_drain: bool,
 }
 
 impl Inner {
@@ -355,6 +357,7 @@ impl Inner {
                 process,
                 killer: KillerState { job },
                 reaped_exit: None,
+                skip_drop_drain: false,
             },
             File::from(stdout_read),
             File::from(stderr_read),
@@ -400,6 +403,10 @@ impl Inner {
         self.killer.kill_tree_until(deadline)
     }
 
+    pub(super) fn disarm_drop_drain(&mut self) {
+        self.skip_drop_drain = true;
+    }
+
     fn read_exit_code(&self) -> io::Result<ContainedExit> {
         let mut code = 0u32;
         // SAFETY: `self.process` is a live exited process handle.
@@ -415,8 +422,10 @@ impl Inner {
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        let _ = self
-            .killer
-            .kill_tree_until(Instant::now() + KILL_DRAIN_TIMEOUT);
+        if !self.skip_drop_drain {
+            let _ = self
+                .killer
+                .kill_tree_until(Instant::now() + KILL_DRAIN_TIMEOUT);
+        }
     }
 }

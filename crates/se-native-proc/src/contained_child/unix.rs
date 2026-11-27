@@ -172,47 +172,56 @@ impl KillerState {
     ///    `pgid` again), probe `kill(-pgid, 0)` up to `deadline` until `ESRCH`
     ///    witnesses that EVERY member of `-pgid` has terminated.
     pub(super) fn kill_tree_until(&self, deadline: Instant) -> io::Result<()> {
-        {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| io::Error::other("contained killer state poisoned"))?;
-            if state.group_empty {
-                return Ok(());
-            }
-            if !state.leader_reaped {
+        // Phase 1: signal -pgid while the unreaped leader pins pgid, then reap
+        // the leader without holding `self.state` across sleeps so concurrent
+        // callers never block past their own deadlines.
+        loop {
+            let mut should_sleep = false;
+            {
+                let mut state = self
+                    .state
+                    .lock()
+                    .map_err(|_| io::Error::other("contained killer state poisoned"))?;
+                if state.group_empty {
+                    return Ok(());
+                }
+                if state.leader_reaped {
+                    break;
+                }
                 self.signal_group_while_pinned()?;
-                loop {
-                    let mut raw_status: libc::c_int = 0;
-                    // SAFETY: Exact unreaped child owned by this process;
-                    // `state` lock prevents double-reap.
-                    let rc = unsafe { libc::waitpid(self.pgid, &mut raw_status, libc::WNOHANG) };
-                    if rc == self.pgid {
-                        if state.observed_exit.is_none() {
-                            state.observed_exit = Some(exit_from_wait_status(raw_status));
-                        }
-                        state.leader_reaped = true;
-                        break;
+                let mut raw_status: libc::c_int = 0;
+                // SAFETY: Exact unreaped child owned by this process;
+                // `state` lock prevents double-reap.
+                let rc = unsafe { libc::waitpid(self.pgid, &mut raw_status, libc::WNOHANG) };
+                if rc == self.pgid {
+                    if state.observed_exit.is_none() {
+                        state.observed_exit = Some(exit_from_wait_status(raw_status));
                     }
-                    if rc < 0 {
-                        let err = io::Error::last_os_error();
-                        if err.kind() == io::ErrorKind::Interrupted {
-                            continue;
-                        }
+                    state.leader_reaped = true;
+                    break;
+                }
+                if rc < 0 {
+                    let err = io::Error::last_os_error();
+                    if err.kind() != io::ErrorKind::Interrupted {
                         return Err(err);
                     }
-                    if Instant::now() >= deadline {
-                        return Err(io::Error::other(format!(
-                            "contained leader {} did not exit after SIGKILL before deadline",
-                            self.pgid
-                        )));
-                    }
-                    std::thread::sleep(KILL_POLL_INTERVAL);
+                } else {
+                    should_sleep = true;
                 }
             }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(io::Error::other(format!(
+                    "contained leader {} did not exit after SIGKILL before deadline",
+                    self.pgid
+                )));
+            }
+            if should_sleep {
+                std::thread::sleep(KILL_POLL_INTERVAL.min(deadline.saturating_duration_since(now)));
+            }
         }
-        // Leader is now reaped; probe `kill(-pgid, 0)` only until `ESRCH`
-        // witnesses that all non-leader descendants in `-pgid` have exited.
+        // Phase 2: leader is now reaped; probe `kill(-pgid, 0)` only until
+        // `ESRCH` witnesses that all non-leader descendants in `-pgid` exited.
         loop {
             // SAFETY: Signal 0 only probes whether any member remains in `-pgid`.
             let probe = unsafe { libc::kill(-self.pgid, 0) };
@@ -228,13 +237,14 @@ impl KillerState {
                     return Err(err);
                 }
             }
-            if Instant::now() >= deadline {
+            let now = Instant::now();
+            if now >= deadline {
                 return Err(io::Error::other(format!(
                     "contained process group {} still has live descendants after SIGKILL",
                     self.pgid
                 )));
             }
-            std::thread::sleep(KILL_POLL_INTERVAL);
+            std::thread::sleep(KILL_POLL_INTERVAL.min(deadline.saturating_duration_since(now)));
         }
     }
 }
@@ -242,6 +252,7 @@ impl KillerState {
 pub(super) struct Inner {
     _child: Child,
     killer: KillerState,
+    skip_drop_drain: bool,
 }
 
 impl Inner {
@@ -287,6 +298,7 @@ impl Inner {
             Self {
                 _child: child,
                 killer,
+                skip_drop_drain: false,
             },
             File::from(OwnedFd::from(stdout)),
             File::from(OwnedFd::from(stderr)),
@@ -354,12 +366,18 @@ impl Inner {
     pub(super) fn terminate_and_reap_until(&mut self, deadline: Instant) -> io::Result<()> {
         self.killer.kill_tree_until(deadline)
     }
+
+    pub(super) fn disarm_drop_drain(&mut self) {
+        self.skip_drop_drain = true;
+    }
 }
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        let _ = self
-            .killer
-            .kill_tree_until(Instant::now() + KILL_DRAIN_TIMEOUT);
+        if !self.skip_drop_drain {
+            let _ = self
+                .killer
+                .kill_tree_until(Instant::now() + KILL_DRAIN_TIMEOUT);
+        }
     }
 }

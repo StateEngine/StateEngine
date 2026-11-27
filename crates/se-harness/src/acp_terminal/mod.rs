@@ -163,9 +163,28 @@ pub(super) struct TerminalEntry {
     /// until `terminate_and_reap_until` succeeds.
     child: Mutex<Option<ContainedChild>>,
     io_workers: Mutex<Vec<IoWorker>>,
+    /// Sticky unrecoverable worker failures (e.g., panicked waiter/reader)
+    /// preserved across retries so a later `close_all` never erases them.
+    sticky_errors: Mutex<Vec<String>>,
 }
 
 impl TerminalEntry {
+    fn record_sticky_error(&self, err: String) {
+        if let Ok(mut sticky) = self.sticky_errors.lock()
+            && !sticky.contains(&err)
+        {
+            sticky.push(err);
+        }
+    }
+
+    fn disarm_retained_child(&self) {
+        if let Ok(mut slot) = self.child.lock()
+            && let Some(child) = slot.as_mut()
+        {
+            child.disarm_drop_drain();
+        }
+    }
+
     fn terminate_and_join(&self, deadline: Instant) -> Result<(), String> {
         let mut errors = Vec::new();
         if let Err(err) = self.killer.kill_tree_until(deadline) {
@@ -180,7 +199,9 @@ impl TerminalEntry {
                         *slot = Some(child);
                     }
                 }
-                Ok(Err(err)) => errors.push(err),
+                Ok(Err(err)) => {
+                    self.record_sticky_error(err);
+                }
                 Err(still_waiting) => {
                     if let Ok(mut slot) = self.wait_worker.lock() {
                         *slot = Some(still_waiting);
@@ -210,7 +231,9 @@ impl TerminalEntry {
         for worker in workers {
             match worker.try_join(deadline) {
                 WorkerJoin::Settled(Ok(())) => {}
-                WorkerJoin::Settled(Err(err)) => errors.push(err),
+                WorkerJoin::Settled(Err(err)) => {
+                    self.record_sticky_error(err);
+                }
                 WorkerJoin::TimedOut(pending) => {
                     still_reading.push(pending);
                     errors.push(
@@ -224,6 +247,14 @@ impl TerminalEntry {
             && let Ok(mut slot) = self.io_workers.lock()
         {
             slot.extend(still_reading);
+        }
+
+        if let Ok(sticky) = self.sticky_errors.lock() {
+            for err in sticky.iter() {
+                if !errors.contains(err) {
+                    errors.push(err.clone());
+                }
+            }
         }
 
         if errors.is_empty() {
@@ -259,6 +290,7 @@ impl Drop for Terminals {
         for entry in entries {
             entry.released.store(true, Ordering::Release);
             let _ = entry.terminate_and_join(deadline);
+            entry.disarm_retained_child();
         }
     }
 }
@@ -601,6 +633,7 @@ fn start_entry(
         wait_worker: Mutex::new(Some(wait_handle)),
         child: Mutex::new(None),
         io_workers: Mutex::new(vec![stdout_handle, stderr_handle]),
+        sticky_errors: Mutex::new(Vec::new()),
     }))
 }
 

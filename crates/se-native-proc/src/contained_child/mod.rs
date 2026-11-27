@@ -160,4 +160,11 @@ impl ContainedChild {
     pub fn terminate_and_reap_until(&mut self, deadline: Instant) -> io::Result<()> {
         self.0.terminate_and_reap_until(deadline)
     }
+
+    /// Skip the fallback blocking drain in `Drop` when a caller (such as a
+    /// deadline-bounded destructor) has already attempted termination within
+    /// its budget and must not restart a fresh drain.
+    pub fn disarm_drop_drain(&mut self) {
+        self.0.disarm_drop_drain();
+    }
 }
