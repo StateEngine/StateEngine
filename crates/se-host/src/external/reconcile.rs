@@ -20,9 +20,10 @@ pub(crate) struct DisconnectOutcome {
     pub observer_warning: Option<SeError>,
 }
 
-/// Settle any tracked pending revocation identities for `(project_id, agent_id)`
-/// whose target session is already terminal in durable store state, removing any
-/// matching in-memory lease and retiring all tracked write identities.
+/// Settle any tracked pending revocation identities for `(project_id, agent_id)`:
+/// returns `Some((session_id, lease_generation))` ONLY when the exact revocation
+/// write receipt is durably present in the store. Also retires any pending entry
+/// whose session is already terminal without claiming that this revoke committed.
 pub(crate) async fn reconcile_pending_revocations_on_store(
     store: &crate::runtime::store::Store,
     external: &ExternalRegistry,
@@ -31,21 +32,48 @@ pub(crate) async fn reconcile_pending_revocations_on_store(
     agent_id: &AgentId,
     deadline: &Deadline,
 ) -> Result<Option<(SessionId, Option<u64>)>> {
-    let mut settled = None;
+    let mut committed_revoke = None;
     for rev in external.pending_revocations_for_agent(project_id, agent_id)? {
-        if !commit::session_is_active_on_store(store, owner, project_id, &rev.session_id, deadline)
-            .await?
-        {
+        let receipt_committed = match rev.identity.key.clone() {
+            Some(key) => {
+                commit::revocation_receipt_committed_on_store(
+                    store,
+                    owner,
+                    project_id,
+                    &rev.session_id,
+                    key,
+                    deadline,
+                )
+                .await?
+            }
+            None => false,
+        };
+        if receipt_committed {
             let removed = external.remove_if_session_and_retire(
                 &store.pending,
                 project_id,
                 agent_id,
                 &rev.session_id,
             )?;
-            settled = Some((rev.session_id, removed.map(|l| l.lease_generation)));
+            committed_revoke = Some((rev.session_id, removed.map(|l| l.lease_generation)));
+        } else if !commit::session_is_active_on_store(
+            store,
+            owner,
+            project_id,
+            &rev.session_id,
+            deadline,
+        )
+        .await?
+        {
+            let _ = external.remove_if_session_and_retire(
+                &store.pending,
+                project_id,
+                agent_id,
+                &rev.session_id,
+            )?;
         }
     }
-    Ok(settled)
+    Ok(committed_revoke)
 }
 
 pub(crate) async fn reconcile_pending_revocations_on_execution(

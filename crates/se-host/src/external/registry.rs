@@ -411,6 +411,33 @@ impl ExternalRegistry {
             .collect())
     }
 
+    /// True if `(project_id, agent_id)` has any pending revocation, expired
+    /// lease, or reconciliation-required/observer-lost approval in the registry,
+    /// even when no live external session row is currently visible in the store.
+    pub(crate) fn has_reconcile_work_for_agent(
+        &self,
+        project_id: &ProjectId,
+        agent_id: &AgentId,
+        now_us: i64,
+    ) -> Result<bool> {
+        let guard = self.state.lock().map_err(|_| poisoned())?;
+        if guard
+            .pending_revocations
+            .values()
+            .any(|rev| rev.project_id == *project_id && rev.agent_id == *agent_id)
+        {
+            return Ok(true);
+        }
+        Ok(guard
+            .active
+            .get(&(project_id.clone(), agent_id.clone()))
+            .is_some_and(|lease| {
+                lease.reconcile_required
+                    || lease.approval_observer_lost
+                    || lease.expires_at_us <= now_us
+            }))
+    }
+
     /// Remove a matching active lease and any pending revocation entry for
     /// `session_id`, then retire all tracked write identities from `pending`.
     pub(crate) fn remove_if_matching_and_retire(

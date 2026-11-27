@@ -390,7 +390,7 @@ pub(crate) async fn revoke_seat(
         deadline,
     )
     .await?;
-    let active_res = {
+    let active_opt = {
         let context = router.context.clone();
         let project = project.clone();
         let agent = agent_id.clone();
@@ -410,11 +410,11 @@ pub(crate) async fn revoke_seat(
                     &agent,
                 )
             })
-            .await
+            .await?
     };
-    let active = match active_res {
-        Ok(active) => active,
-        Err(err) => {
+    let active = match active_opt {
+        Some(active) => active,
+        None => {
             if let Some((session_id, lease_generation)) = settled_prior {
                 return Ok(ExternalRevokeOutput {
                     project_id: project,
@@ -424,7 +424,10 @@ pub(crate) async fn revoke_seat(
                     revoked: true,
                 });
             }
-            return Err(err);
+            return Err(SeError::invalid(
+                "external seat",
+                "an active external seat for this agent",
+            ));
         }
     };
 

@@ -61,7 +61,15 @@ impl LaunchCoordinator {
                     }
                 )
             });
-            if has_external_session {
+            let has_external_reconcile_work = self
+                .capability_admission
+                .external
+                .has_reconcile_work_for_agent(
+                    &plan.project.id,
+                    &plan.agent.id,
+                    crate::runtime::start::now_unix_micros()?,
+                )?;
+            if has_external_session || has_external_reconcile_work {
                 crate::external::lifecycle::reconcile_external_for_launch_on_store(
                     &self.store,
                     &self.capability_admission.external,

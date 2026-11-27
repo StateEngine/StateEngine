@@ -416,6 +416,67 @@ pub(crate) async fn session_is_active(
     session_is_active_on_store(&store, owner, project, session_id, deadline).await
 }
 
+pub(crate) fn revoke_request_identity(
+    session_id: &SessionId,
+    key: IdempotencyKey,
+) -> Result<RequestIdentity> {
+    let intent = serde_json::json!({ "session": session_id });
+    let intent_bytes = serde_json::to_vec(&intent)
+        .map_err(|_| SeError::invalid("external revoke intent", "valid JSON"))?;
+    Ok(RequestIdentity {
+        key,
+        intent: se_store::IntentDigest {
+            operation: "external.revoke",
+            codec_version: 1,
+            sha256: Sha256::digest(&intent_bytes).into(),
+        },
+    })
+}
+
+pub(crate) async fn revocation_receipt_committed_on_store(
+    store: &crate::runtime::store::Store,
+    owner: &se_types::HumanId,
+    project: &ProjectId,
+    session_id: &SessionId,
+    key: IdempotencyKey,
+    deadline: &Deadline,
+) -> Result<bool> {
+    let request = revoke_request_identity(session_id, key)?;
+    let reads = store.reads.clone();
+    let generation = store.generation;
+    let project = project.clone();
+    let owner = owner.clone();
+    store
+        .pool
+        .run_owned(deadline, move || {
+            let phase = reads.read_phase().map_err(|e| store_error(&e))?;
+            let admission = Admission {
+                scope: Scope::Project(project),
+                actor: Actor::Human(owner),
+                session: None,
+                generation: generation.get(),
+            };
+            let mut snap = phase
+                .into_snapshot(se_core::admission::read_scope(&admission))
+                .map_err(|e| store_error(&e))?;
+            let committed = match snap.resolve_request(&request).map_err(|e| store_error(&e)) {
+                Ok(se_types::Read::Present { .. }) => Ok(true),
+                Ok(se_types::Read::Absent { .. }) => Ok(false),
+                Ok(se_types::Read::Unreadable { reason, .. }) => Err(se_core::scope::unreadable(
+                    "external revoke receipt verification",
+                    &reason,
+                )),
+                Ok(se_types::Read::Unknown { what }) => Err(se_core::scope::unreadable(
+                    "external revoke receipt verification",
+                    &what,
+                )),
+                Err(err) => Err(err),
+            };
+            crate::runtime::executor::close_read(committed, snap.close())
+        })
+        .await
+}
+
 pub(crate) fn fresh_revoke_identity(session_id: &SessionId) -> Result<WriteIdentity> {
     let nonce = crate::client::auth::fresh_nonce()?;
     let key = IdempotencyKey::new(format!(
@@ -492,9 +553,7 @@ fn build_revocation_batch(
         .map_err(|e| store_error(&e))?;
     let info = snap.info();
     let res = (|| {
-        let intent = serde_json::json!({ "session": session_id });
-        let intent_bytes = serde_json::to_vec(&intent)
-            .map_err(|_| SeError::invalid("external revoke intent", "valid JSON"))?;
+        let request = revoke_request_identity(&session_id, key)?;
         let mut events = Vec::new();
         if let Some((cred_id, cred_rev)) = cred {
             events.push(make_event(
@@ -521,14 +580,7 @@ fn build_revocation_batch(
         Ok(AtomicBatch {
             expected_incarnation: info.incarnation,
             admission,
-            request: Some(RequestIdentity {
-                key,
-                intent: se_store::IntentDigest {
-                    operation: "external.revoke",
-                    codec_version: 1,
-                    sha256: Sha256::digest(&intent_bytes).into(),
-                },
-            }),
+            request: Some(request),
             import_checkpoint: None,
             events,
         })
@@ -628,7 +680,7 @@ pub(crate) fn find_active_external_session(
     owner: &se_types::HumanId,
     generation: u64,
     agent_id: &AgentId,
-) -> Result<ActiveExternalSession> {
+) -> Result<Option<ActiveExternalSession>> {
     let admission = Admission {
         scope: Scope::Project(project.clone()),
         actor: Actor::Human(owner.clone()),
@@ -674,17 +726,14 @@ pub(crate) fn find_active_external_session(
                 _ => continue,
             };
             let cred_id = external_credential_id(&session_id)?;
-            return Ok(ActiveExternalSession {
+            return Ok(Some(ActiveExternalSession {
                 session_id,
                 session_rev: session_rec.revision,
                 lease_generation,
                 cred: Some((cred_id, rev(2))),
-            });
+            }));
         }
-        Err(SeError::invalid(
-            "external seat",
-            "an active external seat for this agent",
-        ))
+        Ok(None)
     })();
     crate::runtime::executor::close_read(res, snap.close())
 }
