@@ -6,6 +6,9 @@ use std::{
     os::fd::{AsRawFd, FromRawFd},
 };
 
+#[path = "unix_replace.rs"]
+mod replace;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct MountIdentity {
     dev: u64,
@@ -376,54 +379,6 @@ fn verify_target_unchanged(
     }
 }
 
-fn exchange_at(parent: &File, a: &CString, b: &CString) -> Result<(), io::Error> {
-    #[cfg(target_os = "linux")]
-    {
-        // SAFETY: retained parent directory fd and two NUL-terminated literal
-        // names; RENAME_EXCHANGE atomically swaps `a` and `b` without data loss.
-        let rc = unsafe {
-            libc::syscall(
-                libc::SYS_renameat2,
-                parent.as_raw_fd(),
-                a.as_ptr(),
-                parent.as_raw_fd(),
-                b.as_ptr(),
-                libc::RENAME_EXCHANGE,
-            )
-        };
-        if rc < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        // SAFETY: retained parent directory fd and two NUL-terminated literal
-        // names; RENAME_SWAP atomically swaps `a` and `b` without data loss.
-        if unsafe {
-            libc::renameatx_np(
-                parent.as_raw_fd(),
-                a.as_ptr(),
-                parent.as_raw_fd(),
-                b.as_ptr(),
-                libc::RENAME_SWAP,
-            )
-        } < 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = (parent, a, b);
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "atomic rename exchange is unsupported on this platform",
-        ))
-    }
-}
-
 fn publish_exclusive(
     parent: &File,
     stage: &CString,
@@ -448,7 +403,7 @@ fn publish_exclusive(
             return Ok(());
         }
         let err = io::Error::last_os_error();
-        if !matches!(err.raw_os_error(), Some(libc::ENOSYS | libc::EINVAL)) {
+        if !replace::is_rename_flag_unsupported(&err) {
             return Err(io_before(err));
         }
     }
@@ -532,125 +487,6 @@ fn stage_file(
     }
 }
 
-struct ReplaceCtx<'a> {
-    root: &'a File,
-    chain: &'a [(&'a str, File, (u64, u64))],
-    parent: &'a File,
-    stage: &'a CString,
-    leaf: &'a CString,
-    stage_baseline: TargetBaseline,
-    expected: TargetBaseline,
-    root_mount: MountIdentity,
-    dot_git: Option<(u64, u64)>,
-    root_check: &'a dyn Fn() -> io::Result<()>,
-}
-
-/// Atomically exchange `stage` and `leaf`, verify the displaced file's baseline
-/// and parent custody, and swap back cleanly on any concurrent modification or
-/// parent displacement before unlinking the displaced original.
-fn publish_replace(ctx: &ReplaceCtx<'_>) -> Result<(), WorkspaceWriteError> {
-    if let Err(err) = exchange_at(ctx.parent, ctx.stage, ctx.leaf) {
-        cleanup_stage(ctx.parent, ctx.stage);
-        return Err(io_before(err));
-    }
-    let custody = (|| -> Result<(), WorkspaceWriteError> {
-        (ctx.root_check)().map_err(|error| {
-            WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::RootUnverified(error))
-        })?;
-        verify_parent_chain(ctx.root, ctx.chain, ctx.root_mount)?;
-        let displaced = inspect_target_leaf(ctx.parent, ctx.stage, ctx.root_mount, ctx.dot_git)?;
-        if displaced != Some(ctx.expected) {
-            return Err(invalid("target file changed during atomic exchange"));
-        }
-        Ok(())
-    })();
-    if let Err(reason) = custody {
-        // Only swap back if `leaf` still matches our exact staged revision
-        // (inode, size, mtime, mode), so a later in-place edit is never lost.
-        match stat_entry_at(ctx.parent, ctx.leaf, libc::AT_SYMLINK_NOFOLLOW) {
-            Ok(Some(m)) if TargetBaseline::from_meta(m) == ctx.stage_baseline => {}
-            Ok(Some(_)) => {
-                return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                    "target changed after exchange ({reason}); rollback skipped to preserve the newer target"
-                )));
-            }
-            Ok(None) => {
-                return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                    "target is absent after exchange ({reason}); rollback skipped"
-                )));
-            }
-            Err(stat_err) => {
-                return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                    "rollback inspection after exchange conflict ({reason}) failed: {stat_err}; rollback skipped"
-                )));
-            }
-        }
-        if let Err(rollback_err) = exchange_at(ctx.parent, ctx.stage, ctx.leaf) {
-            return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                "rollback after exchange conflict ({reason}) failed: {rollback_err}"
-            )));
-        }
-        if let Err(sync_err) = ctx.parent.sync_all() {
-            return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                "original restored after exchange conflict ({reason}), but rollback directory sync failed: {sync_err}"
-            )));
-        }
-        // Verify the restored staging sibling still matches our staged revision
-        // before unlinking it.
-        match stat_entry_at(ctx.parent, ctx.stage, libc::AT_SYMLINK_NOFOLLOW) {
-            Ok(Some(m)) if TargetBaseline::from_meta(m) == ctx.stage_baseline => {}
-            Ok(Some(_)) => {
-                return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                    "original restored after exchange conflict ({reason}), but staging sibling changed before cleanup and was left on disk"
-                )));
-            }
-            Ok(None) => {
-                return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                    "original restored after exchange conflict ({reason}), but staging sibling was already absent before cleanup"
-                )));
-            }
-            Err(stat_err) => {
-                return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                    "original restored after exchange conflict ({reason}), but staging verification failed: {stat_err}"
-                )));
-            }
-        }
-        // SAFETY: retained parent directory fd and verified staged sibling.
-        if unsafe { libc::unlinkat(ctx.parent.as_raw_fd(), ctx.stage.as_ptr(), 0) } < 0 {
-            return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                "original restored after exchange conflict ({reason}), but staging cleanup failed: {}",
-                io::Error::last_os_error()
-            )));
-        }
-        if let Err(sync_err) = ctx.parent.sync_all() {
-            return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                "original restored and staging removed after exchange conflict ({reason}), but final directory sync failed: {sync_err}"
-            )));
-        }
-        return Err(WorkspaceWriteError::Restored(format!(
-            "conflict during exchange ({reason}); original restored and staging removed"
-        )));
-    }
-    ctx.parent.sync_all().map_err(|error| {
-        WorkspaceWriteError::PublishedUncertain(format!(
-            "containing directory sync failed after exchange: {error}"
-        ))
-    })?;
-    // SAFETY: retained parent directory fd and verified displaced original at `stage`.
-    if unsafe { libc::unlinkat(ctx.parent.as_raw_fd(), ctx.stage.as_ptr(), 0) } < 0 {
-        return Err(WorkspaceWriteError::PublishedUncertain(format!(
-            "replacement published but displaced backup removal failed: {}",
-            io::Error::last_os_error()
-        )));
-    }
-    ctx.parent.sync_all().map_err(|error| {
-        WorkspaceWriteError::PublishedUncertain(format!(
-            "containing directory sync failed after backup removal: {error}"
-        ))
-    })?;
-    Ok(())
-}
-
 pub(super) fn write_relative(
     root: &File,
     _root_path: &std::path::Path,
@@ -698,7 +534,7 @@ pub(super) fn write_relative(
     }
 
     if let Some(expected) = baseline {
-        return publish_replace(&ReplaceCtx {
+        return replace::publish_replace(&replace::ReplaceCtx {
             root,
             chain: &chain,
             parent,
