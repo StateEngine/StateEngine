@@ -204,6 +204,7 @@ impl SqliteFactory {
                             backup: None,
                             checkpoints: Default::default(),
                             channel_delay_us,
+                            temp_store_memory: true,
                         },
                     )?,
                 })
@@ -250,6 +251,7 @@ impl StoreFactory for SqliteFactory {
                             backup: None,
                             checkpoints: Default::default(),
                             channel_delay_us: crate::CHANNEL_DELAY_US,
+                            temp_store_memory: true,
                         },
                     },
                 })

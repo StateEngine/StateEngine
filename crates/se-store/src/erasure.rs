@@ -497,11 +497,10 @@ pub(crate) fn erase(
     host.engine
         .reopen(&host.reader.path, host.reader.timeout, lease)?;
     connection::set_temp_store(&host.engine.db, &host.reader.path, false)?;
+    host.engine.temp_store_memory = false;
     let result = erase_with_file_temp_store(host, plan, approval, lease);
-    let restored = connection::set_temp_store(&host.engine.db, &host.reader.path, true);
-    let report = result?;
-    restored?;
-    Ok(report)
+    host.engine.ensure_memory_temp_store();
+    result
 }
 fn erase_with_file_temp_store(
     host: &mut SqliteHost,

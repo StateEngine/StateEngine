@@ -130,6 +130,7 @@ fn build_staged(
             backup: None,
             checkpoints: Default::default(),
             channel_delay_us: crate::CHANNEL_DELAY_US,
+            temp_store_memory: true,
         },
     ))
 }
