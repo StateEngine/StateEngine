@@ -88,15 +88,25 @@ that profile with `approval = "never"` only if it is absent; an existing
 agent will use. A protocol mode or saved StateEngine profile does not establish OS
 containment.
 
-Agents that read files through their client instead of the disk can read text files
-through StateEngine. The path must lie inside the folder the conversation opened in,
-and every part of it is opened without following a link, so links and `..` are
-refused even when they point back inside. One protocol message carries at most
-1 MiB: a read whose text would not fit is refused and names the `line` and `limit`
-that read it in parts, and files over 4 MiB are not read. StateEngine does not offer
-file writes or terminals to protocol agents; those calls get the standard
-unavailable reply. This limits what StateEngine does for the agent; it is not a
-sandbox around the agent.
+Agents that access files or terminals through their ACP client instead of directly can
+use workspace-scoped callbacks from StateEngine:
+
+- `fs/read_text_file`: reads UTF-8 text files inside the folder the conversation opened
+  in. Every path component is opened without following a link, so links and `..` are
+  refused even when they point back inside. One protocol message carries at most 1 MiB
+  (larger reads are refused and name the `line` and `limit` to read in parts), and files
+  over 4 MiB are not read.
+- `fs/write_text_file`: bounded atomic full-file replacement inside that same workspace
+  folder when the saved profile permits workspace writes (`workspace-write` or `bypass`).
+  Read-only profiles refuse file writes as unavailable.
+- `terminal/*` (`terminal/create`, `terminal/output`, `terminal/wait_for_exit`,
+  `terminal/kill`, `terminal/release`): workspace-scoped terminal execution advertised
+  and answered only when the saved profile sets both `bypass = true` and
+  `approval = "never"`. All other profiles refuse terminal calls as unavailable.
+
+These capabilities are derived strictly from the saved profile, never from a protocol
+suggestion. They bound only what StateEngine's client callbacks do for the agent; they
+are not a sandbox around the native agent.
 
 After installing and configuring a protocol agent, add these sections to the
 existing configuration. Replace `protocol-agent` with its native executable,

@@ -20,13 +20,15 @@ It ships as one native `se` binary for Linux, macOS and Windows.
   over stdio: status, mail, resume, assignments, Atlas code navigation and more.
 - **A crew, not a single chat.** Saved agents send each other mail, a captain receives
   questions and blockers, assignments track who is doing what, and `se status` shows
-  the whole crew at a glance.
-- **Atlas code navigation.** A built-in index answers find, references, impact,
-  outline and recent-changes queries with compact pointers instead of whole files.
-- **Remote machines over SSH.** Watch, message and launch agents on another machine
-  using your existing SSH configuration.
+  the whole crew — including live context-window fill — at a glance.
+- **Atlas code navigation.** `se atlas inspect` gives a one-call pre-edit view of
+  declarations, callers, dependents, covering tests, recent agent edits and linked mail,
+  and `se resume` carries a compact repo map.
+- **Remote machines over SSH.** Set up, watch, message, launch, stop and delegate to
+  agents on another machine over your existing SSH configuration.
 - **Bring your existing sessions.** `se init --adopt` captures Claude Code or Codex
-  sessions you start yourself (Linux and Windows).
+  sessions you start yourself (Linux and Windows), and external seats let any external
+  MCP client or editor session join as a saved agent with Owner approval.
 
 ## Install
 
@@ -128,6 +130,18 @@ directory to your project folder, which selects the project; add `--home DIR` be
 `stateengine_help` is the index for agents, and `se schema OP --json` prints any
 operation's full input and output schema (for example `se schema message.send --json`).
 
+To let any external MCP client or editor session join as a saved agent without
+StateEngine launching its process, mark the agent with `se agent add NAME --external`,
+connect the client through `se mcp --as NAME`, and approve the printed claim from an
+Owner terminal:
+
+```sh
+se external list                       # inspect pending claims and active external leases
+se external approve CLAIM_ID           # one-shot approval; delivers capability over native IPC
+se external revoke NAME                # revoke an active external seat at any time
+se msg wait --as NAME                  # block for mail without polling or stalling MCP stdio
+```
+
 ## Run a crew
 
 ```sh
@@ -136,7 +150,7 @@ se captain set main                                    # main receives questions
 se msg send reviewer "Please review the parser change"
 se assignment write --action open --assignee reviewer --body "Review the parser change"
 se assignment list
-se status                                              # every agent, its session and unread mail
+se status                                              # agents, sessions, context fill, unread mail
 ```
 
 Agents use the same mail through MCP. A message is saved when it is sent; StateEngine
@@ -145,27 +159,27 @@ reports delivery and reading separately and never treats "sent" as "read" or "do
 live and saved activity. `se agent list` prints each agent's ID (`ag_…`) and the
 `Next:` line of `se status` shows the project ID (`prj_…`), so a target looks like
 `prj_…/ag_…`. `se delegate` launches a one-shot temporary agent with an optional
-context handoff.
+context handoff, and `se worktree remove PATH` safely removes a linked Git worktree after
+checking for symlinks, junctions and unreadable entries.
 
 ## Find code with Atlas
 
 Atlas indexes the repository in the background once the runtime is running (`se launch`
-starts it, or run `se up`). Replace `<symbol>` with a function or type name from your
-code and `<file>` with a path relative to the repository root:
+starts it, or run `se up`). Replace `<target>` with a path, `path:line` or symbol name:
 
 ```sh
-se atlas find <symbol>               # code, text and project records
-se atlas refs <symbol>               # references to a symbol
-se atlas impact <symbol>             # dependents, possible tests and linked records
-se atlas outline <file>              # declarations in one file
-se atlas changes --since 10m         # what changed recently
+se atlas inspect <target>            # one-call pre-edit view: declarations, callers, dependents, tests, recent edits, linked mail
+se atlas find <query>                # code, text, recent edits and project records
 ```
 
-Results are compact pointers (file and line range, with size when verified), so agents
-read only the source they need. Agents get the same queries as MCP tools. Before a
-search or file read, managed Claude Code and Codex sessions can also receive a few lines
-of indexed context when Atlas has a confident answer (`hooks = false` in `[atlas]` turns
-that off). Atlas is on by default and runs on Linux, macOS and Windows.
+`se atlas refs`, `se atlas impact`, `se atlas outline` and `se atlas changes --since 10m`
+page individual sections further. Results are compact pointers (file, line range and byte
+size when verified), so agents read only the source they need. `se resume` includes a
+compact repo map, and agents get two compact MCP Atlas tools: `stateengine_atlas_inspect`
+and `stateengine_atlas_find`. Before a search or file read, managed Claude Code and Codex
+sessions can also receive a few lines of indexed context when Atlas has a confident
+answer (`hooks = false` in `[atlas]` turns that off). Atlas is on by default and runs on
+Linux, macOS and Windows.
 
 ## Adopt sessions you already run
 
@@ -198,13 +212,16 @@ profiles, per-agent models and harness configuration.
 ## Work on another machine
 
 ```sh
-se remote add my-server --name build    # uses your normal SSH configuration
-se remote list --host build
-se remote watch --host build --target PROJECT_ID/AGENT_ID
+se remote init my-server:/path/to/repo --agent worker --allow-launch
+se remote list --host my-server
+se remote watch --host my-server --target PROJECT_ID/AGENT_ID
 ```
 
-StateEngine stages its own binary on the destination and keeps remote agents running when
-you disconnect. Sending mail, permissions and remote launch are covered in
+`se remote init` connects over your existing SSH configuration, stages StateEngine on the
+destination, initializes the remote project and grants the permissions you select; remote
+agents stay running when you disconnect. `se remote launch`, `se remote stop` and
+`se remote delegate` start, stop and delegate work to approved remote targets. Sending
+mail, permissions and manual `se remote add` setup are covered in
 **[docs/REMOTE.md](docs/REMOTE.md)**.
 
 ## Where things live
