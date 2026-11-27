@@ -1,6 +1,6 @@
 //! Configured ACP executables use the same native launch lifecycle as stock harnesses.
 use super::*;
-use crate::acp::{CapturedMessage, Connection, PermissionPolicy, Session};
+use crate::acp::{CapturedMessage, Connection, PermissionPolicy, Session, WorkspaceAccess};
 use crate::harness::binding::{AdapterBinding, Observation, StopPolicy};
 use se_config::config_policy::{ConfigFile, Provider, ResolvedProfile};
 use se_types::{Result, SeError};
@@ -315,6 +315,7 @@ impl Harness for AcpHarness {
                 connection,
                 incoming,
                 PermissionPolicy::from_saved_approval(resolved.approval),
+                WorkspaceAccess::from_saved_sandbox(resolved.sandbox),
                 attach.provider_exit,
             )
             .await;

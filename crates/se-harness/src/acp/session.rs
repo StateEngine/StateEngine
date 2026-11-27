@@ -5,7 +5,9 @@ use super::{
     Connection, Incoming, Message, OfferFailure,
     client::{Client, Refusal},
     failure,
-    permission::{Permission, PermissionPolicy, PermissionRefusal, PermissionView},
+    permission::{
+        Permission, PermissionPolicy, PermissionRefusal, PermissionView, WorkspaceAccess,
+    },
     turn::{CapturedMessage, CompletedTurn, Turn, text},
 };
 use crate::CallContext;
@@ -92,6 +94,7 @@ impl Session {
         connection: Arc<Connection>,
         receiver: mpsc::Receiver<Incoming>,
         policy: PermissionPolicy,
+        access: WorkspaceAccess,
         provider_exit: crate::harness::ProviderExitProof,
     ) -> Arc<Self> {
         let session = Arc::new(Self {
@@ -104,7 +107,7 @@ impl Session {
             policy,
             owner_wake: OnceLock::new(),
             provider_exit,
-            client: Client::default(),
+            client: Client::new(access),
         });
         let owned = session.clone();
         *session.pump.lock().await = Some(tokio::spawn(async move {
@@ -189,7 +192,7 @@ impl Session {
                 "initialize",
                 json!({"protocolVersion":1,
                     "clientInfo":{"name":"stateengine","version":env!("CARGO_PKG_VERSION")},
-                    "clientCapabilities":Client::capabilities()}),
+                    "clientCapabilities":self.client.capabilities()}),
                 remaining(&cx, until)?,
             )
             .await;
@@ -586,7 +589,8 @@ impl Session {
         // to answer, so a stalled read cannot starve the connection's own close;
         // a late answer is then discarded.
         let now = tokio::time::Instant::now();
-        self.client
+        let client_close = self
+            .client
             .close(now + until.saturating_duration_since(now) / 2)
             .await;
         self.connection.close(remaining(&cx, until)?).await?;
@@ -603,6 +607,9 @@ impl Session {
                 .map_err(|_| failure("ACP close", "update task panicked"))?;
         }
         *pump = None;
+        if let Err(reason) = client_close {
+            return Err(failure("ACP close", reason));
+        }
         Ok(())
     }
     async fn synchronize(&self, until: tokio::time::Instant) -> Result<()> {

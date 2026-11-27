@@ -6,7 +6,7 @@
 use se_harness::{
     CallContext, HostFuture, ProviderIo, ProviderIoPlatform, ProviderStream, ProviderTransport,
     SessionIdentity, StreamRead, StreamWrite,
-    acp::{Connection, PermissionPolicy, Session},
+    acp::{Connection, PermissionPolicy, Session, WorkspaceAccess},
 };
 use se_types::{Generation, Result};
 use serde_json::{Value, json};
@@ -149,6 +149,7 @@ impl Fixture {
             connection,
             receiver,
             PermissionPolicy::Refuse,
+            WorkspaceAccess::ReadOnly,
             Arc::new(
                 || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
                     Box::pin(async { false })

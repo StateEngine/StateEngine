@@ -6,6 +6,28 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
+/// Whether the ACP client advertises and answers `fs/write_text_file` inside
+/// the session's workspace. Derived from the saved profile's sandbox, never
+/// from a protocol suggestion. This bounds only StateEngine's client callbacks.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WorkspaceAccess {
+    #[default]
+    ReadOnly,
+    ReadWrite,
+}
+impl WorkspaceAccess {
+    pub fn from_saved_sandbox(sandbox: se_config::config_policy::EffectiveSandbox) -> Self {
+        match sandbox {
+            se_config::config_policy::EffectiveSandbox::ReadOnly => Self::ReadOnly,
+            se_config::config_policy::EffectiveSandbox::WorkspaceWrite
+            | se_config::config_policy::EffectiveSandbox::Bypass => Self::ReadWrite,
+        }
+    }
+    pub fn allows_write(self) -> bool {
+        matches!(self, Self::ReadWrite)
+    }
+}
+
 /// Answers permission RPCs; this does not establish a filesystem or network
 /// sandbox. Construct this from the saved profile, never a protocol suggestion.
 #[derive(Clone, Copy)]

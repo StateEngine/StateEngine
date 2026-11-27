@@ -117,14 +117,17 @@ fn open_components(root: &File, path: &str, last_directory: bool) -> io::Result<
 /// `raw` must be null, `INVALID_HANDLE_VALUE`, or a newly created/opened handle
 /// whose sole ownership is transferred to this call; the sentinel values are
 /// rejected as an error preserving the pending OS error.
-unsafe fn owned(raw: HANDLE) -> io::Result<File> {
+pub(crate) unsafe fn owned(raw: HANDLE) -> io::Result<File> {
     if raw.is_null() || raw == INVALID_HANDLE_VALUE {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: this function's safety contract guarantees `raw`'s precondition.
     Ok(unsafe { File::from_raw_handle(raw) })
 }
-fn verify_handle(file: &File, directory: bool) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
+pub(crate) fn verify_handle(
+    file: &File,
+    directory: bool,
+) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
     let info = se_native_path::windows::file::file_information(file)?;
     // SAFETY: immutable native handle query, no retained external pointers.
     if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK

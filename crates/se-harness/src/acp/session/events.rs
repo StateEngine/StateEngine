@@ -10,13 +10,13 @@ impl Session {
                     let Some(value)=value else { break; };
                     let notify = !matches!(&value.message, Message::Update(_));
                     let handled = match value.message {
-                        // A file read never holds up this pump; it changes no conversation
+                        // A workspace file call never holds up this pump; it changes no conversation
                         // state, so it counts as processed once admitted. It is admitted here, in order, only for the
                         // established conversation; calls beyond the bound are refused.
-                        Message::Request { id, method, params } if Client::handles(&method) => {
+                        Message::Request { id, method, params } if self.client.handles(&method) => {
                             match self.admit(&params) {
                                 Ok(permit) => {
-                                    tokio::spawn(self.clone().client_call(permit, id, params));
+                                    tokio::spawn(self.clone().client_call(permit, method, id, params));
                                     Ok(())
                                 }
                                 Err(refusal) => self.connection.answer(id, Err((refusal.code, refusal.message)), CallContext::new(self.connection.generation(), std::time::Duration::from_secs(10))).await,
@@ -57,12 +57,13 @@ impl Session {
     async fn client_call(
         self: Arc<Self>,
         _permit: tokio::sync::OwnedSemaphorePermit,
+        method: String,
         id: Value,
         params: Value,
     ) {
         let outcome = self
             .client
-            .call(params)
+            .call(method, params)
             .await
             .map_err(|refusal| (refusal.code, refusal.message));
         let cx = CallContext::new(

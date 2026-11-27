@@ -8,7 +8,7 @@ use std::{
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]
-mod windows;
+pub(crate) mod windows;
 #[cfg(unix)]
 use unix as os;
 #[cfg(windows)]
@@ -69,8 +69,8 @@ use se_state_files::NativeObjectKey;
 pub use se_state_files::{NativeFileRevision, observe_file_revision};
 
 pub struct NativeSourceRoot {
-    path: PathBuf,
-    directory: File,
+    pub(crate) path: PathBuf,
+    pub(crate) directory: File,
     identity: NativeFileRevision,
 }
 pub struct NativeRootFile<'a> {
@@ -380,7 +380,7 @@ impl Seek for NativeRootFile<'_> {
         self.file.seek(pos)
     }
 }
-fn validate(path: &str) -> io::Result<()> {
+pub(crate) fn validate(path: &str) -> io::Result<()> {
     if path.is_empty()
         || path.len() > 4096
         || path.contains(['\0', '\\', ':'])

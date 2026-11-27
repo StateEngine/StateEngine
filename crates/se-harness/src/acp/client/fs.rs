@@ -1,26 +1,37 @@
-//! Reading text files in the workspace. Reads are bounded, never wait on a FIFO
-//! or device, never follow a link, and a reply never outgrows one protocol
-//! message. These calls block, so the client runs them off the async workers.
+//! Reading and atomically writing text files in the workspace. Operations are
+//! bounded, never wait on a FIFO or device, never follow a link, and refuse
+//! paths outside the workspace or inside `.git` metadata. These calls block, so
+//! the client runs them off the async workers.
 use super::{Outcome, RESPONSE_BYTES, Refusal};
 use serde_json::{Value, json};
 use std::{
     io::Read,
     path::{Path, PathBuf},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 /// The largest file read, in bytes. What one reply carries is smaller still, so a
 /// larger file is read in parts with `line` and `limit`.
 const MAX_FILE: usize = 4 * 1024 * 1024;
+/// The largest UTF-8 payload written in one `fs/write_text_file` call.
+const MAX_WRITE_BYTES: usize = super::super::wire::MAX_FRAME;
 
 /// The folder a conversation opened in, held open from then on. Every read is
-/// opened beneath this one handle, and a read refuses once the folder's name no
-/// longer leads to it.
+/// opened beneath this one handle, every write verifies the held handle and
+/// parent chain without following links, and operations refuse once the
+/// folder's name no longer leads to it.
 pub(super) struct Workspace {
     /// The folder as the agent was told it.
     told: PathBuf,
     /// The same folder with its links resolved.
     physical: PathBuf,
     held: se_proc::NativeSourceRoot,
+    /// Serializes concurrent writes in this workspace so two calls from the
+    /// same agent do not race on file creation or replacement locks.
+    write_lock: Mutex<()>,
 }
 
 impl Workspace {
@@ -41,7 +52,23 @@ impl Workspace {
             told,
             physical,
             held,
+            write_lock: Mutex::new(()),
         })
+    }
+}
+
+/// Verifies the held workspace directory has not been moved, removed or replaced.
+fn check_workspace(workspace: &Workspace) -> Result<(), Refusal> {
+    let told = workspace.told.display();
+    match workspace.held.check() {
+        Ok(()) => Ok(()),
+        Err(gone) if gone.kind() == std::io::ErrorKind::NotFound => Err(Refusal::failed(format!(
+            "the workspace {told} was moved or removed ({gone}); start a new conversation there"
+        ))),
+        Err(unverified) => Err(Refusal::failed(format!(
+            "the workspace {told} could not be verified ({unverified}); check its \
+             permissions, or start a new conversation there if it was moved or replaced"
+        ))),
     }
 }
 
@@ -57,20 +84,8 @@ pub(super) fn read(workspace: &Workspace, params: &Value) -> Outcome {
     // A moved or replaced workspace is not a missing file, even when the lookup
     // saw "not found", so the held folder is checked before naming the cause.
     let unreadable = |error: std::io::Error| {
-        let told = workspace.told.display();
-        match held.check() {
-            Err(gone) if gone.kind() == std::io::ErrorKind::NotFound => {
-                return Refusal::failed(format!(
-                    "the workspace {told} was moved or removed ({gone}); start a new conversation there"
-                ));
-            }
-            Err(unverified) => {
-                return Refusal::failed(format!(
-                    "the workspace {told} could not be verified ({unverified}); check its \
-                     permissions, or start a new conversation there if it was moved or replaced"
-                ));
-            }
-            Ok(()) => {}
+        if let Err(refusal) = check_workspace(workspace) {
+            return refusal;
         }
         match error.kind() {
             std::io::ErrorKind::NotFound => Refusal::missing(format!("{path} does not exist")),
@@ -123,6 +138,73 @@ pub(super) fn read(workspace: &Workspace, params: &Value) -> Outcome {
         )));
     }
     Ok(json!({ "content": selected }))
+}
+
+/// `fs/write_text_file`: bounded atomic full-file replacement beneath the held
+/// workspace. Writes are serialized per session (last-writer-wins with O(1)
+/// target metadata inspection, never hashing unbounded existing files), stay
+/// strictly relative to `workspace.held`, and distinguish refusals before
+/// publication from post-publication durability uncertainty.
+pub(super) fn write(workspace: &Workspace, params: &Value, closed: &AtomicBool) -> Outcome {
+    let path = text(params, "path")?;
+    let content = text(params, "content")?;
+    if content.len() > MAX_WRITE_BYTES {
+        return Err(Refusal::invalid(format!(
+            "the text for {path} is {} bytes, more than the {MAX_WRITE_BYTES} StateEngine writes",
+            content.len()
+        )));
+    }
+    let relative = beneath(&workspace.told, &workspace.physical, path)?;
+    if closed.load(Ordering::Acquire) {
+        return Err(Refusal::invalid(
+            "this conversation is closing, so no new workspace write was started",
+        ));
+    }
+    let _serial = workspace.write_lock.lock().map_err(|_| {
+        Refusal::failed("the workspace write lock was left unusable by an earlier failure")
+    })?;
+    if closed.load(Ordering::Acquire) {
+        return Err(Refusal::invalid(
+            "this conversation is closing, so no new workspace write was started",
+        ));
+    }
+    workspace
+        .held
+        .write_relative(&relative, content.as_bytes())
+        .map_err(|error| map_write_error(workspace, path, error))?;
+    Ok(json!({}))
+}
+
+fn map_write_error(
+    workspace: &Workspace,
+    path: &str,
+    error: se_proc::WorkspaceWriteError,
+) -> Refusal {
+    match error {
+        se_proc::WorkspaceWriteError::Restored(detail) => Refusal::failed(format!(
+            "{path} was not updated because a conflict occurred and the prior state was restored ({detail}); re-read the file before retrying"
+        )),
+        se_proc::WorkspaceWriteError::PublishedUncertain(detail) => Refusal::failed(format!(
+            "{path} had an unresolved write outcome ({detail}); inspect the file on disk before retrying"
+        )),
+        se_proc::WorkspaceWriteError::BeforePublish(refusal) => {
+            if let Err(root_err) = check_workspace(workspace) {
+                return root_err;
+            }
+            match refusal {
+                se_proc::WorkspaceWriteRefusal::RootUnverified(err) => Refusal::failed(format!(
+                    "the workspace {} could not be verified ({err}); no bytes were written to {path}",
+                    workspace.told.display()
+                )),
+                se_proc::WorkspaceWriteRefusal::InvalidTarget(reason) => Refusal::invalid(format!(
+                    "{path} cannot be written safely in the held workspace: {reason}"
+                )),
+                se_proc::WorkspaceWriteRefusal::Io(err) => Refusal::failed(format!(
+                    "{path} could not be written in the held workspace before publication: {err}"
+                )),
+            }
+        }
+    }
 }
 
 /// The slash-separated path of `path` beneath the workspace, given as the agent

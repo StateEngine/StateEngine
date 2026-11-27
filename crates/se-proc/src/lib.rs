@@ -57,7 +57,8 @@ pub use se_native_proc::{
 pub use se_source_watch::NativeWatchWake;
 pub use se_source_watch::{
     NativeFileRevision, NativeRootDirectory, NativeRootFile, NativeSourceEntry, NativeSourceKind,
-    NativeSourceRoot, NativeSourceScan, observe_file_revision,
+    NativeSourceRoot, NativeSourceScan, WorkspaceWriteError, WorkspaceWriteRefusal,
+    observe_file_revision,
 };
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use se_source_watch::{
