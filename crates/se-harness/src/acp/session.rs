@@ -606,13 +606,13 @@ impl Session {
             .close(now + until.saturating_duration_since(now) / 2)
             .await;
         let transport_close = self.finish_transport_close(cx, until).await;
-        match (client_cleanup, transport_close) {
+        match (client_close, transport_close) {
             (Ok(()), Ok(())) => Ok(()),
             (Err(reason), Ok(())) => Err(failure("ACP close", reason)),
             (Ok(()), Err(err)) => Err(err),
             (Err(reason), Err(err)) => Err(failure(
                 "ACP close",
-                format!("{err}; terminal cleanup also failed: {reason}"),
+                format!("{err}; client cleanup also failed: {reason}"),
             )),
         }
     }
@@ -635,9 +635,6 @@ impl Session {
                 .map_err(|_| failure("ACP close", "update task panicked"))?;
         }
         *pump = None;
-        if let Err(reason) = client_close {
-            return Err(failure("ACP close", reason));
-        }
         Ok(())
     }
     async fn synchronize(&self, until: tokio::time::Instant) -> Result<()> {

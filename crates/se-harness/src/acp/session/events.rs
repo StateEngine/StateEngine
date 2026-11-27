@@ -59,7 +59,6 @@ impl Session {
         _permit: tokio::sync::OwnedSemaphorePermit,
         method: String,
         id: Value,
-        method: String,
         params: Value,
     ) {
         let outcome = self

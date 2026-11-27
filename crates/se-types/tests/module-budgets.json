@@ -46,7 +46,7 @@
   "se-types": 5475,
   "se-cli-spec": 2600,
   "se-atlas-host": 2283,
-  "se-harness": 19919,
+  "se-harness": 19915,
   "se-tool-capture": 1083,
   "se-remote-host": 7652,
   "se-state-files": 10635
@@ -75,7 +75,7 @@
   "crates/se-native-ipc/src/native_ipc": 3647,
   "crates/se-native-proc/src/platform/linux": 2582,
   "crates/se-host/src/client": 2371,
-  "crates/se-harness/src/acp": 3127,
+  "crates/se-harness/src/acp": 3123,
   "crates/se-store/src/codec": 2348,
   "crates/se-harness/src/harness/secode_process": 2553,
   "crates/se-atlas-host/src/atlas_runtime": 2080,
