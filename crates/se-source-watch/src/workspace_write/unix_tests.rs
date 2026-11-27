@@ -1,3 +1,6 @@
+use super::replace::{
+    ReplaceCtx, is_rename_flag_unsupported, publish_replace, publish_replace_fallback,
+};
 use super::*;
 use crate::source_root::NativeSourceRoot;
 use std::path::PathBuf;
@@ -216,4 +219,149 @@ fn same_device_different_mount_id_or_mount_root_is_refused() {
             WorkspaceWriteRefusal::InvalidTarget(_)
         ))
     ));
+}
+
+#[test]
+fn unsupported_rename_flag_errnos_trigger_fallback() {
+    for code in [libc::ENOSYS, libc::EINVAL, libc::EOPNOTSUPP, libc::ENOTSUP] {
+        assert!(is_rename_flag_unsupported(&io::Error::from_raw_os_error(
+            code
+        )));
+    }
+    assert!(is_rename_flag_unsupported(&io::Error::new(
+        io::ErrorKind::Unsupported,
+        "unsupported"
+    )));
+    assert!(!is_rename_flag_unsupported(&io::Error::from_raw_os_error(
+        libc::EEXIST
+    )));
+    assert!(!is_rename_flag_unsupported(&io::Error::from_raw_os_error(
+        libc::EACCES
+    )));
+}
+
+#[test]
+fn fallback_replace_overwrites_and_cleans_up_siblings() -> Check {
+    let dir = scratch("fallback-ok")?;
+    let root = File::open(&dir.0)?;
+    let root_mount = root_mount_identity(&root)?;
+    let leaf = cstr("note.txt")?;
+    let stage = cstr(".se-write-stage")?;
+    std::fs::write(dir.0.join("note.txt"), b"v1")?;
+    let expected =
+        inspect_target_leaf(&root, &leaf, root_mount, None)?.ok_or("missing baseline")?;
+    let stage_baseline = stage_file(&root, &stage, b"v2-fallback", Some(expected))?;
+
+    publish_replace_fallback(&ReplaceCtx {
+        root: &root,
+        chain: &[],
+        parent: &root,
+        stage: &stage,
+        leaf: &leaf,
+        stage_baseline,
+        expected,
+        root_mount,
+        dot_git: None,
+        root_check: &|| Ok(()),
+    })?;
+    assert_eq!(std::fs::read(dir.0.join("note.txt"))?, b"v2-fallback");
+    let entries: Vec<_> = std::fs::read_dir(&dir.0)?
+        .map(|e| e.map(|e| e.file_name()))
+        .collect::<Result<_, _>>()?;
+    assert_eq!(entries.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn fallback_replace_leaves_target_and_retains_backup_on_post_publish_custody_failure() -> Check {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let dir = scratch("fallback-post-custody")?;
+    let root = File::open(&dir.0)?;
+    let root_mount = root_mount_identity(&root)?;
+    let leaf = cstr("note.txt")?;
+    let stage = cstr(".se-write-stage")?;
+    std::fs::write(dir.0.join("note.txt"), b"original-content")?;
+    let expected =
+        inspect_target_leaf(&root, &leaf, root_mount, None)?.ok_or("missing baseline")?;
+    let stage_baseline = stage_file(&root, &stage, b"agent-write", Some(expected))?;
+
+    // First root_check (pre-publish) passes; second (post-publish) fails.
+    let calls = AtomicUsize::new(0);
+    let err = publish_replace_fallback(&ReplaceCtx {
+        root: &root,
+        chain: &[],
+        parent: &root,
+        stage: &stage,
+        leaf: &leaf,
+        stage_baseline,
+        expected,
+        root_mount,
+        dot_git: None,
+        root_check: &|| {
+            if calls.fetch_add(1, Ordering::AcqRel) == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::other("root displaced after publish"))
+            }
+        },
+    })
+    .err()
+    .ok_or("expected PublishedUncertain on post-publish custody failure")?;
+    let WorkspaceWriteError::PublishedUncertain(msg) = err else {
+        return Err(format!("expected PublishedUncertain, got {err:?}").into());
+    };
+    assert_eq!(std::fs::read(dir.0.join("note.txt"))?, b"agent-write");
+    assert!(!dir.0.join(".se-write-stage").exists());
+    let backups: Vec<_> = std::fs::read_dir(&dir.0)?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "note.txt")
+        .collect();
+    assert_eq!(backups.len(), 1);
+    assert!(msg.contains(&backups[0]));
+    assert_eq!(std::fs::read(dir.0.join(&backups[0]))?, b"original-content");
+    Ok(())
+}
+
+#[test]
+fn fallback_replace_preserves_concurrent_edit_and_cleans_up() -> Check {
+    let dir = scratch("fallback-concurrent")?;
+    let root = File::open(&dir.0)?;
+    let root_mount = root_mount_identity(&root)?;
+    let leaf = cstr("note.txt")?;
+    let stage = cstr(".se-write-stage")?;
+    std::fs::write(dir.0.join("note.txt"), b"v1")?;
+    let expected =
+        inspect_target_leaf(&root, &leaf, root_mount, None)?.ok_or("missing baseline")?;
+    let stage_baseline = stage_file(&root, &stage, b"agent-write", Some(expected))?;
+
+    // Concurrent editor atomically replaces the file with a new inode before
+    // fallback replacement runs.
+    std::fs::write(dir.0.join(".editor-tmp"), b"concurrent-editor-save")?;
+    std::fs::rename(dir.0.join(".editor-tmp"), dir.0.join("note.txt"))?;
+    let err = publish_replace_fallback(&ReplaceCtx {
+        root: &root,
+        chain: &[],
+        parent: &root,
+        stage: &stage,
+        leaf: &leaf,
+        stage_baseline,
+        expected,
+        root_mount,
+        dot_git: None,
+        root_check: &|| Ok(()),
+    })
+    .err()
+    .ok_or("expected rollback on concurrent atomic replace")?;
+    assert!(matches!(err, WorkspaceWriteError::Restored(_)));
+    assert_eq!(
+        std::fs::read(dir.0.join("note.txt"))?,
+        b"concurrent-editor-save"
+    );
+    let entries: Vec<_> = std::fs::read_dir(&dir.0)?
+        .map(|e| e.map(|e| e.file_name()))
+        .collect::<Result<_, _>>()?;
+    assert_eq!(entries.len(), 1);
+    Ok(())
 }

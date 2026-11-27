@@ -76,8 +76,18 @@ impl fmt::Display for WorkspaceWriteError {
 impl std::error::Error for WorkspaceWriteError {}
 
 impl NativeSourceRoot {
-    /// Atomically write `bytes` to `path` beneath this retained workspace root
-    /// without following links, crossing mounts, or modifying `.git` metadata.
+    /// Write `bytes` to `path` beneath this retained workspace root without
+    /// following links, crossing mounts, or modifying `.git` metadata.
+    ///
+    /// On Unix filesystems that support `renameat2(RENAME_EXCHANGE)` or
+    /// `renameatx_np(RENAME_SWAP)`, existing-file replacement swaps target and
+    /// staging atomically with no absence window. On Unix mounts lacking atomic
+    /// swap (such as WSL2 `/mnt/c`, VirtioFS, FUSE, NFS/SMB, or non-APFS macOS
+    /// volumes), replacement falls back to a non-overwriting backup-rename plus
+    /// exclusive `linkat` sequence with a brief absence window while preserving
+    /// concurrent edits; mounts where hard links are also unsupported refuse
+    /// before modifying the target. On Windows, existing-file replacement uses
+    /// `ReplaceFileW` with an explicit backup sibling for recovery.
     pub fn write_relative(&self, path: &str, bytes: &[u8]) -> Result<(), WorkspaceWriteError> {
         validate(path).map_err(|error| {
             WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::InvalidTarget(
