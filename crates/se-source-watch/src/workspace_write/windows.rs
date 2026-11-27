@@ -2,7 +2,7 @@ use super::{WorkspaceWriteError, WorkspaceWriteRefusal, stage_name};
 use se_state_files::{NativeFileRevision, NativeObjectKey};
 use std::{
     fs::File,
-    io::{self, Write},
+    io::{self, Read, Write},
     mem::{size_of, zeroed},
     os::windows::io::AsRawHandle,
     path::Path,
@@ -545,29 +545,80 @@ mod replace;
 use replace::{ReplaceCtx, publish_replace};
 
 /// Close the write-capable staging handle so Windows finalizes its last-write
-/// time and `ReplaceFileW` can open it exclusively, then re-open read-only to
-/// capture the finalized post-close baseline while verifying object identity.
+/// time and `ReplaceFileW` can open it exclusively, then re-open read-only
+/// (excluding `FILE_SHARE_WRITE`) to verify object identity and exact payload
+/// bytes before capturing the finalized post-close baseline.
 fn finalize_stage_baseline(
     parent: &File,
+    parent_path: &Path,
     stage: File,
     stage_str: &str,
     stage_key: NativeObjectKey,
+    bytes: &[u8],
 ) -> Result<TargetBaseline, WorkspaceWriteError> {
     drop(stage);
+    let stage_path = parent_path.join(stage_str);
     let mut reopened_units = utf16_component(stage_str)?;
-    let reopened = nt_open_relative(
+    let mut reopened = nt_open_relative(
         parent,
         &mut reopened_units,
-        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        GENERIC_READ | DELETE | SYNCHRONIZE,
         FILE_SHARE_READ | FILE_SHARE_DELETE,
         FILE_OPEN,
         FILE_NON_DIRECTORY_FILE,
     )
-    .map_err(io_before)?;
-    if se_state_files::observe_object_key(&reopened).map_err(io_before)? != stage_key {
-        return Err(invalid("staged file identity changed after close"));
+    .map_err(|err| {
+        let status = describe_siblings(parent, &[(stage_str, &stage_path)]);
+        invalid(format!(
+            "staged file could not be reopened after close ({err}); {status}"
+        ))
+    })?;
+    let observed_key = se_state_files::observe_object_key(&reopened).map_err(|err| {
+        let status = describe_siblings(parent, &[(stage_str, &stage_path)]);
+        invalid(format!(
+            "staged file identity unreadable after close ({err}); {status}"
+        ))
+    })?;
+    if observed_key != stage_key {
+        let status = describe_siblings(parent, &[(stage_str, &stage_path)]);
+        return Err(invalid(format!(
+            "staged file identity changed after close; {status}"
+        )));
     }
-    let rev = se_state_files::observe_file_revision(&reopened).map_err(io_before)?;
+    let rev = match se_state_files::observe_file_revision(&reopened) {
+        Ok(rev) => rev,
+        Err(err) => {
+            let cleanup = dispose_checked(&reopened);
+            drop(reopened);
+            let status = describe_siblings(parent, &[(stage_str, &stage_path)]);
+            let note = match cleanup {
+                Ok(()) => format!("staging copy removed ({status})"),
+                Err(clean_err) => format!("staging cleanup failed ({clean_err}); {status}"),
+            };
+            return Err(invalid(format!(
+                "staged file revision unreadable after close ({err}); {note}"
+            )));
+        }
+    };
+    let mut readback = Vec::with_capacity(bytes.len().saturating_add(1));
+    let read_ok = rev.size == bytes.len() as u64
+        && (&mut reopened)
+            .take(bytes.len() as u64 + 1)
+            .read_to_end(&mut readback)
+            .is_ok()
+        && readback == bytes;
+    if !read_ok {
+        let cleanup = dispose_checked(&reopened);
+        drop(reopened);
+        let status = describe_siblings(parent, &[(stage_str, &stage_path)]);
+        let note = match cleanup {
+            Ok(()) => format!("staging copy removed ({status})"),
+            Err(clean_err) => format!("staging cleanup failed ({clean_err}); {status}"),
+        };
+        return Err(invalid(format!(
+            "staged file contents changed after close; {note}"
+        )));
+    }
     Ok(TargetBaseline::from_revision(rev))
 }
 
@@ -640,7 +691,8 @@ pub(super) fn write_relative(
     }
 
     if let Some((held_file, expected)) = held_target {
-        let stage_baseline = finalize_stage_baseline(parent, stage, &stage_str, stage_key)?;
+        let stage_baseline =
+            finalize_stage_baseline(parent, &parent_path, stage, &stage_str, stage_key, bytes)?;
         return publish_replace(
             &ReplaceCtx {
                 root,
