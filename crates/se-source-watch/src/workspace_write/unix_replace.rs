@@ -22,6 +22,28 @@ pub(super) struct ReplaceCtx<'a> {
     pub(super) root_check: &'a dyn Fn() -> io::Result<()>,
 }
 
+/// Structured result of checking whether a directory entry still matches our
+/// staged revision, keeping metadata I/O errors distinct from confirmed edits.
+enum StageEntryCheck {
+    Matches,
+    Changed,
+    Absent,
+    InspectFailed(io::Error),
+}
+
+fn inspect_stage_entry(
+    parent: &File,
+    entry: &CString,
+    expected: TargetBaseline,
+) -> StageEntryCheck {
+    match stat_entry_at(parent, entry, libc::AT_SYMLINK_NOFOLLOW) {
+        Ok(Some(m)) if TargetBaseline::from_meta(m) == expected => StageEntryCheck::Matches,
+        Ok(Some(_)) => StageEntryCheck::Changed,
+        Ok(None) => StageEntryCheck::Absent,
+        Err(err) => StageEntryCheck::InspectFailed(err),
+    }
+}
+
 /// True when the kernel or mount does not support flagged rename operations
 /// (`RENAME_NOREPLACE`, `RENAME_EXCHANGE`, `RENAME_SWAP`).
 pub(super) fn is_rename_flag_unsupported(err: &io::Error) -> bool {
@@ -142,48 +164,30 @@ fn verify_displaced_custody(
     Ok(())
 }
 
-/// Confirm `entry` still matches our exact staged revision (inode, size, mtime,
-/// mode) before any rollback so a newer post-publish edit is never overwritten.
-/// Names `retained_note` whenever rollback is skipped so recovery can locate
-/// the displaced original.
-fn verify_entry_matches_stage(
-    parent: &File,
-    entry: &CString,
-    stage_baseline: TargetBaseline,
-    phase: &str,
-    reason: &WorkspaceWriteError,
-    retained_note: &str,
-) -> Result<(), WorkspaceWriteError> {
-    match stat_entry_at(parent, entry, libc::AT_SYMLINK_NOFOLLOW) {
-        Ok(Some(m)) if TargetBaseline::from_meta(m) == stage_baseline => Ok(()),
-        Ok(Some(_)) => Err(WorkspaceWriteError::PublishedUncertain(format!(
-            "target changed after {phase} ({reason}); rollback skipped to preserve the newer target; {retained_note}"
-        ))),
-        Ok(None) => Err(WorkspaceWriteError::PublishedUncertain(format!(
-            "target is absent after {phase} ({reason}); rollback skipped; {retained_note}"
-        ))),
-        Err(stat_err) => Err(WorkspaceWriteError::PublishedUncertain(format!(
-            "rollback inspection after {phase} conflict ({reason}) failed: {stat_err}; rollback skipped; {retained_note}"
-        ))),
-    }
-}
-
 fn finish_exchange_replace(ctx: &ReplaceCtx<'_>) -> Result<(), WorkspaceWriteError> {
     let custody =
         verify_displaced_custody(ctx, ctx.stage, "target file changed during atomic exchange");
     if let Err(reason) = custody {
-        let retained = format!(
-            "displaced original remains in '{}'",
-            ctx.stage.to_string_lossy()
-        );
-        verify_entry_matches_stage(
-            ctx.parent,
-            ctx.leaf,
-            ctx.stage_baseline,
-            "exchange",
-            &reason,
-            &retained,
-        )?;
+        let stage_name = ctx.stage.to_string_lossy();
+        let retained = format!("displaced original remains in '{stage_name}'");
+        match inspect_stage_entry(ctx.parent, ctx.leaf, ctx.stage_baseline) {
+            StageEntryCheck::Matches => {}
+            StageEntryCheck::Changed => {
+                return Err(WorkspaceWriteError::PublishedUncertain(format!(
+                    "target changed after exchange ({reason}); rollback skipped to preserve the newer target; {retained}"
+                )));
+            }
+            StageEntryCheck::Absent => {
+                return Err(WorkspaceWriteError::PublishedUncertain(format!(
+                    "target is absent after exchange ({reason}); rollback skipped; {retained}"
+                )));
+            }
+            StageEntryCheck::InspectFailed(stat_err) => {
+                return Err(WorkspaceWriteError::PublishedUncertain(format!(
+                    "rollback inspection after exchange conflict ({reason}) failed: {stat_err}; rollback skipped; {retained}"
+                )));
+            }
+        }
         if let Err(rollback_err) = exchange_at(ctx.parent, ctx.stage, ctx.leaf) {
             return Err(WorkspaceWriteError::PublishedUncertain(format!(
                 "rollback after exchange conflict ({reason}) failed: {rollback_err}; {retained}"
@@ -194,33 +198,27 @@ fn finish_exchange_replace(ctx: &ReplaceCtx<'_>) -> Result<(), WorkspaceWriteErr
                 "original restored after exchange conflict ({reason}), but rollback directory sync failed: {sync_err}"
             )));
         }
-        // Verify the restored staging sibling still matches our staged revision
-        // before unlinking it.
-        match stat_entry_at(ctx.parent, ctx.stage, libc::AT_SYMLINK_NOFOLLOW) {
-            Ok(Some(m)) if TargetBaseline::from_meta(m) == ctx.stage_baseline => {}
-            Ok(Some(_)) => {
+        match inspect_stage_entry(ctx.parent, ctx.stage, ctx.stage_baseline) {
+            StageEntryCheck::Matches => {}
+            StageEntryCheck::Changed => {
                 return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                    "original restored after exchange conflict ({reason}), but staging sibling '{}' changed before cleanup and was left on disk",
-                    ctx.stage.to_string_lossy()
+                    "original restored after exchange conflict ({reason}), but staging sibling '{stage_name}' changed before cleanup and was left on disk"
                 )));
             }
-            Ok(None) => {
+            StageEntryCheck::Absent => {
                 return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                    "original restored after exchange conflict ({reason}), but staging sibling '{}' was already absent before cleanup",
-                    ctx.stage.to_string_lossy()
+                    "original restored after exchange conflict ({reason}), but staging sibling '{stage_name}' was already absent before cleanup"
                 )));
             }
-            Err(stat_err) => {
+            StageEntryCheck::InspectFailed(stat_err) => {
                 return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                    "original restored after exchange conflict ({reason}), but staging verification for '{}' failed: {stat_err}",
-                    ctx.stage.to_string_lossy()
+                    "original restored after exchange conflict ({reason}), but staging verification for '{stage_name}' failed: {stat_err}"
                 )));
             }
         }
         if let Err(unlink_err) = unlink_sibling(ctx.parent, ctx.stage) {
             return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                "original restored after exchange conflict ({reason}), but staging sibling '{}' cleanup failed: {unlink_err}",
-                ctx.stage.to_string_lossy()
+                "original restored after exchange conflict ({reason}), but staging sibling '{stage_name}' cleanup failed: {unlink_err}"
             )));
         }
         if let Err(sync_err) = ctx.parent.sync_all() {
@@ -297,8 +295,8 @@ fn probe_linkat_support(
 /// 3. Verify root/parent custody and that `backup` matches `expected`; on
 ///    conflict, restore `backup -> leaf` via exclusive `linkat`.
 /// 4. Publish `stage -> leaf` via exclusive `linkat` (refusing `EEXIST` if a
-///    concurrent creator wrote `leaf`), verify post-publish custody, then
-///    remove `stage` and `backup` and sync `parent`.
+///    concurrent creator wrote `leaf`). If post-publish custody fails, leave
+///    `leaf` untouched and retain `backup` for recovery.
 pub(super) fn publish_replace_fallback(ctx: &ReplaceCtx<'_>) -> Result<(), WorkspaceWriteError> {
     let backup = match stage_name().and_then(|name| cstr(&name)) {
         Ok(name) => name,
@@ -333,7 +331,7 @@ pub(super) fn publish_replace_fallback(ctx: &ReplaceCtx<'_>) -> Result<(), Works
         &backup,
         "target file changed before fallback replacement",
     ) {
-        return Err(restore_backup_to_leaf(ctx, &backup, &reason, None));
+        return Err(restore_backup_to_leaf(ctx, &backup, &reason));
     }
 
     // SAFETY: retained parent directory fd and literal names; `linkat` fails
@@ -364,16 +362,37 @@ pub(super) fn publish_replace_fallback(ctx: &ReplaceCtx<'_>) -> Result<(), Works
             )));
         }
         let reason = io_before(link_err);
-        return Err(restore_backup_to_leaf(ctx, &backup, &reason, None));
+        return Err(restore_backup_to_leaf(ctx, &backup, &reason));
     }
 
+    finish_fallback_publish(ctx, &backup)
+}
+
+fn finish_fallback_publish(
+    ctx: &ReplaceCtx<'_>,
+    backup: &CString,
+) -> Result<(), WorkspaceWriteError> {
     let post_custody = (ctx.root_check)()
         .map_err(|error| {
             WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::RootUnverified(error))
         })
         .and_then(|()| verify_parent_chain(ctx.root, ctx.chain, ctx.root_mount));
     if let Err(reason) = post_custody {
-        return Err(rollback_published_fallback(ctx, &backup, &reason));
+        // Without kernel atomic swap, mutating `leaf` again risks clobbering a
+        // concurrent edit or moving a newly created directory. Leave `leaf`
+        // untouched and retain `backup` for recovery.
+        let stage_note = match unlink_sibling(ctx.parent, ctx.stage) {
+            Ok(()) => String::new(),
+            Err(unlink_err) => format!(
+                "; staging sibling '{}' cleanup failed: {unlink_err}",
+                ctx.stage.to_string_lossy()
+            ),
+        };
+        return Err(WorkspaceWriteError::PublishedUncertain(format!(
+            "post-publish custody check failed during fallback replacement ({reason}); live target was left untouched because atomic swap is unavailable on this mount; displaced original remains in '{}'{}",
+            backup.to_string_lossy(),
+            stage_note
+        )));
     }
 
     ctx.parent.sync_all().map_err(|error| {
@@ -390,7 +409,7 @@ pub(super) fn publish_replace_fallback(ctx: &ReplaceCtx<'_>) -> Result<(), Works
             backup.to_string_lossy()
         )));
     }
-    if let Err(unlink_err) = unlink_sibling(ctx.parent, &backup) {
+    if let Err(unlink_err) = unlink_sibling(ctx.parent, backup) {
         return Err(WorkspaceWriteError::PublishedUncertain(format!(
             "replacement published but backup sibling '{}' removal failed: {unlink_err}",
             backup.to_string_lossy()
@@ -408,7 +427,6 @@ fn restore_backup_to_leaf(
     ctx: &ReplaceCtx<'_>,
     backup: &CString,
     reason: &WorkspaceWriteError,
-    extra_sibling: Option<&CString>,
 ) -> WorkspaceWriteError {
     // SAFETY: retained parent directory fd and literal names; `linkat` refuses
     // with `EEXIST` rather than clobbering a concurrently created `leaf`.
@@ -430,30 +448,10 @@ fn restore_backup_to_leaf(
                 ctx.stage.to_string_lossy()
             ),
         };
-        let extra_note = extra_sibling.map_or_else(String::new, |extra| {
-            match unlink_sibling(ctx.parent, extra) {
-                Ok(()) => String::new(),
-                Err(unlink_err) => format!(
-                    "; rollback sibling '{}' cleanup also failed: {unlink_err}",
-                    extra.to_string_lossy()
-                ),
-            }
-        });
         return WorkspaceWriteError::PublishedUncertain(format!(
-            "rollback after fallback conflict ({reason}) failed: {restore_err}; displaced original remains in '{}'{}{}",
+            "rollback after fallback conflict ({reason}) failed: {restore_err}; displaced original remains in '{}'{}",
             backup.to_string_lossy(),
-            stage_note,
-            extra_note
-        ));
-    }
-    if let Some(extra) = extra_sibling
-        && let Err(unlink_err) = unlink_sibling(ctx.parent, extra)
-    {
-        return WorkspaceWriteError::PublishedUncertain(format!(
-            "original restored after fallback conflict ({reason}), but rollback sibling '{}' cleanup failed: {unlink_err}; backup '{}' and staging '{}' may also remain on disk",
-            extra.to_string_lossy(),
-            backup.to_string_lossy(),
-            ctx.stage.to_string_lossy()
+            stage_note
         ));
     }
     if let Err(unlink_err) = unlink_sibling(ctx.parent, backup) {
@@ -484,91 +482,4 @@ fn restore_backup_to_leaf(
     WorkspaceWriteError::Restored(format!(
         "conflict during fallback replacement ({reason}); original restored and siblings removed"
     ))
-}
-
-/// Rename `leaf` aside to a fresh sibling before verifying it still matches our
-/// staged revision, closing the check-then-unlink race so a concurrent editor
-/// save can never be deleted during rollback.
-fn rollback_published_fallback(
-    ctx: &ReplaceCtx<'_>,
-    backup: &CString,
-    reason: &WorkspaceWriteError,
-) -> WorkspaceWriteError {
-    let retained_pair = format!(
-        "backup '{}' and staging '{}' remain on disk",
-        backup.to_string_lossy(),
-        ctx.stage.to_string_lossy()
-    );
-    let displaced = match stage_name().and_then(|name| cstr(&name)) {
-        Ok(name) => name,
-        Err(name_err) => {
-            return WorkspaceWriteError::PublishedUncertain(format!(
-                "rollback after fallback conflict ({reason}) could not allocate rollback sibling ({name_err}); {retained_pair}"
-            ));
-        }
-    };
-    // SAFETY: retained parent directory fd and literal sibling names; moving
-    // `leaf -> displaced` captures whatever is at `leaf` without deleting it.
-    if unsafe {
-        libc::renameat(
-            ctx.parent.as_raw_fd(),
-            ctx.leaf.as_ptr(),
-            ctx.parent.as_raw_fd(),
-            displaced.as_ptr(),
-        )
-    } < 0
-    {
-        return WorkspaceWriteError::PublishedUncertain(format!(
-            "rollback rename-aside after fallback conflict ({reason}) failed: {}; {retained_pair}",
-            io::Error::last_os_error()
-        ));
-    }
-    let retained_all = format!(
-        "displaced target '{}', backup '{}', and staging '{}' remain on disk",
-        displaced.to_string_lossy(),
-        backup.to_string_lossy(),
-        ctx.stage.to_string_lossy()
-    );
-    match verify_entry_matches_stage(
-        ctx.parent,
-        &displaced,
-        ctx.stage_baseline,
-        "fallback replacement",
-        reason,
-        &retained_all,
-    ) {
-        Ok(()) => restore_backup_to_leaf(ctx, backup, reason, Some(&displaced)),
-        Err(uncertain) => {
-            // Put the concurrent target back at `leaf` via exclusive `linkat`
-            // so the editor's save is never stranded in `displaced`.
-            // SAFETY: retained parent directory fd and literal names.
-            if unsafe {
-                libc::linkat(
-                    ctx.parent.as_raw_fd(),
-                    displaced.as_ptr(),
-                    ctx.parent.as_raw_fd(),
-                    ctx.leaf.as_ptr(),
-                    0,
-                )
-            } == 0
-            {
-                let cleanup_note = match unlink_sibling(ctx.parent, &displaced) {
-                    Ok(()) => String::new(),
-                    Err(unlink_err) => format!(
-                        "; temporary rollback sibling '{}' cleanup failed: {unlink_err}",
-                        displaced.to_string_lossy()
-                    ),
-                };
-                let sync_note = match ctx.parent.sync_all() {
-                    Ok(()) => String::new(),
-                    Err(sync_err) => format!("; directory sync failed: {sync_err}"),
-                };
-                return WorkspaceWriteError::PublishedUncertain(format!(
-                    "target changed after fallback replacement ({reason}); newer target preserved at leaf; {retained_pair}{}{}",
-                    cleanup_note, sync_note
-                ));
-            }
-            uncertain
-        }
-    }
 }

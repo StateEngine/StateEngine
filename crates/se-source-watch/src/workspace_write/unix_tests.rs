@@ -273,9 +273,9 @@ fn fallback_replace_overwrites_and_cleans_up_siblings() -> Check {
 }
 
 #[test]
-fn fallback_replace_restores_original_on_post_rename_custody_failure() -> Check {
+fn fallback_replace_leaves_target_and_retains_backup_on_post_publish_custody_failure() -> Check {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let dir = scratch("fallback-rollback")?;
+    let dir = scratch("fallback-post-custody")?;
     let root = File::open(&dir.0)?;
     let root_mount = root_mount_identity(&root)?;
     let leaf = cstr("note.txt")?;
@@ -285,7 +285,7 @@ fn fallback_replace_restores_original_on_post_rename_custody_failure() -> Check 
         inspect_target_leaf(&root, &leaf, root_mount, None)?.ok_or("missing baseline")?;
     let stage_baseline = stage_file(&root, &stage, b"agent-write", Some(expected))?;
 
-    // First root_check (pre-rename) passes; second (post-rename) fails.
+    // First root_check (pre-publish) passes; second (post-publish) fails.
     let calls = AtomicUsize::new(0);
     let err = publish_replace_fallback(&ReplaceCtx {
         root: &root,
@@ -301,18 +301,25 @@ fn fallback_replace_restores_original_on_post_rename_custody_failure() -> Check 
             if calls.fetch_add(1, Ordering::AcqRel) == 0 {
                 Ok(())
             } else {
-                Err(io::Error::other("root displaced after rename"))
+                Err(io::Error::other("root displaced after publish"))
             }
         },
     })
     .err()
-    .ok_or("expected rollback on post-rename custody failure")?;
-    assert!(matches!(err, WorkspaceWriteError::Restored(_)));
-    assert_eq!(std::fs::read(dir.0.join("note.txt"))?, b"original-content");
-    let entries: Vec<_> = std::fs::read_dir(&dir.0)?
-        .map(|e| e.map(|e| e.file_name()))
-        .collect::<Result<_, _>>()?;
-    assert_eq!(entries.len(), 1);
+    .ok_or("expected PublishedUncertain on post-publish custody failure")?;
+    let WorkspaceWriteError::PublishedUncertain(msg) = err else {
+        return Err(format!("expected PublishedUncertain, got {err:?}").into());
+    };
+    assert_eq!(std::fs::read(dir.0.join("note.txt"))?, b"agent-write");
+    assert!(!dir.0.join(".se-write-stage").exists());
+    let backups: Vec<_> = std::fs::read_dir(&dir.0)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "note.txt")
+        .collect();
+    assert_eq!(backups.len(), 1);
+    assert!(msg.contains(&backups[0]));
+    assert_eq!(std::fs::read(dir.0.join(&backups[0]))?, b"original-content");
     Ok(())
 }
 
