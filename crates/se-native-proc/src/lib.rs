@@ -33,6 +33,8 @@ pub(crate) use se_state_files::state_files;
 
 mod command;
 pub use command::background_command;
+mod contained_child;
+pub use contained_child::{ContainedChild, ContainedChildSpec, ContainedExit, ContainedKiller};
 mod identity;
 pub use identity::*;
 mod launch;

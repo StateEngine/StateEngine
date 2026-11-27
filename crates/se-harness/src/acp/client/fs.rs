@@ -23,7 +23,7 @@ const MAX_WRITE_BYTES: usize = super::super::wire::MAX_FRAME;
 /// opened beneath this one handle, every write verifies the held handle and
 /// parent chain without following links, and operations refuse once the
 /// folder's name no longer leads to it.
-pub(super) struct Workspace {
+pub(crate) struct Workspace {
     /// The folder as the agent was told it.
     told: PathBuf,
     /// The same folder with its links resolved.
@@ -55,6 +55,78 @@ impl Workspace {
             write_lock: Mutex::new(()),
         })
     }
+
+    /// Resolve an optional working directory strictly inside this held workspace,
+    /// verifying that neither the workspace root nor any intermediate directory
+    /// is a symlink or Windows reparse point.
+    pub(crate) fn resolve_dir(&self, cwd: Option<&str>) -> Result<PathBuf, Refusal> {
+        self.held.check().map_err(|err| {
+            Refusal::failed(format!(
+                "the workspace {} could not be verified ({err}); start a new conversation there",
+                self.told.display()
+            ))
+        })?;
+        let Some(path) = cwd else {
+            return Ok(self.physical.clone());
+        };
+        let requested = Path::new(path);
+        if !requested.is_absolute() {
+            return Err(Refusal::invalid(format!("{path} is not an absolute path")));
+        }
+        let rest = requested
+            .strip_prefix(&self.told)
+            .or_else(|_| requested.strip_prefix(&self.physical))
+            .map_err(|_| {
+                Refusal::invalid(format!(
+                    "{path} is outside the workspace {}",
+                    self.told.display()
+                ))
+            })?;
+        let mut current = self.physical.clone();
+        for component in rest.components() {
+            match component {
+                std::path::Component::Normal(name) => {
+                    current.push(name);
+                    let meta = std::fs::symlink_metadata(&current).map_err(|err| {
+                        if err.kind() == std::io::ErrorKind::NotFound {
+                            Refusal::missing(format!("{path} does not exist"))
+                        } else {
+                            Refusal::failed(format!("{path} could not be inspected: {err}"))
+                        }
+                    })?;
+                    if is_link_or_reparse(&meta) {
+                        return Err(Refusal::invalid(format!(
+                            "{path} traverses a link or reparse point inside the workspace"
+                        )));
+                    }
+                    if !meta.is_dir() {
+                        return Err(Refusal::invalid(format!("{path} is not a directory")));
+                    }
+                }
+                _ => {
+                    return Err(Refusal::invalid(format!(
+                        "{path} must name a directory by plain names inside the workspace, without `.` or `..`"
+                    )));
+                }
+            }
+        }
+        Ok(current)
+    }
+}
+
+fn is_link_or_reparse(meta: &std::fs::Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
 }
 
 /// Verifies the held workspace directory has not been moved, removed or replaced.

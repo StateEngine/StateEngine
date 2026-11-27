@@ -1,6 +1,6 @@
 //! ACP v1 client transport. The coordinator retains native process ownership;
 //! protocol replies cannot prove process exit or durable input acceptance.
-mod client;
+pub(crate) mod client;
 mod connection;
 mod offer;
 mod permission;

@@ -81,11 +81,12 @@ pub use stdio::*;
 
 pub use se_native_proc::{
     AgentTreeBasis, AgentTreeMatch, AncestryBound, ArenaEntry, ArenaSnapshot, BootIdentity,
-    Capability, ContainmentGuarantee, ContainmentRequirement, EntryMethod, EnumerationExtent,
-    Environment, ExitEvidence, ExitNotice, ExitNoticeKind, ExitSink, ExitStatus,
-    ExitStatusUnavailable, GenerationId, HostConfig, HostInstanceId, LaunchMode, LaunchPolicy,
-    LaunchReservation, LaunchSpec, LifecycleId, LifecycleState, LinuxDelegation, LiveObservation,
-    MachineId, NativeInterest, NativeOwner, NativeProcessApi, NativeReactor, NativeReadiness,
+    Capability, ContainedChild, ContainedChildSpec, ContainedExit, ContainedKiller,
+    ContainmentGuarantee, ContainmentRequirement, EntryMethod, EnumerationExtent, Environment,
+    ExitEvidence, ExitNotice, ExitNoticeKind, ExitSink, ExitStatus, ExitStatusUnavailable,
+    GenerationId, HostConfig, HostInstanceId, LaunchMode, LaunchPolicy, LaunchReservation,
+    LaunchSpec, LifecycleId, LifecycleState, LinuxDelegation, LiveObservation, MachineId,
+    NativeInterest, NativeOwner, NativeProcessApi, NativeReactor, NativeReadiness,
     NativeRegistration, NativeState, NetworkPolicy, OptionalHardening, OwnedObservation,
     OwnerObservation, OwnerProbeError, OwnerTarget, OwnerTreeObservation, PlatformCapabilities,
     Population, ProcessBirthTime, ProcessId, ProcessIdentity, ProcessObservation, ProcessRead,
