@@ -476,6 +476,8 @@ pub struct Outline {
 
 mod query;
 pub use query::*;
+mod orientation;
+pub use orientation::*;
 mod records;
 pub use records::*;
 mod search;

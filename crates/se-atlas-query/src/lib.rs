@@ -1,5 +1,6 @@
 //! Code-navigation queries over the Atlas v5 index: target resolution,
-//! outlines, references, impact, edit hooks and recent changes.
+//! outlines, references, impact, edit hooks, recent changes and an
+//! orientation map.
 //!
 //! Every answer reads the store inside one [`Reader::snapshot`], so all of
 //! its sections come from the same committed state. Only [`refs`] reads
@@ -13,6 +14,7 @@
 pub mod changes;
 pub mod hooks;
 pub mod impact;
+pub mod map;
 pub mod outline;
 pub mod refs;
 pub mod target;

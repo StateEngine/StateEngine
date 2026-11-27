@@ -20,6 +20,7 @@ pub(super) fn resume_at(
     working_state_section(value, out)?;
     waiting_section(value, out)?;
     changed_section(value, out)?;
+    orientation_section(value, out)?;
     followup_sections(value, out)?;
     continue_command(value, home, out)
 }
@@ -67,6 +68,62 @@ fn status_header(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
         out,
         "This reads saved context only; provider sign-in and task completion are not checked."
     )
+}
+/// The Atlas map and this agent's open assignments, when attached.
+fn orientation_section(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
+    let Some(orientation) = &value.orientation else {
+        return Ok(());
+    };
+    writeln!(out, "\nWhere are things?")?;
+    match (&orientation.map, &orientation.map_note) {
+        (Some(map), _) => {
+            writeln!(
+                out,
+                "Atlas map of {} indexed files{}{}:",
+                map.files,
+                if map.current { "" } else { ", not yet current" },
+                if map.complete { "" } else { ", shortened" }
+            )?;
+            let areas: Vec<_> = map
+                .areas
+                .iter()
+                .map(|(area, files)| format!("{area} {files}"))
+                .collect();
+            if !areas.is_empty() {
+                writeln!(out, "  areas: {}", areas.join(" · "))?;
+            }
+            for hub in &map.hubs {
+                writeln!(
+                    out,
+                    "  {} ({} importers): {}",
+                    hub.path,
+                    hub.importers,
+                    hub.declarations.join(", ")
+                )?;
+            }
+        }
+        (None, Some(note)) => writeln!(out, "No Atlas map: {note}.")?,
+        (None, None) => (),
+    }
+    if !orientation.assignments.is_empty() || orientation.more_assignments {
+        writeln!(out, "Your open assignments:")?;
+        for link in &orientation.assignments {
+            writeln!(
+                out,
+                "  {} {}{}",
+                link.id,
+                link.state,
+                link.preview
+                    .as_deref()
+                    .map(|text| format!(" — {text}"))
+                    .unwrap_or_default()
+            )?;
+        }
+        if orientation.more_assignments {
+            writeln!(out, "  More may exist: se assignment list")?;
+        }
+    }
+    Ok(())
 }
 fn working_state_section(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "\nWhat was I doing?")?;

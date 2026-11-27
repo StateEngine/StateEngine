@@ -262,10 +262,11 @@ fn tagged_targets_and_mutation_payloads_keep_their_actual_json_shapes() -> Check
         json!({"Symbol":{"Name":{"name":"example"}}}),
         json!({"File":"src/example.rs"}),
     ] {
-        for tool in ["stateengine_atlas_refs", "stateengine_atlas_impact"] {
-            let decoded = decode_tool(tool, json!({"target":target,"format":"json"}))?;
-            assert_eq!(serde_json::to_value(decoded)?["input"]["format"], "json");
-        }
+        let decoded = decode_tool(
+            "stateengine_atlas_inspect",
+            json!({"target":target,"format":"json"}),
+        )?;
+        assert_eq!(serde_json::to_value(decoded)?["input"]["format"], "json");
     }
     let agent = AgentId::from_parts(1, [3; 10])?;
     let message = MessageId::from_parts(1, [4; 10])?;

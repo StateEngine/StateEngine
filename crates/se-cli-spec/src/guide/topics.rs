@@ -190,7 +190,7 @@ administration is owner-only.
         summary: "Copy opaque IDs, use bound identity and retain keys and revisions.",
         body: r#"Managed Claude and Codex sessions discover the same MCP tools. Discovery shows
 argument shapes; se schema OPERATION exports full input/output schemas, such as
-se schema message.send or se schema atlas.refs. Runtime value and permission
+se schema message.send or se schema atlas.inspect. Runtime value and permission
 checks still apply even when the short catalogue omits a long description.
 
 Omit agent_id and project_id in a managed session. Supplied values must match
@@ -210,19 +210,24 @@ a conditional update into an unconditional overwrite.
     },
     Topic {
         name: "atlas",
-        title: "Find code and inspect references",
-        summary: "Use optional code navigation with tagged targets and bounded results.",
-        body: r#"Atlas is optional code navigation. se atlas lists find, refs, impact, changes
-and outline. A query requires an installed, enabled controller; status reports
-unavailable, disabled, absent or updating rather than pretending results are empty.
+        title: "Inspect code before editing",
+        summary: "Use optional code navigation: one pre-edit inspect call and focused find.",
+        body: r#"Atlas is optional code navigation. Agents get two tools: stateengine_atlas_inspect
+and stateengine_atlas_find. se atlas inspect and se atlas find are the same calls from a
+shell; se atlas outline, refs, impact and changes page one section further.
+A query requires an installed, enabled controller; status reports unavailable,
+disabled, absent or updating rather than pretending results are empty.
 The native controller runs on Linux, Windows and macOS. Other compositions can report it
 unavailable. Optional code indexing is separate from saved conversations and mail.
 
-MCP targets retain their tagged JSON shape. For example, the target of
-stateengine_atlas_refs can be {"Symbol":{"Name":{"name":"authenticate"}}}
-or {"File":"src/auth.rs"}. Use se schema atlas.refs for its complete grammar.
-root selects a registered worktree when a project has several; copy its ID from
-results. File paths are relative to that registered root.
+Before editing, inspect takes one target as a plain string: a path, path:line or
+symbol name, tried in that order, such as "src/auth.rs" or "authenticate". It returns
+the defining file's declarations, callers and other references, dependents within two
+hops with possible covering tests and linked records, and edits Atlas observed to that
+file in the last seven days. Each section keeps its own coverage and continuation, and
+says why when the target has no single defining file. Use se schema atlas.inspect for
+its complete grammar. root selects a registered worktree when a project has several;
+copy its ID from results. File paths are relative to that registered root.
 
 For stateengine_atlas_find, regex: true treats query as a case-sensitive regular
 expression over live source; (?i) requests case-insensitive matching. Inspect

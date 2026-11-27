@@ -7,13 +7,16 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 type Check = std::result::Result<(), Box<dyn std::error::Error>>;
 #[test]
-fn five_tools_and_cli_routes_share_closed_bounded_inputs() -> Check {
+fn atlas_tools_and_cli_routes_share_closed_bounded_inputs() -> Check {
     let tools = mcp_tools()?;
-    for name in ["find", "refs", "impact", "changes", "outline"] {
-        assert!(
+    for name in ["find", "inspect", "refs", "impact", "changes", "outline"] {
+        // Agents get find and inspect; the other reads stay CLI pages.
+        assert_eq!(
             tools
                 .iter()
-                .any(|tool| tool.name == format!("stateengine_atlas_{name}"))
+                .any(|tool| tool.name == format!("stateengine_atlas_{name}")),
+            matches!(name, "find" | "inspect"),
+            "{name}"
         );
         let meta = CATALOGUE
             .iter()
@@ -46,6 +49,7 @@ fn five_tools_and_cli_routes_share_closed_bounded_inputs() -> Check {
             "--mode",
             "phrase",
         ],
+        vec!["se", "atlas", "inspect", "alpha.rs"],
         vec!["se", "atlas", "refs", "alpha.rs", "--file"],
         vec![
             "se", "atlas", "impact", "alpha", "--path", "alpha.rs", "--depth", "1",

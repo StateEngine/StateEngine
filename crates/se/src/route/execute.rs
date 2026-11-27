@@ -282,9 +282,16 @@ fn route_without_store(
 fn dispatch_read(
     ctx: RouteContext<'_>,
     op: AnyOp,
-    mut snapshot: se_store::SqliteSnapshot,
+    snapshot: se_store::SqliteSnapshot,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<AnyOutput> {
+    let mut op = op;
+    let mut snapshot = match hosted_resume(ctx, &mut op, snapshot, diagnostic)? {
+        Resumed::Hosted(hosted) => {
+            return super::status::finish(ctx.cx, ctx.reader, hosted, &ctx.caller.admission);
+        }
+        Resumed::Local(snapshot) => *snapshot,
+    };
     let RouteContext {
         cx,
         files,
@@ -349,6 +356,102 @@ fn dispatch_read(
         }
     }
     super::status::finish(cx, reader, output, &caller.admission)
+}
+
+/// Who answers a resume: the running host, or this process from the store.
+enum Resumed {
+    Hosted(AnyOutput),
+    Local(Box<se_store::SqliteSnapshot>),
+}
+
+/// An agent session's resume is answered by its running host, which adds code
+/// context and orientation. The admission snapshot closes before the host is
+/// asked, so no read stays open across that wait. With no host the store-only
+/// answer stands; a host that fails to answer, or whose endpoint cannot be
+/// read, becomes a source failure the store-only packet fits in its budget.
+fn hosted_resume(
+    ctx: RouteContext<'_>,
+    op: &mut AnyOp,
+    snapshot: se_store::SqliteSnapshot,
+    diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<Resumed> {
+    let RouteContext {
+        cx,
+        files,
+        reader,
+        caller,
+        selections,
+        ..
+    } = ctx;
+    let AnyOp::Resume(input) = op else {
+        return Ok(Resumed::Local(Box::new(snapshot)));
+    };
+    if !matches!(caller.admission.actor, se_store::Actor::Agent(_))
+        || caller.admission.session.is_none()
+    {
+        return Ok(Resumed::Local(Box::new(snapshot)));
+    }
+    let (failure, snapshot) = match endpoint(files) {
+        Ok(Read::Absent { .. }) => return Ok(Resumed::Local(Box::new(snapshot))),
+        Ok(Read::Present { .. }) => {
+            snapshot.close().map_err(|e| store_error(&e))?;
+            let forwarded = AnyOp::Resume(input.clone());
+            let failure = match super::hosted::forward(
+                cx, files, reader, caller, forwarded, selections, diagnostic,
+            ) {
+                Ok(hosted @ AnyOutput::Resume(_)) => return Ok(Resumed::Hosted(hosted)),
+                Ok(_) => {
+                    scope::unreadable("hosted resume", "the host answered with another output")
+                }
+                Err(error) => error,
+            };
+            (failure, fallback_snapshot(ctx, op)?)
+        }
+        Ok(Read::Unreadable { source, reason, .. }) => {
+            (scope::unreadable(&source, &reason), snapshot)
+        }
+        Ok(Read::Unknown { what }) => (scope::unreadable("runtime endpoint", &what), snapshot),
+        Err(error) => (error, snapshot),
+    };
+    if let AnyOp::Resume(input) = op {
+        input.source_failure = Some(
+            scope::unreadable(
+                "code context and orientation from the running host",
+                &failure.body.message(),
+            )
+            .into_body(),
+        );
+    }
+    Ok(Resumed::Local(Box::new(snapshot)))
+}
+
+/// A fresh admitted snapshot for the store-only resume. The presented
+/// credential is observed again, since it may have expired or been revoked
+/// while the host was asked, and must still bind the same agent, project and
+/// session.
+fn fallback_snapshot(ctx: RouteContext<'_>, op: &AnyOp) -> Result<se_store::SqliteSnapshot> {
+    let mut phase = ctx.reader.read_phase().map_err(|e| store_error(&e))?;
+    let observed = super::admit::observe(ctx.cx, &mut phase, ctx.files)?;
+    let original = &ctx.caller.admission;
+    let mut admission = observed.admission;
+    if (&admission.actor, &admission.scope, &admission.session)
+        != (&original.actor, &original.scope, &original.session)
+    {
+        return Err(scope::unreadable(
+            "session credential",
+            "the presented credential no longer binds this resume's agent, project and session",
+        ));
+    }
+    let mut snapshot = phase
+        .into_snapshot(se_core::admission::read_scope(&admission))
+        .map_err(|e| store_error(&e))?;
+    super::select::apply(ctx.cx, &mut snapshot, &mut admission, op)?;
+    if let se_store::Scope::Project(project) = &admission.scope {
+        snapshot
+            .select_project(project.clone())
+            .map_err(|e| store_error(&e))?;
+    }
+    Ok(snapshot)
 }
 
 /// Writes and host operations: authorize, then forward to the host or take

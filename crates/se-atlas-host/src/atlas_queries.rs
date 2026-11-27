@@ -142,6 +142,7 @@ fn execute_v5(
             answer: engine.find(&input.query()?, records)?,
         }
         .into(),
+        AtlasRead::Inspect(input) => inspect(engine, input, records, viewer)?.into(),
         AtlasRead::Refs(input) => AtlasRefsOutput {
             answer: engine.refs(&input.query()?)?,
         }
@@ -161,12 +162,128 @@ fn execute_v5(
     })
 }
 
+/// The four sections for one target. Outline and recent edits read the one
+/// file that defines it; without exactly one, they say why instead.
+#[cfg(feature = "listener")]
+fn inspect(
+    engine: &se_atlas_service::Root,
+    input: &se_core::ops::AtlasInspect,
+    records: &dyn se_atlas_service::RecordCheck,
+    viewer: &AtlasPrincipal,
+) -> AtlasResult<se_core::ops::AtlasInspectOutput> {
+    use se_atlas::render::{self, INSPECT_HEADING};
+    let queries = input.query()?;
+    let [outline_limit, refs_limit, impact_limit, changes_limit] = queries.limits();
+    // A compact section that overflows its share is asked again for a
+    // smaller page, so the answer keeps its cursor instead of losing a section.
+    let shares = input.compact_shares();
+    let room =
+        |section: usize| shares.map(|shares| shares[section].saturating_sub(INSPECT_HEADING));
+    let refs = fitted(
+        refs_limit,
+        |limit| engine.refs(&queries.refs(limit)),
+        |answer| room(1).is_none_or(|room| render::refs(answer, room).is_ok()),
+    )?;
+    let impact = fitted(
+        impact_limit,
+        |limit| engine.impact(&queries.impact(limit), records),
+        |answer| room(2).is_none_or(|room| render::impact(answer, room).is_ok()),
+    )?;
+    let (files, capped) = engine.defining_files(&input.target)?;
+    // A capped definition set may hide other defining files, so even one
+    // listed file is not the one file that defines the target.
+    let (outline, changes) = if let ([path], false) = (files.as_slice(), capped) {
+        let path = RelativePath::new(path.clone())?;
+        (
+            fitted(
+                outline_limit,
+                |limit| engine.outline(&queries.outline(path.clone(), limit), records),
+                |answer| room(0).is_none_or(|room| render::outline(answer, room).is_ok()),
+            )?,
+            fitted(
+                changes_limit,
+                |limit| engine.changes(&queries.changes(path.clone(), limit), viewer),
+                |answer| room(3).is_none_or(|room| render::changes(answer, room).is_ok()),
+            )?,
+        )
+    } else {
+        let what = if files.is_empty() {
+            "no indexed file defines this target; the refs section says why".to_owned()
+        } else {
+            let shown: Vec<_> = files.iter().take(5).map(String::as_str).collect();
+            let more = if files.len() > shown.len() {
+                ", ..."
+            } else {
+                ""
+            };
+            if capped {
+                format!(
+                    "this name has more definitions than the index lists; they include {} ({}{more}), so more files may define it; inspect one exact path",
+                    if files.len() == 1 {
+                        "1 file".to_owned()
+                    } else {
+                        format!("{} files", files.len())
+                    },
+                    shown.join(", "),
+                )
+            } else {
+                format!(
+                    "{} files define this name ({}{more}); inspect one of those paths",
+                    files.len(),
+                    shown.join(", "),
+                )
+            }
+        };
+        fn unknown<T>(index: &IndexSummary, what: String) -> Answer<Read<T>> {
+            Answer {
+                index: index.clone(),
+                snapshot_advanced: false,
+                epoch_retired: false,
+                data: Read::Unknown { what },
+            }
+        }
+        (
+            unknown(&refs.index, what.clone()),
+            unknown(&refs.index, what),
+        )
+    };
+    Ok(se_core::ops::AtlasInspectOutput {
+        outline,
+        refs,
+        impact,
+        changes,
+    })
+}
+
+/// Query with `limit`, halving it while the answer does not fit.
+#[cfg(feature = "listener")]
+fn fitted<T>(
+    mut limit: u16,
+    query: impl Fn(u16) -> AtlasResult<T>,
+    fits: impl Fn(&T) -> bool,
+) -> AtlasResult<T> {
+    loop {
+        let answer = query(limit)?;
+        if limit <= 1 || fits(&answer) {
+            return Ok(answer);
+        }
+        limit /= 2;
+    }
+}
+
 /// Record a coverage gap that leaves the code index's own state alone.
 #[cfg(feature = "listener")]
 fn note(output: &mut se_core::ops::AnyOutput, reason: CoverageReason) {
     use se_core::ops::AnyOutput;
     match output {
         AnyOutput::AtlasFind(v) => v.value.answer.index.note(reason),
+        AnyOutput::AtlasInspect(v) => {
+            let v = &mut v.value;
+            v.outline.index.note(reason);
+            v.refs.index.note(reason);
+            v.impact.index.note(reason);
+            v.changes.index.note(reason);
+        }
         AnyOutput::AtlasRefs(v) => v.value.answer.index.note(reason),
         AnyOutput::AtlasImpact(v) => v.value.answer.index.note(reason),
         AnyOutput::AtlasChanges(v) => v.value.answer.index.note(reason),
@@ -245,6 +362,13 @@ fn unavailable(request: &se_core::ops::AtlasRead, index: IndexSummary) -> se_cor
     match request {
         AtlasRead::Find(_) => AtlasFindOutput {
             answer: answer(index),
+        }
+        .into(),
+        AtlasRead::Inspect(_) => se_core::ops::AtlasInspectOutput {
+            outline: answer(index.clone()),
+            refs: answer(index.clone()),
+            impact: answer(index.clone()),
+            changes: answer(index),
         }
         .into(),
         AtlasRead::Refs(_) => AtlasRefsOutput {

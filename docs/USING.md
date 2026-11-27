@@ -142,15 +142,28 @@ printed by `se status` (or the file selected by `SE_CONFIG`), set `enabled = tru
 `[atlas]`, then run `se down` and `se up` with the same `--home` you normally use.
 `se config set` changes saved agent settings only.
 
-Run `se atlas` for the find, refs, impact, changes and outline commands; they start
-the host if it is not running, and `se status` reports preparation and partial
-coverage. `se atlas changes` takes `--since` with a
-duration (`10m`), an ISO UTC time, a commit SHA, a cursor or Unix milliseconds.
+Agents get two Atlas tools. `stateengine_atlas_inspect` takes one target before an
+edit and returns, in one call, the defining file's declarations, callers and other
+references, dependents within two hops with possible covering tests and linked
+records, and edits Atlas observed to that file in the last seven days. Each section
+keeps its own coverage and continuation. `stateengine_atlas_find` locates code, text,
+recent edits and messages by query. From a shell, `se atlas inspect TARGET` and
+`se atlas find QUERY` are the same calls; `se atlas outline`, `refs`, `impact` and
+`changes` page one section further. They start the host if it is not running, and
+`se status` reports preparation and partial coverage. `se atlas changes` takes
+`--since` with a duration (`10m`), an ISO UTC time, a commit SHA, a cursor or Unix
+milliseconds.
 Answers are compact pointers: a line range and byte count show how much source a target
 contains before you read it. JSON retains the full span and byte offsets. An extent
 that was not measured shows no byte count; stale revisions stay labelled.
 
-Launched agents are told to use Atlas before editing shared code. With `hooks = true`
+An agent's resume and its first-turn context carry a small orientation: the largest
+areas of the indexed tree, the files most others import with their first declarations,
+and the open assignments the agent holds. It fits in the space the packet has left, says
+when the index is not ready or not current, and is left out rather than delaying the
+resume. `se resume` in an agent session shows it when a host is running.
+
+Launched agents are told to inspect a file or symbol with Atlas before editing it. With `hooks = true`
 in `[atlas]` (the default), managed Claude Code and Codex sessions, and sessions first
 adopted with `se init --adopt`, run a hook before a search or single-file read. When
 Atlas has a confident answer for that lookup, the agent receives a few lines of indexed
@@ -175,7 +188,7 @@ Managed Claude and Codex sessions discover the same compact MCP tool catalogue. 
 advertises argument shapes, required fields, enums and defaults; the runtime still
 checks complete value grammars, bounds and permissions. For full input and output
 schemas, run `se schema OP --json`, for example `se schema message.send --json` or `se
-schema atlas.refs --json`; without `--json` it prints only the operation names. The
+schema atlas.inspect --json`; without `--json` it prints only the operation names. The
 [operation reference](OPS.md) lists operation names.
 
 - Omit `agent_id` and `project_id` in a managed session. If supplied, they must match

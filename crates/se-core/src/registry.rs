@@ -120,6 +120,7 @@ pub enum HumanKind {
     Erasure,
     Remove,
     CodeHits,
+    Inspect,
     CodeRefs,
     Impact,
     CodeChanges,

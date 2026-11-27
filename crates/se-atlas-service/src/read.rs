@@ -8,13 +8,13 @@ use crate::{
     wire::{find, history, nav, outline},
 };
 use rusqlite::OptionalExtension;
-use se_atlas_query::{Answer as Found, Target, outline::OutlineRequest};
+use se_atlas_query::{Answer as Found, Resolved, Target, outline::OutlineRequest};
 use se_types::{
     EventId, Page, Read, Result,
     code::{
-        Answer, AtlasPrincipal, ChangesQuery, CodeChange, FindQuery, Impact, ImpactQuery, Outline,
-        OutlineQuery, QueryText, RecordHit, RecordPointer, ReferenceHit, RefsQuery, ResumeCode,
-        ResumeRequest, SearchResults,
+        Answer, AtlasPrincipal, AtlasTarget, ChangesQuery, CodeChange, FindQuery, Impact,
+        ImpactQuery, IndexState, Outline, OutlineQuery, QueryText, RecordHit, RecordPointer,
+        ReferenceHit, RefsQuery, RepoHub, RepoMap, ResumeCode, ResumeRequest, SearchResults,
     },
 };
 
@@ -118,6 +118,63 @@ impl Root {
         Ok(reconcile::stat(source, path)
             .map_err(|e| index_error(&e))?
             .is_some())
+    }
+
+    /// The files that define `target`, in index order: one for a file or a
+    /// symbol declared once, several for a name declared in many places,
+    /// none for a refused or unknown target. `true` when the name has more
+    /// definitions than the index lists, so more files may define it.
+    pub fn defining_files(&self, target: &AtlasTarget) -> Result<(Vec<String>, bool)> {
+        let target = nav::target(target)?;
+        self.shared.with_reader(|reader| {
+            Ok(
+                match se_atlas_query::resolve(reader, &target).map_err(|e| index_error(&e))? {
+                    Resolved::File(file) => (vec![file.path], false),
+                    Resolved::Symbols { symbols, capped } => {
+                        let mut paths: Vec<String> = Vec::new();
+                        for symbol in symbols {
+                            if !paths.contains(&symbol.file.path) {
+                                paths.push(symbol.file.path);
+                            }
+                        }
+                        (paths, capped)
+                    }
+                    Resolved::Refused { .. } | Resolved::NotFound { .. } => (Vec::new(), false),
+                },
+            )
+        })
+    }
+
+    /// The orientation map of this root, from SQL alone. `current` is false
+    /// while the index builds, catches up or holds files changed since.
+    /// `None` when the map could not be read before `deadline`.
+    pub fn repo_map(&self, deadline: std::time::Instant) -> Result<Option<RepoMap>> {
+        let (index, dirty) = self.shared.snapshot()?;
+        let Some(map) = self.shared.with_reader(|reader| {
+            se_atlas_query::map::map(reader, deadline).map_err(|e| index_error(&e))
+        })?
+        else {
+            return Ok(None);
+        };
+        let coverage = &index.coverage;
+        Ok(Some(RepoMap {
+            files: map.files,
+            current: index.state == IndexState::Current
+                && dirty.paths.is_empty()
+                && !dirty.overflowed
+                && coverage.stale_files == 0,
+            areas: map.areas,
+            hubs: map
+                .hubs
+                .into_iter()
+                .map(|hub| RepoHub {
+                    path: hub.path,
+                    importers: hub.importers,
+                    declarations: hub.declarations,
+                })
+                .collect(),
+            complete: map.more_areas == 0 && !map.more_hubs,
+        }))
     }
 
     /// A unique definition of `name`, with its importers, from SQL alone.

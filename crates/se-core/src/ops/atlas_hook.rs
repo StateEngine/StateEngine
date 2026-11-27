@@ -1,4 +1,4 @@
-//! Private provider augmentation, separate from the five public Atlas queries.
+//! Private provider augmentation, separate from the public Atlas queries.
 use super::inputs::Validate;
 use schemars::JsonSchema;
 use se_types::{

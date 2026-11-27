@@ -203,10 +203,11 @@ Library lifecycle methods (`open`, capability verification, tool catalogue/call,
 | `store.import_node` | `import --from-node PATH` (optional `import` build feature; not in the standard release archive) | none — explicit owner migration of historical data | owner | write | original Node state root, supported format versions, import identity; no executable callbacks | `ImportReceipt`: source provenance, imported/deduplicated/rejected counts, omissions and resume-binding results; originals retained | support J2–J4 |
 | `store.forget` | `forget --event ID [--event ID...] [--plan DIGEST --yes]` | none — human-only irreversible secret erasure | owner | write | required key, explicit captured-record IDs/revisions, printed erase plan and its digest, which `--plan DIGEST --yes` confirms only while the plan still matches, and human-presence check; no typed-ID prompt; no broad text selector | `ErasureReceipt`: erased bodies and derived copies, preserved non-secret audit fact, backup/residual-copy limitations or honest refusal | support J3, J5 |
 | `atlas.find` | `atlas find QUERY` | `stateengine_atlas_find` | either | read | name/text query, scope, limit/budget | `Page<CodeHit>`: path/line/kind pointers, symbol/text method, coverage and index state | optional J2–J4 |
-| `atlas.refs` | `atlas refs SYMBOL` | `stateengine_atlas_refs` | either | read | typed symbol/path selector, page | `Page<Reference>`: import/call/type sites, enclosing symbol, resolved/name-only confidence and omissions | optional J2–J4 |
-| `atlas.impact` | `atlas impact TARGET` | `stateengine_atlas_impact` | either | read | path, path:line or symbol selector, bounded depth at most 3, budget | `Impact`: bounded dependent graph, per-hop confidence, test references and omitted frontier | optional J2–J4 |
-| `atlas.changes` | `atlas changes [--since WHEN]` | `stateengine_atlas_changes` | either | read | duration, ISO time, commit SHA or prefix, cursor or Unix ms baseline, or bound agent's saved index cursor, page | `Page<CodeChange>`: added/removed/signature/body changes, dependent counts, author hints and completeness | optional J3, J4 |
-| `atlas.outline` | `atlas outline PATH` | `stateengine_atlas_outline` | either | read | registered-root-relative file path, budget | `Read<Outline>`: symbol tree, locations, supported/skipped/partial/index facts | optional J2–J4 |
+| `atlas.inspect` | `atlas inspect TARGET` | `stateengine_atlas_inspect` | either | read | path, path:line or symbol name as a plain string, page size cap, budget | `AtlasInspect`: the defining file's outline, refs, impact (dependents within two hops, possible tests, linked records) and its last seven days of changes, each with its own coverage and continuation | optional J2–J4 |
+| `atlas.refs` | `atlas refs SYMBOL` | none — agents call `stateengine_atlas_inspect`; inspect returns refs for one target, and the CLI pages it | either | read | typed symbol/path selector, page | `Page<Reference>`: import/call/type sites, enclosing symbol, resolved/name-only confidence and omissions | optional J2–J4 |
+| `atlas.impact` | `atlas impact TARGET` | none — agents call `stateengine_atlas_inspect`; inspect returns impact for one target, and the CLI pages it | either | read | path, path:line or symbol selector, bounded depth at most 3, budget | `Impact`: bounded dependent graph, per-hop confidence, test references and omitted frontier | optional J2–J4 |
+| `atlas.changes` | `atlas changes [--since WHEN]` | none — agents call `stateengine_atlas_inspect`; inspect returns one target's recent edits; this reads changes across the project, and the CLI pages it | either | read | duration, ISO time, commit SHA or prefix, cursor or Unix ms baseline, or bound agent's saved index cursor, page | `Page<CodeChange>`: added/removed/signature/body changes, dependent counts, author hints and completeness | optional J3, J4 |
+| `atlas.outline` | `atlas outline PATH` | none — agents call `stateengine_atlas_inspect`; inspect returns the defining file's outline, and the CLI pages it | either | read | registered-root-relative file path, budget | `Read<Outline>`: symbol tree, locations, supported/skipped/partial/index facts | optional J2–J4 |
 | `atlas.augment` | none — private native provider augmentation only | none — the provider hook uses authenticated native IPC, never a model tool | session | read | symbol or absolute native file target, optional root; bounded by an ingress deadline | `AtlasHookOutput`: at most 600 bytes of provider JSON; empty means no confident augmentation | J3 |
 
 
@@ -288,16 +289,17 @@ Crew can omit the recipient for a `question`, `blocker`, or `done` message to se
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 65 operations (59 core, 6 Atlas), 33 MCP tools (28 core, 5 Atlas). Planned: 5 operations, 1 MCP tool.
+Registered: 66 operations (59 core, 7 Atlas), 30 MCP tools (28 core, 2 Atlas). Planned: 5 operations, 1 MCP tool.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
 | `atlas.augment` | none — Private native provider augmentation only. | none | session | read |
 | `atlas.find` | atlas find | `stateengine_atlas_find` | either | read |
-| `atlas.refs` | atlas refs | `stateengine_atlas_refs` | either | read |
-| `atlas.impact` | atlas impact | `stateengine_atlas_impact` | either | read |
-| `atlas.changes` | atlas changes | `stateengine_atlas_changes` | either | read |
-| `atlas.outline` | atlas outline | `stateengine_atlas_outline` | either | read |
+| `atlas.inspect` | atlas inspect | `stateengine_atlas_inspect` | either | read |
+| `atlas.refs` | atlas refs | none | either | read |
+| `atlas.impact` | atlas impact | none | either | read |
+| `atlas.changes` | atlas changes | none | either | read |
+| `atlas.outline` | atlas outline | none | either | read |
 | `client.watch` | watch | none | owner | read |
 | `remote.prepare_send` | none — Internal protected source IPC prepares CLI pending output; no remote capability or public tool. | none | either | read |
 | `remote.list` | remote list | `stateengine_remote_list` | either | read |

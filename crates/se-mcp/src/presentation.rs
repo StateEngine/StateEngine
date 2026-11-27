@@ -80,6 +80,7 @@ pub fn presented(value: &AnyOutput) -> Presented<'_> {
     if matches!(
         value,
         AnyOutput::AtlasFind(_)
+            | AnyOutput::AtlasInspect(_)
             | AnyOutput::AtlasRefs(_)
             | AnyOutput::AtlasImpact(_)
             | AnyOutput::AtlasChanges(_)

@@ -11,7 +11,7 @@
 use super::{current_database, open_connection, schema, still_current, varint};
 use crate::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
-use std::path::Path;
+use std::{path::Path, time::Instant};
 
 /// Opens retried when a rebuild reaps the epoch between pointer and open.
 const OPEN_ATTEMPTS: usize = 3;
@@ -51,6 +51,17 @@ impl Reader {
 
     pub fn connection(&self) -> &Connection {
         &self.conn
+    }
+
+    /// Interrupt this connection's statements once `deadline` passes, so the
+    /// failing statement reports `OperationInterrupted`; `None` clears it.
+    pub fn interrupt_at(&mut self, deadline: Option<Instant>) -> Result<()> {
+        Ok(match deadline {
+            Some(deadline) => self
+                .conn
+                .progress_handler(1000, Some(move || Instant::now() >= deadline)),
+            None => self.conn.progress_handler(0, None::<fn() -> bool>),
+        }?)
     }
 
     /// Begin a snapshot; it ends when dropped. Only one can be open at a time.

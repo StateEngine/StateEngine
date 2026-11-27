@@ -167,9 +167,9 @@ impl Shared {
 
     /// Run `read` on a pooled reader. A reader whose query failed is dropped,
     /// never returned to the pool, so a broken connection is not reused.
-    pub fn with_reader<T>(&self, read: impl FnOnce(&Reader) -> Result<T>) -> Result<T> {
-        let reader = self.reader()?;
-        let result = read(&reader);
+    pub fn with_reader<T>(&self, read: impl FnOnce(&mut Reader) -> Result<T>) -> Result<T> {
+        let mut reader = self.reader()?;
+        let result = read(&mut reader);
         if result.is_ok() {
             self.give_back(reader);
         }

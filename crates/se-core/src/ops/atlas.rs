@@ -23,6 +23,7 @@ pub struct AtlasOptions {
     #[serde(default)]
     pub cursor: Option<AtlasCursor>,
     /// Page size; defaults: find 20, refs/impact/changes 50, outline 300.
+    /// Inspect applies it as every section's cap (defaults 100, 20, 20, 10).
     #[serde(default)]
     pub limit: Option<u16>,
     #[serde(default = "bytes")]
@@ -230,9 +231,162 @@ fn target(target: &AtlasTarget) -> Result<()> {
     }
     Ok(())
 }
+// Inspect: one pre-edit call over the outline, refs, impact and changes
+// answers for one target, each keeping its own coverage and cursor.
+/// How far back inspect lists observed edits to the target's file.
+pub const INSPECT_RECENT_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+/// Smallest whole budget: every section keeps at least the per-family minimum.
+pub const INSPECT_MIN_BYTES: u32 = 8192;
+/// Shares of the byte budget, in sixteenths, and default page sizes.
+const OUTLINE: (u32, u16) = (4, 60);
+const REFS: (u32, u16) = (4, 20);
+const IMPACT: (u32, u16) = (5, 20);
+const CHANGES: (u32, u16) = (3, 10);
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AtlasInspect {
+    pub target: AtlasTarget,
+    #[serde(flatten)]
+    pub options: AtlasOptions,
+}
+
+/// The bounded queries one inspect runs, each built for a page size so a
+/// compact answer can shrink a section until it fits its share. Outline and
+/// changes need the target's defining file, which only the index can name.
+pub struct InspectQueries {
+    target: AtlasTarget,
+    /// Outline, refs, impact and changes, in output order.
+    budgets: [QueryBudget; 4],
+}
+
+impl InspectQueries {
+    /// Each section's requested page size, in output order.
+    pub fn limits(&self) -> [u16; 4] {
+        self.budgets.map(|budget| budget.max_results)
+    }
+    fn budget(&self, section: usize, limit: u16) -> QueryBudget {
+        QueryBudget {
+            max_results: limit,
+            ..self.budgets[section]
+        }
+    }
+    pub fn outline(&self, path: RelativePath, limit: u16) -> OutlineQuery {
+        OutlineQuery {
+            path,
+            next: None,
+            budget: self.budget(0, limit),
+        }
+    }
+    pub fn refs(&self, limit: u16) -> RefsQuery {
+        RefsQuery {
+            target: self.target.clone(),
+            kinds: Vec::new(),
+            include_name_only: true,
+            next: None,
+            budget: self.budget(1, limit),
+        }
+    }
+    pub fn impact(&self, limit: u16) -> ImpactQuery {
+        ImpactQuery {
+            target: self.target.clone(),
+            depth: 2,
+            include_name_only: false,
+            next: None,
+            budget: self.budget(2, limit),
+        }
+    }
+    pub fn changes(&self, path: RelativePath, limit: u16) -> ChangesQuery {
+        ChangesQuery {
+            since: ChangeBaseline::RelativeMillis(INSPECT_RECENT_MS),
+            scope: SearchScope {
+                paths: vec![path],
+                languages: Vec::new(),
+            },
+            next: None,
+            budget: self.budget(3, limit),
+        }
+    }
+}
+
+impl AtlasInspect {
+    pub fn query(&self) -> Result<InspectQueries> {
+        if self.options.cursor.is_some() {
+            return Err(SeError::invalid(
+                "Atlas inspect cursor",
+                "no cursor; continue one section with se atlas outline, refs, impact or changes --cursor",
+            ));
+        }
+        if self.options.byte_budget < INSPECT_MIN_BYTES {
+            return Err(SeError::invalid(
+                "Atlas inspect byte_budget",
+                "8192..262144 UTF-8 bytes, shared by its four sections",
+            ));
+        }
+        if let AtlasTarget::Symbol(selector) = &self.target {
+            se_types::code::Validate.selector(selector.clone())?;
+        }
+        let compact = self.options.format == AtlasFormat::Compact;
+        let section = |(share, limit): (u32, u16), max: (u16, u16)| -> Result<QueryBudget> {
+            let mut budget = AtlasOptions {
+                byte_budget: self.options.byte_budget / 16 * share,
+                limit: Some(self.options.limit.unwrap_or(limit).min(max.1)),
+                ..self.options.clone()
+            }
+            .budget(max)?;
+            if compact {
+                // Typed JSON is several times its compact rendering; the
+                // compact share is fitted separately, as find does.
+                budget.max_bytes = budget.max_bytes.saturating_mul(4).min(ATLAS_MAX_BYTES);
+            }
+            Ok(budget)
+        };
+        Ok(InspectQueries {
+            target: self.target.clone(),
+            budgets: [
+                section(OUTLINE, ATLAS_OUTLINE_PAGE)?,
+                section(REFS, ATLAS_LIST_PAGE)?,
+                section(IMPACT, ATLAS_LIST_PAGE)?,
+                section(CHANGES, ATLAS_LIST_PAGE)?,
+            ],
+        })
+    }
+    /// The byte share each section renders into, in output order.
+    pub fn shares(max: usize) -> [usize; 4] {
+        [OUTLINE.0, REFS.0, IMPACT.0, CHANGES.0].map(|share| max / 16 * share as usize)
+    }
+    /// The shares a compact answer is fitted to: the smallest text budget any
+    /// surface renders it into. `None` for JSON, which the query budget bounds.
+    pub fn compact_shares(&self) -> Option<[usize; 4]> {
+        (self.options.format == AtlasFormat::Compact)
+            .then(|| Self::shares(self.options.byte_budget.saturating_sub(256) as usize))
+    }
+}
+
+impl Validate for AtlasInspect {
+    fn validate(&self) -> Result<()> {
+        self.query().map(|_| ())
+    }
+}
+
+/// Each section is the matching single-family answer. Outline and changes
+/// are `Unknown`, with the reason, when the target has no single defining file.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct AtlasInspectOutput {
+    /// Declarations and linked records of the defining file.
+    pub outline: Answer<Read<Outline>>,
+    /// Callers and other references, including labelled name-only candidates.
+    pub refs: Answer<Read<Page<ReferenceHit>>>,
+    /// Dependents up to two hops, possible covering tests and linked records.
+    pub impact: Answer<Read<Impact>>,
+    /// Edits Atlas observed to the defining file in the last seven days, with
+    /// the captured agent when one is known.
+    pub changes: Answer<Read<Page<CodeChange>>>,
+}
 #[derive(Clone, Debug)]
 pub enum AtlasRead {
     Find(AtlasFind),
+    Inspect(AtlasInspect),
     Refs(AtlasRefs),
     Impact(AtlasImpact),
     Changes(AtlasChanges),
@@ -242,6 +396,7 @@ impl AtlasRead {
     pub fn options(&self) -> &AtlasOptions {
         match self {
             Self::Find(v) => &v.options,
+            Self::Inspect(v) => &v.options,
             Self::Refs(v) => &v.options,
             Self::Impact(v) => &v.options,
             Self::Changes(v) => &v.options,
@@ -279,6 +434,7 @@ impl super::AnyOp {
     pub fn atlas_options(&self) -> Option<&AtlasOptions> {
         match self {
             Self::AtlasFind(v) => Some(&v.options),
+            Self::AtlasInspect(v) => Some(&v.options),
             Self::AtlasRefs(v) => Some(&v.options),
             Self::AtlasImpact(v) => Some(&v.options),
             Self::AtlasChanges(v) => Some(&v.options),
@@ -302,16 +458,39 @@ impl super::AnyOutput {
             }),
             Self::AtlasRefs(v) => exit(&v.value.answer, require_complete, page_facts),
             Self::AtlasChanges(v) => exit(&v.value.answer, require_complete, page_facts),
-            Self::AtlasImpact(v) => exit(&v.value.answer, require_complete, |i| {
-                let hits = i.dependents.len() + i.tests.len() + i.records.len();
-                (hits, !i.frontier_count_complete)
-            }),
-            Self::AtlasOutline(v) => exit(&v.value.answer, require_complete, |o| {
-                (o.symbols.len() + o.records.len(), false)
-            }),
+            Self::AtlasImpact(v) => exit(&v.value.answer, require_complete, impact_facts),
+            Self::AtlasOutline(v) => exit(&v.value.answer, require_complete, outline_facts),
+            // Refs and impact always apply; outline and changes count only
+            // when the target has one defining file to read them from.
+            Self::AtlasInspect(v) => {
+                let v = &v.value;
+                let mut codes = vec![
+                    exit(&v.refs, require_complete, page_facts),
+                    exit(&v.impact, require_complete, impact_facts),
+                ];
+                if matches!(v.outline.data, Read::Present { .. }) {
+                    codes.push(exit(&v.outline, require_complete, outline_facts));
+                }
+                if matches!(v.changes.data, Read::Present { .. }) {
+                    codes.push(exit(&v.changes, require_complete, page_facts));
+                }
+                let worst = codes.iter().copied().max().unwrap_or(0);
+                if require_complete || !codes.contains(&0) {
+                    worst
+                } else {
+                    0
+                }
+            }
             _ => return None,
         })
     }
+}
+fn impact_facts(impact: &Impact) -> (usize, bool) {
+    let hits = impact.dependents.len() + impact.tests.len() + impact.records.len();
+    (hits, !impact.frontier_count_complete)
+}
+fn outline_facts(outline: &Outline) -> (usize, bool) {
+    (outline.symbols.len() + outline.records.len(), false)
 }
 /// Hits, and whether the page misses results its sources hold (unreadable or
 /// incomplete), as opposed to one a page or byte limit cut short.

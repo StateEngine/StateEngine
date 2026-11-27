@@ -153,6 +153,10 @@ pub struct ResumeOutput {
     pub code_changes: Option<Vec<se_types::code::ResumeChange>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_status: Option<se_types::code::ResumeCodeStatus>,
+    /// Where things live and which assignments this agent holds; absent
+    /// when no Atlas host attached it or no room was left for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orientation: Option<se_types::code::Orientation>,
     pub omissions: Vec<Omission>,
     pub attention: Vec<String>,
     pub cursor: Cursor,

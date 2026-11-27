@@ -125,6 +125,7 @@ fn initial(
         transcript: data.transcript.clone(),
         code_changes: None,
         code_status: None,
+        orientation: None,
         omissions: data.omissions.clone(),
         attention: data
             .attention
