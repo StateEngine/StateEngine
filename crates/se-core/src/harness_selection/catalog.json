@@ -308,6 +308,7 @@
       "environment": [
         "XAI_API_KEY",
         "GROK_HOME",
+        "GROK_CLI_CHAT_PROXY_BASE_URL",
         "GROK_OIDC_ISSUER",
         "GROK_OIDC_CLIENT_ID"
       ],

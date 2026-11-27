@@ -178,8 +178,8 @@ names: the provider keys and settings it reads, such as `ANTHROPIC_API_KEY` or
 keys from its own `cline auth` sign-in, so only its configuration and data directory
 overrides, `CLINE_DIR` and `CLINE_DATA_DIR`, are listed. Likewise `antigravity`
 lists `GEMINI_API_KEY` and its Google Cloud project settings, `cursor` lists
-`CURSOR_API_KEY` and `CURSOR_AUTH_TOKEN`, `grok` lists `XAI_API_KEY` and its
-`GROK_HOME` directory, `omp` lists its provider keys and `PI_CODING_AGENT_DIR`, and
+`CURSOR_API_KEY` and `CURSOR_AUTH_TOKEN`, `grok` lists `XAI_API_KEY`, its
+`GROK_HOME` directory and its `GROK_CLI_CHAT_PROXY_BASE_URL` proxy override, `omp` lists its provider keys and `PI_CODING_AGENT_DIR`, and
 `deepseek` lists `DEEPSEEK_API_KEY` and `DSH_HOME`. The `cursor` preset launches
 `cursor-agent`, because the shorter `agent` command can also belong to Grok. On
 Windows, `omp` expects its default prebuilt executable rather than the Bun package
