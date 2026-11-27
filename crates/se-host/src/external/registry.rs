@@ -125,6 +125,11 @@ struct RegistryState {
     /// Pending revocation `WriteIdentity` keyed by exact durable `SessionId`,
     /// independent of whether an in-memory `ActiveLease` exists.
     pending_revocations: BTreeMap<SessionId, PendingRevocation>,
+    /// Verified revocation outcome retained per `(ProjectId, AgentId)` after
+    /// retiring the lease and `PendingWrites`, so an Owner `revoke_seat` retry
+    /// can still report `revoked: true` even if an intervening read failed or
+    /// managed launch reconciled the pending entry first.
+    settled_revocations: BTreeMap<(ProjectId, AgentId), (SessionId, Option<u64>)>,
 }
 
 impl Default for ExternalRegistry {
@@ -364,10 +369,36 @@ impl ExternalRegistry {
 
     pub(crate) fn record_active_lease(&self, lease: ActiveLease) -> Result<()> {
         let mut guard = self.state.lock().map_err(|_| poisoned())?;
-        guard
-            .active
-            .insert((lease.project_id.clone(), lease.agent_id.clone()), lease);
+        let key = (lease.project_id.clone(), lease.agent_id.clone());
+        guard.settled_revocations.remove(&key);
+        guard.active.insert(key, lease);
         Ok(())
+    }
+
+    pub(crate) fn record_settled_revocation(
+        &self,
+        project_id: &ProjectId,
+        agent_id: &AgentId,
+        session_id: SessionId,
+        lease_generation: Option<u64>,
+    ) -> Result<()> {
+        let mut guard = self.state.lock().map_err(|_| poisoned())?;
+        guard.settled_revocations.insert(
+            (project_id.clone(), agent_id.clone()),
+            (session_id, lease_generation),
+        );
+        Ok(())
+    }
+
+    pub(crate) fn take_settled_revocation(
+        &self,
+        project_id: &ProjectId,
+        agent_id: &AgentId,
+    ) -> Result<Option<(SessionId, Option<u64>)>> {
+        let mut guard = self.state.lock().map_err(|_| poisoned())?;
+        Ok(guard
+            .settled_revocations
+            .remove(&(project_id.clone(), agent_id.clone())))
     }
 
     /// Return the stable revocation `WriteIdentity` keyed by exact durable

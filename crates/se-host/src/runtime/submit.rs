@@ -128,8 +128,6 @@ pub(super) async fn enqueue_and_await_retained(
     }
 }
 
-/// Submit a batch under `enqueue_deadline`, then await the writer's authoritative
-/// durable outcome without cutting off an already-accepted write on a short request deadline.
 fn recover_observer_join_error(
     identity: &WriteIdentity,
     pending: &super::failure::PendingWrites,
@@ -164,6 +162,8 @@ fn recover_observer_join_error(
     }
 }
 
+/// Submit a batch under `enqueue_deadline`, then await the writer's authoritative
+/// durable outcome without cutting off an already-accepted write on a short request deadline.
 pub(crate) async fn submit_retained(
     context: &ExecutionContext,
     batch: AtomicBatch,

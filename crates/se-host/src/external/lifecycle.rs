@@ -46,7 +46,7 @@ async fn ensure_agent_clear_locked(
             }
         }
     }
-    let _ = reconcile::reconcile_pending_revocations_on_execution(
+    reconcile::reconcile_pending_revocations_on_execution(
         &router.execution,
         &router.context.owner,
         project_id,
@@ -410,7 +410,7 @@ pub(crate) async fn revoke_seat(
         .agent_lock(&project, &agent_id)?
         .lock_owned()
         .await;
-    let settled_prior = reconcile::reconcile_pending_revocations_on_execution(
+    reconcile::reconcile_pending_revocations_on_execution(
         &router.execution,
         &router.context.owner,
         &project,
@@ -422,7 +422,11 @@ pub(crate) async fn revoke_seat(
     let active = match active_opt {
         Some(active) => active,
         None => {
-            if let Some((session_id, lease_generation)) = settled_prior {
+            if let Some((session_id, lease_generation)) = router
+                .execution
+                .external
+                .take_settled_revocation(&project, &agent_id)?
+            {
                 return Ok(ExternalRevokeOutput {
                     project_id: project,
                     agent_id,
@@ -454,6 +458,11 @@ pub(crate) async fn revoke_seat(
         deadline,
     )
     .await?;
+
+    let _ = router
+        .execution
+        .external
+        .take_settled_revocation(&project, &agent_id)?;
 
     let removed = match active.lease_generation {
         Some(lease_gen) => router.execution.external.remove_if_matching_and_retire(

@@ -21,9 +21,11 @@ pub(crate) struct DisconnectOutcome {
 }
 
 /// Settle any tracked pending revocation identities for `(project_id, agent_id)`:
-/// returns `Some((session_id, lease_generation))` ONLY when the exact revocation
-/// write receipt is durably present in the store. Also retires any pending entry
-/// whose session is already terminal without claiming that this revoke committed.
+/// when the exact revocation write receipt is durably present, retires the lease
+/// and `PendingWrites` and records the verified outcome on `ExternalRegistry` so
+/// a subsequent Owner `revoke_seat` can report it even after a read failure or
+/// intervening managed launch. Also retires terminal-session entries whose
+/// receipt did not commit without recording a verified revoke outcome.
 pub(crate) async fn reconcile_pending_revocations_on_store(
     store: &crate::runtime::store::Store,
     external: &ExternalRegistry,
@@ -31,8 +33,7 @@ pub(crate) async fn reconcile_pending_revocations_on_store(
     project_id: &ProjectId,
     agent_id: &AgentId,
     deadline: &Deadline,
-) -> Result<Option<(SessionId, Option<u64>)>> {
-    let mut committed_revoke = None;
+) -> Result<()> {
     for rev in external.pending_revocations_for_agent(project_id, agent_id)? {
         let receipt_committed = match rev.identity.key.clone() {
             Some(key) => {
@@ -55,7 +56,12 @@ pub(crate) async fn reconcile_pending_revocations_on_store(
                 agent_id,
                 &rev.session_id,
             )?;
-            committed_revoke = Some((rev.session_id, removed.map(|l| l.lease_generation)));
+            external.record_settled_revocation(
+                project_id,
+                agent_id,
+                rev.session_id,
+                removed.map(|l| l.lease_generation),
+            )?;
         } else if !commit::session_is_active_on_store(
             store,
             owner,
@@ -73,7 +79,7 @@ pub(crate) async fn reconcile_pending_revocations_on_store(
             )?;
         }
     }
-    Ok(committed_revoke)
+    Ok(())
 }
 
 pub(crate) async fn reconcile_pending_revocations_on_execution(
@@ -82,7 +88,7 @@ pub(crate) async fn reconcile_pending_revocations_on_execution(
     project_id: &ProjectId,
     agent_id: &AgentId,
     deadline: &Deadline,
-) -> Result<Option<(SessionId, Option<u64>)>> {
+) -> Result<()> {
     let store = crate::runtime::store::Store::for_execution(execution);
     reconcile_pending_revocations_on_store(
         &store,
@@ -227,7 +233,7 @@ async fn revoke_expired_lease_on_store(
         if lease.approval_observer_lost {
             return Err(se_core::scope::unreadable(
                 "external seat approval",
-                "approval write has no writer settlement witness; retain pending identity until durable appearance or host restart",
+                "approval write has no writer settlement witness; run `se down` then `se up` to restart the host and clear the unsettled identity",
             ));
         }
         let _ = external.remove_if_matching_and_retire(
@@ -264,10 +270,8 @@ pub(crate) async fn reconcile_external_for_launch_on_store(
             changed = true;
         }
     }
-    let _ = reconcile_pending_revocations_on_store(
-        store, external, owner, project_id, agent_id, deadline,
-    )
-    .await?;
+    reconcile_pending_revocations_on_store(store, external, owner, project_id, agent_id, deadline)
+        .await?;
     let reads = store.reads.clone();
     let generation = store.generation.get();
     let project = project_id.clone();
@@ -464,7 +468,7 @@ pub(crate) async fn fenced_disconnect_locked_on_execution(
         if lease.approval_observer_lost {
             return Err(se_core::scope::unreadable(
                 "external seat approval",
-                "approval write has no writer settlement witness; retain pending identity until durable appearance or host restart",
+                "approval write has no writer settlement witness; run `se down` then `se up` to restart the host and clear the unsettled identity",
             ));
         }
         let _ = execution.external.remove_if_matching_and_retire(
