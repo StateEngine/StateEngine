@@ -8,12 +8,101 @@ use super::TerminalEntry;
 use crate::acp::client::Refusal;
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex, OnceLock, atomic::Ordering},
+    time::{Duration, Instant},
 };
 use tokio::sync::Notify;
 
 /// Maximum concurrent unreleased terminals per ACP conversation.
 pub(super) const MAX_TERMINALS: usize = 8;
+/// Per-entry retry budget inside the shared background orphan reaper.
+const ORPHAN_RETRY_BUDGET: Duration = Duration::from_millis(250);
+/// Pause between orphan reaper passes when entries remain unsettled.
+const ORPHAN_BACKOFF: Duration = Duration::from_millis(100);
+
+struct OrphanQueue {
+    entries: Vec<Arc<TerminalEntry>>,
+    worker_running: bool,
+}
+
+struct OrphanReaper {
+    state: Mutex<OrphanQueue>,
+    wake: Condvar,
+}
+
+static ORPHAN_REAPER: OnceLock<OrphanReaper> = OnceLock::new();
+
+fn orphan_reaper() -> &'static OrphanReaper {
+    ORPHAN_REAPER.get_or_init(|| OrphanReaper {
+        state: Mutex::new(OrphanQueue {
+            entries: Vec::new(),
+            worker_running: false,
+        }),
+        wake: Condvar::new(),
+    })
+}
+
+/// Transfer unresolved terminal entries to the shared process-lived cleanup
+/// queue. Entries remain retained in the queue until `terminate_and_join`
+/// succeeds and `!entry.has_pending_resources()`, so neither `ContainedChild`
+/// nor `WaitWorker` ever runs a 2s drain on a caller's destructor thread—even
+/// if spawning the reaper thread fails.
+pub(super) fn enqueue_orphans(entries: Vec<Arc<TerminalEntry>>) {
+    let pending: Vec<Arc<TerminalEntry>> = entries
+        .into_iter()
+        .filter(|entry| entry.has_pending_resources())
+        .collect();
+    if pending.is_empty() {
+        return;
+    }
+    let reaper = orphan_reaper();
+    let Ok(mut queue) = reaper.state.lock() else {
+        return;
+    };
+    for entry in pending {
+        entry.released.store(true, Ordering::Release);
+        queue.entries.push(entry);
+    }
+    if !queue.worker_running
+        && std::thread::Builder::new()
+            .name("se-acp-term-reap".into())
+            .spawn(move || run_orphan_reaper(reaper))
+            .is_ok()
+    {
+        queue.worker_running = true;
+    }
+    reaper.wake.notify_one();
+}
+
+fn run_orphan_reaper(reaper: &'static OrphanReaper) {
+    loop {
+        let batch = {
+            let Ok(mut queue) = reaper.state.lock() else {
+                return;
+            };
+            while queue.entries.is_empty() {
+                match reaper.wake.wait(queue) {
+                    Ok(guard) => queue = guard,
+                    Err(_) => return,
+                }
+            }
+            std::mem::take(&mut queue.entries)
+        };
+        let mut still_pending = Vec::new();
+        for entry in batch {
+            let res = entry.terminate_and_join(Instant::now() + ORPHAN_RETRY_BUDGET);
+            if res.is_err() || entry.has_pending_resources() {
+                still_pending.push(entry);
+            }
+        }
+        if !still_pending.is_empty() {
+            if let Ok(mut queue) = reaper.state.lock() {
+                queue.entries.extend(still_pending);
+            }
+            std::thread::sleep(ORPHAN_BACKOFF);
+        }
+    }
+}
 
 #[derive(Default)]
 pub(super) struct TerminalTable {
@@ -24,6 +113,21 @@ pub(super) struct TerminalTable {
     /// Terminals whose kill/reap/join failed or aborted; kept counted and
     /// reachable until a subsequent `close_all` or `Drop` witnesses settlement.
     pub(super) unsettled: BTreeMap<String, (Arc<TerminalEntry>, String)>,
+}
+
+impl Drop for TerminalTable {
+    fn drop(&mut self) {
+        let mut remaining: Vec<Arc<TerminalEntry>> =
+            std::mem::take(&mut self.active).into_values().collect();
+        remaining.extend(
+            std::mem::take(&mut self.unsettled)
+                .into_values()
+                .map(|(entry, _)| entry),
+        );
+        if !remaining.is_empty() {
+            enqueue_orphans(remaining);
+        }
+    }
 }
 
 impl TerminalTable {

@@ -9,7 +9,7 @@
 mod custody;
 mod params;
 use crate::acp::client::{Outcome, Refusal, fs::Workspace};
-use custody::{MAX_TERMINALS, PendingSlot, ReleasingSlot, TerminalTable};
+use custody::{MAX_TERMINALS, PendingSlot, ReleasingSlot, TerminalTable, enqueue_orphans};
 use params::{
     exit_json, fit_response, optional_str, parse_args, parse_env, parse_output_limit, required_str,
 };
@@ -157,7 +157,7 @@ pub(super) struct TerminalEntry {
     output: Arc<Mutex<OutputRing>>,
     exit: Arc<Mutex<Option<Result<ContainedExit, String>>>>,
     notify: Arc<Notify>,
-    released: AtomicBool,
+    pub(super) released: AtomicBool,
     wait_worker: Mutex<Option<WaitWorker>>,
     /// Retained child owner once `wait_worker` settles, held across retries
     /// until `terminate_and_reap_until` succeeds.
@@ -177,21 +177,13 @@ impl TerminalEntry {
         }
     }
 
-    fn has_pending_resources(&self) -> bool {
+    pub(super) fn has_pending_resources(&self) -> bool {
         self.wait_worker.lock().is_ok_and(|w| w.is_some())
             || self.child.lock().is_ok_and(|c| c.is_some())
             || self.io_workers.lock().is_ok_and(|w| !w.is_empty())
     }
 
-    fn disarm_retained_child(&self) {
-        if let Ok(mut slot) = self.child.lock()
-            && let Some(child) = slot.as_mut()
-        {
-            child.disarm_drop_drain();
-        }
-    }
-
-    fn terminate_and_join(&self, deadline: Instant) -> Result<(), String> {
+    pub(super) fn terminate_and_join(&self, deadline: Instant) -> Result<(), String> {
         let mut errors = Vec::new();
         if let Err(err) = self.killer.kill_tree_until(deadline) {
             errors.push(err.to_string());
@@ -305,31 +297,7 @@ impl Drop for Terminals {
             }
         }
         if !unresolved.is_empty() {
-            // Transfer unresolved entries (including any retained `wait_worker`
-            // or `child`) off the destructor thread so neither `ContainedChild::drop`
-            // nor `WaitWorker::drop` restarts a fresh 2s drain on Drop's thread
-            // while still preserving a live reaper for unfinished children.
-            let handoff = Arc::new(Mutex::new(unresolved));
-            let bg = Arc::clone(&handoff);
-            if std::thread::Builder::new()
-                .name("se-acp-term-reap".into())
-                .spawn(move || {
-                    let pending = bg
-                        .lock()
-                        .map(|mut guard| std::mem::take(&mut *guard))
-                        .unwrap_or_default();
-                    let bg_deadline = Instant::now() + RELEASE_CLEANUP_TIMEOUT;
-                    for entry in pending {
-                        let _ = entry.terminate_and_join(bg_deadline);
-                    }
-                })
-                .is_err()
-                && let Ok(mut remaining) = handoff.lock()
-            {
-                for entry in remaining.drain(..) {
-                    entry.disarm_retained_child();
-                }
-            }
+            enqueue_orphans(unresolved);
         }
     }
 }
