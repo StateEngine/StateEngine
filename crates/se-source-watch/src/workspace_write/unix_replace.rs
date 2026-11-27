@@ -142,23 +142,28 @@ fn verify_displaced_custody(
     Ok(())
 }
 
-/// Confirm `leaf` still matches our exact staged revision (inode, size, mtime,
+/// Confirm `entry` still matches our exact staged revision (inode, size, mtime,
 /// mode) before any rollback so a newer post-publish edit is never overwritten.
-fn verify_leaf_matches_stage(
-    ctx: &ReplaceCtx<'_>,
+/// Names `retained_note` whenever rollback is skipped so recovery can locate
+/// the displaced original.
+fn verify_entry_matches_stage(
+    parent: &File,
+    entry: &CString,
+    stage_baseline: TargetBaseline,
     phase: &str,
     reason: &WorkspaceWriteError,
+    retained_note: &str,
 ) -> Result<(), WorkspaceWriteError> {
-    match stat_entry_at(ctx.parent, ctx.leaf, libc::AT_SYMLINK_NOFOLLOW) {
-        Ok(Some(m)) if TargetBaseline::from_meta(m) == ctx.stage_baseline => Ok(()),
+    match stat_entry_at(parent, entry, libc::AT_SYMLINK_NOFOLLOW) {
+        Ok(Some(m)) if TargetBaseline::from_meta(m) == stage_baseline => Ok(()),
         Ok(Some(_)) => Err(WorkspaceWriteError::PublishedUncertain(format!(
-            "target changed after {phase} ({reason}); rollback skipped to preserve the newer target"
+            "target changed after {phase} ({reason}); rollback skipped to preserve the newer target; {retained_note}"
         ))),
         Ok(None) => Err(WorkspaceWriteError::PublishedUncertain(format!(
-            "target is absent after {phase} ({reason}); rollback skipped"
+            "target is absent after {phase} ({reason}); rollback skipped; {retained_note}"
         ))),
         Err(stat_err) => Err(WorkspaceWriteError::PublishedUncertain(format!(
-            "rollback inspection after {phase} conflict ({reason}) failed: {stat_err}; rollback skipped"
+            "rollback inspection after {phase} conflict ({reason}) failed: {stat_err}; rollback skipped; {retained_note}"
         ))),
     }
 }
@@ -167,11 +172,21 @@ fn finish_exchange_replace(ctx: &ReplaceCtx<'_>) -> Result<(), WorkspaceWriteErr
     let custody =
         verify_displaced_custody(ctx, ctx.stage, "target file changed during atomic exchange");
     if let Err(reason) = custody {
-        verify_leaf_matches_stage(ctx, "exchange", &reason)?;
+        let retained = format!(
+            "displaced original remains in '{}'",
+            ctx.stage.to_string_lossy()
+        );
+        verify_entry_matches_stage(
+            ctx.parent,
+            ctx.leaf,
+            ctx.stage_baseline,
+            "exchange",
+            &reason,
+            &retained,
+        )?;
         if let Err(rollback_err) = exchange_at(ctx.parent, ctx.stage, ctx.leaf) {
             return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                "rollback after exchange conflict ({reason}) failed: {rollback_err}; displaced original remains in '{}'",
-                ctx.stage.to_string_lossy()
+                "rollback after exchange conflict ({reason}) failed: {rollback_err}; {retained}"
             )));
         }
         if let Err(sync_err) = ctx.parent.sync_all() {
@@ -318,7 +333,7 @@ pub(super) fn publish_replace_fallback(ctx: &ReplaceCtx<'_>) -> Result<(), Works
         &backup,
         "target file changed before fallback replacement",
     ) {
-        return Err(restore_backup_to_leaf(ctx, &backup, &reason));
+        return Err(restore_backup_to_leaf(ctx, &backup, &reason, None));
     }
 
     // SAFETY: retained parent directory fd and literal names; `linkat` fails
@@ -334,8 +349,22 @@ pub(super) fn publish_replace_fallback(ctx: &ReplaceCtx<'_>) -> Result<(), Works
     } < 0
     {
         let link_err = io::Error::last_os_error();
+        if link_err.kind() == io::ErrorKind::AlreadyExists {
+            let stage_note = match unlink_sibling(ctx.parent, ctx.stage) {
+                Ok(()) => String::new(),
+                Err(unlink_err) => format!(
+                    "; staging sibling '{}' cleanup failed: {unlink_err}",
+                    ctx.stage.to_string_lossy()
+                ),
+            };
+            return Err(WorkspaceWriteError::PublishedUncertain(format!(
+                "another writer recreated the target during fallback replacement; this write was not published and the previous version remains in '{}'{}",
+                backup.to_string_lossy(),
+                stage_note
+            )));
+        }
         let reason = io_before(link_err);
-        return Err(restore_backup_to_leaf(ctx, &backup, &reason));
+        return Err(restore_backup_to_leaf(ctx, &backup, &reason, None));
     }
 
     let post_custody = (ctx.root_check)()
@@ -379,6 +408,7 @@ fn restore_backup_to_leaf(
     ctx: &ReplaceCtx<'_>,
     backup: &CString,
     reason: &WorkspaceWriteError,
+    extra_sibling: Option<&CString>,
 ) -> WorkspaceWriteError {
     // SAFETY: retained parent directory fd and literal names; `linkat` refuses
     // with `EEXIST` rather than clobbering a concurrently created `leaf`.
@@ -400,10 +430,30 @@ fn restore_backup_to_leaf(
                 ctx.stage.to_string_lossy()
             ),
         };
+        let extra_note = extra_sibling.map_or_else(String::new, |extra| {
+            match unlink_sibling(ctx.parent, extra) {
+                Ok(()) => String::new(),
+                Err(unlink_err) => format!(
+                    "; rollback sibling '{}' cleanup also failed: {unlink_err}",
+                    extra.to_string_lossy()
+                ),
+            }
+        });
         return WorkspaceWriteError::PublishedUncertain(format!(
-            "rollback after fallback conflict ({reason}) failed: {restore_err}; displaced original remains in '{}'{}",
+            "rollback after fallback conflict ({reason}) failed: {restore_err}; displaced original remains in '{}'{}{}",
             backup.to_string_lossy(),
-            stage_note
+            stage_note,
+            extra_note
+        ));
+    }
+    if let Some(extra) = extra_sibling
+        && let Err(unlink_err) = unlink_sibling(ctx.parent, extra)
+    {
+        return WorkspaceWriteError::PublishedUncertain(format!(
+            "original restored after fallback conflict ({reason}), but rollback sibling '{}' cleanup failed: {unlink_err}; backup '{}' and staging '{}' may also remain on disk",
+            extra.to_string_lossy(),
+            backup.to_string_lossy(),
+            ctx.stage.to_string_lossy()
         ));
     }
     if let Err(unlink_err) = unlink_sibling(ctx.parent, backup) {
@@ -436,20 +486,89 @@ fn restore_backup_to_leaf(
     ))
 }
 
+/// Rename `leaf` aside to a fresh sibling before verifying it still matches our
+/// staged revision, closing the check-then-unlink race so a concurrent editor
+/// save can never be deleted during rollback.
 fn rollback_published_fallback(
     ctx: &ReplaceCtx<'_>,
     backup: &CString,
     reason: &WorkspaceWriteError,
 ) -> WorkspaceWriteError {
-    if let Err(uncertain) = verify_leaf_matches_stage(ctx, "fallback replacement", reason) {
-        return uncertain;
-    }
-    if let Err(unlink_err) = unlink_sibling(ctx.parent, ctx.leaf) {
+    let retained_pair = format!(
+        "backup '{}' and staging '{}' remain on disk",
+        backup.to_string_lossy(),
+        ctx.stage.to_string_lossy()
+    );
+    let displaced = match stage_name().and_then(|name| cstr(&name)) {
+        Ok(name) => name,
+        Err(name_err) => {
+            return WorkspaceWriteError::PublishedUncertain(format!(
+                "rollback after fallback conflict ({reason}) could not allocate rollback sibling ({name_err}); {retained_pair}"
+            ));
+        }
+    };
+    // SAFETY: retained parent directory fd and literal sibling names; moving
+    // `leaf -> displaced` captures whatever is at `leaf` without deleting it.
+    if unsafe {
+        libc::renameat(
+            ctx.parent.as_raw_fd(),
+            ctx.leaf.as_ptr(),
+            ctx.parent.as_raw_fd(),
+            displaced.as_ptr(),
+        )
+    } < 0
+    {
         return WorkspaceWriteError::PublishedUncertain(format!(
-            "rollback unlink of published target after fallback conflict ({reason}) failed: {unlink_err}; backup '{}' and staging '{}' remain on disk",
-            backup.to_string_lossy(),
-            ctx.stage.to_string_lossy()
+            "rollback rename-aside after fallback conflict ({reason}) failed: {}; {retained_pair}",
+            io::Error::last_os_error()
         ));
     }
-    restore_backup_to_leaf(ctx, backup, reason)
+    let retained_all = format!(
+        "displaced target '{}', backup '{}', and staging '{}' remain on disk",
+        displaced.to_string_lossy(),
+        backup.to_string_lossy(),
+        ctx.stage.to_string_lossy()
+    );
+    match verify_entry_matches_stage(
+        ctx.parent,
+        &displaced,
+        ctx.stage_baseline,
+        "fallback replacement",
+        reason,
+        &retained_all,
+    ) {
+        Ok(()) => restore_backup_to_leaf(ctx, backup, reason, Some(&displaced)),
+        Err(uncertain) => {
+            // Put the concurrent target back at `leaf` via exclusive `linkat`
+            // so the editor's save is never stranded in `displaced`.
+            // SAFETY: retained parent directory fd and literal names.
+            if unsafe {
+                libc::linkat(
+                    ctx.parent.as_raw_fd(),
+                    displaced.as_ptr(),
+                    ctx.parent.as_raw_fd(),
+                    ctx.leaf.as_ptr(),
+                    0,
+                )
+            } == 0
+            {
+                let cleanup_note = match unlink_sibling(ctx.parent, &displaced) {
+                    Ok(()) => String::new(),
+                    Err(unlink_err) => format!(
+                        "; temporary rollback sibling '{}' cleanup failed: {unlink_err}",
+                        displaced.to_string_lossy()
+                    ),
+                };
+                let sync_note = match ctx.parent.sync_all() {
+                    Ok(()) => String::new(),
+                    Err(sync_err) => format!("; directory sync failed: {sync_err}"),
+                };
+                return WorkspaceWriteError::PublishedUncertain(format!(
+                    "target changed after fallback replacement ({reason}); newer target preserved at leaf; {retained_pair}{}{}",
+                    cleanup_note, sync_note
+                ));
+            }
+            uncertain
+        }
+    }
 }
