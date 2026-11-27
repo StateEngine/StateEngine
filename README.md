@@ -249,5 +249,3 @@ to build it.
 The Rust workspace is dual-licensed under either the [MIT License](LICENSE-MIT) or the [Apache License, Version 2.0](LICENSE-APACHE), at your option.
 Third-party components retain their own licenses.
 
-The agreement preserves your ownership and permits StateEngine LLC to offer your contribution
-under additional licenses while continuing to offer it under the submission-date license.
