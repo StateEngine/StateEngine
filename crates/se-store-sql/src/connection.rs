@@ -82,7 +82,7 @@ pub fn configure(
         c.busy_timeout(timeout).map_err(sql)?;
         // Nine decoder queries use this bounded cache of SQL programs, never results.
         c.set_prepared_statement_cache_capacity(32);
-        c.execute_batch("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA mmap_size=0; PRAGMA temp_store=FILE; PRAGMA cache_size=-512;").map_err(sql)?;
+        c.execute_batch("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA mmap_size=0; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-512;").map_err(sql)?;
         if writable {
             let journal: String = c
                 .query_row("PRAGMA journal_mode=WAL", [], |r| {
@@ -110,7 +110,7 @@ pub fn configure(
             ("foreign_keys", 1i64),
             ("trusted_schema", 0),
             ("mmap_size", 0),
-            ("temp_store", 1),
+            ("temp_store", 2),
         ] {
             let actual: i64 = c
                 .query_row(&format!("PRAGMA {name}"), [], |r| {
