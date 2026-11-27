@@ -111,6 +111,7 @@
       "environment": [
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
+        "GOOGLE_API_KEY",
         "GEMINI_API_KEY",
         "GOOGLE_GENERATIVE_AI_API_KEY",
         "OPENROUTER_API_KEY",
@@ -177,7 +178,10 @@
         "KIMI_API_KEY",
         "KIMI_BASE_URL",
         "KIMI_MODEL_NAME",
-        "KIMI_SHARE_DIR"
+        "KIMI_SHARE_DIR",
+        "KIMI_MODEL_API_KEY",
+        "KIMI_MODEL_BASE_URL",
+        "KIMI_CODE_HOME"
       ],
       "permissions": {
         "default": {
