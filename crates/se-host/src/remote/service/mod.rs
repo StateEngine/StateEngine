@@ -1,12 +1,14 @@
-//! The owning host's closed list/watch/send adapter. No remote Owner snapshot.
+//! The owning host's closed list/watch/send/launch/stop adapter. No remote Owner snapshot.
 use super::read::SecurityStoreRead;
 use super::*;
 use se_types::{Result, SeError};
 use std::{sync::Arc, time::Duration};
 mod destination;
+mod failure;
 mod launch;
 mod list;
 mod send;
+mod stop;
 mod watch;
 #[derive(Clone)]
 pub struct Service {
@@ -75,6 +77,10 @@ impl listener::RemoteService for Service {
                     .launch(request)
                     .await
                     .map(|value| wire::Reply::Launch(Box::new(value))),
+                RemoteRequest::Stop(_) => self
+                    .stop(request)
+                    .await
+                    .map(|value| wire::Reply::Stop(Box::new(value))),
                 RemoteRequest::Send(_) | RemoteRequest::Reply(_) => self
                     .send(request)
                     .await

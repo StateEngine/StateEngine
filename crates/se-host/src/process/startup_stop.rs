@@ -30,6 +30,7 @@ impl LaunchCoordinator {
                         session: None,
                         generation: self.store.generation.get(),
                     },
+                    &None,
                     deadline,
                 )
                 .await;
@@ -44,11 +45,12 @@ impl LaunchCoordinator {
         job: &Arc<Job>,
         key: &IdempotencyKey,
         admission: Admission,
+        fence: &crate::runtime::store::StopFence,
         deadline: &Deadline,
-    ) -> Result<()> {
+    ) -> Result<Option<se_types::EventId>> {
         loop {
             if job.ready.borrow().is_some() {
-                return Ok(());
+                return Ok(None);
             }
             let agent = job.target.1.clone();
             let lifecycle = job.lifecycle.clone();
@@ -73,7 +75,7 @@ impl LaunchCoordinator {
                 })
                 .await?;
             let Some(previous) = previous else {
-                return Ok(());
+                return Ok(None);
             };
             let identity = match &previous.current.body {
                 EventBody::ProcessTransition {
@@ -81,7 +83,7 @@ impl LaunchCoordinator {
                     to: ProcessState::Starting,
                     ..
                 } => identity.as_ref().clone(),
-                _ => return Ok(()),
+                _ => return Ok(None),
             };
             // Before exec publication the coordinator must still join native
             // allocation. Its original bound and retained cleanup remain owned.
@@ -91,12 +93,12 @@ impl LaunchCoordinator {
             )
             .map_err(|e| error("startup stop custody", e))?;
             if !matches!(checkpoint.checkpoint, se_proc::CheckpointKind::Process(_)) {
-                return Ok(());
+                return Ok(None);
             }
             let request = key.clone();
             let committed = self
                 .store
-                .commit(admission.clone(), deadline, None, move |kernel, cx| {
+                .commit_fenced(admission.clone(), deadline, fence, move |kernel, cx| {
                     process_commit::advance(
                         kernel,
                         process_commit::ProcessChange {
@@ -111,9 +113,9 @@ impl LaunchCoordinator {
                 })
                 .await;
             match committed {
-                Ok(_) => {
+                Ok(receipt) => {
                     job.wake.request_startup_stop();
-                    return Ok(());
+                    return Ok(Some(receipt.primary_event));
                 }
                 // Activation can win the CAS. Re-read that exact lifecycle and
                 // take its ordinary active-stop path; never cancel on a refusal.

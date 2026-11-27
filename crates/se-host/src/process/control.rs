@@ -19,6 +19,18 @@ impl LaunchCoordinator {
         admission: Admission,
         deadline: &Deadline,
     ) -> Result<StopResult> {
+        self.stop_fenced(plan, admission, None, deadline).await
+    }
+    /// A remote stop carries its boundary permit into each remote-actor commit.
+    /// A same-key retry replays its retained receipt before any new selection,
+    /// and an attempt it restarts runs under the retry's own current permit.
+    pub async fn stop_fenced(
+        self: &Arc<Self>,
+        plan: StopPlan,
+        admission: Admission,
+        fence: crate::runtime::store::StopFence,
+        deadline: &Deadline,
+    ) -> Result<StopResult> {
         let key = format!(
             "{:?}/{:?}/{}",
             admission.scope, admission.actor, plan.input.idempotency_key
@@ -26,7 +38,7 @@ impl LaunchCoordinator {
         let intent=Sha256::digest(serde_json::to_vec(&serde_json::json!({"operation":"agent.stop","input":plan.input,"selector":plan.input.owner_agent,"all":plan.input.all,"release":plan.input.release,"scope":format!("{:?}",admission.scope)})).map_err(|e|error("stop request intent",e))?).into();
         let coordinator = Arc::downgrade(self);
         match self
-            .supervise_control(key, intent, deadline, move |deadline| {
+            .supervise_fenced(key, intent, fence, deadline, move |deadline, fence| {
                 let coordinator = coordinator.clone();
                 let plan = plan.clone();
                 let admission = admission.clone();
@@ -34,7 +46,7 @@ impl LaunchCoordinator {
                     coordinator
                         .upgrade()
                         .ok_or_else(|| error("stop retry", "the original host has retired"))?
-                        .stop_selected(plan, admission, &deadline)
+                        .stop_selected(plan, admission, fence, &deadline)
                         .await
                         .map(se_core::ops::AnyOutput::from)
                 }
@@ -52,35 +64,18 @@ impl LaunchCoordinator {
         self: &Arc<Self>,
         mut plan: StopPlan,
         admission: Admission,
+        fence: crate::runtime::store::StopFence,
         deadline: &Deadline,
     ) -> Result<StopResult> {
-        let mut selection_failures = Vec::new();
-        if plan.input.all && plan.targets.is_empty() {
-            for project in plan.projects {
-                let mut admitted = admission.clone();
-                admitted.scope = se_store::Scope::Project(project.id.clone());
-                let project_id = project.id.clone();
-                let result = self
-                    .store
-                    .read(admitted, deadline, move |cx| {
-                        se_core::ops::stop_plan::agents(project, cx)
-                    })
-                    .await;
-                match result {
-                    Ok(mut targets) => plan.targets.append(&mut targets),
-                    Err(error) => {
-                        let cx = se_types::RenderCx {
-                            project: Some(&project_id),
-                            ..Default::default()
-                        };
-                        selection_failures.push(format!(
-                            "project {project_id}: {}",
-                            refusal_detail(&error, &cx)
-                        ));
-                    }
-                }
-            }
-        }
+        let selection_failures = if plan.input.all && plan.targets.is_empty() {
+            let projects = std::mem::take(&mut plan.projects);
+            self.select_all(projects, &mut plan.targets, &admission, deadline)
+                .await
+        } else {
+            Vec::new()
+        };
+        self.refuse_foreign_work(&plan.targets, &admission, deadline)
+            .await?;
         let mut stops = Vec::with_capacity(plan.targets.len());
         for target in plan.targets {
             let mut admitted = admission.clone();
@@ -91,6 +86,7 @@ impl LaunchCoordinator {
                     &plan.input.idempotency_key,
                     plan.input.release,
                     admitted,
+                    &fence,
                     deadline,
                 )
                 .await,
@@ -152,15 +148,42 @@ impl LaunchCoordinator {
             stops: None,
         })
     }
+    /// Native effects run under this request's admission and fence; cleanup
+    /// after the witnessed exit runs under the host's own cleanup custody.
+    async fn stop_and_finish(
+        &self,
+        work: &mut super::launch::Work,
+        key: &IdempotencyKey,
+        admission: Admission,
+        fence: &crate::runtime::store::StopFence,
+        admitted_here: Option<se_types::EventId>,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        work.stop_key = Some(key.clone());
+        work.admission = admission;
+        work.stop_fence = fence.clone();
+        work.stop_admitted_here = admitted_here;
+        let witness = self.stop_native(work, deadline).await;
+        // Restore host custody on every outcome: a failed attempt must not
+        // leave its request admission or fence on the retained job.
+        work.stop_admitted_here = None;
+        work.admission = work.cleanup_admission.clone();
+        work.stop_fence = None;
+        let witness = witness?;
+        work.last_witness = Some(witness.clone());
+        self.finish(work, witness, deadline).await
+    }
     async fn stop_target(
         self: &Arc<Self>,
         target: ControlAgent,
         key: &IdempotencyKey,
         release: bool,
         admission: Admission,
+        fence: &crate::runtime::store::StopFence,
         deadline: &Deadline,
     ) -> AgentStopResult {
-        let retained = self.find_job(&target.target.project.id, &target.target.agent.id);
+        let expected = target.expected.clone();
+        let retained = self.stop_job(&target);
         let mut row = empty_row(target, &self.options.home);
         let mut external = Vec::new();
         let result=async{
@@ -168,7 +191,12 @@ impl LaunchCoordinator {
             // independent targets selected by --all.
             let agent=row.target.agent.id.clone();
             let current=self.store.read(admission.clone(),deadline,move |cx| se_core::scope::require_present(cx.read.control_target(agent).map_err(|e|se_core::store_error::store_error(&e))?,"current stop control","Restore the current create grant or use the owner's terminal.")).await?;
-            external = self.retire_embedded_bindings(&current, &row.target.agent.id, key, &admission, deadline).await?;
+            // A job for the recorded lifecycle whose own stop is not complete still
+            // owns cleanup or capture: keep its witness and report it, never supersession.
+            let unsettled = expected.is_some() && matches!(&retained, Ok(Some(job)) if own_stop_unfinished(job));
+            if self.scoped_ended(expected.as_ref(), &current, unsettled, &admission, &mut row, deadline).await? { return Ok(()); }
+            // Embedded retirement selects the latest session, which may be newer work.
+            if !unsettled { external = self.retire_embedded_bindings(&current, &row.target.agent.id, key, &admission, fence, deadline).await?; }
             if !external.is_empty() && current.processes.is_empty() {
                 let changed = external.iter().any(|binding| binding.changed);
                 row.result = if changed { "stopped" } else { "already-stopped" }.into();
@@ -184,13 +212,14 @@ impl LaunchCoordinator {
             let job=match retained? {Some(job)=>Some(job),None=>self.cold_stop_job(&current,&row.target.project.id,deadline).await?};
             let Some(job)=job else {
                 if current.processes.is_empty() && current.sessions.is_empty() && matches!(current.latest_process,se_types::Read::Absent {..}) {
-                    row.result="already-stopped".into();row.population="empty".into();row.enumeration="not-applicable".into();
-                    row.witness=StopWitness {state:"witnessed".into(),method:Some("not-applicable".into()),observed_at:Some(se_core::ops::receipt::timestamp(crate::runtime::start::now_unix_micros()?)?),detail:Some("The complete admitted control snapshot contains no recorded managed lifecycle or live session.".into())};
-                    return Ok(());
+                    return already_stopped(&mut row, "The complete admitted control snapshot contains no recorded managed lifecycle or live session.");
                 }
                 return Err(se_core::scope::unreadable("cold stop custody","this host has no retained native reference; protected-record recovery is required before claiming an exit"));
             };
-            if !release { self.interrupt_startup(&job,key,admission.clone(),deadline).await?; }
+            if expected.as_ref().is_some_and(|expected| expected.lifecycle != job.lifecycle) {
+                return Err(error("scoped stop lifecycle", "the retained job is not the recorded lifecycle"));
+            }
+            let admitted_here = if release { None } else { self.interrupt_startup(&job,key,admission.clone(),fence,deadline).await? };
             let mut work=if release {
                 job.control_state(deadline).await?
             } else {
@@ -216,12 +245,7 @@ impl LaunchCoordinator {
                 fill_stopped(&mut row,&work,true,&self.options.home)?;
                 return Ok(());
             }
-            work.stop_key=Some(key.clone());
-            work.admission=admission;
-            let witness=self.stop_native(&mut work,deadline).await?;
-            work.last_witness=Some(witness.clone());
-            work.admission=work.cleanup_admission.clone();
-            self.finish(&mut work,witness,deadline).await?;
+            self.stop_and_finish(&mut work, key, admission, fence, admitted_here, deadline).await?;
             if !job.settled.swap(true,Ordering::AcqRel){self.activity.send_modify(|count|*count=count.saturating_sub(1));}
             fill_stopped(&mut row,&work,false,&self.options.home)?;Ok(())
         }.await;
@@ -253,6 +277,14 @@ impl LaunchCoordinator {
             row.population_reason = Some(detail);
         }
         row
+    }
+    /// A remote stop selects its recorded lifecycle, never the agent's newest job.
+    fn stop_job(&self, target: &ControlAgent) -> Result<Option<Arc<Job>>> {
+        let (project, agent) = (&target.target.project.id, &target.target.agent.id);
+        match &target.expected {
+            Some(expected) => self.find_lifecycle_job(project, agent, &expected.lifecycle),
+            None => self.find_job(project, agent),
+        }
     }
     pub(super) fn find_lifecycle_job(
         &self,
@@ -290,6 +322,123 @@ impl LaunchCoordinator {
             })
             .cloned())
     }
+}
+impl LaunchCoordinator {
+    /// `--all` selects every agent of each project; one unreadable project is a
+    /// named selection failure, never an empty scope.
+    async fn select_all(
+        &self,
+        projects: Vec<se_types::Named<se_types::ProjectId>>,
+        targets: &mut Vec<ControlAgent>,
+        admission: &Admission,
+        deadline: &Deadline,
+    ) -> Vec<String> {
+        let mut selection_failures = Vec::new();
+        for project in projects {
+            let mut admitted = admission.clone();
+            admitted.scope = se_store::Scope::Project(project.id.clone());
+            let project_id = project.id.clone();
+            let result = self
+                .store
+                .read(admitted, deadline, move |cx| {
+                    se_core::ops::stop_plan::agents(project, cx)
+                })
+                .await;
+            match result {
+                Ok(mut selected) => targets.append(&mut selected),
+                Err(error) => {
+                    let cx = se_types::RenderCx {
+                        project: Some(&project_id),
+                        ..Default::default()
+                    };
+                    selection_failures.push(format!(
+                        "project {project_id}: {}",
+                        refusal_detail(&error, &cx)
+                    ));
+                }
+            }
+        }
+        selection_failures
+    }
+    /// A new scoped attempt refuses other live work as a refusal, not a row.
+    /// Runs inside the supervised request, after a same-key retry could replay.
+    async fn refuse_foreign_work(
+        &self,
+        targets: &[ControlAgent],
+        admission: &Admission,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        for target in targets {
+            if let Some(expected) = target.expected.clone() {
+                let mut admitted = admission.clone();
+                admitted.scope = se_store::Scope::Project(target.target.project.id.clone());
+                let agent = target.target.agent.id.clone();
+                let next =
+                    "Ask the Owner of that machine to run se stop AGENT in a terminal there.";
+                self.store
+                    .read(admitted, deadline, move |cx| {
+                        let current = cx
+                            .read
+                            .control_target(agent)
+                            .map_err(|e| se_core::store_error::store_error(&e))?;
+                        let current =
+                            se_core::scope::require_present(current, "scoped stop control", next)?;
+                        expected.check(&current)
+                    })
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+    /// A scoped stop refuses other live work. When nothing live is its own,
+    /// newer work exists and no unsettled job still owns its cleanup, its
+    /// lifecycle counts as stopped only with its own exit record.
+    async fn scoped_ended(
+        &self,
+        expected: Option<&se_core::ops::stop_plan::ExpectedLifecycle>,
+        current: &se_store::ControlTarget,
+        unsettled: bool,
+        admission: &Admission,
+        row: &mut AgentStopResult,
+        deadline: &Deadline,
+    ) -> Result<bool> {
+        let Some(expected) = expected else {
+            return Ok(false);
+        };
+        expected.check(current)?;
+        if unsettled || !expected.superseded(current) {
+            return Ok(false);
+        }
+        let lifecycle = expected.lifecycle.clone();
+        let head = self
+            .store
+            .read(admission.clone(), deadline, move |cx| {
+                cx.read
+                    .process(lifecycle)
+                    .map_err(|e| se_core::store_error::store_error(&e))
+            })
+            .await?;
+        expected.exited(&head)?;
+        already_stopped(
+            row,
+            "The recorded lifecycle's exit is recorded and it has no live session; newer work on this agent was left untouched.",
+        )?;
+        Ok(true)
+    }
+}
+fn already_stopped(row: &mut AgentStopResult, detail: &str) -> Result<()> {
+    row.result = "already-stopped".into();
+    row.population = "empty".into();
+    row.enumeration = "not-applicable".into();
+    row.witness = StopWitness {
+        state: "witnessed".into(),
+        method: Some("not-applicable".into()),
+        observed_at: Some(se_core::ops::receipt::timestamp(
+            crate::runtime::start::now_unix_micros()?,
+        )?),
+        detail: Some(detail.into()),
+    };
+    Ok(())
 }
 /// Receipt fields carry public failure text rather than an error envelope.
 /// Keep its recovery advice too, without exposing a private error cause chain.
@@ -367,6 +516,15 @@ fn empty_row(target: ControlAgent, home: &std::path::Path) -> AgentStopResult {
             last_event_id: None,
         },
     }
+}
+/// The recorded lifecycle's own stop is complete only once its job settled
+/// and its capture actually flushed or was never owed; the latest capture
+/// diagnostic is not that proof. A job busy in another attempt is unfinished.
+fn own_stop_unfinished(job: &Job) -> bool {
+    !job.settled.load(Ordering::Acquire)
+        || job.state.try_lock().map_or(true, |work| {
+            !(work.capture_flushed || !work.meta.capture || !work.activated)
+        })
 }
 pub(super) fn fill_stopped(
     row: &mut AgentStopResult,

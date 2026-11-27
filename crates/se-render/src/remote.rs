@@ -156,6 +156,33 @@ pub(super) fn launch(
     }
 }
 
+pub(super) fn stop(value: &se_core::ops::RemoteStopOutput, out: &mut impl Write) -> io::Result<()> {
+    writeln!(
+        out,
+        "Remote stop of {}/{} session {}: {} (key {}).",
+        value.target.project,
+        value.target.agent,
+        value.session,
+        value.result,
+        value.idempotency_key
+    )?;
+    write!(out, "Witness: {}", value.witness.state)?;
+    if let Some(method) = &value.witness.method {
+        write!(out, " via {method}")?;
+    }
+    writeln!(out)?;
+    if let Some(detail) = &value.witness.detail {
+        writeln!(out, "{detail}")?;
+    }
+    if !value.complete {
+        writeln!(
+            out,
+            "Closure is not proved. Retry remote stop with the same host, target, session and key."
+        )?;
+    }
+    Ok(())
+}
+
 fn launch_details(value: Option<&se_types::LaunchDetails>, out: &mut impl Write) -> io::Result<()> {
     let Some(value) = value else {
         return writeln!(

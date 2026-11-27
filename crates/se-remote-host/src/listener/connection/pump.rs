@@ -196,7 +196,10 @@ fn text_frame(
             *frame.last_request = Some(id);
             let mutation = matches!(
                 invocation.request,
-                RemoteRequest::Send(_) | RemoteRequest::Reply(_) | RemoteRequest::Launch(_)
+                RemoteRequest::Send(_)
+                    | RemoteRequest::Reply(_)
+                    | RemoteRequest::Launch(_)
+                    | RemoteRequest::Stop(_)
             );
             let admission = match frame.slot.limits.request(mutation) {
                 Ok(admission) => admission,

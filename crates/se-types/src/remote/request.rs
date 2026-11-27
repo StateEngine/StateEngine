@@ -108,6 +108,16 @@ pub struct RemoteLaunch {
     pub idempotency_key: IdempotencyKey,
 }
 
+/// Stop one exact session this paired machine launched. The destination
+/// refuses any other session, including later work on the same agent.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteStop {
+    pub target: RemoteTarget,
+    pub session: SessionId,
+    pub idempotency_key: IdempotencyKey,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteSend {
@@ -182,6 +192,7 @@ pub enum RemoteRequest {
     Watch(RemoteWatch),
     Send(RemoteSend),
     Launch(RemoteLaunch),
+    Stop(RemoteStop),
     Reply(RemoteSendReply),
     Replies(RemoteReplies),
     ResolveContact(RemoteResolveContact),
@@ -192,7 +203,7 @@ impl RemoteRequest {
             Self::List(v) => v.validate(),
             Self::Watch(v) => v.validate(),
             Self::Send(v) => v.validate(),
-            Self::Launch(_) => Ok(()),
+            Self::Launch(_) | Self::Stop(_) => Ok(()),
             Self::Reply(v) => v.validate(),
             Self::Replies(v) => v.validate(),
             Self::ResolveContact(_) => Ok(()),

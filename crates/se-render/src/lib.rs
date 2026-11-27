@@ -101,6 +101,7 @@ fn render_human(value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
     let kind = value.human_kind();
     match kind {
         HumanKind::RemoteLaunch
+        | HumanKind::RemoteStop
         | HumanKind::RemoteList
         | HumanKind::RemoteWatch
         | HumanKind::RemoteSend => render_remote(kind, value, out),
@@ -161,6 +162,7 @@ fn render_remote(kind: HumanKind, value: &AnyOutput, out: &mut impl Write) -> io
         (HumanKind::RemoteLaunch, AnyOutput::RemoteLaunch(value)) => {
             remote::launch(&value.value, out)
         }
+        (HumanKind::RemoteStop, AnyOutput::RemoteStop(value)) => remote::stop(&value.value, out),
         (HumanKind::RemoteList, AnyOutput::RemoteList(value)) => remote::list(&value.value, out),
         (HumanKind::RemoteWatch, AnyOutput::RemoteWatch(value)) => remote::watch(&value.value, out),
         (HumanKind::RemoteSend, AnyOutput::RemoteSend(value)) => remote::send(&value.value, out),

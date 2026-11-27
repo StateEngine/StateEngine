@@ -86,7 +86,7 @@ impl AuthorizedRemoteRequest {
         )
     }
 }
-/// Consumed once by the nonblocking writer enqueue. Planning has already closed its read pin.
+/// Checked at each nonblocking writer enqueue. Planning has already closed its read pin.
 pub struct AdmissionPermit {
     principal: RemotePrincipalId,
     fence: Arc<fence::GrantFence>,
@@ -106,8 +106,18 @@ impl AdmissionPermit {
         batch: se_store::AtomicBatch,
         map_error: impl FnOnce(&se_store::StoreError) -> se_types::SeError,
     ) -> Result<<se_store::SqliteClient as se_store::WriterClient>::Completion> {
+        self.submit_ref(writer, batch, map_error)
+    }
+    /// For a request whose native work commits more than once, such as a remote
+    /// stop: every remote-actor submission re-checks the original grant fences.
+    pub fn submit_ref(
+        &self,
+        writer: &se_store::SqliteClient,
+        batch: se_store::AtomicBatch,
+        map_error: impl FnOnce(&se_store::StoreError) -> se_types::SeError,
+    ) -> Result<<se_store::SqliteClient as se_store::WriterClient>::Completion> {
         use se_store::WriterClient;
-        if batch.admission.actor != se_store::Actor::Remote(self.principal) {
+        if batch.admission.actor != se_store::Actor::Remote(self.principal.clone()) {
             return Err(refused("remote admission principal differs"));
         }
         let _guard = self.fence.output()?;

@@ -107,6 +107,28 @@ impl LaunchCoordinator {
                 ));
             }
         };
+        // A remote stop starts effects only under the fenced admission this
+        // attempt commits itself: the startup interrupt counts only while it is
+        // still the exact head. Any other StopRequested, and every StopUnproved,
+        // is only observed: an exit observed above still gets host cleanup;
+        // otherwise the destination Owner recovers it.
+        let fresh = from == ProcessState::StopRequested
+            && work.stop_admitted_here.as_ref() == Some(&previous.current.header.event);
+        if work.stop_fence.is_some()
+            && !fresh
+            && matches!(
+                from,
+                ProcessState::StopRequested | ProcessState::StopUnproved
+            )
+        {
+            return Err(se_types::SeError::new(se_types::Detail::StateConflict(
+                se_types::details::StateConflict {
+                    subject: "remote stop".into(),
+                    reason: "this session's stop was already admitted and its exit is not yet observed".into(),
+                    next_step: "Repeat this stop later to observe the exit, or ask the Owner of that machine to run se stop AGENT in a terminal there.".into(),
+                },
+            )));
+        }
         if from != ProcessState::StopRequested {
             self.change(
                 work,

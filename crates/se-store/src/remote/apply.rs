@@ -72,6 +72,11 @@ fn scope(c: &Connection, scope: &RemoteScope) -> StoreResult<()> {
                     "launch consent belongs in the explicit saved-target permission, never the legacy machine verbs",
                 ));
             }
+            RemoteVerb::Stop => {
+                return Err(invalid(
+                    "stop authority comes from the recorded launch, never the legacy machine verbs",
+                ));
+            }
         };
         if !seen.insert(name) {
             return Err(invalid("duplicate remote verb"));

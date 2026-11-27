@@ -78,7 +78,12 @@ pub fn from_matches_with_key(
     };
     if matches!(
         meta.name,
-        "remote.list" | "remote.watch" | "remote.send" | "remote.launch" | "client.watch"
+        "remote.list"
+            | "remote.watch"
+            | "remote.send"
+            | "remote.launch"
+            | "remote.stop"
+            | "client.watch"
     ) {
         return super::remote::decode(meta.name, m, key);
     }

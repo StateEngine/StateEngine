@@ -272,7 +272,7 @@ impl LaunchCoordinator {
                 &plan.input.idempotency_key,
                 &format!("takeover-startup/{expected}"),
             )?;
-            self.interrupt_startup(&job, &key, admission.clone(), deadline)
+            self.interrupt_startup(&job, &key, admission.clone(), &None, deadline)
                 .await?;
         }
         let mut work = if stop {

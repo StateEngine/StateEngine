@@ -36,6 +36,7 @@ pub enum Reply {
     Watch(Box<RemoteWatchBatch>),
     Send(Box<RemoteSendResult>),
     Launch(Box<RemoteLaunchResult>),
+    Stop(Box<RemoteStopResult>),
     Replies(Box<RemoteRepliesResult>),
     Contact(Box<RemoteContactResult>),
 }

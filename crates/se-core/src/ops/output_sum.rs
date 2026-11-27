@@ -92,6 +92,7 @@ RemoteList => RemoteListCall, RemoteListOutput;
 RemoteWatch => RemoteWatchCall, RemoteWatchOutput;
 RemoteSend => RemoteSendCall, RemoteSendOutput;
 RemoteLaunch => RemoteLaunchCall, RemoteLaunchOutput;
+RemoteStop => RemoteStopCall, RemoteStopOutput;
 Resume => Resume, ResumeOutput;
 HandoffExport => HandoffExport, HandoffOutput;
 SessionContext => SessionContextRequest, SessionContextOutput;

@@ -660,19 +660,24 @@ impl LaunchCoordinator {
         let request = work.stop_key.as_ref().unwrap_or(&work.meta.request).clone();
         let receipt = self
             .store
-            .commit(work.admission.clone(), deadline, None, move |kernel, cx| {
-                process_commit::advance(
-                    kernel,
-                    process_commit::ProcessChange {
-                        request,
-                        phase,
-                        previous,
-                        identity,
-                        edge,
-                    },
-                    cx,
-                )
-            })
+            .commit_fenced(
+                work.admission.clone(),
+                deadline,
+                &work.stop_fence,
+                move |kernel, cx| {
+                    process_commit::advance(
+                        kernel,
+                        process_commit::ProcessChange {
+                            request,
+                            phase,
+                            previous,
+                            identity,
+                            edge,
+                        },
+                        cx,
+                    )
+                },
+            )
             .await?;
         Ok(receipt.primary_event)
     }

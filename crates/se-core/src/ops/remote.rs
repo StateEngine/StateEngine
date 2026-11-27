@@ -64,6 +64,17 @@ impl Validate for RemoteLaunchCall {
         validate_alias(&self.host)
     }
 }
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteStopCall {
+    pub host: String,
+    pub request: RemoteStop,
+}
+impl Validate for RemoteStopCall {
+    fn validate(&self) -> Result<()> {
+        validate_alias(&self.host)
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -90,7 +101,8 @@ impl Validate for RemoteSendCall {
 // The local envelope owns the schema; wire and local consumers share each body.
 pub use se_types::remote::{
     RemoteLaunchBody as RemoteLaunchOutput, RemoteListBody as RemoteListOutput,
-    RemoteSendBody as RemoteSendOutput, RemoteWatchBody as RemoteWatchOutput,
+    RemoteSendBody as RemoteSendOutput, RemoteStopBody as RemoteStopOutput,
+    RemoteWatchBody as RemoteWatchOutput,
 };
 
 /// Internal source IPC only: obtain the nonsecret binding facts after native

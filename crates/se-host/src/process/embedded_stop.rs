@@ -39,6 +39,7 @@ impl LaunchCoordinator {
         agent: &se_types::AgentId,
         key: &IdempotencyKey,
         admission: &Admission,
+        fence: &crate::runtime::store::StopFence,
         deadline: &Deadline,
     ) -> Result<Vec<EmbeddedRetirement>> {
         let mut selected = control.sessions.iter().collect::<Vec<_>>();
@@ -109,7 +110,7 @@ impl LaunchCoordinator {
                 let phase =
                     process_commit::phase_key(key, &format!("embedded-retirement/{session}"))?;
                 self.store
-                    .commit(admission.clone(), deadline, None, move |kernel, cx| {
+                    .commit_fenced(admission.clone(), deadline, fence, move |kernel, cx| {
                         process_commit::retire_embedded(kernel, agent, observed, phase, reason, cx)
                     })
                     .await?;
@@ -179,7 +180,14 @@ impl LaunchCoordinator {
                 )
                 .parse()?;
                 if let Err(error) = self
-                    .retire_embedded_bindings(&control, &identity.agent, &key, &owner, deadline)
+                    .retire_embedded_bindings(
+                        &control,
+                        &identity.agent,
+                        &key,
+                        &owner,
+                        &None,
+                        deadline,
+                    )
                     .await
                 {
                     pending.push(format!(

@@ -111,6 +111,20 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
         })
     }
 
+    #[cfg(feature = "remote")]
+    fn stop_remote<'a>(
+        &'a self,
+        plan: se_core::ops::stop_plan::StopPlan,
+        admission: Admission,
+        permit: crate::remote::auth::AdmissionPermit,
+        deadline: &'a Deadline,
+    ) -> HostFuture<'a, se_core::ops::StopResult> {
+        Box::pin(async move {
+            self.stop_fenced(plan, admission, Some(Arc::new(permit)), deadline)
+                .await
+        })
+    }
+
     fn catch_up<'a>(&'a self, deadline: &'a Deadline) -> HostFuture<'a, ()> {
         Box::pin(async move { self.catch_up_live(deadline).await })
     }
