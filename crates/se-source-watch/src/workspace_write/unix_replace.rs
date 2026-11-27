@@ -388,10 +388,15 @@ fn finish_fallback_publish(
                 ctx.stage.to_string_lossy()
             ),
         };
+        let sync_note = match ctx.parent.sync_all() {
+            Ok(()) => String::new(),
+            Err(sync_err) => format!("; parent directory sync failed: {sync_err}"),
+        };
         return Err(WorkspaceWriteError::PublishedUncertain(format!(
-            "post-publish custody check failed during fallback replacement ({reason}); live target was left untouched because atomic swap is unavailable on this mount; displaced original remains in '{}'{}",
+            "post-publish custody check failed during fallback replacement ({reason}); live target was left untouched because atomic swap is unavailable on this mount; displaced original remains in '{}'{}{}",
             backup.to_string_lossy(),
-            stage_note
+            stage_note,
+            sync_note
         )));
     }
 

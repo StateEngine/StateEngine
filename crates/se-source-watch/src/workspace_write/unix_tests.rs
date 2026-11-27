@@ -313,7 +313,8 @@ fn fallback_replace_leaves_target_and_retains_backup_on_post_publish_custody_fai
     assert_eq!(std::fs::read(dir.0.join("note.txt"))?, b"agent-write");
     assert!(!dir.0.join(".se-write-stage").exists());
     let backups: Vec<_> = std::fs::read_dir(&dir.0)?
-        .filter_map(|e| e.ok())
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|name| name != "note.txt")
         .collect();
