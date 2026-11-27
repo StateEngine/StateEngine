@@ -380,7 +380,8 @@ impl AdmissionContext {
         match effective {
             PresentedAuthority::ExternalSession(secret) => {
                 let secret = Arc::new(se_types::Secret::new(secret.expose().to_vec())?);
-                self.external_session(phase, &secret)?;
+                let admission = self.external_session(phase, &secret)?;
+                check_bound_project(&admission, project.as_ref())?;
                 Ok(ExternalCall::MailWait {
                     principal: WaitPrincipal::Credential {
                         secret,
@@ -392,7 +393,8 @@ impl AdmissionContext {
             }
             PresentedAuthority::Session(secret) => {
                 let secret = Arc::new(se_types::Secret::new(secret.expose().to_vec())?);
-                self.session(phase, &secret)?;
+                let admission = self.session(phase, &secret)?;
+                check_bound_project(&admission, project.as_ref())?;
                 Ok(ExternalCall::MailWait {
                     principal: WaitPrincipal::Credential {
                         secret,
@@ -494,3 +496,15 @@ pub(crate) struct BridgeBinding {
 
 /// Active external lease binding attached to a bridge's connection grant.
 pub(crate) type ActiveConnectionBinding = BridgeBinding;
+
+fn check_bound_project(admission: &Admission, requested: Option<&ProjectId>) -> Result<()> {
+    if let Some(project) = requested
+        && admission.scope != Scope::Project(project.clone())
+    {
+        return Err(SeError::invalid(
+            "project selection",
+            "the authenticated session's bound project",
+        ));
+    }
+    Ok(())
+}
