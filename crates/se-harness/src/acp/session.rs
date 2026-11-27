@@ -97,13 +97,15 @@ impl Session {
         access: WorkspaceAccess,
         provider_exit: crate::harness::ProviderExitProof,
     ) -> Arc<Self> {
-        Self::retain_with_capabilities(connection, receiver, policy, false, provider_exit).await
+        Self::retain_with_capabilities(connection, receiver, policy, access, false, provider_exit)
+            .await
     }
 
     pub async fn retain_with_capabilities(
         connection: Arc<Connection>,
         receiver: mpsc::Receiver<Incoming>,
         policy: PermissionPolicy,
+        access: WorkspaceAccess,
         allow_terminal: bool,
         provider_exit: crate::harness::ProviderExitProof,
     ) -> Arc<Self> {
@@ -117,7 +119,7 @@ impl Session {
             policy,
             owner_wake: OnceLock::new(),
             provider_exit,
-            client: Client::new(access),
+            client: Client::new(access, allow_terminal),
         });
         let owned = session.clone();
         *session.pump.lock().await = Some(tokio::spawn(async move {

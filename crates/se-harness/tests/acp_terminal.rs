@@ -6,7 +6,7 @@
 use se_harness::{
     CallContext, HostFuture, ProviderIo, ProviderIoPlatform, ProviderStream, ProviderTransport,
     SessionIdentity, StreamRead, StreamWrite,
-    acp::{Connection, PermissionPolicy, Session},
+    acp::{Connection, PermissionPolicy, Session, WorkspaceAccess},
 };
 use se_types::{Generation, Result};
 use serde_json::{Value, json};
@@ -176,7 +176,8 @@ impl Fixture {
             Session::retain_with_capabilities(
                 connection,
                 receiver,
-                PermissionPolicy::Refuse,
+                PermissionPolicy::NeverAsk,
+                WorkspaceAccess::ReadWrite,
                 true,
                 provider_exit,
             )
@@ -186,6 +187,7 @@ impl Fixture {
                 connection,
                 receiver,
                 PermissionPolicy::Refuse,
+                WorkspaceAccess::ReadOnly,
                 provider_exit,
             )
             .await

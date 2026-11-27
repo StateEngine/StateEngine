@@ -42,11 +42,30 @@ fn orphan_reaper() -> &'static OrphanReaper {
     })
 }
 
+/// Ensure the shared process-lived orphan reaper thread is running before
+/// admitting any terminal. Refuses `terminal/create` if the reaper cannot start.
+pub(super) fn ensure_reaper_started() -> Result<(), Refusal> {
+    let reaper = orphan_reaper();
+    let mut queue = reaper
+        .state
+        .lock()
+        .map_err(|_| Refusal::failed("orphan terminal reaper state is poisoned"))?;
+    if !queue.worker_running {
+        std::thread::Builder::new()
+            .name("se-acp-term-reap".into())
+            .spawn(move || run_orphan_reaper(reaper))
+            .map_err(|err| {
+                Refusal::failed(format!("failed to start terminal cleanup reaper: {err}"))
+            })?;
+        queue.worker_running = true;
+    }
+    Ok(())
+}
+
 /// Transfer unresolved terminal entries to the shared process-lived cleanup
-/// queue. Entries remain retained in the queue until `terminate_and_join`
-/// succeeds and `!entry.has_pending_resources()`, so neither `ContainedChild`
-/// nor `WaitWorker` ever runs a 2s drain on a caller's destructor thread—even
-/// if spawning the reaper thread fails.
+/// queue. Entries remain retained in the queue until `!entry.has_pending_resources()`,
+/// so neither `ContainedChild` nor `WaitWorker` ever runs a 2s drain on a
+/// caller's destructor thread.
 pub(super) fn enqueue_orphans(entries: Vec<Arc<TerminalEntry>>) {
     let pending: Vec<Arc<TerminalEntry>> = entries
         .into_iter()
@@ -90,8 +109,8 @@ fn run_orphan_reaper(reaper: &'static OrphanReaper) {
         };
         let mut still_pending = Vec::new();
         for entry in batch {
-            let res = entry.terminate_and_join(Instant::now() + ORPHAN_RETRY_BUDGET);
-            if res.is_err() || entry.has_pending_resources() {
+            let _ = entry.terminate_and_join(Instant::now() + ORPHAN_RETRY_BUDGET);
+            if entry.has_pending_resources() {
                 still_pending.push(entry);
             }
         }

@@ -1,10 +1,12 @@
 //! Methods an ACP agent calls back on its client. StateEngine answers
 //! `fs/read_text_file` for files inside the folder the conversation opened in,
-//! and `fs/write_text_file` inside that same folder only when the saved profile
-//! permits workspace writes; it does not offer terminals. This bound is the
-//! client's own; it does not sandbox the agent process.
-mod fs;
+//! `fs/write_text_file` inside that same folder when the saved profile permits
+//! workspace writes, and workspace-scoped `terminal/*` only when the saved
+//! profile runs with `EffectiveSandbox::Bypass` and `PermissionPolicy::NeverAsk`.
+//! This bound is the client's own; it does not sandbox the agent process.
+pub(crate) mod fs;
 use super::permission::WorkspaceAccess;
+use crate::acp_terminal as terminal;
 use serde_json::{Value, json};
 use std::{
     path::PathBuf,
@@ -61,6 +63,8 @@ pub(crate) type Outcome = Result<Value, Refusal>;
 pub(super) struct Client {
     /// Whether this session's profile permits workspace writes.
     access: WorkspaceAccess,
+    /// Whether this session's profile permits `terminal/*` execution.
+    allow_terminal: bool,
     /// The workspace held since the conversation opened, or why it could not be.
     workspace: Mutex<Option<Result<Arc<fs::Workspace>, String>>>,
     /// Owned contained terminals for this conversation.
@@ -76,15 +80,17 @@ pub(super) struct Client {
 
 impl Default for Client {
     fn default() -> Self {
-        Self::new(WorkspaceAccess::ReadOnly)
+        Self::new(WorkspaceAccess::ReadOnly, false)
     }
 }
 
 impl Client {
-    pub(super) fn new(access: WorkspaceAccess) -> Self {
+    pub(super) fn new(access: WorkspaceAccess, allow_terminal: bool) -> Self {
         Self {
             access,
+            allow_terminal,
             workspace: Mutex::new(None),
+            terminals: terminal::Terminals::default(),
             calls: Arc::new(Semaphore::new(MAX_CALLS as usize)),
             closed: Arc::new(AtomicBool::new(false)),
             active_writes: Arc::new(AtomicUsize::new(0)),
@@ -93,13 +99,18 @@ impl Client {
 
     /// The `clientCapabilities` to advertise.
     pub(super) fn capabilities(&self) -> Value {
-        json!({"fs":{"readTextFile":true,"writeTextFile":self.access.allows_write()},"terminal":false})
+        json!({
+            "fs": {"readTextFile": true, "writeTextFile": self.access.allows_write()},
+            "terminal": self.allow_terminal,
+        })
     }
 
     /// Whether `method` is a client method this session answers. Other methods
     /// get the connection's standard unavailable reply.
     pub(super) fn handles(&self, method: &str) -> bool {
-        method == READ || (self.access.allows_write() && method == WRITE)
+        method == READ
+            || (self.access.allows_write() && method == WRITE)
+            || (self.allow_terminal && terminal::is_terminal_method(method))
     }
 
     /// Opens and holds the directory the conversation opens in as the workspace,
@@ -147,22 +158,31 @@ impl Client {
         Ok(permit)
     }
 
-    /// Admits no more calls, cancels queued workspace writes before they begin,
-    /// then waits until `until` for admitted ones to finish. Reports an error
-    /// if an in-flight workspace write outlives the close deadline.
+    /// Admits no more calls, cancels queued workspace writes, kills and releases
+    /// every owned terminal, then waits until `until` for admitted calls to drain.
     pub(super) async fn close(&self, until: tokio::time::Instant) -> Result<(), String> {
         self.closed.store(true, Ordering::Release);
-        if tokio::time::timeout_at(until, self.calls.acquire_many(MAX_CALLS))
+        let terminal_cleanup = self.terminals.close_all(until).await;
+        let drain_err = if tokio::time::timeout_at(until, self.calls.acquire_many(MAX_CALLS))
             .await
             .is_err()
-            && self.active_writes.load(Ordering::Acquire) > 0
         {
-            return Err(
-                "an admitted workspace write is still running after the close deadline; its final persistence outcome is uncertain"
-                    .into(),
-            );
+            if self.active_writes.load(Ordering::Acquire) > 0 {
+                Some(
+                    "an admitted workspace write is still running after the close deadline; its final persistence outcome is uncertain"
+                        .to_owned(),
+                )
+            } else {
+                Some("in-flight client calls did not drain before close deadline".to_owned())
+            }
+        } else {
+            None
+        };
+        match (terminal_cleanup, drain_err) {
+            (Ok(()), None) => Ok(()),
+            (Err(err), None) | (Ok(()), Some(err)) => Err(err),
+            (Err(term_err), Some(call_err)) => Err(format!("{term_err}; {call_err}")),
         }
-        Ok(())
     }
 
     /// Answers one admitted call. File I/O blocks, so it runs off the async workers.
@@ -204,6 +224,11 @@ impl Client {
                 tokio::task::spawn_blocking(move || fs::write(&workspace, &params, &closed))
                     .await
                     .map_err(|_| Refusal::failed("the call stopped before it finished"))?
+            }
+            _ if self.allow_terminal && terminal::is_terminal_method(method.as_str()) => {
+                self.terminals
+                    .call(workspace, method.as_str(), params)
+                    .await
             }
             _ => Err(Refusal::invalid(format!(
                 "unsupported client method {method}"

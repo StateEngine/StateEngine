@@ -23,7 +23,7 @@ const MAX_WRITE_BYTES: usize = super::super::wire::MAX_FRAME;
 /// opened beneath this one handle, every write verifies the held handle and
 /// parent chain without following links, and operations refuse once the
 /// folder's name no longer leads to it.
-pub(super) struct Workspace {
+pub(crate) struct Workspace {
     /// The folder as the agent was told it.
     told: PathBuf,
     /// The same folder with its links resolved.

@@ -9,7 +9,10 @@
 mod custody;
 mod params;
 use crate::acp::client::{Outcome, Refusal, fs::Workspace};
-use custody::{MAX_TERMINALS, PendingSlot, ReleasingSlot, TerminalTable, enqueue_orphans};
+use custody::{
+    MAX_TERMINALS, PendingSlot, ReleasingSlot, TerminalTable, enqueue_orphans,
+    ensure_reaper_started,
+};
 use params::{
     exit_json, fit_response, optional_str, parse_args, parse_env, parse_output_limit, required_str,
 };
@@ -421,6 +424,8 @@ impl Terminals {
         let cwd_param = optional_str(&params, "cwd", 4096)?.map(str::to_owned);
         let output_limit = parse_output_limit(&params)?;
 
+        // Establish the process-wide orphan reaper before admitting terminal custody.
+        ensure_reaper_started()?;
         // Atomically reserve a slot BEFORE resolving dirs or spawning any process.
         let slot = self.reserve_slot()?;
 

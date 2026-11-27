@@ -322,8 +322,9 @@ impl Harness for AcpHarness {
             let session = Session::retain_with_capabilities(
                 connection,
                 incoming,
-                PermissionPolicy::from_saved_approval(resolved.approval),
+                policy,
                 WorkspaceAccess::from_saved_sandbox(resolved.sandbox),
+                allow_terminal,
                 attach.provider_exit,
             )
             .await;
