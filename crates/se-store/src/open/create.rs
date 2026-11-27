@@ -111,6 +111,7 @@ fn build_staged(
     if identity.mode == LeaseMode::Host {
         crate::erasure::permit::install(&db)?;
     }
+    connection::set_temp_store(&db, &reader.path, true)?;
     let identity = LeaseIdentity {
         store: Some(id),
         ..identity
@@ -129,6 +130,7 @@ fn build_staged(
             backup: None,
             checkpoints: Default::default(),
             channel_delay_us: crate::CHANNEL_DELAY_US,
+            temp_store_memory: true,
         },
     ))
 }

@@ -496,6 +496,18 @@ pub(crate) fn erase(
 ) -> StoreResult<ErasureReport> {
     host.engine
         .reopen(&host.reader.path, host.reader.timeout, lease)?;
+    host.engine.temp_store_memory = false;
+    connection::set_temp_store(&host.engine.db, &host.reader.path, false)?;
+    let result = erase_with_file_temp_store(host, plan, approval, lease);
+    host.engine.ensure_memory_temp_store();
+    result
+}
+fn erase_with_file_temp_store(
+    host: &mut SqliteHost,
+    plan: ErasurePlan,
+    approval: ErasureApproval,
+    lease: &dyn RuntimeLease,
+) -> StoreResult<ErasureReport> {
     let info = connection::info(&host.engine.db)?;
     crate::open::validate_lease(&info, lease, LeaseMode::Host)?;
     if approval.erasure != plan.id || approval.expected_incarnation != info.incarnation {

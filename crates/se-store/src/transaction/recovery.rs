@@ -84,6 +84,7 @@ impl Engine {
         let old = std::mem::replace(&mut self.db, next);
         drop(old);
         connection::configure(&self.db, path, true, timeout)?;
+        self.temp_store_memory = false;
         if self.identity.mode == LeaseMode::Host {
             crate::erasure::permit::install(&self.db)?;
         }
@@ -176,6 +177,8 @@ impl Engine {
             .map_err(sql)?;
         let committed = checked?;
         rollback?;
+        connection::set_temp_store(&self.db, path, true)?;
+        self.temp_store_memory = true;
         if !matches!(
             lease.files().inspect_metadata(path)?,
             se_types::Read::Present { .. }

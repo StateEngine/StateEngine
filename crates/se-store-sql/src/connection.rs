@@ -128,6 +128,28 @@ pub fn configure(
     })();
     result.map_err(|error| context(error, path, StoreIoStage::PragmaReadback))
 }
+pub fn set_temp_store(c: &Connection, path: &Path, memory: bool) -> StoreResult<()> {
+    let (mode, expected) = if memory {
+        ("MEMORY", 2i64)
+    } else {
+        ("FILE", 1i64)
+    };
+    let result = (|| {
+        c.execute_batch(&format!("PRAGMA temp_store={mode};"))
+            .map_err(sql)?;
+        let actual: i64 = c
+            .query_row("PRAGMA temp_store", [], |r| crate::sql_value::value(r, 0))
+            .map_err(sql)?;
+        if actual != expected {
+            return Err(fail(
+                StoreErrorCode::PragmaRefused,
+                "temp_store readback differs",
+            ));
+        }
+        Ok(())
+    })();
+    result.map_err(|error| context(error, path, StoreIoStage::PragmaReadback))
+}
 /// Store header without the head scan: schema gate, id, incarnation and
 /// state. The background checkpoint task validates its lease through this
 /// instead of paying for the latest event position on every tick.

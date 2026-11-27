@@ -31,6 +31,7 @@ pub(crate) struct Engine {
     /// The channel delayed-status threshold applied by this writer's commits;
     /// the production constant except in trusted in-process test homes.
     pub(crate) channel_delay_us: i64,
+    pub(crate) temp_store_memory: bool,
 }
 #[derive(Default, Clone, Debug)]
 pub(crate) struct Phases {
@@ -40,11 +41,20 @@ pub(crate) struct Phases {
     pub checkpoint: Option<Duration>,
 }
 impl Engine {
+    pub(crate) fn ensure_memory_temp_store(&mut self) {
+        if !self.temp_store_memory && connection::set_temp_store(&self.db, &self.path, true).is_ok()
+        {
+            self.temp_store_memory = true;
+        }
+    }
     pub(crate) fn group(
         &mut self,
         batches: Vec<AtomicBatch>,
         maintenance: bool,
     ) -> StoreResult<(Vec<StoreResult<CommitReceipt>>, Phases)> {
+        if !maintenance {
+            self.ensure_memory_temp_store();
+        }
         self.commit(batches, maintenance, false)
     }
     fn commit(
