@@ -107,6 +107,19 @@ impl LaunchCoordinator {
                 ));
             }
         };
+        if work.stop_fence.is_some() {
+            // A remote stop owns an unfinished or unproved stop only if this
+            // request recorded it; either way its current permit must be live
+            // before this attempt can start effects.
+            if matches!(
+                from,
+                ProcessState::StopRequested | ProcessState::StopUnproved
+            ) {
+                self.require_own_stop_admission(work, &previous, deadline)
+                    .await?;
+            }
+            crate::runtime::store::check_stop_fence(&work.stop_fence)?;
+        }
         if from != ProcessState::StopRequested {
             self.change(
                 work,
@@ -116,9 +129,6 @@ impl LaunchCoordinator {
                 deadline,
             )
             .await?;
-        } else if work.stop_fence.is_some() {
-            self.require_own_stop_admission(work, &previous, deadline)
-                .await?;
         }
         // Standalone takeover uses stop followed by launch. Close the old
         // binding durably before any interruption, even with an empty inbox;
@@ -473,7 +483,8 @@ impl LaunchCoordinator {
         }
     }
     /// A fenced (remote) stop may continue a lifecycle already in StopRequested
-    /// only when that exact transition was durably committed by this request.
+    /// or StopUnproved only when that exact transition was durably committed by
+    /// this request. The destination Owner's unfenced stop remains the recovery.
     /// Another request's admission never authorizes this caller's effects.
     async fn require_own_stop_admission(
         &self,

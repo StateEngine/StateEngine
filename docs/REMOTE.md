@@ -124,7 +124,8 @@ does refuse it, including a stop that is already in progress. The destination's 
 path ends the session and reports its witness. If closure is not proved, the command
 exits 2; repeat it with the same key. A repeat runs under the pairing's current
 permission, so it works again once a removed source address is restored. A stop
-with a new key is refused while an earlier request's stop is still unfinished.
+with a new key is refused while an earlier request's stop is unfinished or its
+closure unproved; the destination Owner's `se stop AGENT` remains available.
 
 ## Reading IDs and cursors
 

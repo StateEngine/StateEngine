@@ -166,9 +166,9 @@ impl LaunchCoordinator {
             // independent targets selected by --all.
             let agent=row.target.agent.id.clone();
             let current=self.store.read(admission.clone(),deadline,move |cx| se_core::scope::require_present(cx.read.control_target(agent).map_err(|e|se_core::store_error::store_error(&e))?,"current stop control","Restore the current create grant or use the owner's terminal.")).await?;
-            // An unsettled job for the recorded lifecycle still owns its cleanup:
-            // keep its exit witness and report that cleanup, never supersession.
-            let unsettled = expected.is_some() && matches!(&retained, Ok(Some(job)) if !job.settled.load(Ordering::Acquire));
+            // A job for the recorded lifecycle whose own stop is not complete still
+            // owns cleanup or capture: keep its witness and report it, never supersession.
+            let unsettled = expected.is_some() && matches!(&retained, Ok(Some(job)) if own_stop_unfinished(job));
             if self.scoped_ended(expected.as_ref(), &current, unsettled, &admission, &mut row, deadline).await? { return Ok(()); }
             // Embedded retirement selects the latest session, which may be newer work.
             if !unsettled { external = self.retire_embedded_bindings(&current, &row.target.agent.id, key, &admission, fence, deadline).await?; }
@@ -498,6 +498,15 @@ fn empty_row(target: ControlAgent, home: &std::path::Path) -> AgentStopResult {
             last_event_id: None,
         },
     }
+}
+/// The recorded lifecycle's own stop is complete only once its job settled
+/// with no capture still owed. A job busy in another attempt is unfinished.
+fn own_stop_unfinished(job: &Job) -> bool {
+    !job.settled.load(Ordering::Acquire)
+        || job
+            .state
+            .try_lock()
+            .map_or(true, |work| work.capture_failure.is_some())
 }
 pub(super) fn fill_stopped(
     row: &mut AgentStopResult,
