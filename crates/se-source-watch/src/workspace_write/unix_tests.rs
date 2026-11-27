@@ -328,8 +328,10 @@ fn fallback_replace_preserves_concurrent_edit_and_cleans_up() -> Check {
         inspect_target_leaf(&root, &leaf, root_mount, None)?.ok_or("missing baseline")?;
     let stage_baseline = stage_file(&root, &stage, b"agent-write", Some(expected))?;
 
-    // Concurrent editor updates the file before fallback replacement runs.
-    std::fs::write(dir.0.join("note.txt"), b"concurrent-editor-save")?;
+    // Concurrent editor atomically replaces the file with a new inode before
+    // fallback replacement runs.
+    std::fs::write(dir.0.join(".editor-tmp"), b"concurrent-editor-save")?;
+    std::fs::rename(dir.0.join(".editor-tmp"), dir.0.join("note.txt"))?;
     let err = publish_replace_fallback(&ReplaceCtx {
         root: &root,
         chain: &[],
@@ -343,11 +345,8 @@ fn fallback_replace_preserves_concurrent_edit_and_cleans_up() -> Check {
         root_check: &|| Ok(()),
     })
     .err()
-    .ok_or("expected refusal on concurrent edit")?;
-    assert!(matches!(
-        err,
-        WorkspaceWriteError::BeforePublish(WorkspaceWriteRefusal::InvalidTarget(_))
-    ));
+    .ok_or("expected rollback on concurrent atomic replace")?;
+    assert!(matches!(err, WorkspaceWriteError::Restored(_)));
     assert_eq!(
         std::fs::read(dir.0.join("note.txt"))?,
         b"concurrent-editor-save"
