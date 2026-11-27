@@ -82,7 +82,7 @@ pub fn configure(
         c.busy_timeout(timeout).map_err(sql)?;
         // Nine decoder queries use this bounded cache of SQL programs, never results.
         c.set_prepared_statement_cache_capacity(32);
-        c.execute_batch("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA mmap_size=0; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-512;").map_err(sql)?;
+        c.execute_batch("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA mmap_size=0; PRAGMA temp_store=FILE; PRAGMA cache_size=-512;").map_err(sql)?;
         if writable {
             let journal: String = c
                 .query_row("PRAGMA journal_mode=WAL", [], |r| {
@@ -92,7 +92,7 @@ pub fn configure(
             if journal != "wal" {
                 return Err(fail(StoreErrorCode::PragmaRefused, "WAL refused"));
             }
-            c.execute_batch(&format!("PRAGMA synchronous=NORMAL; PRAGMA wal_autocheckpoint=0; PRAGMA journal_size_limit={WAL_KEEP_BYTES};")).map_err(sql)?;
+            c.execute_batch(&format!("PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; PRAGMA wal_autocheckpoint=0; PRAGMA journal_size_limit={WAL_KEEP_BYTES};")).map_err(sql)?;
         }
         for (name, arity) in [
             ("se_erase_operation_allowed", 1),
@@ -110,7 +110,7 @@ pub fn configure(
             ("foreign_keys", 1i64),
             ("trusted_schema", 0),
             ("mmap_size", 0),
-            ("temp_store", 2),
+            ("temp_store", if writable { 2 } else { 1 }),
         ] {
             let actual: i64 = c
                 .query_row(&format!("PRAGMA {name}"), [], |r| {
