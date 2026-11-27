@@ -366,6 +366,34 @@ async fn resolve_agent_id_for_revoke(
         .await
 }
 
+async fn read_active_external_session(
+    router: &HostedRouter,
+    project: &ProjectId,
+    agent_id: &AgentId,
+    deadline: &Deadline,
+) -> Result<Option<commit::ActiveExternalSession>> {
+    let context = router.context.clone();
+    let project = project.clone();
+    let agent = agent_id.clone();
+    router
+        .execution
+        .blocking
+        .run_owned(deadline, move || {
+            let phase = context.reads.read_phase().map_err(|e| store_error(&e))?;
+            if let Err(error) = context.check_generation(&phase) {
+                return crate::runtime::executor::close_read(Err(error), phase.close());
+            }
+            commit::find_active_external_session(
+                phase,
+                &project,
+                &context.owner,
+                context.generation.get(),
+                &agent,
+            )
+        })
+        .await
+}
+
 /// Owner revokes an active external seat by agent name or ID, serialized per agent.
 pub(crate) async fn revoke_seat(
     router: &HostedRouter,
@@ -390,28 +418,7 @@ pub(crate) async fn revoke_seat(
         deadline,
     )
     .await?;
-    let active_opt = {
-        let context = router.context.clone();
-        let project = project.clone();
-        let agent = agent_id.clone();
-        router
-            .execution
-            .blocking
-            .run_owned(deadline, move || {
-                let phase = context.reads.read_phase().map_err(|e| store_error(&e))?;
-                if let Err(error) = context.check_generation(&phase) {
-                    return crate::runtime::executor::close_read(Err(error), phase.close());
-                }
-                commit::find_active_external_session(
-                    phase,
-                    &project,
-                    &context.owner,
-                    context.generation.get(),
-                    &agent,
-                )
-            })
-            .await?
-    };
+    let active_opt = read_active_external_session(router, &project, &agent_id, deadline).await?;
     let active = match active_opt {
         Some(active) => active,
         None => {

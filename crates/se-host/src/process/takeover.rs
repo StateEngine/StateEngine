@@ -41,6 +41,47 @@ fn empty_report(previous_session: SessionId, scope: String, witness: String) -> 
 }
 
 impl LaunchCoordinator {
+    async fn reconcile_external_before_launch(
+        &self,
+        plan: LaunchPlan,
+        admission: &Admission,
+        deadline: &Deadline,
+    ) -> Result<LaunchPlan> {
+        let has_external_session = plan.control.sessions.iter().any(|rec| {
+            let orig = rec.original.as_deref().unwrap_or(&rec.current);
+            matches!(
+                orig.body,
+                EventBody::SessionPrepared {
+                    surface: Some(se_store::SessionSurface::External),
+                    ..
+                }
+            )
+        });
+        let has_external_reconcile_work = self
+            .capability_admission
+            .external
+            .has_reconcile_work_for_agent(
+                &plan.project.id,
+                &plan.agent.id,
+                crate::runtime::start::now_unix_micros()?,
+            )?;
+        if has_external_session || has_external_reconcile_work {
+            crate::external::lifecycle::reconcile_external_for_launch_on_store(
+                &self.store,
+                &self.capability_admission.external,
+                &self.human,
+                &plan.project.id,
+                &plan.agent.id,
+                deadline,
+            )
+            .await?;
+            // Always replan after expiry/revocation reconciliation so launch evaluates a
+            // fresh post-reconciliation snapshot even if a concurrent call settled it.
+            return self.replan_launch(&plan, admission, deadline).await;
+        }
+        Ok(plan)
+    }
+
     pub async fn launch(
         self: &Arc<Self>,
         mut plan: LaunchPlan,
@@ -51,39 +92,9 @@ impl LaunchCoordinator {
         if !plan.replayed {
             self.require_force_selection(&plan)?;
             plan = crate::reboot::after_reboot(self, plan, &admission, deadline).await?;
-            let has_external_session = plan.control.sessions.iter().any(|rec| {
-                let orig = rec.original.as_deref().unwrap_or(&rec.current);
-                matches!(
-                    orig.body,
-                    EventBody::SessionPrepared {
-                        surface: Some(se_store::SessionSurface::External),
-                        ..
-                    }
-                )
-            });
-            let has_external_reconcile_work = self
-                .capability_admission
-                .external
-                .has_reconcile_work_for_agent(
-                    &plan.project.id,
-                    &plan.agent.id,
-                    crate::runtime::start::now_unix_micros()?,
-                )?;
-            if has_external_session || has_external_reconcile_work {
-                crate::external::lifecycle::reconcile_external_for_launch_on_store(
-                    &self.store,
-                    &self.capability_admission.external,
-                    &self.human,
-                    &plan.project.id,
-                    &plan.agent.id,
-                    deadline,
-                )
+            plan = self
+                .reconcile_external_before_launch(plan, &admission, deadline)
                 .await?;
-                // Always replan after expiry reconciliation so launch evaluates a
-                // fresh post-reconciliation snapshot even if a concurrent call
-                // settled the expiry between planning and acquiring the agent lock.
-                plan = self.replan_launch(&plan, &admission, deadline).await?;
-            }
         }
         if plan.replayed || (plan.control.processes.is_empty() && plan.control.sessions.is_empty())
         {
