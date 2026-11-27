@@ -276,7 +276,7 @@
     "setup_url": "https://cursor.com/docs/cli/acp",
     "descriptor": {
       "driver": "acp-stdio",
-      "command": "agent",
+      "command": "cursor-agent",
       "arguments": [
         "acp"
       ],
@@ -307,6 +307,7 @@
       ],
       "environment": [
         "XAI_API_KEY",
+        "GROK_HOME",
         "GROK_OIDC_ISSUER",
         "GROK_OIDC_CLIENT_ID"
       ],
