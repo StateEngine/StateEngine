@@ -364,15 +364,11 @@ fn requested(host: &SqliteHost, erasure: &RecordId) -> StoreResult<Option<bool>>
 }
 /// Rewrites the database without free pages, then empties the write-ahead log.
 fn rewrite(host: &mut SqliteHost, lease: &dyn RuntimeLease) -> StoreResult<bool> {
-    connection::set_temp_store(&host.engine.db, &host.reader.path, false)?;
-    let vacuum = host.engine.db.execute_batch("VACUUM").map_err(|error| {
+    host.engine.db.execute_batch("VACUUM").map_err(|error| {
         let mut error = sql(error);
         error.code = StoreErrorCode::ErasurePhysicalGuaranteeUnavailable;
         error
-    });
-    let restored = connection::set_temp_store(&host.engine.db, &host.reader.path, true);
-    vacuum?;
-    restored?;
+    })?;
     let until = Instant::now() + host.engine.timeout;
     loop {
         let report = host.checkpoint(CheckpointMode::Truncate, lease)?;
@@ -500,6 +496,19 @@ pub(crate) fn erase(
 ) -> StoreResult<ErasureReport> {
     host.engine
         .reopen(&host.reader.path, host.reader.timeout, lease)?;
+    connection::set_temp_store(&host.engine.db, &host.reader.path, false)?;
+    let result = erase_with_file_temp_store(host, plan, approval, lease);
+    let restored = connection::set_temp_store(&host.engine.db, &host.reader.path, true);
+    let report = result?;
+    restored?;
+    Ok(report)
+}
+fn erase_with_file_temp_store(
+    host: &mut SqliteHost,
+    plan: ErasurePlan,
+    approval: ErasureApproval,
+    lease: &dyn RuntimeLease,
+) -> StoreResult<ErasureReport> {
     let info = connection::info(&host.engine.db)?;
     crate::open::validate_lease(&info, lease, LeaseMode::Host)?;
     if approval.erasure != plan.id || approval.expected_incarnation != info.incarnation {
