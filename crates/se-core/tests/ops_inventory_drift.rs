@@ -27,8 +27,14 @@ const BEGIN: &str = "<!-- BEGIN GENERATED: ops-inventory (do not edit between th
 const END: &str = "<!-- END GENERATED: ops-inventory -->";
 const UPDATE: &str = "SE_OPS_INVENTORY_UPDATE";
 /// Design rows the CLI ships as transport commands outside the operation
-/// registry. `se mcp` is built directly in `se-cli-spec`'s root command.
-const TRANSPORTS: &[&str] = &["mcp.serve"];
+/// registry. `se mcp` and `se external` are built directly in `se-cli-spec`'s root command.
+const TRANSPORTS: &[&str] = &[
+    "external.approve",
+    "external.list",
+    "external.mail_wait",
+    "external.revoke",
+    "mcp.serve",
+];
 /// Registered rows compiled only with an optional cargo feature that the
 /// standard release archive (`scripts/release/inputs.json`) does not enable.
 const OPTIONAL_BUILD: &[(&str, &str)] = &[("store.import_node", "import")];
