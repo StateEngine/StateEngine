@@ -463,6 +463,21 @@ pub(crate) async fn read_live_session_rev_on_execution(
         .await
 }
 
+pub(crate) fn fresh_revoke_identity(session_id: &SessionId) -> Result<WriteIdentity> {
+    let nonce = crate::client::auth::fresh_nonce()?;
+    let key = IdempotencyKey::new(format!(
+        "external-revoke-{}-{}",
+        session_id,
+        se_types::hex_lower(&nonce[..8])
+    ))?;
+    Ok(WriteIdentity {
+        operation: "external.revoke",
+        key: Some(key),
+        natural_key: None,
+        natural_events: Vec::new(),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn commit_revocation(
     router: &HostedRouter,
@@ -471,6 +486,7 @@ pub(crate) async fn commit_revocation(
     session_rev: Revision,
     cred: Option<(RecordId, Revision)>,
     reason: &str,
+    identity: WriteIdentity,
     deadline: &Deadline,
 ) -> Result<Option<SeError>> {
     commit_revocation_on_execution(
@@ -481,6 +497,7 @@ pub(crate) async fn commit_revocation(
         session_rev,
         cred,
         reason,
+        identity,
         deadline,
     )
     .await
@@ -496,8 +513,9 @@ fn build_revocation_batch(
     session_rev: Revision,
     cred: Option<(RecordId, Revision)>,
     reason: String,
+    key: IdempotencyKey,
     now_us: i64,
-) -> Result<(AtomicBatch, IdempotencyKey)> {
+) -> Result<AtomicBatch> {
     let phase = reads.read_phase().map_err(|e| store_error(&e))?;
     let current_owner = phase.runtime_owner().map_err(|e| store_error(&e))?;
     if !matches!(current_owner, se_types::Read::Present { value } if value.generation == generation)
@@ -521,16 +539,7 @@ fn build_revocation_batch(
         .map_err(|e| store_error(&e))?;
     let info = snap.info();
     let res = (|| {
-        let nonce = crate::client::auth::fresh_nonce()?;
-        let key = IdempotencyKey::new(format!(
-            "external-revoke-{}-{}",
-            session_id,
-            se_types::hex_lower(&nonce[..8])
-        ))?;
-        let intent = serde_json::json!({
-            "session": session_id,
-            "reason": reason,
-        });
+        let intent = serde_json::json!({ "session": session_id });
         let intent_bytes = serde_json::to_vec(&intent)
             .map_err(|_| SeError::invalid("external revoke intent", "valid JSON"))?;
         let mut events = Vec::new();
@@ -556,11 +565,11 @@ fn build_revocation_batch(
                 reason: InputText::Inline(reason),
             },
         )?);
-        let batch = AtomicBatch {
+        Ok(AtomicBatch {
             expected_incarnation: info.incarnation,
             admission,
             request: Some(RequestIdentity {
-                key: key.clone(),
+                key,
                 intent: se_store::IntentDigest {
                     operation: "external.revoke",
                     codec_version: 1,
@@ -569,8 +578,7 @@ fn build_revocation_batch(
             }),
             import_checkpoint: None,
             events,
-        };
-        Ok((batch, key))
+        })
     })();
     crate::runtime::executor::close_read(res, snap.close())
 }
@@ -584,8 +592,13 @@ pub(crate) async fn commit_revocation_on_store(
     session_rev: Revision,
     cred: Option<(RecordId, Revision)>,
     reason: &str,
+    identity: WriteIdentity,
     deadline: &Deadline,
 ) -> Result<Option<SeError>> {
+    let key = identity
+        .key
+        .clone()
+        .ok_or_else(|| SeError::invalid("external revoke key", "idempotency key"))?;
     let now_us = now_unix_micros()?;
     let reads = store.reads.clone();
     let generation = store.generation;
@@ -593,7 +606,7 @@ pub(crate) async fn commit_revocation_on_store(
     let project_cloned = project.clone();
     let session_cloned = session_id.clone();
     let reason_owned = reason.to_owned();
-    let (batch, key) = store
+    let batch = store
         .pool
         .run_owned(deadline, move || {
             build_revocation_batch(
@@ -605,22 +618,18 @@ pub(crate) async fn commit_revocation_on_store(
                 session_rev,
                 cred,
                 reason_owned,
+                key,
                 now_us,
             )
         })
         .await?;
-    let identity = WriteIdentity {
-        operation: "external.revoke",
-        key: Some(key),
-        natural_key: None,
-        natural_events: Vec::new(),
-    };
     let observer_warning = match store
         .submit_batch_retained(batch, identity, deadline)
         .await?
     {
         crate::runtime::submit::RetainedCommit::Committed { observer_warning } => observer_warning,
-        crate::runtime::submit::RetainedCommit::OutcomeUnknown(err) => return Err(err),
+        crate::runtime::submit::RetainedCommit::OutcomeUnknown(err)
+        | crate::runtime::submit::RetainedCommit::ObserverLost(err) => return Err(err),
     };
     let mut revocations = crate::runtime::mail::Revocations::default();
     revocations
@@ -642,6 +651,7 @@ pub(crate) async fn commit_revocation_on_execution(
     session_rev: Revision,
     cred: Option<(RecordId, Revision)>,
     reason: &str,
+    identity: WriteIdentity,
     deadline: &Deadline,
 ) -> Result<Option<SeError>> {
     let store = crate::runtime::store::Store::for_execution(execution);
@@ -653,6 +663,7 @@ pub(crate) async fn commit_revocation_on_execution(
         session_rev,
         cred,
         reason,
+        identity,
         deadline,
     )
     .await

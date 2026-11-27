@@ -12,9 +12,14 @@ pub(crate) enum RetainedCommit {
     Committed {
         observer_warning: Option<se_types::SeError>,
     },
-    /// The writer or observer reported an indeterminate post-enqueue outcome;
-    /// caller must reconcile against durable store state and retire `identity`.
+    /// The writer itself returned `CommitOutcomeUnknown` after settling its
+    /// transaction attempt; caller can reconcile via exact-record snapshot and
+    /// retire `identity`.
     OutcomeUnknown(se_types::SeError),
+    /// The completion observer task failed to join without a writer settlement
+    /// witness. The accepted writer command may still be queued or executing,
+    /// so an absent snapshot cannot clear the pending write.
+    ObserverLost(se_types::SeError),
 }
 
 /// Shared retained submission path used by both `ExecutionContext` and `Store`:
@@ -76,7 +81,7 @@ pub(super) async fn enqueue_and_await_retained(
     let (receipt, settled) = match completion.await {
         Ok(outcome) => outcome,
         Err(error) => {
-            return Ok(RetainedCommit::OutcomeUnknown(identity.wait_error(
+            return Ok(RetainedCommit::ObserverLost(identity.wait_error(
                 se_core::scope::unreadable("write completion observer", &error.to_string()),
             )));
         }

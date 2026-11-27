@@ -122,6 +122,12 @@ async fn revoke_expired_lease_on_store(
         })
         .await?;
     if let Some(session_rev) = rev_info {
+        let revoke_identity = external.ensure_revoke_identity(
+            &lease.project_id,
+            &lease.agent_id,
+            &lease.session_id,
+            lease.lease_generation,
+        )?;
         let warn = commit::commit_revocation_on_store(
             store,
             owner,
@@ -130,32 +136,35 @@ async fn revoke_expired_lease_on_store(
             session_rev,
             Some((lease.credential_id, commit::rev(2))),
             EXPIRED_LEASE_REASON,
+            revoke_identity,
             deadline,
         )
         .await?;
-        let _ = external.remove_if_matching(
+        let _ = external.remove_if_matching_and_retire(
+            &store.pending,
             &lease.project_id,
             &lease.agent_id,
             &lease.session_id,
             lease.lease_generation,
         )?;
-        if let Some(pending_id) = &lease.pending_write {
-            store.pending.resolve(pending_id)?;
-        }
         if let Some(err) = warn {
             return Err(err);
         }
         Ok(true)
     } else {
-        let _ = external.remove_if_matching(
+        if lease.approval_observer_lost && now_unix_micros()? < lease.expires_at_us {
+            return Err(se_core::scope::unreadable(
+                "external seat approval",
+                "approval completion observer was lost; waiting for settlement or lease expiry",
+            ));
+        }
+        let _ = external.remove_if_matching_and_retire(
+            &store.pending,
             &lease.project_id,
             &lease.agent_id,
             &lease.session_id,
             lease.lease_generation,
         )?;
-        if let Some(pending_id) = &lease.pending_write {
-            store.pending.resolve(pending_id)?;
-        }
         Ok(false)
     }
 }
@@ -196,6 +205,7 @@ pub(crate) async fn reconcile_external_for_launch_on_store(
         })
         .await?;
     if let commit::LiveSeatCheck::StaleExternal(stale, reason) = check {
+        let revoke_identity = commit::fresh_revoke_identity(&stale.session_id)?;
         let warn = commit::commit_revocation_on_store(
             store,
             owner,
@@ -204,6 +214,7 @@ pub(crate) async fn reconcile_external_for_launch_on_store(
             stale.session_rev,
             stale.cred,
             reason,
+            revoke_identity,
             deadline,
         )
         .await?;
@@ -267,6 +278,7 @@ async fn ensure_agent_clear_locked(
     match live_check {
         commit::LiveSeatCheck::Clear => Ok(()),
         commit::LiveSeatCheck::StaleExternal(stale, reason) => {
+            let revoke_identity = commit::fresh_revoke_identity(&stale.session_id)?;
             if let Some(warn) = commit::commit_revocation(
                 router,
                 project_id,
@@ -274,6 +286,7 @@ async fn ensure_agent_clear_locked(
                 stale.session_rev,
                 stale.cred,
                 reason,
+                revoke_identity,
                 deadline,
             )
             .await?
@@ -353,6 +366,8 @@ pub(crate) async fn approve_claim(
         expires_at_us,
         reconcile_required: false,
         pending_write: None,
+        revoke_write: None,
+        approval_observer_lost: false,
     };
     let observer_warning =
         settle_approve_commit(router, batch, &identity, &active, deadline).await?;
@@ -381,6 +396,14 @@ async fn settle_approve_commit(
 ) -> Result<Option<SeError>> {
     match submit::submit_retained(&router.execution, batch, identity, deadline).await? {
         submit::RetainedCommit::Committed { observer_warning } => Ok(observer_warning),
+        submit::RetainedCommit::ObserverLost(err) => {
+            let mut pending = active.clone();
+            pending.reconcile_required = true;
+            pending.pending_write = Some(identity.clone());
+            pending.approval_observer_lost = true;
+            let _ = router.execution.external.record_active_lease(pending);
+            Err(err)
+        }
         submit::RetainedCommit::OutcomeUnknown(err) => {
             let check_deadline =
                 crate::runtime::serve::options(std::time::Duration::from_secs(10))?;
@@ -505,6 +528,36 @@ async fn handoff_to_bridge_locked(
     })
 }
 
+async fn resolve_agent_id_for_revoke(
+    router: &HostedRouter,
+    project: &ProjectId,
+    agent_selector: &str,
+    deadline: &Deadline,
+) -> Result<AgentId> {
+    let context = router.context.clone();
+    let project = project.clone();
+    let selector = agent_selector.to_owned();
+    router
+        .execution
+        .blocking
+        .run_owned(deadline, move || {
+            let phase = context.reads.read_phase().map_err(|e| store_error(&e))?;
+            if let Err(error) = context.check_generation(&phase) {
+                return crate::runtime::executor::close_read(Err(error), phase.close());
+            }
+            let (agent_id, _, _) = resolve_external_agent(
+                phase,
+                &project,
+                &context.owner,
+                context.generation.get(),
+                &selector,
+                false,
+            )?;
+            Ok(agent_id)
+        })
+        .await
+}
+
 /// Owner revokes an active external seat by agent name or ID, serialized per agent.
 pub(crate) async fn revoke_seat(
     router: &HostedRouter,
@@ -514,30 +567,7 @@ pub(crate) async fn revoke_seat(
     deadline: &Deadline,
 ) -> Result<ExternalRevokeOutput> {
     router.check_open()?;
-    let agent_id = {
-        let context = router.context.clone();
-        let project = project.clone();
-        let selector = agent_selector.to_owned();
-        router
-            .execution
-            .blocking
-            .run_owned(deadline, move || {
-                let phase = context.reads.read_phase().map_err(|e| store_error(&e))?;
-                if let Err(error) = context.check_generation(&phase) {
-                    return crate::runtime::executor::close_read(Err(error), phase.close());
-                }
-                let (agent_id, _, _) = resolve_external_agent(
-                    phase,
-                    &project,
-                    &context.owner,
-                    context.generation.get(),
-                    &selector,
-                    false,
-                )?;
-                Ok(agent_id)
-            })
-            .await?
-    };
+    let agent_id = resolve_agent_id_for_revoke(router, &project, agent_selector, deadline).await?;
     let _agent_guard = router
         .execution
         .external
@@ -567,6 +597,15 @@ pub(crate) async fn revoke_seat(
             .await?
     };
 
+    let revoke_identity = router
+        .execution
+        .external
+        .ensure_revoke_identity_for_session(
+            &project,
+            &agent_id,
+            &active.session_id,
+            active.lease_generation,
+        )?;
     let observer_warning = commit::commit_revocation(
         router,
         &project,
@@ -574,23 +613,25 @@ pub(crate) async fn revoke_seat(
         active.session_rev,
         active.cred,
         reason,
+        revoke_identity,
         deadline,
     )
     .await?;
 
     let removed = match active.lease_generation {
-        Some(lease_gen) => router.execution.external.remove_if_matching(
+        Some(lease_gen) => router.execution.external.remove_if_matching_and_retire(
+            &router.execution.pending_writes,
             &project,
             &agent_id,
             &active.session_id,
             lease_gen,
         )?,
-        None => {
-            router
-                .execution
-                .external
-                .remove_if_session(&project, &agent_id, &active.session_id)?
-        }
+        None => router.execution.external.remove_if_session_and_retire(
+            &router.execution.pending_writes,
+            &project,
+            &agent_id,
+            &active.session_id,
+        )?,
     };
     if let Some(warn) = observer_warning {
         return Err(warn);
@@ -703,20 +744,30 @@ async fn fenced_disconnect_locked_on_execution(
     )
     .await?;
     let Some((session_rev, cred_id, cred_rev)) = rev_info else {
-        let _ = execution.external.remove_if_matching(
+        if lease.approval_observer_lost && now_unix_micros()? < lease.expires_at_us {
+            return Err(se_core::scope::unreadable(
+                "external seat approval",
+                "approval completion observer was lost; waiting for settlement or lease expiry",
+            ));
+        }
+        let _ = execution.external.remove_if_matching_and_retire(
+            &execution.pending_writes,
             project_id,
             agent_id,
             session_id,
             lease_generation,
         )?;
-        if let Some(pending_id) = &lease.pending_write {
-            execution.pending_writes.resolve(pending_id)?;
-        }
         return Ok(DisconnectOutcome {
             revoked: false,
             observer_warning: None,
         });
     };
+    let revoke_identity = execution.external.ensure_revoke_identity(
+        project_id,
+        agent_id,
+        session_id,
+        lease_generation,
+    )?;
     let observer_warning = commit::commit_revocation_on_execution(
         execution,
         owner,
@@ -725,18 +776,17 @@ async fn fenced_disconnect_locked_on_execution(
         session_rev,
         Some((cred_id, cred_rev)),
         reason,
+        revoke_identity,
         deadline,
     )
     .await?;
-    let _ = execution.external.remove_if_matching(
+    let _ = execution.external.remove_if_matching_and_retire(
+        &execution.pending_writes,
         project_id,
         agent_id,
         session_id,
         lease_generation,
     )?;
-    if let Some(pending_id) = &lease.pending_write {
-        execution.pending_writes.resolve(pending_id)?;
-    }
     Ok(DisconnectOutcome {
         revoked: true,
         observer_warning,

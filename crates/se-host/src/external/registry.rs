@@ -96,6 +96,13 @@ pub(crate) struct ActiveLease {
     /// Original approval `WriteIdentity` retained while indeterminate so
     /// subsequent reconciliation retires it from `PendingWrites` once settled.
     pub pending_write: Option<crate::runtime::WriteIdentity>,
+    /// Stable revocation `WriteIdentity` reused across revocation retries and
+    /// retired from `PendingWrites` when the lease is removed after settlement.
+    pub revoke_write: Option<crate::runtime::WriteIdentity>,
+    /// True when the approval completion observer failed to join without a
+    /// writer settlement witness, so an absent snapshot before expiry cannot
+    /// assume the queued write never committed.
+    pub approval_observer_lost: bool,
 }
 
 /// Tracks pending claims and active external seat leases for this host generation.
@@ -119,6 +126,16 @@ impl Default for ExternalRegistry {
             state: Mutex::new(RegistryState::default()),
         }
     }
+}
+
+fn retire_lease_writes(pending: &crate::PendingWrites, lease: &ActiveLease) -> Result<()> {
+    if let Some(pending_id) = &lease.pending_write {
+        pending.resolve(pending_id)?;
+    }
+    if let Some(revoke_id) = &lease.revoke_write {
+        pending.resolve(revoke_id)?;
+    }
+    Ok(())
 }
 
 /// Inputs required to open a pending external seat claim.
@@ -339,6 +356,84 @@ impl ExternalRegistry {
             .active
             .insert((lease.project_id.clone(), lease.agent_id.clone()), lease);
         Ok(())
+    }
+
+    /// Return the lease's stable revocation `WriteIdentity`, minting and storing
+    /// it once so retries reuse the same key instead of adding new pending entries.
+    pub(crate) fn ensure_revoke_identity(
+        &self,
+        project_id: &ProjectId,
+        agent_id: &AgentId,
+        session_id: &SessionId,
+        lease_generation: u64,
+    ) -> Result<crate::runtime::WriteIdentity> {
+        self.ensure_revoke_identity_for_session(
+            project_id,
+            agent_id,
+            session_id,
+            Some(lease_generation),
+        )
+    }
+
+    /// Remove a matching active lease and retire any tracked approval or
+    /// revocation write identities from `pending` through one shared path.
+    pub(crate) fn remove_if_matching_and_retire(
+        &self,
+        pending: &crate::PendingWrites,
+        project_id: &ProjectId,
+        agent_id: &AgentId,
+        session_id: &SessionId,
+        lease_generation: u64,
+    ) -> Result<Option<ActiveLease>> {
+        let removed =
+            self.remove_if_matching(project_id, agent_id, session_id, lease_generation)?;
+        if let Some(lease) = &removed {
+            retire_lease_writes(pending, lease)?;
+        }
+        Ok(removed)
+    }
+
+    /// Remove a session-matching active lease and retire any tracked approval or
+    /// revocation write identities from `pending` through one shared path.
+    pub(crate) fn remove_if_session_and_retire(
+        &self,
+        pending: &crate::PendingWrites,
+        project_id: &ProjectId,
+        agent_id: &AgentId,
+        session_id: &SessionId,
+    ) -> Result<Option<ActiveLease>> {
+        let removed = self.remove_if_session(project_id, agent_id, session_id)?;
+        if let Some(lease) = &removed {
+            retire_lease_writes(pending, lease)?;
+        }
+        Ok(removed)
+    }
+
+    /// Return the stable revocation `WriteIdentity` for an active lease matching
+    /// `(project_id, agent_id, session_id)` (and optional `lease_generation`),
+    /// or mint a fresh identity when revoking a stale session with no live lease.
+    pub(crate) fn ensure_revoke_identity_for_session(
+        &self,
+        project_id: &ProjectId,
+        agent_id: &AgentId,
+        session_id: &SessionId,
+        lease_generation: Option<u64>,
+    ) -> Result<crate::runtime::WriteIdentity> {
+        let mut guard = self.state.lock().map_err(|_| poisoned())?;
+        if let Some(lease) = guard
+            .active
+            .get_mut(&(project_id.clone(), agent_id.clone()))
+            && lease.session_id == *session_id
+            && lease_generation.is_none_or(|g| lease.lease_generation == g)
+        {
+            if let Some(existing) = &lease.revoke_write {
+                return Ok(existing.clone());
+            }
+            let fresh = super::commit::fresh_revoke_identity(session_id)?;
+            lease.revoke_write = Some(fresh.clone());
+            return Ok(fresh);
+        }
+        super::commit::fresh_revoke_identity(session_id)
     }
 
     /// Read-only fenced lookup matching exact `(session_id, lease_generation)`.
