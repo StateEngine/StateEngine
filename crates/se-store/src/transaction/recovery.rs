@@ -176,6 +176,7 @@ impl Engine {
             .map_err(sql)?;
         let committed = checked?;
         rollback?;
+        connection::set_temp_store(&self.db, path, true)?;
         if !matches!(
             lease.files().inspect_metadata(path)?,
             se_types::Read::Present { .. }

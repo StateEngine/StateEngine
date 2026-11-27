@@ -364,11 +364,15 @@ fn requested(host: &SqliteHost, erasure: &RecordId) -> StoreResult<Option<bool>>
 }
 /// Rewrites the database without free pages, then empties the write-ahead log.
 fn rewrite(host: &mut SqliteHost, lease: &dyn RuntimeLease) -> StoreResult<bool> {
-    host.engine.db.execute_batch("VACUUM").map_err(|error| {
+    connection::set_temp_store(&host.engine.db, &host.reader.path, false)?;
+    let vacuum = host.engine.db.execute_batch("VACUUM").map_err(|error| {
         let mut error = sql(error);
         error.code = StoreErrorCode::ErasurePhysicalGuaranteeUnavailable;
         error
-    })?;
+    });
+    let restored = connection::set_temp_store(&host.engine.db, &host.reader.path, true);
+    vacuum?;
+    restored?;
     let until = Instant::now() + host.engine.timeout;
     loop {
         let report = host.checkpoint(CheckpointMode::Truncate, lease)?;

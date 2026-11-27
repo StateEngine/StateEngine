@@ -188,6 +188,7 @@ impl SqliteFactory {
                     );
                     crate::migration::upgrade(&db, o, lease, context)?;
                 }
+                connection::set_temp_store(&db, &reader.path, true)?;
                 let reader_path = reader.path.clone();
                 Ok(Read::Present {
                     value: SqliteHost::maintenance(
@@ -233,6 +234,7 @@ impl StoreFactory for SqliteFactory {
             Read::Present { value: reader } => {
                 let (db, info) = Self::open_verified_writer(&reader, o.busy_timeout)?;
                 let identity = crate::open::validate_lease(&info, lease, LeaseMode::DirectClient)?;
+                connection::set_temp_store(&db, &reader.path, true)?;
                 let reader_path = reader.path.clone();
                 Ok(Read::Present {
                     value: SqliteDirect {

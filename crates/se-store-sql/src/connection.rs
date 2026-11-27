@@ -92,7 +92,7 @@ pub fn configure(
             if journal != "wal" {
                 return Err(fail(StoreErrorCode::PragmaRefused, "WAL refused"));
             }
-            c.execute_batch(&format!("PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; PRAGMA wal_autocheckpoint=0; PRAGMA journal_size_limit={WAL_KEEP_BYTES};")).map_err(sql)?;
+            c.execute_batch(&format!("PRAGMA synchronous=NORMAL; PRAGMA wal_autocheckpoint=0; PRAGMA journal_size_limit={WAL_KEEP_BYTES};")).map_err(sql)?;
         }
         for (name, arity) in [
             ("se_erase_operation_allowed", 1),
@@ -110,7 +110,7 @@ pub fn configure(
             ("foreign_keys", 1i64),
             ("trusted_schema", 0),
             ("mmap_size", 0),
-            ("temp_store", if writable { 2 } else { 1 }),
+            ("temp_store", 1),
         ] {
             let actual: i64 = c
                 .query_row(&format!("PRAGMA {name}"), [], |r| {
@@ -123,6 +123,28 @@ pub fn configure(
                     format!("{name} readback differs"),
                 ));
             }
+        }
+        Ok(())
+    })();
+    result.map_err(|error| context(error, path, StoreIoStage::PragmaReadback))
+}
+pub fn set_temp_store(c: &Connection, path: &Path, memory: bool) -> StoreResult<()> {
+    let (mode, expected) = if memory {
+        ("MEMORY", 2i64)
+    } else {
+        ("FILE", 1i64)
+    };
+    let result = (|| {
+        c.execute_batch(&format!("PRAGMA temp_store={mode};"))
+            .map_err(sql)?;
+        let actual: i64 = c
+            .query_row("PRAGMA temp_store", [], |r| crate::sql_value::value(r, 0))
+            .map_err(sql)?;
+        if actual != expected {
+            return Err(fail(
+                StoreErrorCode::PragmaRefused,
+                "temp_store readback differs",
+            ));
         }
         Ok(())
     })();
