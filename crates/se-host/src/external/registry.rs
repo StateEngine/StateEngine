@@ -96,13 +96,18 @@ pub(crate) struct ActiveLease {
     /// Original approval `WriteIdentity` retained while indeterminate so
     /// subsequent reconciliation retires it from `PendingWrites` once settled.
     pub pending_write: Option<crate::runtime::WriteIdentity>,
-    /// Stable revocation `WriteIdentity` reused across revocation retries and
-    /// retired from `PendingWrites` when the lease is removed after settlement.
-    pub revoke_write: Option<crate::runtime::WriteIdentity>,
     /// True when the approval completion observer failed to join without a
-    /// writer settlement witness, so an absent snapshot before expiry cannot
-    /// assume the queued write never committed.
+    /// writer settlement witness, so an absent snapshot cannot assume the
+    /// accepted writer command never committed.
     pub approval_observer_lost: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PendingRevocation {
+    pub project_id: ProjectId,
+    pub agent_id: AgentId,
+    pub session_id: SessionId,
+    pub identity: crate::runtime::WriteIdentity,
 }
 
 /// Tracks pending claims and active external seat leases for this host generation.
@@ -117,6 +122,9 @@ struct RegistryState {
     active: BTreeMap<(ProjectId, AgentId), ActiveLease>,
     receivers: BTreeMap<String, ClaimReceiver>,
     agent_locks: BTreeMap<(ProjectId, AgentId), Arc<tokio::sync::Mutex<()>>>,
+    /// Pending revocation `WriteIdentity` keyed by exact durable `SessionId`,
+    /// independent of whether an in-memory `ActiveLease` exists.
+    pending_revocations: BTreeMap<SessionId, PendingRevocation>,
 }
 
 impl Default for ExternalRegistry {
@@ -128,12 +136,16 @@ impl Default for ExternalRegistry {
     }
 }
 
-fn retire_lease_writes(pending: &crate::PendingWrites, lease: &ActiveLease) -> Result<()> {
-    if let Some(pending_id) = &lease.pending_write {
+fn retire_writes(
+    pending: &crate::PendingWrites,
+    lease: Option<&ActiveLease>,
+    revocation: Option<&PendingRevocation>,
+) -> Result<()> {
+    if let Some(pending_id) = lease.and_then(|l| l.pending_write.as_ref()) {
         pending.resolve(pending_id)?;
     }
-    if let Some(revoke_id) = &lease.revoke_write {
-        pending.resolve(revoke_id)?;
+    if let Some(rev) = revocation {
+        pending.resolve(&rev.identity)?;
     }
     Ok(())
 }
@@ -358,25 +370,49 @@ impl ExternalRegistry {
         Ok(())
     }
 
-    /// Return the lease's stable revocation `WriteIdentity`, minting and storing
-    /// it once so retries reuse the same key instead of adding new pending entries.
+    /// Return the stable revocation `WriteIdentity` keyed by exact durable
+    /// `SessionId` (independent of whether an in-memory `ActiveLease` exists),
+    /// minting and storing it once so retries reuse the same key.
     pub(crate) fn ensure_revoke_identity(
         &self,
         project_id: &ProjectId,
         agent_id: &AgentId,
         session_id: &SessionId,
-        lease_generation: u64,
     ) -> Result<crate::runtime::WriteIdentity> {
-        self.ensure_revoke_identity_for_session(
-            project_id,
-            agent_id,
-            session_id,
-            Some(lease_generation),
-        )
+        let mut guard = self.state.lock().map_err(|_| poisoned())?;
+        if let Some(existing) = guard.pending_revocations.get(session_id) {
+            return Ok(existing.identity.clone());
+        }
+        let fresh = super::commit::fresh_revoke_identity(session_id)?;
+        guard.pending_revocations.insert(
+            session_id.clone(),
+            PendingRevocation {
+                project_id: project_id.clone(),
+                agent_id: agent_id.clone(),
+                session_id: session_id.clone(),
+                identity: fresh.clone(),
+            },
+        );
+        Ok(fresh)
     }
 
-    /// Remove a matching active lease and retire any tracked approval or
-    /// revocation write identities from `pending` through one shared path.
+    /// Snapshot pending revocation entries tracked for `(project_id, agent_id)`.
+    pub(crate) fn pending_revocations_for_agent(
+        &self,
+        project_id: &ProjectId,
+        agent_id: &AgentId,
+    ) -> Result<Vec<PendingRevocation>> {
+        let guard = self.state.lock().map_err(|_| poisoned())?;
+        Ok(guard
+            .pending_revocations
+            .values()
+            .filter(|rev| rev.project_id == *project_id && rev.agent_id == *agent_id)
+            .cloned()
+            .collect())
+    }
+
+    /// Remove a matching active lease and any pending revocation entry for
+    /// `session_id`, then retire all tracked write identities from `pending`.
     pub(crate) fn remove_if_matching_and_retire(
         &self,
         pending: &crate::PendingWrites,
@@ -385,16 +421,25 @@ impl ExternalRegistry {
         session_id: &SessionId,
         lease_generation: u64,
     ) -> Result<Option<ActiveLease>> {
-        let removed =
-            self.remove_if_matching(project_id, agent_id, session_id, lease_generation)?;
-        if let Some(lease) = &removed {
-            retire_lease_writes(pending, lease)?;
-        }
+        let (removed, revocation) = {
+            let mut guard = self.state.lock().map_err(|_| poisoned())?;
+            let key = (project_id.clone(), agent_id.clone());
+            let removed = if guard.active.get(&key).is_some_and(|l| {
+                l.session_id == *session_id && l.lease_generation == lease_generation
+            }) {
+                guard.active.remove(&key)
+            } else {
+                None
+            };
+            let revocation = guard.pending_revocations.remove(session_id);
+            (removed, revocation)
+        };
+        retire_writes(pending, removed.as_ref(), revocation.as_ref())?;
         Ok(removed)
     }
 
-    /// Remove a session-matching active lease and retire any tracked approval or
-    /// revocation write identities from `pending` through one shared path.
+    /// Remove any session-matching active lease and any pending revocation entry
+    /// for `session_id`, then retire all tracked write identities from `pending`.
     pub(crate) fn remove_if_session_and_retire(
         &self,
         pending: &crate::PendingWrites,
@@ -402,38 +447,23 @@ impl ExternalRegistry {
         agent_id: &AgentId,
         session_id: &SessionId,
     ) -> Result<Option<ActiveLease>> {
-        let removed = self.remove_if_session(project_id, agent_id, session_id)?;
-        if let Some(lease) = &removed {
-            retire_lease_writes(pending, lease)?;
-        }
+        let (removed, revocation) = {
+            let mut guard = self.state.lock().map_err(|_| poisoned())?;
+            let key = (project_id.clone(), agent_id.clone());
+            let removed = if guard
+                .active
+                .get(&key)
+                .is_some_and(|l| l.session_id == *session_id)
+            {
+                guard.active.remove(&key)
+            } else {
+                None
+            };
+            let revocation = guard.pending_revocations.remove(session_id);
+            (removed, revocation)
+        };
+        retire_writes(pending, removed.as_ref(), revocation.as_ref())?;
         Ok(removed)
-    }
-
-    /// Return the stable revocation `WriteIdentity` for an active lease matching
-    /// `(project_id, agent_id, session_id)` (and optional `lease_generation`),
-    /// or mint a fresh identity when revoking a stale session with no live lease.
-    pub(crate) fn ensure_revoke_identity_for_session(
-        &self,
-        project_id: &ProjectId,
-        agent_id: &AgentId,
-        session_id: &SessionId,
-        lease_generation: Option<u64>,
-    ) -> Result<crate::runtime::WriteIdentity> {
-        let mut guard = self.state.lock().map_err(|_| poisoned())?;
-        if let Some(lease) = guard
-            .active
-            .get_mut(&(project_id.clone(), agent_id.clone()))
-            && lease.session_id == *session_id
-            && lease_generation.is_none_or(|g| lease.lease_generation == g)
-        {
-            if let Some(existing) = &lease.revoke_write {
-                return Ok(existing.clone());
-            }
-            let fresh = super::commit::fresh_revoke_identity(session_id)?;
-            lease.revoke_write = Some(fresh.clone());
-            return Ok(fresh);
-        }
-        super::commit::fresh_revoke_identity(session_id)
     }
 
     /// Read-only fenced lookup matching exact `(session_id, lease_generation)`.
@@ -498,47 +528,6 @@ impl ExternalRegistry {
                 .values()
                 .any(|lease| lease.reconcile_required || lease.expires_at_us <= now_us)
         })
-    }
-
-    /// Fenced removal: removes the active lease ONLY if `(session_id, lease_generation)` matches.
-    /// Returns `Some(lease)` if this call won the fence, or `None` if already superseded/revoked.
-    pub(crate) fn remove_if_matching(
-        &self,
-        project_id: &ProjectId,
-        agent_id: &AgentId,
-        session_id: &SessionId,
-        lease_generation: u64,
-    ) -> Result<Option<ActiveLease>> {
-        let mut guard = self.state.lock().map_err(|_| poisoned())?;
-        let key = (project_id.clone(), agent_id.clone());
-        let matches = guard.active.get(&key).is_some_and(|lease| {
-            lease.session_id == *session_id && lease.lease_generation == lease_generation
-        });
-        if matches {
-            Ok(guard.active.remove(&key))
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Fenced removal by exact `session_id` (never wipes a successor session).
-    pub(crate) fn remove_if_session(
-        &self,
-        project_id: &ProjectId,
-        agent_id: &AgentId,
-        session_id: &SessionId,
-    ) -> Result<Option<ActiveLease>> {
-        let mut guard = self.state.lock().map_err(|_| poisoned())?;
-        let key = (project_id.clone(), agent_id.clone());
-        let matches = guard
-            .active
-            .get(&key)
-            .is_some_and(|lease| lease.session_id == *session_id);
-        if matches {
-            Ok(guard.active.remove(&key))
-        } else {
-            Ok(None)
-        }
     }
 
     /// Returns the healthy unexpired active lease for `(project_id, agent_id)`, if any.

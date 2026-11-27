@@ -22,11 +22,21 @@ pub(crate) enum RetainedCommit {
     ObserverLost(se_types::SeError),
 }
 
+/// Authoritative writer settlement witness emitted by `CommitObserver`
+/// immediately after `completion.await` completes, before any secondary
+/// observer side-effects (record feed, mail wakes, custody) can fail or panic.
+pub(super) enum WriterWitness {
+    Committed(Vec<se_types::EventId>),
+    OutcomeUnknown(se_types::SeError),
+    DefiniteFailure(se_types::SeError),
+}
+
 /// Shared retained submission path used by both `ExecutionContext` and `Store`:
 /// enqueues under `enqueue_deadline`, then awaits the writer's authoritative
-/// durable outcome without cutting off an already-accepted write. Any post-enqueue
-/// observer join failure is mapped to `RetainedCommit::OutcomeUnknown` so callers
-/// always run exact-record reconciliation instead of bypassing it.
+/// durable outcome without cutting off an already-accepted write. If the
+/// observer task fails to join after the writer already replied, the direct
+/// `WriterWitness` channel preserves the exact durable outcome; only a join
+/// failure with no writer settlement witness maps to `ObserverLost`.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn enqueue_and_await_retained(
     blocking: &crate::BlockingPool,
@@ -44,7 +54,9 @@ pub(super) async fn enqueue_and_await_retained(
     let revocations = super::mail::revocations(&batch);
     let submit_deadline = enqueue_deadline.clone();
     let submitted = identity.clone();
+    let pending_after = pending.clone();
     let runtime = blocking.handle();
+    let (witness_tx, mut witness_rx) = tokio::sync::oneshot::channel();
     let (completion, _submission) =
         timings::blocking(blocking, Mode::Owned, enqueue_deadline, move || {
             submit_deadline.remaining()?;
@@ -62,6 +74,7 @@ pub(super) async fn enqueue_and_await_retained(
                     revocations,
                     recipients,
                     custody,
+                    witness: Some(witness_tx),
                 }
                 .spawn(&runtime)),
                 Err(error) => {
@@ -81,9 +94,7 @@ pub(super) async fn enqueue_and_await_retained(
     let (receipt, settled) = match completion.await {
         Ok(outcome) => outcome,
         Err(error) => {
-            return Ok(RetainedCommit::ObserverLost(identity.wait_error(
-                se_core::scope::unreadable("write completion observer", &error.to_string()),
-            )));
+            return recover_observer_join_error(identity, &pending_after, &mut witness_rx, error);
         }
     };
     match receipt {
@@ -119,6 +130,40 @@ pub(super) async fn enqueue_and_await_retained(
 
 /// Submit a batch under `enqueue_deadline`, then await the writer's authoritative
 /// durable outcome without cutting off an already-accepted write on a short request deadline.
+fn recover_observer_join_error(
+    identity: &WriteIdentity,
+    pending: &super::failure::PendingWrites,
+    witness_rx: &mut tokio::sync::oneshot::Receiver<WriterWitness>,
+    error: tokio::task::JoinError,
+) -> Result<RetainedCommit> {
+    let observer_err = se_core::scope::unreadable("write completion observer", &error.to_string());
+    match witness_rx.try_recv() {
+        Ok(WriterWitness::Committed(committed_events)) => {
+            let _ = pending.resolve(identity);
+            let warning = CommittedWrite {
+                operation: identity.operation.into(),
+                key: identity.key.clone(),
+                natural_events: identity.natural_events.clone(),
+                committed_events,
+            }
+            .response_error(observer_err);
+            Ok(RetainedCommit::Committed {
+                observer_warning: Some(warning),
+            })
+        }
+        Ok(WriterWitness::OutcomeUnknown(store_err)) => Ok(RetainedCommit::OutcomeUnknown(
+            store_err.with_cause(observer_err),
+        )),
+        Ok(WriterWitness::DefiniteFailure(store_err)) => {
+            let _ = pending.failed_attempt(identity);
+            Err(store_err.with_cause(observer_err))
+        }
+        Err(_) => Ok(RetainedCommit::ObserverLost(
+            identity.wait_error(observer_err),
+        )),
+    }
+}
+
 pub(crate) async fn submit_retained(
     context: &ExecutionContext,
     batch: AtomicBatch,
@@ -232,6 +277,7 @@ async fn measured_with(
                         revocations,
                         recipients,
                         custody,
+                        witness: None,
                     }
                     .spawn(&runtime))
                 }
@@ -291,6 +337,7 @@ pub(super) struct CommitObserver {
     pub(super) revocations: super::mail::Revocations,
     pub(super) recipients: Vec<super::mail::MailRecipient>,
     pub(super) custody: Option<Arc<dyn super::CustodyExecutor>>,
+    pub(super) witness: Option<tokio::sync::oneshot::Sender<WriterWitness>>,
 }
 
 impl CommitObserver {
@@ -300,6 +347,16 @@ impl CommitObserver {
     ) -> tokio::task::JoinHandle<(se_store::StoreResult<CommitReceipt>, Result<()>)> {
         runtime.spawn(async move {
             let receipt = self.completion.await;
+            if let Some(tx) = self.witness {
+                let witness = match &receipt {
+                    Ok(committed) => WriterWitness::Committed(committed.events.clone()),
+                    Err(error) if error.code == se_store::StoreErrorCode::CommitOutcomeUnknown => {
+                        WriterWitness::OutcomeUnknown(self.submitted.store_error(error))
+                    }
+                    Err(error) => WriterWitness::DefiniteFailure(self.submitted.store_error(error)),
+                };
+                let _ = tx.send(witness);
+            }
             if receipt
                 .as_ref()
                 .is_err_and(|e| e.code == se_store::StoreErrorCode::CommitOutcomeUnknown)

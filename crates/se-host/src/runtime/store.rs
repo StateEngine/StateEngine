@@ -309,6 +309,7 @@ impl Store {
                         revocations,
                         recipients,
                         custody: None,
+                        witness: None,
                     }
                     .spawn(&runtime)),
                     Err(error) => {

@@ -359,20 +359,20 @@ fn approve_events(
     ])
 }
 
-pub(crate) async fn session_is_active(
-    execution: &crate::runtime::ExecutionContext,
+pub(crate) async fn session_is_active_on_store(
+    store: &crate::runtime::store::Store,
     owner: &se_types::HumanId,
     project: &ProjectId,
     session_id: &SessionId,
     deadline: &Deadline,
 ) -> Result<bool> {
-    let reads = execution.reads.clone();
-    let generation = execution.generation;
+    let reads = store.reads.clone();
+    let generation = store.generation;
     let project = project.clone();
     let owner = owner.clone();
     let target = session_id.clone();
-    execution
-        .blocking
+    store
+        .pool
         .run_owned(deadline, move || {
             let phase = reads.read_phase().map_err(|e| store_error(&e))?;
             let admission = Admission {
@@ -405,62 +405,15 @@ pub(crate) async fn session_is_active(
         .await
 }
 
-pub(crate) async fn read_live_session_rev_on_execution(
+pub(crate) async fn session_is_active(
     execution: &crate::runtime::ExecutionContext,
     owner: &se_types::HumanId,
-    project_id: &ProjectId,
+    project: &ProjectId,
     session_id: &SessionId,
-    credential_id: RecordId,
     deadline: &Deadline,
-) -> Result<Option<(Revision, RecordId, Revision)>> {
-    let reads = execution.reads.clone();
-    let generation = execution.generation;
-    let owner = owner.clone();
-    let project = project_id.clone();
-    let target_session = session_id.clone();
-    execution
-        .blocking
-        .run_owned(deadline, move || {
-            let phase = reads.read_phase().map_err(|e| store_error(&e))?;
-            let current_owner = phase.runtime_owner().map_err(|e| store_error(&e))?;
-            if !matches!(
-                current_owner,
-                se_types::Read::Present { value } if value.generation == generation
-            ) {
-                return crate::runtime::executor::close_read(
-                    Err(se_core::scope::unreadable(
-                        "external disconnect generation",
-                        "host generation changed",
-                    )),
-                    phase.close(),
-                );
-            }
-            let admission = Admission {
-                scope: Scope::Project(project),
-                actor: Actor::Human(owner),
-                session: None,
-                generation: generation.get(),
-            };
-            let mut snap = phase
-                .into_snapshot(se_core::admission::read_scope(&admission))
-                .map_err(|e| store_error(&e))?;
-            let res = (|| {
-                let se_types::Read::Present { value: session_rec } =
-                    snap.session(target_session).map_err(|e| store_error(&e))?
-                else {
-                    return Ok(None);
-                };
-                if !matches!(
-                    session_rec.current.body,
-                    EventBody::SessionPrepared { .. } | EventBody::SessionActivated { .. }
-                ) {
-                    return Ok(None);
-                }
-                Ok(Some((session_rec.revision, credential_id, rev(2))))
-            })();
-            crate::runtime::executor::close_read(res, snap.close())
-        })
-        .await
+) -> Result<bool> {
+    let store = crate::runtime::store::Store::for_execution(execution);
+    session_is_active_on_store(&store, owner, project, session_id, deadline).await
 }
 
 pub(crate) fn fresh_revoke_identity(session_id: &SessionId) -> Result<WriteIdentity> {

@@ -11,6 +11,8 @@ pub(crate) mod dispatch;
 #[cfg(feature = "listener")]
 pub(crate) mod lifecycle;
 #[cfg(feature = "listener")]
+pub(crate) mod reconcile;
+#[cfg(feature = "listener")]
 pub(crate) mod registry;
 #[cfg(feature = "listener")]
 pub(crate) mod wait;
