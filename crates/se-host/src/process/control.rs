@@ -164,11 +164,13 @@ impl LaunchCoordinator {
         work.stop_fence = fence.clone();
         work.stop_admitted_here = admitted_here;
         let witness = self.stop_native(work, deadline).await;
+        // Restore host custody on every outcome: a failed attempt must not
+        // leave its request admission or fence on the retained job.
         work.stop_admitted_here = None;
-        let witness = witness?;
-        work.last_witness = Some(witness.clone());
         work.admission = work.cleanup_admission.clone();
         work.stop_fence = None;
+        let witness = witness?;
+        work.last_witness = Some(witness.clone());
         self.finish(work, witness, deadline).await
     }
     async fn stop_target(
