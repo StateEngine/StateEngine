@@ -11,6 +11,7 @@ pub(super) struct ReplaceCtx<'a> {
     pub stage_str: &'a str,
     pub stage_key: NativeObjectKey,
     pub stage_baseline: TargetBaseline,
+    pub bytes: &'a [u8],
     pub expected: TargetBaseline,
     pub root_check: &'a dyn Fn() -> io::Result<()>,
 }
@@ -51,6 +52,37 @@ fn verify_leaf_matches(
         Err(err) => return Err(err),
     };
     matches_revision(&file, expected_key, expected_baseline)
+}
+
+/// Open the published target excluding `FILE_SHARE_WRITE` and verify both its
+/// object identity/baseline and exact payload bytes before deleting the backup.
+fn verify_published_target(
+    parent: &File,
+    name: &str,
+    expected_key: NativeObjectKey,
+    expected_baseline: TargetBaseline,
+    bytes: &[u8],
+) -> Result<bool, io::Error> {
+    let mut units = utf16_component(name)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+    let mut file = match nt_open_relative(
+        parent,
+        &mut units,
+        GENERIC_READ | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE,
+    ) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err),
+    };
+    let key = se_state_files::observe_object_key(&file)?;
+    let rev = se_state_files::observe_file_revision(&file)?;
+    if key != expected_key || TargetBaseline::from_revision(rev) != expected_baseline {
+        return Ok(false);
+    }
+    read_matches_bytes(&mut file, rev.size, bytes)
 }
 
 fn retire_verified_restore(
@@ -327,15 +359,22 @@ pub(super) fn publish_replace(
         ));
     }
 
-    // Verify incoming target holds our exact staged revision before deleting backup.
-    match verify_leaf_matches(ctx.parent, ctx.leaf_str, ctx.stage_key, ctx.stage_baseline) {
+    // Verify incoming target holds our exact staged identity and payload bytes
+    // under a handle excluding FILE_SHARE_WRITE before deleting backup.
+    match verify_published_target(
+        ctx.parent,
+        ctx.leaf_str,
+        ctx.stage_key,
+        ctx.stage_baseline,
+        ctx.bytes,
+    ) {
         Ok(true) => {}
         Ok(false) => {
             drop(backup_file);
             drop(held_target);
             let status = describe_siblings(ctx.parent, &[(&backup_str, &backup_path)]);
             return Err(WorkspaceWriteError::PublishedUncertain(format!(
-                "replacement completed but target did not match staged revision; {status}"
+                "replacement completed but target did not match staged identity and bytes; {status}"
             )));
         }
         Err(err) => {

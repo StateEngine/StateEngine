@@ -544,6 +544,49 @@ mod replace;
 
 use replace::{ReplaceCtx, publish_replace};
 
+pub(super) fn read_matches_bytes(
+    file: &mut File,
+    size: u64,
+    bytes: &[u8],
+) -> Result<bool, io::Error> {
+    if size != bytes.len() as u64 {
+        return Ok(false);
+    }
+    let mut readback = Vec::with_capacity(bytes.len().saturating_add(1));
+    file.take(bytes.len() as u64 + 1)
+        .read_to_end(&mut readback)?;
+    Ok(readback == bytes)
+}
+
+fn dispose_and_report(parent: &File, file: File, name: &str, path: &Path) -> String {
+    let cleanup = dispose_checked(&file);
+    drop(file);
+    match (cleanup, probe_sibling(parent, name)) {
+        (Ok(()), SiblingState::Absent) => {
+            format!("staging copy {} confirmed removed", path.display())
+        }
+        (Ok(()), SiblingState::Present) => format!(
+            "deletion requested for {} but file is still present on disk",
+            path.display()
+        ),
+        (Ok(()), SiblingState::Unreadable(err)) => format!(
+            "deletion requested for {} but post-delete status is unreadable: {err}",
+            path.display()
+        ),
+        (Err(err), state) => {
+            let state_note = match state {
+                SiblingState::Present => "still present on disk".to_owned(),
+                SiblingState::Absent => "not observed on disk".to_owned(),
+                SiblingState::Unreadable(probe_err) => format!("unreadable: {probe_err}"),
+            };
+            format!(
+                "staging cleanup for {} failed ({err}); file is {state_note}",
+                path.display()
+            )
+        }
+    }
+}
+
 /// Close the write-capable staging handle so Windows finalizes its last-write
 /// time and `ReplaceFileW` can open it exclusively, then re-open read-only
 /// (excluding `FILE_SHARE_WRITE`) to verify object identity and exact payload
@@ -569,14 +612,16 @@ fn finalize_stage_baseline(
     )
     .map_err(|err| {
         let status = describe_siblings(parent, &[(stage_str, &stage_path)]);
-        invalid(format!(
-            "staged file could not be reopened after close ({err}); {status}"
+        io_before(io::Error::new(
+            err.kind(),
+            format!("staged file could not be reopened after close ({err}); {status}"),
         ))
     })?;
     let observed_key = se_state_files::observe_object_key(&reopened).map_err(|err| {
         let status = describe_siblings(parent, &[(stage_str, &stage_path)]);
-        invalid(format!(
-            "staged file identity unreadable after close ({err}); {status}"
+        io_before(io::Error::new(
+            err.kind(),
+            format!("staged file identity unreadable after close ({err}); {status}"),
         ))
     })?;
     if observed_key != stage_key {
@@ -588,38 +633,29 @@ fn finalize_stage_baseline(
     let rev = match se_state_files::observe_file_revision(&reopened) {
         Ok(rev) => rev,
         Err(err) => {
-            let cleanup = dispose_checked(&reopened);
-            drop(reopened);
-            let status = describe_siblings(parent, &[(stage_str, &stage_path)]);
-            let note = match cleanup {
-                Ok(()) => format!("staging copy removed ({status})"),
-                Err(clean_err) => format!("staging cleanup failed ({clean_err}); {status}"),
-            };
-            return Err(invalid(format!(
-                "staged file revision unreadable after close ({err}); {note}"
+            let note = dispose_and_report(parent, reopened, stage_str, &stage_path);
+            return Err(io_before(io::Error::new(
+                err.kind(),
+                format!("staged file revision unreadable after close ({err}); {note}"),
             )));
         }
     };
-    let mut readback = Vec::with_capacity(bytes.len().saturating_add(1));
-    let read_ok = rev.size == bytes.len() as u64
-        && (&mut reopened)
-            .take(bytes.len() as u64 + 1)
-            .read_to_end(&mut readback)
-            .is_ok()
-        && readback == bytes;
-    if !read_ok {
-        let cleanup = dispose_checked(&reopened);
-        drop(reopened);
-        let status = describe_siblings(parent, &[(stage_str, &stage_path)]);
-        let note = match cleanup {
-            Ok(()) => format!("staging copy removed ({status})"),
-            Err(clean_err) => format!("staging cleanup failed ({clean_err}); {status}"),
-        };
-        return Err(invalid(format!(
-            "staged file contents changed after close; {note}"
-        )));
+    match read_matches_bytes(&mut reopened, rev.size, bytes) {
+        Ok(true) => Ok(TargetBaseline::from_revision(rev)),
+        Ok(false) => {
+            let note = dispose_and_report(parent, reopened, stage_str, &stage_path);
+            Err(invalid(format!(
+                "staged file contents changed after close; {note}"
+            )))
+        }
+        Err(err) => {
+            let note = dispose_and_report(parent, reopened, stage_str, &stage_path);
+            Err(io_before(io::Error::new(
+                err.kind(),
+                format!("staged file readback failed after close ({err}); {note}"),
+            )))
+        }
     }
-    Ok(TargetBaseline::from_revision(rev))
 }
 
 pub(super) fn write_relative(
@@ -703,6 +739,7 @@ pub(super) fn write_relative(
                 stage_str: &stage_str,
                 stage_key,
                 stage_baseline,
+                bytes,
                 expected,
                 root_check,
             },
