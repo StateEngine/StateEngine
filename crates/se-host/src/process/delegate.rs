@@ -88,7 +88,7 @@ impl LaunchCoordinator {
     ) -> Result<(se_types::AgentId, String, bool)> {
         if let Some((agent, name)) = &plan.existing_agent {
             // An earlier attempt may have committed it and failed before arming.
-            self.arm_worker_ttl(plan);
+            self.arm_worker_ttl(plan.ephemeral.ttl_seconds);
             return Ok((agent.clone(), name.clone(), false));
         }
         self.qualify_delegate(plan, deadline).await?;
@@ -97,26 +97,35 @@ impl LaunchCoordinator {
                          cx: &mut se_core::commit::Cx<'_, _>| {
             create_ephemeral_batch(kernel, &commit_plan, cx)
         };
-        // Arm expiry before the write: the writer may commit the worker even
-        // if this request is then dropped, and the sweep runs on its own task.
-        self.arm_worker_ttl(plan);
-        let receipt = {
-            let _create_guard =
-                crate::runtime::pool::within(deadline, self.delegate_create_lock.lock()).await?;
-            match write {
-                CreateWrite::Local => {
-                    self.store
-                        .commit(admission.clone(), deadline, None, work)
-                        .await?
+        // The write runs on its own task, so it settles and arms expiry even
+        // if this request is dropped while it waits or commits.
+        let this = Arc::clone(self);
+        let (owned_admission, owned_deadline) = (admission.clone(), deadline.clone());
+        let ttl_seconds = plan.ephemeral.ttl_seconds;
+        let receipt = tokio::spawn(async move {
+            let receipt = {
+                let _create_guard =
+                    crate::runtime::pool::within(&owned_deadline, this.delegate_create_lock.lock())
+                        .await?;
+                match write {
+                    CreateWrite::Local => {
+                        this.store
+                            .commit(owned_admission, &owned_deadline, None, work)
+                            .await?
+                    }
+                    #[cfg(feature = "remote")]
+                    CreateWrite::Remote(permit) => {
+                        this.store
+                            .commit_remote(owned_admission, &owned_deadline, None, permit, work)
+                            .await?
+                    }
                 }
-                #[cfg(feature = "remote")]
-                CreateWrite::Remote(permit) => {
-                    self.store
-                        .commit_remote(admission.clone(), deadline, None, permit, work)
-                        .await?
-                }
-            }
-        };
+            };
+            this.arm_worker_ttl(ttl_seconds);
+            Ok::<_, se_types::SeError>(receipt)
+        })
+        .await
+        .map_err(|join| error("delegate creation", join))??;
         // A concurrent request with the same key may have won the write; the
         // worker is the one the receipt committed, never this plan's guess.
         let created = matches!(receipt.state, se_store::CommitState::Committed);
@@ -130,9 +139,9 @@ impl LaunchCoordinator {
     }
 
     /// Schedule the expiry sweep that retires this worker at its lifetime.
-    fn arm_worker_ttl(self: &Arc<Self>, plan: &DelegateStartPlan) {
-        let wait = Duration::from_secs(u64::from(plan.ephemeral.ttl_seconds))
-            .saturating_add(Duration::from_millis(100));
+    fn arm_worker_ttl(self: &Arc<Self>, ttl_seconds: u32) {
+        let wait =
+            Duration::from_secs(u64::from(ttl_seconds)).saturating_add(Duration::from_millis(100));
         self.arm_ephemeral_ttl(wait);
     }
 

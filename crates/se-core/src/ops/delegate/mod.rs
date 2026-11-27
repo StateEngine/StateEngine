@@ -145,7 +145,6 @@ pub struct DelegateStartPlan {
     pub model: Option<String>,
     pub named_profile: String,
     pub permission: PermissionProfile,
-    pub resolved: se_config::config_policy::ResolvedProfile,
     pub ephemeral: EphemeralSpec,
     pub max_active_per_parent: u32,
     pub composed_task: String,

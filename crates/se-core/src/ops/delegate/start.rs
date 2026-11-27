@@ -104,38 +104,17 @@ pub(crate) fn plan_worker<R: Snapshot>(
         &normalized_intent,
         cx,
     )?;
-    let binding =
-        crate::harness_selection::resolve(configuration, input.provider, input.harness.as_deref())?;
-    let provider = binding.provider;
-    let defaults = configuration.provider(provider);
-    let named_profile = input
-        .profile
-        .clone()
-        .unwrap_or_else(|| defaults.profile.clone());
-    if let Some(allowed) = allowlist
-        && existing_agent.is_none()
-    {
-        allowed(&configuration.delegation, provider, &named_profile)?;
-    }
-    let resolved = configuration.resolve_profile(&named_profile, provider, true)?;
-    let permission = match resolved.sandbox {
-        EffectiveSandbox::ReadOnly => PermissionProfile::ReadOnly,
-        EffectiveSandbox::WorkspaceWrite => PermissionProfile::WorkspaceWrite,
-        EffectiveSandbox::Bypass => PermissionProfile::NamedFullBypass,
+    // A retry continues from what its worker committed; only a new worker
+    // takes this machine's current defaults and allowlist.
+    let launch = match &existing_agent {
+        Some((agent, _)) => committed_launch(agent, cx)?,
+        None => new_launch(&input, configuration, allowlist)?,
     };
-    let configured_ttl = configuration.delegation.ttl_seconds();
-    let ttl_seconds = input
-        .ttl_seconds
-        .map_or(configured_ttl, |requested| requested.min(configured_ttl));
     let max_active_per_parent = configuration.delegation.max_active_per_parent();
     if existing_agent.is_none() {
         enforce_active_child_cap(max_active_per_parent, cx)?;
     }
     let (composed_task, handoff_included) = compose_task(&input, cx)?;
-    let model = input
-        .model
-        .clone()
-        .or_else(|| (!defaults.model.is_empty()).then(|| defaults.model.clone()));
     let role = input
         .role
         .clone()
@@ -158,16 +137,15 @@ pub(crate) fn plan_worker<R: Snapshot>(
         agent_id,
         name,
         role,
-        provider,
-        stored_provider: provider.into(),
-        harness: binding.harness,
-        model,
-        named_profile,
-        permission,
-        resolved,
+        provider: launch.provider,
+        stored_provider: launch.provider.into(),
+        harness: launch.harness,
+        model: launch.model,
+        named_profile: launch.named_profile,
+        permission: launch.permission,
         ephemeral: EphemeralSpec {
             one_shot: true,
-            ttl_seconds,
+            ttl_seconds: launch.ttl_seconds,
         },
         max_active_per_parent,
         composed_task,
@@ -176,6 +154,96 @@ pub(crate) fn plan_worker<R: Snapshot>(
         normalized_intent,
         existing_agent,
         remote,
+    })
+}
+
+/// What a worker is started with.
+struct Launch {
+    provider: se_types::Provider,
+    harness: Option<String>,
+    model: Option<String>,
+    named_profile: String,
+    permission: PermissionProfile,
+    ttl_seconds: u32,
+}
+
+/// A new worker's launch from this machine's current configuration.
+fn new_launch(
+    input: &DelegateStart,
+    configuration: &ConfigFile,
+    allowlist: Option<AllowCheck>,
+) -> Result<Launch> {
+    let binding =
+        crate::harness_selection::resolve(configuration, input.provider, input.harness.as_deref())?;
+    let provider = binding.provider;
+    let defaults = configuration.provider(provider);
+    let named_profile = input
+        .profile
+        .clone()
+        .unwrap_or_else(|| defaults.profile.clone());
+    if let Some(allowed) = allowlist {
+        allowed(&configuration.delegation, provider, &named_profile)?;
+    }
+    let resolved = configuration.resolve_profile(&named_profile, provider, true)?;
+    let configured_ttl = configuration.delegation.ttl_seconds();
+    Ok(Launch {
+        provider,
+        harness: binding.harness,
+        model: input
+            .model
+            .clone()
+            .or_else(|| (!defaults.model.is_empty()).then(|| defaults.model.clone())),
+        named_profile,
+        permission: match resolved.sandbox {
+            EffectiveSandbox::ReadOnly => PermissionProfile::ReadOnly,
+            EffectiveSandbox::WorkspaceWrite => PermissionProfile::WorkspaceWrite,
+            EffectiveSandbox::Bypass => PermissionProfile::NamedFullBypass,
+        },
+        ttl_seconds: input
+            .ttl_seconds
+            .map_or(configured_ttl, |requested| requested.min(configured_ttl)),
+    })
+}
+
+/// An existing worker's launch, exactly as its store saved it.
+fn committed_launch<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Launch> {
+    let saved = scope::require_present(
+        cx.read
+            .profile(agent.clone())
+            .map_err(|error| store_error(&error))?,
+        "delegated worker profile",
+        scope::COMMITTED_READ_RECOVERY,
+    )?;
+    let EventBody::ProfileSaved { profile, .. } = saved.current.body else {
+        return Err(scope::unreadable(
+            "delegated worker profile",
+            "the profile projection has the wrong event kind",
+        ));
+    };
+    let record = scope::require_present(
+        cx.read
+            .principal(Actor::Agent(agent.clone()))
+            .map_err(|error| store_error(&error))?,
+        "delegated worker",
+        scope::COMMITTED_READ_RECOVERY,
+    )?;
+    let EventBody::PrincipalRegistered {
+        ephemeral: Some(spec),
+        ..
+    } = &record.original.as_deref().unwrap_or(&record.current).body
+    else {
+        return Err(scope::unreadable(
+            "delegated worker",
+            "the original registration is not a temporary agent",
+        ));
+    };
+    Ok(Launch {
+        provider: profile.provider.into(),
+        harness: profile.harness,
+        model: profile.model,
+        named_profile: profile.named_profile,
+        permission: profile.permission,
+        ttl_seconds: spec.ttl_seconds,
     })
 }
 
