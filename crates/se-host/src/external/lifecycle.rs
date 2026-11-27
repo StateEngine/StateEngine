@@ -81,6 +81,7 @@ async fn ensure_agent_clear_locked(
                 project_id,
                 agent_id,
                 &stale.session_id,
+                false,
             )?;
             let warn = commit::commit_revocation(
                 router,
@@ -447,6 +448,7 @@ pub(crate) async fn revoke_seat(
         &project,
         &agent_id,
         &active.session_id,
+        true,
     )?;
     let observer_warning = commit::commit_revocation(
         router,

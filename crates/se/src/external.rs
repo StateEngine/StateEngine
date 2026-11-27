@@ -192,8 +192,11 @@ fn run_msg_wait(args: &[OsString]) -> io::Result<u8> {
     let timeout_ms = timeout_secs.saturating_mul(1000);
     let json = wait.get_flag("json");
     let result = (|| -> Result<()> {
-        let cx =
-            crate::bootstrap::Bootstrap::resolve_owner(home, false, json, "external seat control")?;
+        let cx = if agent.is_some() {
+            crate::bootstrap::Bootstrap::resolve_owner(home, false, json, "msg.wait")?
+        } else {
+            crate::bootstrap::Bootstrap::resolve_either(home, project_arg.clone(), false, json)?
+        };
         let project = if agent.is_some() {
             Some(resolve_required_project(&cx, project_arg.as_deref())?)
         } else {

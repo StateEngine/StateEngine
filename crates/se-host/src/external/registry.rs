@@ -108,6 +108,7 @@ pub(crate) struct PendingRevocation {
     pub agent_id: AgentId,
     pub session_id: SessionId,
     pub lease_generation: Option<u64>,
+    pub owner_initiated: bool,
     pub identity: crate::runtime::WriteIdentity,
 }
 
@@ -397,9 +398,13 @@ impl ExternalRegistry {
         project_id: &ProjectId,
         agent_id: &AgentId,
         session_id: &SessionId,
+        owner_initiated: bool,
     ) -> Result<crate::runtime::WriteIdentity> {
         let mut guard = self.state.lock().map_err(|_| poisoned())?;
-        if let Some(existing) = guard.pending_revocations.get(session_id) {
+        if let Some(existing) = guard.pending_revocations.get_mut(session_id) {
+            if owner_initiated {
+                existing.owner_initiated = true;
+            }
             return Ok(existing.identity.clone());
         }
         let lease_generation = guard
@@ -415,6 +420,7 @@ impl ExternalRegistry {
                 agent_id: agent_id.clone(),
                 session_id: session_id.clone(),
                 lease_generation,
+                owner_initiated,
                 identity: fresh.clone(),
             },
         );

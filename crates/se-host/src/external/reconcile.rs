@@ -55,7 +55,7 @@ pub(crate) async fn reconcile_pending_revocations_on_store(
                 project_id,
                 agent_id,
                 &rev.session_id,
-                true,
+                rev.owner_initiated,
             )?;
         } else if !commit::session_is_active_on_store(
             store,
@@ -209,6 +209,7 @@ async fn revoke_expired_lease_on_store(
             &lease.project_id,
             &lease.agent_id,
             &lease.session_id,
+            false,
         )?;
         let warn = commit::commit_revocation_on_store(
             store,
@@ -290,7 +291,7 @@ pub(crate) async fn reconcile_external_for_launch_on_store(
         .await?;
     if let commit::LiveSeatCheck::StaleExternal(stale, reason) = check {
         let revoke_identity =
-            external.ensure_revoke_identity(project_id, agent_id, &stale.session_id)?;
+            external.ensure_revoke_identity(project_id, agent_id, &stale.session_id, false)?;
         let warn = commit::commit_revocation_on_store(
             store,
             owner,
@@ -490,7 +491,7 @@ pub(crate) async fn fenced_disconnect_locked_on_execution(
     };
     let revoke_identity = execution
         .external
-        .ensure_revoke_identity(project_id, agent_id, session_id)?;
+        .ensure_revoke_identity(project_id, agent_id, session_id, false)?;
     let observer_warning = commit::commit_revocation_on_execution(
         execution,
         owner,

@@ -88,6 +88,14 @@ impl Bootstrap {
         }
         Self::resolve_mode(home, None, no_color, json, false, false)
     }
+    pub(crate) fn resolve_either(
+        home: Option<PathBuf>,
+        project: Option<String>,
+        no_color: bool,
+        json: bool,
+    ) -> Result<Self> {
+        Self::resolve_mode(home, project, no_color, json, false, false)
+    }
     #[cfg(feature = "remote")]
     pub(crate) fn resolve_remote_owner(
         home: Option<PathBuf>,
