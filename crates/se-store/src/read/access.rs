@@ -70,6 +70,7 @@ impl SqliteSnapshot {
             e.body,
             EventBody::ChannelRecorded { .. }
                 | EventBody::RemoteLaunchAttributed { .. }
+                | EventBody::RemoteDelegateAttributed { .. }
                 | EventBody::RemoteMailboxRecorded { .. }
         ) {
             return Ok(matches!(self.scope.visibility, Visibility::Owner)

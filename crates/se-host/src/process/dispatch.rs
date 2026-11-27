@@ -125,6 +125,20 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
         })
     }
 
+    #[cfg(feature = "remote")]
+    fn delegate_remote<'a>(
+        &'a self,
+        plan: se_core::ops::delegate::DelegateStartPlan,
+        admission: Admission,
+        permit: crate::remote::auth::AdmissionPermit,
+        deadline: &'a Deadline,
+    ) -> HostFuture<'a, se_core::ops::LaunchReply> {
+        Box::pin(async move {
+            self.delegate_remote_admitted(plan, admission, permit, deadline)
+                .await
+        })
+    }
+
     fn catch_up<'a>(&'a self, deadline: &'a Deadline) -> HostFuture<'a, ()> {
         Box::pin(async move { self.catch_up_live(deadline).await })
     }

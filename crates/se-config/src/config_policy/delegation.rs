@@ -29,11 +29,18 @@ pub struct DelegationConfig {
     /// Owner-authored `(provider, profile)` allowlist for agent-initiated delegation.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub allow: Vec<DelegationAllowEntry>,
+    /// Pairs a paired machine may start beside an approved agent here. Empty
+    /// (the default) refuses every remote delegation, whatever `allow` lists.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub remote_allow: Vec<DelegationAllowEntry>,
 }
 
 impl DelegationConfig {
     pub fn is_default(&self) -> bool {
-        self.max_active_per_parent.is_none() && self.ttl_seconds.is_none() && self.allow.is_empty()
+        self.max_active_per_parent.is_none()
+            && self.ttl_seconds.is_none()
+            && self.allow.is_empty()
+            && self.remote_allow.is_empty()
     }
 
     pub fn max_active_per_parent(&self) -> u32 {
@@ -64,53 +71,83 @@ impl DelegationConfig {
                 "expected an integer in 1..=86400 seconds",
             ));
         }
-        if self.allow.len() > 64 {
-            return Err(invalid(
-                "delegation.allow",
-                "expected at most 64 allowlist entries",
-            ));
-        }
-        for entry in &self.allow {
-            if entry.profile.is_empty()
-                || (entry.profile != "default" && !profiles.contains_key(&entry.profile))
-            {
-                return Err(invalid(
-                    "delegation.allow",
-                    "allowlist entry names an empty or absent permission profile",
-                ));
-            }
-        }
-        Ok(())
+        validate_list("delegation.allow", &self.allow, profiles)?;
+        validate_list("delegation.remote_allow", &self.remote_allow, profiles)
     }
 
     pub fn is_allowed(&self, provider: Provider, profile: &str) -> bool {
-        self.allow
-            .iter()
-            .any(|entry| entry.provider == provider && entry.profile == profile)
+        listed(&self.allow, provider, profile)
     }
 
     pub fn require_allowed(&self, provider: Provider, profile: &str) -> Result<()> {
-        if self.is_allowed(provider, profile) {
-            return Ok(());
-        }
-        let name = provider.registration().id;
-        let reason = if self.allow.is_empty() {
-            format!(
-                "agent delegation to ({name}, profile '{profile}') is not allowed because [delegation].allow is empty"
-            )
-        } else {
-            format!(
-                "agent delegation to ({name}, profile '{profile}') is not listed in [delegation].allow"
-            )
-        };
-        Err(SeError::new(Detail::ConfigurationInvalid(
-            details::ConfigurationInvalid {
-                subject: "delegation.allow".into(),
-                reason,
-                next_step: format!(
-                    "Add {{ provider = \"{name}\", profile = \"{profile}\" }} under [delegation].allow in config.toml and retry."
-                ),
-            },
-        )))
+        require_listed("allow", "agent", &self.allow, provider, profile)
     }
+
+    /// A paired machine's worker pair, checked only against `remote_allow`.
+    pub fn require_remote_allowed(&self, provider: Provider, profile: &str) -> Result<()> {
+        require_listed(
+            "remote_allow",
+            "remote",
+            &self.remote_allow,
+            provider,
+            profile,
+        )
+    }
+}
+
+fn validate_list(
+    field: &str,
+    list: &[DelegationAllowEntry],
+    profiles: &BTreeMap<String, Profile>,
+) -> Result<()> {
+    if list.len() > 64 {
+        return Err(invalid(field, "expected at most 64 allowlist entries"));
+    }
+    for entry in list {
+        if entry.profile.is_empty()
+            || (entry.profile != "default" && !profiles.contains_key(&entry.profile))
+        {
+            return Err(invalid(
+                field,
+                "allowlist entry names an empty or absent permission profile",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn listed(list: &[DelegationAllowEntry], provider: Provider, profile: &str) -> bool {
+    list.iter()
+        .any(|entry| entry.provider == provider && entry.profile == profile)
+}
+
+fn require_listed(
+    field: &str,
+    who: &str,
+    list: &[DelegationAllowEntry],
+    provider: Provider,
+    profile: &str,
+) -> Result<()> {
+    if listed(list, provider, profile) {
+        return Ok(());
+    }
+    let name = provider.registration().id;
+    let reason = if list.is_empty() {
+        format!(
+            "{who} delegation to ({name}, profile '{profile}') is not allowed because [delegation].{field} is empty"
+        )
+    } else {
+        format!(
+            "{who} delegation to ({name}, profile '{profile}') is not listed in [delegation].{field}"
+        )
+    };
+    Err(SeError::new(Detail::ConfigurationInvalid(
+        details::ConfigurationInvalid {
+            subject: format!("delegation.{field}"),
+            reason,
+            next_step: format!(
+                "Add {{ provider = \"{name}\", profile = \"{profile}\" }} under [delegation].{field} in config.toml and retry."
+            ),
+        },
+    )))
 }

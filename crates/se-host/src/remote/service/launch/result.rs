@@ -2,55 +2,45 @@
 use super::*;
 use se_core::store_error::store_error;
 use se_store::{CommitReceipt, remote::LaunchAttribution};
-pub(super) struct Completion {
-    pub(super) input: RemoteLaunch,
-    pub(super) attribution: RemoteAttribution,
-    pub(super) admission: Admission,
-    pub(super) native_key: se_types::IdempotencyKey,
-    pub(super) replayed: bool,
+/// A started agent's receipt: the launched target and the caller's original key.
+pub(in crate::remote::service) struct Completion {
+    pub(in crate::remote::service) target: RemoteTarget,
+    pub(in crate::remote::service) key: se_types::IdempotencyKey,
+    pub(in crate::remote::service) operation: &'static str,
+    pub(in crate::remote::service) attribution: RemoteAttribution,
+    pub(in crate::remote::service) admission: Admission,
+    pub(in crate::remote::service) native_key: se_types::IdempotencyKey,
+    pub(in crate::remote::service) replayed: bool,
 }
-pub(super) async fn finish(
+pub(in crate::remote::service) async fn finish(
     service: &Service,
     store: &crate::runtime::store::Store,
     completion: Completion,
     reply: LaunchReply,
     deadline: &crate::client::lease::Deadline,
 ) -> Result<RemoteLaunchResult> {
-    let Completion {
-        input,
-        attribution,
-        admission,
-        native_key,
-        replayed,
-    } = completion;
-    let launched_target = input.target.clone();
     let (outcome, attribution) = match reply {
         LaunchReply::Pending(value) => {
             let outcome = RemoteLaunchOutcome::Pending {
                 launch: RemoteLaunchStarted {
-                    target: input.target,
+                    target: completion.target,
                     session: value.session_id,
                     lifecycle: value.lifecycle_id,
                     details: None,
                 },
-                idempotency_key: input.idempotency_key,
+                idempotency_key: completion.key,
                 setup_needed: matches!(value.state, se_core::ops::LaunchPendingState::SetupNeeded),
             };
-            (outcome, attribution)
+            (outcome, completion.attribution)
         }
         LaunchReply::Running(value) => {
+            let target = completion.target.clone();
             return started(
                 service,
                 store,
-                Completion {
-                    input,
-                    attribution,
-                    admission,
-                    native_key,
-                    replayed,
-                },
+                completion,
                 RemoteLaunchStarted {
-                    target: launched_target,
+                    target,
                     session: value.session_id,
                     lifecycle: value.lifecycle_id,
                     details: None,
@@ -70,7 +60,7 @@ pub(super) async fn finish(
     })
 }
 
-pub(super) async fn started(
+pub(in crate::remote::service) async fn started(
     service: &Service,
     store: &crate::runtime::store::Store,
     completion: Completion,
@@ -79,15 +69,17 @@ pub(super) async fn started(
     deadline: &crate::client::lease::Deadline,
 ) -> Result<RemoteLaunchResult> {
     let Completion {
-        input,
+        key,
+        operation,
         attribution,
         admission,
         native_key,
         replayed,
+        ..
     } = completion;
     let known = crate::runtime::CommittedWrite {
-        operation: "remote.launch".into(),
-        key: Some(input.idempotency_key.clone()),
+        operation: operation.into(),
+        key: Some(key.clone()),
         natural_events: vec![],
         committed_events: vec![event],
     };
@@ -103,7 +95,7 @@ pub(super) async fn started(
     let commit = se_types::Commit {
         event_id: receipt.primary_event,
         position,
-        idempotency_key: input.idempotency_key,
+        idempotency_key: key,
         value: RemoteLaunchStarted {
             target: origin.target,
             session: origin.session,

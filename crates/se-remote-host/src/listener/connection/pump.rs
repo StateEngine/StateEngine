@@ -200,6 +200,7 @@ fn text_frame(
                     | RemoteRequest::Reply(_)
                     | RemoteRequest::Launch(_)
                     | RemoteRequest::Stop(_)
+                    | RemoteRequest::Delegate(_)
             );
             let admission = match frame.slot.limits.request(mutation) {
                 Ok(admission) => admission,

@@ -198,6 +198,7 @@ fn remote_body(plan: &LaunchPlan) -> Result<Option<EventBody<InputText>>> {
                 lifecycle: plan.lifecycle.clone(),
                 attribution: attribution.clone(),
                 details: Some(plan.details()),
+                delegated_from: plan.delegated_from.clone(),
             },
         }));
     }

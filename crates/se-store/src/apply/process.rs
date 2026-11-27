@@ -135,7 +135,9 @@ fn verify_actor_and_session(
         .map_err(sql)?
         .ok_or_else(|| reference_missing("process principal is not registered in its project"))?;
     let permitted = match (&h.actor, &identity.principal) {
-        (Actor::Remote(_), Actor::Agent(_)) => authority.remote_launch.is_some(),
+        (Actor::Remote(_), Actor::Agent(_)) => authority
+            .remote_launch
+            .is_some_and(crate::remote::LaunchAuthority::launches),
         (Actor::Remote(_) | Actor::Guest, _) | (_, Actor::Remote(_) | Actor::Guest) => false,
         (Actor::Human(human), _) => key(c, "human", human.as_str(), &[0], false)? == owner,
         (Actor::Agent(_), _) if h.actor == identity.principal => h.session == identity.session,

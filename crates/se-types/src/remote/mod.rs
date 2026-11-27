@@ -1,12 +1,14 @@
 //! Pure R0 client values (design 45 §§3–6, 47). No authority, I/O or key material.
 mod authority;
 mod credential;
+mod delegate;
 mod handshake;
 mod request;
 mod response;
 pub use crate::{RemoteDeviceId, RemoteGrantId, RemotePrincipalId};
 pub use authority::*;
 pub use credential::*;
+pub use delegate::*;
 pub use handshake::*;
 pub use request::*;
 pub use response::*;

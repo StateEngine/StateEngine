@@ -177,6 +177,24 @@ pub trait CustodyExecutor: Send + Sync {
         })
     }
 
+    /// A remote delegated worker, created and started under the original
+    /// boundary permit of its admitted request.
+    #[cfg(feature = "remote")]
+    fn delegate_remote<'a>(
+        &'a self,
+        _plan: se_core::ops::delegate::DelegateStartPlan,
+        _admission: Admission,
+        _permit: crate::remote::auth::AdmissionPermit,
+        _deadline: &'a Deadline,
+    ) -> crate::HostFuture<'a, se_core::ops::LaunchReply> {
+        Box::pin(async {
+            Err(se_core::scope::unreadable(
+                "remote delegation",
+                "the native process coordinator does not support remote delegation",
+            ))
+        })
+    }
+
     /// One finite live-work sweep, under the host's original timer budget.
     fn catch_up<'a>(&'a self, _deadline: &'a Deadline) -> crate::HostFuture<'a, ()> {
         Box::pin(async {

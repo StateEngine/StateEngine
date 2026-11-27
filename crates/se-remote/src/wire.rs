@@ -37,6 +37,7 @@ pub enum Reply {
     Send(Box<RemoteSendResult>),
     Launch(Box<RemoteLaunchResult>),
     Stop(Box<RemoteStopResult>),
+    Delegate(Box<RemoteDelegateResult>),
     Replies(Box<RemoteRepliesResult>),
     Contact(Box<RemoteContactResult>),
 }

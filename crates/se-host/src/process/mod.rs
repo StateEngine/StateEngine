@@ -106,6 +106,10 @@ type AgentLaunchLocks = std::sync::Mutex<
         Arc<tokio::sync::Mutex<()>>,
     >,
 >;
+/// A delegation request's namespace, as the store keys it: scope, actor and key.
+type DelegationKey = (String, String, String, se_types::IdempotencyKey);
+type DelegationLocks =
+    std::sync::Mutex<std::collections::BTreeMap<DelegationKey, Arc<tokio::sync::Mutex<()>>>>;
 
 pub struct LaunchCoordinator {
     #[cfg(any(windows, target_os = "macos"))]
@@ -136,6 +140,7 @@ pub struct LaunchCoordinator {
     orphans: std::sync::Mutex<std::collections::BTreeSet<se_types::LifecycleId>>,
     ephemeral_ttl: Arc<ephemeral::TtlTimer>,
     delegate_create_lock: tokio::sync::Mutex<()>,
+    delegation_locks: DelegationLocks,
     agent_launch_locks: AgentLaunchLocks,
 }
 struct ProviderHarnesses {
@@ -277,6 +282,7 @@ impl LaunchCoordinator {
             orphans: std::sync::Mutex::default(),
             ephemeral_ttl: Arc::new(ephemeral::TtlTimer::new()),
             delegate_create_lock: tokio::sync::Mutex::new(()),
+            delegation_locks: std::sync::Mutex::default(),
             agent_launch_locks: std::sync::Mutex::default(),
         }))
     }
@@ -296,6 +302,40 @@ impl LaunchCoordinator {
             })?;
             locks
                 .entry((project.clone(), agent.clone()))
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        crate::runtime::pool::within(deadline, lock.lock_owned()).await
+    }
+
+    /// Own one delegation request from creation through first launch and any
+    /// cleanup, so a same-request caller never continues a worker its creator
+    /// is still starting or retiring. Requests are namespaced like the store's
+    /// idempotency records, so unrelated callers never share a lock.
+    pub(super) async fn lock_delegation(
+        &self,
+        admission: &se_store::Admission,
+        key: &se_types::IdempotencyKey,
+        deadline: &crate::client::lease::Deadline,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>> {
+        let scope = match &admission.scope {
+            se_store::Scope::Project(project) => project.to_string(),
+            se_store::Scope::Registry => String::new(),
+        };
+        let namespace = (
+            scope,
+            admission.actor.kind().to_owned(),
+            admission.actor.wire().to_owned(),
+            key.clone(),
+        );
+        let lock = {
+            let mut locks = self.delegation_locks.lock().map_err(|_| {
+                se_core::scope::unreadable("delegation lock", "coordinator lock poisoned")
+            })?;
+            // Keys nobody holds or waits on are dropped, so the map stays small.
+            locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+            locks
+                .entry(namespace)
                 .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
                 .clone()
         };

@@ -83,6 +83,7 @@ pub fn from_matches_with_key(
             | "remote.send"
             | "remote.launch"
             | "remote.stop"
+            | "remote.delegate"
             | "client.watch"
     ) {
         return super::remote::decode(meta.name, m, key);

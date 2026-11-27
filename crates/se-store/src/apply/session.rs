@@ -93,7 +93,9 @@ fn apply_prepared(
         principal::refuse_retired(c, p, &a)?;
     }
     let permitted = match &h.actor {
-        Actor::Remote(_) => authority.remote_launch.is_some(),
+        Actor::Remote(_) => authority
+            .remote_launch
+            .is_some_and(crate::remote::LaunchAuthority::launches),
         Actor::Guest => false,
         Actor::Agent(actor) if *actor == agent => true,
         Actor::Agent(creator) => {

@@ -51,6 +51,7 @@ impl Security {
             RemoteRequest::Send(v) => (RemoteVerb::Send, std::slice::from_ref(&v.target)),
             RemoteRequest::Launch(v) => (RemoteVerb::Launch, std::slice::from_ref(&v.target)),
             RemoteRequest::Stop(v) => (RemoteVerb::Stop, std::slice::from_ref(&v.target)),
+            RemoteRequest::Delegate(v) => (RemoteVerb::Launch, std::slice::from_ref(&v.target)),
             RemoteRequest::Reply(v) => {
                 if invocation.source.is_none() {
                     return Err(refused(
@@ -85,14 +86,20 @@ impl Security {
             authority_revision: grant.authority_revision.value.get(),
             source: invocation.source,
         };
-        let admission = if let RemoteRequest::Launch(input) = &invocation.request {
+        // Delegation is admitted by its anchor's launch consent; it has none of its own.
+        let consent = match &invocation.request {
+            RemoteRequest::Launch(input) => Some(&input.target),
+            RemoteRequest::Delegate(input) => Some(&input.target),
+            _ => None,
+        };
+        let admission = if let Some(target) = consent {
             let permission = se_core::scope::require_present(
                 self.store
-                    .read(|phase| phase.remote_launch_permission(&grant.grant, &input.target))?,
+                    .read(|phase| phase.remote_launch_permission(&grant.grant, target))?,
                 "remote launch consent",
                 "Ask the destination Owner to allow this saved agent with se remote permissions --name <saved-alias> --launch in a terminal.",
             )?;
-            se_core::remote::authorize_launch(grant, &input.target, permission, now()?)?
+            se_core::remote::authorize_launch(grant, target, permission, now()?)?
         } else if let RemoteRequest::Stop(input) = &invocation.request {
             let launched = self.store.read(|phase| {
                 phase.remote_launched_session(&grant.principal, &input.target, &input.session)

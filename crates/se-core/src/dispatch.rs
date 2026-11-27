@@ -109,6 +109,10 @@ impl Kernel {
         self.config_origin = Some(origin);
         self
     }
+    /// The adapter-resolved file policy bound to this call, if any.
+    pub fn configuration(&self) -> Option<&se_config::config_policy::ConfigFile> {
+        self.configuration.as_ref()
+    }
     pub(crate) fn facts(&self) -> Result<&CallFacts> {
         self.facts.as_ref().ok_or_else(|| {
             SeError::invalid(
@@ -216,6 +220,7 @@ impl Kernel {
             | AnyOp::RemoteSend(_)
             | AnyOp::RemoteLaunch(_)
             | AnyOp::RemoteStop(_) => Err(remote_refused()),
+            AnyOp::RemoteDelegate(_) => Err(remote_refused()),
             AnyOp::Resume(input) => plan_resume(self, input, cx),
             AnyOp::HandoffExport(input) => {
                 complete_step(crate::ops::continuity::handoff::export(input, cx))

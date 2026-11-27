@@ -100,6 +100,7 @@ impl Client {
         let (verb, targets) = match &invocation.request {
             RemoteRequest::Launch(r) => (RemoteVerb::Launch, std::slice::from_ref(&r.target)),
             RemoteRequest::Stop(r) => (RemoteVerb::Stop, std::slice::from_ref(&r.target)),
+            RemoteRequest::Delegate(r) => (RemoteVerb::Launch, std::slice::from_ref(&r.target)),
             RemoteRequest::List(r) => (RemoteVerb::List, r.targets.as_slice()),
             RemoteRequest::Watch(r) => (RemoteVerb::Watch, r.targets.as_slice()),
             RemoteRequest::Send(r) => (RemoteVerb::Send, std::slice::from_ref(&r.target)),
@@ -209,6 +210,24 @@ impl RemoteClient for Client {
             match connection.once(Arc::new(call), invocation).await {
                 Ok(Reply::Stop(value)) if value.schema == RemoteStopResult::SCHEMA => Ok(*value),
                 Ok(_) => Err(unknown_mutation("remote.stop", key)),
+                Err(error) => Err(error),
+            }
+        })
+    }
+    fn delegate(
+        &self,
+        call: RemoteCallContext,
+        request: RemoteDelegate,
+    ) -> RemoteFuture<'_, RemoteDelegateResult> {
+        Box::pin(async move {
+            let key = request.idempotency_key.to_string();
+            let invocation = self.invocation(&call, RemoteRequest::Delegate(request))?;
+            let connection = self.connection().await?;
+            match connection.once(Arc::new(call), invocation).await {
+                Ok(Reply::Delegate(value)) if value.schema == RemoteDelegateResult::SCHEMA => {
+                    Ok(*value)
+                }
+                Ok(_) => Err(unknown_mutation("remote.delegate", key)),
                 Err(error) => Err(error),
             }
         })

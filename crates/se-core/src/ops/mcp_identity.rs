@@ -43,6 +43,7 @@ pub const MCP_IDENTITY_ARGUMENT_ROLES: &[(&str, &[FieldRole])] = &[
     ("stateengine_remote_send", CALLER_FIELDS),
     ("stateengine_remote_launch", CALLER_FIELDS),
     ("stateengine_remote_stop", CALLER_FIELDS),
+    ("stateengine_remote_delegate", CALLER_FIELDS),
     ("stateengine_status", CALLER_FIELDS),
     ("stateengine_event_read", CALLER_FIELDS),
     ("stateengine_search", CALLER_FIELDS),

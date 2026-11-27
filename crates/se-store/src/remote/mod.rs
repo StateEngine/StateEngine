@@ -1,6 +1,8 @@
 //! Closed remote-security transitions over the existing authoritative writer.
 mod apply;
 mod changes;
+mod delegate;
+pub(crate) use delegate::{apply as apply_delegate, validate_create as validate_delegate};
 mod launch;
 mod launch_continue;
 mod launch_permission;

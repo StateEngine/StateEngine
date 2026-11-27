@@ -40,6 +40,9 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
         "remote.watch" => "Read one bounded live/durable page; disconnect never stops work",
         "remote.launch" => "Start an existing Owner-approved remote agent with its saved profile",
         "remote.stop" => "Stop a remote agent session that your remote launch started",
+        "remote.delegate" => {
+            "Start one bounded temporary worker beside an Owner-approved remote agent"
+        }
         "remote.send" => "Send keyed direct mail to an exact remote agent session",
         "meta.help" => "Explain a command and its options",
         "meta.guide" => "List guide topics or read one named topic",

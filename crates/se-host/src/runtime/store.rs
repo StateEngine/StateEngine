@@ -89,11 +89,12 @@ impl Store {
             matches!(
                 event.body,
                 se_store::EventBody::RemoteLaunchAttributed { .. }
+                    | se_store::EventBody::RemoteDelegateAttributed { .. }
             )
         }) {
             return Err(error(
                 "remote launch reservation",
-                "the original boundary permit must accompany native C1 submission",
+                "the original boundary permit must accompany a remote launch or delegation",
             ));
         }
         self.submit_lifecycle(batch, deadline, None).await
