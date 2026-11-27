@@ -234,6 +234,9 @@ are not shipped.
 - **Decision ledger.** Decision-ledger commands are retired. Previously stored events
   remain readable through `se history`; retirement does not delete their recorded
   payloads.
+- **Linked worktrees.** `se worktree remove PATH` safely removes a linked Git worktree
+  after checking for symlinks, junctions and unreadable entries (use `--force` to remove
+  a dirty worktree after those safety checks pass).
 - **External seats.** To let an external MCP client join a project without StateEngine
   launching its process, register the agent with `se agent add NAME --external`, connect
   the client through `se mcp --as NAME`, and approve the printed claim out of band from an
