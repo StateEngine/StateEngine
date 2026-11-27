@@ -120,12 +120,11 @@ other session, including a later session of the same agent started by its Owner 
 another machine. To stop that work, the destination Owner runs `se stop AGENT` in a
 terminal on that machine. Stop needs no extra permission: the recorded launch is the
 authority, so it still works after launch consent is revoked. Removing the pairing
-does refuse it, including a stop that is already in progress. The destination's own stop
-path ends the session and reports its witness. If closure is not proved, the command
-exits 2; repeat it with the same key. A repeat runs under the pairing's current
-permission, so it works again once a removed source address is restored. A stop
-with a new key is refused while an earlier request's stop is unfinished or its
-closure unproved; the destination Owner's `se stop AGENT` remains available.
+refuses any stop not yet admitted. The destination's own stop path ends the session
+and reports its witness. If closure is not proved, the command exits 2. Repeating it
+does not start the stop again: once a session's stop is admitted, a repeat only
+observes its exit and finishes the destination's cleanup. If the exit is still not
+observed, the destination Owner runs `se stop AGENT` on that machine.
 
 ## Reading IDs and cursors
 

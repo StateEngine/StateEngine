@@ -107,18 +107,24 @@ impl LaunchCoordinator {
                 ));
             }
         };
-        if work.stop_fence.is_some() {
-            // A remote stop owns an unfinished or unproved stop only if this
-            // request recorded it; either way its current permit must be live
-            // before this attempt can start effects.
-            if matches!(
+        // A remote stop starts effects only under the fenced admission this
+        // attempt commits itself. A stop admitted earlier is only observed: an
+        // exit observed above still gets host cleanup; otherwise the
+        // destination Owner recovers it.
+        if work.stop_fence.is_some()
+            && !work.stop_admitted_here
+            && matches!(
                 from,
                 ProcessState::StopRequested | ProcessState::StopUnproved
-            ) {
-                self.require_own_stop_admission(work, &previous, deadline)
-                    .await?;
-            }
-            crate::runtime::store::check_stop_fence(&work.stop_fence)?;
+            )
+        {
+            return Err(se_types::SeError::new(se_types::Detail::StateConflict(
+                se_types::details::StateConflict {
+                    subject: "remote stop".into(),
+                    reason: "this session's stop was already admitted and its exit is not yet observed".into(),
+                    next_step: "Repeat this stop later to observe the exit, or ask the Owner of that machine to run se stop AGENT in a terminal there.".into(),
+                },
+            )));
         }
         if from != ProcessState::StopRequested {
             self.change(
@@ -480,64 +486,6 @@ impl LaunchCoordinator {
                 return Err(failure);
             }
             (ticket, observed) = self.stop_observation(ticket, deadline).await?;
-        }
-    }
-    /// A fenced (remote) stop may continue a lifecycle already in StopRequested
-    /// or StopUnproved only when that exact transition was durably committed by
-    /// this request. The destination Owner's unfenced stop remains the recovery.
-    /// Another request's admission never authorizes this caller's effects.
-    async fn require_own_stop_admission(
-        &self,
-        work: &Work,
-        head: &se_store::ProjectionRecord,
-        deadline: &Deadline,
-    ) -> Result<()> {
-        let EventBody::ProcessTransition {
-            process,
-            expected: se_store::Expected::Revision(previous),
-            outcome,
-            ..
-        } = &head.current.body
-        else {
-            return Err(se_core::scope::unreadable(
-                "stop admission",
-                "the stop request record has no prior revision",
-            ));
-        };
-        let request = work
-            .stop_key
-            .as_ref()
-            .ok_or_else(|| error("stop admission", "the stop request key is absent"))?;
-        let key =
-            process_commit::phase_key(request, &format!("{process}/{outcome}/{}", previous.value))?;
-        let actor = work.admission.actor.clone();
-        let receipt = self
-            .store
-            .read(work.admission.clone(), deadline, move |cx| {
-                cx.read
-                    .operation_receipt(actor, key)
-                    .map_err(|e| se_core::store_error::store_error(&e))
-            })
-            .await?;
-        match receipt {
-            se_types::Read::Present { value } if value.primary_event == head.current.header.event => {
-                Ok(())
-            }
-            se_types::Read::Present { .. } | se_types::Read::Absent { .. } => {
-                Err(se_types::SeError::new(se_types::Detail::StateConflict(
-                    se_types::details::StateConflict {
-                        subject: "remote stop".into(),
-                        reason: "this session is already stopping under another request".into(),
-                        next_step: "Repeat the earlier stop with its original key, or ask the Owner of that machine to run se stop AGENT in a terminal there.".into(),
-                    },
-                )))
-            }
-            se_types::Read::Unknown { what } => {
-                Err(se_core::scope::unreadable("stop admission", &what))
-            }
-            se_types::Read::Unreadable { reason, .. } => {
-                Err(se_core::scope::unreadable("stop admission", &reason))
-            }
         }
     }
     async fn revoke_credentials(&self, work: &mut Work, deadline: &Deadline) -> Result<()> {

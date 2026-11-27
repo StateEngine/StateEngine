@@ -334,18 +334,6 @@ fn error(subject: &str, cause: impl std::fmt::Display) -> se_types::SeError {
 /// one stop. Absent for every local or owner-admitted stop.
 #[cfg(feature = "remote")]
 pub type StopFence = Option<std::sync::Arc<crate::remote::auth::AdmissionPermit>>;
-/// A stop attempt that starts native effects without its own remote-actor
-/// commit must still hold a live boundary permit.
-#[cfg(feature = "remote")]
-pub fn check_stop_fence(fence: &StopFence) -> Result<()> {
-    fence
-        .as_ref()
-        .map_or(Ok(()), |permit| permit.check_current())
-}
-#[cfg(not(feature = "remote"))]
-pub fn check_stop_fence(_: &StopFence) -> Result<()> {
-    Ok(())
-}
 #[cfg(not(feature = "remote"))]
 pub type StopFence = Option<NoPermit>;
 /// Uninhabited: without the remote feature no stop carries a boundary permit.

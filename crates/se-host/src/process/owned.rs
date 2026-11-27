@@ -65,6 +65,8 @@ pub(super) struct Work {
     pub cleanup_admission: Admission,
     /// A remote stop's grant fences for its remote-actor commits.
     pub stop_fence: crate::runtime::store::StopFence,
+    /// This attempt committed the fenced stop admission itself.
+    pub stop_admitted_here: bool,
     pub process: Option<Arc<se_proc::OwnedProcess>>,
     pub record: Option<se_proc::ProcessRecord>,
     pub exec_observed: bool,
@@ -140,6 +142,7 @@ impl Work {
             #[cfg(feature = "remote")]
             remote_permit: None,
             stop_fence: None,
+            stop_admitted_here: false,
             process: None,
             record: None,
             exec_observed: false,

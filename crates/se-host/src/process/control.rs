@@ -148,6 +148,29 @@ impl LaunchCoordinator {
             stops: None,
         })
     }
+    /// Native effects run under this request's admission and fence; cleanup
+    /// after the witnessed exit runs under the host's own cleanup custody.
+    async fn stop_and_finish(
+        &self,
+        work: &mut super::launch::Work,
+        key: &IdempotencyKey,
+        admission: Admission,
+        fence: &crate::runtime::store::StopFence,
+        admitted_here: bool,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        work.stop_key = Some(key.clone());
+        work.admission = admission;
+        work.stop_fence = fence.clone();
+        work.stop_admitted_here = admitted_here;
+        let witness = self.stop_native(work, deadline).await;
+        work.stop_admitted_here = false;
+        let witness = witness?;
+        work.last_witness = Some(witness.clone());
+        work.admission = work.cleanup_admission.clone();
+        work.stop_fence = None;
+        self.finish(work, witness, deadline).await
+    }
     async fn stop_target(
         self: &Arc<Self>,
         target: ControlAgent,
@@ -194,7 +217,7 @@ impl LaunchCoordinator {
             if expected.as_ref().is_some_and(|expected| expected.lifecycle != job.lifecycle) {
                 return Err(error("scoped stop lifecycle", "the retained job is not the recorded lifecycle"));
             }
-            if !release { self.interrupt_startup(&job,key,admission.clone(),fence,deadline).await?; }
+            let admitted_here = !release && self.interrupt_startup(&job,key,admission.clone(),fence,deadline).await?;
             let mut work=if release {
                 job.control_state(deadline).await?
             } else {
@@ -220,14 +243,7 @@ impl LaunchCoordinator {
                 fill_stopped(&mut row,&work,true,&self.options.home)?;
                 return Ok(());
             }
-            work.stop_key=Some(key.clone());
-            work.admission=admission;
-            work.stop_fence=fence.clone();
-            let witness=self.stop_native(&mut work,deadline).await?;
-            work.last_witness=Some(witness.clone());
-            work.admission=work.cleanup_admission.clone();
-            work.stop_fence=None;
-            self.finish(&mut work,witness,deadline).await?;
+            self.stop_and_finish(&mut work, key, admission, fence, admitted_here, deadline).await?;
             if !job.settled.swap(true,Ordering::AcqRel){self.activity.send_modify(|count|*count=count.saturating_sub(1));}
             fill_stopped(&mut row,&work,false,&self.options.home)?;Ok(())
         }.await;
@@ -500,13 +516,13 @@ fn empty_row(target: ControlAgent, home: &std::path::Path) -> AgentStopResult {
     }
 }
 /// The recorded lifecycle's own stop is complete only once its job settled
-/// with no capture still owed. A job busy in another attempt is unfinished.
+/// and its capture actually flushed or was never owed; the latest capture
+/// diagnostic is not that proof. A job busy in another attempt is unfinished.
 fn own_stop_unfinished(job: &Job) -> bool {
     !job.settled.load(Ordering::Acquire)
-        || job
-            .state
-            .try_lock()
-            .map_or(true, |work| work.capture_failure.is_some())
+        || job.state.try_lock().map_or(true, |work| {
+            !(work.capture_flushed || !work.meta.capture || !work.activated)
+        })
 }
 pub(super) fn fill_stopped(
     row: &mut AgentStopResult,

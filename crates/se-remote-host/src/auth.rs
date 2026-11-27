@@ -108,17 +108,6 @@ impl AdmissionPermit {
     ) -> Result<<se_store::SqliteClient as se_store::WriterClient>::Completion> {
         self.submit_ref(writer, batch, map_error)
     }
-    /// Check the grant and source fences now, for an attempt about to start
-    /// native effects without a new remote-actor submission of its own.
-    pub fn check_current(&self) -> Result<()> {
-        let _guard = self.fence.output()?;
-        let _source_guard = self
-            .source_fence
-            .as_ref()
-            .map(|fence| fence.output())
-            .transpose()?;
-        Ok(())
-    }
     /// For a request whose native work commits more than once, such as a remote
     /// stop: every remote-actor submission re-checks the original grant fences.
     pub fn submit_ref(

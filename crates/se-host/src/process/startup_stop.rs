@@ -47,10 +47,10 @@ impl LaunchCoordinator {
         admission: Admission,
         fence: &crate::runtime::store::StopFence,
         deadline: &Deadline,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         loop {
             if job.ready.borrow().is_some() {
-                return Ok(());
+                return Ok(false);
             }
             let agent = job.target.1.clone();
             let lifecycle = job.lifecycle.clone();
@@ -75,7 +75,7 @@ impl LaunchCoordinator {
                 })
                 .await?;
             let Some(previous) = previous else {
-                return Ok(());
+                return Ok(false);
             };
             let identity = match &previous.current.body {
                 EventBody::ProcessTransition {
@@ -83,7 +83,7 @@ impl LaunchCoordinator {
                     to: ProcessState::Starting,
                     ..
                 } => identity.as_ref().clone(),
-                _ => return Ok(()),
+                _ => return Ok(false),
             };
             // Before exec publication the coordinator must still join native
             // allocation. Its original bound and retained cleanup remain owned.
@@ -93,7 +93,7 @@ impl LaunchCoordinator {
             )
             .map_err(|e| error("startup stop custody", e))?;
             if !matches!(checkpoint.checkpoint, se_proc::CheckpointKind::Process(_)) {
-                return Ok(());
+                return Ok(false);
             }
             let request = key.clone();
             let committed = self
@@ -115,7 +115,7 @@ impl LaunchCoordinator {
             match committed {
                 Ok(_) => {
                     job.wake.request_startup_stop();
-                    return Ok(());
+                    return Ok(true);
                 }
                 // Activation can win the CAS. Re-read that exact lifecycle and
                 // take its ordinary active-stop path; never cancel on a refusal.
