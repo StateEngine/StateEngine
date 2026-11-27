@@ -311,6 +311,11 @@ impl HostedRouter {
         Ok(exchange)
     }
 }
+impl HostedConnection {
+    pub(crate) async fn wait_for_peer_close(&self) -> Result<()> {
+        self.connection.wait_for_peer_close().await
+    }
+}
 impl AdmittedExchange {
     pub(super) async fn wait_for_peer_close(&self) -> Result<()> {
         self.connection.connection.wait_for_peer_close().await

@@ -10,6 +10,7 @@ use crate::{
 use se_core::store_error::store_error;
 use se_store::{Actor, Admission, EventBody, RecordId, Revision, Scope, Snapshot};
 use se_types::{AgentId, HumanId, ProjectId, Read, Result, SeError, SessionId};
+use tokio::sync::watch;
 
 pub(crate) const EXPIRED_LEASE_REASON: &str = "external seat lease expired";
 
@@ -319,50 +320,104 @@ pub(crate) async fn reconcile_external_for_launch_on_store(
     Ok(changed)
 }
 
+/// Exact fenced target for external-seat disconnect and rollback cleanup.
+#[derive(Clone, Copy)]
+pub(crate) struct DisconnectTarget<'a> {
+    pub project_id: &'a ProjectId,
+    pub agent_id: &'a AgentId,
+    pub session_id: &'a SessionId,
+    pub lease_generation: u64,
+}
+
+/// Awaits `fut` while adopting the live host shutdown deadline as soon as
+/// shutdown begins.
+async fn within_shutdown<F, T>(
+    shutdown: Option<&mut watch::Receiver<Option<Deadline>>>,
+    fut: F,
+) -> Result<T>
+where
+    F: std::future::Future<Output = T>,
+{
+    let Some(rx) = shutdown else {
+        return Ok(fut.await);
+    };
+    tokio::pin!(fut);
+    loop {
+        let current = rx.borrow_and_update().clone();
+        if let Some(bound) = current {
+            let remaining = bound.remaining()?;
+            tokio::select! {
+                biased;
+                value = &mut fut => return Ok(value),
+                _ = tokio::time::sleep(remaining) => {
+                    return Err(match bound.remaining() {
+                        Err(err) => err,
+                        Ok(_) => SeError::new(se_types::Detail::DeadlineExceeded(
+                            se_types::details::DeadlineExceeded {
+                                op: "local IPC".into(),
+                                deadline_ms: bound.budget().as_millis() as u64,
+                            },
+                        )),
+                    });
+                }
+            }
+        } else {
+            tokio::select! {
+                biased;
+                value = &mut fut => return Ok(value),
+                changed = rx.changed() => {
+                    if changed.is_err() {
+                        return Ok(fut.await);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Bounded retry wrapper for connection-drop and rollback cleanup.
 pub(crate) async fn fenced_disconnect_with_retry(
     router: &HostedRouter,
-    project_id: &ProjectId,
-    agent_id: &AgentId,
-    session_id: &SessionId,
-    lease_generation: u64,
+    target: DisconnectTarget<'_>,
     reason: &str,
+    mut shutdown: Option<watch::Receiver<Option<Deadline>>>,
 ) -> Result<DisconnectOutcome> {
-    let _agent_guard = router
+    let lock = router
         .execution
         .external
-        .agent_lock(project_id, agent_id)?
-        .lock_owned()
-        .await;
-    fenced_disconnect_locked_with_retry(
-        router,
-        project_id,
-        agent_id,
-        session_id,
-        lease_generation,
-        reason,
-    )
-    .await
+        .agent_lock(target.project_id, target.agent_id)?;
+    let _agent_guard = within_shutdown(shutdown.as_mut(), lock.lock_owned()).await?;
+    fenced_disconnect_locked_with_retry(router, target, reason, shutdown).await
 }
 
 pub(crate) async fn fenced_disconnect_locked_with_retry(
     router: &HostedRouter,
-    project_id: &ProjectId,
-    agent_id: &AgentId,
-    session_id: &SessionId,
-    lease_generation: u64,
+    target: DisconnectTarget<'_>,
     reason: &str,
+    mut shutdown: Option<watch::Receiver<Option<Deadline>>>,
 ) -> Result<DisconnectOutcome> {
-    let mut last_err = None;
+    let mut last_err: Option<SeError> = None;
     for attempt in 0..3u64 {
-        let deadline = crate::runtime::serve::options(std::time::Duration::from_secs(10))?;
+        let current_bound = shutdown.as_ref().and_then(|rx| rx.borrow().clone());
+        let deadline = match current_bound.as_ref() {
+            Some(bound) => match bound.stage(std::time::Duration::from_secs(10)) {
+                Ok(deadline) => deadline,
+                Err(deadline_err) => {
+                    return Err(match last_err {
+                        Some(err) => err.with_cause(deadline_err),
+                        None => deadline_err,
+                    });
+                }
+            },
+            None => crate::runtime::serve::options(std::time::Duration::from_secs(10))?,
+        };
         match fenced_disconnect_locked_on_execution(
             &router.execution,
             &router.context.owner,
-            project_id,
-            agent_id,
-            session_id,
-            lease_generation,
+            target.project_id,
+            target.agent_id,
+            target.session_id,
+            target.lease_generation,
             reason,
             &deadline,
         )
@@ -372,7 +427,15 @@ pub(crate) async fn fenced_disconnect_locked_with_retry(
             Err(err) => {
                 last_err = Some(err);
                 if attempt < 2 {
-                    tokio::time::sleep(std::time::Duration::from_millis(50 * (attempt + 1))).await;
+                    let backoff = std::time::Duration::from_millis(50 * (attempt + 1));
+                    if let Err(deadline_err) =
+                        within_shutdown(shutdown.as_mut(), tokio::time::sleep(backoff)).await
+                    {
+                        return Err(match last_err {
+                            Some(err) => err.with_cause(deadline_err),
+                            None => deadline_err,
+                        });
+                    }
                 }
             }
         }

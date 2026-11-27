@@ -263,14 +263,26 @@ async fn connection(
     };
     let ext_claim = connection.grant.external_claim.clone();
     let ext_active = Arc::clone(&connection.grant.external_active);
-    let outcome = connection_loop(&router, connection, &mut shutdown).await;
-    crate::external::dispatch::release_connection(&router, ext_claim, &ext_active).await;
+    let mut ext_close_reason = "external bridge disconnected";
+    let outcome = connection_loop(&router, connection, &mut ext_close_reason, &mut shutdown).await;
+    if shutdown.borrow().is_some() && ext_close_reason == "external bridge disconnected" {
+        ext_close_reason = "host is shutting down";
+    }
+    crate::external::dispatch::release_connection(
+        &router,
+        ext_claim,
+        &ext_active,
+        ext_close_reason,
+        shutdown,
+    )
+    .await;
     outcome
 }
 
 async fn connection_loop(
     router: &HostedRouter,
     mut connection: HostedConnection,
+    ext_close_reason: &mut &'static str,
     shutdown: &mut watch::Receiver<Option<Deadline>>,
 ) -> Result<ConnectionEnd> {
     loop {
@@ -283,8 +295,15 @@ async fn connection_loop(
             return Ok(ConnectionEnd::Closed);
         };
         if let Some(call) = exchange.take_external() {
-            let Some(returned) =
-                serve_external_exchange(router, exchange, call, &deadline, shutdown).await?
+            let Some(returned) = serve_external_exchange(
+                router,
+                exchange,
+                call,
+                &deadline,
+                ext_close_reason,
+                shutdown,
+            )
+            .await?
             else {
                 return Ok(ConnectionEnd::Closed);
             };
@@ -353,6 +372,7 @@ async fn serve_external_exchange(
     exchange: AdmittedExchange,
     call: super::admission::external::ExternalCall,
     deadline: &Deadline,
+    ext_close_reason: &mut &'static str,
     shutdown: &mut watch::Receiver<Option<Deadline>>,
 ) -> Result<Option<HostedConnection>> {
     let active_binding = Arc::clone(&exchange.connection.grant.external_active);
@@ -364,12 +384,13 @@ async fn serve_external_exchange(
         | super::admission::external::ExternalCall::Revoke { .. } => {
             let task_router = router.clone();
             let task_deadline = deadline.clone();
+            let task_binding = Arc::clone(&active_binding);
             let mut task_shutdown = shutdown.clone();
             let handle = tokio::spawn(async move {
                 crate::external::dispatch::execute(
                     &task_router,
                     call,
-                    &active_binding,
+                    &task_binding,
                     &task_deadline,
                     &mut task_shutdown,
                 )
@@ -404,10 +425,30 @@ async fn serve_external_exchange(
         },
     };
     let reply_deadline = options(CALL_TIMEOUT)?;
-    exchange
-        .reply_external(result, &reply_deadline)
-        .await
-        .map(Some)
+    match result {
+        Ok(crate::external::dispatch::DispatchOutput {
+            output,
+            bridge_witness: Some(witness),
+        }) => {
+            let _work = router.execution.mail_waits.client_work()?;
+            let connection = exchange.reply_external(Ok(output), &reply_deadline).await?;
+            *ext_close_reason =
+                crate::external::dispatch::hold_approved_bridge(connection, witness, shutdown)
+                    .await?;
+            Ok(None)
+        }
+        Ok(crate::external::dispatch::DispatchOutput {
+            output,
+            bridge_witness: None,
+        }) => exchange
+            .reply_external(Ok(output), &reply_deadline)
+            .await
+            .map(Some),
+        Err(error) => exchange
+            .reply_external(Err(error), &reply_deadline)
+            .await
+            .map(Some),
+    }
 }
 
 // The authenticated caller's clock already includes connection/authentication.
