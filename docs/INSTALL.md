@@ -146,6 +146,11 @@ archive="stateengine-VERSION-aarch64-apple-darwin-unsigned.tar.gz"
 shasum -a 256 -c "$archive.sha256" && tar -xzf "$archive" && cd "${archive%.tar.gz}"
 ```
 
+A browser marks downloaded files as quarantined, and macOS may refuse to run the
+unsigned `se` from such an archive. After the checksum passes, clear the mark from the
+extracted folder before installing: `xattr -dr com.apple.quarantine .` The script
+install above downloads with `curl`, which does not set the mark.
+
 Then, from the extracted folder, install as your normal user.
 
 **Linux and macOS, sh/bash/zsh:**
