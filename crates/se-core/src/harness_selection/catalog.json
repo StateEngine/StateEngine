@@ -12,7 +12,12 @@
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "OPENAI_MODEL",
-        "QWEN_HOME"
+        "QWEN_HOME",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_MODEL",
+        "GEMINI_API_KEY",
+        "GEMINI_MODEL"
       ],
       "permissions": {
         "default": {
@@ -49,7 +54,10 @@
         "GOOSE_PATH_ROOT",
         "GOOSE_DISABLE_KEYRING",
         "GOOSE_MODEL",
-        "GOOSE_MODE"
+        "GOOSE_MODE",
+        "ANTHROPIC_API_KEY",
+        "GOOGLE_API_KEY",
+        "OPENROUTER_API_KEY"
       ],
       "model_environment": "GOOSE_MODEL",
       "permissions": {
@@ -73,7 +81,11 @@
       ],
       "environment": [
         "HERMES_HOME",
-        "HERMES_MODEL"
+        "HERMES_MODEL",
+        "OPENROUTER_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL"
       ],
       "model_environment": "HERMES_MODEL",
       "unadvertised_http_mcp": true,
@@ -96,7 +108,18 @@
       "arguments": [
         "acp"
       ],
-      "environment": [],
+      "environment": [
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_GENERATIVE_AI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GROQ_API_KEY",
+        "XAI_API_KEY",
+        "OPENCODE_CONFIG",
+        "OPENCODE_CONFIG_DIR"
+      ],
       "permissions": {
         "default": {
           "arguments": [],
@@ -151,7 +174,15 @@
       "arguments": [
         "acp"
       ],
-      "environment": [],
+      "environment": [
+        "KIMI_API_KEY",
+        "KIMI_BASE_URL",
+        "KIMI_MODEL_NAME",
+        "KIMI_SHARE_DIR",
+        "KIMI_MODEL_API_KEY",
+        "KIMI_MODEL_BASE_URL",
+        "KIMI_CODE_HOME"
+      ],
       "permissions": {
         "default": {
           "arguments": [],
@@ -196,7 +227,10 @@
       "arguments": [
         "--acp"
       ],
-      "environment": [],
+      "environment": [
+        "CLINE_DIR",
+        "CLINE_DATA_DIR"
+      ],
       "permissions": {
         "default": {
           "arguments": [],

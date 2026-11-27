@@ -165,14 +165,21 @@ automatically. Missing or unreadable installations refuse
 with their actual cause and a native setup link. Init does not install software or
 sign in to a provider, and saving the descriptor does not establish a successful
 launch: the normal launch still verifies native capabilities and readiness. Existing
-named entries take precedence over catalogue names and keep their original command
-and permission choices.
+named entries take precedence over catalogue names and keep their original command,
+permission choices and environment names.
 
 A catalogue descriptor's `environment` lists only that agent's own documented variable
-names (for example `GEMINI_API_KEY` for `gemini`). StateEngine saves the names, never
-values, and you can add or remove names there. Every protocol agent also inherits the
-proxy and TLS trust variables (`HTTPS_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`,
-`NODE_EXTRA_CA_CERTS` and related), including through the background runtime.
+names: the provider keys and settings it reads, such as `ANTHROPIC_API_KEY` or
+`OPENROUTER_API_KEY` for `opencode`, `goose` and `hermes`, `GOOGLE_API_KEY` or
+`GEMINI_API_KEY` for `opencode` and `gemini`, and for `kimi` both the current
+`KIMI_MODEL_API_KEY`, `KIMI_MODEL_BASE_URL` and `KIMI_CODE_HOME` and the older
+`KIMI_API_KEY`, `KIMI_BASE_URL`, `KIMI_MODEL_NAME` and `KIMI_SHARE_DIR`. Cline keeps
+keys from its own `cline auth` sign-in, so only its configuration and data directory
+overrides, `CLINE_DIR` and `CLINE_DATA_DIR`, are listed. StateEngine saves the names,
+never values, and you can add or remove names there; an entry saved by an earlier init
+keeps its names until you edit it. Every protocol agent also inherits the proxy and TLS
+trust variables (`HTTPS_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS` and
+related), including through the background runtime.
 
 For any other installed protocol agent, register it from your own terminal without
 editing the file by hand:
