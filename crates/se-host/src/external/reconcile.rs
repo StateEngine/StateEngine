@@ -320,7 +320,17 @@ pub(crate) async fn reconcile_external_for_launch_on_store(
     Ok(changed)
 }
 
-/// Bounded retry wrapper for connection-drop and rollback cleanup.
+/// Exact fenced target for external-seat disconnect and rollback cleanup.
+#[derive(Clone, Copy)]
+pub(crate) struct DisconnectTarget<'a> {
+    pub project_id: &'a ProjectId,
+    pub agent_id: &'a AgentId,
+    pub session_id: &'a SessionId,
+    pub lease_generation: u64,
+}
+
+/// Awaits `fut` while adopting the live host shutdown deadline as soon as
+/// shutdown begins.
 async fn within_shutdown<F, T>(
     shutdown: Option<&mut watch::Receiver<Option<Deadline>>>,
     fut: F,
@@ -365,37 +375,24 @@ where
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Bounded retry wrapper for connection-drop and rollback cleanup.
 pub(crate) async fn fenced_disconnect_with_retry(
     router: &HostedRouter,
-    project_id: &ProjectId,
-    agent_id: &AgentId,
-    session_id: &SessionId,
-    lease_generation: u64,
+    target: DisconnectTarget<'_>,
     reason: &str,
     mut shutdown: Option<watch::Receiver<Option<Deadline>>>,
 ) -> Result<DisconnectOutcome> {
-    let lock = router.execution.external.agent_lock(project_id, agent_id)?;
+    let lock = router
+        .execution
+        .external
+        .agent_lock(target.project_id, target.agent_id)?;
     let _agent_guard = within_shutdown(shutdown.as_mut(), lock.lock_owned()).await?;
-    fenced_disconnect_locked_with_retry(
-        router,
-        project_id,
-        agent_id,
-        session_id,
-        lease_generation,
-        reason,
-        shutdown,
-    )
-    .await
+    fenced_disconnect_locked_with_retry(router, target, reason, shutdown).await
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn fenced_disconnect_locked_with_retry(
     router: &HostedRouter,
-    project_id: &ProjectId,
-    agent_id: &AgentId,
-    session_id: &SessionId,
-    lease_generation: u64,
+    target: DisconnectTarget<'_>,
     reason: &str,
     mut shutdown: Option<watch::Receiver<Option<Deadline>>>,
 ) -> Result<DisconnectOutcome> {
@@ -417,10 +414,10 @@ pub(crate) async fn fenced_disconnect_locked_with_retry(
         match fenced_disconnect_locked_on_execution(
             &router.execution,
             &router.context.owner,
-            project_id,
-            agent_id,
-            session_id,
-            lease_generation,
+            target.project_id,
+            target.agent_id,
+            target.session_id,
+            target.lease_generation,
             reason,
             &deadline,
         )

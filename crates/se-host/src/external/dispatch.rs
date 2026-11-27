@@ -75,7 +75,7 @@ pub(crate) async fn execute(
             )?))
         }
         ExternalCall::Approve { claim_id } => {
-            let output = lifecycle::approve_claim(router, &claim_id, deadline).await?;
+            let output = lifecycle::approve_claim(router, &claim_id, deadline, shutdown).await?;
             Ok(DispatchOutput::plain(encode(
                 "se.external-approve/v1",
                 &output,
@@ -257,10 +257,12 @@ async fn close_bridge_and_revoke(
         if let Some((project_id, agent_id, session_id, lease_generation)) = &active {
             match lifecycle::fenced_disconnect_with_retry(
                 &router,
-                project_id,
-                agent_id,
-                session_id,
-                *lease_generation,
+                lifecycle::DisconnectTarget {
+                    project_id,
+                    agent_id,
+                    session_id,
+                    lease_generation: *lease_generation,
+                },
                 &reason,
                 shutdown.clone(),
             )
@@ -300,10 +302,12 @@ async fn close_bridge_and_revoke(
         {
             match lifecycle::fenced_disconnect_with_retry(
                 &router,
-                &undelivered.project_id,
-                &undelivered.agent_id,
-                &undelivered.session_id,
-                undelivered.lease_generation,
+                lifecycle::DisconnectTarget {
+                    project_id: &undelivered.project_id,
+                    agent_id: &undelivered.agent_id,
+                    session_id: &undelivered.session_id,
+                    lease_generation: undelivered.lease_generation,
+                },
                 &reason,
                 shutdown,
             )

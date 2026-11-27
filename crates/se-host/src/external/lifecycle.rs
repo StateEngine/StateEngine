@@ -7,13 +7,13 @@ use crate::{
     runtime::{WriteIdentity, start::now_unix_micros, submit},
 };
 use se_core::store_error::store_error;
-use se_types::{AgentId, ProjectId, Result, SeError, Secret, SessionId};
+use se_types::{AgentId, ProjectId, Result, SeError, Secret};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 pub(crate) use commit::resolve_external_agent;
 pub(crate) use reconcile::{
-    EXPIRED_LEASE_REASON, fenced_disconnect_with_retry, reconcile_expired_leases,
+    DisconnectTarget, EXPIRED_LEASE_REASON, fenced_disconnect_with_retry, reconcile_expired_leases,
     reconcile_expired_on_execution, reconcile_external_for_launch_on_store,
 };
 
@@ -119,6 +119,7 @@ pub(crate) async fn approve_claim(
     router: &HostedRouter,
     claim_id: &str,
     deadline: &Deadline,
+    shutdown: &tokio::sync::watch::Receiver<Option<Deadline>>,
 ) -> Result<ExternalApproveOutput> {
     router.check_open()?;
     let host_generation = router.context.generation;
@@ -183,17 +184,12 @@ pub(crate) async fn approve_claim(
     };
     let observer_warning =
         settle_approve_commit(router, batch, &identity, &active, deadline).await?;
-    router.execution.external.record_active_lease(active)?;
-    let output = handoff_to_bridge_locked(
-        router,
-        consumed,
-        session_id,
-        lease_generation,
-        expires_at_us,
-        secret,
-        retired_rx,
-    )
-    .await?;
+    router
+        .execution
+        .external
+        .record_active_lease(active.clone())?;
+    let output =
+        handoff_to_bridge_locked(router, consumed, &active, secret, retired_rx, shutdown).await?;
     if let Some(warn) = observer_warning {
         return Err(warn);
     }
@@ -252,12 +248,14 @@ async fn settle_approve_commit(
 async fn handoff_to_bridge_locked(
     router: &HostedRouter,
     consumed: registry::ConsumedClaim,
-    session_id: SessionId,
-    lease_generation: u64,
-    expires_at_us: i64,
+    active: &ActiveLease,
     secret: Arc<Secret>,
     retired: tokio::sync::watch::Receiver<bool>,
+    shutdown: &tokio::sync::watch::Receiver<Option<Deadline>>,
 ) -> Result<ExternalApproveOutput> {
+    let session_id = active.session_id.clone();
+    let lease_generation = active.lease_generation;
+    let expires_at_us = active.expires_at_us;
     let handoff_ok = {
         let mut bridge = consumed
             .bridge
@@ -292,12 +290,14 @@ async fn handoff_to_bridge_locked(
     if !delivered {
         match reconcile::fenced_disconnect_locked_with_retry(
             router,
-            &consumed.project_id,
-            &consumed.agent_id,
-            &session_id,
-            lease_generation,
+            DisconnectTarget {
+                project_id: &consumed.project_id,
+                agent_id: &consumed.agent_id,
+                session_id: &session_id,
+                lease_generation,
+            },
             "external bridge disconnected before capability delivery",
-            None,
+            Some(shutdown.clone()),
         )
         .await
         {
