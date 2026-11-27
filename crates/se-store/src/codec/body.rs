@@ -18,6 +18,9 @@ pub(crate) fn body(
         "remote.launch_attributed" => RemoteLaunchAttributed {
             record: field(&facts(c, seq)?, "record")?,
         },
+        "remote.delegate_attributed" => RemoteDelegateAttributed {
+            record: field(&facts(c, seq)?, "record")?,
+        },
         "remote.mailbox_recorded" => RemoteMailboxRecorded {
             change: field(&facts(c, seq)?, "change")?,
         },

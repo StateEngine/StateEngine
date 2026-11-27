@@ -126,6 +126,18 @@ pub trait RemoteClient: Send + Sync {
             ))
         })
     }
+    fn delegate(
+        &self,
+        _call: RemoteCallContext,
+        _request: RemoteDelegate,
+    ) -> RemoteFuture<'_, RemoteDelegateResult> {
+        Box::pin(async {
+            Err(se_types::SeError::invalid(
+                "remote delegate",
+                "a destination supporting bounded remote delegation; update both installations",
+            ))
+        })
+    }
     /// Join this connector's network tasks during owning-host shutdown. A
     /// transport adapter must provide its own closure witness, never a no-op.
     fn close(&self) -> RemoteFuture<'_, ()> {

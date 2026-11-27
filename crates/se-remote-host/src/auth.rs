@@ -93,6 +93,15 @@ pub struct AdmissionPermit {
     source_fence: Option<Arc<fence::GrantFence>>,
 }
 impl AdmissionPermit {
+    /// A delegated worker's creation and its start are two writes of one
+    /// admitted request. Each copy still takes the grant fences when submitted.
+    pub fn for_next_write(&self) -> Self {
+        Self {
+            principal: self.principal.clone(),
+            fence: self.fence.clone(),
+            source_fence: self.source_fence.clone(),
+        }
+    }
     pub fn submit(
         self,
         writer: &se_store::SqliteClient,

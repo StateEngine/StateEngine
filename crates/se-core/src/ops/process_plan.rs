@@ -5,7 +5,7 @@ use super::{
     inputs::Validate,
 };
 use crate::{commit::Cx, dispatch::Kernel, scope, store_error::store_error};
-use se_config::config_policy::{ConfigFile, EffectiveSandbox, Provider};
+use se_config::config_policy::{ConfigFile, DelegationConfig, EffectiveSandbox, Provider};
 use se_store::{Actor, EventBody, PermissionProfile, Snapshot};
 use se_types::{
     AgentId, Detail, Named, ProviderSessionId, Read, Result, ResumeSelection, SeError,
@@ -101,16 +101,21 @@ fn recheck_delegated_launch(
     profile: &se_store::Profile,
     configuration: &ConfigFile,
 ) -> Result<()> {
-    if ephemeral.is_some() && matches!(actor, Actor::Agent(_)) {
+    // The pair checked is the one this launch reserves; the store fences the
+    // saved profile's revision, so a later edit cannot slip past it.
+    let allowed = match actor {
+        Actor::Agent(_) => DelegationConfig::require_allowed,
+        Actor::Remote(_) => DelegationConfig::require_remote_allowed,
+        _ => return Ok(()),
+    };
+    if ephemeral.is_some() {
         if !profile.provider_settings.is_empty() {
             return Err(SeError::invalid(
                 "provider_settings",
                 "delegated launches cannot use custom provider_settings or base_url",
             ));
         }
-        configuration
-            .delegation
-            .require_allowed(provider, &profile.named_profile)?;
+        allowed(&configuration.delegation, provider, &profile.named_profile)?;
     }
     Ok(())
 }
@@ -189,6 +194,7 @@ pub fn launch<R: Snapshot>(
         .ok_or_else(|| SeError::invalid("launch allocation", "canonical UUIDv7 event identity"))?;
     Ok(LaunchPlan {
         remote: None,
+        delegated_from: None,
         channel_resume: None,
         input,
         owner,

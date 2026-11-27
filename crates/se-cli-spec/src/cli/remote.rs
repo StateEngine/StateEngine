@@ -24,6 +24,20 @@ pub(super) fn command(name: &str, c: Command) -> Command {
                 .required(true)
                 .help("Session ID returned by that remote launch; other sessions are refused"),
         )
+    } else if name == "remote.delegate" {
+        c.arg(value("target").required(true).help(
+            "Exact Owner-approved destination project-ID/agent-ID; the worker starts beside it",
+        ))
+        .arg(value("task").required(true).help("Initial task prompt for the worker (1..16384 bytes)"))
+        .arg(value("role").help("Short role label for the worker name tmp-<role>-<8hex>"))
+        .arg(value("provider").value_parser(provider_value_parser()).help(format!(
+            "Destination provider (default: the anchor's): {}",
+            provider_list()
+        )))
+        .arg(value("profile").help(
+            "Destination named profile (default: the anchor's); the destination must list the pair in [delegation].remote_allow",
+        ))
+        .arg(value("ttl").help("Lifetime in seconds (1..=86400); each machine lowers it to its cap"))
     } else if name == "remote.send" {
         c.arg(
             value("expected_host")
@@ -138,6 +152,7 @@ pub(super) fn decode(
                 idempotency_key: key()?,
             },
         }),
+        "remote.delegate" => delegate(host, m, key)?,
         "remote.send" => AnyOp::RemoteSend(RemoteSendCall {
             expected_binding: text(m, "expected_host")
                 .map(|host| {
@@ -158,7 +173,7 @@ pub(super) fn decode(
         _ => {
             return Err(SeError::invalid(
                 "remote command",
-                "list, watch, send, launch or stop",
+                "list, watch, send, launch, stop or delegate",
             ));
         }
     })
@@ -208,4 +223,33 @@ fn unsigned(m: &ArgMatches, id: &str) -> Result<u32> {
     required(m, id)?
         .parse::<u32>()
         .map_err(|_| SeError::invalid(id, "a bounded unsigned integer"))
+}
+
+fn delegate(
+    host: String,
+    m: &ArgMatches,
+    key: impl FnOnce() -> Result<IdempotencyKey>,
+) -> Result<AnyOp> {
+    Ok(AnyOp::RemoteDelegate(RemoteDelegateCall {
+        host,
+        request: RemoteDelegate {
+            target: parse_remote_target(&required(m, "target")?)?,
+            task: required(m, "task")?,
+            role: text(m, "role"),
+            provider: text(m, "provider")
+                .map(|value| {
+                    serde_json::from_value(serde_json::Value::String(value))
+                        .map_err(|_| SeError::invalid("provider", provider_list()))
+                })
+                .transpose()?,
+            profile: text(m, "profile"),
+            ttl_seconds: text(m, "ttl")
+                .map(|v| {
+                    v.parse::<u32>()
+                        .map_err(|_| SeError::invalid("ttl", "1..=86400 seconds"))
+                })
+                .transpose()?,
+            idempotency_key: key()?,
+        },
+    }))
 }

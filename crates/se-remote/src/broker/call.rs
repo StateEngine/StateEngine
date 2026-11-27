@@ -55,6 +55,10 @@ impl<B: Budget> RemoteBroker<B> {
                 self.stop(input, admission, terminal, source, deadline)
                     .await
             }
+            AnyOp::RemoteDelegate(input) => {
+                self.delegate(input, admission, terminal, source, deadline)
+                    .await
+            }
             AnyOp::RemoteList(input) => {
                 let b = self
                     .resolve(&input.host, context(), admission, terminal, deadline)
@@ -96,7 +100,7 @@ impl<B: Budget> RemoteBroker<B> {
                 self.send(input, &b, source).await
             }
             _ => Err(refused(
-                "only closed remote list/watch/send operations enter this broker",
+                "only closed remote list/watch/send/launch/delegate operations enter this broker",
             )),
         }
     }

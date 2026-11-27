@@ -38,7 +38,9 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
     let s = scope_key(c, &e.header.scope, false)?;
     match &e.body {
         RemoteSecurity { .. } => crate::remote::revision(c, e),
-        RemoteMessageAttributed { .. } | RemoteLaunchAttributed { .. } => Ok(1),
+        RemoteMessageAttributed { .. }
+        | RemoteLaunchAttributed { .. }
+        | RemoteDelegateAttributed { .. } => Ok(1),
         RemoteMailboxRecorded { .. } => Ok(1),
         CaptainMessageRouted { .. } => Ok(1),
         ProcessRegistered { .. } | ProcessTransition { .. } => process::revision(c, e),

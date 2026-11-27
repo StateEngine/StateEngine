@@ -386,6 +386,9 @@ pub trait Snapshot {
     fn principals(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
     /// Non-retired project principals (hiding retired ephemeral agents on schema >= 17).
     fn active_principals(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
+    /// A remote caller's live temporary workers across every project in this
+    /// store: the per-machine worker bound counts these.
+    fn remote_active_workers(&mut self) -> StoreResult<u32>;
     /// Whether this agent has been terminally retired (`principals.retired_seq IS NOT NULL`).
     /// Project-scoped roster visibility (same as `principals()` and `active_principals()`):
     /// readable under `Visibility::SelfOnly` for peer addressing without exposing private agent data.

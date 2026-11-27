@@ -35,25 +35,11 @@ pub(crate) fn validate_launch(
         return Err(denied());
     }
     let record = records[0];
-    let stamp = &record.attribution;
-    let grant = read::grant(c, &stamp.grant)?.ok_or_else(denied)?;
-    let permission =
-        launch_permission::permission(c, &grant.grant, &record.target)?.ok_or_else(denied)?;
-    if !permission.allowed
-        || grant.state != GrantState::Active
-        || grant.expires_at_us <= now
-        || grant.store != info.id
-        || stamp.store != info.id
-        || stamp.host != grant.host
-        || stamp.principal != grant.principal
-        || stamp.device != grant.device
-        || stamp.authority_revision != grant.authority_revision.value.get()
-        || !grant.subject.admits_source(stamp.source.as_ref())
-        || batch.admission.actor != Actor::Remote(grant.principal)
-        || batch.admission.session.is_some()
-        || batch.admission.scope != Scope::Project(record.target.project.clone())
-    {
-        return Err(denied());
+    // A delegated worker starts under its anchor's consent, never its own.
+    let consent = record.delegated_from.as_ref().unwrap_or(&record.target);
+    let grant = consented(c, batch, info, now, &record.attribution, consent)?;
+    if let Some(anchor) = &record.delegated_from {
+        super::delegate::require_worker(c, info, &grant, anchor, &record.target)?;
     }
     launch_permission::require_saved_target(c, &record.target)?;
     let project = crate::identity::key(c, "project", record.target.project.as_str(), &[0], false)?;
@@ -103,6 +89,37 @@ pub(crate) fn validate_launch(
     Ok(true)
 }
 
+/// The grant behind `stamp` is current, matches this batch's admission, and
+/// holds the Owner's launch consent for `consent` in the admitted project.
+pub(super) fn consented(
+    c: &Connection,
+    batch: &AtomicBatch,
+    info: &StoreInfo,
+    now: i64,
+    stamp: &se_types::remote::RemoteAttribution,
+    consent: &se_types::remote::RemoteTarget,
+) -> StoreResult<GrantRecord> {
+    let grant = read::grant(c, &stamp.grant)?.ok_or_else(denied)?;
+    let permission = launch_permission::permission(c, &grant.grant, consent)?.ok_or_else(denied)?;
+    if !permission.allowed
+        || grant.state != GrantState::Active
+        || grant.expires_at_us <= now
+        || grant.store != info.id
+        || stamp.store != info.id
+        || stamp.host != grant.host
+        || stamp.principal != grant.principal
+        || stamp.device != grant.device
+        || stamp.authority_revision != grant.authority_revision.value.get()
+        || !grant.subject.admits_source(stamp.source.as_ref())
+        || batch.admission.actor != Actor::Remote(grant.principal.clone())
+        || batch.admission.session.is_some()
+        || batch.admission.scope != Scope::Project(consent.project.clone())
+    {
+        return Err(denied());
+    }
+    Ok(grant)
+}
+
 pub(crate) fn apply(
     c: &Connection,
     h: &EventHeader,
@@ -135,7 +152,9 @@ pub(crate) fn target_owned(
     grant: &se_types::RemoteGrantId,
     target: &se_types::remote::RemoteTarget,
 ) -> StoreResult<bool> {
-    if launch_permission::permission(c, grant, target)?.is_some_and(|p| p.allowed) {
+    if launch_permission::permission(c, grant, target)?.is_some_and(|p| p.allowed)
+        || super::delegate::created_by_grant(c, grant, target)?
+    {
         return Ok(true);
     }
     let p = crate::identity::key(c, "project", target.project.as_str(), &[0], false)?;

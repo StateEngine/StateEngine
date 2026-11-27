@@ -524,6 +524,31 @@ impl Snapshot for SqliteSnapshot {
             budget,
         )
     }
+    fn remote_active_workers(&mut self) -> StoreResult<u32> {
+        let Actor::Remote(principal) = &self.scope.admission.actor else {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "only a remote caller counts its own workers",
+            ));
+        };
+        if self.remote_launch_grant.is_none() || self.info.schema_version < 17 {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "remote worker counts need an admitted launch grant",
+            ));
+        }
+        // A remote principal's key is the same in every project.
+        let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
+        let creator = key(&self.db, "remote", principal.as_str(), &scope, false)?;
+        self.db
+            .query_row(
+                "SELECT COUNT(*) FROM principals p JOIN events e ON e.seq=p.first_seq
+                 WHERE p.retired_seq IS NULL AND p.ephemeral_one_shot IS NOT NULL AND e.actor_id=?",
+                rusqlite::params![creator],
+                |r| r.get(0),
+            )
+            .map_err(sql)
+    }
     fn principal_retired(&mut self, agent: AgentId) -> StoreResult<bool> {
         self.require_local_port()?;
         let p = self.project_bytes()?;

@@ -23,7 +23,6 @@ pub(super) async fn execute(
             "a closed remote operation",
         ));
     };
-    #[cfg(feature = "remote")]
     let mut operation = operation;
     #[cfg(feature = "remote")]
     let _work = context.mail_waits.client_work()?;
@@ -43,6 +42,16 @@ pub(super) async fn execute(
         deadline,
     )
     .await?;
+    if let se_core::ops::AnyOp::RemoteDelegate(input) = &mut operation {
+        admit_delegate(
+            context,
+            &call.kernel,
+            &call.admission,
+            &mut input.request,
+            deadline,
+        )
+        .await?;
+    }
     #[cfg(feature = "remote")]
     if let Some(source) = &source {
         // Reconnects that first list or watch must also resume saved return mail.
@@ -55,6 +64,7 @@ pub(super) async fn execute(
             .await?;
     }
     let key = operation.idempotency_key().map(ToString::to_string);
+    let operation_name = operation.meta().name;
     #[cfg(feature = "remote")]
     let outgoing = match &operation {
         se_core::ops::AnyOp::RemoteSend(input) => Some(input.clone()),
@@ -68,26 +78,7 @@ pub(super) async fn execute(
         broker.execute(operation, &call.admission, &call.terminal, source, deadline),
     )
     .await
-    .map_err(|_| {
-        let mut error = if key.is_some() {
-            SeError::new(se_types::Detail::CommitOutcomeUnknown(
-                se_types::details::CommitOutcomeUnknown {
-                    operation: "remote.send".into(),
-                    key,
-                    natural_events: vec![],
-                },
-            ))
-        } else {
-            SeError::new(se_types::Detail::DeadlineExceeded(
-                se_types::details::DeadlineExceeded {
-                    op: "remote read".into(),
-                    deadline_ms: timeout.as_millis().min(u128::from(u64::MAX)) as u64,
-                },
-            ))
-        };
-        error.body = error.body.with_retry(se_types::Retry::AfterReread);
-        error
-    })??;
+    .map_err(|_| timed_out(operation_name, key, timeout))??;
     #[cfg(feature = "remote")]
     if let (Some(input), Some(source), se_core::ops::AnyOutput::RemoteSend(result)) =
         (outgoing, mailing_source, &output)
@@ -187,6 +178,49 @@ pub(super) fn validate_source(
             "the same active non-superseded source session/generation after fence registration",
         ));
     }
+    Ok(())
+}
+
+/// A keyed remote write that runs out of time has an unknown outcome; a read
+/// has simply exceeded its deadline. Either is retried after a reread.
+fn timed_out(operation: &str, key: Option<String>, timeout: std::time::Duration) -> SeError {
+    let mut error = if key.is_some() {
+        SeError::new(se_types::Detail::CommitOutcomeUnknown(
+            se_types::details::CommitOutcomeUnknown {
+                operation: operation.into(),
+                key,
+                natural_events: vec![],
+            },
+        ))
+    } else {
+        SeError::new(se_types::Detail::DeadlineExceeded(
+            se_types::details::DeadlineExceeded {
+                op: "remote read".into(),
+                deadline_ms: timeout.as_millis().min(u128::from(u64::MAX)) as u64,
+            },
+        ))
+    };
+    error.body = error.body.with_retry(se_types::Retry::AfterReread);
+    error
+}
+
+/// This machine's own delegation policy, read under the caller's admission
+/// before the request leaves it. The admitted request replaces the caller's.
+async fn admit_delegate(
+    context: &ExecutionContext,
+    kernel: &se_core::dispatch::Kernel,
+    admission: &se_store::Admission,
+    request: &mut se_types::remote::RemoteDelegate,
+    deadline: &crate::client::lease::Deadline,
+) -> Result<()> {
+    let configuration = kernel.configuration().cloned();
+    let mut admitted = request.clone();
+    *request = super::store::Store::for_execution(context)
+        .read(admission.clone(), deadline, move |cx| {
+            se_core::remote::admit_source_delegate(configuration.as_ref(), &mut admitted, cx)?;
+            Ok(admitted)
+        })
+        .await?;
     Ok(())
 }
 

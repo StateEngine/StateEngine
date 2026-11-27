@@ -2,8 +2,23 @@
 use super::*;
 use se_types::remote::RemoteVerb;
 
-/// Produced only after this transaction validates the closed launch batch.
-pub(crate) struct LaunchAuthority(());
+/// Produced only after this transaction validates a closed batch admitted by
+/// launch consent: a native launch reservation, or a delegated worker's creation.
+pub(crate) struct LaunchAuthority(Admitted);
+enum Admitted {
+    Launch,
+    Delegate,
+}
+impl LaunchAuthority {
+    /// A validated native launch reservation (session and process events).
+    pub(crate) fn launches(&self) -> bool {
+        matches!(self.0, Admitted::Launch)
+    }
+    /// A validated worker creation, whose creator is its anchor agent.
+    pub(crate) fn delegates(&self) -> bool {
+        matches!(self.0, Admitted::Delegate)
+    }
+}
 
 pub(crate) fn validate_batch(
     c: &Connection,
@@ -15,7 +30,10 @@ pub(crate) fn validate_batch(
         return Ok(None);
     }
     if super::validate_launch(c, batch, info, now)? {
-        return Ok(Some(LaunchAuthority(())));
+        return Ok(Some(LaunchAuthority(Admitted::Launch)));
+    }
+    if super::validate_delegate(c, batch, info, now)? {
+        return Ok(Some(LaunchAuthority(Admitted::Delegate)));
     }
     let Actor::Remote(principal) = &batch.admission.actor else {
         if batch

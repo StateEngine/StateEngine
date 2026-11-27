@@ -183,6 +183,66 @@ pub(super) fn stop(value: &se_core::ops::RemoteStopOutput, out: &mut impl Write)
     Ok(())
 }
 
+pub(super) fn delegate(
+    value: &se_core::ops::RemoteDelegateOutput,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    use se_types::{Receipt, remote::RemoteLaunchOutcome};
+    let worker = &value.worker;
+    let (target, session, key, state, details) = match &value.outcome {
+        RemoteLaunchOutcome::Started { receipt } => match receipt {
+            Receipt::Committed { commit } | Receipt::Replayed { original: commit } => (
+                &commit.value.target,
+                &commit.value.session,
+                &commit.idempotency_key,
+                "started",
+                commit.value.details.as_ref(),
+            ),
+            _ => {
+                return Err(io::Error::other(
+                    "remote delegation returned an incompatible start receipt",
+                ));
+            }
+        },
+        RemoteLaunchOutcome::Pending {
+            launch,
+            idempotency_key,
+            setup_needed,
+        } => (
+            &launch.target,
+            &launch.session,
+            idempotency_key,
+            if *setup_needed {
+                "waiting for destination setup"
+            } else {
+                "starting"
+            },
+            None,
+        ),
+    };
+    writeln!(
+        out,
+        "Remote worker {} ({}/{}) is {state} in session {session} (key {key}).",
+        worker.name, target.project, target.agent
+    )?;
+    writeln!(
+        out,
+        "  beside {}/{}; provider {}, profile {}, lifetime {}s; it stops after its first turn",
+        worker.anchor.project,
+        worker.anchor.agent,
+        worker.provider.id(),
+        worker.profile,
+        worker.ttl_seconds
+    )?;
+    if state != "started" {
+        writeln!(
+            out,
+            "  Retry remote delegate with the same host, target and key to observe its start."
+        )?;
+    }
+    launch_details(details, out)
+}
+
 fn launch_details(value: Option<&se_types::LaunchDetails>, out: &mut impl Write) -> io::Result<()> {
     let Some(value) = value else {
         return writeln!(

@@ -1,5 +1,7 @@
 //! Planning and atomic principal/profile creation for `delegate.start`.
-use super::{DEFAULT_HANDOFF_BYTES, DelegateStart, DelegateStartPlan, MAX_TASK_BYTES};
+use super::{
+    DEFAULT_HANDOFF_BYTES, DelegateStart, DelegateStartPlan, MAX_TASK_BYTES, RemoteDelegation,
+};
 use crate::{
     commit::Cx,
     dispatch::{Kernel, admitted},
@@ -11,7 +13,7 @@ use crate::{
     scope,
     store_error::store_error,
 };
-use se_config::config_policy::{ConfigFile, EffectiveSandbox};
+use se_config::config_policy::{ConfigFile, DelegationConfig, EffectiveSandbox};
 use se_store::{
     Actor, AtomicBatch, EphemeralSpec, EventBody, Expected, GrantKey, PermissionProfile,
     PrincipalKind, Profile, ReadBudget, Snapshot,
@@ -37,41 +39,82 @@ pub fn plan_start<R: Snapshot>(
     input.validate()?;
     configuration.validate()?;
     admitted(cx)?;
-    let (project_id, owner, project_name, cwd) = project_facts(cx)?;
-    require_delegate_authority(cx)?;
-    let binding =
-        crate::harness_selection::resolve(configuration, input.provider, input.harness.as_deref())?;
-    let provider = binding.provider;
-    let defaults = configuration.provider(provider);
-    let named_profile = input
-        .profile
-        .clone()
-        .unwrap_or_else(|| defaults.profile.clone());
-    if matches!(cx.admission.actor, Actor::Agent(_)) {
-        configuration
-            .delegation
-            .require_allowed(provider, &named_profile)?;
-    }
-    let resolved = configuration.resolve_profile(&named_profile, provider, true)?;
-    let permission = match resolved.sandbox {
-        EffectiveSandbox::ReadOnly => PermissionProfile::ReadOnly,
-        EffectiveSandbox::WorkspaceWrite => PermissionProfile::WorkspaceWrite,
-        EffectiveSandbox::Bypass => PermissionProfile::NamedFullBypass,
+    require_delegate_authority("delegate.start", cx)?;
+    let requester = match cx.admission.actor {
+        Actor::Agent(_) => Requester::Agent,
+        _ => Requester::Owner,
     };
-    let configured_ttl = configuration.delegation.ttl_seconds();
-    let ttl_seconds = input
-        .ttl_seconds
-        .map_or(configured_ttl, |requested| requested.min(configured_ttl));
+    plan_worker(kernel, input, configuration, requester, cx)
+}
+
+/// Who asks for a worker; it decides the allowed pairs and the request identity.
+pub(crate) enum Requester {
+    /// The local Owner may choose any configured pair.
+    Owner,
+    /// A local agent may choose only a `[delegation].allow` pair.
+    Agent,
+    /// A paired machine may choose only a `[delegation].remote_allow` pair; its
+    /// worker is created by the anchor.
+    Remote(Box<RemoteRequest>),
+}
+
+/// A paired machine's request as it arrived, before this machine filled any
+/// default from the anchor's saved profile, so a byte-identical retry keeps
+/// its key even after the Owner edits that profile.
+pub(crate) struct RemoteRequest {
+    pub origin: RemoteDelegation,
+    pub supplied: serde_json::Value,
+}
+
+type AllowCheck = fn(&DelegationConfig, se_config::config_policy::Provider, &str) -> Result<()>;
+
+/// Plan one temporary worker once its caller's authority is checked.
+pub(crate) fn plan_worker<R: Snapshot>(
+    kernel: &Kernel,
+    input: DelegateStart,
+    configuration: &ConfigFile,
+    requester: Requester,
+    cx: &mut Cx<'_, R>,
+) -> Result<DelegateStartPlan> {
+    let (project_id, owner, project_name, cwd) = project_facts(cx)?;
+    let allowlist = match &requester {
+        Requester::Owner => None,
+        Requester::Agent => Some(DelegationConfig::require_allowed as AllowCheck),
+        Requester::Remote(_) => Some(DelegationConfig::require_remote_allowed as AllowCheck),
+    };
+    // The exact earlier request is found first: a retry continues its committed
+    // worker, whose pair the first launch rechecks, even if the defaults this
+    // request would now fill in have changed.
+    let (remote, normalized_intent) = match requester {
+        Requester::Remote(request) => {
+            let RemoteRequest { origin, supplied } = *request;
+            let intent = serde_json::json!({ "anchor": origin.anchor, "request": supplied });
+            (Some(origin), intent)
+        }
+        Requester::Owner | Requester::Agent => (
+            None,
+            serde_json::to_value(&input)
+                .map_err(|error| scope::unreadable("delegate intent", &error.to_string()))?,
+        ),
+    };
+    let existing_agent = find_replayed_agent(
+        kernel,
+        operation(remote.as_ref()),
+        &input.idempotency_key,
+        &normalized_intent,
+        cx,
+    )?;
+    // A retry continues from what its worker committed; only a new worker
+    // takes this machine's current defaults and allowlist.
+    let launch = match &existing_agent {
+        Some((agent, _)) => committed_launch(agent, cx)?,
+        None => new_launch(&input, configuration, allowlist)?,
+    };
     let max_active_per_parent = configuration.delegation.max_active_per_parent();
-    let existing_agent = find_replayed_agent(&input.idempotency_key, cx)?;
     if existing_agent.is_none() {
         enforce_active_child_cap(max_active_per_parent, cx)?;
     }
     let (composed_task, handoff_included) = compose_task(&input, cx)?;
-    let model = input
-        .model
-        .clone()
-        .or_else(|| (!defaults.model.is_empty()).then(|| defaults.model.clone()));
     let role = input
         .role
         .clone()
@@ -80,29 +123,29 @@ pub fn plan_start<R: Snapshot>(
     let agent_id = kernel.facts()?.agent.clone();
     let suffix = short_hex(&agent_id);
     let name = format!("tmp-{role}-{suffix}");
-    let normalized_intent = serde_json::to_value(&input)
-        .map_err(|error| scope::unreadable("delegate intent", &error.to_string()))?;
     Ok(DelegateStartPlan {
         project: Named {
             id: project_id,
             name: project_name,
         },
         owner,
-        creator: cx.admission.actor.clone(),
+        creator: match &remote {
+            Some(origin) => Actor::Agent(origin.anchor.agent.clone()),
+            None => cx.admission.actor.clone(),
+        },
         cwd,
         agent_id,
         name,
         role,
-        provider,
-        stored_provider: provider.into(),
-        harness: binding.harness,
-        model,
-        named_profile,
-        permission,
-        resolved,
+        provider: launch.provider,
+        stored_provider: launch.provider.into(),
+        harness: launch.harness,
+        model: launch.model,
+        named_profile: launch.named_profile,
+        permission: launch.permission,
         ephemeral: EphemeralSpec {
             one_shot: true,
-            ttl_seconds,
+            ttl_seconds: launch.ttl_seconds,
         },
         max_active_per_parent,
         composed_task,
@@ -110,7 +153,106 @@ pub fn plan_start<R: Snapshot>(
         idempotency_key: input.idempotency_key,
         normalized_intent,
         existing_agent,
+        remote,
     })
+}
+
+/// What a worker is started with.
+struct Launch {
+    provider: se_types::Provider,
+    harness: Option<String>,
+    model: Option<String>,
+    named_profile: String,
+    permission: PermissionProfile,
+    ttl_seconds: u32,
+}
+
+/// A new worker's launch from this machine's current configuration.
+fn new_launch(
+    input: &DelegateStart,
+    configuration: &ConfigFile,
+    allowlist: Option<AllowCheck>,
+) -> Result<Launch> {
+    let binding =
+        crate::harness_selection::resolve(configuration, input.provider, input.harness.as_deref())?;
+    let provider = binding.provider;
+    let defaults = configuration.provider(provider);
+    let named_profile = input
+        .profile
+        .clone()
+        .unwrap_or_else(|| defaults.profile.clone());
+    if let Some(allowed) = allowlist {
+        allowed(&configuration.delegation, provider, &named_profile)?;
+    }
+    let resolved = configuration.resolve_profile(&named_profile, provider, true)?;
+    let configured_ttl = configuration.delegation.ttl_seconds();
+    Ok(Launch {
+        provider,
+        harness: binding.harness,
+        model: input
+            .model
+            .clone()
+            .or_else(|| (!defaults.model.is_empty()).then(|| defaults.model.clone())),
+        named_profile,
+        permission: match resolved.sandbox {
+            EffectiveSandbox::ReadOnly => PermissionProfile::ReadOnly,
+            EffectiveSandbox::WorkspaceWrite => PermissionProfile::WorkspaceWrite,
+            EffectiveSandbox::Bypass => PermissionProfile::NamedFullBypass,
+        },
+        ttl_seconds: input
+            .ttl_seconds
+            .map_or(configured_ttl, |requested| requested.min(configured_ttl)),
+    })
+}
+
+/// An existing worker's launch, exactly as its store saved it. It is read
+/// through the creator-authorized control view, which admits a parent's own
+/// worker without widening ordinary profile visibility.
+fn committed_launch<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Launch> {
+    let control = scope::require_present(
+        cx.read
+            .control_target(agent.clone())
+            .map_err(|error| store_error(&error))?,
+        "delegated worker",
+        scope::COMMITTED_READ_RECOVERY,
+    )?;
+    let saved = scope::require_present(
+        control.profile,
+        "delegated worker profile",
+        scope::COMMITTED_READ_RECOVERY,
+    )?;
+    let EventBody::ProfileSaved { profile, .. } = saved.current.body else {
+        return Err(scope::unreadable(
+            "delegated worker profile",
+            "the profile projection has the wrong event kind",
+        ));
+    };
+    let record = &control.principal;
+    let EventBody::PrincipalRegistered {
+        ephemeral: Some(spec),
+        ..
+    } = &record.original.as_deref().unwrap_or(&record.current).body
+    else {
+        return Err(scope::unreadable(
+            "delegated worker",
+            "the original registration is not a temporary agent",
+        ));
+    };
+    Ok(Launch {
+        provider: profile.provider.into(),
+        harness: profile.harness,
+        model: profile.model,
+        named_profile: profile.named_profile,
+        permission: profile.permission,
+        ttl_seconds: spec.ttl_seconds,
+    })
+}
+
+fn operation(remote: Option<&RemoteDelegation>) -> &'static str {
+    match remote {
+        Some(_) => "remote.delegate",
+        None => "delegate.start",
+    }
 }
 
 /// Build the atomic `PrincipalRegistered { ephemeral: Some(..) } + ProfileSaved`
@@ -121,7 +263,16 @@ pub fn create_ephemeral_batch<R: Snapshot>(
     plan: &DelegateStartPlan,
     cx: &mut Cx<'_, R>,
 ) -> Result<AtomicBatch> {
-    if find_replayed_agent(&plan.idempotency_key, cx)?.is_none() {
+    let operation = operation(plan.remote.as_ref());
+    if find_replayed_agent(
+        kernel,
+        operation,
+        &plan.idempotency_key,
+        &plan.normalized_intent,
+        cx,
+    )?
+    .is_none()
+    {
         enforce_active_child_cap(plan.max_active_per_parent, cx)?;
     }
     let identity = EventBody::PrincipalRegistered {
@@ -148,19 +299,40 @@ pub fn create_ephemeral_batch<R: Snapshot>(
         },
         expected: Expected::Absent,
     };
+    let mut bodies = vec![identity, profile];
+    if let Some(origin) = &plan.remote {
+        bodies.push(EventBody::RemoteDelegateAttributed {
+            record: se_store::remote::DelegateAttribution {
+                anchor: origin.anchor.clone(),
+                worker: plan.agent_id.clone(),
+                attribution: origin.attribution.clone(),
+            },
+        });
+    }
     process_commit::batch(
         kernel,
-        "delegate.start",
+        operation,
         plan.idempotency_key.clone(),
         plan.normalized_intent.clone(),
-        vec![identity, profile],
+        bodies,
         cx,
     )
 }
 
-/// Paginate across all active principals in the project and refuse if this
-/// parent already has `cap` or more active temporary children.
+/// Refuse when this parent already has `cap` active temporary children: a
+/// local parent's in its project, a remote machine's across this whole store.
 pub fn enforce_active_child_cap<R: Snapshot>(cap: u32, cx: &mut Cx<'_, R>) -> Result<()> {
+    if let Actor::Remote(_) = &cx.admission.actor {
+        let active = cx
+            .read
+            .remote_active_workers()
+            .map_err(|error| store_error(&error))?;
+        return if active >= cap {
+            Err(over_cap(active, cap, &cx.admission.actor))
+        } else {
+            Ok(())
+        };
+    }
     let mut after = None;
     let mut active_children: u32 = 0;
     loop {
@@ -189,15 +361,7 @@ pub fn enforce_active_child_cap<R: Snapshot>(cap: u32, cx: &mut Cx<'_, R>) -> Re
             {
                 active_children = active_children.saturating_add(1);
                 if active_children >= cap {
-                    return Err(SeError::new(Detail::StateConflict(
-                        details::StateConflict {
-                            subject: "delegate.start".into(),
-                            reason: format!(
-                                "parent already has {active_children} active temporary agents (cap is {cap})"
-                            ),
-                            next_step: "Wait for an active temporary agent to finish or cancel one with se delegate cancel <agent>.".into(),
-                        },
-                    )));
+                    return Err(over_cap(active_children, cap, &cx.admission.actor));
                 }
             }
         }
@@ -208,7 +372,31 @@ pub fn enforce_active_child_cap<R: Snapshot>(cap: u32, cx: &mut Cx<'_, R>) -> Re
     }
 }
 
-fn require_delegate_authority<R: Snapshot>(cx: &mut Cx<'_, R>) -> Result<()> {
+/// The cap refusal, with a step the caller can actually take.
+fn over_cap(active: u32, cap: u32, actor: &Actor) -> SeError {
+    let (subject, reason, next_step) = match actor {
+        Actor::Remote(_) => (
+            "remote.delegate",
+            format!(
+                "this paired machine already has {active} of its {cap} allowed active workers here"
+            ),
+            "Wait for one of its workers to finish its turn; the destination Owner can cancel one with se delegate cancel <agent>.",
+        ),
+        _ => (
+            "delegate.start",
+            format!("parent already has {active} active temporary agents (cap is {cap})"),
+            "Wait for an active temporary agent to finish or cancel one with se delegate cancel <agent>.",
+        ),
+    };
+    SeError::new(Detail::StateConflict(details::StateConflict {
+        subject: subject.into(),
+        reason,
+        next_step: next_step.into(),
+    }))
+}
+
+/// An agent caller is not itself temporary (depth 1) and holds its create grant.
+pub(crate) fn require_delegate_authority<R: Snapshot>(op: &str, cx: &mut Cx<'_, R>) -> Result<()> {
     let Actor::Agent(creator) = &cx.admission.actor else {
         return Ok(());
     };
@@ -227,7 +415,7 @@ fn require_delegate_authority<R: Snapshot>(cx: &mut Cx<'_, R>) -> Result<()> {
         ) {
             return Err(SeError::new(Detail::StateConflict(
                 details::StateConflict {
-                    subject: "delegate.start".into(),
+                    subject: op.into(),
                     reason: "temporary agents cannot delegate grandchildren (depth limit is 1)"
                         .into(),
                     next_step:
@@ -255,7 +443,9 @@ fn require_delegate_authority<R: Snapshot>(cx: &mut Cx<'_, R>) -> Result<()> {
         }
         Read::Absent { .. } | Read::Present { .. } => Err(SeError::new(Detail::OwnerRequired(
             details::OwnerRequired {
-                op: "delegate.start without an active agent create grant (set via se config set agent.<name>.can-create true)".into(),
+                op: format!(
+                    "{op} without an active agent create grant (set via se config set agent.<name>.can-create true)"
+                ),
             },
         ))),
         Read::Unreadable { source, reason, .. } => Err(scope::unreadable(&source, &reason)),
@@ -263,27 +453,39 @@ fn require_delegate_authority<R: Snapshot>(cx: &mut Cx<'_, R>) -> Result<()> {
     }
 }
 
+/// The worker an earlier request with this key created. The key is resolved
+/// with its whole intent, so a different request reusing it is refused.
 fn find_replayed_agent<R: Snapshot>(
+    kernel: &Kernel,
+    operation: &'static str,
     key: &IdempotencyKey,
+    intent: &serde_json::Value,
     cx: &mut Cx<'_, R>,
 ) -> Result<Option<(AgentId, String)>> {
-    let record = match cx
+    let request = kernel.request_identity(operation, key.clone(), intent)?;
+    match cx
         .read
-        .operation_receipt(cx.admission.actor.clone(), key.clone())
+        .resolve_request(&request)
         .map_err(|error| store_error(&error))?
     {
-        Read::Present { value } => value,
-        Read::Absent { .. } => return Ok(None),
-        Read::Unreadable { source, reason, .. } => return Err(scope::unreadable(&source, &reason)),
-        Read::Unknown { what } => return Err(scope::unreadable("delegate idempotency", &what)),
-    };
-    let event = receipt::committed_event(cx.read, &record)?;
-    match event.body {
+        Read::Present { value } => committed_worker(&value, cx).map(Some),
+        Read::Absent { .. } => Ok(None),
+        Read::Unreadable { source, reason, .. } => Err(scope::unreadable(&source, &reason)),
+        Read::Unknown { what } => Err(scope::unreadable("delegate idempotency", &what)),
+    }
+}
+
+/// The worker a creation receipt committed, whichever request won the write.
+pub fn committed_worker<R: Snapshot>(
+    receipt: &se_store::CommitReceipt,
+    cx: &mut Cx<'_, R>,
+) -> Result<(AgentId, String)> {
+    match receipt::committed_event(cx.read, receipt)?.body {
         EventBody::PrincipalRegistered {
             principal: Actor::Agent(agent),
             name,
             ..
-        } => Ok(Some((agent, name))),
+        } => Ok((agent, name)),
         _ => Err(scope::unreadable(
             "delegated agent registration",
             "idempotency record does not point to a principal registration",

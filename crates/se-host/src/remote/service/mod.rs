@@ -3,6 +3,7 @@ use super::read::SecurityStoreRead;
 use super::*;
 use se_types::{Result, SeError};
 use std::{sync::Arc, time::Duration};
+mod delegate;
 mod destination;
 mod failure;
 mod launch;
@@ -81,6 +82,10 @@ impl listener::RemoteService for Service {
                     .stop(request)
                     .await
                     .map(|value| wire::Reply::Stop(Box::new(value))),
+                RemoteRequest::Delegate(_) => self
+                    .delegate(request)
+                    .await
+                    .map(|value| wire::Reply::Delegate(Box::new(value))),
                 RemoteRequest::Send(_) | RemoteRequest::Reply(_) => self
                     .send(request)
                     .await

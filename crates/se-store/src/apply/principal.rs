@@ -15,7 +15,11 @@ pub(super) fn require_ephemeral_schema(c: &Connection) -> StoreResult<()> {
     Ok(())
 }
 
-pub(super) fn register(x: &super::Ctx<'_>, body: EventBody<InputText>) -> StoreResult<()> {
+pub(super) fn register(
+    x: &super::Ctx<'_>,
+    body: EventBody<InputText>,
+    authority: &super::ApplyAuthority<'_>,
+) -> StoreResult<()> {
     let (c, header, seq, revision) = (x.c, x.header, x.seq, x.revision);
     let EventBody::PrincipalRegistered {
         principal,
@@ -82,15 +86,7 @@ pub(super) fn register(x: &super::Ctx<'_>, body: EventBody<InputText>) -> StoreR
         )
         .map_err(sql)?;
     } else {
-        if header.door != Door::Import
-            && header.actor != Actor::Human(owner.clone())
-            && created_by.as_ref() != Some(&header.actor)
-        {
-            return Err(fail(
-                StoreErrorCode::CreatorControlRefused,
-                "creator differs from admitted actor",
-            ));
-        }
+        require_creator(header, &owner, created_by.as_ref(), authority)?;
         let creator = created_by.as_ref().map(|a| x.actor(a)).transpose()?;
         insert_project_principal(
             c,
@@ -111,6 +107,32 @@ pub(super) fn register(x: &super::Ctx<'_>, body: EventBody<InputText>) -> StoreR
             crate::sql_value::sql_params![x.project()?, a, seq],
         )
         .map_err(sql)?;
+    }
+    Ok(())
+}
+
+/// The owner, an import, or the creator itself registers a project principal.
+/// A validated remote delegation registers its worker under the anchor agent
+/// whose launch consent admitted it.
+fn require_creator(
+    header: &EventHeader,
+    owner: &se_types::HumanId,
+    created_by: Option<&Actor>,
+    authority: &super::ApplyAuthority<'_>,
+) -> StoreResult<()> {
+    let delegated = matches!(header.actor, Actor::Remote(_))
+        && authority
+            .remote_launch
+            .is_some_and(crate::remote::LaunchAuthority::delegates);
+    if header.door != Door::Import
+        && header.actor != Actor::Human(owner.clone())
+        && created_by != Some(&header.actor)
+        && !delegated
+    {
+        return Err(fail(
+            StoreErrorCode::CreatorControlRefused,
+            "creator differs from admitted actor",
+        ));
     }
     Ok(())
 }

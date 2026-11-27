@@ -246,7 +246,7 @@ pub(crate) fn apply(
         | LegacyRetained { .. }
         | AliasImported { .. }) => crate::import::apply(c, header, b, seq, revision, facts)?,
         body => {
-            recorded(x, body, authority.lease)?;
+            recorded(x, body, authority)?;
             codec::aux(c, seq, facts)?;
         }
     }
@@ -278,7 +278,11 @@ fn refuse_removed(c: &Connection, header: &EventHeader, p: &[u8]) -> StoreResult
     Ok(())
 }
 /// Projections whose event facts are kept as auxiliary data once they apply.
-fn recorded(x: Ctx<'_>, body: EventBody<InputText>, lease: &LeaseIdentity) -> StoreResult<()> {
+fn recorded(
+    x: Ctx<'_>,
+    body: EventBody<InputText>,
+    authority: &ApplyAuthority<'_>,
+) -> StoreResult<()> {
     use EventBody::*;
     let (c, header, s, seq, revision) = (x.c, x.header, x.s, x.seq, x.revision);
     match body {
@@ -293,6 +297,7 @@ fn recorded(x: Ctx<'_>, body: EventBody<InputText>, lease: &LeaseIdentity) -> St
             c.execute("INSERT INTO remote_message_attribution(event_seq,project_id,message_id,grant_id,facts) VALUES(?,?,?,?,?)",rusqlite::params![seq,p,message,grant,codec::encode(&record)?]).map_err(sql)?;
         }
         RemoteLaunchAttributed { record } => crate::remote::apply_launch(c, header, record, seq)?,
+        RemoteDelegateAttributed { record } => crate::remote::apply_delegate(c, header, &record)?,
         RemoteMailboxRecorded { change } => crate::remote::apply_mailbox(c, header, change, seq)?,
         CaptainMessageRouted { captain, .. } => assignment::check_route(c, header, &captain)?,
         ProjectCaptainChanged {
@@ -301,7 +306,7 @@ fn recorded(x: Ctx<'_>, body: EventBody<InputText>, lease: &LeaseIdentity) -> St
             ..
         } => change_captain(x, &target, captain)?,
         b @ ProjectRegistered { .. } => register_project(x, b)?,
-        b @ PrincipalRegistered { .. } => principal::register(&x, b)?,
+        b @ PrincipalRegistered { .. } => principal::register(&x, b, authority)?,
         PrincipalRenamed {
             principal, name, ..
         } => {
@@ -329,7 +334,7 @@ fn recorded(x: Ctx<'_>, body: EventBody<InputText>, lease: &LeaseIdentity) -> St
             active,
             ..
         } => record_grant(&x, &principal, &grant, active)?,
-        b @ RuntimeOwnerEstablished { .. } => runtime_owner(x, b, lease)?,
+        b @ RuntimeOwnerEstablished { .. } => runtime_owner(x, b, authority.lease)?,
         DecisionProposed { .. }
         | DecisionRatified { .. }
         | DecisionRejected { .. }

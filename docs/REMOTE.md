@@ -126,6 +126,47 @@ does not start the stop again: once a session's stop is admitted, a repeat only
 observes its exit and finishes the destination's cleanup. If the exit is still not
 observed, the destination Owner runs `se stop AGENT` on that machine.
 
+## Remote delegation
+
+Remote delegation starts one temporary worker beside an agent the destination Owner
+allowed for launch. It is off until the destination Owner lists the pairs a paired
+machine may start under `[delegation].remote_allow`:
+
+```toml
+[delegation]
+remote_allow = [{ provider = "claude", profile = "default" }]
+```
+
+That list is separate from `[delegation].allow`, which only governs local agents.
+Launch consent for the approved agent is still required, and revoking it blocks new
+workers.
+
+```sh
+se remote delegate --host build --target PROJECT_ID/AGENT_ID --task "Run the test suite" --key job-1
+```
+
+A lead agent calls `stateengine_remote_delegate` with the same fields. Both machines
+apply their own `[delegation]` settings:
+
+- **This machine** refuses a temporary agent (workers cannot delegate further) and an
+  agent without its create grant (`se config set agent.NAME.can-create true`). An agent
+  must name `--provider` and `--profile`, and the pair must be in this machine's
+  `[delegation].allow`. The lifetime is lowered to this machine's
+  `[delegation].ttl_seconds`.
+- **The destination** requires the pair in its own `[delegation].remote_allow`, lowers
+  the lifetime to its own cap, and limits each paired machine to
+  `[delegation].max_active_per_parent` running workers across all its projects. The
+  worker's profile cannot grant more than the approved agent's saved profile, and never
+  full bypass. Provider and profile default to the approved agent's.
+
+The worker is a new one-shot agent named `tmp-ROLE-XXXXXXXX` in the approved agent's
+project. It receives the task as its first prompt, stops after its first turn and is
+then retired; its completion notice goes to the destination Owner. The receipt names the
+worker's project, agent, session and lifecycle, plus its provider, profile and
+lifetime as the destination saved them. Use that worker target and session with
+`remote watch` and `remote send` when the machine grant's scope includes it. A pending
+result keeps its key; repeat the same delegation with that key to observe its start.
+
 ## Reading IDs and cursors
 
 Remote commands take exact IDs rather than names. `se remote list --host build` prints

@@ -182,6 +182,16 @@ stops only a session your own remote launch started; for any other work, the
 destination Owner runs se stop AGENT on that machine. Disconnecting or forgetting a connection
 closes its source transport, not the destination host or its agents. Remote
 administration is owner-only.
+
+`stateengine_remote_delegate` or `se remote delegate --host NAME --target
+PROJECT-ID/AGENT-ID --task TEXT` starts one temporary worker beside that
+approved agent, under the same launch consent. It is off until the destination
+Owner lists pairs in `[delegation].remote_allow`, separate from the local
+`[delegation].allow`. An agent caller must also name a pair in its own
+machine's `[delegation].allow`. The worker is one-shot, cannot delegate
+further, never exceeds the approved agent's profile, and its lifetime is capped
+by each machine. Watch or message it with the returned worker target and
+session.
 "#,
     },
     Topic {

@@ -318,7 +318,7 @@ fn input_command(name: &str, c: Command) -> Command {
     let c = match name {
         name if name.starts_with("atlas.") => atlas::command(name, c),
         "remote.list" | "remote.watch" | "remote.send" | "remote.launch" | "remote.stop"
-        | "client.watch" => remote_command(name, c),
+        | "remote.delegate" | "client.watch" => remote_command(name, c),
         _ => c,
     };
     let c = input_command_meta(name, c);

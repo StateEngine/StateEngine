@@ -2,7 +2,7 @@
 use super::*;
 use se_core::{dispatch::Kernel, ops::LaunchReply};
 use se_store::{Actor, Admission, Scope};
-mod result;
+pub(super) mod result;
 
 impl Service {
     pub(super) async fn launch(
@@ -74,7 +74,9 @@ impl Service {
         let seed = plan.seed.clone();
         let key = input.idempotency_key.clone();
         let completion = result::Completion {
-            input,
+            target: input.target,
+            key: key.clone(),
+            operation: "remote.launch",
             attribution,
             admission: admission.clone(),
             native_key: native_key.clone(),

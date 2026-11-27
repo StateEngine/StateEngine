@@ -132,6 +132,19 @@ pub struct LaunchAttribution {
     pub attribution: RemoteAttribution,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<se_types::LaunchDetails>,
+    /// For a delegated worker: the approved agent whose consent admits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated_from: Option<RemoteTarget>,
+}
+
+/// Native proof that this remote caller created one temporary worker under
+/// the launch consent of `anchor`, in the same atomic batch as the worker.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DelegateAttribution {
+    pub anchor: RemoteTarget,
+    pub worker: se_types::AgentId,
+    pub attribution: RemoteAttribution,
 }
 
 mod mailbox;

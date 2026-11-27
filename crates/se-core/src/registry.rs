@@ -71,6 +71,7 @@ pub enum HumanKind {
     RemoteSend,
     RemoteLaunch,
     RemoteStop,
+    RemoteDelegate,
     Version,
     Help,
     Guide,

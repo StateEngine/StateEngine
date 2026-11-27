@@ -6,7 +6,8 @@ mod start;
 
 pub use cancel::plan_cancel;
 pub use completion::{CaptureOutcome, CompletionNoticeInput, completion_notice_batch};
-pub use start::{create_ephemeral_batch, enforce_active_child_cap, plan_start};
+pub(crate) use start::{RemoteRequest, Requester, plan_worker, require_delegate_authority};
+pub use start::{committed_worker, create_ephemeral_batch, enforce_active_child_cap, plan_start};
 
 use crate::{
     commit::{Cx, OpStep},
@@ -144,7 +145,6 @@ pub struct DelegateStartPlan {
     pub model: Option<String>,
     pub named_profile: String,
     pub permission: PermissionProfile,
-    pub resolved: se_config::config_policy::ResolvedProfile,
     pub ephemeral: EphemeralSpec,
     pub max_active_per_parent: u32,
     pub composed_task: String,
@@ -152,6 +152,16 @@ pub struct DelegateStartPlan {
     pub idempotency_key: IdempotencyKey,
     pub normalized_intent: serde_json::Value,
     pub existing_agent: Option<(AgentId, String)>,
+    /// Set only by remote delegation, after destination admission.
+    pub remote: Option<RemoteDelegation>,
+}
+
+/// The authenticated caller and the approved agent whose consent admits a
+/// remote worker. Never supplied by a local operation DTO.
+#[derive(Clone)]
+pub struct RemoteDelegation {
+    pub anchor: se_types::remote::RemoteTarget,
+    pub attribution: se_types::remote::RemoteAttribution,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

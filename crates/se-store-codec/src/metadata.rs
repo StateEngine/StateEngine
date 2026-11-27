@@ -15,6 +15,7 @@ pub fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
         ChannelRecorded { .. }
         | RemoteSecurity { .. }
         | RemoteLaunchAttributed { .. }
+        | RemoteDelegateAttributed { .. }
         | RemoteMailboxRecorded { .. }
         | RemoteMessageAttributed { .. } => channel_remote(body)?,
         ProjectCaptainChanged { .. }
@@ -89,6 +90,9 @@ fn channel_remote<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> 
         ChannelRecorded { change } => ("channel.recorded", json!({"change":change})),
         RemoteSecurity { transition } => ("remote.security", json!({"transition":transition})),
         RemoteLaunchAttributed { record } => ("remote.launch_attributed", json!({"record":record})),
+        RemoteDelegateAttributed { record } => {
+            ("remote.delegate_attributed", json!({"record":record}))
+        }
         RemoteMailboxRecorded { change } => ("remote.mailbox_recorded", json!({"change":change})),
         RemoteMessageAttributed { record } => {
             ("remote.message_attributed", json!({"record":record}))

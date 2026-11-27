@@ -29,81 +29,37 @@ pub(super) struct OneShotCompletion {
     pub reason: RetirementReason,
 }
 
+/// How a worker's creation reaches the writer. A remote caller's creation
+/// carries the boundary permit of its admitted request.
+pub(super) enum CreateWrite {
+    Local,
+    #[cfg(feature = "remote")]
+    Remote(crate::remote::auth::AdmissionPermit),
+}
+
 impl LaunchCoordinator {
-    /// Qualify provider/harness BEFORE creating the ephemeral principal so a
-    /// failed qualification never leaves an orphan agent behind (`I12`).
     pub(super) async fn delegate_start(
         self: &Arc<Self>,
         plan: DelegateStartPlan,
         admission: Admission,
         deadline: &Deadline,
     ) -> Result<DelegateStartOutput> {
-        let newly_created = plan.existing_agent.is_none();
-        let (agent_id, name) = if let Some(existing) = &plan.existing_agent {
-            existing.clone()
-        } else {
-            self.qualify_delegate(&plan, deadline).await?;
-            let commit_plan = plan.clone();
-            {
-                let _create_guard =
-                    crate::runtime::pool::within(deadline, self.delegate_create_lock.lock())
-                        .await?;
-                self.store
-                    .commit(admission.clone(), deadline, None, move |kernel, cx| {
-                        create_ephemeral_batch(kernel, &commit_plan, cx)
-                    })
-                    .await?;
-            }
-            let wait = Duration::from_secs(u64::from(plan.ephemeral.ttl_seconds))
-                .saturating_add(Duration::from_millis(100));
-            self.arm_ephemeral_ttl(wait);
-            (plan.agent_id.clone(), plan.name.clone())
-        };
-        let launch_key = process_commit::phase_key(&plan.idempotency_key, "delegate-launch")?;
-        let launch_input = AgentLaunch {
-            target_agent_id: Some(agent_id.clone()),
-            resume: None,
-            model: plan.model.clone(),
-            task: Some(plan.composed_task.clone()),
-            detach: true,
-            override_live: false,
-            force_selection: None,
-            idempotency_key: launch_key,
-            owner_agent: None,
-            owner_provider: None,
-        };
-        let configuration = self.options.configuration.clone();
+        let _owned = self
+            .lock_delegation(&admission, &plan.idempotency_key, deadline)
+            .await?;
+        let (agent_id, name, newly_created) = self
+            .create_delegate(&plan, &admission, CreateWrite::Local, deadline)
+            .await?;
         let launch_plan = self
-            .store
-            .read(admission.clone(), deadline, move |cx| {
-                let facts = crate::runtime::start::allocate_facts()?;
-                let kernel = se_core::dispatch::Kernel::new(facts)?;
-                process_plan::launch(&kernel, launch_input, &configuration, cx)
-            })
+            .plan_delegate_launch(&plan, &agent_id, &admission, deadline)
             .await;
         let reply = match launch_plan {
             Ok(lp) => self.launch(lp, admission.clone(), deadline).await,
             Err(err) => Err(err),
         };
-        let reply = match reply {
-            Ok(reply) => reply,
-            Err(launch_err) => {
-                if newly_created
-                    && let Err(cleanup_err) = self
-                        .retire_failed_delegate(&plan.project.id, &agent_id, &admission, deadline)
-                        .await
-                {
-                    return Err(error(
-                        "delegate.start",
-                        format!(
-                            "launch failed ({}); cleanup of temporary agent {agent_id} also failed ({}) and it remains active until TTL",
-                            launch_err.body, cleanup_err.body
-                        ),
-                    ));
-                }
-                return Err(launch_err);
-            }
-        };
+        let reply = self
+            .settle_delegate(reply, newly_created, &plan, &agent_id, &admission, deadline)
+            .await?;
         let session_id = match reply {
             LaunchReply::Running(launched) => launched.session_id,
             LaunchReply::Pending(pending) => pending.session_id,
@@ -118,6 +74,142 @@ impl LaunchCoordinator {
             ttl_seconds: plan.ephemeral.ttl_seconds,
             handoff_included: plan.handoff_included,
         })
+    }
+
+    /// Qualify provider/harness BEFORE creating the ephemeral principal so a
+    /// failed qualification never leaves an orphan agent behind (`I12`).
+    /// Returns the worker, its name, and whether this call created it.
+    pub(super) async fn create_delegate(
+        self: &Arc<Self>,
+        plan: &DelegateStartPlan,
+        admission: &Admission,
+        write: CreateWrite,
+        deadline: &Deadline,
+    ) -> Result<(se_types::AgentId, String, bool)> {
+        if let Some((agent, name)) = &plan.existing_agent {
+            // An earlier attempt may have committed it and failed before arming.
+            self.arm_worker_ttl(plan.ephemeral.ttl_seconds);
+            return Ok((agent.clone(), name.clone(), false));
+        }
+        self.qualify_delegate(plan, deadline).await?;
+        let commit_plan = plan.clone();
+        let work = move |kernel: &se_core::dispatch::Kernel,
+                         cx: &mut se_core::commit::Cx<'_, _>| {
+            create_ephemeral_batch(kernel, &commit_plan, cx)
+        };
+        // The write runs on its own task, so it settles and arms expiry even
+        // if this request is dropped while it waits or commits.
+        let this = Arc::clone(self);
+        let (owned_admission, owned_deadline) = (admission.clone(), deadline.clone());
+        let ttl_seconds = plan.ephemeral.ttl_seconds;
+        let receipt = tokio::spawn(async move {
+            let _create_guard =
+                crate::runtime::pool::within(&owned_deadline, this.delegate_create_lock.lock())
+                    .await?;
+            let written = match write {
+                CreateWrite::Local => {
+                    this.store
+                        .commit(owned_admission, &owned_deadline, None, work)
+                        .await
+                }
+                #[cfg(feature = "remote")]
+                CreateWrite::Remote(permit) => {
+                    this.store
+                        .commit_remote(owned_admission, &owned_deadline, None, permit, work)
+                        .await
+                }
+            };
+            // Armed whatever the reply: an unavailable or unknown outcome may
+            // still be a committed worker, and a spare sweep finds nothing.
+            this.arm_worker_ttl(ttl_seconds);
+            written
+        })
+        .await
+        .map_err(|join| error("delegate creation", join))??;
+        // A concurrent request with the same key may have won the write; the
+        // worker is the one the receipt committed, never this plan's guess.
+        let created = matches!(receipt.state, se_store::CommitState::Committed);
+        let (agent, name) = self
+            .store
+            .read(admission.clone(), deadline, move |cx| {
+                se_core::ops::delegate::committed_worker(&receipt, cx)
+            })
+            .await?;
+        Ok((agent, name, created))
+    }
+
+    /// Schedule the expiry sweep that retires this worker at its lifetime.
+    fn arm_worker_ttl(self: &Arc<Self>, ttl_seconds: u32) {
+        let wait =
+            Duration::from_secs(u64::from(ttl_seconds)).saturating_add(Duration::from_millis(100));
+        self.arm_ephemeral_ttl(wait);
+    }
+
+    /// The worker's first launch, keyed under the delegation's own key.
+    pub(super) async fn plan_delegate_launch(
+        &self,
+        plan: &DelegateStartPlan,
+        agent: &se_types::AgentId,
+        admission: &Admission,
+        deadline: &Deadline,
+    ) -> Result<se_core::ops::agent_launch::LaunchPlan> {
+        // The worker starts from its committed saved profile, not from what
+        // the current configuration would choose now.
+        let launch_input = AgentLaunch {
+            target_agent_id: Some(agent.clone()),
+            resume: None,
+            model: None,
+            task: Some(plan.composed_task.clone()),
+            detach: true,
+            override_live: false,
+            force_selection: None,
+            idempotency_key: process_commit::phase_key(&plan.idempotency_key, "delegate-launch")?,
+            owner_agent: None,
+            owner_provider: None,
+        };
+        let configuration = self.options.configuration.clone();
+        self.store
+            .read(admission.clone(), deadline, move |cx| {
+                let facts = crate::runtime::start::allocate_facts()?;
+                let kernel = se_core::dispatch::Kernel::new(facts)?;
+                process_plan::launch(&kernel, launch_input, &configuration, cx)
+            })
+            .await
+    }
+
+    /// A launch that failed before activation retires the worker this call
+    /// created, through host cleanup authority, so it never counts until TTL.
+    pub(super) async fn settle_delegate(
+        &self,
+        reply: Result<LaunchReply>,
+        newly_created: bool,
+        plan: &DelegateStartPlan,
+        agent: &se_types::AgentId,
+        admission: &Admission,
+        deadline: &Deadline,
+    ) -> Result<LaunchReply> {
+        let launch_err = match reply {
+            Ok(reply) => return Ok(reply),
+            Err(error) => error,
+        };
+        let cleanup = match admission.actor {
+            se_store::Actor::Remote(_) => self.owner_project_admission(&plan.project.id),
+            _ => admission.clone(),
+        };
+        if newly_created
+            && let Err(cleanup_err) = self
+                .retire_failed_delegate(&plan.project.id, agent, &cleanup, deadline)
+                .await
+        {
+            return Err(error(
+                "delegate.start",
+                format!(
+                    "launch failed ({}); cleanup of temporary agent {agent} also failed ({}) and it remains active until TTL",
+                    launch_err.body, cleanup_err.body
+                ),
+            ));
+        }
+        Err(launch_err)
     }
 
     async fn qualify_delegate(&self, plan: &DelegateStartPlan, deadline: &Deadline) -> Result<()> {
@@ -397,6 +489,11 @@ impl LaunchCoordinator {
                     Read::Present { value } => {
                         let original = value.original.as_deref().unwrap_or(&value.current);
                         match &original.body {
+                            // A remote caller's worker reports to the destination
+                            // Owner, not to the anchor that never asked for it.
+                            _ if matches!(original.header.actor, se_store::Actor::Remote(_)) => {
+                                None
+                            }
                             EventBody::PrincipalRegistered { created_by, .. } => created_by.clone(),
                             _ => None,
                         }
