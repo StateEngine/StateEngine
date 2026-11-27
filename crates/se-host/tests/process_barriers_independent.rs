@@ -233,6 +233,7 @@ fn embedded_session_bind_is_atomic_and_credential_free() -> Check {
             harness: None,
             named_profile: "default".into(),
             effort: None,
+            external: false,
         },
         expected: revision(1)?,
     }])?;

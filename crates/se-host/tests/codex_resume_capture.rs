@@ -162,6 +162,7 @@ fn seed_resume_sessions(
                     harness: None,
                     named_profile: "default".into(),
                     effort: None,
+                    external: false,
                 },
                 expected: Expected::Absent,
             }],

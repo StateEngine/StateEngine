@@ -144,6 +144,7 @@ pub fn create_ephemeral_batch<R: Snapshot>(
             harness: plan.harness.clone(),
             named_profile: plan.named_profile.clone(),
             effort: None,
+            external: false,
         },
         expected: Expected::Absent,
     };

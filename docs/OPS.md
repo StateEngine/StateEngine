@@ -152,6 +152,10 @@ Resume defaults to 4,096 UTF-8 bytes for its ordinary CLI JSON or MCP reply and 
 | `message.read` | `msg read ID` | `stateengine_msg_read` | either | write | message ID addressed to the authenticated recipient | `MessageRead`: full bounded message and committed/idempotent read marker; truncated body explicitly incomplete | J4 |
 | `message.ack` | `msg ack ID` | `stateengine_msg_ack` | either | write | message ID in self inbox, restricted recipient/message/marker natural identity | `DispositionReceipt`: durable read acknowledgment; no reply or task-completion claim | J4 |
 | `message.dismiss` | `msg dismiss ID` | `stateengine_msg_dismiss` | either | write | message ID in self inbox, restricted recipient/message/marker natural identity | `DispositionReceipt`: dismissed/archived fact without claiming read; history remains listable | J4 |
+| `external.mail_wait` | `msg wait [--as AGENT --after CURSOR --timeout SECS]` | none — dedicated blocking CLI transport; MCP stdio pipes must never park long-blocking tool calls | either | read | optional `--as AGENT` (Owner terminal targeting a pinned active external seat), optional cursor and bounded timeout (1–300s) | `ExternalMailWaitOutput`: `messages`/`empty`, `session_id`, pending message IDs, cursor, `complete`; never marks read | J4 |
+| `external.list` | `external list` | none — Owner-terminal-only out-of-band seat control (same precedent as `remote_owner`) | owner | read | optional project filter | `ExternalListOutput`: pending claims and unexpired active external leases | J2 |
+| `external.approve` | `external approve CLAIM_ID` | none — Owner-terminal-only out-of-band seat approval (requires human terminal presence) | owner | write | pending claim ID from `se external list` or bridge stderr | `ExternalApproveOutput`: one-shot approval, atomic exclusivity check, capability delivered exclusively over waiting bridge's native IPC channel | J2 |
+| `external.revoke` | `external revoke AGENT` | none — Owner-terminal-only out-of-band seat revocation | owner | write | project and agent name or ID | `ExternalRevokeOutput`: durable `SessionRevoked` + `CredentialRevoked` fenced by `(session_id, lease_generation)` | J2 |
 
 Listing never creates or changes read/delivered markers, including `msg list --full` / MCP `full: true`; `message.read` remains the recipient-marking path. Full mode stops before a body that would exceed the page's byte cap and returns continuation instead of silently truncating that body; the explicit too-small-budget remedy applies when even the first full item cannot fit. Owner full-body inspection covers any message in the selected project; a session can list full bodies only for messages it sent or received. Delivered, read, dismissed, replied and task-completed are distinct; internal mail settlement records actual consumer observations rather than manufacturing a public completion verb. No PostgreSQL mirror retry flags or repair commands survive into these inputs. Working-state compare-and-set conflicts require a reread rather than an unconditional overwrite retry. Decision-ledger commands are retired; previously recorded events remain readable through `se history`.
 
@@ -356,7 +360,7 @@ Registered: 65 operations (59 core, 6 Atlas), 33 MCP tools (28 core, 5 Atlas). P
 
 `store.import_node` needs the optional `import` build feature; the standard release archive does not enable it.
 
-Shipped as CLI transport commands outside the registry: `mcp.serve`
+Shipped as CLI transport commands outside the registry: `external.approve`, `external.list`, `external.mail_wait`, `external.revoke`, `mcp.serve`
 
 Planned operations (design tables, not yet registered): `credential.rotate`, `mcp.token`, `session.begin`, `session.end`, `session.turn`
 

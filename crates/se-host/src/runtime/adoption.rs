@@ -168,6 +168,7 @@ impl HostedRouter {
                         model: None,
                         profile: None,
                         idempotency_key: format!("observe-agent-{selected}").parse()?,
+                        external: false,
                     },
                     &config,
                     cx,

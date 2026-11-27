@@ -26,6 +26,7 @@ fn external_stdio_gets_only_the_new_public_session_in_both_surfaces()
             harness: None,
             named_profile: "default".into(),
             effort: None,
+            external: false,
         },
         policy: LaunchPolicy {
             containment: ContainmentRequirement::BestAvailable,
@@ -116,6 +117,7 @@ fn a_named_windows_sandbox_reaches_the_providers_launch_settings()
             harness: None,
             named_profile: "default".into(),
             effort: None,
+            external: false,
         },
         policy: LaunchPolicy {
             containment: ContainmentRequirement::BestAvailable,

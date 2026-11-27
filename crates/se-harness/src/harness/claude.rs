@@ -521,6 +521,7 @@ mod transcript_location_tests {
                 harness: None,
                 named_profile: "default".into(),
                 effort: None,
+                external: false,
             },
             policy: LaunchPolicy {
                 containment: ContainmentRequirement::BestAvailable,

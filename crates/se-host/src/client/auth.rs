@@ -348,6 +348,8 @@ pub(crate) enum AuthorityRef<'a> {
     GuestBootstrap(&'a se_types::NativePath),
     SessionBootstrap(#[serde(serialize_with = "secret_bytes::serialize")] &'a se_types::Secret),
     Lease(#[serde(serialize_with = "secret_bytes::serialize")] &'a se_types::Secret),
+    ExternalClaim(&'a crate::external::ExternalClaimBootstrap),
+    ExternalSession(#[serde(serialize_with = "secret_bytes::serialize")] &'a se_types::Secret),
 }
 impl<'a> From<&'a crate::PresentedAuthority> for AuthorityRef<'a> {
     fn from(authority: &'a crate::PresentedAuthority) -> Self {
@@ -358,6 +360,8 @@ impl<'a> From<&'a crate::PresentedAuthority> for AuthorityRef<'a> {
             crate::PresentedAuthority::GuestBootstrap(cwd) => Self::GuestBootstrap(cwd),
             crate::PresentedAuthority::SessionBootstrap(token) => Self::SessionBootstrap(token),
             crate::PresentedAuthority::Lease(token) => Self::Lease(token),
+            crate::PresentedAuthority::ExternalClaim(claim) => Self::ExternalClaim(claim),
+            crate::PresentedAuthority::ExternalSession(token) => Self::ExternalSession(token),
         }
     }
 }
@@ -391,6 +395,8 @@ pub(crate) enum AuthorityWire {
     GuestBootstrap(se_types::NativePath),
     SessionBootstrap(ProtectedSecret),
     Lease(ProtectedSecret),
+    ExternalClaim(Box<crate::external::ExternalClaimBootstrap>),
+    ExternalSession(ProtectedSecret),
 }
 impl From<AuthorityWire> for crate::PresentedAuthority {
     fn from(authority: AuthorityWire) -> Self {
@@ -401,6 +407,8 @@ impl From<AuthorityWire> for crate::PresentedAuthority {
             AuthorityWire::GuestBootstrap(cwd) => Self::GuestBootstrap(cwd),
             AuthorityWire::SessionBootstrap(token) => Self::SessionBootstrap(token.0),
             AuthorityWire::Lease(token) => Self::Lease(token.0),
+            AuthorityWire::ExternalClaim(claim) => Self::ExternalClaim(claim),
+            AuthorityWire::ExternalSession(token) => Self::ExternalSession(token.0),
         }
     }
 }

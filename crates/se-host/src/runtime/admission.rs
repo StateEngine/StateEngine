@@ -24,6 +24,7 @@ use std::{
 use zeroize::Zeroizing;
 mod adoption;
 mod codex;
+pub(crate) mod external;
 mod http;
 #[cfg(feature = "remote")]
 mod remote;
@@ -55,14 +56,25 @@ pub(crate) struct AdmissionContext {
     /// the host never invents an origin for in-memory configuration.
     pub configuration_file: Option<std::path::PathBuf>,
     pub prepared_requests: Arc<std::sync::OnceLock<crate::PreparedRequestProofs>>,
+    pub external: Arc<crate::external::ExternalRegistry>,
 }
 /// A successful owner MAC is channel-bound. Its digest lets each subsequent
 /// call detect machine-key replacement without retaining another secret copy.
 pub(crate) struct ConnectionGrant {
     pub owner_key: Option<Sha256>,
     pub(crate) guest: Option<crate::mcp_lease::LeaseGrant>,
+    pub(crate) external_claim: Option<crate::external::PendingClaimHandle>,
+    pub(crate) external_active: Arc<std::sync::Mutex<external::ActiveConnectionBinding>>,
 }
 impl ConnectionGrant {
+    pub(crate) fn empty() -> Self {
+        Self {
+            owner_key: None,
+            guest: None,
+            external_claim: None,
+            external_active: Default::default(),
+        }
+    }
     pub(crate) fn connection_ticket(&self) -> Option<crate::ConnectionTicket> {
         self.guest.as_ref().map(|guest| guest.ticket.clone())
     }
@@ -136,6 +148,13 @@ impl AdmissionContext {
         {
             return self.session_handshake(pending.peer(), secret);
         }
+        if let HandshakeInput::Call(crate::ClientHello {
+            authority: PresentedAuthority::ExternalClaim(claim),
+            ..
+        }) = pending.input()
+        {
+            return self.external_claim_handshake(pending.peer(), claim);
+        }
         let mut phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let result = (|| {
             self.check_generation(&phase)?;
@@ -146,12 +165,14 @@ impl AdmissionContext {
                     }
                     PresentedAuthority::Session(secret) => {
                         self.session(&phase, secret)?;
-                        Ok(ConnectionGrant {
-                            owner_key: None,
-                            guest: None,
-                        })
+                        Ok(ConnectionGrant::empty())
                     }
-                    PresentedAuthority::GuestBootstrap(_)
+                    PresentedAuthority::ExternalSession(secret) => {
+                        self.external_session(&phase, secret)?;
+                        Ok(ConnectionGrant::empty())
+                    }
+                    PresentedAuthority::ExternalClaim(_)
+                    | PresentedAuthority::GuestBootstrap(_)
                     | PresentedAuthority::SessionBootstrap(_)
                     | PresentedAuthority::Lease(_) => Err(SeError::invalid(
                         "guest credential",
@@ -182,6 +203,8 @@ impl AdmissionContext {
         Ok(ConnectionGrant {
             owner_key: Some(Sha256::from_bytes(Hasher::digest(key.expose()).into())),
             guest: None,
+            external_claim: None,
+            external_active: Default::default(),
         })
     }
     /// One native caller check shared by ordinary operations and the closed
@@ -195,6 +218,9 @@ impl AdmissionContext {
         grant: &ConnectionGrant,
         presence: Option<&crate::client::presence::OwnerPresence>,
     ) -> Result<(Admission, HumanTerminal)> {
+        if let Some(res) = self.external_caller(phase, connection, override_authority) {
+            return res;
+        }
         Ok(match override_authority {
             Some(PresentedAuthority::Lease(secret)) => (
                 self.lease_caller(phase, peer, connection, grant, secret)?,
@@ -221,6 +247,12 @@ impl AdmissionContext {
                         reason: "session authority cannot become an owner terminal".into(),
                     },
                 ),
+                PresentedAuthority::ExternalSession(_) | PresentedAuthority::ExternalClaim(_) => {
+                    return Err(SeError::invalid(
+                        "external seat",
+                        "the external caller admission path",
+                    ));
+                }
                 PresentedAuthority::OwnerProof { .. } => {
                     let key = self.machine_key()?;
                     let current = Sha256::from_bytes(Hasher::digest(key.expose()).into());
@@ -340,7 +372,15 @@ impl AdmissionContext {
             }
             // Principal/scope admission precedes execution; Kernel::plan applies
             // presence policy to this verified terminal fact before any effects.
-            se_core::admission::authorize(operation.meta(), &admission)?;
+            let is_external_seat = matches!(
+                override_authority.unwrap_or(connection),
+                PresentedAuthority::ExternalSession(_)
+            );
+            if is_external_seat {
+                se_core::admission::authorize_external_seat(operation.meta(), &admission)?;
+            } else {
+                se_core::admission::authorize(operation.meta(), &admission)?;
+            }
             let mut facts = allocate_facts()?;
             facts.door = if matches!(&operation, ops::AnyOp::HookClaude(_)) {
                 se_store::Door::Hook
@@ -717,6 +757,7 @@ impl HostedRuntime {
             configuration: self.configuration.clone(),
             configuration_file: self.configuration_file.clone(),
             prepared_requests: self.prepared_requests.clone(),
+            external: self.execution.external.clone(),
             reads: self.admission_reads.clone(),
             lease: Arc::downgrade(&self.lease),
             owner: self.owner.clone(),

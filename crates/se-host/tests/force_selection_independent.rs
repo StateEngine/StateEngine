@@ -109,6 +109,7 @@ fn embedded_binding_retirement_is_not_a_native_stop() -> Check {
             harness: None,
             named_profile: "default".into(),
             effort: None,
+            external: false,
         },
         expected: revision(1)?,
     }])?;
@@ -200,6 +201,7 @@ fn busy_protocol_launch_reaches_confirmation_before_detach_validation() -> Check
                 harness: None,
                 named_profile: "default".into(),
                 effort: None,
+                external: false,
             },
             expected: revision(1)?,
         }])?;
@@ -259,6 +261,7 @@ fn fresh_protocol_launch_still_requires_an_explicit_headless_mode() -> Check {
                 harness: None,
                 named_profile: "default".into(),
                 effort: None,
+                external: false,
             },
             expected: revision(1)?,
         }])?;

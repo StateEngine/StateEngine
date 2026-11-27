@@ -112,6 +112,11 @@ pub trait McpBackend {
     fn configured_atlas(&mut self) -> Option<Result<bool>> {
         None
     }
+    /// Whether this transport is a dedicated external-seat bridge restricted
+    /// to the narrow Phase 1 allowlist (never advertising privileged tools).
+    fn is_external_seat(&self) -> bool {
+        false
+    }
 }
 
 pub async fn dispatch(
@@ -173,25 +178,10 @@ pub async fn dispatch(
         "tools/list" | "tools/call" => (),
         _ => return McpReply::Json(rpc_error(id, -32601, "method not found")),
     }
-    // A guest (no capability, no launched session) lists tools from its
-    // configuration, so a harness checking this server never starts a host
-    // under its own environment; its first tool call does. Configuration is all
-    // a guest can read: it lists Atlas whenever enabled, although a Windows host
-    // that failed native SQLite qualification hides it. Any _meta that could
-    // carry a capability, malformed or not, is refused as capability() does.
-    let explicit = params.get("_meta").is_some_and(|meta| {
-        !meta.is_object() || meta.get("stateengine.session-capability-v1").is_some()
-    });
-    let guest = capability.is_none() && !explicit && std::env::var_os("SE_SESSION").is_none();
     if method == "tools/list"
-        && guest
-        && let Some(atlas) = backend.configured_atlas()
+        && let Some(reply) = unauthenticated_tools_list(backend, &params, &capability, &id)
     {
-        let response = match atlas.and_then(tools) {
-            Ok(result) => success(id, result),
-            Err(error) => rpc_error(id, -32603, &error.to_string()),
-        };
-        return McpReply::Json(budgeted(response, backend.response_limit()));
+        return McpReply::Json(budgeted(reply, backend.response_limit()));
     }
     let capability = match backend.capability(params.get("_meta"), capability) {
         Ok(Some(capability)) => capability,
@@ -246,6 +236,52 @@ fn initialize(params: &Value) -> Value {
     })
 }
 
+fn unauthenticated_tools_list(
+    backend: &mut impl McpBackend,
+    params: &Value,
+    capability: &Option<Arc<Secret>>,
+    id: &Value,
+) -> Option<Value> {
+    if backend.is_external_seat() {
+        return Some(match external_seat_tools() {
+            Ok(result) => success(id.clone(), result),
+            Err(error) => rpc_error(id.clone(), -32603, &error.to_string()),
+        });
+    }
+    let explicit = params.get("_meta").is_some_and(|meta| {
+        !meta.is_object() || meta.get("stateengine.session-capability-v1").is_some()
+    });
+    let guest = capability.is_none() && !explicit && std::env::var_os("SE_SESSION").is_none();
+    if guest && let Some(atlas) = backend.configured_atlas() {
+        return Some(match atlas.and_then(tools) {
+            Ok(result) => success(id.clone(), result),
+            Err(error) => rpc_error(id.clone(), -32603, &error.to_string()),
+        });
+    }
+    None
+}
+
+fn external_seat_tools() -> Result<Value> {
+    let tools: Vec<Value> = se_core::ops::mcp_tools()?
+        .into_iter()
+        .filter(|tool| {
+            se_core::ops::CATALOGUE.iter().any(|meta| {
+                se_core::admission::EXTERNAL_SEAT_ALLOWLIST.contains(&meta.name)
+                    && matches!(meta.mcp, se_core::registry::McpExposure::Tool { name, .. } if name == tool.name)
+            })
+        })
+        .map(|tool| {
+            json!({
+                "name": tool.name,
+                "title": tool.title,
+                "description": tool.description,
+                "inputSchema": tool.input_schema,
+            })
+        })
+        .collect();
+    Ok(json!({"tools": tools}))
+}
+
 /// Discovery comes only from core's generated registry; listing is read-only.
 /// It advertises input schemas only: MCP makes outputSchema optional, the
 /// output schemas are ~97% of the catalogue's bytes, and they remain public
@@ -294,6 +330,17 @@ async fn call(
     };
     let outcome = match se_core::ops::decode_tool(name, arguments) {
         Ok(mut operation) => {
+            if backend.is_external_seat()
+                && !se_core::admission::EXTERNAL_SEAT_ALLOWLIST.contains(&operation.meta().name)
+            {
+                let error = SeError::invalid(
+                    "external seat tool",
+                    &format!(
+                        "a Phase 1 allowlisted tool (whoami, inbox list/read/ack/dismiss, send, working_state); `{name}` is refused for external seats"
+                    ),
+                );
+                return resume::failure(id, &error);
+            }
             if operation.atlas_options().is_some() {
                 return atlas::call(backend, capability, id, operation).await;
             }

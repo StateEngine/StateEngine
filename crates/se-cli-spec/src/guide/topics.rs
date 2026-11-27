@@ -109,6 +109,11 @@ it to reach the current captain; replies still need their verified route. Floor
 mail requires work.action and work.addressees. quiet suppresses notifications
 while leaving the message unread.
 
+se msg wait [--as AGENT] [--after CURSOR] [--timeout SECS] blocks on the host's
+recipient-scoped mail registry with zero polling until mail arrives, the timeout
+elapses, or the seat closes. It is a dedicated CLI transport (not an MCP tool)
+so long-blocking waits never park an MCP stdio pipe.
+
 Use assignment.write to open work or record accept, done, block and hand-back;
 assignment.list shows open and blocked work. Each change records a floor message.
 Use its assignment ID with history.event_read to inspect the opening floor event.
@@ -274,6 +279,33 @@ is not a completed uninstall. On Windows use the matching archive's uninstall.ps
 to wait for the final status; after an installed executable has been removed,
 recover from the archive rather than retrying that missing executable.
 Run se help remove or se help uninstall before choosing the scope.
+"#,
+    },
+    Topic {
+        name: "external-seats",
+        title: "Connect external agents with Owner approval",
+        summary: "Mark an agent external-eligible, connect over stdio MCP, approve out of band and wait for mail.",
+        body: r#"An external seat lets an agent running outside StateEngine's managed launcher
+join a project's mail, status, history and Atlas tools over stdio MCP.
+
+1. Mark an agent external-eligible (Owner terminal):
+   se agent add NAME --external
+2. Connect the external client's MCP bridge:
+   se mcp --as NAME
+   The bridge prints a pending claim ID to stderr while parking on its native
+   IPC channel for Owner approval.
+3. Inspect and approve out of band (Owner terminal only; not an MCP tool):
+   se external list
+   se external approve CLAIM-ID
+   Approval is one-shot, enforces per-agent exclusivity against managed launches
+   and other external seats, and delivers the session capability directly over
+   the waiting bridge's native channel (never in prompts, argv, env or files).
+4. Revoke an active external seat at any time (Owner terminal only):
+   se external revoke NAME
+   Disconnecting the bridge or restarting the host also fences and expires the seat.
+5. Wait for incoming mail without polling:
+   se msg wait [--as NAME] [--after CURSOR] [--timeout SECS]
+   Runs on a separate CLI channel so blocking waits never stall the MCP stdio pipe.
 "#,
     },
 ];

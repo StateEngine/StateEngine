@@ -233,6 +233,28 @@ impl Store {
         };
         self.submit(batch, identity, deadline).await
     }
+    /// Submit a batch via the shared retained submission path, separating
+    /// durable commit from any secondary observer warning.
+    pub(crate) async fn submit_batch_retained(
+        &self,
+        batch: AtomicBatch,
+        identity: crate::runtime::WriteIdentity,
+        deadline: &Deadline,
+    ) -> Result<super::submit::RetainedCommit> {
+        super::submit::enqueue_and_await_retained(
+            &self.pool,
+            self.writer.clone(),
+            self.record_feed.clone(),
+            self.pending.clone(),
+            Arc::clone(&self.mail_waits),
+            self.fault.clone(),
+            None,
+            batch,
+            &identity,
+            deadline,
+        )
+        .await
+    }
     async fn submit(
         &self,
         batch: AtomicBatch,
@@ -287,6 +309,7 @@ impl Store {
                         revocations,
                         recipients,
                         custody: None,
+                        witness: None,
                     }
                     .spawn(&runtime)),
                     Err(error) => {

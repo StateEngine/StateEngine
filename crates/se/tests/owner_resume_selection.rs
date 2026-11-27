@@ -94,6 +94,7 @@ fn owner_resume_refusal_lists_saved_agents_with_the_exact_home_and_project() -> 
                         harness: None,
                         named_profile: "default".into(),
                         effort: None,
+                        external: false,
                     },
                     expected: Expected::Absent,
                 }],

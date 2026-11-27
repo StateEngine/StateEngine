@@ -576,6 +576,7 @@ fn plain_status_labels_the_owner_unread_scope() -> Check {
                         harness: None,
                         named_profile: "default".into(),
                         effort: None,
+                        external: false,
                     },
                     expected: Expected::Absent,
                 }],

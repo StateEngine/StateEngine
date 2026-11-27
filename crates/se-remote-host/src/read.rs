@@ -346,6 +346,7 @@ fn observe(
         // This view's provider filter admits Claude/Codex, not managed services.
         secode_binding: None,
         secode_runtime: None,
+        external_seat: None,
         acp_runtime: None,
         codex_login: None,
         harness_policy_notice: None,

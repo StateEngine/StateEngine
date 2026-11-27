@@ -32,6 +32,7 @@ fn request(f: &Fixture, sequence: u8) -> Check<HarnessRequest> {
             harness: None,
             named_profile: "default".into(),
             effort: Some("high".into()),
+            external: false,
         },
         policy: LaunchPolicy {
             containment: ContainmentRequirement::BestAvailable,

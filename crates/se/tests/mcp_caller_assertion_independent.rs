@@ -130,6 +130,7 @@ fn stdio_caller_assertion_tracks_the_authenticated_binding() -> Check {
                 permission: PermissionProfile::WorkspaceWrite,
                 named_profile: "default".into(),
                 effort: None,
+                external: false,
             },
             expected: Expected::Absent,
         },

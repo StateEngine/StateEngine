@@ -300,6 +300,7 @@ fn build_harness_request(
             harness: None,
             named_profile: "default".into(),
             effort: None,
+            external: false,
         },
         policy: policy.clone(),
         mode: LaunchMode::Headless,

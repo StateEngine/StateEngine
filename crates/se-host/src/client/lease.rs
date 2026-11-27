@@ -23,6 +23,8 @@ pub enum ClientCredential {
     Launch(se_types::Secret),
     GuestBootstrap(se_types::NativePath),
     SessionBootstrap(se_types::Secret),
+    ExternalClaim(Box<crate::external::ExternalClaimBootstrap>),
+    ExternalSession(se_types::Secret),
 }
 impl ClientCredential {
     fn for_renewal(&self) -> Result<Self> {
@@ -33,6 +35,10 @@ impl ClientCredential {
             Self::GuestBootstrap(cwd) => Self::GuestBootstrap(cwd.clone()),
             Self::SessionBootstrap(key) => {
                 Self::SessionBootstrap(se_types::Secret::new(key.expose().to_vec())?)
+            }
+            Self::ExternalClaim(claim) => Self::ExternalClaim(claim.clone()),
+            Self::ExternalSession(key) => {
+                Self::ExternalSession(se_types::Secret::new(key.expose().to_vec())?)
             }
         })
     }
@@ -268,6 +274,12 @@ impl crate::client::BlockingIpcClient {
                     token.expose().to_vec(),
                 )?)
             }
+            ClientCredential::ExternalClaim(claim) => {
+                crate::PresentedAuthority::ExternalClaim(claim.clone())
+            }
+            ClientCredential::ExternalSession(token) => crate::PresentedAuthority::ExternalSession(
+                se_types::Secret::new(token.expose().to_vec())?,
+            ),
         };
         let sent = crate::ClientHello {
             version: se_types::API_VERSION,

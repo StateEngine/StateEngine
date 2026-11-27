@@ -268,6 +268,7 @@ fn acp_activation_stores_absent_first_requests_honestly() -> Check {
             harness: None,
             named_profile: "default".into(),
             effort: None,
+            external: false,
         },
         expected: revision(1)?,
     }])?;

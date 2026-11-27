@@ -1,6 +1,7 @@
 //! Installed MCP stdio entry. The common se-host consumer owns JSON-RPC;
 //! this adapter owns pipe I/O and the persistent session-only native client.
 mod backend;
+mod external;
 use se_types::Result;
 use std::ffi::OsString;
 
@@ -11,14 +12,25 @@ pub fn entry(args: &[OsString]) -> Option<Result<u8>> {
     if !args.iter().skip(1).any(|arg| arg == "mcp") {
         return None;
     }
-    crate::grammar::mcp_options(args).map(|home| home.and_then(run))
+    crate::grammar::mcp_options(args).map(|options| options.and_then(run))
 }
-fn run(home: Option<std::path::PathBuf>) -> Result<u8> {
+fn run(options: crate::grammar::McpOptions) -> Result<u8> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| se_core::scope::unreadable("MCP runtime", &error.to_string()))?;
-    let mut backend = backend::Backend::new(home);
+    if let Some(agent) = options.external_as {
+        let mut backend = external::ExternalBackend::connect(options.home, agent, options.project)?;
+        return crate::mcp_stdio::serve(|bytes| {
+            Ok(
+                match runtime.block_on(se_host::mcp::dispatch(bytes, None, &mut backend)) {
+                    se_host::McpReply::Json(value) => Some(value),
+                    se_host::McpReply::Accepted => None,
+                },
+            )
+        });
+    }
+    let mut backend = backend::Backend::new(options.home);
     crate::mcp_stdio::serve(|bytes| {
         Ok(
             match runtime.block_on(se_host::mcp::dispatch(bytes, None, &mut backend)) {

@@ -129,6 +129,7 @@ fn seed_compaction_session(
                         harness: None,
                         named_profile: "default".into(),
                         effort: None,
+                        external: false,
                     },
                     expected: Expected::Absent,
                 },

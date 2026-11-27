@@ -235,6 +235,7 @@ fn seed_observed_agents(root: &Path, home: &Path, initialized: &serde_json::Valu
             model: Some(model.clone()),
             profile: None,
             idempotency_key: IdempotencyKey::new(format!("observed-page-agent-{index}"))?,
+            external: false,
         });
         let mut snapshot = direct.snapshot(seed.scoped(Visibility::Owner))?;
         let mut cx = Cx {

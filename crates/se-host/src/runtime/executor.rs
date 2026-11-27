@@ -73,6 +73,22 @@ pub fn execute(
                 _ => (),
             }
         }
+        if matches!(
+            &admitted.input,
+            HostedInput::Operation(
+                se_core::ops::AnyOp::ProjectStatus(_) | se_core::ops::AnyOp::AgentShow(_)
+            )
+        ) && let se_store::Scope::Project(project) = &admitted.admission.scope
+        {
+            crate::external::lifecycle::reconcile_expired_on_execution(
+                &context,
+                &context.owner,
+                Some(project),
+                None,
+                &deadline,
+            )
+            .await?;
+        }
         let reader = context.reads.clone();
         let generation = context.generation;
         let planning_context = context.clone();
@@ -193,6 +209,7 @@ async fn finish_complete(
         output = custody.observe_output(output, &deadline).await?;
         output = custody.observe_peers(output, &admission, &deadline).await?;
     }
+    enrich_external_seats(&context, &admission, &mut output);
     Ok(ExecutedCall {
         host_phases,
         output,
@@ -201,6 +218,49 @@ async fn finish_complete(
         capture_commits: Vec::new(),
         capture_keys: Vec::new(),
     })
+}
+
+fn enrich_external_seats(
+    context: &ExecutionContext,
+    admission: &Admission,
+    output: &mut AnyOutput,
+) {
+    let se_store::Scope::Project(project) = &admission.scope else {
+        return;
+    };
+    let now_us = super::start::now_unix_micros().unwrap_or(0);
+    let update = |row: &mut se_core::ops::AgentRow| {
+        let Some(view) = row.external_seat.as_mut() else {
+            return;
+        };
+        if let Ok(Some(lease)) = context.external.active_lease(project, &row.id, now_us) {
+            view.state = "active".into();
+            view.session_id = Some(lease.session_id);
+            view.lease_generation = Some(lease.lease_generation);
+            view.expires_at = se_core::ops::receipt::timestamp(lease.expires_at_us).ok();
+            view.revocation_reason = None;
+        } else if view.state == "active" {
+            // Host restarted without an active connection in this generation.
+            view.state = "expired".into();
+            view.lease_generation = None;
+            view.expires_at = None;
+        }
+    };
+    match output {
+        AnyOutput::ProjectStatus(status) => {
+            if let Some(agents) = &mut status.value.agents {
+                for row in agents.items_mut() {
+                    update(row);
+                }
+            }
+        }
+        AnyOutput::AgentShow(status) => {
+            if let se_types::Read::Present { value } = &mut status.value.agent {
+                update(value);
+            }
+        }
+        _ => (),
+    }
 }
 /// Submit the batch and run the committed continuation on a pooled read phase.
 async fn finish_commit(

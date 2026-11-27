@@ -94,6 +94,7 @@ fn create_initial_agent(
         model: input.model.clone(),
         profile: None,
         idempotency_key: phase_key(&input.idempotency_key, "agent")?,
+        external: false,
     });
     match crate::route::direct::execute(
         store,

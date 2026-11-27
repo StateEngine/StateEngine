@@ -223,15 +223,70 @@ pub fn cli_command() -> Command {
             root = insert(root, path, meta.name, hidden);
         }
     }
-    // MCP is a streaming transport for the registered operations, not another
-    // store operation with a fabricated product output family.
+    // MCP, external-seat lifecycle, and blocking mail wait are dedicated host
+    // transports rather than store catalogue operations.
+    transport_commands(root)
+}
+fn transport_commands(root: Command) -> Command {
+    let root = root.mut_subcommand("msg", |msg| {
+        msg.subcommand(
+            Command::new("wait")
+                .about("Block on the host's recipient-scoped mail registry until mail arrives or the seat closes")
+                .disable_help_flag(true)
+                .disable_version_flag(true)
+                .disable_help_subcommand(true)
+                .arg(value("as").long("as").help("External seat agent name or ID to wait on"))
+                .arg(value("after").help("Cursor returned by a previous wait"))
+                .arg(value("timeout").help("Wait timeout in seconds (1..=300; default 25)")),
+        )
+    });
     root.subcommand(
+        Command::new("external")
+            .about("Manage owner-approved external seats (Owner terminal only)")
+            .disable_help_flag(true)
+            .disable_version_flag(true)
+            .disable_help_subcommand(true)
+            .subcommand(
+                Command::new("list")
+                    .about("List pending external seat claims and active external leases")
+                    .disable_help_flag(true)
+                    .disable_version_flag(true)
+                    .disable_help_subcommand(true),
+            )
+            .subcommand(
+                Command::new("approve")
+                    .about("Approve a pending external seat claim once")
+                    .disable_help_flag(true)
+                    .disable_version_flag(true)
+                    .disable_help_subcommand(true)
+                    .arg(
+                        positional("claim_id", 1, true).help(
+                            "Pending claim ID from `se external list` or the bridge's stderr",
+                        ),
+                    ),
+            )
+            .subcommand(
+                Command::new("revoke")
+                    .about("Revoke an active external seat")
+                    .disable_help_flag(true)
+                    .disable_version_flag(true)
+                    .disable_help_subcommand(true)
+                    .arg(
+                        positional("agent", 1, true)
+                            .help("Agent name or ID whose active external seat to revoke"),
+                    ),
+            ),
+    )
+    .subcommand(
         Command::new("mcp")
             .about("Serve session tools over newline-delimited JSON-RPC on stdin/stdout")
             .disable_help_flag(true)
             .disable_version_flag(true)
             .disable_help_subcommand(true)
-            .arg(toggle("stdio").help("Read JSON-RPC on stdin and write replies on stdout")),
+            .arg(toggle("stdio").help("Read JSON-RPC on stdin and write replies on stdout"))
+            .arg(value("as").long("as").help(
+                "Connect as an external-eligible agent seat awaiting out-of-band Owner approval",
+            )),
     )
 }
 fn insert(command: Command, path: &[&'static str], name: &str, hidden: bool) -> Command {
@@ -368,7 +423,8 @@ fn input_command_agent(name: &str, c: Command) -> Command {
             .arg(value("base-url").help("Non-secret provider endpoint; requires --model-provider"))
             .arg(value("wire-api").help("Provider wire protocol: responses"))
             .arg(value("reasoning-effort").help("Per-agent reasoning effort"))
-            .arg(value("context-window").help("Per-agent positive token count")),
+            .arg(value("context-window").help("Per-agent positive token count"))
+            .arg(toggle("external").help("Mark this agent eligible for owner-approved external seat leases")),
         "delegate.start" => c
             .subcommand_negates_reqs(true)
             .arg(value("task").required(true).help("Initial task prompt for the temporary agent"))

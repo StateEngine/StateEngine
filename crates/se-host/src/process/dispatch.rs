@@ -192,6 +192,7 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
                     harness: None,
                     named_profile: "default".into(),
                     effort: None,
+                    external: false,
                 })
             })
             .collect()

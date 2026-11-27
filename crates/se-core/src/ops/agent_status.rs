@@ -199,6 +199,7 @@ fn from_principal<R: Snapshot>(
     } else {
         (None, None)
     };
+    let external_seat = external_seat_view(profile.external, &session, &mut resume);
     let unread = unread_count(&agent, cx)?;
     // The open question is a stored fact; the state itself is settled once the
     // runtime's observations are merged.
@@ -233,6 +234,7 @@ fn from_principal<R: Snapshot>(
                     .then(|| se_types::ACP_NO_SANDBOX_NOTICE.into()),
                 secode_binding,
                 secode_runtime,
+                external_seat,
                 id: agent,
                 name,
                 role,
@@ -259,6 +261,54 @@ fn from_principal<R: Snapshot>(
                 resume_after: None,
             },
         },
+    })
+}
+
+fn external_seat_view(
+    eligible: bool,
+    session: &super::SessionView,
+    resume: &mut super::ResumeCommand,
+) -> Option<super::ExternalSeatView> {
+    let is_external_session = session.surface.as_deref() == Some("external");
+    if is_external_session {
+        resume.ready = false;
+        resume.mode = "unavailable".into();
+        resume.reason = Some(
+            "external seat cannot be resumed by StateEngine; reconnect your external bridge and approve with `se external approve`"
+                .into(),
+        );
+        resume.command = None;
+        resume.argv = None;
+    }
+    (eligible || is_external_session).then(|| {
+        let state = if !is_external_session {
+            "idle"
+        } else {
+            match session.recorded_state.as_deref() {
+                Some("activated") => "active",
+                Some("revoked")
+                    if session.end_reason.as_deref() == Some("external seat lease expired") =>
+                {
+                    "expired"
+                }
+                Some("revoked") => "revoked",
+                Some("ended") => "ended",
+                Some("prepared") => "pending",
+                _ => "idle",
+            }
+        };
+        super::ExternalSeatView {
+            eligible,
+            state: state.into(),
+            session_id: is_external_session
+                .then(|| session.session_id.clone())
+                .flatten(),
+            lease_generation: None,
+            expires_at: None,
+            revocation_reason: matches!(state, "revoked" | "expired")
+                .then(|| session.end_reason.clone())
+                .flatten(),
+        }
     })
 }
 

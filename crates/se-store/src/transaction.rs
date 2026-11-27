@@ -491,6 +491,7 @@ impl Engine {
         // handshake-activated credentials without a first request, refuse
         // older readers instead of failing mid-decode or losing settings.
         let schema_version = match &e.body {
+            EventBody::ProfileSaved { profile, .. } if profile.external => 4,
             EventBody::ProfileSaved { profile, .. } if !profile.provider_settings.is_empty() => 3,
             EventBody::ProfileSaved { profile, .. } if profile.harness.is_some() => 2,
             EventBody::CredentialActivated {
@@ -568,7 +569,16 @@ impl Engine {
         }
         apply::capture::validate_batch(&self.db, &batch)?;
         let op = self.open_operation(&batch, &scope, &actor, info, full)?;
+        let mut session_agents: Vec<(Scope, se_types::AgentId)> = Vec::new();
         for (ordinal, (e, description)) in batch.events.into_iter().zip(descriptors).enumerate() {
+            if e.header.door != Door::Import
+                && let EventBody::SessionPrepared { agent, .. } = &e.body
+            {
+                let pair = (e.header.scope.clone(), agent.clone());
+                if !session_agents.contains(&pair) {
+                    session_agents.push(pair);
+                }
+            }
             let prior = apply::natural(&self.db, &e)?;
             let seq = if let Some(seq) = prior {
                 self.compare_natural(&e, &description, seq, info)?;
@@ -578,6 +588,7 @@ impl Engine {
             };
             self.db.execute("INSERT INTO operation_events(operation_id,ordinal,event_seq,newly_appended) VALUES(?,?,?,?)",crate::sql_value::sql_params![op,ordinal,seq,prior.is_none()]).map_err(sql)?;
         }
+        apply::session::verify_exclusivity(&self.db, &session_agents, recorded)?;
         receipt(&self.db, &op, info, batch.request.map(|r| r.key))
     }
     fn rollback(&mut self) {

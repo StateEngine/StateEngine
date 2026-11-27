@@ -91,6 +91,9 @@ pub struct AgentRow {
     pub secode_binding: Option<Read<super::SecodeBindingView>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secode_runtime: Option<Read<super::SecodeRuntimeView>>,
+    /// External seat eligibility and live/revoked/expired status for this agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_seat: Option<ExternalSeatView>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ephemeral: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -101,6 +104,21 @@ pub struct AgentRow {
     #[serde(skip)]
     pub resume_after: Option<se_types::Cursor>,
 }
+/// External seat status, session identity, expiry, and revocation.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ExternalSeatView {
+    pub eligible: bool,
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revocation_reason: Option<String>,
+}
+
 /// Which Codex login serves an agent. Identifiers only; never a credential.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CodexLoginView {

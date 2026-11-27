@@ -132,6 +132,7 @@ enum RequestRef<'a> {
     Adopt(&'a crate::adoption::Input),
     #[cfg(feature = "remote")]
     RemoteOwner(&'a crate::remote::OwnerInput),
+    External(&'a crate::external::ExternalRequest),
     Operation(OperationRef<'a>),
     Hook(HookRef<'a>),
 }
@@ -198,6 +199,7 @@ enum RequestWire {
     Adopt(crate::adoption::Input),
     #[cfg(feature = "remote")]
     RemoteOwner(Box<crate::remote::OwnerInput>),
+    External(Box<crate::external::ExternalRequest>),
     Operation(OperationWire),
     Hook(HookWire),
 }
@@ -229,6 +231,7 @@ pub fn encode_call(call: &crate::IpcEnvelope) -> Result<WireBytes> {
         crate::IpcRequest::Adopt(input) => RequestRef::Adopt(input),
         #[cfg(feature = "remote")]
         crate::IpcRequest::RemoteOwner(input) => RequestRef::RemoteOwner(input),
+        crate::IpcRequest::External(input) => RequestRef::External(input),
         crate::IpcRequest::Operation(operation) => RequestRef::Operation(OperationRef {
             name: &operation.name,
             arguments: &operation.arguments,
@@ -265,6 +268,7 @@ pub fn decode_call(payload: &[u8]) -> Result<crate::IpcEnvelope> {
         RequestWire::Adopt(input) => crate::IpcRequest::Adopt(input),
         #[cfg(feature = "remote")]
         RequestWire::RemoteOwner(input) => crate::IpcRequest::RemoteOwner(input),
+        RequestWire::External(input) => crate::IpcRequest::External(input),
         RequestWire::Operation(operation) => crate::IpcRequest::Operation(crate::RawOperation {
             name: operation.name,
             arguments: operation.arguments,

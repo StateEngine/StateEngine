@@ -52,6 +52,7 @@ fn window_task_cannot_supply_claude_options_on_new_or_resumed_launches()
             harness: None,
             named_profile: "default".into(),
             effort: None,
+            external: false,
         },
         policy: LaunchPolicy {
             containment: ContainmentRequirement::BestAvailable,

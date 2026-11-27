@@ -68,6 +68,7 @@ fn setup() -> Result<(Fixture, SqliteDirect, Arc<Lease>), Box<dyn std::error::Er
                     harness: None,
                     named_profile: "default".into(),
                     effort: None,
+                    external: false,
                 },
                 expected: Expected::Absent,
             }],
