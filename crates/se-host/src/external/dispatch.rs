@@ -22,6 +22,15 @@ pub(crate) struct DispatchOutput {
     pub bridge_witness: Option<ApprovedBridgeWitness>,
 }
 
+impl DispatchOutput {
+    fn plain(output: OperationOutput) -> Self {
+        Self {
+            output,
+            bridge_witness: None,
+        }
+    }
+}
+
 pub(crate) async fn execute(
     router: &HostedRouter,
     call: ExternalCall,
@@ -30,20 +39,17 @@ pub(crate) async fn execute(
     shutdown: &mut watch::Receiver<Option<Deadline>>,
 ) -> Result<DispatchOutput> {
     match call {
-        ExternalCall::ClaimOpen { handle } => Ok(DispatchOutput {
-            output: encode(
-                "se.external-claim-open/v1",
-                &ExternalClaimOpenOutput {
-                    claim_id: handle.claim_id,
-                    project_id: handle.project_id,
-                    agent_id: handle.agent_id,
-                    agent_name: handle.agent_name,
-                    scope: EXTERNAL_SEAT_SCOPE.to_owned(),
-                    expires_at_us: handle.expires_at_us,
-                },
-            )?,
-            bridge_witness: None,
-        }),
+        ExternalCall::ClaimOpen { handle } => Ok(DispatchOutput::plain(encode(
+            "se.external-claim-open/v1",
+            &ExternalClaimOpenOutput {
+                claim_id: handle.claim_id,
+                project_id: handle.project_id,
+                agent_id: handle.agent_id,
+                agent_name: handle.agent_name,
+                scope: EXTERNAL_SEAT_SCOPE.to_owned(),
+                expires_at_us: handle.expires_at_us,
+            },
+        )?)),
         ExternalCall::ClaimWait {
             claim_id,
             peer_binding,
@@ -63,17 +69,17 @@ pub(crate) async fn execute(
             lifecycle::reconcile_expired_leases(router, project.as_ref()).await?;
             let now_us = crate::runtime::start::now_unix_micros()?;
             let output = router.execution.external.list(project.as_ref(), now_us)?;
-            Ok(DispatchOutput {
-                output: encode("se.external-list/v1", &output)?,
-                bridge_witness: None,
-            })
+            Ok(DispatchOutput::plain(encode(
+                "se.external-list/v1",
+                &output,
+            )?))
         }
         ExternalCall::Approve { claim_id } => {
             let output = lifecycle::approve_claim(router, &claim_id, deadline).await?;
-            Ok(DispatchOutput {
-                output: encode("se.external-approve/v1", &output)?,
-                bridge_witness: None,
-            })
+            Ok(DispatchOutput::plain(encode(
+                "se.external-approve/v1",
+                &output,
+            )?))
         }
         ExternalCall::Revoke { project, agent } => {
             let output = lifecycle::revoke_seat(
@@ -84,10 +90,10 @@ pub(crate) async fn execute(
                 deadline,
             )
             .await?;
-            Ok(DispatchOutput {
-                output: encode("se.external-revoke/v1", &output)?,
-                bridge_witness: None,
-            })
+            Ok(DispatchOutput::plain(encode(
+                "se.external-revoke/v1",
+                &output,
+            )?))
         }
         ExternalCall::MailWait {
             principal,
@@ -95,10 +101,10 @@ pub(crate) async fn execute(
             timeout_ms,
         } => {
             let output = wait::wait_mail(router, principal, after, timeout_ms, shutdown).await?;
-            Ok(DispatchOutput {
-                output: encode("se.external-mail-wait/v1", &output)?,
-                bridge_witness: None,
-            })
+            Ok(DispatchOutput::plain(encode(
+                "se.external-mail-wait/v1",
+                &output,
+            )?))
         }
     }
 }
@@ -121,7 +127,15 @@ async fn execute_claim_wait(
     let delivery = tokio::select! {
         biased;
         _ = shutdown.changed() => {
-            close_bridge_and_revoke(router, Some(&claim_id), active_binding, "host is shutting down").await;
+            let bound = shutdown.borrow().clone();
+            close_bridge_and_revoke(
+                router,
+                Some(&claim_id),
+                active_binding,
+                "host is shutting down",
+                bound,
+            )
+            .await;
             return Err(SeError::invalid("external claim wait", "host is shutting down"));
         }
         _ = tokio::time::sleep_until(until) => {
@@ -130,6 +144,7 @@ async fn execute_claim_wait(
                 Some(&claim_id),
                 active_binding,
                 "external claim expired before bridge received capability",
+                None,
             )
             .await;
             return Err(SeError::invalid(
@@ -145,6 +160,7 @@ async fn execute_claim_wait(
                     Some(&claim_id),
                     active_binding,
                     "external claim closed before capability delivery",
+                    None,
                 )
                 .await;
                 return Err(SeError::invalid(
@@ -181,50 +197,39 @@ async fn execute_claim_wait(
 
 /// Park an approved bridge's witness connection on native peer-close detection,
 /// bounded by host shutdown, explicit revocation/retirement, and lease expiry.
+/// Returns the close reason for the connection's single `release_connection` pass.
 pub(crate) async fn hold_approved_bridge(
-    router: &HostedRouter,
     connection: HostedConnection,
     mut witness: ApprovedBridgeWitness,
-    active_binding: &Arc<Mutex<ActiveConnectionBinding>>,
     shutdown: &mut watch::Receiver<Option<Deadline>>,
-) -> Result<()> {
+) -> Result<&'static str> {
     if shutdown.borrow().is_some() {
-        close_bridge_and_revoke(router, None, active_binding, "host is shutting down").await;
-        return Ok(());
+        return Ok("host is shutting down");
     }
     if *witness.retired.borrow() {
-        return Ok(());
+        return Ok("external bridge disconnected");
     }
     let now_us = crate::runtime::start::now_unix_micros()?;
     let remaining_us = witness.expires_at_us.saturating_sub(now_us);
     if remaining_us <= 0 {
-        close_bridge_and_revoke(
-            router,
-            None,
-            active_binding,
-            lifecycle::EXPIRED_LEASE_REASON,
-        )
-        .await;
-        return Ok(());
+        return Ok(lifecycle::EXPIRED_LEASE_REASON);
     }
     let expiry = tokio::time::sleep(std::time::Duration::from_micros(
         u64::try_from(remaining_us).unwrap_or(0),
     ));
     tokio::pin!(expiry);
-    let revoke_reason = tokio::select! {
+    tokio::select! {
         biased;
-        _ = shutdown.changed() => Some("host is shutting down"),
-        _ = async { let _ = witness.retired.wait_for(|retired| *retired).await; } => None,
-        _ = &mut expiry => Some(lifecycle::EXPIRED_LEASE_REASON),
+        _ = shutdown.changed() => Ok("host is shutting down"),
+        _ = async { let _ = witness.retired.wait_for(|retired| *retired).await; } => {
+            Ok("external bridge disconnected")
+        }
+        _ = &mut expiry => Ok(lifecycle::EXPIRED_LEASE_REASON),
         closed = connection.wait_for_peer_close() => {
             closed?;
-            None
+            Ok("external bridge disconnected")
         }
-    };
-    if let Some(reason) = revoke_reason {
-        close_bridge_and_revoke(router, None, active_binding, reason).await;
     }
-    Ok(())
 }
 
 /// Atomically mark the bridge closed and spawn durable cleanup on a detached
@@ -236,6 +241,7 @@ async fn close_bridge_and_revoke(
     claim_id: Option<&str>,
     active_binding: &Arc<Mutex<ActiveConnectionBinding>>,
     reason: &str,
+    bound: Option<Deadline>,
 ) {
     let active = active_binding.lock().ok().and_then(|mut b| {
         b.closed = true;
@@ -257,6 +263,7 @@ async fn close_bridge_and_revoke(
                 session_id,
                 *lease_generation,
                 &reason,
+                bound.as_ref(),
             )
             .await
             {
@@ -299,6 +306,7 @@ async fn close_bridge_and_revoke(
                 &undelivered.session_id,
                 undelivered.lease_generation,
                 &reason,
+                bound.as_ref(),
             )
             .await
             {
@@ -335,12 +343,15 @@ pub(crate) async fn release_connection(
     router: &HostedRouter,
     claim: Option<PendingClaimHandle>,
     active_binding: &Arc<Mutex<ActiveConnectionBinding>>,
+    reason: &str,
+    bound: Option<Deadline>,
 ) {
     close_bridge_and_revoke(
         router,
         claim.as_ref().map(|h| h.claim_id.as_str()),
         active_binding,
-        "external bridge disconnected",
+        reason,
+        bound,
     )
     .await;
 }

@@ -297,6 +297,7 @@ async fn handoff_to_bridge_locked(
             &session_id,
             lease_generation,
             "external bridge disconnected before capability delivery",
+            None,
         )
         .await
         {

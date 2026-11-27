@@ -327,6 +327,7 @@ pub(crate) async fn fenced_disconnect_with_retry(
     session_id: &SessionId,
     lease_generation: u64,
     reason: &str,
+    bound: Option<&Deadline>,
 ) -> Result<DisconnectOutcome> {
     let _agent_guard = router
         .execution
@@ -341,6 +342,7 @@ pub(crate) async fn fenced_disconnect_with_retry(
         session_id,
         lease_generation,
         reason,
+        bound,
     )
     .await
 }
@@ -352,10 +354,14 @@ pub(crate) async fn fenced_disconnect_locked_with_retry(
     session_id: &SessionId,
     lease_generation: u64,
     reason: &str,
+    bound: Option<&Deadline>,
 ) -> Result<DisconnectOutcome> {
     let mut last_err = None;
     for attempt in 0..3u64 {
-        let deadline = crate::runtime::serve::options(std::time::Duration::from_secs(10))?;
+        let deadline = match bound {
+            Some(bound) => bound.stage(std::time::Duration::from_secs(10))?,
+            None => crate::runtime::serve::options(std::time::Duration::from_secs(10))?,
+        };
         match fenced_disconnect_locked_on_execution(
             &router.execution,
             &router.context.owner,
