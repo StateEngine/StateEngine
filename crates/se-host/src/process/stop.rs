@@ -116,6 +116,9 @@ impl LaunchCoordinator {
                 deadline,
             )
             .await?;
+        } else if work.stop_fence.is_some() {
+            self.require_own_stop_admission(work, &previous, deadline)
+                .await?;
         }
         // Standalone takeover uses stop followed by launch. Close the old
         // binding durably before any interruption, even with an empty inbox;
@@ -467,6 +470,63 @@ impl LaunchCoordinator {
                 return Err(failure);
             }
             (ticket, observed) = self.stop_observation(ticket, deadline).await?;
+        }
+    }
+    /// A fenced (remote) stop may continue a lifecycle already in StopRequested
+    /// only when that exact transition was durably committed by this request.
+    /// Another request's admission never authorizes this caller's effects.
+    async fn require_own_stop_admission(
+        &self,
+        work: &Work,
+        head: &se_store::ProjectionRecord,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let EventBody::ProcessTransition {
+            process,
+            expected: se_store::Expected::Revision(previous),
+            outcome,
+            ..
+        } = &head.current.body
+        else {
+            return Err(se_core::scope::unreadable(
+                "stop admission",
+                "the stop request record has no prior revision",
+            ));
+        };
+        let request = work
+            .stop_key
+            .as_ref()
+            .ok_or_else(|| error("stop admission", "the stop request key is absent"))?;
+        let key =
+            process_commit::phase_key(request, &format!("{process}/{outcome}/{}", previous.value))?;
+        let actor = work.admission.actor.clone();
+        let receipt = self
+            .store
+            .read(work.admission.clone(), deadline, move |cx| {
+                cx.read
+                    .operation_receipt(actor, key)
+                    .map_err(|e| se_core::store_error::store_error(&e))
+            })
+            .await?;
+        match receipt {
+            se_types::Read::Present { value } if value.primary_event == head.current.header.event => {
+                Ok(())
+            }
+            se_types::Read::Present { .. } | se_types::Read::Absent { .. } => {
+                Err(se_types::SeError::new(se_types::Detail::StateConflict(
+                    se_types::details::StateConflict {
+                        subject: "remote stop".into(),
+                        reason: "this session is already stopping under another request".into(),
+                        next_step: "Repeat the earlier stop with its original key, or ask the Owner of that machine to run se stop AGENT in a terminal there.".into(),
+                    },
+                )))
+            }
+            se_types::Read::Unknown { what } => {
+                Err(se_core::scope::unreadable("stop admission", &what))
+            }
+            se_types::Read::Unreadable { reason, .. } => {
+                Err(se_core::scope::unreadable("stop admission", &reason))
+            }
         }
     }
     async fn revoke_credentials(&self, work: &mut Work, deadline: &Deadline) -> Result<()> {

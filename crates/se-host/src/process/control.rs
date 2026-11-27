@@ -22,7 +22,8 @@ impl LaunchCoordinator {
         self.stop_fenced(plan, admission, None, deadline).await
     }
     /// A remote stop carries its boundary permit into each remote-actor commit.
-    /// A same-key retry replays its retained receipt before any new selection.
+    /// A same-key retry replays its retained receipt before any new selection,
+    /// and an attempt it restarts runs under the retry's own current permit.
     pub async fn stop_fenced(
         self: &Arc<Self>,
         plan: StopPlan,
@@ -37,11 +38,10 @@ impl LaunchCoordinator {
         let intent=Sha256::digest(serde_json::to_vec(&serde_json::json!({"operation":"agent.stop","input":plan.input,"selector":plan.input.owner_agent,"all":plan.input.all,"release":plan.input.release,"scope":format!("{:?}",admission.scope)})).map_err(|e|error("stop request intent",e))?).into();
         let coordinator = Arc::downgrade(self);
         match self
-            .supervise_control(key, intent, deadline, move |deadline| {
+            .supervise_fenced(key, intent, fence, deadline, move |deadline, fence| {
                 let coordinator = coordinator.clone();
                 let plan = plan.clone();
                 let admission = admission.clone();
-                let fence = fence.clone();
                 async move {
                     coordinator
                         .upgrade()
@@ -166,8 +166,12 @@ impl LaunchCoordinator {
             // independent targets selected by --all.
             let agent=row.target.agent.id.clone();
             let current=self.store.read(admission.clone(),deadline,move |cx| se_core::scope::require_present(cx.read.control_target(agent).map_err(|e|se_core::store_error::store_error(&e))?,"current stop control","Restore the current create grant or use the owner's terminal.")).await?;
-            if self.scoped_ended(expected.as_ref(), &current, &admission, &mut row, deadline).await? { return Ok(()); }
-            external = self.retire_embedded_bindings(&current, &row.target.agent.id, key, &admission, fence, deadline).await?;
+            // An unsettled job for the recorded lifecycle still owns its cleanup:
+            // keep its exit witness and report that cleanup, never supersession.
+            let unsettled = expected.is_some() && matches!(&retained, Ok(Some(job)) if !job.settled.load(Ordering::Acquire));
+            if self.scoped_ended(expected.as_ref(), &current, unsettled, &admission, &mut row, deadline).await? { return Ok(()); }
+            // Embedded retirement selects the latest session, which may be newer work.
+            if !unsettled { external = self.retire_embedded_bindings(&current, &row.target.agent.id, key, &admission, fence, deadline).await?; }
             if !external.is_empty() && current.processes.is_empty() {
                 let changed = external.iter().any(|binding| binding.changed);
                 row.result = if changed { "stopped" } else { "already-stopped" }.into();
@@ -368,13 +372,14 @@ impl LaunchCoordinator {
         }
         Ok(())
     }
-    /// A scoped stop refuses other live work. When nothing live is its own and
-    /// newer work exists, its lifecycle counts as stopped only with its own exit
-    /// record: report that and touch nothing.
+    /// A scoped stop refuses other live work. When nothing live is its own,
+    /// newer work exists and no unsettled job still owns its cleanup, its
+    /// lifecycle counts as stopped only with its own exit record.
     async fn scoped_ended(
         &self,
         expected: Option<&se_core::ops::stop_plan::ExpectedLifecycle>,
         current: &se_store::ControlTarget,
+        unsettled: bool,
         admission: &Admission,
         row: &mut AgentStopResult,
         deadline: &Deadline,
@@ -383,7 +388,7 @@ impl LaunchCoordinator {
             return Ok(false);
         };
         expected.check(current)?;
-        if !expected.superseded(current) {
+        if unsettled || !expected.superseded(current) {
             return Ok(false);
         }
         let lifecycle = expected.lifecycle.clone();

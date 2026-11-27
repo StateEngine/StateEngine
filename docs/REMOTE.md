@@ -122,7 +122,9 @@ terminal on that machine. Stop needs no extra permission: the recorded launch is
 authority, so it still works after launch consent is revoked. Removing the pairing
 does refuse it, including a stop that is already in progress. The destination's own stop
 path ends the session and reports its witness. If closure is not proved, the command
-exits 2; repeat it with the same key.
+exits 2; repeat it with the same key. A repeat runs under the pairing's current
+permission, so it works again once a removed source address is restored. A stop
+with a new key is refused while an earlier request's stop is still unfinished.
 
 ## Reading IDs and cursors
 

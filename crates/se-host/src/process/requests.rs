@@ -16,8 +16,12 @@ use std::{
 use tokio::sync::watch;
 #[derive(Default)]
 pub(super) struct Controls(Mutex<BTreeMap<String, Arc<Control>>>);
-type Retry =
-    dyn Fn(Deadline) -> Pin<Box<dyn Future<Output = Result<AnyOutput>> + Send>> + Send + Sync;
+/// Each attempt receives the boundary permit of the request that starts it, so
+/// a retry needing a new admission never reuses an earlier, revoked permit.
+type Retry = dyn Fn(Deadline, StopFence) -> Pin<Box<dyn Future<Output = Result<AnyOutput>> + Send>>
+    + Send
+    + Sync;
+use crate::runtime::store::StopFence;
 struct Control {
     intent: [u8; 32],
     execute: Arc<Retry>,
@@ -65,6 +69,68 @@ impl LaunchCoordinator {
         }
         Ok(())
     }
+    /// Join the retained request for `key`, restart its retryable attempt, or
+    /// register a new one within the bounded registry.
+    fn admit_control(
+        &self,
+        key: String,
+        intent: [u8; 32],
+        execute: Arc<Retry>,
+    ) -> Result<(Arc<Control>, bool)> {
+        let mut controls =
+            self.controls.0.lock().map_err(|_| {
+                SeError::invalid("process request registry", "an unpoisoned registry")
+            })?;
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(error(
+                "process request admission",
+                "shutdown is joining retained cleanup; reconnect after it completes",
+            ));
+        }
+        if let Some(control) = controls.get(&key) {
+            if control.intent != intent {
+                return Err(SeError::invalid(
+                    "process request key",
+                    "the original operation, target and options",
+                ));
+            }
+            let retry =
+                control.ready.borrow().is_some() && control.retryable.load(Ordering::Acquire);
+            if retry {
+                // Clear under the registry lock: another caller joins this
+                // attempt instead of starting a second cleanup concurrently.
+                control.ready.send_replace(None);
+                control.retryable.store(false, Ordering::Release);
+            }
+            Ok((control.clone(), retry))
+        } else {
+            if controls.len() >= 128
+                && let Some(old) = controls
+                    .iter()
+                    .find(|(_, c)| {
+                        c.ready.borrow().is_some() && !c.retryable.load(Ordering::Acquire)
+                    })
+                    .map(|(k, _)| k.clone())
+            {
+                controls.remove(&old);
+            }
+            if controls.len() >= 128 {
+                return Err(SeError::invalid(
+                    "process request capacity",
+                    "finish retained requests before submitting more",
+                ));
+            }
+            let control = Arc::new(Control {
+                intent,
+                execute,
+                retryable: AtomicBool::new(false),
+                ready: watch::channel(None).0,
+                task: Mutex::new(None),
+            });
+            controls.insert(key, control.clone());
+            Ok((control, true))
+        }
+    }
     pub(super) async fn supervise_control<
         F: Future<Output = Result<AnyOutput>> + Send + 'static,
     >(
@@ -74,60 +140,22 @@ impl LaunchCoordinator {
         deadline: &Deadline,
         execute: impl Fn(Deadline) -> F + Send + Sync + 'static,
     ) -> Result<AnyOutput> {
-        let (control, new) = {
-            let mut controls = self.controls.0.lock().map_err(|_| {
-                SeError::invalid("process request registry", "an unpoisoned registry")
-            })?;
-            if self.stopping.load(Ordering::Acquire) {
-                return Err(error(
-                    "process request admission",
-                    "shutdown is joining retained cleanup; reconnect after it completes",
-                ));
-            }
-            if let Some(control) = controls.get(&key) {
-                if control.intent != intent {
-                    return Err(SeError::invalid(
-                        "process request key",
-                        "the original operation, target and options",
-                    ));
-                }
-                let retry =
-                    control.ready.borrow().is_some() && control.retryable.load(Ordering::Acquire);
-                if retry {
-                    // Clear under the registry lock: another caller joins this
-                    // attempt instead of starting a second cleanup concurrently.
-                    control.ready.send_replace(None);
-                    control.retryable.store(false, Ordering::Release);
-                }
-                (control.clone(), retry)
-            } else {
-                if controls.len() >= 128
-                    && let Some(old) = controls
-                        .iter()
-                        .find(|(_, c)| {
-                            c.ready.borrow().is_some() && !c.retryable.load(Ordering::Acquire)
-                        })
-                        .map(|(k, _)| k.clone())
-                {
-                    controls.remove(&old);
-                }
-                if controls.len() >= 128 {
-                    return Err(SeError::invalid(
-                        "process request capacity",
-                        "finish retained requests before submitting more",
-                    ));
-                }
-                let control = Arc::new(Control {
-                    intent,
-                    execute: Arc::new(move |deadline| Box::pin(execute(deadline))),
-                    retryable: AtomicBool::new(false),
-                    ready: watch::channel(None).0,
-                    task: Mutex::new(None),
-                });
-                controls.insert(key, control.clone());
-                (control, true)
-            }
-        };
+        self.supervise_fenced(key, intent, None, deadline, move |deadline, _| {
+            execute(deadline)
+        })
+        .await
+    }
+    pub(super) async fn supervise_fenced<F: Future<Output = Result<AnyOutput>> + Send + 'static>(
+        &self,
+        key: String,
+        intent: [u8; 32],
+        fence: StopFence,
+        deadline: &Deadline,
+        execute: impl Fn(Deadline, StopFence) -> F + Send + Sync + 'static,
+    ) -> Result<AnyOutput> {
+        let execute: Arc<Retry> =
+            Arc::new(move |deadline, fence| Box::pin(execute(deadline, fence)));
+        let (control, new) = self.admit_control(key, intent, execute)?;
         if new {
             let owned = control.clone();
             let previous = control
@@ -137,7 +165,10 @@ impl LaunchCoordinator {
                 .take();
             // The job runs on its own task: carry the launching terminal's sign-in.
             let sign_in = crate::launch_sign_in::current();
-            let job = crate::launch_sign_in::scope(sign_in, (control.execute)(deadline.retained()));
+            let job = crate::launch_sign_in::scope(
+                sign_in,
+                (control.execute)(deadline.retained(), fence),
+            );
             let task = self.store.pool.handle().spawn(async move {
                 if let Some(previous) = previous
                     && let Err(failure) = previous.await
