@@ -38,6 +38,10 @@ pub(crate) async fn describe(destination: &str, distribution: &Path) -> Result<I
         let retry = ssh(destination, staging::sh("uname -sm")).await?;
         if retry.success {
             probe = retry;
+        } else if !retry.stderr_tail.is_empty() {
+            // The system `uname` path's verdict is the one a refusal should
+            // name; the bare probe's stays when the retry said nothing.
+            probe.stderr_tail = retry.stderr_tail;
         }
     }
     let first_tail = probe.stderr_tail;
