@@ -243,5 +243,143 @@
       "name": "cline",
       "bin": "cline"
     }
+  },
+  "antigravity": {
+    "title": "Antigravity",
+    "setup_url": "https://antigravity.google/docs/ide/extensions/acp/",
+    "descriptor": {
+      "driver": "acp-stdio",
+      "command": "agy",
+      "arguments": [
+        "acp"
+      ],
+      "environment": [
+        "GEMINI_API_KEY",
+        "GOOGLE_GEMINI_BASE_URL",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+        "GOOGLE_CLOUD_QUOTA_PROJECT",
+        "AGY_ADC_AUTH"
+      ],
+      "permissions": {
+        "default": {
+          "arguments": [],
+          "environment": {},
+          "mode": ""
+        }
+      }
+    },
+    "package": null
+  },
+  "cursor": {
+    "title": "Cursor",
+    "setup_url": "https://cursor.com/docs/cli/acp",
+    "descriptor": {
+      "driver": "acp-stdio",
+      "command": "cursor-agent",
+      "arguments": [
+        "acp"
+      ],
+      "environment": [
+        "CURSOR_API_KEY",
+        "CURSOR_AUTH_TOKEN"
+      ],
+      "permissions": {
+        "default": {
+          "arguments": [],
+          "environment": {},
+          "mode": ""
+        }
+      }
+    },
+    "package": null
+  },
+  "grok": {
+    "title": "Grok",
+    "setup_url": "https://docs.x.ai/build/overview",
+    "descriptor": {
+      "driver": "acp-stdio",
+      "command": "grok",
+      "arguments": [
+        "--no-auto-update",
+        "agent",
+        "stdio"
+      ],
+      "environment": [
+        "XAI_API_KEY",
+        "GROK_HOME",
+        "GROK_CLI_CHAT_PROXY_BASE_URL",
+        "GROK_OIDC_ISSUER",
+        "GROK_OIDC_CLIENT_ID"
+      ],
+      "permissions": {
+        "default": {
+          "arguments": [],
+          "environment": {},
+          "mode": ""
+        }
+      }
+    },
+    "package": null
+  },
+  "omp": {
+    "title": "Oh My Pi",
+    "setup_url": "https://omp.sh/docs/acp",
+    "descriptor": {
+      "driver": "acp-stdio",
+      "command": "omp",
+      "arguments": [
+        "acp"
+      ],
+      "environment": [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_OAUTH_TOKEN",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "XAI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "PI_CONFIG_DIR",
+        "PI_CODING_AGENT_DIR",
+        "OMP_PROFILE"
+      ],
+      "permissions": {
+        "default": {
+          "arguments": [],
+          "environment": {},
+          "mode": ""
+        }
+      }
+    },
+    "package": null
+  },
+  "deepseek": {
+    "title": "DeepSeek",
+    "setup_url": "https://github.com/deepseek-ai/deepseek-harness",
+    "descriptor": {
+      "driver": "acp-stdio",
+      "command": "node",
+      "arguments": [
+        "--profile",
+        "acp"
+      ],
+      "environment": [
+        "DEEPSEEK_API_KEY",
+        "DEEPSEEK_BASE_URL",
+        "DSH_HOME",
+        "DSH_AGENTS_HOME"
+      ],
+      "permissions": {
+        "default": {
+          "arguments": [],
+          "environment": {},
+          "mode": ""
+        }
+      }
+    },
+    "package": {
+      "name": "@deepseek-ai/dsh",
+      "bin": "dsh"
+    }
   }
 }
