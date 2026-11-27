@@ -335,4 +335,9 @@ fn error(subject: &str, cause: impl std::fmt::Display) -> se_types::SeError {
 #[cfg(feature = "remote")]
 pub type StopFence = Option<std::sync::Arc<crate::remote::auth::AdmissionPermit>>;
 #[cfg(not(feature = "remote"))]
-pub type StopFence = Option<std::convert::Infallible>;
+pub type StopFence = Option<NoPermit>;
+/// Uninhabited: without the remote feature no stop carries a boundary permit.
+/// Clone without Copy keeps the fence handling identical in both builds.
+#[cfg(not(feature = "remote"))]
+#[derive(Clone)]
+pub enum NoPermit {}
