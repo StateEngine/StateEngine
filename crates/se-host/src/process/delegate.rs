@@ -103,26 +103,26 @@ impl LaunchCoordinator {
         let (owned_admission, owned_deadline) = (admission.clone(), deadline.clone());
         let ttl_seconds = plan.ephemeral.ttl_seconds;
         let receipt = tokio::spawn(async move {
-            let receipt = {
-                let _create_guard =
-                    crate::runtime::pool::within(&owned_deadline, this.delegate_create_lock.lock())
-                        .await?;
-                match write {
-                    CreateWrite::Local => {
-                        this.store
-                            .commit(owned_admission, &owned_deadline, None, work)
-                            .await?
-                    }
-                    #[cfg(feature = "remote")]
-                    CreateWrite::Remote(permit) => {
-                        this.store
-                            .commit_remote(owned_admission, &owned_deadline, None, permit, work)
-                            .await?
-                    }
+            let _create_guard =
+                crate::runtime::pool::within(&owned_deadline, this.delegate_create_lock.lock())
+                    .await?;
+            let written = match write {
+                CreateWrite::Local => {
+                    this.store
+                        .commit(owned_admission, &owned_deadline, None, work)
+                        .await
+                }
+                #[cfg(feature = "remote")]
+                CreateWrite::Remote(permit) => {
+                    this.store
+                        .commit_remote(owned_admission, &owned_deadline, None, permit, work)
+                        .await
                 }
             };
+            // Armed whatever the reply: an unavailable or unknown outcome may
+            // still be a committed worker, and a spare sweep finds nothing.
             this.arm_worker_ttl(ttl_seconds);
-            Ok::<_, se_types::SeError>(receipt)
+            written
         })
         .await
         .map_err(|join| error("delegate creation", join))??;

@@ -205,12 +205,19 @@ fn new_launch(
     })
 }
 
-/// An existing worker's launch, exactly as its store saved it.
+/// An existing worker's launch, exactly as its store saved it. It is read
+/// through the creator-authorized control view, which admits a parent's own
+/// worker without widening ordinary profile visibility.
 fn committed_launch<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Launch> {
-    let saved = scope::require_present(
+    let control = scope::require_present(
         cx.read
-            .profile(agent.clone())
+            .control_target(agent.clone())
             .map_err(|error| store_error(&error))?,
+        "delegated worker",
+        scope::COMMITTED_READ_RECOVERY,
+    )?;
+    let saved = scope::require_present(
+        control.profile,
         "delegated worker profile",
         scope::COMMITTED_READ_RECOVERY,
     )?;
@@ -220,13 +227,7 @@ fn committed_launch<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<
             "the profile projection has the wrong event kind",
         ));
     };
-    let record = scope::require_present(
-        cx.read
-            .principal(Actor::Agent(agent.clone()))
-            .map_err(|error| store_error(&error))?,
-        "delegated worker",
-        scope::COMMITTED_READ_RECOVERY,
-    )?;
+    let record = &control.principal;
     let EventBody::PrincipalRegistered {
         ephemeral: Some(spec),
         ..
