@@ -425,13 +425,27 @@ fn hosted_resume(
     Ok(Resumed::Local(Box::new(snapshot)))
 }
 
-/// A fresh snapshot for the store-only resume, selected as admission was.
+/// A fresh admitted snapshot for the store-only resume. The presented
+/// credential is observed again, since it may have expired or been revoked
+/// while the host was asked, and must still bind the same agent, project and
+/// session.
 fn fallback_snapshot(ctx: RouteContext<'_>, op: &AnyOp) -> Result<se_store::SqliteSnapshot> {
-    let admission = &ctx.caller.admission;
-    let mut snapshot =
-        se_store::ReadStore::snapshot(ctx.reader, se_core::admission::read_scope(admission))
-            .map_err(|e| store_error(&e))?;
-    super::select::apply(ctx.cx, &mut snapshot, &mut admission.clone(), op)?;
+    let mut phase = ctx.reader.read_phase().map_err(|e| store_error(&e))?;
+    let observed = super::admit::observe(ctx.cx, &mut phase, ctx.files)?;
+    let original = &ctx.caller.admission;
+    let mut admission = observed.admission;
+    if (&admission.actor, &admission.scope, &admission.session)
+        != (&original.actor, &original.scope, &original.session)
+    {
+        return Err(scope::unreadable(
+            "session credential",
+            "the presented credential no longer binds this resume's agent, project and session",
+        ));
+    }
+    let mut snapshot = phase
+        .into_snapshot(se_core::admission::read_scope(&admission))
+        .map_err(|e| store_error(&e))?;
+    super::select::apply(ctx.cx, &mut snapshot, &mut admission, op)?;
     if let se_store::Scope::Project(project) = &admission.scope {
         snapshot
             .select_project(project.clone())
