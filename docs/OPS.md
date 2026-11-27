@@ -360,7 +360,7 @@ Registered: 65 operations (59 core, 6 Atlas), 33 MCP tools (28 core, 5 Atlas). P
 
 `store.import_node` needs the optional `import` build feature; the standard release archive does not enable it.
 
-Shipped as CLI transport commands outside the registry: `mcp.serve`
+Shipped as CLI transport commands outside the registry: `external.approve`, `external.list`, `external.mail_wait`, `external.revoke`, `mcp.serve`
 
 Planned operations (design tables, not yet registered): `credential.rotate`, `mcp.token`, `session.begin`, `session.end`, `session.turn`
 
