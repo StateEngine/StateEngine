@@ -265,8 +265,7 @@ async fn connection(
     let ext_active = Arc::clone(&connection.grant.external_active);
     let mut ext_close_reason = "external bridge disconnected";
     let outcome = connection_loop(&router, connection, &mut ext_close_reason, &mut shutdown).await;
-    let shutdown_bound = shutdown.borrow().clone();
-    if shutdown_bound.is_some() && ext_close_reason == "external bridge disconnected" {
+    if shutdown.borrow().is_some() && ext_close_reason == "external bridge disconnected" {
         ext_close_reason = "host is shutting down";
     }
     crate::external::dispatch::release_connection(
@@ -274,7 +273,7 @@ async fn connection(
         ext_claim,
         &ext_active,
         ext_close_reason,
-        shutdown_bound,
+        shutdown,
     )
     .await;
     outcome

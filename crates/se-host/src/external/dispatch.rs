@@ -127,13 +127,12 @@ async fn execute_claim_wait(
     let delivery = tokio::select! {
         biased;
         _ = shutdown.changed() => {
-            let bound = shutdown.borrow().clone();
             close_bridge_and_revoke(
                 router,
                 Some(&claim_id),
                 active_binding,
                 "host is shutting down",
-                bound,
+                Some(shutdown.clone()),
             )
             .await;
             return Err(SeError::invalid("external claim wait", "host is shutting down"));
@@ -144,7 +143,7 @@ async fn execute_claim_wait(
                 Some(&claim_id),
                 active_binding,
                 "external claim expired before bridge received capability",
-                None,
+                Some(shutdown.clone()),
             )
             .await;
             return Err(SeError::invalid(
@@ -160,7 +159,7 @@ async fn execute_claim_wait(
                     Some(&claim_id),
                     active_binding,
                     "external claim closed before capability delivery",
-                    None,
+                    Some(shutdown.clone()),
                 )
                 .await;
                 return Err(SeError::invalid(
@@ -241,7 +240,7 @@ async fn close_bridge_and_revoke(
     claim_id: Option<&str>,
     active_binding: &Arc<Mutex<ActiveConnectionBinding>>,
     reason: &str,
-    bound: Option<Deadline>,
+    shutdown: Option<watch::Receiver<Option<Deadline>>>,
 ) {
     let active = active_binding.lock().ok().and_then(|mut b| {
         b.closed = true;
@@ -263,7 +262,7 @@ async fn close_bridge_and_revoke(
                 session_id,
                 *lease_generation,
                 &reason,
-                bound.as_ref(),
+                shutdown.clone(),
             )
             .await
             {
@@ -306,7 +305,7 @@ async fn close_bridge_and_revoke(
                 &undelivered.session_id,
                 undelivered.lease_generation,
                 &reason,
-                bound.as_ref(),
+                shutdown,
             )
             .await
             {
@@ -344,14 +343,14 @@ pub(crate) async fn release_connection(
     claim: Option<PendingClaimHandle>,
     active_binding: &Arc<Mutex<ActiveConnectionBinding>>,
     reason: &str,
-    bound: Option<Deadline>,
+    shutdown: watch::Receiver<Option<Deadline>>,
 ) {
     close_bridge_and_revoke(
         router,
         claim.as_ref().map(|h| h.claim_id.as_str()),
         active_binding,
         reason,
-        bound,
+        Some(shutdown),
     )
     .await;
 }
