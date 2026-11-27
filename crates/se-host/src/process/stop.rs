@@ -108,11 +108,14 @@ impl LaunchCoordinator {
             }
         };
         // A remote stop starts effects only under the fenced admission this
-        // attempt commits itself. A stop admitted earlier is only observed: an
-        // exit observed above still gets host cleanup; otherwise the
-        // destination Owner recovers it.
+        // attempt commits itself: the startup interrupt counts only while it is
+        // still the exact head. Any other StopRequested, and every StopUnproved,
+        // is only observed: an exit observed above still gets host cleanup;
+        // otherwise the destination Owner recovers it.
+        let fresh = from == ProcessState::StopRequested
+            && work.stop_admitted_here.as_ref() == Some(&previous.current.header.event);
         if work.stop_fence.is_some()
-            && !work.stop_admitted_here
+            && !fresh
             && matches!(
                 from,
                 ProcessState::StopRequested | ProcessState::StopUnproved

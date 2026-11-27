@@ -47,10 +47,10 @@ impl LaunchCoordinator {
         admission: Admission,
         fence: &crate::runtime::store::StopFence,
         deadline: &Deadline,
-    ) -> Result<bool> {
+    ) -> Result<Option<se_types::EventId>> {
         loop {
             if job.ready.borrow().is_some() {
-                return Ok(false);
+                return Ok(None);
             }
             let agent = job.target.1.clone();
             let lifecycle = job.lifecycle.clone();
@@ -75,7 +75,7 @@ impl LaunchCoordinator {
                 })
                 .await?;
             let Some(previous) = previous else {
-                return Ok(false);
+                return Ok(None);
             };
             let identity = match &previous.current.body {
                 EventBody::ProcessTransition {
@@ -83,7 +83,7 @@ impl LaunchCoordinator {
                     to: ProcessState::Starting,
                     ..
                 } => identity.as_ref().clone(),
-                _ => return Ok(false),
+                _ => return Ok(None),
             };
             // Before exec publication the coordinator must still join native
             // allocation. Its original bound and retained cleanup remain owned.
@@ -93,7 +93,7 @@ impl LaunchCoordinator {
             )
             .map_err(|e| error("startup stop custody", e))?;
             if !matches!(checkpoint.checkpoint, se_proc::CheckpointKind::Process(_)) {
-                return Ok(false);
+                return Ok(None);
             }
             let request = key.clone();
             let committed = self
@@ -113,9 +113,9 @@ impl LaunchCoordinator {
                 })
                 .await;
             match committed {
-                Ok(_) => {
+                Ok(receipt) => {
                     job.wake.request_startup_stop();
-                    return Ok(true);
+                    return Ok(Some(receipt.primary_event));
                 }
                 // Activation can win the CAS. Re-read that exact lifecycle and
                 // take its ordinary active-stop path; never cancel on a refusal.

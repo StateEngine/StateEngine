@@ -156,7 +156,7 @@ impl LaunchCoordinator {
         key: &IdempotencyKey,
         admission: Admission,
         fence: &crate::runtime::store::StopFence,
-        admitted_here: bool,
+        admitted_here: Option<se_types::EventId>,
         deadline: &Deadline,
     ) -> Result<()> {
         work.stop_key = Some(key.clone());
@@ -164,7 +164,7 @@ impl LaunchCoordinator {
         work.stop_fence = fence.clone();
         work.stop_admitted_here = admitted_here;
         let witness = self.stop_native(work, deadline).await;
-        work.stop_admitted_here = false;
+        work.stop_admitted_here = None;
         let witness = witness?;
         work.last_witness = Some(witness.clone());
         work.admission = work.cleanup_admission.clone();
@@ -217,7 +217,7 @@ impl LaunchCoordinator {
             if expected.as_ref().is_some_and(|expected| expected.lifecycle != job.lifecycle) {
                 return Err(error("scoped stop lifecycle", "the retained job is not the recorded lifecycle"));
             }
-            let admitted_here = !release && self.interrupt_startup(&job,key,admission.clone(),fence,deadline).await?;
+            let admitted_here = if release { None } else { self.interrupt_startup(&job,key,admission.clone(),fence,deadline).await? };
             let mut work=if release {
                 job.control_state(deadline).await?
             } else {
