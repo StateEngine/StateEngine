@@ -41,7 +41,7 @@ pub(crate) async fn wait_mail(
     let deadline = crate::runtime::serve::options(stage)?;
     let until = tokio::time::Instant::now() + Duration::from_millis(bounded_ms);
 
-    let first = read_page(router, &principal, &deadline).await?;
+    let first = read_page(router, &principal, &deadline, after.as_ref()).await?;
     let pins = Pins {
         session: first.session.clone(),
         recipient: first.recipient.clone(),
@@ -61,10 +61,7 @@ pub(crate) async fn wait_mail(
 
     loop {
         if wait.signal.cancelled.load(Ordering::Acquire) {
-            return Err(SeError::invalid(
-                "mail wait",
-                "this seat's active session was revoked, replaced, or disconnected",
-            ));
+            return Err(seat_closed());
         }
         let (page, gate) =
             decide(router, &principal, &deadline, &pins, &mut activity, after).await?;
@@ -79,18 +76,14 @@ pub(crate) async fn wait_mail(
             _ = wait.signal.changed.notified() => {
                 continue;
             }
-            changed = async {
+            // A change, or a dropped state when the lease retired: `decide`
+            // re-reads and re-resolves the lease either way.
+            _ = async {
                 match activity.as_mut() {
                     Some(watch) => watch.changed().await,
                     None => std::future::pending().await,
                 }
-            } => {
-                // A dropped state means the lease retired; the next read refuses.
-                if changed.is_err() {
-                    activity = None;
-                }
-                continue;
-            }
+            } => continue,
             _ = tokio::time::sleep_until(until) => {
                 // Recheck authority and final inbox state on timeout; never mark read.
                 let (page, gate) =
@@ -130,8 +123,15 @@ async fn decide(
 ) -> Result<(crate::http::mail::Page, activity::Gate)> {
     for _ in 0..DECISION_ATTEMPTS {
         let seen = activity.as_mut().map(activity::Watch::observe);
-        let page = read_page(router, principal, deadline).await?;
+        let page = read_page(router, principal, deadline, after).await?;
         verify_same_binding(&page, &pins.session, &pins.recipient, pins.credential)?;
+        if activity.as_ref().is_some_and(activity::Watch::retired) {
+            // The observed lease retired around the read: decide only from the
+            // current authoritative lease, or refuse when there is none.
+            let lease = external_lease(router, principal, &page)?.ok_or_else(seat_closed)?;
+            *activity = Some(activity::Watch::new(&lease.activity));
+            continue;
+        }
         let has_ids = !page.ids.is_empty();
         let fresh = after.map(se_types::Cursor::as_str) != Some(page.cursor.as_str());
         let gate = match (activity.as_mut(), seen) {
@@ -188,6 +188,13 @@ fn external_lease(
     }
 }
 
+fn seat_closed() -> SeError {
+    SeError::invalid(
+        "mail wait",
+        "this seat's active session was revoked, replaced, or disconnected",
+    )
+}
+
 fn verify_same_binding(
     page: &crate::http::mail::Page,
     session: &SessionId,
@@ -195,10 +202,7 @@ fn verify_same_binding(
     credential: se_store::RecordId,
 ) -> Result<()> {
     if page.session != *session || page.recipient != *recipient || page.credential != credential {
-        return Err(SeError::invalid(
-            "mail wait",
-            "this seat's active session was revoked, replaced, or disconnected",
-        ));
+        return Err(seat_closed());
     }
     Ok(())
 }
@@ -207,7 +211,9 @@ async fn read_page(
     router: &HostedRouter,
     principal: &WaitPrincipal,
     deadline: &Deadline,
+    after: Option<&se_types::Cursor>,
 ) -> Result<crate::http::mail::Page> {
+    let after = after.cloned();
     router.check_open()?;
     let context = router.context.clone();
     match principal {
@@ -218,7 +224,7 @@ async fn read_page(
                 .execution
                 .blocking
                 .run_owned(deadline, move || {
-                    context.mail_page_for_purpose(&secret, purpose)
+                    context.mail_page_for_purpose(&secret, purpose, after.as_ref())
                 })
                 .await
         }
@@ -255,6 +261,7 @@ async fn read_page(
                         &agent,
                         &session_id,
                         credential_id,
+                        after.as_ref(),
                     )
                 })
                 .await

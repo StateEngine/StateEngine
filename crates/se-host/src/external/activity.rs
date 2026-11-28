@@ -97,9 +97,10 @@ impl Watch {
         fresh: bool,
     ) -> Option<Gate> {
         match seen.phase {
-            // A later change is not marked seen, so the waiter wakes for it.
+            // The state moved while the page was read: the page may predate an
+            // ended turn (Busy) or a started one (Idle), so it decides nothing.
+            Phase::Busy | Phase::Idle if self.receiver.has_changed().unwrap_or(true) => None,
             Phase::Busy => Some(Gate::Busy),
-            Phase::Idle if self.receiver.has_changed().unwrap_or(true) => None,
             Phase::Idle => Some(untracked(has_ids, fresh)),
             Phase::TurnEnded => {
                 let Some(sender) = self.sender.upgrade() else {
@@ -127,6 +128,11 @@ impl Watch {
                 Some(if has_ids { Gate::Return } else { Gate::Hold })
             }
         }
+    }
+
+    /// The lease that owned this state retired (revoked, replaced or expired).
+    pub(crate) fn retired(&self) -> bool {
+        self.sender.strong_count() == 0
     }
 
     /// Resolve when the reported state changes. An error means the lease and
