@@ -11,6 +11,8 @@ pub(crate) mod cursor;
 #[cfg(feature = "listener")]
 pub(crate) mod project;
 #[cfg(feature = "listener")]
+pub(crate) mod scan;
+#[cfg(feature = "listener")]
 pub(crate) mod stream;
 
 #[cfg(feature = "listener")]
@@ -28,8 +30,8 @@ pub const DEFAULT_HEARTBEAT_SECS: u64 = 10;
 /// Maximum buffered frames per subscriber before emitting `lagged` and closing.
 pub const MAX_SUBSCRIBER_QUEUE: usize = 256;
 
-/// Minimum caller-requested `max_batch_bytes` (must fit a single control frame).
-pub const MIN_BATCH_BYTES: u32 = 1024;
+/// Minimum caller-requested or negotiated `max_batch_bytes` (fits control and notice frames).
+pub const MIN_BATCH_BYTES: u32 = 4096;
 
 /// Closed event-stream kind filter for `events.subscribe`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
@@ -80,10 +82,13 @@ impl SubscribeRequest {
         if let Some(cursor) = &self.after_cursor
             && (cursor.is_empty() || cursor.len() > 512)
         {
-            return Err(SeError::invalid(
-                "stale_cursor",
-                "a nonempty opaque event-stream cursor of at most 512 bytes",
-            ));
+            return Err(SeError::new(se_types::Detail::CursorInvalid(
+                se_types::details::CursorInvalid {
+                    reason: "stale_cursor: after_cursor must be nonempty and at most 512 bytes"
+                        .into(),
+                    next_step: "reconnect without after_cursor to re-baseline".into(),
+                },
+            )));
         }
         if let Some(filter) = &self.filter
             && filter.len() > 16

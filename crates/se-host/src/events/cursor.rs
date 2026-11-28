@@ -42,48 +42,46 @@ pub(crate) fn decode_and_verify(
     info: &StoreInfo,
     generation: Generation,
 ) -> Result<u64> {
-    let encoded = raw.strip_prefix(CURSOR_PREFIX).ok_or_else(|| {
-        SeError::invalid(
-            "stale_cursor",
-            "an opaque event-stream cursor issued by this host; reconnect without after_cursor to re-baseline",
-        )
-    })?;
-    let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| {
-        SeError::invalid(
-            "stale_cursor",
-            "a valid opaque event-stream cursor; reconnect without after_cursor to re-baseline",
-        )
-    })?;
-    let payload: CursorPayload = serde_json::from_slice(&bytes).map_err(|_| {
-        SeError::invalid(
-            "stale_cursor",
-            "a valid v1 event-stream cursor; reconnect without after_cursor to re-baseline",
-        )
-    })?;
+    let stale = |reason: &str| {
+        SeError::new(se_types::Detail::CursorInvalid(
+            se_types::details::CursorInvalid {
+                reason: format!("stale_cursor: {reason}"),
+                next_step: "reconnect without after_cursor to re-baseline".into(),
+            },
+        ))
+    };
+    let encoded = raw
+        .strip_prefix(CURSOR_PREFIX)
+        .ok_or_else(|| stale("missing evcur_v1_ prefix"))?;
+    let bytes = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| stale("malformed base64url payload"))?;
+    let payload: CursorPayload =
+        serde_json::from_slice(&bytes).map_err(|_| stale("malformed v1 cursor payload"))?;
     if payload.v != CURSOR_VERSION {
-        return Err(SeError::invalid(
-            "stale_cursor",
-            "a v1 event-stream cursor; reconnect without after_cursor to re-baseline",
-        ));
+        return Err(stale("unsupported cursor version"));
     }
     if payload.s != info.id || payload.i != info.incarnation {
-        return Err(SeError::invalid(
-            "stale_cursor",
-            "a cursor matching the current store identity and incarnation (store was reset or restored); reconnect without after_cursor",
+        return Err(stale(
+            "store identity or incarnation changed (store reset or restored)",
         ));
     }
     if payload.g != generation.get() {
-        return Err(SeError::invalid(
-            "generation_changed",
-            "a cursor matching the current host generation; reconnect without after_cursor to re-baseline",
-        ));
+        return Err(SeError::new(se_types::Detail::RuntimeIncompatible(
+            se_types::details::RuntimeIncompatible {
+                subject: "events.subscribe generation_changed".into(),
+                reason: format!(
+                    "cursor generation {} does not match host generation {}",
+                    payload.g,
+                    generation.get()
+                ),
+                next_step: "reconnect without after_cursor to re-baseline against the current host generation".into(),
+            },
+        )));
     }
     let head_seq = info.head.as_ref().map_or(0, |pos| pos.sequence());
     if payload.q > head_seq {
-        return Err(SeError::invalid(
-            "stale_cursor",
-            "a cursor at or behind the current committed store head; reconnect without after_cursor",
-        ));
+        return Err(stale("cursor sequence is ahead of committed store head"));
     }
     Ok(payload.q)
 }
@@ -122,24 +120,24 @@ mod tests {
         let err = decode_and_verify(&cur, &info, gen2)
             .err()
             .ok_or("expected generation_changed")?;
-        assert!(err.to_string().contains("generation_changed"), "{err}");
+        assert_eq!(err.code(), se_types::Code::RuntimeIncompatible);
 
         let restored = test_info("store_00000000-0000-7000-8000-000000000001", 2, 42)?;
         let err = decode_and_verify(&cur, &restored, gen1)
             .err()
             .ok_or("expected stale_cursor on incarnation mismatch")?;
-        assert!(err.to_string().contains("stale_cursor"), "{err}");
+        assert_eq!(err.code(), se_types::Code::CursorInvalid);
 
         let behind = test_info("store_00000000-0000-7000-8000-000000000001", 1, 10)?;
         let err = decode_and_verify(&cur, &behind, gen1)
             .err()
             .ok_or("expected stale_cursor ahead of head")?;
-        assert!(err.to_string().contains("stale_cursor"), "{err}");
+        assert_eq!(err.code(), se_types::Code::CursorInvalid);
 
         let err = decode_and_verify("not-a-cursor", &info, gen1)
             .err()
             .ok_or("expected stale_cursor on malformed")?;
-        assert!(err.to_string().contains("stale_cursor"), "{err}");
+        assert_eq!(err.code(), se_types::Code::CursorInvalid);
         Ok(())
     }
 }

@@ -133,6 +133,18 @@ impl IpcConnection {
         deadline: &Deadline,
         terminal: bool,
     ) -> Result<()> {
+        let max_bytes = self.hello.maximum_reply_bytes.get() as usize;
+        self.reply_part_bounded(response, deadline, max_bytes, terminal)
+            .await
+    }
+    /// Encode once against `min(negotiated, max_bytes)` and write a single stream frame.
+    pub(crate) async fn reply_part_bounded(
+        &mut self,
+        response: &IpcResponse,
+        deadline: &Deadline,
+        max_bytes: usize,
+        terminal: bool,
+    ) -> Result<()> {
         if self.awaiting != Some(response.request_id)
             || response.version != self.hello.version
             || response.generation != self.hello.generation
@@ -142,7 +154,8 @@ impl IpcConnection {
                 "the exact outstanding request ID, API and generation",
             ));
         }
-        let frame = wire::encode_response(response, self.hello.maximum_reply_bytes.get() as usize)?;
+        let limit = (self.hello.maximum_reply_bytes.get() as usize).min(max_bytes);
+        let frame = wire::encode_response(response, limit)?;
         let stream = self
             .stream
             .take()

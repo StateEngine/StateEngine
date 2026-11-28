@@ -58,14 +58,56 @@ pub(crate) fn event_kinds_for_filter(filter: Option<&[EventStreamKind]>) -> Vec<
     out
 }
 
+/// Exact session binding for `SubscribePrincipal::Session` callers.
+///
+/// Session-owned lifecycle events (`AgentState` process events, `SessionHold`,
+/// and `SessionRevoke`) are strictly gated to the authenticated session or
+/// credential so events from another session of the same agent never leak.
+/// Agent-scoped notices (`MailNotice`, `Assignment`, `Decision`) remain visible
+/// across that agent's sessions per `Visibility::SelfOnly(agent)`.
+pub(crate) struct SessionScope<'a> {
+    pub(crate) agent: &'a se_types::AgentId,
+    pub(crate) session: &'a se_types::SessionId,
+    pub(crate) credential: se_store::RecordId,
+}
+
+fn session_scope_allows(event: &StoredEvent, scope: &SessionScope<'_>) -> bool {
+    match &event.body {
+        EventBody::ProcessRegistered { identity, .. }
+        | EventBody::ProcessTransition { identity, .. } => {
+            identity.session.as_ref() == Some(scope.session)
+        }
+        EventBody::AgentRetired {
+            agent,
+            final_session,
+            ..
+        } => {
+            agent == scope.agent
+                && (final_session.is_none() || final_session.as_ref() == Some(scope.session))
+        }
+        EventBody::SessionPrepared { session, .. }
+        | EventBody::SessionActivated { session, .. }
+        | EventBody::SessionEnded { session, .. }
+        | EventBody::SessionRevoked { session, .. } => session == scope.session,
+        EventBody::CredentialRevoked { credential, .. } => *credential == scope.credential,
+        _ => true,
+    }
+}
+
 /// Project one authorized `StoredEvent` into an `EventPushFrame` if its kind
-/// belongs to the stream catalogue (and passes `filter`).
+/// belongs to the stream catalogue (and passes `filter` and exact-session scope).
 pub(crate) fn project_event(
     event: &StoredEvent,
     info: &StoreInfo,
     generation: Generation,
     filter: Option<&[EventStreamKind]>,
+    session_scope: Option<&SessionScope<'_>>,
 ) -> Result<Option<EventPushFrame>> {
+    if let Some(scope) = session_scope
+        && !session_scope_allows(event, scope)
+    {
+        return Ok(None);
+    }
     let project_id = match &event.header.scope {
         Scope::Project(id) => Some(id.as_str()),
         Scope::Registry => None,

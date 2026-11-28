@@ -6,7 +6,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -26,6 +26,8 @@ pub(crate) struct Waits {
     pub(crate) commits: tokio::sync::watch::Sender<u64>,
     maximum: usize,
     sessions: Mutex<BTreeMap<(ProjectId, SessionId), Arc<Signal>>>,
+    next_subscription_id: AtomicU64,
+    subscriptions: Mutex<BTreeMap<u64, SubscriptionEntry>>,
     // Cancelled predecessors may still be encoding/closing their connection.
     // Bound those retained resources separately from the live session map.
     retained: Arc<Semaphore>,
@@ -37,6 +39,8 @@ pub(crate) struct Waits {
         )>,
     >,
 }
+type SubscriptionEntry = (ProjectId, SessionId, Arc<Signal>);
+
 pub(crate) struct Signal {
     pub(crate) changed: Notify,
     pub(crate) cancelled: AtomicBool,
@@ -46,6 +50,12 @@ pub(crate) struct Signal {
 pub(crate) struct Wait {
     registry: Arc<Waits>,
     key: (ProjectId, SessionId),
+    pub(crate) signal: Arc<Signal>,
+    _permit: OwnedSemaphorePermit,
+}
+pub(crate) struct SubscriptionWait {
+    registry: Arc<Waits>,
+    id: u64,
     pub(crate) signal: Arc<Signal>,
     _permit: OwnedSemaphorePermit,
 }
@@ -131,6 +141,8 @@ impl Waits {
             commits: tokio::sync::watch::channel(0).0,
             maximum,
             sessions: Mutex::new(BTreeMap::new()),
+            next_subscription_id: AtomicU64::new(1),
+            subscriptions: Mutex::new(BTreeMap::new()),
             retained: Arc::new(Semaphore::new(maximum.saturating_mul(2))),
             closed: AtomicBool::new(false),
             native: Mutex::new(Vec::new()),
@@ -174,6 +186,50 @@ impl Waits {
         Ok(Wait {
             registry: Arc::clone(self),
             key,
+            signal,
+            _permit: permit,
+        })
+    }
+    /// Register an `events.subscribe` watcher without displacing a parked
+    /// `se msg wait` / HTTP mail wait for the same `(project, session)`.
+    pub(crate) fn register_subscription(
+        self: &Arc<Self>,
+        session: SessionId,
+        recipient: crate::runtime::MailRecipient,
+        credential: se_store::RecordId,
+    ) -> Result<SubscriptionWait> {
+        let permit = Arc::clone(&self.retained)
+            .try_acquire_owned()
+            .map_err(|_| {
+                SeError::invalid(
+                    "event subscription capacity",
+                    "retry after an earlier stream closes",
+                )
+            })?;
+        let mut subscriptions = self.subscriptions.lock().map_err(|_| poisoned())?;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(SeError::invalid(
+                "event subscription",
+                "a running host before shutdown",
+            ));
+        }
+        if subscriptions.len() >= self.maximum {
+            return Err(SeError::invalid(
+                "event subscription capacity",
+                "retry after an earlier stream closes",
+            ));
+        }
+        let signal = Arc::new(Signal {
+            changed: Notify::new(),
+            cancelled: AtomicBool::new(false),
+            recipient: recipient.clone(),
+            credential,
+        });
+        let id = self.next_subscription_id.fetch_add(1, Ordering::Relaxed);
+        subscriptions.insert(id, (recipient.project, session, Arc::clone(&signal)));
+        Ok(SubscriptionWait {
+            registry: Arc::clone(self),
+            id,
             signal,
             _permit: permit,
         })
@@ -248,6 +304,10 @@ impl Waits {
             signal.cancelled.store(true, Ordering::Release);
             signal.changed.notify_one();
         }
+        for (_, _, signal) in self.subscriptions.lock().map_err(|_| poisoned())?.values() {
+            signal.cancelled.store(true, Ordering::Release);
+            signal.changed.notify_one();
+        }
         for (_, signal) in self.native.lock().map_err(|_| poisoned())?.iter() {
             if let Some(signal) = signal.upgrade() {
                 signal.wake();
@@ -257,6 +317,12 @@ impl Waits {
     }
     pub(crate) fn interrupt(&self, session: &SessionId) -> Result<()> {
         for ((_, found), signal) in self.sessions.lock().map_err(|_| poisoned())?.iter() {
+            if found == session {
+                signal.cancelled.store(true, Ordering::Release);
+                signal.changed.notify_one();
+            }
+        }
+        for (_, found, signal) in self.subscriptions.lock().map_err(|_| poisoned())?.values() {
             if found == session {
                 signal.cancelled.store(true, Ordering::Release);
                 signal.changed.notify_one();
@@ -284,6 +350,22 @@ impl Waits {
                 signal.changed.notify_one();
             }
         }
+        for (project, session, signal) in
+            self.subscriptions.lock().map_err(|_| poisoned())?.values()
+        {
+            if changes
+                .sessions
+                .iter()
+                .any(|(found_project, found)| found_project == project && found == session)
+                || changes.credentials.iter().any(|(cred_project, found)| {
+                    cred_project == &signal.recipient.project && *found == signal.credential
+                })
+            {
+                self.bells.revoke(session)?;
+                signal.cancelled.store(true, Ordering::Release);
+                signal.changed.notify_one();
+            }
+        }
         Ok(())
     }
 }
@@ -295,6 +377,13 @@ impl Drop for Wait {
                 .is_some_and(|signal| Arc::ptr_eq(signal, &self.signal))
         {
             sessions.remove(&self.key);
+        }
+    }
+}
+impl Drop for SubscriptionWait {
+    fn drop(&mut self) {
+        if let Ok(mut subscriptions) = self.registry.subscriptions.lock() {
+            subscriptions.remove(&self.id);
         }
     }
 }
@@ -518,6 +607,24 @@ mod tests {
         );
         drop(last);
         assert_eq!(registry.retained.available_permits(), 2);
+        Ok(())
+    }
+    #[test]
+    fn subscriptions_do_not_displace_parked_mail_wait_and_fence_on_revoke() -> Result<()> {
+        let registry = Waits::new(2);
+        let session = SessionId::from_parts(1, [7; 10])?;
+        let cred = credential(1)?;
+        let mail_wait = registry.register(session.clone(), recipient()?, cred)?;
+        let sub_wait = registry.register_subscription(session.clone(), recipient()?, cred)?;
+        assert!(!mail_wait.signal.cancelled.load(Ordering::Acquire));
+        assert!(!sub_wait.signal.cancelled.load(Ordering::Acquire));
+        registry.revoked(&crate::runtime::mail::Revocations {
+            sessions: vec![(recipient()?.project, session)],
+            credentials: Vec::new(),
+        })?;
+        assert!(sub_wait.signal.cancelled.load(Ordering::Acquire));
+        drop(sub_wait);
+        drop(mail_wait);
         Ok(())
     }
 }

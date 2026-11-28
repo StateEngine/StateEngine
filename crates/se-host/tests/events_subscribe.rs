@@ -409,7 +409,7 @@ fn assert_stale_cursor_refused(host: &LiveHost) -> Result<(), Box<dyn std::error
         )
         .err()
         .ok_or("expected stale_cursor refusal")?;
-    assert!(err.to_string().contains("stale_cursor"), "{err}");
+    assert_eq!(err.code(), se_types::Code::CursorInvalid, "{err}");
     Ok(())
 }
 
@@ -484,9 +484,9 @@ fn external_session_subscribe_enforces_scope_and_closes_on_revoke()
     ready_rx.recv_timeout(Duration::from_secs(5))?;
     host.revoke_external_seat_a()?;
     let end = reader.join().map_err(|_| "reader panicked")?;
-    assert!(
-        end.is_err(),
-        "expected revoked stream to terminate with error"
-    );
+    let err = end
+        .err()
+        .ok_or("expected revoked stream to terminate with error")?;
+    assert_eq!(err.code(), se_types::Code::CapabilityInvalid, "{err}");
     Ok(())
 }

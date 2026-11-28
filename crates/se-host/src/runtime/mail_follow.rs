@@ -201,18 +201,10 @@ impl AdmittedExchange {
             generation: self.connection.connection.negotiated().generation,
             result,
         };
-        let limit = (self
-            .connection
-            .connection
-            .negotiated()
-            .maximum_reply_bytes
-            .get() as usize)
-            .min(max_bytes);
-        crate::client::wire::encode_response(&response, limit)?;
         let deadline = super::serve::options(Duration::from_secs(5))?;
         self.connection
             .connection
-            .reply_part(&response, &deadline, terminal)
+            .reply_part_bounded(&response, &deadline, max_bytes, terminal)
             .await
     }
 }

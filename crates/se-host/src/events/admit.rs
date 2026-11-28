@@ -73,6 +73,16 @@ pub(crate) fn admit_subscribe(
     let max_batch_bytes = request
         .max_batch_bytes
         .map_or(negotiated_max_bytes, |req| req.min(negotiated_max_bytes));
+    if max_batch_bytes < super::MIN_BATCH_BYTES {
+        return Err(SeError::invalid(
+            "events.subscribe max_batch_bytes",
+            &format!(
+                "an effective byte limit of at least {} (negotiated {})",
+                super::MIN_BATCH_BYTES,
+                negotiated_max_bytes
+            ),
+        ));
+    }
     let filter = request.filter.map(|mut kinds| {
         kinds.sort();
         kinds.dedup();

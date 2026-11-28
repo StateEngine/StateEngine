@@ -106,6 +106,16 @@ impl BlockingConnection {
             )?;
             match response.result {
                 crate::IpcResult::Output(output) => {
+                    if output.schema != crate::events::EVENT_STREAM_SCHEMA {
+                        return Err(se_core::scope::unreadable(
+                            "event stream schema",
+                            &format!(
+                                "expected {}, got {}",
+                                crate::events::EVENT_STREAM_SCHEMA,
+                                output.schema
+                            ),
+                        ));
+                    }
                     let parsed: crate::events::SubscribeFrame =
                         serde_json::from_value(output.value).map_err(|e| {
                             se_core::scope::unreadable("event stream frame", &e.to_string())
