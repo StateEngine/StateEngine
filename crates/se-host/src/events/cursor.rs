@@ -1,7 +1,8 @@
-//! Opaque event-stream cursor bound to `(store_id, incarnation, generation, event_seq)`.
-//! Any malformed cursor, store/incarnation reset, generation change, or out-of-range
-//! sequence returns a typed `stale_cursor` or `generation_changed` refusal rather than
-//! silently dropping or splicing events.
+//! Opaque event-stream cursor bound to `(store_id, incarnation, event_seq)`.
+//! Cursors survive host restarts because events are durable store rows; any
+//! malformed cursor, store/incarnation reset or restore, or ahead-of-head
+//! sequence returns a typed `Code::CursorInvalid` refusal rather than silently
+//! dropping or splicing events.
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use se_store::StoreInfo;
 use se_types::{Generation, Result, SeError, StoreId};
@@ -66,19 +67,7 @@ pub(crate) fn decode_and_verify(
             "store identity or incarnation changed (store reset or restored)",
         ));
     }
-    if payload.g != generation.get() {
-        return Err(SeError::new(se_types::Detail::RuntimeIncompatible(
-            se_types::details::RuntimeIncompatible {
-                subject: "events.subscribe generation_changed".into(),
-                reason: format!(
-                    "cursor generation {} does not match host generation {}",
-                    payload.g,
-                    generation.get()
-                ),
-                next_step: "reconnect without after_cursor to re-baseline against the current host generation".into(),
-            },
-        )));
-    }
+    let _ = generation;
     let head_seq = info.head.as_ref().map_or(0, |pos| pos.sequence());
     if payload.q > head_seq {
         return Err(stale("cursor sequence is ahead of committed store head"));
@@ -110,17 +99,15 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_and_mismatch_refusals() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn round_trip_survives_restart_and_refuses_mismatches()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let info = test_info("store_00000000-0000-7000-8000-000000000001", 1, 42)?;
         let gen1 = Generation::new(1)?;
         let gen2 = Generation::new(2)?;
         let cur = encode(&info, gen1, 17)?;
         assert_eq!(decode_and_verify(&cur, &info, gen1)?, 17);
-
-        let err = decode_and_verify(&cur, &info, gen2)
-            .err()
-            .ok_or("expected generation_changed")?;
-        assert_eq!(err.code(), se_types::Code::RuntimeIncompatible);
+        // Host restart (new generation on same store + incarnation) keeps cursor valid.
+        assert_eq!(decode_and_verify(&cur, &info, gen2)?, 17);
 
         let restored = test_info("store_00000000-0000-7000-8000-000000000001", 2, 42)?;
         let err = decode_and_verify(&cur, &restored, gen1)

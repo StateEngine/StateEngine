@@ -292,8 +292,8 @@ When `ServerHello.capabilities` includes `"events.subscribe"`, an authenticated 
   - **Event frame:** `{ "cursor": "evcur_v1_...", "event_id": "ev_...", "kind": "<kind>", "occurred_at_us": i64, "payload": { ... } }`, where `kind` is one of `"mail.notice"`, `"agent.state"`, `"assignment"`, `"decision"`, `"session.hold"`, or `"session.revoke"`.
     - **Erasure invariant:** `"mail.notice"` and `"decision"` payloads carry IDs, routing metadata, and body-free dedupe digests only—never message or decision text bodies.
   - **Heartbeat control frame:** `{ "kind": "heartbeat", "head_cursor": "evcur_v1_..." }` emitted immediately when subscribing without `after_cursor` and periodically (default 10s) for liveness, never advancing `head_cursor` ahead of covered/delivered replay.
-  - **Lagged control frame (terminal):** `{ "kind": "lagged", "missed_through_cursor": "evcur_v1_..." }` emitted when the per-subscriber queue (256 frames) overflows, after which the host closes the stream.
-- **Cursor verification & termination:** Cursors (`evcur_v1_...`) are bound to `(store_id, incarnation, generation, event_seq)`. Malformed, reset/restored, or ahead-of-head cursors refuse with `code = "cursor-invalid"`; host generation changes refuse with `code = "runtime-incompatible"`. Session/seat revocation fences queued frames and terminates with `code = "capability-invalid"` (or closes the connection cleanly if a frame write was interrupted mid-frame).
+  - **Lagged control frame (terminal):** `{ "kind": "lagged", "missed_through_cursor": "evcur_v1_..." }` reserved for unrecoverable retention/compaction gaps (backlog catch-up applies bounded channel backpressure instead of disconnecting).
+- **Cursor verification & termination:** Cursors (`evcur_v1_...`) are bound to `(store_id, incarnation, event_seq)` and survive host restarts cleanly across the same store incarnation. Malformed, reset/restored, or ahead-of-head cursors refuse with `code = "cursor-invalid"`. Session/seat revocation fences queued frames and terminates with `code = "capability-invalid"` (or closes the connection cleanly if a frame write was interrupted mid-frame).
 
 ---
 

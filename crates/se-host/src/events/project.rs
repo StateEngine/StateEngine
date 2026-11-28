@@ -454,7 +454,7 @@ fn project_session(
             EventStreamKind::SessionRevoke,
             json!({
                 "project_id": project_id,
-                "credential_id": format!("{credential:?}"),
+                "credential_id": credential,
                 "state": "revoked",
             }),
         )),

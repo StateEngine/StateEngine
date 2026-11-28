@@ -1,22 +1,23 @@
 //! Bounded store scanning, multi-project pagination, and cursor/authority
 //! verification for `events.subscribe`.
 //!
-//! Every scan captures a common upper watermark (`upper_seq`) from `reader.info()`
-//! so concurrent commits landing between per-project snapshots can never advance
-//! the stream cursor past unread projects. Cross-project buffering is strictly
-//! bounded by both event count and estimated byte budget.
+//! Every scan captures `StoreInfo` (`upper_seq`) and the scoped project list
+//! from the SAME pinned SQLite snapshot so concurrent commits landing between
+//! per-project snapshots can never advance the stream cursor past unread
+//! projects. Cross-project buffering is strictly bounded by both event count
+//! and estimated byte budget.
 use super::{
-    EventPushFrame, EventStreamKind,
+    EventPushFrame,
     admit::{AdmittedSubscribe, SubscribePrincipal},
     cursor, project,
 };
-use crate::runtime::HostedRouter;
+use crate::runtime::{HostedRouter, admission::AdmissionContext};
 use se_core::store_error::store_error;
 use se_store::{
-    Actor, Admission, HistoryDirection, HistoryQuery, ReadScope, ReadStore, Scope, Snapshot,
-    StoreInfo, StorePosition, TranscriptFilter, Visibility,
+    Actor, Admission, EventKind, HistoryDirection, HistoryQuery, ReadScope, ReadStore, Scope,
+    Snapshot, StoreInfo, StorePosition, TranscriptFilter, Visibility,
 };
-use se_types::{AgentId, ProjectId, Result};
+use se_types::{ProjectId, Result};
 use std::{sync::Arc, time::Duration};
 
 const SCAN_LIMIT: u32 = 128;
@@ -29,20 +30,21 @@ pub(crate) struct ScanOutcome {
     pub(crate) frames: Vec<EventPushFrame>,
     pub(crate) next_seq: u64,
     pub(crate) safe_cursor: String,
-    pub(crate) missed_cursor: String,
     pub(crate) has_more: bool,
 }
 
-enum ScanPrincipal {
-    Owner(se_types::HumanId),
-    Session {
-        secret: Arc<se_types::Secret>,
-        purpose: &'static str,
-        project: ProjectId,
-        agent: AgentId,
-        session: se_types::SessionId,
-        credential: se_store::RecordId,
-    },
+struct ProjectScan {
+    items: Vec<(u64, usize, EventPushFrame)>,
+    truncated_at: Option<u64>,
+    saw_newer: bool,
+}
+
+struct ScanWindow<'a> {
+    context: &'a AdmissionContext,
+    sub: &'a AdmittedSubscribe,
+    kinds: &'a [EventKind],
+    since: Option<&'a StorePosition>,
+    info: &'a StoreInfo,
 }
 
 pub(crate) async fn resolve_start_cursor(
@@ -67,7 +69,7 @@ pub(crate) async fn resolve_start_cursor(
                     Some(raw) => cursor::decode_and_verify(raw, &info, context.generation)?,
                     None => head_seq,
                 };
-                // Initialize heartbeat at start_seq (the caller's input cursor on replay,
+                // Initialize heartbeat at start_seq (caller's input cursor on replay,
                 // or head_seq on fresh tail) so heartbeats never advance ahead of coverage.
                 let initial_cursor = cursor::encode(&info, context.generation, start_seq)?;
                 Ok((start_seq, initial_cursor))
@@ -112,66 +114,33 @@ pub(crate) async fn verify_live_authority(
 
 pub(crate) async fn scan_events(
     router: &HostedRouter,
-    sub: &AdmittedSubscribe,
+    sub: Arc<AdmittedSubscribe>,
     after_seq: u64,
     max_items: usize,
 ) -> Result<ScanOutcome> {
     router.check_open()?;
     let context = router.context.clone();
-    let project_filter = sub.project_filter.clone();
-    let agent_filter = sub.agent_filter.clone();
-    let filter = sub.filter.clone();
-    let principal = match &sub.principal {
-        SubscribePrincipal::Owner { human } => ScanPrincipal::Owner(human.clone()),
-        SubscribePrincipal::Session {
-            secret,
-            purpose,
-            project,
-            agent,
-            session,
-            credential,
-        } => ScanPrincipal::Session {
-            secret: Arc::clone(secret),
-            purpose,
-            project: project.clone(),
-            agent: agent.clone(),
-            session: session.clone(),
-            credential: *credential,
-        },
-    };
     let deadline = crate::runtime::serve::options(Duration::from_secs(SCAN_DEADLINE_SECS))?;
     router
         .execution
         .blocking
         .run_owned(&deadline, move || {
-            scan_events_blocking(
-                &context,
-                &principal,
-                project_filter.as_ref(),
-                agent_filter.as_ref(),
-                filter.as_deref(),
-                after_seq,
-                max_items,
-            )
+            scan_events_blocking(&context, &sub, after_seq, max_items)
         })
         .await
 }
 
-#[allow(clippy::too_many_arguments)]
 fn scan_events_blocking(
-    context: &crate::runtime::admission::AdmissionContext,
-    principal: &ScanPrincipal,
-    project_filter: Option<&ProjectId>,
-    agent_filter: Option<&AgentId>,
-    filter: Option<&[EventStreamKind]>,
+    context: &AdmissionContext,
+    sub: &AdmittedSubscribe,
     after_seq: u64,
     max_items: usize,
 ) -> Result<ScanOutcome> {
     let phase = context.reads.read_phase().map_err(|e| store_error(&e))?;
-    if let Err(err) = verify_scan_phase(context, principal, &phase) {
+    if let Err(err) = verify_scan_phase(context, &sub.principal, &phase) {
         return crate::runtime::executor::close_read(Err(err), phase.close());
     }
-    let (info, projects) = resolve_pinned_inventory(context, phase, principal, project_filter)?;
+    let (info, projects) = resolve_pinned_inventory(context, phase, sub)?;
 
     let upper_seq = info.head.as_ref().map_or(0, StorePosition::sequence);
     let upper_cursor = cursor::encode(&info, context.generation, upper_seq)?;
@@ -179,19 +148,25 @@ fn scan_events_blocking(
         return Ok(ScanOutcome {
             frames: Vec::new(),
             next_seq: upper_seq,
-            safe_cursor: upper_cursor.clone(),
-            missed_cursor: upper_cursor,
+            safe_cursor: upper_cursor,
             has_more: false,
         });
     }
 
-    let kinds = project::event_kinds_for_filter(filter);
+    let kinds = project::event_kinds_for_filter(sub.filter.as_deref());
     let since = (after_seq > 0)
         .then(|| {
             StorePosition::new_internal(info.id.clone(), info.incarnation, after_seq)
                 .map_err(|e| store_error(&e))
         })
         .transpose()?;
+    let window = ScanWindow {
+        context,
+        sub,
+        kinds: &kinds,
+        since: since.as_ref(),
+        info: &info,
+    };
 
     let max_items = max_items.max(1);
     let max_bytes = SCAN_BYTES as usize;
@@ -202,17 +177,7 @@ fn scan_events_blocking(
     let mut saw_newer = false;
 
     for proj in &projects {
-        let scan = read_project_events(
-            context,
-            principal,
-            proj,
-            agent_filter,
-            &kinds,
-            filter,
-            since.as_ref(),
-            effective_upper_seq,
-            &info,
-        )?;
+        let scan = read_project_events(&window, proj, effective_upper_seq)?;
         saw_newer |= scan.saw_newer;
         if let Some(limit_seq) = scan.truncated_at {
             effective_upper_seq = effective_upper_seq.min(limit_seq);
@@ -247,26 +212,24 @@ fn scan_events_blocking(
             frames: collected.into_iter().map(|(_, _, f)| f).collect(),
             next_seq: frontier,
             safe_cursor,
-            missed_cursor: upper_cursor,
             has_more: true,
         });
     }
     Ok(ScanOutcome {
         frames: collected.into_iter().map(|(_, _, f)| f).collect(),
         next_seq: upper_seq,
-        safe_cursor: upper_cursor.clone(),
-        missed_cursor: upper_cursor,
+        safe_cursor: upper_cursor,
         has_more: saw_newer,
     })
 }
 
 fn verify_scan_phase(
-    context: &crate::runtime::admission::AdmissionContext,
-    principal: &ScanPrincipal,
+    context: &AdmissionContext,
+    principal: &SubscribePrincipal,
     phase: &se_store::ReadPhase,
 ) -> Result<()> {
     context.check_generation(phase)?;
-    if let ScanPrincipal::Session {
+    if let SubscribePrincipal::Session {
         secret, purpose, ..
     } = principal
     {
@@ -307,13 +270,12 @@ fn prune_collected_budget(
 /// from the SAME pinned SQLite snapshot so newly registered projects or commits
 /// can never fall behind `upper_seq` while missing from the inventory.
 fn resolve_pinned_inventory(
-    context: &crate::runtime::admission::AdmissionContext,
+    context: &AdmissionContext,
     phase: se_store::ReadPhase,
-    principal: &ScanPrincipal,
-    project_filter: Option<&ProjectId>,
+    sub: &AdmittedSubscribe,
 ) -> Result<(StoreInfo, Vec<ProjectId>)> {
-    let scope = match (principal, project_filter) {
-        (ScanPrincipal::Owner(human), Some(project)) => ReadScope {
+    let scope = match (&sub.principal, sub.project_filter.as_ref()) {
+        (SubscribePrincipal::Owner { human }, Some(project)) => ReadScope {
             admission: Admission {
                 scope: Scope::Project(project.clone()),
                 actor: Actor::Human(human.clone()),
@@ -322,7 +284,7 @@ fn resolve_pinned_inventory(
             },
             visibility: Visibility::Owner,
         },
-        (ScanPrincipal::Owner(human), None) => ReadScope {
+        (SubscribePrincipal::Owner { human }, None) => ReadScope {
             admission: Admission {
                 scope: Scope::Registry,
                 actor: Actor::Human(human.clone()),
@@ -332,7 +294,7 @@ fn resolve_pinned_inventory(
             visibility: Visibility::Owner,
         },
         (
-            ScanPrincipal::Session {
+            SubscribePrincipal::Session {
                 project,
                 agent,
                 session,
@@ -351,10 +313,10 @@ fn resolve_pinned_inventory(
     };
     let mut snap = phase.into_snapshot(scope).map_err(|e| store_error(&e))?;
     let info = snap.info();
-    let list = match (principal, project_filter) {
+    let list = match (&sub.principal, sub.project_filter.as_ref()) {
         (_, Some(project)) => Ok(vec![project.clone()]),
-        (ScanPrincipal::Session { project, .. }, None) => Ok(vec![project.clone()]),
-        (ScanPrincipal::Owner(_), None) => enumerate_all_projects(&mut snap),
+        (SubscribePrincipal::Session { project, .. }, None) => Ok(vec![project.clone()]),
+        (SubscribePrincipal::Owner { .. }, None) => enumerate_all_projects(&mut snap),
     };
     let projects = crate::runtime::executor::close_read(list, snap.close())?;
     Ok((info, projects))
@@ -392,39 +354,30 @@ fn enumerate_all_projects(snap: &mut se_store::SqliteSnapshot) -> Result<Vec<Pro
     ))
 }
 
-struct ProjectScan {
-    items: Vec<(u64, usize, EventPushFrame)>,
-    truncated_at: Option<u64>,
-    saw_newer: bool,
-}
-
-#[allow(clippy::too_many_arguments)]
 fn read_project_events(
-    context: &crate::runtime::admission::AdmissionContext,
-    principal: &ScanPrincipal,
+    window: &ScanWindow<'_>,
     project_id: &ProjectId,
-    agent_filter: Option<&AgentId>,
-    kinds: &[se_store::EventKind],
-    filter: Option<&[EventStreamKind]>,
-    since: Option<&StorePosition>,
     upper_seq: u64,
-    info: &StoreInfo,
 ) -> Result<ProjectScan> {
-    let p_phase = context.reads.read_phase().map_err(|e| store_error(&e))?;
-    let (read_scope, session_scope) = match principal {
-        ScanPrincipal::Owner(human) => (
+    let p_phase = window
+        .context
+        .reads
+        .read_phase()
+        .map_err(|e| store_error(&e))?;
+    let (read_scope, session_scope) = match &window.sub.principal {
+        SubscribePrincipal::Owner { human } => (
             ReadScope {
                 admission: Admission {
                     scope: Scope::Project(project_id.clone()),
                     actor: Actor::Human(human.clone()),
                     session: None,
-                    generation: context.generation.get(),
+                    generation: window.context.generation.get(),
                 },
                 visibility: Visibility::Owner,
             },
             None,
         ),
-        ScanPrincipal::Session {
+        SubscribePrincipal::Session {
             agent,
             session,
             credential,
@@ -435,7 +388,7 @@ fn read_project_events(
                     scope: Scope::Project(project_id.clone()),
                     actor: Actor::Agent(agent.clone()),
                     session: Some(session.clone()),
-                    generation: context.generation.get(),
+                    generation: window.context.generation.get(),
                 },
                 visibility: Visibility::SelfOnly(agent.clone()),
             },
@@ -450,12 +403,12 @@ fn read_project_events(
         .into_snapshot(read_scope)
         .map_err(|e| store_error(&e))?;
     let query = HistoryQuery {
-        agent: agent_filter.cloned(),
+        agent: window.sub.agent_filter.clone(),
         session: None,
-        kinds: kinds.to_vec(),
+        kinds: window.kinds.to_vec(),
         families: Vec::new(),
         transcript: TranscriptFilter::All,
-        since: since.cloned(),
+        since: window.since.cloned(),
         direction: HistoryDirection::OldestFirst,
     };
     let budget = se_store::read_budget(
@@ -478,9 +431,9 @@ fn read_project_events(
         last_seq = Some(seq);
         if let Some(frame) = project::project_event(
             event,
-            info,
-            context.generation,
-            filter,
+            window.info,
+            window.context.generation,
+            window.sub.filter.as_deref(),
             session_scope.as_ref(),
         )? {
             let est_bytes = frame.cursor.len()
