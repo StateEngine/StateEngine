@@ -43,7 +43,7 @@ flowchart LR
 ```
 
 > [!NOTE]
-> **Early alpha (`v0.1.2`).** StateEngine is pre-1.0: commands and saved state can change between releases. Start on a backed-up repo and [report issues on GitHub](https://github.com/StateEngine/StateEngine/issues).
+> **Early alpha (`v0.1.3`).** StateEngine is pre-1.0: commands and saved state can change between releases. Start on a backed-up repo and [report issues on GitHub](https://github.com/StateEngine/StateEngine/issues).
 
 ---
 
