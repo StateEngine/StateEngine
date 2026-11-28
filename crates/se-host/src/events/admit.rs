@@ -120,24 +120,28 @@ pub(crate) fn admit_subscribe(
             PresentedAuthority::Session(secret) => admit_session_subscribe(
                 context,
                 &phase,
-                secret,
-                SESSION_CAPABILITY,
-                request.project_id,
-                request.agent_id,
-                request.after_cursor,
-                filter,
-                max_batch_bytes,
+                SessionAdmit {
+                    secret,
+                    purpose: SESSION_CAPABILITY,
+                    requested_project: request.project_id,
+                    requested_agent: request.agent_id,
+                    after_cursor: request.after_cursor,
+                    filter,
+                    max_batch_bytes,
+                },
             ),
             PresentedAuthority::ExternalSession(secret) => admit_session_subscribe(
                 context,
                 &phase,
-                secret,
-                EXTERNAL_SESSION_CAPABILITY,
-                request.project_id,
-                request.agent_id,
-                request.after_cursor,
-                filter,
-                max_batch_bytes,
+                SessionAdmit {
+                    secret,
+                    purpose: EXTERNAL_SESSION_CAPABILITY,
+                    requested_project: request.project_id,
+                    requested_agent: request.agent_id,
+                    after_cursor: request.after_cursor,
+                    filter,
+                    max_batch_bytes,
+                },
             ),
             _ => Err(SeError::invalid(
                 "events.subscribe authority",
@@ -148,18 +152,30 @@ pub(crate) fn admit_subscribe(
     crate::runtime::executor::close_read(res, phase.close())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn admit_session_subscribe(
-    context: &AdmissionContext,
-    phase: &se_store::ReadPhase,
-    secret: &Secret,
+struct SessionAdmit<'a> {
+    secret: &'a Secret,
     purpose: &'static str,
     requested_project: Option<ProjectId>,
     requested_agent: Option<AgentId>,
     after_cursor: Option<String>,
     filter: Option<Vec<EventStreamKind>>,
     max_batch_bytes: u32,
+}
+
+fn admit_session_subscribe(
+    context: &AdmissionContext,
+    phase: &se_store::ReadPhase,
+    params: SessionAdmit<'_>,
 ) -> Result<AdmittedSubscribe> {
+    let SessionAdmit {
+        secret,
+        purpose,
+        requested_project,
+        requested_agent,
+        after_cursor,
+        filter,
+        max_batch_bytes,
+    } = params;
     let secret = Arc::new(Secret::new(secret.expose().to_vec())?);
     let admission = if purpose == EXTERNAL_SESSION_CAPABILITY {
         context.external_session(phase, &secret)?

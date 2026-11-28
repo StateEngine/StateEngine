@@ -39,12 +39,8 @@ pub(crate) fn encode(info: &StoreInfo, generation: Generation, event_seq: u64) -
 }
 
 /// Decode and strictly verify `after_cursor` against the current store identity,
-/// incarnation, host generation, and committed head sequence.
-pub(crate) fn decode_and_verify(
-    raw: &str,
-    info: &StoreInfo,
-    generation: Generation,
-) -> Result<u64> {
+/// incarnation, and committed head sequence.
+pub(crate) fn decode_and_verify(raw: &str, info: &StoreInfo) -> Result<u64> {
     let stale = |reason: &str| {
         SeError::new(se_types::Detail::CursorInvalid(
             se_types::details::CursorInvalid {
@@ -69,7 +65,6 @@ pub(crate) fn decode_and_verify(
             "store identity or incarnation changed (store reset or restored)",
         ));
     }
-    let _ = generation;
     let head_seq = info.head.as_ref().map_or(0, |pos| pos.sequence());
     if payload.q > head_seq {
         return Err(stale("cursor sequence is ahead of committed store head"));
@@ -105,25 +100,22 @@ mod tests {
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let info = test_info("store_00000000-0000-7000-8000-000000000001", 1, 42)?;
         let gen1 = Generation::new(1)?;
-        let gen2 = Generation::new(2)?;
         let cur = encode(&info, gen1, 17)?;
-        assert_eq!(decode_and_verify(&cur, &info, gen1)?, 17);
-        // Host restart (new generation on same store + incarnation) keeps cursor valid.
-        assert_eq!(decode_and_verify(&cur, &info, gen2)?, 17);
+        assert_eq!(decode_and_verify(&cur, &info)?, 17);
 
         let restored = test_info("store_00000000-0000-7000-8000-000000000001", 2, 42)?;
-        let err = decode_and_verify(&cur, &restored, gen1)
+        let err = decode_and_verify(&cur, &restored)
             .err()
             .ok_or("expected stale_cursor on incarnation mismatch")?;
         assert_eq!(err.code(), se_types::Code::CursorInvalid);
 
         let behind = test_info("store_00000000-0000-7000-8000-000000000001", 1, 10)?;
-        let err = decode_and_verify(&cur, &behind, gen1)
+        let err = decode_and_verify(&cur, &behind)
             .err()
             .ok_or("expected stale_cursor ahead of head")?;
         assert_eq!(err.code(), se_types::Code::CursorInvalid);
 
-        let err = decode_and_verify("not-a-cursor", &info, gen1)
+        let err = decode_and_verify("not-a-cursor", &info)
             .err()
             .ok_or("expected stale_cursor on malformed")?;
         assert_eq!(err.code(), se_types::Code::CursorInvalid);

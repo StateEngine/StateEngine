@@ -66,7 +66,7 @@ pub(crate) async fn resolve_start_cursor(
                 let info = reader.info().map_err(|e| store_error(&e))?;
                 let head_seq = info.head.as_ref().map_or(0, StorePosition::sequence);
                 let start_seq = match after.as_deref() {
-                    Some(raw) => cursor::decode_and_verify(raw, &info, context.generation)?,
+                    Some(raw) => cursor::decode_and_verify(raw, &info)?,
                     None => head_seq,
                 };
                 // Initialize heartbeat at start_seq (caller's input cursor on replay,

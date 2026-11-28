@@ -212,26 +212,24 @@ impl IpcConnection {
         max_bytes: usize,
         terminal: bool,
     ) -> Result<()> {
-        if self.awaiting != Some(response.request_id)
-            || response.version != self.hello.version
-            || response.generation != self.hello.generation
+        match self
+            .reply_part_cancellable(
+                response,
+                deadline,
+                max_bytes,
+                terminal,
+                std::future::pending(),
+            )
+            .await?
         {
-            return Err(SeError::invalid(
+            StreamWriteOutcome::Sent => Ok(()),
+            StreamWriteOutcome::Oversize { .. } => Err(SeError::invalid(
                 "IPC reply",
-                "the exact outstanding request ID, API and generation",
-            ));
+                "complete JSON within the negotiated byte budget",
+            )),
+            StreamWriteOutcome::CancelledBeforeWrite | StreamWriteOutcome::InterruptedPartial => {
+                Err(SeError::invalid("IPC reply", "a completed write"))
+            }
         }
-        let limit = (self.hello.maximum_reply_bytes.get() as usize).min(max_bytes);
-        let frame = wire::encode_response(response, limit)?;
-        let stream = self
-            .stream
-            .take()
-            .ok_or_else(|| SeError::invalid("IPC channel", "a complete prior exchange"))?;
-        send(&stream, &frame, &deadline.stage(WRITE_TIMEOUT)?).await?;
-        if terminal {
-            self.awaiting = None;
-        }
-        self.stream = Some(stream);
-        Ok(())
     }
 }

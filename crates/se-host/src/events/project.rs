@@ -6,10 +6,18 @@
 //! rationale bodies. Clients fetch bodies via bounded read operations so
 //! `se forget` remains authoritative.
 use super::{EventPushFrame, EventStreamKind, cursor};
-use se_store::{Actor, EventBody, EventKind, Scope, StoreInfo, StoredEvent};
+use se_store::{
+    Actor, EventBody, EventKind, RecordId, RecordIdentity, Scope, StoreInfo, StoredEvent,
+};
 use se_types::{Generation, Result};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+
+fn record_id_string(id: &RecordId) -> String {
+    uuid::Uuid::from_bytes(*id.as_bytes())
+        .hyphenated()
+        .to_string()
+}
 
 /// Map an optional `EventStreamKind` filter to the exact SQLite `EventKind` set
 /// queried by `Snapshot::history`.
@@ -454,7 +462,7 @@ fn project_session(
             EventStreamKind::SessionRevoke,
             json!({
                 "project_id": project_id,
-                "credential_id": credential,
+                "credential_id": record_id_string(credential),
                 "state": "revoked",
             }),
         )),

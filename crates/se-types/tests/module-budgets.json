@@ -4,7 +4,7 @@
  "default_crate_lines": 40000,
  "default_directory_lines": 10000,
  "crates": {
-  "se-host": 56658,
+  "se-host": 59116,
   "se-adoption": 3471,
   "se-agent-observation": 1466,
   "se-proc": 4045,
@@ -52,7 +52,7 @@
   "se-state-files": 10635
  },
  "directories": {
-  "crates/se-host/src/runtime": 21553,
+  "crates/se-host/src/runtime": 21646,
   "crates/se-core/src/ops": 22796,
   "crates/se-host/src/process": 16397,
   "crates/se-harness/src/harness": 12242,
@@ -74,7 +74,7 @@
   "crates/se-proc/src/runtime": 3038,
   "crates/se-native-ipc/src/native_ipc": 3647,
   "crates/se-native-proc/src/platform/linux": 2582,
-  "crates/se-host/src/client": 2504,
+  "crates/se-host/src/client": 2660,
   "crates/se-harness/src/acp": 3123,
   "crates/se-store/src/codec": 2348,
   "crates/se-harness/src/harness/secode_process": 2553,
@@ -136,7 +136,7 @@
   "crates/se/src/route/status": 612,
   "crates/se-remote-host/src/auth": 607,
   "crates/se-host/src/process/takeover": 604,
-  "crates/se-host/src/runtime/admission": 933,
+  "crates/se-host/src/runtime/admission": 962,
   "crates/se-core/src/ops/installation": 581,
   "crates/se-host/src/runtime/shutdown": 565,
   "crates/se-host/src/process/stop": 567,
