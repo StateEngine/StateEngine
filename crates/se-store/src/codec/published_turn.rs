@@ -4,7 +4,11 @@ use crate::published_turn::{DiffCounts, PublishedTurn, TurnNesting, TurnUsage};
 use rusqlite::OptionalExtension;
 use se_types::SessionId;
 
-pub(crate) fn decode(c: &Connection, seq: i64, scope: &Scope) -> StoreResult<EventBody<StoredText>> {
+pub(crate) fn decode(
+    c: &Connection,
+    seq: i64,
+    scope: &Scope,
+) -> StoreResult<EventBody<StoredText>> {
     let s = scope_key(c, scope, false)?;
     let mut q = c
         .prepare_cached("SELECT * FROM published_turns WHERE event_seq=?")
@@ -22,12 +26,22 @@ pub(crate) fn decode(c: &Connection, seq: i64, scope: &Scope) -> StoreResult<Eve
             .map(|v| u64::try_from(v).map_err(|_| invalid("negative published turn count")))
             .transpose()
     };
-    let session: SessionId = wire(c, "session", &row.get::<_, Vec<u8>>("session_id").map_err(sql)?, &s)?
-        .try_into()
-        .map_err(invalid)?;
+    let session: SessionId = wire(
+        c,
+        "session",
+        &row.get::<_, Vec<u8>>("session_id").map_err(sql)?,
+        &s,
+    )?
+    .try_into()
+    .map_err(invalid)?;
     let agent = decode_agent(
         c,
-        wire(c, "agent", &row.get::<_, Vec<u8>>("agent_id").map_err(sql)?, &s)?,
+        wire(
+            c,
+            "agent",
+            &row.get::<_, Vec<u8>>("agent_id").map_err(sql)?,
+            &s,
+        )?,
         &s,
     )?;
     let usage = match (
@@ -36,15 +50,18 @@ pub(crate) fn decode(c: &Connection, seq: i64, scope: &Scope) -> StoreResult<Eve
         int("cache_read_tokens")?,
         int("cache_write_tokens")?,
     ) {
-        (Some(input_tokens), Some(output_tokens), Some(cache_read_tokens), Some(cache_write_tokens)) => {
-            Some(TurnUsage {
-                input_tokens,
-                output_tokens,
-                cache_read_tokens,
-                cache_write_tokens,
-                cost_usd: row.get("cost_usd").map_err(sql)?,
-            })
-        }
+        (
+            Some(input_tokens),
+            Some(output_tokens),
+            Some(cache_read_tokens),
+            Some(cache_write_tokens),
+        ) => Some(TurnUsage {
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            cost_usd: row.get("cost_usd").map_err(sql)?,
+        }),
         (None, None, None, None) => None,
         _ => return Err(invalid("partial published turn usage")),
     };
@@ -57,9 +74,14 @@ pub(crate) fn decode(c: &Connection, seq: i64, scope: &Scope) -> StoreResult<Eve
         (None, None, None) => None,
         _ => return Err(invalid("partial published turn diff counts")),
     };
-    let nesting = match row.get::<_, Option<Vec<u8>>>("parent_session_id").map_err(sql)? {
+    let nesting = match row
+        .get::<_, Option<Vec<u8>>>("parent_session_id")
+        .map_err(sql)?
+    {
         Some(parent) => Some(TurnNesting {
-            parent_session: wire(c, "session", &parent, &s)?.try_into().map_err(invalid)?,
+            parent_session: wire(c, "session", &parent, &s)?
+                .try_into()
+                .map_err(invalid)?,
             nested_agent: text("nested_agent")?,
             depth: row.get("nesting_depth").map_err(sql)?,
         }),

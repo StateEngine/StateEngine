@@ -30,6 +30,13 @@ pub struct TurnNesting {
     pub depth: u32,
 }
 
+/// The newest usage a session's main conversation published.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PublishedUsage {
+    pub usage: TurnUsage,
+    pub occurred_at_us: i64,
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PublishedTurn {
     pub agent: AgentId,

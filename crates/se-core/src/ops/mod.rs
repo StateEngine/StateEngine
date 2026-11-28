@@ -99,6 +99,8 @@ mod mcp_schema;
 mod meta;
 pub mod outputs;
 pub mod project;
+pub mod publish_turn;
+pub use publish_turn::{SessionPublishTurn, SessionPublishTurnOutput};
 pub mod receipt;
 pub mod status;
 pub use crate::commit::{MessageSend, WorkingStateSet};
@@ -265,6 +267,7 @@ ops! {
     MessageList => MessageList, MessagePage, ("message.list",leaf(&["msg","list"]),tool("stateengine_msg_list","List your messages","List authorized mail with completeness; never marks read. full returns bodies."),Either,false,Never,Read,Project,None,"se.message-page",MessagePage,&["J4"]);
     MessageInbox => MessageInbox, MessagePage, ("message.inbox",leaf(&["msg","inbox"]),no_mcp("Bound agents use stateengine_msg_list with its unread inbox view."),Either,false,Never,Read,Project,None,"se.message-page",MessagePage,&["J3","J4"]);
     WorkingStateGet => WorkingStateGet, WorkingStateOutput, ("working_state.get",leaf(&["working-state"]),tool("stateengine_working_state_get","Read working state","Read your note and revision."),Either,false,Never,Read,Session,None,"se.working-state",WorkingState,&["J3"]);
+    SessionPublishTurn => SessionPublishTurn, SessionPublishTurnOutput, ("session.publish_turn",leaf(&["session","publish-turn"]),tool("stateengine_session_publish_turn","Publish a completed turn","Record one completed turn of your session: summary, token usage, diff counts and decision. Prose is erasable with se forget. Retry uncertainty with the original key."),Either,false,Never,Write,Project,HostForWrites,"se.publish-turn-receipt",PublishTurn,&["J3"]);
     WorkingStateSet => WorkingStateSet, WorkingStateReceipt, ("working_state.set",leaf(&["working-state","set"]),tool("stateengine_working_state_set","Replace working state","Replace your note; expect is its read revision, or absent for first write."),Either,false,Never,Write,Session,HostForWrites,"se.working-state-receipt",WorkingStateReceipt,&["J3"]);
     HookClaude => HookClaude, HookResult, ("hook.claude",CliExposure::Leaf {path:&["hook","claude"],hidden:true,select:Selector::Always},no_mcp("Provider hooks use authenticated native stdin and pinned-source capture."),Session,false,Never,Custody,Session,HostAutoStart,"se.hook-result",Hook,&["E3","J3"]);
     RuntimeUp => RuntimeUp, RuntimeStart, ("runtime.up",leaf(&["up"]),no_mcp("Runtime custody is an owner operation."),Owner,false,Never,Custody,Home,HostAutoStart,"se.runtime-start",RuntimeStart,&["J3"]);
@@ -338,6 +341,7 @@ impl AnyOp {
             Self::RemoteStop(v) => Some(&v.request.idempotency_key),
             Self::MessageSend(v) => Some(&v.idempotency_key),
             Self::WorkingStateSet(v) => Some(&v.idempotency_key),
+            Self::SessionPublishTurn(v) => Some(&v.idempotency_key),
             Self::RuntimeUp(v) => Some(&v.idempotency_key),
             Self::RuntimeDown(v) => Some(&v.idempotency_key),
             Self::Uninstall(v) => Some(&v.idempotency_key),
@@ -375,6 +379,11 @@ impl AnyOp {
             }
             Self::WorkingStateSet(v) => {
                 v.text = read(v.text.clone(), "text", se_types::WORKING_STATE_MAX_BYTES)?
+            }
+            Self::SessionPublishTurn(v) => {
+                if let Some(body) = v.body_text.take() {
+                    v.body_text = Some(read(body, "body_text", 1024 * 1024)?);
+                }
             }
             _ => (),
         }

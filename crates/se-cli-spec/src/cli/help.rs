@@ -76,6 +76,9 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
         "hook.claude" => "Receive a Claude Code lifecycle event on stdin",
         "working_state.get" => "Read or save an agent's working notes",
         "working_state.set" => "Save working notes only if their revision still matches",
+        "session.publish_turn" => {
+            "Publish one completed turn: summary, usage, diff counts and decision"
+        }
         "runtime.up" => "Start this data home's background runtime",
         "runtime.down" => "Stop this data home's runtime",
         "installation.uninstall" => "Remove this installation while preserving retained data",

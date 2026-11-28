@@ -14,6 +14,7 @@ pub enum Then {
     MessageSend(MessageSendThen),
     MessageMark(crate::ops::message_mark::MarkThen),
     WorkingStateSet(WorkingStateSetThen),
+    PublishTurn(crate::ops::publish_turn::PublishTurnThen),
 }
 pub enum CustodyPlan {
     AgentWake(crate::ops::agent_wake::WakePlan),

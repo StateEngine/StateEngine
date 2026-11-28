@@ -18,7 +18,8 @@ pub(super) fn apply(
     let p = project_id(c, &h.scope, false)?;
     let scope = scope_key(c, &h.scope, false)?;
     match &h.actor {
-        Actor::Agent(actor) if *actor == turn.agent && h.session.as_ref() == Some(&turn.session) => {}
+        Actor::Agent(actor)
+            if *actor == turn.agent && h.session.as_ref() == Some(&turn.session) => {}
         Actor::Human(_) => {}
         _ => {
             return Err(scope_mismatch(
@@ -27,13 +28,17 @@ pub(super) fn apply(
         }
     }
     if turn.role == Role::System {
-        return Err(invalid("published turn role must be user, assistant or tool"));
+        return Err(invalid(
+            "published turn role must be user, assistant or tool",
+        ));
     }
     let session = key(c, "session", turn.session.as_str(), &scope, false)?;
     let agent = key(c, "agent", turn.agent.as_str(), &scope, false)?;
     let head = codec::session::head(c, &p, &session)?;
     if head.agent != agent {
-        return Err(scope_mismatch("published turn session belongs to another agent"));
+        return Err(scope_mismatch(
+            "published turn session belongs to another agent",
+        ));
     }
     let duplicate: bool = c
         .query_row(
@@ -49,7 +54,13 @@ pub(super) fn apply(
         ));
     }
     let parent = match &turn.nesting {
-        Some(nesting) => Some(key(c, "session", nesting.parent_session.as_str(), &scope, false)?),
+        Some(nesting) => Some(key(
+            c,
+            "session",
+            nesting.parent_session.as_str(),
+            &scope,
+            false,
+        )?),
         None => None,
     };
     let payload = match body {

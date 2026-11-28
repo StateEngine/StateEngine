@@ -243,6 +243,17 @@ pub struct ContextWindowView {
     pub observed_at: Option<String>,
 }
 
+impl AgentRow {
+    /// A runtime's live reading wins. Usage a harness published for this
+    /// session stands in only while the runtime has no reading of its own.
+    pub fn merge_context(&mut self, live: Read<ContextWindowView>) {
+        let published = matches!(self.context, Some(Read::Present { .. }));
+        if !published || matches!(live, Read::Present { .. }) {
+            self.context = Some(live);
+        }
+    }
+}
+
 impl ContextWindowView {
     /// A provider-reported size wins over the saved setting, because it is the
     /// window the provider applied. A zero size is treated as unreported.

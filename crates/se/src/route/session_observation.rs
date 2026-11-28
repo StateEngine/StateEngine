@@ -124,7 +124,10 @@ pub(super) fn merge_runtime_observation(
 ) -> Result<AnyOutput> {
     let observed = live.as_ref().map(rows);
     let mut apply = |row: &mut AgentRow| -> Result<()> {
-        row.context = joined_context(row, &observed);
+        match joined_context(row, &observed) {
+            Some(live) => row.merge_context(live),
+            None => row.context = None,
+        }
         if matches!(
             row.provider,
             se_types::Provider::Claude | se_types::Provider::Codex
