@@ -17,12 +17,14 @@ struct CursorPayload {
     v: u8,
     s: StoreId,
     i: u64,
+    /// Compatibility metadata recording the issuing host generation; not enforced across restarts.
     g: u64,
     q: u64,
 }
 
-/// Encode an opaque cursor bound to the store's `(id, incarnation)`, host
-/// `generation`, and exact committed `event_seq` (`0` for an empty store).
+/// Encode an opaque cursor bound to the store's `(id, incarnation)` and exact
+/// committed `event_seq` (`0` for an empty store); `generation` is retained as
+/// v1 compatibility metadata and is not enforced across host restarts.
 pub(crate) fn encode(info: &StoreInfo, generation: Generation, event_seq: u64) -> Result<String> {
     let payload = CursorPayload {
         v: CURSOR_VERSION,

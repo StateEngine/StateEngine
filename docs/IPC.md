@@ -160,7 +160,7 @@ If authentication and admission succeed, the host replies with `ServerHello` (or
   "maximum_reply_bytes": 262144,
   "package_version": "0.1.3",
   "store_id": "store_01...",
-  "capabilities": ["ipc.capabilities"]
+  "capabilities": ["ipc.capabilities", "events.subscribe"]
 }
 ```
 
@@ -287,7 +287,7 @@ When `ServerHello.capabilities` includes `"events.subscribe"`, an authenticated 
 ```
 
 - **Authorization & scope:** Owner connections may filter by `project_id` / `agent_id` or subscribe across all registered projects (`project_id: null`). Managed and external session connections are pinned to their authenticated `(project_id, agent_id, session_id)` and refuse cross-project or cross-agent selectors; session-owned events (`agent.state`, `session.hold`, `session.revoke`) are gated to that exact session/credential.
-- **Effective byte cap:** `min(max_batch_bytes, ServerHello.maximum_reply_bytes)` must be at least `4096` bytes (`MIN_BATCH_BYTES`) and at most `1,048,576` bytes (`MAX_FRAME_BYTES`). Every streamed frame and terminal error stays within this effective cap; an oversized event emits a terminal `input-too-large` error carrying the exact serialized byte count.
+- **Effective byte cap:** `min(max_batch_bytes, ServerHello.maximum_reply_bytes)` must be at least `4096` bytes (`MIN_BATCH_BYTES`) and at most `1,048,576` bytes (`MAX_FRAME_BYTES`). Ordinary output frames and terminal error envelopes both stay within this effective cap: an oversized event emits a terminal `input-too-large` error carrying the exact serialized byte count, and an oversized terminal error envelope falls back to a short bounded `input-too-large` envelope preserving the original error code.
 - **Streamed frames:** Each pushed `IpcResponse` carries `result.state = "output"` with `schema = "se.event-stream/v1"`. Clients MUST verify `schema == "se.event-stream/v1"` before parsing `value`, which is one of:
   - **Event frame:** `{ "cursor": "evcur_v1_...", "event_id": "ev_...", "kind": "<kind>", "occurred_at_us": i64, "payload": { ... } }`, where `kind` is one of `"mail.notice"`, `"agent.state"`, `"assignment"`, `"decision"`, `"session.hold"`, or `"session.revoke"`.
     - **Erasure invariant:** `"mail.notice"` and `"decision"` payloads carry IDs, routing metadata, and body-free dedupe digests only—never message or decision text bodies.

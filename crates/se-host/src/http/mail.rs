@@ -39,13 +39,31 @@ pub(crate) struct Waits {
         )>,
     >,
 }
-type SubscriptionEntry = (ProjectId, SessionId, Arc<Signal>);
+type SubscriptionEntry = (ProjectId, SessionId, Arc<SubscriptionSignal>);
 
 pub(crate) struct Signal {
     pub(crate) changed: Notify,
     pub(crate) cancelled: AtomicBool,
     recipient: crate::runtime::MailRecipient,
     credential: se_store::RecordId,
+}
+/// Sticky broadcast cancellation signal for `events.subscribe` tasks so both
+/// the producer and any blocked native write observe revocation simultaneously.
+pub(crate) struct SubscriptionSignal {
+    cancelled: tokio::sync::watch::Sender<bool>,
+    recipient: crate::runtime::MailRecipient,
+    credential: se_store::RecordId,
+}
+impl SubscriptionSignal {
+    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.cancelled.subscribe()
+    }
+    pub(crate) fn is_cancelled(&self) -> bool {
+        *self.cancelled.borrow()
+    }
+    fn cancel(&self) {
+        self.cancelled.send_replace(true);
+    }
 }
 pub(crate) struct Wait {
     registry: Arc<Waits>,
@@ -56,7 +74,7 @@ pub(crate) struct Wait {
 pub(crate) struct SubscriptionWait {
     registry: Arc<Waits>,
     id: u64,
-    pub(crate) signal: Arc<Signal>,
+    pub(crate) signal: Arc<SubscriptionSignal>,
     _permit: OwnedSemaphorePermit,
 }
 impl Waits {
@@ -219,9 +237,8 @@ impl Waits {
                 "retry after an earlier stream closes",
             ));
         }
-        let signal = Arc::new(Signal {
-            changed: Notify::new(),
-            cancelled: AtomicBool::new(false),
+        let signal = Arc::new(SubscriptionSignal {
+            cancelled: tokio::sync::watch::channel(false).0,
             recipient: recipient.clone(),
             credential,
         });
@@ -305,8 +322,7 @@ impl Waits {
             signal.changed.notify_one();
         }
         for (_, _, signal) in self.subscriptions.lock().map_err(|_| poisoned())?.values() {
-            signal.cancelled.store(true, Ordering::Release);
-            signal.changed.notify_one();
+            signal.cancel();
         }
         for (_, signal) in self.native.lock().map_err(|_| poisoned())?.iter() {
             if let Some(signal) = signal.upgrade() {
@@ -324,8 +340,7 @@ impl Waits {
         }
         for (_, found, signal) in self.subscriptions.lock().map_err(|_| poisoned())?.values() {
             if found == session {
-                signal.cancelled.store(true, Ordering::Release);
-                signal.changed.notify_one();
+                signal.cancel();
             }
         }
         Ok(())
@@ -362,8 +377,7 @@ impl Waits {
                 })
             {
                 self.bells.revoke(session)?;
-                signal.cancelled.store(true, Ordering::Release);
-                signal.changed.notify_one();
+                signal.cancel();
             }
         }
         Ok(())
@@ -617,12 +631,12 @@ mod tests {
         let mail_wait = registry.register(session.clone(), recipient()?, cred)?;
         let sub_wait = registry.register_subscription(session.clone(), recipient()?, cred)?;
         assert!(!mail_wait.signal.cancelled.load(Ordering::Acquire));
-        assert!(!sub_wait.signal.cancelled.load(Ordering::Acquire));
+        assert!(!sub_wait.signal.is_cancelled());
         registry.revoked(&crate::runtime::mail::Revocations {
             sessions: vec![(recipient()?.project, session)],
             credentials: Vec::new(),
         })?;
-        assert!(sub_wait.signal.cancelled.load(Ordering::Acquire));
+        assert!(sub_wait.signal.is_cancelled());
         drop(sub_wait);
         drop(mail_wait);
         Ok(())

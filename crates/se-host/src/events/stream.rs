@@ -30,7 +30,7 @@ enum ProducerEvent {
 struct PumpContext<'a> {
     router: &'a HostedRouter,
     sub: &'a AdmittedSubscribe,
-    cancel_signal: Option<Arc<crate::http::mail::Signal>>,
+    cancel_signal: Option<Arc<crate::http::mail::SubscriptionSignal>>,
     heartbeat_interval: Duration,
 }
 
@@ -40,7 +40,7 @@ struct ProducerConfig {
     start_seq: u64,
     max_scan_items: usize,
     commits: watch::Receiver<u64>,
-    cancel_signal: Option<Arc<crate::http::mail::Signal>>,
+    cancel_signal: Option<Arc<crate::http::mail::SubscriptionSignal>>,
     shutdown: watch::Receiver<Option<Deadline>>,
     stop_rx: oneshot::Receiver<()>,
     tx: mpsc::Sender<ProducerEvent>,
@@ -227,17 +227,13 @@ async fn wait_optional<T>(
     }
 }
 
-async fn wait_for_cancel(signal: &Option<Arc<crate::http::mail::Signal>>) {
+async fn wait_for_cancel(signal: &Option<Arc<crate::http::mail::SubscriptionSignal>>) {
     let Some(sig) = signal else {
         std::future::pending::<()>().await;
         return;
     };
-    loop {
-        if sig.cancelled.load(std::sync::atomic::Ordering::Acquire) {
-            return;
-        }
-        sig.changed.notified().await;
-    }
+    let mut rx = sig.subscribe();
+    let _ = rx.wait_for(|&cancelled| cancelled).await;
 }
 
 async fn handle_producer_item(
@@ -414,10 +410,8 @@ fn spawn_producer(cfg: ProducerConfig) -> tokio::task::JoinHandle<()> {
     })
 }
 
-fn is_cancelled(signal: &Option<Arc<crate::http::mail::Signal>>) -> bool {
-    signal
-        .as_ref()
-        .is_some_and(|sig| sig.cancelled.load(std::sync::atomic::Ordering::Acquire))
+fn is_cancelled(signal: &Option<Arc<crate::http::mail::SubscriptionSignal>>) -> bool {
+    signal.as_ref().is_some_and(|sig| sig.is_cancelled())
 }
 
 fn revoked_error() -> SeError {
@@ -504,12 +498,53 @@ async fn send_error(
     max_batch_bytes: u32,
     shutdown: &mut watch::Receiver<Option<Deadline>>,
 ) -> Result<()> {
+    let original_code = error.code();
     let mut shutdown_watch = shutdown.clone();
     let cancel = pin!(async {
         let _ = shutdown_watch.changed().await;
     });
-    let _ = exchange
+    match exchange
         .reply_stream_part_cancellable(Err(error), max_batch_bytes as usize, true, cancel)
-        .await?;
-    Ok(())
+        .await?
+    {
+        StreamWriteOutcome::Sent
+        | StreamWriteOutcome::CancelledBeforeWrite
+        | StreamWriteOutcome::InterruptedPartial => Ok(()),
+        StreamWriteOutcome::Oversize { exact_bytes } => {
+            let fallback = SeError::new(se_types::Detail::InputTooLarge(
+                se_types::details::InputTooLarge {
+                    field: format!(
+                        "events.subscribe terminal error ({})",
+                        original_code.as_str()
+                    ),
+                    limit_bytes: u64::from(max_batch_bytes),
+                    got_bytes: exact_bytes as u64,
+                },
+            ));
+            let mut shutdown_watch = shutdown.clone();
+            let cancel = pin!(async {
+                let _ = shutdown_watch.changed().await;
+            });
+            match exchange
+                .reply_stream_part_cancellable(
+                    Err(fallback),
+                    max_batch_bytes as usize,
+                    true,
+                    cancel,
+                )
+                .await?
+            {
+                StreamWriteOutcome::Sent
+                | StreamWriteOutcome::CancelledBeforeWrite
+                | StreamWriteOutcome::InterruptedPartial => Ok(()),
+                StreamWriteOutcome::Oversize { exact_bytes } => Err(SeError::new(
+                    se_types::Detail::InputTooLarge(se_types::details::InputTooLarge {
+                        field: "events.subscribe terminal error".into(),
+                        limit_bytes: u64::from(max_batch_bytes),
+                        got_bytes: exact_bytes as u64,
+                    }),
+                )),
+            }
+        }
+    }
 }
