@@ -93,6 +93,57 @@ pub(super) fn inventory_at<S: Snapshot>(
     ))
 }
 
+/// Resolve an explicit `--project` selector (either a `ProjectId` or a saved
+/// project name) against the registered projects in `home`, using the same
+/// candidate/ambiguity policy as ordinary CLI commands without requiring
+/// owner-terminal presence (so `se mcp --stdio --as` works under coding agents).
+pub(crate) fn resolve_project_selector(
+    home: &std::path::Path,
+    selector: &str,
+) -> Result<ProjectId> {
+    use se_store::StoreFactory as _;
+    if let Ok(id) = selector.parse::<ProjectId>() {
+        return Ok(id);
+    }
+    let files = super::files::Files::open(home).map_err(|e| store_error(&e))?;
+    let options = se_store::StoreOptions {
+        state_directory: home.to_path_buf(),
+        busy_timeout: Duration::from_secs(2),
+    };
+    let reader = scope::require_present(
+        se_store::SqliteFactory::open_reader(&options).map_err(|e| store_error(&e))?,
+        "project registry",
+        "Run `se init` to initialize this StateEngine home first.",
+    )?;
+    let inventory = super::owner::inventory(&reader, &files)?;
+    let [owner] = inventory.owners.as_slice() else {
+        return Err(scope::unreadable(
+            "project selection",
+            "one retained protected owner is required",
+        ));
+    };
+    let mut admission = Admission {
+        actor: se_store::Actor::Human(owner.clone()),
+        scope: Scope::Registry,
+        session: None,
+        generation: 1,
+    };
+    let mut snap = open_snapshot(&reader, &admission)?;
+    let dummy = se_core::ops::AnyOp::ProjectStatus(Default::default());
+    let res = gather_candidates(&mut snap, Some(selector), home, None, &dummy).and_then(
+        |(candidates, choices)| {
+            select_scope(candidates, choices, Some(selector), &dummy, &mut admission)
+        },
+    );
+    super::execute::finish_read(res, snap.close().map_err(|e| store_error(&e)))?;
+    match admission.scope {
+        Scope::Project(id) => Ok(id),
+        Scope::Registry => Err(SeError::new(Detail::ProjectRequired(
+            details::ProjectRequired { choices: vec![] },
+        ))),
+    }
+}
+
 pub fn apply<S: Snapshot>(
     cx: &Bootstrap,
     snapshot: &mut S,
