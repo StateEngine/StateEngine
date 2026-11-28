@@ -44,6 +44,7 @@ pub enum EventKind {
     DecisionRetracted,
     DecisionSuperseded,
     SessionTurn,
+    SessionTurnPublished,
     CaptureSource,
     CaptureProgress,
     CaptureFailed,
@@ -321,6 +322,11 @@ pub enum EventBody<T> {
         role: Role,
         text: T,
         evidence: SourceEvidence,
+    },
+    /// `session.turn_published`: all prose is the one optional body.
+    SessionTurnPublished {
+        turn: crate::published_turn::PublishedTurn,
+        body: Option<T>,
     },
     CaptureSource {
         source: RecordId,

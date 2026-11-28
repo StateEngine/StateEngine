@@ -13,6 +13,16 @@ impl Param for bool {
         Ok(Value::Integer(i64::from(*self)))
     }
 }
+/// Only finite reals are stored; NaN and infinities have no honest meaning.
+impl Param for f64 {
+    fn sql_value(&self) -> StoreResult<Value> {
+        if self.is_finite() {
+            Ok(Value::Real(*self))
+        } else {
+            Err(invalid("a finite number"))
+        }
+    }
+}
 impl Param for str {
     fn sql_value(&self) -> StoreResult<Value> {
         Ok(Value::Text(self.into()))

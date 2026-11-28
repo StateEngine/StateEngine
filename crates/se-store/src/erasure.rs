@@ -80,7 +80,7 @@ fn observe_one(
     let project = project.ok_or_else(|| {
         fail(
             StoreErrorCode::InvalidTransition,
-            "only project messages and captured turns can be forgotten",
+            "only project messages and captured or published turns can be forgotten",
         )
     })?;
     if revision != target.expected.value.get() {
@@ -113,6 +113,11 @@ fn observe_one(
             true,
             "SELECT length(p.content),s.value FROM turn_data d JOIN payloads p ON p.payload_id=d.text_payload LEFT JOIN symbols s ON s.id=d.source_path WHERE d.event_seq=?",
         ),
+        // Every published prose field lives in the one body payload.
+        "session.turn_published" => (
+            true,
+            "SELECT length(p.content),NULL FROM published_turns d JOIN payloads p ON p.payload_id=d.body_payload WHERE d.event_seq=?",
+        ),
         "message.sent" => (
             false,
             "SELECT length(p.content),NULL FROM message_data d JOIN payloads p ON p.payload_id=d.body_payload WHERE d.event_seq=?",
@@ -126,7 +131,7 @@ fn observe_one(
             return Err(fail(
                 StoreErrorCode::InvalidTransition,
                 format!(
-                    "event {} is a {kind}; only message bodies and captured turns can be forgotten",
+                    "event {} is a {kind}; only message bodies and captured or published turns can be forgotten",
                     target.event.as_str()
                 ),
             ));

@@ -14,6 +14,7 @@ mod revision;
 mod work_message;
 pub(crate) use revision::{expected, revision_for};
 mod principal;
+mod published_turn;
 pub(crate) mod process;
 pub(crate) mod project;
 pub(crate) mod session;
@@ -213,6 +214,7 @@ pub(crate) fn apply(
             work_message::mark(c, header, body, seq, revision)?
         }
         b @ WorkingStateSet { .. } => set_working_state(x, b)?,
+        SessionTurnPublished { turn, body } => published_turn::apply(c, header, seq, turn, body)?,
         b @ (SessionPrepared { .. }
         | SessionActivated { .. }
         | SessionEnded { .. }

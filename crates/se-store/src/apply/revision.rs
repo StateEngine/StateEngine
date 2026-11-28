@@ -43,6 +43,7 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
         | RemoteDelegateAttributed { .. } => Ok(1),
         RemoteMailboxRecorded { .. } => Ok(1),
         CaptainMessageRouted { .. } => Ok(1),
+        SessionTurnPublished { .. } => Ok(1),
         ProcessRegistered { .. } | ProcessTransition { .. } => process::revision(c, e),
         SessionPrepared { .. }
         | SessionActivated { .. }

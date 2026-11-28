@@ -35,6 +35,11 @@ pub fn descriptor<T, S: Serialize>(
         | CredentialRevoked { reason, .. } => {
             fields.insert("reason".into(), json!(text(reason)?));
         }
+        SessionTurnPublished {
+            body: Some(value), ..
+        } => {
+            fields.insert("body".into(), json!(text(value)?));
+        }
         SessionTurn { text: value, .. } => {
             fields.remove("turn");
             fields.insert("text".into(), json!(text(value)?));

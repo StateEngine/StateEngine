@@ -29,7 +29,7 @@ pub(crate) fn role(value: Role) -> &'static str {
         Role::Tool => "tool",
     }
 }
-fn parse_role(value: &str) -> StoreResult<Role> {
+pub(crate) fn parse_role(value: &str) -> StoreResult<Role> {
     match value {
         "system" => Ok(Role::System),
         "user" => Ok(Role::User),
