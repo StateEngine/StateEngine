@@ -28,7 +28,8 @@ pub(super) fn residual(
 pub(super) fn atlas(home: &std::path::Path) -> StoreResult<ResidualCopy> {
     Ok(ResidualCopy {
         custodian: "Atlas project index".into(),
-        location: NativePath::from_local(home.join("atlas")).map_err(invalid)?,
+        location: NativePath::from_local(home.join(se_types::code::ATLAS_STATE_DIRECTORY))
+            .map_err(invalid)?,
         reason: "Atlas drops the forgotten record when it next reads history; freed index pages may hold its text until Atlas compacts its database.".into(),
     })
 }

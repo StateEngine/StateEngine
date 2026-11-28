@@ -336,7 +336,7 @@ A harness that runs its own conversations records each completed turn with `sess
 ```
 
 - An agent session publishes only for its own agent and session, so it omits `target_agent_id` and `session_id`. An owner client names both.
-- `body_text`, `usage`, `diff_summary`, `decision` and `nesting` are optional. A shortened body reports the bytes it left out in `body_omitted_bytes`.
+- `body_text`, `usage`, `diff_summary`, `decision` and `nesting` are optional. A shortened body reports the bytes it left out in `body_omitted_bytes`. The serialized body, decision and paths together stay within 1 MiB, and the decision and paths alone within 64 KiB.
 - `content_sha256` is checked when the whole body is supplied, and recorded as reported when it is not. It is kept only when prose is stored, so `se forget` erases the two together.
 - `occurred_at_us` runs from 0 through 253402300799999999 (the end of year 9999).
 - The key is bound to the resolved agent and session, so one key never replays across sessions. Replaying it returns the original `event_id` and `cursor`. Reusing a `vendor_turn_id` for the same session and harness under a new key is refused with `state-conflict`.

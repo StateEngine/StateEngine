@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const MAX_PROSE_BYTES: usize = 1024 * 1024;
+/// Decision and paths together: what metadata readers such as Atlas receive.
+const MAX_METADATA_BYTES: usize = 64 * 1024;
 const MAX_PATHS: usize = 256;
 /// 9999-12-31T23:59:59.999999Z: every platform clock can represent it.
 pub const MAX_OCCURRED_AT_US: i64 = 253_402_300_799_999_999;
@@ -289,9 +291,6 @@ pub struct PublishTurnThen {
 /// The one prose document: everything `se forget` must be able to remove.
 fn prose(input: &PublishTurnRequest) -> Result<Option<String>> {
     let mut doc = serde_json::Map::new();
-    if let Some(text) = &input.body_text {
-        doc.insert("text".into(), text.clone().into());
-    }
     if let Some(decision) = &input.decision {
         doc.insert(
             "decision".into(),
@@ -300,6 +299,15 @@ fn prose(input: &PublishTurnRequest) -> Result<Option<String>> {
     }
     if let Some(diff) = input.diff_summary.as_ref().filter(|d| !d.paths.is_empty()) {
         doc.insert("paths".into(), serde_json::json!(diff.paths));
+    }
+    if serde_json::Value::Object(doc.clone()).to_string().len() > MAX_METADATA_BYTES {
+        return Err(SeError::invalid(
+            "decision",
+            "decision and diff_summary.paths together within 64 KiB; list fewer paths",
+        ));
+    }
+    if let Some(text) = &input.body_text {
+        doc.insert("text".into(), text.clone().into());
     }
     if doc.is_empty() {
         return Ok(None);

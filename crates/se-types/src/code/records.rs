@@ -2,6 +2,9 @@
 use super::*;
 use crate::{HumanId, Result, SeError};
 
+/// The Atlas index's folder under the StateEngine state directory.
+pub const ATLAS_STATE_DIRECTORY: &str = "atlas-v5";
+
 #[derive(
     Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]

@@ -9,6 +9,8 @@ pub(super) struct HistoryStream {
     pub sql: String,
     pub params: Vec<Value>,
     exact_session: Option<SessionId>,
+    /// Metadata readers get published turns without their chat text.
+    metadata: bool,
 }
 struct HistoryWindow {
     scope: Vec<u8>,
@@ -118,6 +120,7 @@ impl SqliteSnapshot {
             sql,
             params,
             exact_session: exact_session.cloned(),
+            metadata: matches!(query.transcript, TranscriptFilter::Metadata),
         })
     }
 
@@ -246,7 +249,15 @@ impl SqliteSnapshot {
         seq: i64,
         stream: &HistoryStream,
     ) -> StoreResult<StoredEvent> {
-        let event = self.record(seq)?;
+        let mut event = self.record(seq)?;
+        if stream.metadata
+            && let EventBody::SessionTurnPublished {
+                body: Some(StoredText::Present(doc)),
+                ..
+            } = &mut event.body
+        {
+            *doc = without_chat(doc)?;
+        }
         if let Some(session) = &stream.exact_session
             && !(matches!(&event.body, EventBody::SessionTurn { session: actual, .. } if actual == session)
                 && event.header.session.as_ref() == Some(session)
@@ -352,4 +363,13 @@ pub(super) fn normalize(query: &mut HistoryQuery) {
     query.kinds.dedup();
     query.families.sort_by_key(|family| format!("{family:?}"));
     query.families.dedup();
+}
+/// A published turn's prose without its chat text: the decision and paths that
+/// validation keeps within 64 KiB, so metadata pages stay small.
+fn without_chat(doc: &str) -> StoreResult<String> {
+    let mut prose: serde_json::Value = serde_json::from_str(doc).map_err(invalid)?;
+    if let Some(fields) = prose.as_object_mut() {
+        fields.remove("text");
+    }
+    Ok(prose.to_string())
 }
