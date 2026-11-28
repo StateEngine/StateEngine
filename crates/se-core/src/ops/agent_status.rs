@@ -206,17 +206,24 @@ fn from_principal<R: Snapshot>(
     let waiting_on = super::agent_state::open_question(&agent, cx)?;
     let review = super::agent_state::open_review(&agent, cx)?;
     let working_note = super::agent_state::working_note(&agent, cx)?;
+    let published = published_context(
+        &agent,
+        &session,
+        profile.provider_settings.context_window,
+        cx,
+    )?;
     Ok(AgentStatusOutput {
         agent: Read::Present {
             value: AgentRow {
                 provider_settings: profile.provider_settings.clone(),
                 harness: profile.harness.clone(),
-                // The owning runtime replaces this with its live reading.
-                context: (provider != se_types::Provider::SeCode).then(|| if never_launched {
+                // The owning runtime replaces this with its live reading;
+                // published usage stands in until it has one.
+                context: published.or_else(|| (provider != se_types::Provider::SeCode).then(|| if never_launched {
                     Read::Absent { checked: "This agent has no launched provider session".into() }
                 } else {
                     Read::Unknown { what: "Token usage is read by the owning runtime from a live session".into() }
-                }),
+                })),
                 provider_activity: matches!(provider, se_types::Provider::Claude | se_types::Provider::Codex).then(|| if never_launched {
                     Read::Absent { checked: "This agent has no launched provider session".into() }
                 } else {
@@ -464,4 +471,36 @@ fn retained_secode_binding<R: Snapshot>(
             },
         },
     )
+}
+
+/// Context fill from the newest main-conversation turn a harness published for
+/// this session, read as the provider counts it: everything the model read.
+fn published_context<R: Snapshot>(
+    agent: &AgentId,
+    session: &super::outputs::SessionView,
+    configured: Option<u64>,
+    cx: &mut Cx<'_, R>,
+) -> Result<Option<Read<super::outputs::ContextWindowView>>> {
+    let Some(id) = session.session_id.clone() else {
+        return Ok(None);
+    };
+    let latest = cx
+        .read
+        .published_usage(agent.clone(), id)
+        .map_err(|e| store_error(&e))?;
+    let Read::Present { value } = latest else {
+        return Ok(None);
+    };
+    let usage = value.usage;
+    let used = usage
+        .input_tokens
+        .saturating_add(usage.cache_read_tokens)
+        .saturating_add(usage.cache_write_tokens);
+    // A time this platform's clock cannot hold is reported as unknown.
+    let observed = u64::try_from(value.occurred_at_us)
+        .ok()
+        .and_then(|us| std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_micros(us)));
+    Ok(Some(Read::Present {
+        value: super::outputs::ContextWindowView::new(used, None, configured, observed),
+    }))
 }

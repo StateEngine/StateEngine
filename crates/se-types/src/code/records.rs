@@ -2,6 +2,9 @@
 use super::*;
 use crate::{HumanId, Result, SeError};
 
+/// The Atlas index's folder under the StateEngine state directory.
+pub const ATLAS_STATE_DIRECTORY: &str = "atlas-v5";
+
 #[derive(
     Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
@@ -46,6 +49,8 @@ pub enum RecordKind {
     Working,
     Edit,
     Commit,
+    /// A published turn's decision and changed paths.
+    Turn,
 }
 
 /// Canonical principal keys; display names never confer visibility.

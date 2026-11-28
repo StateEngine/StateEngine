@@ -9,6 +9,8 @@ pub(super) struct HistoryStream {
     pub sql: String,
     pub params: Vec<Value>,
     exact_session: Option<SessionId>,
+    /// Metadata readers get published turns without their chat text.
+    metadata: bool,
 }
 struct HistoryWindow {
     scope: Vec<u8>,
@@ -55,11 +57,16 @@ impl SqliteSnapshot {
         }
         if let Some(session) = &query.session {
             let k = key(&self.db, "session", session.as_str(), &win.scope, false)?;
-            sql.push_str(if exact_session.is_some() {
-                " AND t.session_id=?"
+            if exact_session.is_some() {
+                sql.push_str(" AND t.session_id=?");
+            } else if self.info.schema_version >= 18 {
+                // An owner-published turn is attributed to the owner, with no
+                // session header, yet belongs to the session it names.
+                sql.push_str(" AND (e.session_id=? OR EXISTS(SELECT 1 FROM published_turns pt WHERE pt.event_seq=e.seq AND pt.session_id=?))");
+                params.push(Value::Blob(k.clone()));
             } else {
-                " AND e.session_id=?"
-            });
+                sql.push_str(" AND e.session_id=?");
+            }
             params.push(Value::Blob(k));
         }
         if let Visibility::SelfOnly(agent) = &self.scope.visibility {
@@ -70,10 +77,15 @@ impl SqliteSnapshot {
                 "messages"
             };
             let upper_op = win.upper_op;
+            let published = if self.info.schema_version >= 18 {
+                "\n                OR EXISTS(SELECT 1 FROM published_turns d WHERE d.event_seq=e.seq AND d.project_id=? AND d.agent_id=?)"
+            } else {
+                ""
+            };
             sql.push_str(&format!(" AND (e.actor_id=?
                 OR EXISTS(SELECT 1 FROM {mail} d WHERE d.sent_seq=e.seq AND d.project_id=? AND d.recipient_id=? AND d.sent_seq>? AND d.sent_seq{upper_op}?)
                 OR EXISTS(SELECT 1 FROM turn_data d WHERE d.event_seq=e.seq AND d.project_id=? AND d.agent_id=? AND d.event_seq>? AND d.event_seq{upper_op}?)
-                OR EXISTS(SELECT 1 FROM process_data d WHERE d.event_seq=e.seq AND d.principal_id=?))"));
+                OR EXISTS(SELECT 1 FROM process_data d WHERE d.event_seq=e.seq AND d.principal_id=?){published})"));
             let project = self.project_bytes()?;
             params.extend([
                 Value::Blob(a.clone()),
@@ -85,8 +97,11 @@ impl SqliteSnapshot {
                 Value::Blob(a.clone()),
                 Value::Integer(win.after as i64),
                 Value::Integer(win.upper as i64),
-                Value::Blob(a),
+                Value::Blob(a.clone()),
             ]);
+            if !published.is_empty() {
+                params.extend([Value::Blob(self.project_bytes()?), Value::Blob(a)]);
+            }
         }
         append_history_kind_filters(query, exact_session.is_some(), &mut sql, &mut params);
         sql.push_str(if exact_session.is_some() {
@@ -105,6 +120,7 @@ impl SqliteSnapshot {
             sql,
             params,
             exact_session: exact_session.cloned(),
+            metadata: matches!(query.transcript, TranscriptFilter::Metadata),
         })
     }
 
@@ -189,6 +205,13 @@ impl SqliteSnapshot {
             ("messages", "messages_recipient_seq")
         };
         let upper_op = win.upper_op;
+        let published = if self.info.schema_version >= 18 {
+            format!(
+                "\n            UNION SELECT event_seq FROM published_turns INDEXED BY published_turns_agent_seq WHERE project_id=? AND agent_id=? AND event_seq>? AND event_seq{upper_op}?"
+            )
+        } else {
+            String::new()
+        };
         // Seek the agent's indexed streams before applying the caller's
         // visibility below. A correlated OR would visit every project event
         // to find even an empty agent history. UNION also deduplicates mail
@@ -197,7 +220,7 @@ impl SqliteSnapshot {
             SELECT seq FROM events INDEXED BY events_actor_seq WHERE project_id=? AND actor_id=? AND seq>? AND seq{upper_op}?
             UNION SELECT sent_seq FROM {mail} INDEXED BY {recipient_index} WHERE project_id=? AND recipient_id=? AND sent_seq>? AND sent_seq{upper_op}?
             UNION SELECT event_seq FROM turn_data INDEXED BY turn_data_agent_seq WHERE project_id=? AND agent_id=? AND event_seq>? AND event_seq{upper_op}?
-            UNION SELECT event_seq FROM process_data WHERE principal_id=? AND event_seq>? AND event_seq{upper_op}?)"));
+            UNION SELECT event_seq FROM process_data WHERE principal_id=? AND event_seq>? AND event_seq{upper_op}?{published})"));
         for _ in 0..3 {
             params.extend([
                 Value::Blob(project.clone()),
@@ -207,10 +230,18 @@ impl SqliteSnapshot {
             ]);
         }
         params.extend([
-            Value::Blob(a),
+            Value::Blob(a.clone()),
             Value::Integer(win.after as i64),
             Value::Integer(win.upper as i64),
         ]);
+        if !published.is_empty() {
+            params.extend([
+                Value::Blob(project),
+                Value::Blob(a),
+                Value::Integer(win.after as i64),
+                Value::Integer(win.upper as i64),
+            ]);
+        }
         Ok(())
     }
     pub(super) fn history_event(
@@ -218,7 +249,15 @@ impl SqliteSnapshot {
         seq: i64,
         stream: &HistoryStream,
     ) -> StoreResult<StoredEvent> {
-        let event = self.record(seq)?;
+        let mut event = self.record(seq)?;
+        if stream.metadata
+            && let EventBody::SessionTurnPublished {
+                body: Some(StoredText::Present(doc)),
+                ..
+            } = &mut event.body
+        {
+            *doc = without_chat(doc)?;
+        }
         if let Some(session) = &stream.exact_session
             && !(matches!(&event.body, EventBody::SessionTurn { session: actual, .. } if actual == session)
                 && event.header.session.as_ref() == Some(session)
@@ -324,4 +363,13 @@ pub(super) fn normalize(query: &mut HistoryQuery) {
     query.kinds.dedup();
     query.families.sort_by_key(|family| format!("{family:?}"));
     query.families.dedup();
+}
+/// A published turn's prose without its chat text: the decision and paths that
+/// validation keeps within 64 KiB, so metadata pages stay small.
+fn without_chat(doc: &str) -> StoreResult<String> {
+    let mut prose: serde_json::Value = serde_json::from_str(doc).map_err(invalid)?;
+    if let Some(fields) = prose.as_object_mut() {
+        fields.remove("text");
+    }
+    Ok(prose.to_string())
 }

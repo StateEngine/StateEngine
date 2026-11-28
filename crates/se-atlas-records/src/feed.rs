@@ -64,7 +64,7 @@ fn next_scoped<R: Snapshot>(
     let key = feed_change(read, &event, &project, &through, resolve, &mut changes)?;
     if let Some((kind, key)) = key {
         let pointer = RecordPointer {
-            key: RecordKey::new(key)?,
+            key,
             kind,
             source_event: through.clone(),
         };
@@ -114,12 +114,15 @@ fn feed_kinds(resolve: &PathResolver<'_>) -> Vec<EventKind> {
         EventKind::DecisionRejected,
         EventKind::DecisionRetracted,
         EventKind::DecisionSuperseded,
+        EventKind::SessionTurnPublished,
+        EventKind::TurnErased,
     ];
     if resolve.is_some() {
         kinds.push(EventKind::SessionTurn);
     }
     kinds
 }
+/// Published turns arrive without chat text, so every accepted event fits.
 fn feed_page<R: Snapshot>(
     read: &mut R,
     kinds: Vec<EventKind>,
@@ -197,14 +200,14 @@ fn feed_edit_change<R: Snapshot>(
     }
     Ok(())
 }
-fn feed_change<'a, R: Snapshot>(
+fn feed_change<R: Snapshot>(
     read: &mut R,
-    event: &'a StoredEvent,
+    event: &StoredEvent,
     project: &ProjectId,
     through: &se_types::EventId,
     resolve: PathResolver<'_>,
     changes: &mut Vec<RecordFeedChange>,
-) -> Result<Option<(RecordKind, &'a str)>> {
+) -> Result<Option<(RecordKind, RecordKey)>> {
     Ok(match &event.body {
         EventBody::SessionTurn { .. } => {
             feed_edit_change(read, event, project, through, resolve, changes)?;
@@ -227,9 +230,40 @@ fn feed_change<'a, R: Snapshot>(
             None
         }
         EventBody::MessageSent { message, .. } | EventBody::WorkMessageSent { message, .. } => {
-            Some((RecordKind::Message, message.as_str()))
+            Some((RecordKind::Message, RecordKey::new(message.as_str())?))
         }
-        EventBody::WorkingStateSet { agent, .. } => Some((RecordKind::Working, agent.as_str())),
+        EventBody::WorkingStateSet { agent, .. } => {
+            Some((RecordKind::Working, RecordKey::new(agent.as_str())?))
+        }
+        EventBody::SessionTurnPublished {
+            body: Some(StoredText::Erased { .. }),
+            ..
+        } => {
+            changes.push(RecordFeedChange::Remove {
+                project: project.clone(),
+                key: super::published::key(&event.header.event)?,
+            });
+            None
+        }
+        EventBody::SessionTurnPublished { .. } => super::published::document(event)?
+            .map(|_| super::published::key(&event.header.event))
+            .transpose()?
+            .map(|key| (RecordKind::Turn, key)),
+        EventBody::TurnErased { target, .. } => {
+            let source = scope::require_present(
+                read.event(target.clone()).map_err(|e| store_error(&e))?,
+                "erased turn identity",
+                "Restore the immutable turn metadata before completing Atlas privacy maintenance.",
+            )?;
+            // A captured turn's edit record reads as stale once its text is gone.
+            if matches!(source.body, EventBody::SessionTurnPublished { .. }) {
+                changes.push(RecordFeedChange::Remove {
+                    project: project.clone(),
+                    key: super::published::key(target)?,
+                });
+            }
+            None
+        }
         EventBody::DecisionProposed { decision, .. }
         | EventBody::DecisionRatified { decision, .. }
         | EventBody::DecisionRejected { decision, .. }
@@ -341,6 +375,13 @@ fn explicit_mentions<R: Snapshot>(
             }
             refs.as_slice()
         }
+        EventBody::SessionTurnPublished { .. } => {
+            if let Some(published) = super::published::document(event)? {
+                output.extend(published.paths.into_iter().map(MentionTarget::File));
+                output.dedup();
+            }
+            return Ok(output);
+        }
         _ => return Ok(output),
     };
     for id in refs {
@@ -395,6 +436,9 @@ fn audience(event: &StoredEvent) -> RecordVisibility {
         }
         | EventBody::WorkingStateSet { agent, .. }
         | EventBody::SessionTurn { agent, .. } => keys.push(AtlasPrincipal::Agent(agent.clone())),
+        EventBody::SessionTurnPublished { turn, .. } => {
+            keys.push(AtlasPrincipal::Agent(turn.agent.clone()));
+        }
         EventBody::WorkMessageSent { work, .. } => {
             keys.extend(work.addressees.iter().cloned().map(AtlasPrincipal::Agent));
         }

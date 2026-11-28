@@ -590,6 +590,28 @@ fn decode_runtime(
                     .map_err(|_| SeError::invalid("event", "a fixed Claude hook event"))?,
             }),
             "working_state.get" => AnyOp::WorkingStateGet(WorkingStateGet { owner_agent: None }),
+            "session.publish_turn" => {
+                let mut turn: serde_json::Value = serde_json::from_str(&required(m, "turn")?)
+                    .map_err(|e| SeError::invalid("turn", &format!("one JSON object: {e}")))?;
+                let object = turn
+                    .as_object_mut()
+                    .ok_or_else(|| SeError::invalid("turn", "one JSON object"))?;
+                if object.contains_key("idempotency_key") {
+                    return Err(SeError::invalid(
+                        "turn",
+                        "the turn without idempotency_key; pass --key",
+                    ));
+                }
+                object.insert(
+                    "idempotency_key".into(),
+                    serde_json::to_value(key()?)
+                        .map_err(|e| SeError::invalid("turn", &e.to_string()))?,
+                );
+                AnyOp::SessionPublishTurn(
+                    serde_json::from_value(turn)
+                        .map_err(|e| SeError::invalid("turn", &e.to_string()))?,
+                )
+            }
             "working_state.set" => {
                 let expect = required(m, "expect")?;
                 AnyOp::WorkingStateSet(WorkingStateSet {

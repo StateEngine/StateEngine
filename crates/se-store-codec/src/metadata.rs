@@ -36,7 +36,8 @@ pub fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
         | SessionActivated { .. }
         | SessionEnded { .. }
         | SessionRevoked { .. }
-        | SessionTurn { .. } => session_turn(body)?,
+        | SessionTurn { .. }
+        | SessionTurnPublished { .. } => session_turn(body)?,
         CaptureSource { .. }
         | CaptureProgress { .. }
         | CaptureVerified { .. }
@@ -302,6 +303,7 @@ fn session_turn<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
             "session.turn",
             json!({"turn":turn,"agent":agent,"session":session,"provider":provider,"vendor_ref":vendor_ref,"role":role,"evidence":evidence}),
         ),
+        SessionTurnPublished { turn, .. } => ("session.turn_published", json!({ "turn": turn })),
         _ => return unmapped(),
     })
 }

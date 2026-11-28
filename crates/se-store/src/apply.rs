@@ -16,6 +16,7 @@ pub(crate) use revision::{expected, revision_for};
 mod principal;
 pub(crate) mod process;
 pub(crate) mod project;
+mod published_turn;
 pub(crate) mod session;
 use crate::{codec, connection::*, error::*, identity::*, *};
 use rusqlite::{Connection, OptionalExtension};
@@ -213,6 +214,7 @@ pub(crate) fn apply(
             work_message::mark(c, header, body, seq, revision)?
         }
         b @ WorkingStateSet { .. } => set_working_state(x, b)?,
+        SessionTurnPublished { turn, body } => published_turn::apply(c, header, seq, turn, body)?,
         b @ (SessionPrepared { .. }
         | SessionActivated { .. }
         | SessionEnded { .. }

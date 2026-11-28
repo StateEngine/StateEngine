@@ -20,12 +20,17 @@ pub(super) fn residual(
                 location,
                 reason: "The provider wrote this turn to its own transcript; StateEngine does not own or edit that file.".into(),
             }),
-        None if !turn => Some(ResidualCopy {
-            custodian: "Atlas project index".into(),
-            location: NativePath::from_local(home.join("atlas")).map_err(invalid)?,
-            reason: "Atlas drops the message record when it next reads history; freed index pages may hold the text until Atlas compacts its database.".into(),
-        }),
+        None if !turn => Some(atlas(home)?),
         None => None,
+    })
+}
+/// Atlas indexes message bodies and published turns' decisions and paths.
+pub(super) fn atlas(home: &std::path::Path) -> StoreResult<ResidualCopy> {
+    Ok(ResidualCopy {
+        custodian: "Atlas project index".into(),
+        location: NativePath::from_local(home.join(se_types::code::ATLAS_STATE_DIRECTORY))
+            .map_err(invalid)?,
+        reason: "Atlas drops the forgotten record when it next reads history; freed index pages may hold its text until Atlas compacts its database.".into(),
     })
 }
 /// The recipient agent's recorded provider transcripts written after the message

@@ -158,7 +158,7 @@ impl LaunchCoordinator {
             ),
         };
         row.provider_activity = Some(activity);
-        row.context = Some(context);
+        row.merge_context(context);
         row.background = se_agent_observation::background(row.provider, &self.native, found);
         if row.provider == se_types::Provider::Codex {
             row.codex_login = Some(match &row.session.session_id {

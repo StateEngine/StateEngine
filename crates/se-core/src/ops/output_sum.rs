@@ -121,6 +121,7 @@ MessageRead => MessageRead, MessageReadOutput;
 MessageDisposition => MessageAck, DispositionReceipt;
 WorkingStateGet => WorkingStateGet, WorkingStateOutput;
 WorkingStateSet => WorkingStateSet, WorkingStateReceipt;
+SessionPublishTurn => SessionPublishTurn, SessionPublishTurnOutput;
 HookClaude => HookClaude, HookResult;
 RuntimeUp => RuntimeUp, RuntimeStart;
 RuntimeDown => RuntimeDown, RuntimeStop;

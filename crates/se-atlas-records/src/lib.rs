@@ -2,6 +2,7 @@
 mod captured;
 mod excerpt;
 pub mod feed;
+mod published;
 use se_core::{ops::receipt, scope, store_error::store_error};
 use se_store::{
     Actor, Admission, EventBody, EventHeader, Scope, Snapshot, StoreErrorCode, StoredEvent,
@@ -86,6 +87,11 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
         } else {
             captured::Captured::Skip
         };
+        let published = if pointer.kind == RecordKind::Turn {
+            published::document(&source)?
+        } else {
+            None
+        };
         let body = match (source.body, pointer.kind) {
             (_, RecordKind::Decision) => return Ok(Read::Absent {
                 checked: "decision ledger records are retired; original events remain readable through history".into(),
@@ -109,6 +115,18 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
                     return Ok(stale());
                 }
                 text(body)?
+            }
+            (EventBody::SessionTurnPublished { .. }, RecordKind::Turn) => {
+                if published::key(&source.header.event)? != pointer.key {
+                    return Ok(stale());
+                }
+                let Some(published) = published else {
+                    return Ok(Read::Absent {
+                        checked: "published turn prose was erased or names no decision or paths"
+                            .into(),
+                    });
+                };
+                published.body
             }
             (EventBody::SessionTurn { .. }, RecordKind::Edit) => {
                 return self.edit_document(project, pointer, captured, at);

@@ -107,6 +107,7 @@ impl SqliteSnapshot {
                     }
                     EventBody::WorkingStateSet { agent, .. }
                     | EventBody::SessionTurn { agent, .. } => agent == a,
+                    EventBody::SessionTurnPublished { turn, .. } => &turn.agent == a,
                     EventBody::CaptureSource { session, .. }
                     | EventBody::CaptureFailed { session, .. }
                     | EventBody::CaptureVerified { session, .. }

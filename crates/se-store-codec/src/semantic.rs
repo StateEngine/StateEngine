@@ -35,6 +35,17 @@ pub fn descriptor<T, S: Serialize>(
         | CredentialRevoked { reason, .. } => {
             fields.insert("reason".into(), json!(text(reason)?));
         }
+        SessionTurnPublished {
+            body: Some(value), ..
+        } => {
+            // The body is already a JSON document: nest it rather than escape it
+            // again, so a turn costs about its stored size to read.
+            let body = match json!(text(value)?) {
+                Value::String(doc) => serde_json::from_str(&doc).unwrap_or(Value::String(doc)),
+                other => other,
+            };
+            fields.insert("body".into(), body);
+        }
         SessionTurn { text: value, .. } => {
             fields.remove("turn");
             fields.insert("text".into(), json!(text(value)?));

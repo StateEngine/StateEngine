@@ -3,7 +3,7 @@
  "default_directory_files": 12,
  "directories": {
   "crates/se-host/src/runtime": 92,
-  "crates/se-core/src/ops": 100,
+  "crates/se-core/src/ops": 101,
   "crates/se-host/src/process": 70,
   "crates/se-host/src/remote": 27,
   "crates/se-harness/src/harness": 58,

@@ -168,6 +168,7 @@ pub(super) fn kind_name(k: EventKind) -> &'static str {
         EventKind::DecisionRetracted => "decision.retracted",
         EventKind::DecisionSuperseded => "decision.superseded",
         EventKind::SessionTurn => "session.turn",
+        EventKind::SessionTurnPublished => "session.turn_published",
         EventKind::CaptureSource => "capture.source",
         EventKind::CaptureProgress => "capture.progress",
         EventKind::CaptureFailed => "capture.failed",

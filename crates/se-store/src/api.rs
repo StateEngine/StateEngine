@@ -409,6 +409,14 @@ pub trait Snapshot {
     /// One agent's most recent session in any state, ended and revoked
     /// included, with its original preparation; absent if it never had one.
     fn latest_session(&mut self, agent: AgentId) -> StoreResult<Read<ProjectionRecord>>;
+    /// The published main-conversation turn of this agent's session that reported
+    /// usage and occurred last; a late backfill of an older turn never wins.
+    /// Nested turns describe another context and are skipped.
+    fn published_usage(
+        &mut self,
+        agent: AgentId,
+        session: SessionId,
+    ) -> StoreResult<Read<crate::published_turn::PublishedUsage>>;
     fn message(&mut self, id: MessageId) -> StoreResult<Read<MessageRecord>>;
     /// Read the verified original source of this visible addressed message.
     /// Local mail returns None; missing remote provenance refuses. Later revoke

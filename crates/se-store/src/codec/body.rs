@@ -43,6 +43,7 @@ pub(crate) fn body(
             message_mark(c, seq, scope, kind)?
         }
         "working_state.set" => working_state_set(c, seq, scope)?,
+        "session.turn_published" => super::published_turn::decode(c, seq, scope)?,
         "decision.proposed"
         | "decision.ratified"
         | "decision.rejected"

@@ -99,6 +99,7 @@ fn record_kind(kind: SearchKind) -> Option<RecordKind> {
         SearchKind::Working => Some(RecordKind::Working),
         SearchKind::Edit => Some(RecordKind::Edit),
         SearchKind::Commit => Some(RecordKind::Commit),
+        SearchKind::Turn => Some(RecordKind::Turn),
         _ => None,
     }
 }

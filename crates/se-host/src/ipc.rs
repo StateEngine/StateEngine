@@ -106,9 +106,12 @@ pub trait IpcPlatform: Send + Sync {
 pub const MAX_CAPABILITIES: usize = 32;
 pub const MAX_CAPABILITY_LEN: usize = 64;
 pub const CAPABILITY_IPC_CAPABILITIES: &str = "ipc.capabilities";
+/// The host accepts `session.publish_turn`.
+pub const CAPABILITY_SESSION_PUBLISH_TURN: &str = "session.publish_turn";
 pub const HOST_CAPABILITIES: &[&str] = &[
     CAPABILITY_IPC_CAPABILITIES,
     crate::events::EVENTS_SUBSCRIBE_CAPABILITY,
+    CAPABILITY_SESSION_PUBLISH_TURN,
 ];
 
 pub struct ClientHello {

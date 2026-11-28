@@ -123,6 +123,7 @@ fn pointer(record_id: &str, kind: &str, event: &str) -> Option<RecordPointer> {
         "working" => RecordKind::Working,
         "edit" => RecordKind::Edit,
         "commit" => RecordKind::Commit,
+        "turn" => RecordKind::Turn,
         _ => return None,
     };
     Some(RecordPointer {

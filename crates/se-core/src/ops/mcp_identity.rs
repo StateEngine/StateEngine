@@ -54,6 +54,7 @@ pub const MCP_IDENTITY_ARGUMENT_ROLES: &[(&str, &[FieldRole])] = &[
     ("stateengine_msg_list", CALLER_FIELDS),
     ("stateengine_working_state_get", CALLER_FIELDS),
     ("stateengine_working_state_set", CALLER_FIELDS),
+    ("stateengine_session_publish_turn", CALLER_FIELDS),
     ("stateengine_agent_create", CALLER_FIELDS),
     ("stateengine_resume", CALLER_FIELDS),
     ("stateengine_handoff_export", CALLER_FIELDS),

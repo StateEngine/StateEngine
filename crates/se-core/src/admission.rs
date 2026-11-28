@@ -21,6 +21,7 @@ pub const EXTERNAL_SEAT_ALLOWLIST: &[&str] = &[
     "message.send",
     "working_state.get",
     "working_state.set",
+    "session.publish_turn",
 ];
 
 /// Enforce the narrow Phase 1 command allowlist for an external seat lease.
@@ -39,7 +40,7 @@ pub fn authorize_external_seat(meta: &OpMeta, admission: &Admission) -> Result<(
         return Err(SeError::invalid(
             "external seat operation",
             &format!(
-                "an operation permitted for external seats (whoami, inbox list/read/ack/dismiss, send, working_state); `{}` is refused for external leases",
+                "an operation permitted for external seats (whoami, inbox list/read/ack/dismiss, send, working_state, publish_turn); `{}` is refused for external leases",
                 meta.name
             ),
         ));

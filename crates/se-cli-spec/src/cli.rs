@@ -635,6 +635,9 @@ fn input_command_ops(name: &str, c: Command) -> Command {
         "working_state.get" => {
             c.arg(value("agent").help("Saved agent name or ID whose working state the owner reads"))
         }
+        "session.publish_turn" => c.arg(positional("turn", 1, true).help(
+            "The turn as one JSON object with the stateengine_session_publish_turn fields; --key supplies idempotency_key, and \"body_text\":\"-\" reads the body from stdin",
+        )),
         "working_state.set" => c
             .arg(
                 positional("text", 1, true)

@@ -7,7 +7,7 @@ pub(crate) mod permit;
 mod residuals;
 mod resume;
 use crate::{connection, error::*, open::SqliteHost, *};
-use residuals::{inventory, recipient_transcripts, residual, same_inventory};
+use residuals::{atlas, inventory, recipient_transcripts, residual, same_inventory};
 use resume::{committed_generations, open_manifest, pinned_generations, unfinished};
 use rusqlite::{Connection, OptionalExtension};
 use se_types::{EventId, HumanId};
@@ -80,7 +80,7 @@ fn observe_one(
     let project = project.ok_or_else(|| {
         fail(
             StoreErrorCode::InvalidTransition,
-            "only project messages and captured turns can be forgotten",
+            "only project messages and captured or published turns can be forgotten",
         )
     })?;
     if revision != target.expected.value.get() {
@@ -108,30 +108,7 @@ fn observe_one(
             "Nothing is left to erase for this event; leave it out of the request.".into();
         return Err(error);
     }
-    let (turn, sql_text) = match kind.as_str() {
-        "session.turn" => (
-            true,
-            "SELECT length(p.content),s.value FROM turn_data d JOIN payloads p ON p.payload_id=d.text_payload LEFT JOIN symbols s ON s.id=d.source_path WHERE d.event_seq=?",
-        ),
-        "message.sent" => (
-            false,
-            "SELECT length(p.content),NULL FROM message_data d JOIN payloads p ON p.payload_id=d.body_payload WHERE d.event_seq=?",
-        ),
-        // Shared work mail keeps one body payload per event and no message_data row.
-        "message.work_sent" => (
-            false,
-            "SELECT length(p.content),NULL FROM payloads p WHERE p.event_seq=? AND p.field='body'",
-        ),
-        _ => {
-            return Err(fail(
-                StoreErrorCode::InvalidTransition,
-                format!(
-                    "event {} is a {kind}; only message bodies and captured turns can be forgotten",
-                    target.event.as_str()
-                ),
-            ));
-        }
-    };
+    let (turn, sql_text) = body_query(&kind, &target.event)?;
     let (bytes, source): (u64, Option<Vec<u8>>) = c
         .query_row(sql_text, [seq], |r| {
             Ok((crate::sql_value::value(r, 0)?, r.get(1)?))
@@ -153,7 +130,42 @@ fn observe_one(
     if !turn {
         residuals.extend(recipient_transcripts(c, seq, &kind)?);
     }
+    if kind == "session.turn_published" {
+        residuals.push(atlas(home)?);
+    }
     Ok((project, body, residuals))
+}
+/// Which forgettable body an event kind stores, and the query that sizes it.
+fn body_query(kind: &str, event: &EventId) -> StoreResult<(bool, &'static str)> {
+    Ok(match kind {
+        "session.turn" => (
+            true,
+            "SELECT length(p.content),s.value FROM turn_data d JOIN payloads p ON p.payload_id=d.text_payload LEFT JOIN symbols s ON s.id=d.source_path WHERE d.event_seq=?",
+        ),
+        // Every published prose field lives in the one body payload.
+        "session.turn_published" => (
+            true,
+            "SELECT length(p.content),NULL FROM published_turns d JOIN payloads p ON p.payload_id=d.body_payload WHERE d.event_seq=?",
+        ),
+        "message.sent" => (
+            false,
+            "SELECT length(p.content),NULL FROM message_data d JOIN payloads p ON p.payload_id=d.body_payload WHERE d.event_seq=?",
+        ),
+        // Shared work mail keeps one body payload per event and no message_data row.
+        "message.work_sent" => (
+            false,
+            "SELECT length(p.content),NULL FROM payloads p WHERE p.event_seq=? AND p.field='body'",
+        ),
+        _ => {
+            return Err(fail(
+                StoreErrorCode::InvalidTransition,
+                format!(
+                    "event {} is a {kind}; only message bodies and captured or published turns can be forgotten",
+                    event.as_str()
+                ),
+            ));
+        }
+    })
 }
 fn observe(
     c: &Connection,

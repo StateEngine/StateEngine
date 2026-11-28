@@ -53,7 +53,7 @@ impl Service {
         interests: Arc<crate::atlas_runtime::record_fence::RecordFeedFence>,
     ) -> Result<Arc<Self>> {
         Ok(Arc::new(Self {
-            home: state_directory.join("atlas-v5"),
+            home: state_directory.join(se_types::code::ATLAS_STATE_DIRECTORY),
             owner,
             enabled,
             interests,

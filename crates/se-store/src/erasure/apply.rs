@@ -116,6 +116,7 @@ pub(crate) fn body(
     // Work mail keeps its body payload without a projection column to clear.
     let (table, column) = match (kind, stored_kind.as_str()) {
         ("turn", "session.turn") => ("turn_data", Some("text_payload")),
+        ("turn", "session.turn_published") => ("published_turns", Some("body_payload")),
         ("message", "message.sent") => ("message_data", Some("body_payload")),
         ("message", "message.work_sent") => ("payloads", None),
         _ => {
@@ -158,10 +159,11 @@ pub(crate) fn body(
     {
         let _allowed = permit::body(seq, "body");
         if let Some(column) = column {
-            let digest = if table == "turn_data" {
-                ",source_sha256=NULL"
-            } else {
-                ""
+            // A content digest would let anyone confirm a guessed body.
+            let digest = match table {
+                "turn_data" => ",source_sha256=NULL",
+                "published_turns" => ",content_sha256=NULL",
+                _ => "",
             };
             c.execute(
                 &format!("UPDATE {table} SET {column}=NULL{digest} WHERE event_seq=?"),

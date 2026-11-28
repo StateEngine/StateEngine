@@ -500,7 +500,7 @@ fn verify_in_band_switch_refused(h: &LiveHost, capability: &str) -> Check {
 }
 
 fn verify_external_mcp_tools(h: &LiveHost) -> Check {
-    // MCP tools/list for an external seat advertises ONLY the 8 Phase 1 allowlisted tools (never se_join!).
+    // MCP tools/list for an external seat advertises ONLY the 9 allowlisted tools (never se_join!).
     struct DummyExternal;
     impl se_host::mcp::McpBackend for DummyExternal {
         fn is_external_seat(&self) -> bool {
@@ -535,7 +535,8 @@ fn verify_external_mcp_tools(h: &LiveHost) -> Check {
         .iter()
         .filter_map(|t| t["name"].as_str())
         .collect();
-    assert_eq!(names.len(), 8, "expected 8 external tools, got {names:?}");
+    assert_eq!(names.len(), 9, "expected 9 external tools, got {names:?}");
+    assert!(names.contains(&"stateengine_session_publish_turn"));
     assert!(
         !names
             .iter()

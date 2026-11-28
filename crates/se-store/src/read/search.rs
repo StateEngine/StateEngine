@@ -136,6 +136,7 @@ fn snippet(body: &EventBody<StoredText>, needle: &str) -> StoreResult<Option<(St
     let fields = match body {
         MessageSent { body, .. } | WorkMessageSent { body, .. } => vec![body],
         SessionTurn { text, .. } | WorkingStateSet { text, .. } => vec![text],
+        SessionTurnPublished { body, .. } => body.iter().collect(),
         DecisionProposed {
             statement,
             rationale,

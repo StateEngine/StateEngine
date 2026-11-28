@@ -160,7 +160,7 @@ If authentication and admission succeed, the host replies with `ServerHello` (or
   "maximum_reply_bytes": 262144,
   "package_version": "0.1.3",
   "store_id": "store_01...",
-  "capabilities": ["ipc.capabilities", "events.subscribe"]
+  "capabilities": ["ipc.capabilities", "events.subscribe", "session.publish_turn"]
 }
 ```
 
@@ -172,6 +172,7 @@ If authentication and admission succeed, the host replies with `ServerHello` (or
   - `capabilities`: Exact list of optional capabilities supported by this host binary. Hosts never advertise unimplemented capabilities.
     - `"ipc.capabilities"`: Capability negotiation handshake is supported.
     - `"events.subscribe"`: Cursor-resumable push event stream (`IpcRequest::Subscribe`) is supported.
+    - `"session.publish_turn"`: The `session.publish_turn` operation is available (see [Publishing turns](#publishing-turns)).
 
 ---
 
@@ -305,5 +306,42 @@ Exact JSON Schemas for every registered operation's input and output are exporte
 se schema                          # list all registered operations and their schemas
 se schema project.status --json    # exact input/output JSON schema for one operation
 ```
+
+### Publishing turns
+
+A harness that runs its own conversations records each completed turn with `session.publish_turn`. Check for the `session.publish_turn` host capability first; older hosts refuse the operation name. Put the same idempotency key in `arguments.idempotency_key` and in `input.key`.
+
+```json
+{
+  "kind": "operation",
+  "input": {
+    "name": "session.publish_turn",
+    "key": "turn-7f3a",
+    "arguments": {
+      "idempotency_key": "turn-7f3a",
+      "conversation_id": "conv-1",
+      "harness": "example-harness",
+      "model": { "provider": "anthropic", "model": "example-model" },
+      "vendor_turn_id": "turn-42",
+      "occurred_at_us": 1795000000000000,
+      "role": "assistant",
+      "body_text": "Renamed the config loader.",
+      "content_sha256": "<lowercase hex SHA-256 of the complete body>",
+      "usage": { "input_tokens": 1200, "output_tokens": 300, "cache_read_tokens": 0, "cache_write_tokens": 0 },
+      "diff_summary": { "files_changed": 1, "insertions": 4, "deletions": 2, "paths": ["src/config.rs"] },
+      "decision": { "title": "Rename the loader", "rationale": "Clearer name", "scope": "config" }
+    }
+  }
+}
+```
+
+- An agent session publishes only for its own agent and session, so it omits `target_agent_id` and `session_id`. An owner client names both.
+- `body_text`, `usage`, `diff_summary`, `decision` and `nesting` are optional. A shortened body reports the bytes it left out in `body_omitted_bytes`. The serialized body, decision and paths together stay within 1 MiB, and the decision and paths alone within 64 KiB.
+- `content_sha256` is checked when the whole body is supplied, and recorded as reported when it is not. It is kept only when prose is stored, so `se forget` erases the two together.
+- `occurred_at_us` runs from 0 through 253402300799999999 (the end of year 9999).
+- The key is bound to the resolved agent and session, so one key never replays across sessions. Replaying it returns the original `event_id` and `cursor`. Reusing a `vendor_turn_id` for the same session and harness under a new key is refused with `state-conflict`.
+- When no prose is stored, the reported `content_sha256` is neither kept nor part of the key's request, so a replay may differ in that field alone.
+- The receipt (`se.publish-turn-receipt/v1`) reports `cursor`, `body_stored`, `content_sha256_stored` and `content_verified`. `cursor` is the event's store sequence number, which orders events; it is not a history `--position` cursor. Read the event with `se history --event ID` for that.
+- `se forget` erases the body, decision, paths and digest. Token usage and diff counts remain. The forget also drops the request digest kept for the key, so replaying that key afterwards is refused with `source-unreadable` (the fingerprint was erased); the turn stays published.
 
 See [docs/OPS.md](OPS.md) for the complete operation inventory and [docs/USING.md](USING.md) for external seat workflows (`se agent add <name> --external`, `se external approve`, `se msg wait`).

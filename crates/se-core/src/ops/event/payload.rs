@@ -14,6 +14,53 @@ fn text(value: &StoredText) -> Result<Value> {
     let hash: String = se_types::hex_lower(&Sha256::digest(value.as_bytes()));
     Ok(json!({"text":value,"bytes":value.len(),"sha256":hash,"complete":true}))
 }
+/// Published prose is one JSON document; after forget only its absence remains.
+fn published_prose(body: Option<&StoredText>) -> Result<Value> {
+    Ok(match body {
+        None => Value::Null,
+        Some(StoredText::Present(doc)) => {
+            let mut prose: Value = serde_json::from_str(doc)
+                .map_err(|e| scope::unreadable("published turn prose", &e.to_string()))?;
+            prose["erased"] = Value::Bool(false);
+            prose
+        }
+        Some(_) => json!({"text": null, "erased": true}),
+    })
+}
+fn published_turn<R: Snapshot>(
+    read: &mut R,
+    turn: &se_store::published_turn::PublishedTurn,
+    body: Option<&StoredText>,
+) -> Result<Value> {
+    let role = match turn.role {
+        se_store::Role::User => "user",
+        se_store::Role::Assistant => "assistant",
+        se_store::Role::Tool => "tool",
+        se_store::Role::System => {
+            return Err(scope::unreadable(
+                "published turn role",
+                "a user, assistant or tool turn",
+            ));
+        }
+    };
+    Ok(json!({
+        "agent": receipt::named_agent(read, &turn.agent)?,
+        "session_id": turn.session,
+        "conversation_id": turn.conversation,
+        "harness": turn.harness,
+        "model": {"provider": turn.model_provider, "model": turn.model},
+        "vendor_turn_id": turn.vendor_turn,
+        "occurred_at": receipt::timestamp(turn.occurred_at_us)?,
+        "role": role,
+        "body_omitted_bytes": turn.body_omitted_bytes,
+        "content_sha256": turn.content_sha256.map(|d| se_types::hex_lower(&d)),
+        "content_verified": turn.content_verified,
+        "usage": turn.usage,
+        "diff": turn.diff,
+        "nesting": turn.nesting,
+        "prose": published_prose(body)?,
+    }))
+}
 pub(super) fn public<R: Snapshot>(
     event: &StoredEvent,
     read: &mut R,
@@ -30,6 +77,7 @@ pub(super) fn public<R: Snapshot>(
         MessageDismissed{message,recipient}=>("message.dismissed",json!({"message_id":message,"recipient":receipt::actor_ref(read,recipient)?})),
         MessageDelivered{message,recipient,evidence}=>("message.delivered",json!({"message_id":message,"recipient":receipt::actor_ref(read,recipient)?,"evidence":evidence})),
         MessageSuperseded{message,replacement,..}=>("message.superseded",json!({"message_id":message,"replacement":replacement})),
+        SessionTurnPublished { turn, body } => ("session.turn_published", published_turn(read, turn, body.as_ref())?),
         WorkingStateSet { agent, text: body, .. } => ("working_state.set", json!({"agent":receipt::named_agent(read,agent)?,"body":text(body)?,"revision":event.revision.value})),
         PrincipalRegistered { principal, name, role, ephemeral, .. } => {
             let mut body = json!({"principal":receipt::actor_ref(read,principal)?,"name":name,"role":role});

@@ -249,3 +249,11 @@ are not shipped.
   `se msg wait [--as NAME] [--after CURSOR] [--timeout SECS]` for zero-polling blocking
   mail waits on a separate CLI channel (keeping MCP stdio pipes non-blocking). Run
   `se guide external-seats` for the full walkthrough.
+- **Published turns.** A harness that runs its own conversations can record each completed
+  turn with the `stateengine_session_publish_turn` tool, or from an Owner terminal with
+  `se session publish-turn TURN_JSON --key KEY`: a summary, reported token usage, diff
+  counts and a decision. A session publishes only its own turns. History shows them,
+  `se status` uses the reported usage of the latest turn for context fill until a live
+  runtime reports its own, and `se atlas find --kind turn` and `se atlas inspect` show a
+  turn's decision and changed paths. `se forget --event ID` erases the summary, decision,
+  paths and content digest, and removes the turn from Atlas, while keeping the counts.

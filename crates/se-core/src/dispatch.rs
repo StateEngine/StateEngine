@@ -251,6 +251,7 @@ impl Kernel {
             AnyOp::MessageDismiss(input) => plan_message_dismiss(self, input, cx),
             AnyOp::MessageSend(input) => message_send_step(self, input, cx),
             AnyOp::WorkingStateSet(input) => working_state_set_step(self, input, cx),
+            AnyOp::SessionPublishTurn(input) => crate::ops::publish_turn::write(self, input, cx),
             AnyOp::WorkingStateGet(input) => plan_working_state_get(input, cx),
             AnyOp::IdentityWhoami(input) => plan_identity_whoami(input, cx),
             AnyOp::HistoryList(input) => plan_history_list(input, cx),
@@ -295,6 +296,7 @@ impl Kernel {
         let maintenance_failed = receipt.maintenance_failed;
         let output: Result<crate::ops::AnyOutput> = match then {
             Then::Assignment(then) => crate::ops::assignment::committed(then, receipt, cx),
+            Then::PublishTurn(then) => crate::ops::publish_turn::committed(then, receipt, cx),
             Then::Captain(then) => crate::ops::captain::committed(then, receipt, cx),
             Then::AgentConfig(then) => {
                 Ok(crate::ops::agent_config_receipt::committed(then, receipt, cx)?.into())

@@ -157,6 +157,7 @@ pub(crate) fn texts(body: &mut EventBody<InputText>) -> Vec<&mut InputText> {
     match body {
         MessageSent { body, .. } | WorkMessageSent { body, .. } => vec![body],
         WorkingStateSet { text, .. } | SessionTurn { text, .. } => vec![text],
+        SessionTurnPublished { body, .. } => body.iter_mut().collect(),
         DecisionProposed {
             statement,
             rationale,

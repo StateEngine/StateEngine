@@ -576,6 +576,61 @@ impl Snapshot for SqliteSnapshot {
             Some("first_seq"),
         )
     }
+    fn published_usage(
+        &mut self,
+        agent: AgentId,
+        session: SessionId,
+    ) -> StoreResult<Read<crate::published_turn::PublishedUsage>> {
+        use rusqlite::OptionalExtension;
+        let checked = "No turn with token usage was published for this session.";
+        if self.info.schema_version < 18 {
+            return Ok(Read::Absent {
+                checked: "This store predates published turns.".into(),
+            });
+        }
+        let p = self.project_bytes()?;
+        let a = self.agent_bytes(&agent)?;
+        let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
+        let s = match key(&self.db, "session", session.as_str(), &scope, false) {
+            Ok(s) => s,
+            Err(e) if e.code == StoreErrorCode::ReferenceMissing => {
+                return Ok(Read::Absent {
+                    checked: checked.into(),
+                });
+            }
+            Err(e) => return Err(e),
+        };
+        let row: Option<(i64, i64, i64, i64, Option<f64>, i64)> = self
+            .db
+            .query_row(
+                "SELECT input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost_usd,occurred_at_us FROM published_turns INDEXED BY published_turns_session_time
+                 WHERE project_id=? AND session_id=? AND agent_id=? AND input_tokens IS NOT NULL AND parent_session_id IS NULL
+                 ORDER BY occurred_at_us DESC,event_seq DESC LIMIT 1",
+                crate::sql_value::sql_params![p, s, a],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .optional()
+            .map_err(sql)?;
+        let Some((input, output, cache_read, cache_write, cost_usd, occurred_at_us)) = row else {
+            return Ok(Read::Absent {
+                checked: checked.into(),
+            });
+        };
+        let count =
+            |v: i64| u64::try_from(v).map_err(|_| invalid("negative published token count"));
+        Ok(Read::Present {
+            value: crate::published_turn::PublishedUsage {
+                usage: crate::published_turn::TurnUsage {
+                    input_tokens: count(input)?,
+                    output_tokens: count(output)?,
+                    cache_read_tokens: count(cache_read)?,
+                    cache_write_tokens: count(cache_write)?,
+                    cost_usd,
+                },
+                occurred_at_us,
+            },
+        })
+    }
     fn sessions(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
         self.require_local_port()?;
         let p = self.project_bytes()?;

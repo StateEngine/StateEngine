@@ -106,6 +106,7 @@ fn present(value: &HistoryEvent, conversation_page: bool, out: &mut impl Write) 
 fn title(kind: &str) -> &str {
     match kind {
         "session.turn" => "Conversation message",
+        "session.turn_published" => "Published turn",
         "message.sent" => "Message sent",
         "message.work_sent" => "Project message sent",
         "working_state.set" => "Working notes saved",
@@ -153,6 +154,17 @@ fn fact(label: &str, text: &str, out: &mut impl Write) -> io::Result<()> {
 fn summary_fields(kind: &str) -> &'static [(&'static str, &'static str)] {
     match kind {
         "session.turn" => &[("Role", "/role"), ("Text", "/body/text")],
+        "session.turn_published" => &[
+            ("Agent", "/agent/name"),
+            ("Role", "/role"),
+            ("Harness", "/harness"),
+            ("Model", "/model/model"),
+            ("Text", "/prose/text"),
+            ("Decision", "/prose/decision/title"),
+            ("Input tokens", "/usage/input_tokens"),
+            ("Output tokens", "/usage/output_tokens"),
+            ("Files changed", "/diff/files_changed"),
+        ],
         "message.sent" | "message.work_sent" => &[
             ("To", "/to/name"),
             ("Kind", "/kind"),

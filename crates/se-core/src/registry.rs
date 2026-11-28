@@ -66,6 +66,7 @@ impl Family {
 pub enum HumanKind {
     Captain,
     Assignment,
+    PublishTurn,
     RemoteList,
     RemoteWatch,
     RemoteSend,

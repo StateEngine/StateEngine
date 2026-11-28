@@ -7,6 +7,7 @@ pub(crate) mod event;
 #[cfg(test)]
 mod materialized_text_review;
 pub(crate) mod process;
+mod published_turn;
 pub(crate) mod session;
 // Closed wave-1 metadata codec; text lives only in its typed payload column.
 use crate::{error::*, identity::*, *};

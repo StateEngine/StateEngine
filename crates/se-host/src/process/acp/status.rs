@@ -96,7 +96,7 @@ impl LaunchCoordinator {
         };
         let runtime = read();
         // A connection that cannot be read has no usage either; the runtime keeps the detail.
-        row.context = Some(match (&runtime, context) {
+        row.merge_context(match (&runtime, context) {
             (_, Some(context)) => context,
             (Ok(Read::Absent { .. }), None) => Read::Absent {
                 checked: "No live protocol connection".into(),
