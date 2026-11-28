@@ -44,10 +44,10 @@ All fields are closed (`deny_unknown_fields`); `schema` must be `1` and `package
 
 - `address.kind`:
   - `"unix_socket"` with `path` encoded as a `NativePath` (`{ "encoding": "unix_bytes", "units": [u8...] }`).
-  - `"windows_pipe"` with `name` matching `\\.\pipe\<segment>` (no NUL or path separators in `<segment>`, max 1024 UTF-16 code units).
+  - `"windows_pipe"` with `name` matching `\\.\pipe\<segment>` (`<segment>` non-empty, not `.` or `..`, no NUL or `/` / `\` separators; full `name` at most 1024 UTF-16 code units).
 - `epoch.owner.started.os`:
   - `"linux"`: `{ "os": "linux", "start_ticks": u64 }`
-  - `"macos"`: `{ "os": "macos", "start_seconds": i64, "start_micros": i64 }`
+  - `"macos"`: `{ "os": "macos", "start_seconds": u64, "start_micros": u32 }`
   - `"windows"`: `{ "os": "windows", "creation_filetime": u64 }`
 - `kind`: `"standalone"` or `"embedded_secode"`.
 - `listener_port`: Loopback HTTP port for managed MCP sessions (`null` if absent; never `0`).
@@ -93,11 +93,13 @@ Immediately after accepting a connection and observing the client's native OS pe
 ```json
 {
   "version": { "major": 1, "minor": 0 },
-  "epoch": { "...": "same HostEpoch as endpoint.json" },
-  "nonce": [/* 32 random bytes (u8 array) */],
+  "epoch": { "owner": { "...": "same HostEpoch as endpoint.json" }, "generation": 1 },
+  "nonce": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31],
   "image_sha256": "<64-hex-chars>"
 }
 ```
+
+(`nonce` is a 32-byte random `u8` array.)
 
 The client MUST verify that `version`, `epoch`, and `image_sha256` match the verified `endpoint.json` before proceeding.
 
@@ -113,8 +115,8 @@ The client replies with a `ClientHello`:
   "authority": {
     "kind": "owner_proof",
     "proof": {
-      "nonce": [/* 32 random client bytes */],
-      "mac": [/* 32-byte HMAC-SHA256 */]
+      "nonce": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31],
+      "mac": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
     }
   },
   "client_capabilities": ["ipc.capabilities"]
@@ -124,18 +126,23 @@ The client replies with a `ClientHello`:
 - `expected_generation`: Optional `u64` (`null` to accept any live generation). If present and different from the host's current generation, the host refuses with a stale-generation error.
 - `maximum_reply_bytes`: Non-zero `u32`, at most `1,048,576` (1 MiB).
 - `authority`: Tagged union (`kind` + `proof`), supporting:
-  - `owner_proof`: `{ "nonce": [u8; 32], "mac": [u8; 32] }` — HMAC-SHA256 using the owner's local machine key (`<state_home>/machine.key`, `>= 32` bytes) over the following `u32`-big-endian length-prefixed fields in order:
+  - `owner_proof`: `{ "nonce": [u8; 32], "mac": [u8; 32] }` — HMAC-SHA256 using the owner's local machine credential (`<state_home>/credential`, exact 32 bytes) over the following `u32`-big-endian length-prefixed fields in order:
     1. Domain tag: `b"se.ipc.owner/v1"`
     2. API version: `major` (`u16` BE) concatenated with `minor` (`u16` BE) (4 bytes)
     3. Canonical `challenge.epoch` JSON with object keys sorted lexicographically and no extra whitespace
     4. `challenge.image_sha256` raw bytes (32 bytes)
     5. `challenge.nonce` (32 bytes)
     6. Client `nonce` (32 bytes)
-    7. Canonical native OS peer binding bytes observed on the channel
+    7. Canonical native OS peer binding bytes observed on the channel: `b"se.native.peer/v1"` followed by `u32`-big-endian length-prefixed fields for:
+       - principal (`b"unix"` + `uid: u32 BE`, or `b"windows"` + UTF-8 `sid`),
+       - `pid: u32 BE`,
+       - process start identity (`b"linux"` + `start_ticks: u64 BE`, `b"windows"` + `creation_filetime: u64 BE`, or `b"macos"` + `start_seconds: u64 BE` + `start_micros: u32 BE`),
+       - `image_sha256` raw bytes (32 bytes).
   - `external_session`: `[u8; N]` — UTF-8 bytes of an owner-approved external seat capability (`sext1.<hex>`), held in transport memory only.
   - `external_claim`: `ExternalClaimBootstrap` (`{ "project": ProjectId | null, "cwd": NativePath, "agent": String, "connection_nonce": [u8; 32] }`) — opens a pending external seat claim awaiting out-of-band `se external approve <claim_id>`.
   - `session` / `launch` / `guest_bootstrap` / `session_bootstrap` / `lease`: Managed session and read-only guest bootstrap credentials used by `se` itself.
-- `client_capabilities` *(optional)*: Array of ASCII capability names indicating that the client supports capability negotiation.
+- `client_capabilities` *(optional, `Call` handshakes only)*: Array of ASCII capability names indicating that the client supports capability negotiation. Rejected on `Stop` and `Rebind` handshakes.
+  - Semantics: omitted or `null` means no opt-in (legacy behavior); `[]` (empty array) opts in to receiving host metadata and capability lists.
   - Bounds: at most `32` entries, each `1..=64` ASCII bytes matching `[A-Za-z0-9._-]`.
   - **Rolling-upgrade rule:** Omit `client_capabilities` when connecting to a host that does not support capability negotiation (for example, `v0.1.2` hosts whose `ClientHello` decoder rejects unknown fields).
 
@@ -146,20 +153,20 @@ If authentication and admission succeed, the host replies with `ServerHello` (or
 ```json
 {
   "version": { "major": 1, "minor": 0 },
-  "epoch": { "...": "HostEpoch" },
+  "epoch": { "owner": { "...": "same HostEpoch as endpoint.json" }, "generation": 1 },
   "generation": 1,
   "maximum_reply_bytes": 262144,
   "package_version": "0.1.3",
-  "store_id": "st_01...",
+  "store_id": "store_01...",
   "capabilities": ["ipc.capabilities"]
 }
 ```
 
 - `maximum_reply_bytes`: `min(client.maximum_reply_bytes, server_cap, 1_048_576)`.
 - `lease` *(optional)*: Present only for `guest_bootstrap` / `session_bootstrap` handshakes (`ConnectionTicket`).
-- **Rolling-upgrade capability fields:** `package_version`, `store_id`, and `capabilities` are **only** serialized when the client sent `client_capabilities` (`Some(...)`) in `ClientHello`. When a client omits `client_capabilities`, the host omits all three fields so older clients enforcing `deny_unknown_fields` never reject the response.
-  - `package_version`: The host's semantic version string (same as `endpoint.json`).
-  - `store_id`: The host's persistent SQLite store identifier (`st_...`), stable across host restarts. Omitted if unavailable.
+- **Rolling-upgrade capability fields:** `package_version`, `store_id`, and `capabilities` are **only** serialized when the client sent a non-null `client_capabilities` array (`Some(...)`, including `[]`) in `ClientHello`. When a client omits `client_capabilities` (or sends `null`), the host omits all three fields so older clients enforcing `deny_unknown_fields` never reject the response.
+  - `package_version`: The host's semantic version string (`1..=128` UTF-8 bytes, same as `endpoint.json`).
+  - `store_id`: The host's persistent SQLite store identifier (`store_...`, `1..=128` UTF-8 bytes), stable across host restarts. Omitted if unavailable.
   - `capabilities`: Exact list of optional capabilities supported by this host binary. Hosts never advertise unimplemented capabilities.
     - `"ipc.capabilities"`: Capability negotiation handshake is supported.
 
@@ -190,7 +197,7 @@ After `ServerHello`, the connection enters a sequential request/response loop (o
 
 - `request_id`: Strictly positive `u64` (`>= 1`). Echoed back in `IpcResponse`.
 - `generation`: Must equal `ServerHello.generation`.
-- `authority`: Optional per-request authority override (`null` inherits the connection's authenticated authority; external seat connections forbid authority overrides).
+- `authority`: Optional per-request authority override. `null` inherits the connection's authenticated authority for `owner_proof`, `session`, and `external_session` connections (external seat connections forbid per-request overrides). Bootstrapped guest connections (`guest_bootstrap` / `session_bootstrap`) MUST present their channel-bound `lease` ticket (`ConnectionTicket`) on each request.
 - `presence` *(optional)*: Omitted when `null`. Owner terminal presence attestation for destructive or privilege-changing actions.
 - `cli_selections` *(optional)*: Omitted when `null`. CLI routing metadata (never widens authority).
 - `request`: Tagged union (`kind` + `input`):
@@ -214,7 +221,7 @@ Success (`state: "output"`):
   "result": {
     "state": "output",
     "value": {
-      "schema": "se.project-status/v1",
+      "schema": "se.status/v1",
       "value": { "...": "operation output payload" },
       "window": null
     }
@@ -235,6 +242,7 @@ Error (`state: "error"`):
       "schema": "se.error/v1",
       "code": "...",
       "class": "...",
+      "exit": 1,
       "message": "...",
       "remedy": { "text": "...", "command": null },
       "retry": { "kind": "never" }
@@ -243,6 +251,8 @@ Error (`state: "error"`):
 }
 ```
 
+(`ErrorEnvelope` flattens `ErrorBody` into the envelope, so typed per-code detail fields appear at the top level alongside `schema`, `code`, `class`, `exit`, `message`, `remedy`, and `retry`.)
+
 ---
 
 ## 5. Operation Schemas
@@ -250,7 +260,7 @@ Error (`state: "error"`):
 Exact JSON Schemas for every registered operation's input and output are exported directly by the installed `se` binary (offline, without a running host):
 
 ```sh
-se schema --list                   # list all registered operation names
+se schema                          # list all registered operations and their schemas
 se schema project.status --json    # exact input/output JSON schema for one operation
 ```
 
