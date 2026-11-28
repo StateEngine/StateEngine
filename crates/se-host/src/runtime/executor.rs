@@ -365,11 +365,13 @@ async fn finish_init(
     deadline: Deadline,
     host_phases: se_core::ops::HostPhaseTimings,
 ) -> Result<ExecutedCall> {
+    let (output, committed) =
+        super::project_init::execute(context, input, admission, kernel, &deadline).await?;
     Ok(ExecutedCall {
         host_phases,
-        output: super::project_init::execute(context, input, admission, kernel, &deadline).await?,
+        output,
         write_timings: None,
-        committed: None,
+        committed,
         capture_commits: Vec::new(),
         capture_keys: Vec::new(),
     })

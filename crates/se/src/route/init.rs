@@ -3,7 +3,7 @@
 use super::{
     execute,
     files::{DirectLease, Files},
-    first_init, owner, select, setup,
+    first_init, owner, setup,
 };
 use crate::bootstrap::Bootstrap;
 use se_config::config_policy::ConfigFile;
@@ -15,23 +15,14 @@ use se_core::{
     store_error::{store_error, write_error},
 };
 use se_store::{
-    Actor, Admission, DirectStore, EventBody, LeaseIdentity, LeaseMode, ReadStore, Scope, Snapshot,
+    Actor, Admission, DirectStore, LeaseIdentity, LeaseMode, ReadStore, Scope, Snapshot,
     SqliteDirect, SqliteFactory, StoreFactory, StoreInfo, StoreOptions,
 };
-use se_types::{
-    AgentId, HumanId, IdempotencyKey, NativePath, ProjectId, Read, Result, SeError, StoreId,
-};
-use sha2::{Digest, Sha256};
+use se_types::{AgentId, HumanId, NativePath, ProjectId, Read, Result, SeError, StoreId};
 use std::time::Duration;
 #[path = "init/repository.rs"]
 mod repository;
 
-fn phase_key(key: &IdempotencyKey, phase: &str) -> Result<IdempotencyKey> {
-    let digest: String = se_types::hex_lower(&Sha256::digest(
-        serde_json::to_vec(key).map_err(|e| scope::unreadable("setup key", &e.to_string()))?,
-    ));
-    IdempotencyKey::new(format!("init.{phase}.{digest}"))
-}
 fn mcp_setup_error(mut error: SeError) -> SeError {
     error.body = error.body.with_remedy(se_types::Remedy {
         text: "Project registration was saved. Resolve the reported MCP configuration issue, then retry se init.".into(),
@@ -305,7 +296,22 @@ fn execute_live(cx: &Bootstrap, mut input: ProjectInit, live: LiveInit<'_>) -> R
         configuration,
         adoption,
     } = live;
-    input.repo = Some(repository.path.display().to_string());
+    if let Some(name) = input.harness.as_deref()
+        && !cx.config.value.harnesses.contains_key(name)
+    {
+        return Err(SeError::new(se_types::Detail::StateConflict(
+            se_types::details::StateConflict {
+                subject: "harness configuration".into(),
+                reason: format!(
+                    "harness `{name}` is not yet published in config.toml; the running host loaded its configuration at startup and cannot use an unpublished harness"
+                ),
+                next_step: "Run se down with the same --home, then retry se init and run se up"
+                    .into(),
+            },
+        )));
+    }
+    input.native_root = Some(NativePath::from_local(repository.path.clone())?);
+    input.resolved_name = Some(repository.name.clone());
     let credential = execute::credential(cx, &files)?;
     let options = execute::forwarding_options(cx, &files, &endpoint)?;
     let mut value = crate::ipc::forward(
@@ -324,7 +330,10 @@ fn execute_live(cx: &Bootstrap, mut input: ProjectInit, live: LiveInit<'_>) -> R
         output.value.repo.git = repository.git.clone();
         output.value.owner.os_user = observed.os_owner().into();
         output.value.import_hint = registration::import_hint(repository);
-        output.value.profile.native_server_port = configuration.runtime.listen_port.unwrap_or(0);
+        output.value.profile.native_server_port = endpoint
+            .listener_port
+            .or(configuration.runtime.listen_port)
+            .unwrap_or(0);
         registration::record_git_identity(
             repository,
             &output.value.project.id,

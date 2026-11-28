@@ -336,3 +336,348 @@ pub fn committed_registration<R: Snapshot>(
     }
     Ok(project)
 }
+
+/// Deterministic phase-scoped idempotency key derived from the caller's setup key.
+pub fn phase_key(key: &IdempotencyKey, phase: &str) -> Result<IdempotencyKey> {
+    use sha2::{Digest, Sha256};
+    let digest = se_types::hex_lower(&Sha256::digest(
+        serde_json::to_vec(key).map_err(|e| scope::unreadable("setup key", &e.to_string()))?,
+    ));
+    IdempotencyKey::new(format!("init.{phase}.{digest}"))
+}
+
+/// Active project identity, name and current roots, or `None` for non-active bodies.
+pub fn active_project<T>(body: &EventBody<T>) -> Option<(&ProjectId, &str, &[Root])> {
+    match body {
+        EventBody::ProjectRegistered {
+            project,
+            name,
+            roots,
+            ..
+        }
+        | EventBody::ProjectUpdated {
+            project,
+            name,
+            roots,
+            ..
+        } => Some((project, name.as_str(), roots.as_slice())),
+        EventBody::ProjectMoved {
+            project, name, to, ..
+        } => Some((project, name.as_str(), std::slice::from_ref(to))),
+        _ => None,
+    }
+}
+
+fn setup_read_budget(after: Option<se_types::Cursor>) -> Result<se_store::ReadBudget> {
+    use std::{num::NonZeroU32, time::Duration};
+    Ok(se_store::ReadBudget {
+        page: se_types::PageRequest {
+            after,
+            limit: NonZeroU32::new(100)
+                .ok_or_else(|| SeError::invalid("setup page", "positive limit"))?,
+            max_bytes: NonZeroU32::new(1024 * 1024)
+                .ok_or_else(|| SeError::invalid("setup page", "positive byte budget"))?,
+        },
+        deadline: Duration::from_secs(1),
+    })
+}
+
+/// The existing registration of `root` in the registry, if any.
+pub fn find_registered_project<R: Snapshot>(
+    snap: &mut R,
+    input: &super::ProjectInit,
+    project_name: &str,
+    root: &NativePath,
+) -> Result<Option<ProjectId>> {
+    let mut after = None;
+    let mut found = None;
+    let mut complete = false;
+    for _ in 0..64 {
+        let page = snap
+            .projects(setup_read_budget(after)?)
+            .map_err(|e| crate::store_error::store_error(&e))?;
+        for record in page.items() {
+            let Some((id, registered, roots)) = active_project(&record.current.body) else {
+                continue;
+            };
+            if roots.iter().any(|candidate| candidate.path == *root) {
+                if found.is_some() {
+                    return Err(scope::unreadable(
+                        "setup project",
+                        "repository has more than one registration",
+                    ));
+                }
+                if input.name.is_some() && registered != project_name {
+                    return Err(SeError::invalid(
+                        "project name",
+                        "the existing registered name for this repository",
+                    ));
+                }
+                found = Some(id.clone());
+            }
+        }
+        match page.next() {
+            Some(next) => after = Some(next.clone()),
+            None if page.window().complete() => {
+                complete = true;
+                break;
+            }
+            None => {
+                return Err(scope::unreadable(
+                    "setup project",
+                    "project inventory is incomplete",
+                ));
+            }
+        }
+        if after.is_some() && page.items().is_empty() {
+            return Err(scope::unreadable(
+                "setup project",
+                "nonprogressing project inventory",
+            ));
+        }
+    }
+    if !complete {
+        return Err(scope::unreadable(
+            "setup project",
+            "project inventory exceeded its finite bound",
+        ));
+    }
+    Ok(found)
+}
+
+/// Find an existing saved agent in the current project scope by name.
+pub fn find_saved_agent<R: Snapshot>(
+    snap: &mut R,
+    agent_name: &str,
+) -> Result<Option<se_types::AgentId>> {
+    let mut after = None;
+    let mut found = None;
+    let mut complete = false;
+    for _ in 0..64 {
+        let page = snap
+            .principals(setup_read_budget(after)?)
+            .map_err(|e| crate::store_error::store_error(&e))?;
+        for record in page.items() {
+            if let EventBody::PrincipalRegistered {
+                principal: Actor::Agent(agent),
+                name,
+                ..
+            }
+            | EventBody::PrincipalRenamed {
+                principal: Actor::Agent(agent),
+                name,
+                ..
+            } = &record.current.body
+                && name == agent_name
+                && found.replace(agent.clone()).is_some()
+            {
+                return Err(scope::unreadable(
+                    "initial agent",
+                    "saved name is ambiguous",
+                ));
+            }
+        }
+        match page.next() {
+            Some(next) => after = Some(next.clone()),
+            None if page.window().complete() => {
+                complete = true;
+                break;
+            }
+            None => {
+                return Err(scope::unreadable(
+                    "initial agent",
+                    "principal inventory is incomplete",
+                ));
+            }
+        }
+        if after.is_some() && page.items().is_empty() {
+            return Err(scope::unreadable(
+                "initial agent",
+                "nonprogressing principal inventory",
+            ));
+        }
+    }
+    if !complete {
+        return Err(scope::unreadable(
+            "initial agent",
+            "principal inventory exceeded its finite bound",
+        ));
+    }
+    Ok(found)
+}
+
+/// Verify an existing saved agent matches the requested provider and harness.
+pub fn verify_saved_agent(row: &super::AgentRow, input: &super::ProjectInit) -> Result<()> {
+    if input
+        .provider
+        .is_some_and(|provider| row.provider != provider)
+    {
+        return Err(SeError::invalid(
+            "initial provider",
+            "the existing agent keeps its saved provider; select a new --agent name to choose a different harness",
+        ));
+    }
+    if input
+        .harness
+        .as_ref()
+        .is_some_and(|selected| row.harness.as_ref() != Some(selected))
+    {
+        return Err(SeError::invalid(
+            "initial harness",
+            "the existing agent keeps its saved harness; create another agent with --harness to select a different one",
+        ));
+    }
+    Ok(())
+}
+
+/// Build the `AgentCreate` operation for the initial saved agent.
+pub fn initial_agent_op(input: &super::ProjectInit) -> Result<super::AnyOp> {
+    Ok(super::AnyOp::AgentCreate(super::AgentCreate {
+        provider_settings: Default::default(),
+        harness: input.harness.clone(),
+        name: input.agent.clone(),
+        provider: input.provider,
+        model: input.model.clone(),
+        profile: None,
+        idempotency_key: phase_key(&input.idempotency_key, "agent")?,
+        external: false,
+    }))
+}
+
+/// Read back an initialized project's active projection record and name.
+pub fn read_project_metadata<R: Snapshot>(
+    snap: &mut R,
+    id: &ProjectId,
+) -> Result<(ProjectionRecord, String)> {
+    let metadata = scope::require_present(
+        snap.project(id.clone())
+            .map_err(|e| crate::store_error::store_error(&e))?,
+        "initialized project",
+        "Read the original project metadata in this data home, then retry se init with its original --key; preserve existing project and machine identities.",
+    )?;
+    let Some((_, project_name, _)) = active_project(&metadata.current.body) else {
+        return Err(scope::unreadable(
+            "initialized project",
+            "active project metadata is unavailable",
+        ));
+    };
+    let project_name = project_name.to_owned();
+    Ok((metadata, project_name))
+}
+
+/// Read back the initial saved agent row.
+pub fn read_saved_agent<R: Snapshot>(
+    cx: &mut Cx<'_, R>,
+    agent: &se_types::AgentId,
+) -> Result<super::AgentRow> {
+    let output = super::agent_status::show(
+        super::AgentShow {
+            target_agent_id: Some(agent.clone()),
+        },
+        cx,
+    )?;
+    scope::require_present(
+        output.agent,
+        "initial saved agent",
+        "Read the original saved agent in this data home, then retry se init with its original --key; preserve existing agent identities.",
+    )
+}
+
+pub struct InitOutputParts {
+    pub id: ProjectId,
+    pub outcome: super::InitOutcome,
+    pub project_name: String,
+    pub metadata: ProjectionRecord,
+    pub row: super::AgentRow,
+    pub agent_created: bool,
+    pub human: se_types::HumanId,
+    pub os_user: String,
+    pub home: String,
+    pub repo_root: String,
+    pub git: Option<super::GitView>,
+    pub import_hint: Option<String>,
+    pub native_server_port: u16,
+    pub idempotency_key: IdempotencyKey,
+    pub changed: Vec<String>,
+    pub next: super::NextStep,
+}
+
+/// Shared `InitOutput` assembly used by both direct and live hosted setup.
+pub fn build_init_output(
+    parts: InitOutputParts,
+    configuration: &se_config::config_policy::ConfigFile,
+) -> Result<super::InitOutput> {
+    let InitOutputParts {
+        id,
+        outcome,
+        project_name,
+        metadata,
+        row,
+        agent_created,
+        human,
+        os_user,
+        home,
+        repo_root,
+        git,
+        import_hint,
+        native_server_port,
+        idempotency_key,
+        changed,
+        next,
+    } = parts;
+    Ok(super::InitOutput {
+        import_hint,
+        idempotency_key,
+        outcome,
+        project: super::ProjectView {
+            id: id.clone(),
+            name: project_name,
+            root: repo_root.clone(),
+            registered_at: super::receipt::timestamp(
+                metadata
+                    .original
+                    .as_deref()
+                    .unwrap_or(&metadata.current)
+                    .recorded_at_us,
+            )?,
+            git: None,
+        },
+        repo: super::RepositoryView {
+            root: repo_root.clone(),
+            git,
+            files_touched: 0,
+        },
+        owner: super::OwnerView {
+            human_id: human.clone(),
+            os_user,
+        },
+        home: home.clone(),
+        agent: super::InitialAgent {
+            harness: row.harness.clone(),
+            id: row.id.clone(),
+            name: row.name.clone(),
+            outcome: if agent_created {
+                super::IdentityOutcome::Created
+            } else {
+                super::IdentityOutcome::Existing
+            },
+            provider: row.provider,
+            model: row.model.clone(),
+            permission_profile: saved_profile(configuration, &row)?,
+        },
+        profile: super::InitProfile {
+            schema: "stateengine-init/v1".into(),
+            project: id,
+            repo_root,
+            registry_root: home.clone(),
+            keys_dir: home,
+            human_id: human,
+            agent_id: row.id,
+            native_server_port,
+        },
+        integrations: vec![],
+        changed,
+        next,
+        launch: None,
+    })
+}

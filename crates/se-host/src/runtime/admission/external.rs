@@ -486,7 +486,7 @@ impl AdmissionContext {
                 se_types::details::OwnerRequired { op: op.into() },
             )));
         }
-        Ok(())
+        crate::client::presence::OwnerPresence::require_owner_cli(presence, peer, op)
     }
 }
 

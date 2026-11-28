@@ -1,212 +1,26 @@
 //! Live project registration through a running host's authoritative writer.
-//! Registers an additional project (or confirms an existing one) without
-//! taking down active seats in other projects on the same home.
-use super::{ExecutionContext, executor, failure::WriteIdentity, start::allocate_facts, submit};
+//! Shares setup policy with direct CLI setup via `se_core::ops::project`.
+use super::{
+    CommittedWrite, ExecutionContext, executor, failure::WriteIdentity, start::allocate_facts,
+    submit,
+};
 use crate::client::lease::Deadline;
 use se_core::{
     admission::{HumanTerminal, read_scope},
     commit::{Cx, OpStep},
     dispatch::Kernel,
     ops::{
-        AgentCommand, AgentCreate, AgentOutcome, AgentRow, AgentShow, AnyOp, AnyOutput,
-        IdentityOutcome, InitOutcome, InitOutput, InitProfile, InitialAgent, NextStep, OwnerView,
-        ProjectInit, ProjectView, RepositoryView, agent_status, project, receipt,
+        AgentCommand, AgentOutcome, AnyOutput, InitOutcome, NextStep, ProjectInit,
+        inputs::Validate, project,
     },
     scope,
     store_error::store_error,
 };
-use se_store::{
-    Actor, Admission, CommitState, EventBody, ProjectionRecord, ReadBudget, Root, Scope, Snapshot,
-    SqliteSnapshot,
-};
+use se_store::{Actor, Admission, CommitState, Root, Scope, Snapshot};
 use se_types::{
-    AgentId, HumanId, IdempotencyKey, NativePath, PageRequest, ProjectId, Read, Result, SeError,
+    AgentId, EventId, HumanId, IdempotencyKey, NativePath, ProjectId, Read, Result, SeError,
 };
-use sha2::{Digest, Sha256};
-use std::{num::NonZeroU32, path::PathBuf, time::Duration};
-
-fn phase_key(key: &IdempotencyKey, phase: &str) -> Result<IdempotencyKey> {
-    let digest = se_types::hex_lower(&Sha256::digest(
-        serde_json::to_vec(key).map_err(|e| scope::unreadable("setup key", &e.to_string()))?,
-    ));
-    IdempotencyKey::new(format!("init.{phase}.{digest}"))
-}
-
-fn read_budget(after: Option<se_types::Cursor>) -> Result<ReadBudget> {
-    Ok(ReadBudget {
-        page: PageRequest {
-            after,
-            limit: NonZeroU32::new(100)
-                .ok_or_else(|| SeError::invalid("project page", "positive limit"))?,
-            max_bytes: NonZeroU32::new(1024 * 1024)
-                .ok_or_else(|| SeError::invalid("project page", "positive byte budget"))?,
-        },
-        deadline: Duration::from_secs(1),
-    })
-}
-
-fn active_project<T>(body: &EventBody<T>) -> Option<(&ProjectId, &str, &[Root])> {
-    match body {
-        EventBody::ProjectRegistered {
-            project,
-            name,
-            roots,
-            ..
-        }
-        | EventBody::ProjectUpdated {
-            project,
-            name,
-            roots,
-            ..
-        } => Some((project, name.as_str(), roots.as_slice())),
-        EventBody::ProjectMoved {
-            project, name, to, ..
-        } => Some((project, name.as_str(), std::slice::from_ref(to))),
-        _ => None,
-    }
-}
-
-fn find_registered_project(
-    snap: &mut SqliteSnapshot,
-    input: &ProjectInit,
-    project_name: &str,
-    root: &NativePath,
-) -> Result<Option<ProjectId>> {
-    let mut after = None;
-    let mut found = None;
-    let mut complete = false;
-    for _ in 0..64 {
-        let page = snap
-            .projects(read_budget(after)?)
-            .map_err(|e| store_error(&e))?;
-        for record in page.items() {
-            let Some((id, registered, roots)) = active_project(&record.current.body) else {
-                continue;
-            };
-            if roots.iter().any(|candidate| candidate.path == *root) {
-                if found.is_some() {
-                    return Err(scope::unreadable(
-                        "setup project",
-                        "repository has more than one registration",
-                    ));
-                }
-                if input.name.is_some() && registered != project_name {
-                    return Err(SeError::invalid(
-                        "project name",
-                        "the existing registered name for this repository",
-                    ));
-                }
-                found = Some(id.clone());
-            }
-        }
-        match page.next() {
-            Some(next) => after = Some(next.clone()),
-            None if page.window().complete() => {
-                complete = true;
-                break;
-            }
-            None => {
-                return Err(scope::unreadable(
-                    "setup project",
-                    "project inventory is incomplete",
-                ));
-            }
-        }
-        if after.is_some() && page.items().is_empty() {
-            return Err(scope::unreadable(
-                "setup project",
-                "nonprogressing project inventory",
-            ));
-        }
-    }
-    if !complete {
-        return Err(scope::unreadable(
-            "setup project",
-            "project inventory exceeded its finite bound",
-        ));
-    }
-    Ok(found)
-}
-
-fn find_saved_agent(snap: &mut SqliteSnapshot, agent_name: &str) -> Result<Option<AgentId>> {
-    let mut after = None;
-    let mut found = None;
-    let mut complete = false;
-    for _ in 0..64 {
-        let page = snap
-            .principals(read_budget(after)?)
-            .map_err(|e| store_error(&e))?;
-        for record in page.items() {
-            if let EventBody::PrincipalRegistered {
-                principal: Actor::Agent(agent),
-                name,
-                ..
-            }
-            | EventBody::PrincipalRenamed {
-                principal: Actor::Agent(agent),
-                name,
-                ..
-            } = &record.current.body
-                && name == agent_name
-                && found.replace(agent.clone()).is_some()
-            {
-                return Err(scope::unreadable(
-                    "initial agent",
-                    "saved name is ambiguous",
-                ));
-            }
-        }
-        match page.next() {
-            Some(next) => after = Some(next.clone()),
-            None if page.window().complete() => {
-                complete = true;
-                break;
-            }
-            None => {
-                return Err(scope::unreadable(
-                    "initial agent",
-                    "principal inventory is incomplete",
-                ));
-            }
-        }
-        if after.is_some() && page.items().is_empty() {
-            return Err(scope::unreadable(
-                "initial agent",
-                "nonprogressing principal inventory",
-            ));
-        }
-    }
-    if !complete {
-        return Err(scope::unreadable(
-            "initial agent",
-            "principal inventory exceeded its finite bound",
-        ));
-    }
-    Ok(found)
-}
-
-fn verify_saved_row(row: &AgentRow, input: &ProjectInit) -> Result<()> {
-    if input
-        .provider
-        .is_some_and(|provider| row.provider != provider)
-    {
-        return Err(SeError::invalid(
-            "initial provider",
-            "the existing agent keeps its saved provider; select a new --agent name to choose a different harness",
-        ));
-    }
-    if input
-        .harness
-        .as_ref()
-        .is_some_and(|selected| row.harness.as_ref() != Some(selected))
-    {
-        return Err(SeError::invalid(
-            "initial harness",
-            "the existing agent keeps its saved harness; create another agent with --harness to select a different one",
-        ));
-    }
-    Ok(())
-}
+use std::path::PathBuf;
 
 fn write_identity(batch: &se_store::AtomicBatch, operation: &'static str) -> WriteIdentity {
     WriteIdentity {
@@ -225,6 +39,59 @@ fn write_identity(batch: &se_store::AtomicBatch, operation: &'static str) -> Wri
     }
 }
 
+fn partial_commit_error(
+    mut error: SeError,
+    committed: &[String],
+    id: &ProjectId,
+    key: &IdempotencyKey,
+) -> SeError {
+    if !committed.is_empty() {
+        error.body = error.body.with_remedy(se_types::Remedy {
+            text: format!(
+                "Earlier setup steps already committed for project {id} ({}). Resolve the failure and retry `se init` with the exact same `--key {key}` to resume.",
+                committed.join(", "),
+            ),
+            command: None,
+        });
+    }
+    error
+}
+
+fn resolve_root_and_name(input: &ProjectInit) -> Result<(NativePath, PathBuf, String)> {
+    let (root, repo_path) = match (&input.native_root, &input.repo) {
+        (Some(root), _) => (root.clone(), root.to_local()?),
+        (None, Some(repo)) => {
+            let path = PathBuf::from(repo);
+            (NativePath::from_local(path.clone())?, path)
+        }
+        (None, None) => {
+            return Err(SeError::invalid(
+                "project.init repo",
+                "a canonical repository root",
+            ));
+        }
+    };
+    let project_name = input
+        .resolved_name
+        .clone()
+        .or_else(|| input.name.clone())
+        .or_else(|| {
+            repo_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| SeError::invalid("project name", "a validated project name"))?;
+    Ok((root, repo_path, project_name))
+}
+
+#[derive(Default)]
+struct InitProgress {
+    changed: Vec<String>,
+    events: Vec<EventId>,
+}
+
 async fn ensure_project(
     context: &ExecutionContext,
     admission: &Admission,
@@ -232,7 +99,7 @@ async fn ensure_project(
     project_name: &str,
     root: &NativePath,
     deadline: &Deadline,
-    changed: &mut Vec<String>,
+    progress: &mut InitProgress,
 ) -> Result<(ProjectId, bool)> {
     let reg_admission = admission.clone();
     let reg_input = input.clone();
@@ -246,7 +113,7 @@ async fn ensure_project(
                 .map_err(|e| store_error(&e))?;
             let result = (|| {
                 if let Some(existing) =
-                    find_registered_project(&mut snap, &reg_input, &reg_name, &reg_root)?
+                    project::find_registered_project(&mut snap, &reg_input, &reg_name, &reg_root)?
                 {
                     return Ok(Ok(existing));
                 }
@@ -286,6 +153,7 @@ async fn ensure_project(
             let identity = write_identity(&batch, "project.init");
             let receipt = submit::submit(context, batch, &identity, deadline).await?;
             let committed_new = receipt.state == CommitState::Committed;
+            progress.events.extend(receipt.events.iter().cloned());
             let reg_admission = admission.clone();
             let id = context
                 .run_foreground(deadline, move |ctx| {
@@ -304,7 +172,7 @@ async fn ensure_project(
                 })
                 .await?;
             if committed_new {
-                changed.push("registered the project".into());
+                progress.changed.push("registered the project".into());
             }
             Ok((id, true))
         }
@@ -317,10 +185,10 @@ async fn ensure_project_owner(
     input: &ProjectInit,
     id: &ProjectId,
     deadline: &Deadline,
-    changed: &mut Vec<String>,
+    progress: &mut InitProgress,
 ) -> Result<()> {
     let owner_admission = project_admission.clone();
-    let owner_key = phase_key(&input.idempotency_key, &format!("project-owner-{id}"))?;
+    let owner_key = project::phase_key(&input.idempotency_key, &format!("project-owner-{id}"))?;
     let maybe_batch = context
         .run_foreground(deadline, move |ctx| {
             let phase = executor::checked_pooled_phase(&ctx.reads, ctx.generation)?;
@@ -357,8 +225,9 @@ async fn ensure_project_owner(
         .await?;
     if let Some(batch) = maybe_batch {
         let identity = write_identity(&batch, "project.init.owner");
-        submit::submit(context, batch, &identity, deadline).await?;
-        changed.push("registered the project owner".into());
+        let receipt = submit::submit(context, batch, &identity, deadline).await?;
+        progress.events.extend(receipt.events.iter().cloned());
+        progress.changed.push("registered the project owner".into());
     }
     Ok(())
 }
@@ -369,7 +238,7 @@ async fn ensure_initial_agent(
     input: &ProjectInit,
     configuration: &se_config::config_policy::ConfigFile,
     deadline: &Deadline,
-    changed: &mut Vec<String>,
+    progress: &mut InitProgress,
 ) -> Result<(AgentId, bool)> {
     let agent_admission = project_admission.clone();
     let agent_input = input.clone();
@@ -381,21 +250,12 @@ async fn ensure_initial_agent(
                 .into_snapshot(read_scope(&agent_admission))
                 .map_err(|e| store_error(&e))?;
             let result = (|| {
-                if let Some(existing) = find_saved_agent(&mut snap, &agent_input.agent)? {
+                if let Some(existing) = project::find_saved_agent(&mut snap, &agent_input.agent)? {
                     return Ok(Ok((existing, false)));
                 }
                 let plan_kernel =
                     Kernel::new(allocate_facts()?)?.with_configuration(agent_config)?;
-                let op = AnyOp::AgentCreate(AgentCreate {
-                    provider_settings: Default::default(),
-                    harness: agent_input.harness.clone(),
-                    name: agent_input.agent.clone(),
-                    provider: agent_input.provider,
-                    model: agent_input.model.clone(),
-                    profile: None,
-                    idempotency_key: phase_key(&agent_input.idempotency_key, "agent")?,
-                    external: false,
-                });
+                let op = project::initial_agent_op(&agent_input)?;
                 let terminal = HumanTerminal::Refused {
                     reason: "setup creates a safe saved identity without claiming human presence"
                         .into(),
@@ -427,6 +287,7 @@ async fn ensure_initial_agent(
         Err((batch, then, plan_kernel)) => {
             let identity = write_identity(&batch, "agent.create");
             let receipt = submit::submit(context, batch, &identity, deadline).await?;
+            progress.events.extend(receipt.events.iter().cloned());
             let agent_admission = project_admission.clone();
             let (agent_id, created) = context
                 .run_foreground(deadline, move |ctx| {
@@ -457,7 +318,9 @@ async fn ensure_initial_agent(
                 })
                 .await?;
             if created {
-                changed.push("created the initial saved agent".into());
+                progress
+                    .changed
+                    .push("created the initial saved agent".into());
             }
             Ok((agent_id, created))
         }
@@ -470,10 +333,10 @@ async fn read_final_state(
     id: &ProjectId,
     agent_id: &AgentId,
     deadline: &Deadline,
-) -> Result<(ProjectionRecord, String, AgentRow)> {
+) -> Result<(se_store::ProjectionRecord, String, se_core::ops::AgentRow)> {
     let read_admission = project_admission.clone();
-    let project_id = id.clone();
-    let agent_id = agent_id.clone();
+    let read_id = id.clone();
+    let read_agent = agent_id.clone();
     context
         .run_foreground(deadline, move |ctx| {
             let phase = executor::checked_pooled_phase(&ctx.reads, ctx.generation)?;
@@ -481,32 +344,13 @@ async fn read_final_state(
                 .into_snapshot(read_scope(&read_admission))
                 .map_err(|e| store_error(&e))?;
             let result = (|| {
-                let metadata = scope::require_present(
-                    snap.project(project_id.clone())
-                        .map_err(|e| store_error(&e))?,
-                    "initialized project",
-                    "Read the original project metadata in this data home, then retry se init with its original --key; preserve existing project and machine identities.",
-                )?;
-                let Some((_, project_name, _)) = active_project(&metadata.current.body) else {
-                    return Err(scope::unreadable(
-                        "initialized project",
-                        "active project metadata is unavailable",
-                    ));
-                };
-                let project_name = project_name.to_owned();
-                let output = agent_status::show(
-                    AgentShow {
-                        target_agent_id: Some(agent_id),
-                    },
+                let (metadata, project_name) = project::read_project_metadata(&mut snap, &read_id)?;
+                let row = project::read_saved_agent(
                     &mut Cx {
                         read: &mut snap,
                         admission: &read_admission,
                     },
-                )?;
-                let row = scope::require_present(
-                    output.agent,
-                    "initial saved agent",
-                    "Read the original saved agent in this data home, then retry se init with its original --key; preserve existing agent identities.",
+                    &read_agent,
                 )?;
                 Ok((metadata, project_name, row))
             })();
@@ -515,106 +359,64 @@ async fn read_final_state(
         .await
 }
 
-struct OutputParts {
+struct FinalizeArgs {
     id: ProjectId,
     created: bool,
     project_name: String,
-    metadata: ProjectionRecord,
-    row: AgentRow,
+    metadata: se_store::ProjectionRecord,
+    row: se_core::ops::AgentRow,
     agent_created: bool,
     human: HumanId,
     home: PathBuf,
     repo_path: PathBuf,
-    idempotency_key: IdempotencyKey,
-    changed: Vec<String>,
+    key: IdempotencyKey,
+    progress: InitProgress,
 }
 
-fn build_init_output(
-    parts: OutputParts,
+fn finish_output(
+    args: FinalizeArgs,
     configuration: &se_config::config_policy::ConfigFile,
-) -> Result<AnyOutput> {
-    let OutputParts {
-        id,
-        created,
-        project_name,
-        metadata,
-        row,
-        agent_created,
-        human,
-        home,
-        repo_path,
-        idempotency_key,
-        changed,
-    } = parts;
-    let home_text = home.display().to_string();
-    let repo_root = repo_path.display().to_string();
-    let next = AgentCommand::launch_in_home(&row.id, &home, &id, true)
+) -> Result<(AnyOutput, Option<CommittedWrite>)> {
+    let next = AgentCommand::launch_in_home(&args.row.id, &args.home, &args.id, true)
         .map(|command| NextStep {
             text: "Launch your first agent".into(),
             command: command.command,
             argv: command.argv,
         })
         .ok_or_else(|| scope::unreadable("first launch command", AgentCommand::HOME_UNAVAILABLE))?;
-    Ok(InitOutput {
-        import_hint: None,
-        idempotency_key,
-        outcome: if created {
-            InitOutcome::Created
-        } else {
-            InitOutcome::AlreadyPresent
-        },
-        project: ProjectView {
-            id: id.clone(),
-            name: project_name,
-            root: repo_root.clone(),
-            registered_at: receipt::timestamp(
-                metadata
-                    .original
-                    .as_deref()
-                    .unwrap_or(&metadata.current)
-                    .recorded_at_us,
-            )?,
-            git: None,
-        },
-        repo: RepositoryView {
-            root: repo_root.clone(),
-            git: None,
-            files_touched: 0,
-        },
-        owner: OwnerView {
-            human_id: human.clone(),
-            os_user: String::new(),
-        },
-        home: home_text.clone(),
-        agent: InitialAgent {
-            harness: row.harness.clone(),
-            id: row.id.clone(),
-            name: row.name.clone(),
-            outcome: if agent_created {
-                IdentityOutcome::Created
+    let output = project::build_init_output(
+        project::InitOutputParts {
+            id: args.id,
+            outcome: if args.created {
+                InitOutcome::Created
             } else {
-                IdentityOutcome::Existing
+                InitOutcome::AlreadyPresent
             },
-            provider: row.provider,
-            model: row.model.clone(),
-            permission_profile: project::saved_profile(configuration, &row)?,
-        },
-        profile: InitProfile {
-            schema: "stateengine-init/v1".into(),
-            project: id,
-            repo_root,
-            registry_root: home_text.clone(),
-            keys_dir: home_text,
-            human_id: human,
-            agent_id: row.id,
+            project_name: args.project_name,
+            metadata: args.metadata,
+            row: args.row,
+            agent_created: args.agent_created,
+            human: args.human,
+            os_user: String::new(),
+            home: args.home.display().to_string(),
+            repo_root: args.repo_path.display().to_string(),
+            git: None,
+            import_hint: None,
             native_server_port: 0,
+            idempotency_key: args.key.clone(),
+            changed: args.progress.changed,
+            next,
         },
-        integrations: vec![],
-        changed,
-        next,
-        launch: None,
-    }
-    .into())
+        configuration,
+    )?
+    .into();
+    let committed = (!args.progress.events.is_empty()).then(|| CommittedWrite {
+        operation: "project.init".into(),
+        key: Some(args.key),
+        natural_events: Vec::new(),
+        committed_events: args.progress.events,
+    });
+    Ok((output, committed))
 }
 
 pub(super) async fn execute(
@@ -623,7 +425,7 @@ pub(super) async fn execute(
     admission: Admission,
     kernel: Kernel,
     deadline: &Deadline,
-) -> Result<AnyOutput> {
+) -> Result<(AnyOutput, Option<CommittedWrite>)> {
     let human: HumanId = match (&admission.actor, admission.session.is_none()) {
         (Actor::Human(owner), true) if admission.scope == Scope::Registry => owner.clone(),
         _ => {
@@ -634,23 +436,17 @@ pub(super) async fn execute(
             )));
         }
     };
-    let repo_str = input
-        .repo
-        .as_deref()
-        .ok_or_else(|| SeError::invalid("project.init repo", "a repository path"))?;
-    let repo_path = PathBuf::from(repo_str);
-    let root = NativePath::from_local(repo_path.clone())?;
-    let project_name = match &input.name {
-        Some(name) => name.clone(),
-        None => repo_path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| SeError::invalid("project name", "a UTF-8 repository directory name"))?
-            .to_owned(),
-    };
+    input.validate()?;
+    let (root, repo_path, project_name) = resolve_root_and_name(&input)?;
     let configuration = kernel.configuration().cloned().unwrap_or_default();
-    let mut changed = Vec::new();
+    if input.harness.is_some() {
+        se_core::harness_selection::resolve(
+            &configuration,
+            input.provider,
+            input.harness.as_deref(),
+        )?;
+    }
+    let mut progress = InitProgress::default();
     let (id, created) = ensure_project(
         &context,
         &admission,
@@ -658,7 +454,7 @@ pub(super) async fn execute(
         &project_name,
         &root,
         deadline,
-        &mut changed,
+        &mut progress,
     )
     .await?;
     let project_admission = Admission {
@@ -673,23 +469,30 @@ pub(super) async fn execute(
         &input,
         &id,
         deadline,
-        &mut changed,
+        &mut progress,
     )
-    .await?;
+    .await
+    .map_err(|err| partial_commit_error(err, &progress.changed, &id, &input.idempotency_key))?;
     let (agent_id, agent_created) = ensure_initial_agent(
         &context,
         &project_admission,
         &input,
         &configuration,
         deadline,
-        &mut changed,
+        &mut progress,
     )
-    .await?;
+    .await
+    .map_err(|err| partial_commit_error(err, &progress.changed, &id, &input.idempotency_key))?;
     let (metadata, project_name, row) =
-        read_final_state(&context, &project_admission, &id, &agent_id, deadline).await?;
-    verify_saved_row(&row, &input)?;
-    build_init_output(
-        OutputParts {
+        read_final_state(&context, &project_admission, &id, &agent_id, deadline)
+            .await
+            .map_err(|err| {
+                partial_commit_error(err, &progress.changed, &id, &input.idempotency_key)
+            })?;
+    project::verify_saved_agent(&row, &input)
+        .map_err(|err| partial_commit_error(err, &progress.changed, &id, &input.idempotency_key))?;
+    finish_output(
+        FinalizeArgs {
             id,
             created,
             project_name,
@@ -699,8 +502,8 @@ pub(super) async fn execute(
             human,
             home: context.state_directory,
             repo_path,
-            idempotency_key: input.idempotency_key,
-            changed,
+            key: input.idempotency_key,
+            progress,
         },
         &configuration,
     )

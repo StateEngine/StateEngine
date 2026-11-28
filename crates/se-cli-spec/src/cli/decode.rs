@@ -360,7 +360,9 @@ fn decode_project(
         "project.init" => AnyOp::ProjectInit(ProjectInit {
             harness: text(m, "harness"),
             repo: text(m, "repo"),
+            native_root: None,
             name: text(m, "name"),
+            resolved_name: None,
             agent: required(m, "agent")?,
             provider: text(m, "provider")
                 .map(|v| {
