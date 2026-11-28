@@ -181,6 +181,7 @@ pub(crate) async fn approve_claim(
         pending_write: None,
         approval_observer_lost: false,
         retired: Arc::new(retired_tx),
+        activity: super::activity::idle(),
     };
     let observer_warning =
         settle_approve_commit(router, batch, &identity, &active, deadline).await?;

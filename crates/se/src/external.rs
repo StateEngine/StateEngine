@@ -1,13 +1,14 @@
-//! Out-of-band Owner external-seat controls (`se external list|approve|revoke`)
-//! and dedicated authenticated blocking wait CLI (`se msg wait`).
-use clap::{Arg, ArgAction, Command};
+//! Out-of-band Owner external-seat controls (`se external list|approve|revoke`),
+//! dedicated authenticated blocking wait CLI (`se msg wait`), and the turn
+//! state an external seat's runner reports (`se msg activity`).
+use clap::{Arg, Command};
 use se_core::store_error::store_error;
 use se_host::{
     IpcEnvelope, IpcRequest, OperationOutput,
     client::{ClientOptions, lease::Deadline, presence::OwnerPresence},
     external::{
-        ExternalApproveOutput, ExternalListOutput, ExternalMailWaitOutput, ExternalRequest,
-        ExternalRevokeOutput,
+        ActivityState, ExternalApproveOutput, ExternalListOutput, ExternalMailWaitOutput,
+        ExternalRequest, ExternalRevokeOutput, ExternalSessionActivityOutput,
     },
 };
 use se_store::{Scope, Snapshot};
@@ -20,144 +21,179 @@ use std::{
     time::Duration,
 };
 
-/// Extract the first two positional subcommand words after skipping standard
-/// leading global flags (`--home`, `-p`/`--project`, `--json`, `--quiet`,
-/// `--no-color`, `--key`, `--config`, `--format`).
-fn leading_subcommands(args: &[OsString]) -> Option<(&str, Option<&str>)> {
-    let mut i = 1;
-    let mut first: Option<&str> = None;
-    while let Some(raw) = args.get(i) {
-        let token = raw.to_str()?;
-        if token == "--" {
-            break;
-        }
-        if matches!(
-            token,
-            "--home" | "--project" | "-p" | "--config" | "--key" | "--format"
-        ) {
-            i += 2;
-            continue;
-        }
-        if token.starts_with("--home=")
-            || token.starts_with("--project=")
-            || token.starts_with("-p=")
-            || token.starts_with("--config=")
-            || token.starts_with("--key=")
-            || token.starts_with("--format=")
-            || matches!(token, "--json" | "--quiet" | "-q" | "--no-color")
-        {
-            i += 1;
-            continue;
-        }
-        if token.starts_with('-') {
-            return None;
-        }
-        match first {
-            None => first = Some(token),
-            Some(cmd1) => return Some((cmd1, Some(token))),
-        }
-        i += 1;
-    }
-    first.map(|cmd1| (cmd1, None))
-}
-
 pub(crate) fn entry(args: &[OsString]) -> Option<io::Result<u8>> {
-    match leading_subcommands(args)? {
-        ("external", _) => Some(run_external(args)),
-        ("msg", Some("wait")) => Some(run_msg_wait(args)),
-        _ => None,
+    // A cheap candidate filter keeps ordinary commands off this grammar; only
+    // the parse below selects a transport route.
+    let word = |w: &str| args.iter().skip(1).any(|a| a == w);
+    if !(word("external") || (word("msg") && (word("wait") || word("activity")))) {
+        return None;
     }
-}
-
-fn with_global_flags(cmd: Command) -> Command {
-    cmd.arg(Arg::new("home").long("home").global(true))
-        .arg(Arg::new("project").short('p').long("project").global(true))
-        .arg(
-            Arg::new("json")
-                .long("json")
-                .action(ArgAction::SetTrue)
-                .global(true),
-        )
-        .arg(
-            Arg::new("quiet")
-                .short('q')
-                .long("quiet")
-                .action(ArgAction::SetTrue)
-                .global(true),
-        )
-        .arg(
-            Arg::new("no_color")
-                .long("no-color")
-                .action(ArgAction::SetTrue)
-                .global(true),
-        )
-}
-
-fn external_command() -> Command {
-    with_global_flags(Command::new("se")).subcommand(
-        Command::new("external")
-            .about("Manage owner-approved external seats")
-            .subcommand_required(true)
-            .subcommand(
-                Command::new("list").about("List pending external seat claims and active leases"),
-            )
-            .subcommand(
-                Command::new("approve")
-                    .about("Approve a pending external seat claim once")
-                    .arg(Arg::new("claim_id").required(true)),
-            )
-            .subcommand(
-                Command::new("revoke")
-                    .about("Revoke an active external seat")
-                    .arg(Arg::new("agent").required(true)),
-            ),
-    )
-}
-
-fn msg_wait_command() -> Command {
-    with_global_flags(Command::new("se")).subcommand(
-        Command::new("msg").subcommand(
-            Command::new("wait")
-                .about("Block on the host's recipient-scoped mail registry until mail arrives or the seat closes")
-                .arg(Arg::new("as").long("as").help("External seat agent name or ID to wait on"))
-                .arg(Arg::new("after").long("after").help("Cursor from a previous wait"))
-                .arg(
-                    Arg::new("timeout")
-                        .long("timeout")
-                        .value_parser(clap::value_parser!(u64))
-                        .help("Wait timeout in seconds (1..=300)"),
-                ),
-        ),
-    )
-}
-
-fn run_external(args: &[OsString]) -> io::Result<u8> {
-    let json = crate::grammar::json_requested(args);
+    let command = transport_command();
     let mut stdout = io::stdout().lock();
     let mut stderr = io::stderr().lock();
-    let matches = match external_command().try_get_matches_from(args) {
-        Ok(m) => m,
+    match command.clone().try_get_matches_from(args) {
+        Ok(matches) => {
+            let (route, sub) = route(&matches)?;
+            drop((stdout, stderr));
+            Some(match route {
+                Route::External => run_external(sub),
+                Route::Wait => run_msg_wait(sub),
+                Route::Activity => run_msg_activity(sub),
+            })
+        }
         Err(err) => {
+            // Refuse only invocations that select a transport route; anything
+            // else (`se msg send ...`) belongs to the ordinary CLI.
+            let selected = command
+                .ignore_errors(true)
+                .try_get_matches_from(args)
+                .ok()?;
+            route(&selected)?;
             if matches!(
                 err.kind(),
                 clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
             ) {
-                let _ = write!(stdout, "{err}");
-                return Ok(0);
+                return Some(write!(stdout, "{err}").map(|()| 0));
             }
             let se_err = crate::grammar::usage_error(err, args);
-            return crate::render::error::write(
+            let json = crate::grammar::json_requested(args);
+            Some(crate::render::error::write(
                 &se_err,
                 &RenderCx::default(),
                 json,
                 &mut stdout,
                 &mut stderr,
-            );
+            ))
         }
+    }
+}
+
+enum Route {
+    External,
+    Wait,
+    Activity,
+}
+
+fn route(matches: &clap::ArgMatches) -> Option<(Route, &clap::ArgMatches)> {
+    match matches.subcommand()? {
+        ("external", sub) => Some((Route::External, sub)),
+        ("msg", msg) => match msg.subcommand()? {
+            ("wait", sub) => Some((Route::Wait, sub)),
+            ("activity", sub) => Some((Route::Activity, sub)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// One grammar for the transport commands. The ordinary CLI's global flags are
+/// shared, so they may lead or follow the command.
+fn transport_command() -> Command {
+    Command::new("se")
+        .args(se_cli_spec::output_global_args())
+        .subcommand(
+            Command::new("external")
+                .about("Manage owner-approved external seats")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("list")
+                        .about("List pending external seat claims and active leases"),
+                )
+                .subcommand(
+                    Command::new("approve")
+                        .about("Approve a pending external seat claim once")
+                        .arg(Arg::new("claim_id").required(true)),
+                )
+                .subcommand(
+                    Command::new("revoke")
+                        .about("Revoke an active external seat")
+                        .arg(Arg::new("agent").required(true)),
+                ),
+        )
+        .subcommand(
+            Command::new("msg")
+                .subcommand(
+                    Command::new("wait")
+                        .about("Block on the host's recipient-scoped mail registry until mail arrives or the seat closes")
+                        .arg(Arg::new("as").long("as").help("External seat agent name or ID to wait on"))
+                        .arg(Arg::new("after").long("after").help("Cursor from a previous `messages` result"))
+                        .arg(
+                            Arg::new("timeout")
+                                .long("timeout")
+                                .value_parser(clap::value_parser!(u64))
+                                .help("Wait timeout in seconds (1..=300)"),
+                        ),
+                )
+                .subcommand(
+                    Command::new("activity")
+                        .about("Report an external seat's turn state so `se msg wait` holds mail while it is busy")
+                        .arg(Arg::new("as").long("as").help("External seat agent name or ID"))
+                        .arg(
+                            Arg::new("state")
+                                .required(true)
+                                .value_parser(["busy", "idle"])
+                                .help("busy when a turn starts, idle when it ends"),
+                        ),
+                ),
+        )
+}
+
+fn run_msg_activity(sub: &clap::ArgMatches) -> io::Result<u8> {
+    let mut stdout = io::stdout().lock();
+    let mut stderr = io::stderr().lock();
+    let home = sub.get_one::<String>("home").map(PathBuf::from);
+    let project_arg = sub.get_one::<String>("project").cloned();
+    let agent = sub.get_one::<String>("as").cloned();
+    let state = match sub.get_one::<String>("state").map(String::as_str) {
+        Some("busy") => ActivityState::Busy,
+        _ => ActivityState::Idle,
     };
-    let Some(ext) = matches.subcommand_matches("external") else {
-        return Ok(2);
-    };
+    let json = sub.get_flag("json");
+    let result = (|| -> Result<()> {
+        let cx = if agent.is_some() {
+            crate::bootstrap::Bootstrap::resolve_owner(home, false, json, "session.activity")?
+        } else {
+            crate::bootstrap::Bootstrap::resolve_either(home, project_arg.clone(), false, json)?
+        };
+        let project = if agent.is_some() {
+            Some(resolve_required_project(&cx, project_arg.as_deref())?)
+        } else {
+            resolve_optional_project(&cx, project_arg.as_deref())?
+        };
+        let request = ExternalRequest::SessionActivity {
+            project,
+            agent,
+            state,
+        };
+        let out = send_seat_request(&cx, request, Duration::from_secs(30))?;
+        let reported: ExternalSessionActivityOutput = serde_json::from_value(out.value)
+            .map_err(|e| se_core::scope::unreadable("session activity output", &e.to_string()))?;
+        let line = if json {
+            serde_json::to_string(&reported)
+                .map_err(|e| se_core::scope::unreadable("json", &e.to_string()))?
+        } else {
+            let state = match reported.state {
+                ActivityState::Busy => "busy: `se msg wait` holds new mail until it reports idle",
+                ActivityState::Idle if reported.turn_ended => {
+                    "idle: the next `se msg wait` returns any unread mail at once"
+                }
+                ActivityState::Idle => "idle",
+            };
+            format!("External seat {} is {state}", reported.agent_id)
+        };
+        writeln!(stdout, "{line}").map_err(|e| se_core::scope::unreadable("stdout", &e.to_string()))
+    })();
+    match result {
+        Ok(()) => Ok(0),
+        Err(err) => {
+            crate::render::error::write(&err, &RenderCx::default(), json, &mut stdout, &mut stderr)
+        }
+    }
+}
+
+fn run_external(ext: &clap::ArgMatches) -> io::Result<u8> {
+    let mut stdout = io::stdout().lock();
+    let mut stderr = io::stderr().lock();
     let home = ext.get_one::<String>("home").map(PathBuf::from);
     let project_arg = ext.get_one::<String>("project").cloned();
     let json = ext.get_flag("json");
@@ -205,36 +241,9 @@ fn run_external(args: &[OsString]) -> io::Result<u8> {
     }
 }
 
-fn run_msg_wait(args: &[OsString]) -> io::Result<u8> {
-    let json = crate::grammar::json_requested(args);
+fn run_msg_wait(wait: &clap::ArgMatches) -> io::Result<u8> {
     let mut stdout = io::stdout().lock();
     let mut stderr = io::stderr().lock();
-    let matches = match msg_wait_command().try_get_matches_from(args) {
-        Ok(m) => m,
-        Err(err) => {
-            if matches!(
-                err.kind(),
-                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
-            ) {
-                let _ = write!(stdout, "{err}");
-                return Ok(0);
-            }
-            let se_err = crate::grammar::usage_error(err, args);
-            return crate::render::error::write(
-                &se_err,
-                &RenderCx::default(),
-                json,
-                &mut stdout,
-                &mut stderr,
-            );
-        }
-    };
-    let Some(wait) = matches
-        .subcommand_matches("msg")
-        .and_then(|m| m.subcommand_matches("wait"))
-    else {
-        return Ok(2);
-    };
     let home = wait.get_one::<String>("home").map(PathBuf::from);
     let project_arg = wait.get_one::<String>("project").cloned();
     let agent = wait.get_one::<String>("as").cloned();
@@ -259,7 +268,7 @@ fn run_msg_wait(args: &[OsString]) -> io::Result<u8> {
             after,
             timeout_ms: Some(timeout_ms),
         };
-        let out = send_wait_request(
+        let out = send_seat_request(
             &cx,
             request,
             Duration::from_millis(timeout_ms.saturating_add(10_000)),
@@ -274,7 +283,15 @@ fn run_msg_wait(args: &[OsString]) -> io::Result<u8> {
                     .map_err(|e| se_core::scope::unreadable("json", &e.to_string()))?
             )
             .map_err(|e| se_core::scope::unreadable("stdout", &e.to_string()))?;
-        } else if waited.ids.is_empty() {
+        } else if waited.status == "busy" {
+            writeln!(
+                stdout,
+                "Seat is busy: {} unread message(s) held until it reports idle (cursor: {})",
+                waited.ids.len(),
+                waited.cursor
+            )
+            .map_err(|e| se_core::scope::unreadable("stdout", &e.to_string()))?;
+        } else if waited.ids.is_empty() || waited.status != "messages" {
             writeln!(
                 stdout,
                 "No new mail (status: {}, cursor: {})",
@@ -360,7 +377,8 @@ fn send_owner_external(
     )
 }
 
-fn send_wait_request(
+/// Send a seat-scoped request (wait or activity) with the caller's own credential.
+fn send_seat_request(
     cx: &crate::bootstrap::Bootstrap,
     request: ExternalRequest,
     timeout: Duration,

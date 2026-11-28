@@ -248,3 +248,34 @@ and resumes. Existing agents without a saved selection keep the legacy
 launching its saved agents; there is no fallback to a different agent.
 Descriptor-bound profiles use event schema version 2, so older binaries refuse them
 instead of losing the saved selection.
+
+## Waking external agents
+
+An external seat (`se agent add NAME --external`, connected through
+`se mcp --as NAME`) is driven by your own runner, so StateEngine cannot see its
+turns. Give the runner this loop:
+
+1. Wait for mail: `se msg wait --as NAME --after CURSOR --json`. Pass the cursor
+   from the previous `messages` result; omit `--after` the first time.
+2. If `status` is `messages`, run `se msg activity busy --as NAME` and start one
+   agent turn that names the returned message IDs.
+3. When the turn ends, run `se msg activity idle --as NAME`, then go back to step 1.
+
+Start turns only on `messages`. While the seat is `busy`, waits hold new mail
+instead of returning it. A wait that times out then reports `busy`: it lists the
+held message IDs and returns your `--after` cursor unchanged (or the current
+cursor if you passed none), so the runner never interrupts a turn and never skips
+that mail later. Use one runner per seat.
+
+After `idle`, the next wait checks unread mail again. If the agent already read
+everything during its turn, it keeps waiting and no empty turn starts. Otherwise it
+returns the unread messages as one batch, including mail that arrived during the
+turn, even if its cursor matches `--after`. A batch holds at most 32 IDs; when
+`complete` is `false`, more unread mail remains, so read it with `se msg list`.
+
+The state belongs to the seat's active session in the host. Revoking the seat,
+replacing or disconnecting its bridge, lease expiry or a host restart clears it,
+and a new seat starts `idle`. Stopping only your runner while the bridge stays
+connected does not: report `idle` before the runner exits, or the seat keeps
+holding mail. Agents that StateEngine launches itself never need this: their
+turns are observed directly and they refuse `se msg activity`.

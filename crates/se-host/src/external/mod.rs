@@ -5,6 +5,8 @@ use se_types::{AgentId, Generation, MessageId, NativePath, ProjectId, Result, Se
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "listener")]
+pub(crate) mod activity;
+#[cfg(feature = "listener")]
 pub(crate) mod commit;
 #[cfg(feature = "listener")]
 pub(crate) mod dispatch;
@@ -93,6 +95,21 @@ pub enum ExternalRequest {
         after: Option<String>,
         timeout_ms: Option<u64>,
     },
+    /// An external seat's runner reports its agent's turn state, so a waiting
+    /// `MailWait` holds mail while the agent is busy.
+    SessionActivity {
+        project: Option<ProjectId>,
+        agent: Option<String>,
+        state: ActivityState,
+    },
+}
+
+/// Turn state an external seat's runner reports for its agent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityState {
+    Busy,
+    Idle,
 }
 
 impl ExternalRequest {
@@ -112,20 +129,14 @@ impl ExternalRequest {
                 }
                 Ok(())
             }
+            Self::SessionActivity { agent, .. } => validate_seat_selector(agent.as_deref()),
             Self::MailWait {
                 agent,
                 after,
                 timeout_ms,
                 ..
             } => {
-                if let Some(agent) = agent
-                    && (agent.is_empty() || agent.len() > 64)
-                {
-                    return Err(SeError::invalid(
-                        "mail wait agent",
-                        "a nonempty agent name or ID",
-                    ));
-                }
+                validate_seat_selector(agent.as_deref())?;
                 if let Some(after) = after
                     && (after.is_empty() || after.len() > 512)
                 {
@@ -143,6 +154,27 @@ impl ExternalRequest {
             }
         }
     }
+}
+
+/// Refusal for a seat whose external lease is no longer active.
+#[cfg(feature = "listener")]
+pub(crate) fn inactive_seat() -> SeError {
+    SeError::invalid(
+        "external seat",
+        "an active unexpired external seat for this agent; it was revoked, expired, or disconnected. Reconnect its bridge with `se mcp --as <agent>` and approve it with `se external approve`",
+    )
+}
+
+fn validate_seat_selector(agent: Option<&str>) -> Result<()> {
+    if let Some(agent) = agent
+        && (agent.is_empty() || agent.len() > 64)
+    {
+        return Err(SeError::invalid(
+            "external seat agent",
+            "a nonempty agent name or ID",
+        ));
+    }
+    Ok(())
 }
 
 pub fn validate_claim_id(claim_id: &str) -> Result<()> {
@@ -241,4 +273,15 @@ pub struct ExternalMailWaitOutput {
     pub ids: Vec<MessageId>,
     pub cursor: se_types::Cursor,
     pub complete: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExternalSessionActivityOutput {
+    pub project_id: ProjectId,
+    pub agent_id: AgentId,
+    pub session_id: SessionId,
+    pub state: ActivityState,
+    /// True when an `idle` report ended a busy turn, so the next wait decides
+    /// from live unread mail.
+    pub turn_ended: bool,
 }

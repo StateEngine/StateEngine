@@ -247,7 +247,9 @@ are not shipped.
   `doctor --fix`) still require a human terminal. External seats enforce per-agent exclusivity against
   managed launches, expire after 8 hours or on bridge disconnect/host restart, and use
   `se msg wait [--as NAME] [--after CURSOR] [--timeout SECS]` for zero-polling blocking
-  mail waits on a separate CLI channel (keeping MCP stdio pipes non-blocking). Run
+  mail waits on a separate CLI channel (keeping MCP stdio pipes non-blocking). A runner
+  that drives the client reports turns with `se msg activity busy|idle --as NAME` so waits
+  never wake a busy agent; see [Waking external agents](HARNESSES.md#waking-external-agents). Run
   `se guide external-seats` for the full walkthrough.
 - **Published turns.** A harness that runs its own conversations can record each completed
   turn with the `stateengine_session_publish_turn` tool, or from an Owner terminal with

@@ -112,7 +112,10 @@ while leaving the message unread.
 se msg wait [--as AGENT] [--after CURSOR] [--timeout SECS] blocks on the host's
 recipient-scoped mail registry with zero polling until mail arrives, the timeout
 elapses, or the seat closes. It is a dedicated CLI transport (not an MCP tool)
-so long-blocking waits never park an MCP stdio pipe.
+so long-blocking waits never park an MCP stdio pipe. An external seat's runner
+reports turns with se msg activity busy|idle [--as AGENT]: while busy, waits
+hold new mail; when the turn ends, the next wait returns all unread mail as one
+batch, or keeps waiting if the agent already read it.
 
 Use assignment.write to open work or record accept, done, block and hand-back;
 assignment.list shows open and blocked work. Each change records a floor message.
@@ -324,6 +327,9 @@ join a project's mail, status, history and Atlas tools over stdio MCP.
 5. Wait for incoming mail without polling:
    se msg wait [--as NAME] [--after CURSOR] [--timeout SECS]
    Runs on a separate CLI channel so blocking waits never stall the MCP stdio pipe.
+6. Report turns so waits never wake a busy agent:
+   se msg activity busy --as NAME    (when a turn starts)
+   se msg activity idle --as NAME    (when it ends)
 "#,
     },
 ];

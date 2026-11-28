@@ -162,6 +162,33 @@ fn unknown(command: &str) -> SeError {
     }))
 }
 
+/// The global `--home`, `-p/--project`, `--json`, `-q/--quiet` and `--no-color`
+/// flags, shared by the catalogue grammar and the dedicated host-transport
+/// grammar so both accept the same spellings in any position.
+pub fn output_global_args() -> [Arg; 5] {
+    [
+        value("home")
+            .help("Data home directory for this StateEngine installation")
+            .global(true),
+        value("project")
+            .short('p')
+            .help("Saved project name or ID")
+            .global(true),
+        toggle("json")
+            .help("Print structured JSON instead of the default readable output")
+            .global(true),
+        toggle("quiet")
+            .short('q')
+            .help("Suppress informational output; refusals still print")
+            .global(true),
+        Arg::new("no_color")
+            .long("no-color")
+            .action(ArgAction::SetTrue)
+            .help("Disable color in the plain rendering")
+            .global(true),
+    ]
+}
+
 pub fn cli_command() -> Command {
     let mut root = Command::new("se")
         .about("StateEngine — durable agent work and context")
@@ -184,35 +211,7 @@ pub fn cli_command() -> Command {
                 .help("Show help for this command and exit")
                 .global(true),
         )
-        .arg(
-            value("home")
-                .help("Data home directory for this StateEngine installation")
-                .global(true),
-        )
-        .arg(
-            value("project")
-                .short('p')
-                .help("Saved project name or ID")
-                .global(true),
-        )
-        .arg(
-            toggle("json")
-                .help("Print structured JSON instead of the default readable output")
-                .global(true),
-        )
-        .arg(
-            toggle("quiet")
-                .short('q')
-                .help("Suppress informational output; refusals still print")
-                .global(true),
-        )
-        .arg(
-            Arg::new("no_color")
-                .long("no-color")
-                .action(ArgAction::SetTrue)
-                .help("Disable color in the plain rendering")
-                .global(true),
-        )
+        .args(output_global_args())
         .arg(
             value("key")
                 .help("Request key: reuse it to repeat the same change; use a new key for a different change")
@@ -223,8 +222,8 @@ pub fn cli_command() -> Command {
             root = insert(root, path, meta.name, hidden);
         }
     }
-    // MCP, external-seat lifecycle, and blocking mail wait are dedicated host
-    // transports rather than store catalogue operations.
+    // MCP, external-seat lifecycle, blocking mail wait and external turn state
+    // are dedicated host transports rather than store catalogue operations.
     transport_commands(root)
 }
 fn transport_commands(root: Command) -> Command {
@@ -238,6 +237,20 @@ fn transport_commands(root: Command) -> Command {
                 .arg(value("as").long("as").help("External seat agent name or ID to wait on"))
                 .arg(value("after").help("Cursor returned by a previous wait"))
                 .arg(value("timeout").help("Wait timeout in seconds (1..=300; default 25)")),
+        )
+        .subcommand(
+            Command::new("activity")
+                .about("Report an external seat's turn state so `se msg wait` holds mail while it is busy")
+                .disable_help_flag(true)
+                .disable_version_flag(true)
+                .disable_help_subcommand(true)
+                .arg(value("as").long("as").help("External seat agent name or ID"))
+                .arg(
+                    Arg::new("state")
+                        .required(true)
+                        .value_parser(["busy", "idle"])
+                        .help("busy when a turn starts, idle when it ends"),
+                ),
         )
     });
     root.subcommand(

@@ -33,6 +33,7 @@ const TRANSPORTS: &[&str] = &[
     "external.list",
     "external.mail_wait",
     "external.revoke",
+    "external.session_activity",
     "mcp.serve",
 ];
 /// Registered rows compiled only with an optional cargo feature that the

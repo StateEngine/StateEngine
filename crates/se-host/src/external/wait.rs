@@ -31,7 +31,7 @@ pub(crate) enum WaitPrincipal {
 pub(crate) async fn wait_mail(
     router: &HostedRouter,
     principal: WaitPrincipal,
-    after: Option<String>,
+    after: Option<se_types::Cursor>,
     timeout_ms: u64,
     shutdown: &mut watch::Receiver<Option<Deadline>>,
 ) -> Result<ExternalMailWaitOutput> {
@@ -42,16 +42,22 @@ pub(crate) async fn wait_mail(
     let until = tokio::time::Instant::now() + Duration::from_millis(bounded_ms);
 
     let first = read_page(router, &principal, &deadline).await?;
-    let pinned_session = first.session.clone();
-    let pinned_recipient = first.recipient.clone();
-    let pinned_credential = first.credential;
+    let pins = Pins {
+        session: first.session.clone(),
+        recipient: first.recipient.clone(),
+        credential: first.credential,
+    };
     // Register BEFORE the deciding read so no commit can fall between snapshot
     // and waiter installation.
     let wait = router.execution.mail_waits.register(
-        pinned_session.clone(),
-        pinned_recipient.clone(),
-        pinned_credential,
+        pins.session.clone(),
+        pins.recipient.clone(),
+        pins.credential,
     )?;
+    // External seats may report turns; managed seats' turns are observed elsewhere.
+    let mut activity = external_lease(router, &principal, &first)?
+        .map(|lease| activity::Watch::new(&lease.activity));
+    let after = after.as_ref();
 
     loop {
         if wait.signal.cancelled.load(Ordering::Acquire) {
@@ -60,16 +66,10 @@ pub(crate) async fn wait_mail(
                 "this seat's active session was revoked, replaced, or disconnected",
             ));
         }
-        let page = read_page(router, &principal, &deadline).await?;
-        verify_same_binding(&page, &pinned_session, &pinned_recipient, pinned_credential)?;
-        if !page.ids.is_empty() && after.as_deref() != Some(page.cursor.as_str()) {
-            return Ok(ExternalMailWaitOutput {
-                status: "messages".into(),
-                session_id: page.session,
-                ids: page.ids,
-                cursor: page.cursor,
-                complete: page.complete,
-            });
+        let (page, gate) =
+            decide(router, &principal, &deadline, &pins, &mut activity, after).await?;
+        if gate == activity::Gate::Return {
+            return Ok(output(page, "messages", None));
         }
         tokio::select! {
             biased;
@@ -79,31 +79,112 @@ pub(crate) async fn wait_mail(
             _ = wait.signal.changed.notified() => {
                 continue;
             }
+            changed = async {
+                match activity.as_mut() {
+                    Some(watch) => watch.changed().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                // A dropped state means the lease retired; the next read refuses.
+                if changed.is_err() {
+                    activity = None;
+                }
+                continue;
+            }
             _ = tokio::time::sleep_until(until) => {
                 // Recheck authority and final inbox state on timeout; never mark read.
-                let final_page = read_page(router, &principal, &deadline).await?;
-                verify_same_binding(
-                    &final_page,
-                    &pinned_session,
-                    &pinned_recipient,
-                    pinned_credential,
-                )?;
-                let status = if !final_page.ids.is_empty()
-                    && after.as_deref() != Some(final_page.cursor.as_str())
-                {
-                    "messages"
-                } else {
-                    "empty"
-                };
-                return Ok(ExternalMailWaitOutput {
-                    status: status.into(),
-                    session_id: final_page.session,
-                    ids: final_page.ids,
-                    cursor: final_page.cursor,
-                    complete: final_page.complete,
+                let (page, gate) =
+                    decide(router, &principal, &deadline, &pins, &mut activity, after).await?;
+                return Ok(match gate {
+                    activity::Gate::Return => output(page, "messages", None),
+                    // Held mail stays listed, but a busy reply returns the
+                    // caller's exact cursor, so passing it back hides nothing.
+                    // Without one it carries the live cursor; the finished turn
+                    // still returns all unread mail regardless of `after`.
+                    activity::Gate::Busy => output(page, "busy", after),
+                    activity::Gate::Hold => output(page, "empty", None),
                 });
             }
         }
+    }
+}
+
+struct Pins {
+    session: SessionId,
+    recipient: crate::runtime::MailRecipient,
+    credential: se_store::RecordId,
+}
+
+/// A runner reporting turns faster than a wait can decide is not making progress.
+const DECISION_ATTEMPTS: usize = 16;
+
+/// Observe the seat's turn state, then read the inbox, then decide. A state
+/// change in between means the page may predate it, so observe and read again.
+async fn decide(
+    router: &HostedRouter,
+    principal: &WaitPrincipal,
+    deadline: &Deadline,
+    pins: &Pins,
+    activity: &mut Option<activity::Watch>,
+    after: Option<&se_types::Cursor>,
+) -> Result<(crate::http::mail::Page, activity::Gate)> {
+    for _ in 0..DECISION_ATTEMPTS {
+        let seen = activity.as_mut().map(activity::Watch::observe);
+        let page = read_page(router, principal, deadline).await?;
+        verify_same_binding(&page, &pins.session, &pins.recipient, pins.credential)?;
+        let has_ids = !page.ids.is_empty();
+        let fresh = after.map(se_types::Cursor::as_str) != Some(page.cursor.as_str());
+        let gate = match (activity.as_mut(), seen) {
+            (Some(watch), Some(seen)) => match watch.decide(seen, has_ids, fresh) {
+                Some(gate) => gate,
+                None => continue,
+            },
+            _ => activity::untracked(has_ids, fresh),
+        };
+        return Ok((page, gate));
+    }
+    Err(SeError::invalid(
+        "mail wait",
+        "a seat whose runner reports each turn once; its busy and idle reports changed on every read. Report busy when a turn starts and idle when it ends, then wait again",
+    ))
+}
+
+fn output(
+    page: crate::http::mail::Page,
+    status: &str,
+    cursor: Option<&se_types::Cursor>,
+) -> ExternalMailWaitOutput {
+    ExternalMailWaitOutput {
+        status: status.into(),
+        session_id: page.session,
+        ids: page.ids,
+        cursor: cursor.cloned().unwrap_or(page.cursor),
+        complete: page.complete,
+    }
+}
+
+/// The external lease behind this wait, if its principal is an external seat.
+fn external_lease(
+    router: &HostedRouter,
+    principal: &WaitPrincipal,
+    page: &crate::http::mail::Page,
+) -> Result<Option<ActiveLease>> {
+    let now_us = crate::runtime::start::now_unix_micros()?;
+    let external = &router.execution.external;
+    match principal {
+        WaitPrincipal::Credential { purpose, .. } if *purpose == EXTERNAL_SESSION_CAPABILITY => {
+            Ok(external
+                .active_lease(&page.recipient.project, &page.recipient.agent, now_us)?
+                .filter(|lease| lease.session_id == page.session))
+        }
+        WaitPrincipal::Credential { .. } => Ok(None),
+        WaitPrincipal::OwnerForExternal {
+            project,
+            agent,
+            session_id,
+            lease_generation,
+            ..
+        } => external.matching_active_lease(project, agent, session_id, *lease_generation, now_us),
     }
 }
 
