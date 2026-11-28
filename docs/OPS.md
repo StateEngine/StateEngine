@@ -188,6 +188,7 @@ The last flushed page already contains the cursor needed to restart.
 | `session.begin` | `session begin` (hidden) | none — trusted integrator establishes the capability before tools can act | owner | write | project/agent selection, provider-native session identity and capture consent, caller-proved integration binding | `SessionBegin`: binding/session ID, external capability through protected output or embedded in-process handle without credential issuance; explicit unbound/incognito result | planned J2, J3 |
 | `session.context` | `session context` (hidden) | none — SE Code/harness context DTO; tools use resume | session | read | bound session, byte budget and since cursor; capability through protected stdin/per-call metadata | `SessionContext`: versioned SE Code context family, packet/identity/model input, truncation and warnings | J2, J3 |
 | `session.turn` | `session turn` (hidden) | `stateengine_session_turn` | session | write | bounded canonical role/content/time/provider session/turn/source evidence via stdin or typed input; verified capture consent | `TurnReceipt`: captured/duplicate/suppressed/refused identity and committed event reference | planned J2–J4 |
+| `session.publish_turn` | `session publish-turn TURN_JSON` | `stateengine_session_publish_turn` | either | write | bound self, or owner-selected `target_agent_id` and `session_id`; conversation, harness, model and harness turn identity, completion time, role; optional bounded body text with omitted byte count and SHA-256; reported usage (cost only when reported), diff counts and paths, decision, nesting. One prose body that `forget` erases | `SessionPublishTurnOutput`: agent, session, harness turn ID, store cursor, whether prose was stored and matched its digest, write receipt (committed or replayed) | J3 |
 | `session.end` | `session end` (hidden) | none — integrator lifecycle; not model-controlled credential management | either | write | owner-selected session or bound self, expected generation, end reason | `SessionEnd`: flushed capture/cursor and durable revocation result; no implicit process-stop claim | planned J3, J5 |
 | `hook.claude` | `hook claude EVENT` (hidden) | none — native versioned hook stdin/stdout protocol, not MCP | session | read for session-start; write for prompt/stop/stop-failure | event enum `session-start`, `prompt`, `stop`, `stop-failure`; native payload, bound launch/session capability and transcript evidence | `HookResult`: session-start context or capture/failure receipt; harness stdout protocol and explicit failed/suppressed capture facts | J2–J4 |
 
@@ -293,7 +294,7 @@ Crew can omit the recipient for a `question`, `blocker`, or `done` message to se
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 67 operations (60 core, 7 Atlas), 31 MCP tools (29 core, 2 Atlas). Planned: 5 operations, 1 MCP tool.
+Registered: 68 operations (61 core, 7 Atlas), 32 MCP tools (30 core, 2 Atlas). Planned: 5 operations, 1 MCP tool.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -340,6 +341,7 @@ Registered: 67 operations (60 core, 7 Atlas), 31 MCP tools (29 core, 2 Atlas). P
 | `message.list` | msg list | `stateengine_msg_list` | either | read |
 | `message.inbox` | msg inbox | none | either | read |
 | `working_state.get` | working-state | `stateengine_working_state_get` | either | read |
+| `session.publish_turn` | session publish-turn | `stateengine_session_publish_turn` | either | write |
 | `working_state.set` | working-state set | `stateengine_working_state_set` | either | write |
 | `hook.claude` | hook claude (hidden) | none | session | custody |
 | `runtime.up` | up | none | owner | custody |

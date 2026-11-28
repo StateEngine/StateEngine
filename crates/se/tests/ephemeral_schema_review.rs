@@ -1,6 +1,6 @@
-//! Reviewer check: the native host upgrades a schema-16 store to 17 with the
-//! same catalog a fresh store has, keeps every existing agent a usable saved
-//! seat, and then records and retires a temporary agent.
+//! Reviewer check: the native host upgrades a schema-16 store to the current
+//! schema with the same catalog a fresh store has, keeps every existing agent a
+//! usable saved seat, and then records and retires a temporary agent.
 #[path = "../../se-host/tests/support/wave2_host_fixture.rs"]
 mod support;
 use se_host::{HostedRuntime, initialize_host_process};
@@ -29,11 +29,12 @@ fn version(f: &Fixture) -> Result<u32, Box<dyn std::error::Error>> {
     Ok(database(f)?.query_row("PRAGMA user_version", [], |row| row.get(0))?)
 }
 
-/// Undo exactly what schema 17 adds, leaving a schema-16 store with data.
+/// Undo exactly what schemas 18 and 17 add, leaving a schema-16 store with data.
 fn schema_sixteen(f: &Fixture) -> Check {
     seed(f)?;
     database(f)?.execute_batch(
-        "DROP INDEX principals_retired;
+        "DROP TABLE published_turns;
+         DROP INDEX principals_retired;
          ALTER TABLE principals DROP COLUMN ephemeral_ttl_seconds;
          ALTER TABLE principals DROP COLUMN ephemeral_one_shot;
          ALTER TABLE principals DROP COLUMN retired_seq;
@@ -61,14 +62,15 @@ fn run_native_host(f: &Fixture) -> Check {
     })
 }
 
-/// Protects: 16 -> 17 is additive. The migrated catalog equals a fresh one,
+/// Protects: 16 -> current is additive. The migrated catalog equals a fresh one,
 /// existing agents stay saved seats, and the new lifecycle works afterwards.
 #[test]
 fn schema_sixteen_upgrades_to_the_fresh_catalog_and_keeps_saved_seats() -> Check {
     let fresh = Fixture::new()?;
     seed(&fresh)?;
     let expected = catalog(&fresh)?;
-    assert_eq!(version(&fresh)?, 17, "a fresh store is not at schema 17");
+    let current = version(&fresh)?;
+    assert!(current >= 17, "a fresh store is older than schema 17");
 
     let old = Fixture::new()?;
     schema_sixteen(&old)?;
@@ -80,7 +82,7 @@ fn schema_sixteen_upgrades_to_the_fresh_catalog_and_keeps_saved_seats() -> Check
         "a read-only open migrated"
     );
     run_native_host(&old)?;
-    assert_eq!(version(&old)?, 17, "the native host did not migrate");
+    assert_eq!(version(&old)?, current, "the native host did not migrate");
     assert_eq!(
         catalog(&old)?,
         expected,

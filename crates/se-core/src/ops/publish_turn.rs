@@ -82,9 +82,42 @@ pub struct PublishedNesting {
 /// One completed turn. A bound session publishes for itself: `session_id` and
 /// `target_agent_id` may be omitted and must match it when given. The owner
 /// names both.
+/// The operation input, boxed so it does not widen every operation value.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SessionPublishTurn(pub Box<PublishTurnRequest>);
+/// Tools advertise the request object itself, not a reference to it.
+impl JsonSchema for SessionPublishTurn {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        PublishTurnRequest::schema_name()
+    }
+    fn inline_schema() -> bool {
+        true
+    }
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        PublishTurnRequest::json_schema(generator)
+    }
+}
+impl std::ops::Deref for SessionPublishTurn {
+    type Target = PublishTurnRequest;
+    fn deref(&self) -> &PublishTurnRequest {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for SessionPublishTurn {
+    fn deref_mut(&mut self) -> &mut PublishTurnRequest {
+        &mut self.0
+    }
+}
+impl Validate for SessionPublishTurn {
+    fn validate(&self) -> Result<()> {
+        self.0.validate()
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct SessionPublishTurn {
+pub struct PublishTurnRequest {
     pub idempotency_key: IdempotencyKey,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_agent_id: Option<AgentId>,
@@ -144,7 +177,7 @@ fn digest(hex: &str) -> Result<[u8; 32]> {
     Ok(out)
 }
 
-impl Validate for SessionPublishTurn {
+impl Validate for PublishTurnRequest {
     fn validate(&self) -> Result<()> {
         bounded("conversation_id", &self.conversation_id, 256)?;
         bounded("harness", &self.harness, 64)?;
@@ -232,7 +265,7 @@ pub struct PublishTurnThen {
 }
 
 /// The one prose document: everything `se forget` must be able to remove.
-fn prose(input: &SessionPublishTurn) -> Result<Option<String>> {
+fn prose(input: &PublishTurnRequest) -> Result<Option<String>> {
     let mut doc = serde_json::Map::new();
     if let Some(text) = &input.body_text {
         doc.insert("text".into(), text.clone().into());
@@ -261,7 +294,7 @@ fn prose(input: &SessionPublishTurn) -> Result<Option<String>> {
 
 /// Who the turn belongs to: a session only ever names itself.
 fn subject<R: Snapshot>(
-    input: &SessionPublishTurn,
+    input: &PublishTurnRequest,
     cx: &Cx<'_, R>,
 ) -> Result<(AgentId, SessionId)> {
     match (&cx.admission.actor, &cx.admission.session) {
@@ -295,6 +328,7 @@ pub fn write<R: Snapshot>(
     input: SessionPublishTurn,
     cx: &mut Cx<'_, R>,
 ) -> Result<Step> {
+    let input = *input.0;
     input.validate()?;
     scope::project(cx.admission)?;
     let (agent, session) = subject(&input, cx)?;

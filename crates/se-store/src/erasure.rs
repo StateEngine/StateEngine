@@ -108,7 +108,33 @@ fn observe_one(
             "Nothing is left to erase for this event; leave it out of the request.".into();
         return Err(error);
     }
-    let (turn, sql_text) = match kind.as_str() {
+    let (turn, sql_text) = body_query(&kind, &target.event)?;
+    let (bytes, source): (u64, Option<Vec<u8>>) = c
+        .query_row(sql_text, [seq], |r| {
+            Ok((crate::sql_value::value(r, 0)?, r.get(1)?))
+        })
+        .optional()
+        .map_err(sql)?
+        .ok_or_else(|| {
+            fail(
+                StoreErrorCode::ContentErased,
+                format!("event {} has no stored body", target.event.as_str()),
+            )
+        })?;
+    let body = Body {
+        target: target.clone(),
+        bytes,
+        turn,
+    };
+    let mut residuals: Vec<ResidualCopy> = residual(source, turn, home)?.into_iter().collect();
+    if !turn {
+        residuals.extend(recipient_transcripts(c, seq, &kind)?);
+    }
+    Ok((project, body, residuals))
+}
+/// Which forgettable body an event kind stores, and the query that sizes it.
+fn body_query(kind: &str, event: &EventId) -> StoreResult<(bool, &'static str)> {
+    Ok(match kind {
         "session.turn" => (
             true,
             "SELECT length(p.content),s.value FROM turn_data d JOIN payloads p ON p.payload_id=d.text_payload LEFT JOIN symbols s ON s.id=d.source_path WHERE d.event_seq=?",
@@ -132,33 +158,11 @@ fn observe_one(
                 StoreErrorCode::InvalidTransition,
                 format!(
                     "event {} is a {kind}; only message bodies and captured or published turns can be forgotten",
-                    target.event.as_str()
+                    event.as_str()
                 ),
             ));
         }
-    };
-    let (bytes, source): (u64, Option<Vec<u8>>) = c
-        .query_row(sql_text, [seq], |r| {
-            Ok((crate::sql_value::value(r, 0)?, r.get(1)?))
-        })
-        .optional()
-        .map_err(sql)?
-        .ok_or_else(|| {
-            fail(
-                StoreErrorCode::ContentErased,
-                format!("event {} has no stored body", target.event.as_str()),
-            )
-        })?;
-    let body = Body {
-        target: target.clone(),
-        bytes,
-        turn,
-    };
-    let mut residuals: Vec<ResidualCopy> = residual(source, turn, home)?.into_iter().collect();
-    if !turn {
-        residuals.extend(recipient_transcripts(c, seq, &kind)?);
-    }
-    Ok((project, body, residuals))
+    })
 }
 fn observe(
     c: &Connection,

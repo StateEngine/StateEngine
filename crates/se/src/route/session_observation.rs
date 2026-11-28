@@ -91,16 +91,14 @@ fn rows(output: &AnyOutput) -> Vec<&AgentRow> {
         _ => vec![],
     }
 }
-/// The owning runtime's token usage for this exact session, or why it is
-/// missing. SE Code sessions report none, so their rows keep what they had.
-fn joined_context(
-    row: &AgentRow,
-    observed: &std::result::Result<Vec<&AgentRow>, &SeError>,
-) -> Option<Read<se_core::ops::ContextWindowView>> {
+/// Join the owning runtime's token usage for this exact session, or why it is
+/// missing. SE Code sessions report none, so their rows keep what they had;
+/// usage a harness published stays until the runtime has its own reading.
+fn join_context(row: &mut AgentRow, observed: &std::result::Result<Vec<&AgentRow>, &SeError>) {
     if row.provider == se_types::Provider::SeCode {
-        return row.context.clone();
+        return;
     }
-    Some(match observed {
+    let live = match observed {
         Ok(rows) => rows
             .iter()
             .find(|other| other.id == row.id && other.session.session_id == row.session.session_id)
@@ -114,7 +112,8 @@ fn joined_context(
             reason: error.to_string(),
             error: Some(Box::new(error.body.clone())),
         },
-    })
+    };
+    row.merge_context(live);
 }
 /// Preserve the CLI's independent native observation and join only the same
 /// session's authenticated runtime facts after its store snapshot has closed.
@@ -124,10 +123,7 @@ pub(super) fn merge_runtime_observation(
 ) -> Result<AnyOutput> {
     let observed = live.as_ref().map(rows);
     let mut apply = |row: &mut AgentRow| -> Result<()> {
-        match joined_context(row, &observed) {
-            Some(live) => row.merge_context(live),
-            None => row.context = None,
-        }
+        join_context(row, &observed);
         if matches!(
             row.provider,
             se_types::Provider::Claude | se_types::Provider::Codex
