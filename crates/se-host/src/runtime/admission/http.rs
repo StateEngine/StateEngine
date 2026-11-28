@@ -9,13 +9,15 @@ use std::time::Duration;
 
 impl AdmissionContext {
     pub(crate) fn mail_page(&self, secret: &se_types::Secret) -> Result<crate::http::mail::Page> {
-        self.mail_page_for_purpose(secret, crate::MCP_BEARER_PURPOSE)
+        self.mail_page_for_purpose(secret, crate::MCP_BEARER_PURPOSE, None)
     }
 
+    /// `after`, when given, must decode as a mail cursor for this recipient's scope.
     pub(crate) fn mail_page_for_purpose(
         &self,
         secret: &se_types::Secret,
         purpose: &'static str,
+        after: Option<&se_types::Cursor>,
     ) -> Result<crate::http::mail::Page> {
         let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let admitted = (|| {
@@ -37,7 +39,7 @@ impl AdmissionContext {
             Ok(admission) => admission,
             Err(error) => return super::super::executor::close_read(Err(error), phase.close()),
         };
-        read_mail_page(phase, admission, credential)
+        read_mail_page(phase, admission, credential, after)
     }
 
     pub(crate) fn mail_page_for_active_external(
@@ -46,6 +48,7 @@ impl AdmissionContext {
         agent: &se_types::AgentId,
         session: &se_types::SessionId,
         credential: se_store::RecordId,
+        after: Option<&se_types::Cursor>,
     ) -> Result<crate::http::mail::Page> {
         let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let admission = Admission {
@@ -81,7 +84,7 @@ impl AdmissionContext {
         if let Err(error) = super::super::executor::close_read(checked, snap.close()) {
             return super::super::executor::close_read(Err(error), phase.close());
         }
-        read_mail_page(phase, admission, credential)
+        read_mail_page(phase, admission, credential, after)
     }
 }
 
@@ -89,6 +92,7 @@ fn read_mail_page(
     phase: se_store::ReadPhase,
     admission: Admission,
     credential: se_store::RecordId,
+    after: Option<&se_types::Cursor>,
 ) -> Result<crate::http::mail::Page> {
     let Actor::Agent(agent) = &admission.actor else {
         return super::super::executor::close_read(
@@ -120,6 +124,9 @@ fn read_mail_page(
         .into_snapshot(se_core::admission::read_scope(&admission))
         .map_err(|e| store_error(&e))?;
     let result = (|| {
+        if let Some(after) = after {
+            check_wait_cursor(&read, after)?;
+        }
         let page = read
             .mail_pending(
                 agent.clone(),
@@ -199,5 +206,26 @@ impl AdmissionContext {
             )
         })();
         super::super::executor::close_read(result, phase.close())
+    }
+}
+
+/// A wait cursor must decode as a checked position for this recipient scope:
+/// a malformed, other-store, other-scope or beyond-head token is refused
+/// instead of echoed back. The scope is bound; the position itself is not.
+fn check_wait_cursor(read: &se_store::SqliteSnapshot, after: &se_types::Cursor) -> Result<()> {
+    match read.cursor_position(after, se_store::PositionPurpose::Checked) {
+        Ok(_) => Ok(()),
+        Err(error)
+            if matches!(
+                error.code,
+                se_store::StoreErrorCode::CursorInvalid | se_store::StoreErrorCode::CursorStale
+            ) =>
+        {
+            Err(SeError::invalid(
+                "mail wait cursor",
+                "a cursor returned by a previous `se msg wait` for this seat; omit --after to wait from now",
+            ))
+        }
+        Err(error) => Err(store_error(&error)),
     }
 }

@@ -108,10 +108,13 @@ pub const MAX_CAPABILITY_LEN: usize = 64;
 pub const CAPABILITY_IPC_CAPABILITIES: &str = "ipc.capabilities";
 /// The host accepts `session.publish_turn`.
 pub const CAPABILITY_SESSION_PUBLISH_TURN: &str = "session.publish_turn";
+/// The host accepts the external `session_activity` request and gates `mail_wait` on it.
+pub const CAPABILITY_SESSION_ACTIVITY: &str = "session.activity";
 pub const HOST_CAPABILITIES: &[&str] = &[
     CAPABILITY_IPC_CAPABILITIES,
     crate::events::EVENTS_SUBSCRIBE_CAPABILITY,
     CAPABILITY_SESSION_PUBLISH_TURN,
+    CAPABILITY_SESSION_ACTIVITY,
 ];
 
 pub struct ClientHello {

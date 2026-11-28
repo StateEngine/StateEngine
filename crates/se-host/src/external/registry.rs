@@ -105,6 +105,8 @@ pub(crate) struct ActiveLease {
     pub approval_observer_lost: bool,
     /// Notifies the parked bridge witness immediately when this lease is retired.
     pub retired: Arc<watch::Sender<bool>>,
+    /// Turn state reported by the seat's runner; retired with the lease.
+    pub activity: super::activity::ActivitySender,
 }
 
 #[derive(Clone, Debug)]
@@ -614,6 +616,28 @@ impl ExternalRegistry {
                 .values()
                 .any(|lease| lease.reconcile_required || lease.expires_at_us <= now_us)
         })
+    }
+
+    /// Apply a turn report to exactly this healthy, unexpired lease under the
+    /// registry lock, so a lease retired after admission is never acknowledged.
+    /// Returns the replaced phase, or `None` when that lease is no longer active.
+    pub(crate) fn report_activity(
+        &self,
+        lease: &ActiveLease,
+        state: ActivityState,
+        now_us: i64,
+    ) -> Result<Option<super::activity::Phase>> {
+        let guard = self.state.lock().map_err(|_| poisoned())?;
+        Ok(guard
+            .active
+            .get(&(lease.project_id.clone(), lease.agent_id.clone()))
+            .filter(|active| {
+                active.session_id == lease.session_id
+                    && active.lease_generation == lease.lease_generation
+                    && !active.reconcile_required
+                    && active.expires_at_us > now_us
+            })
+            .map(|active| super::activity::report(&active.activity, state)))
     }
 
     /// Returns the healthy unexpired active lease for `(project_id, agent_id)`, if any.

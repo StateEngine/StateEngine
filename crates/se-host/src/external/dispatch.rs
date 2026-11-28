@@ -106,6 +106,24 @@ pub(crate) async fn execute(
                 &output,
             )?))
         }
+        ExternalCall::SessionActivity { lease, state } => {
+            let now_us = crate::runtime::start::now_unix_micros()?;
+            let previous = router
+                .execution
+                .external
+                .report_activity(&lease, state, now_us)?
+                .ok_or_else(inactive_seat)?;
+            Ok(DispatchOutput::plain(encode(
+                "se.session-activity/v1",
+                &ExternalSessionActivityOutput {
+                    project_id: lease.project_id,
+                    agent_id: lease.agent_id,
+                    session_id: lease.session_id,
+                    state,
+                    turn_ended: state == ActivityState::Idle && previous == activity::Phase::Busy,
+                },
+            )?))
+        }
     }
 }
 

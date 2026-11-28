@@ -31,8 +31,12 @@ pub(crate) enum ExternalCall {
     },
     MailWait {
         principal: WaitPrincipal,
-        after: Option<String>,
+        after: Option<se_types::Cursor>,
         timeout_ms: u64,
+    },
+    SessionActivity {
+        lease: crate::external::ActiveLease,
+        state: crate::external::ActivityState,
     },
 }
 
@@ -279,6 +283,22 @@ impl AdmissionContext {
                     after,
                     timeout_ms,
                 ),
+                ExternalRequest::SessionActivity {
+                    project,
+                    agent,
+                    state,
+                } => self
+                    .admit_session_activity(
+                        &mut phase,
+                        peer,
+                        connection,
+                        override_authority,
+                        grant,
+                        presence,
+                        project,
+                        agent,
+                    )
+                    .map(|lease| ExternalCall::SessionActivity { lease, state }),
             }
         })();
         crate::runtime::executor::close_read(res, phase.close())
@@ -376,6 +396,17 @@ impl AdmissionContext {
             ));
         }
         let timeout_ms = timeout_ms.unwrap_or(crate::external::DEFAULT_WAIT_TIMEOUT_MS);
+        // Validate once: a reply echoes exactly this cursor, never a substitute.
+        let after = after
+            .map(|raw| {
+                raw.parse::<se_types::Cursor>().map_err(|_| {
+                    SeError::invalid(
+                        "mail wait cursor",
+                        "a cursor returned by a previous `se msg wait`; omit --after to wait from now",
+                    )
+                })
+            })
+            .transpose()?;
         let effective = override_authority.unwrap_or(connection);
         match effective {
             PresentedAuthority::ExternalSession(secret) => {
@@ -405,49 +436,17 @@ impl AdmissionContext {
                 })
             }
             PresentedAuthority::OwnerProof { .. } => {
-                let (admission, _) =
-                    self.caller(phase, peer, connection, override_authority, grant, presence)?;
-                if !matches!(admission.actor, Actor::Human(_)) {
-                    return Err(SeError::new(se_types::Detail::OwnerRequired(
-                        se_types::details::OwnerRequired {
-                            op: "msg.wait".into(),
-                        },
-                    )));
-                }
-                let project = project.ok_or_else(|| {
-                    SeError::new(se_types::Detail::ProjectRequired(
-                        se_types::details::ProjectRequired { choices: vec![] },
-                    ))
-                })?;
-                let selector = agent.ok_or_else(|| {
-                    SeError::invalid(
-                        "mail wait target",
-                        "`--as <agent>` specifying the active external seat to wait on",
-                    )
-                })?;
-                let resolve_phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
-                let (agent_id, _, _) = resolve_external_agent(
-                    resolve_phase,
-                    &project,
-                    &self.owner,
-                    self.generation.get(),
-                    &selector,
-                    false,
+                let lease = self.owner_external_lease(
+                    phase,
+                    (peer, connection, override_authority, grant, presence),
+                    "msg.wait",
+                    project,
+                    agent,
                 )?;
-                let now_us = super::super::start::now_unix_micros()?;
-                let lease = self
-                    .external
-                    .active_lease(&project, &agent_id, now_us)?
-                    .ok_or_else(|| {
-                        SeError::invalid(
-                            "external mail wait",
-                            "an active unexpired external seat for this agent; it was revoked, expired, or disconnected",
-                        )
-                    })?;
                 Ok(ExternalCall::MailWait {
                     principal: WaitPrincipal::OwnerForExternal {
-                        project,
-                        agent: agent_id,
+                        project: lease.project_id,
+                        agent: lease.agent_id,
                         session_id: lease.session_id,
                         credential_id: lease.credential_id,
                         lease_generation: lease.lease_generation,
@@ -492,6 +491,110 @@ impl AdmissionContext {
         }
     }
 
+    /// Only the seat's own external capability, or an Owner naming the seat,
+    /// may report its turns. Managed seats' turns are observed by the host.
+    #[allow(clippy::too_many_arguments)]
+    fn admit_session_activity(
+        &self,
+        phase: &mut se_store::ReadPhase,
+        peer: &PeerProof,
+        connection: &PresentedAuthority,
+        override_authority: Option<&PresentedAuthority>,
+        grant: &ConnectionGrant,
+        presence: Option<&crate::client::presence::OwnerPresence>,
+        project: Option<ProjectId>,
+        agent: Option<String>,
+    ) -> Result<crate::external::ActiveLease> {
+        match (override_authority, connection) {
+            (
+                Some(_),
+                PresentedAuthority::ExternalSession(_) | PresentedAuthority::ExternalClaim(_),
+            ) => Err(SeError::invalid(
+                "external seat connection",
+                "one immutable seat per connection without in-band identity switching",
+            )),
+            (Some(PresentedAuthority::ExternalSession(secret)), _)
+            | (None, PresentedAuthority::ExternalSession(secret)) => {
+                if agent.is_some() {
+                    return Err(SeError::invalid(
+                        "session activity target",
+                        "no `--as`: an external seat reports only its own turns",
+                    ));
+                }
+                let admission = self.external_session(phase, secret)?;
+                check_bound_project(&admission, project.as_ref())?;
+                let (Scope::Project(project), Actor::Agent(agent), Some(session)) =
+                    (&admission.scope, &admission.actor, &admission.session)
+                else {
+                    return Err(SeError::invalid(
+                        "session activity",
+                        "an external seat bound to one project, agent and session",
+                    ));
+                };
+                let now_us = super::super::start::now_unix_micros()?;
+                self.external
+                    .active_lease(project, agent, now_us)?
+                    .filter(|lease| lease.session_id == *session)
+                    .ok_or_else(crate::external::inactive_seat)
+            }
+            (_, PresentedAuthority::Session(_)) | (Some(PresentedAuthority::Session(_)), _) => {
+                Err(SeError::invalid(
+                    "session activity",
+                    "an external seat; StateEngine observes managed agents' turns itself, so they never report activity",
+                ))
+            }
+            _ => self.owner_external_lease(
+                phase,
+                (peer, connection, override_authority, grant, presence),
+                "session.activity",
+                project,
+                agent,
+            ),
+        }
+    }
+
+    /// The active external lease an Owner names with `--as <agent>`.
+    fn owner_external_lease(
+        &self,
+        phase: &mut se_store::ReadPhase,
+        (peer, connection, override_authority, grant, presence): OwnerCaller<'_>,
+        op: &str,
+        project: Option<ProjectId>,
+        agent: Option<String>,
+    ) -> Result<crate::external::ActiveLease> {
+        let (admission, _) =
+            self.caller(phase, peer, connection, override_authority, grant, presence)?;
+        if !matches!(admission.actor, Actor::Human(_)) {
+            return Err(SeError::new(se_types::Detail::OwnerRequired(
+                se_types::details::OwnerRequired { op: op.into() },
+            )));
+        }
+        let project = project.ok_or_else(|| {
+            SeError::new(se_types::Detail::ProjectRequired(
+                se_types::details::ProjectRequired { choices: vec![] },
+            ))
+        })?;
+        let selector = agent.ok_or_else(|| {
+            SeError::invalid(
+                "external seat target",
+                "`--as <agent>` naming the active external seat",
+            )
+        })?;
+        let resolve_phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
+        let (agent_id, _, _) = resolve_external_agent(
+            resolve_phase,
+            &project,
+            &self.owner,
+            self.generation.get(),
+            &selector,
+            false,
+        )?;
+        let now_us = super::super::start::now_unix_micros()?;
+        self.external
+            .active_lease(&project, &agent_id, now_us)?
+            .ok_or_else(crate::external::inactive_seat)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn require_external_owner(
         &self,
@@ -527,6 +630,15 @@ pub(crate) struct BridgeBinding {
     pub closed: bool,
     pub active: Option<(ProjectId, AgentId, SessionId, u64)>,
 }
+
+/// The native caller facts an Owner check needs, passed as one unit.
+type OwnerCaller<'a> = (
+    &'a PeerProof,
+    &'a PresentedAuthority,
+    Option<&'a PresentedAuthority>,
+    &'a ConnectionGrant,
+    Option<&'a crate::client::presence::OwnerPresence>,
+);
 
 /// Active external lease binding attached to a bridge's connection grant.
 pub(crate) type ActiveConnectionBinding = BridgeBinding;
