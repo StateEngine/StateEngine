@@ -40,14 +40,18 @@ impl OwnerPresence {
         }
     }
     #[cfg(feature = "listener")]
-    pub(crate) fn passes(&self, peer_owner: &str) -> bool {
+    pub(crate) fn passes_owner_cli(&self, peer_owner: &str) -> bool {
         !self.os_owner.is_empty()
             && self.os_owner == peer_owner
+            && !self.session_present
+            && self.outside_agent_tree
+    }
+    #[cfg(feature = "listener")]
+    pub(crate) fn passes(&self, peer_owner: &str) -> bool {
+        self.passes_owner_cli(peer_owner)
             && self.stdin_console
             && self.stdout_console
-            && !self.session_present
             && !self.provider_marker_present
-            && self.outside_agent_tree
     }
     #[cfg(feature = "listener")]
     pub(crate) fn refusal_reason(&self, peer_owner: &str) -> String {

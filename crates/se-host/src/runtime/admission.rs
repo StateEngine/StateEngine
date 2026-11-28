@@ -269,6 +269,15 @@ impl AdmissionContext {
                         se_proc::native_ipc::IpcPrincipal::Unix { uid } => uid.to_string(),
                         se_proc::native_ipc::IpcPrincipal::Windows { sid } => sid.clone(),
                     };
+                    if let Some(observed) = presence
+                        && !observed.passes_owner_cli(&peer_owner)
+                    {
+                        return Err(SeError::new(se_types::Detail::OwnerRequired(
+                            se_types::details::OwnerRequired {
+                                op: "owner IPC".into(),
+                            },
+                        )));
+                    }
                     let terminal = match presence {
                         Some(observed) if observed.passes(&peer_owner) => {
                             HumanTerminal::OutsideAgentTree

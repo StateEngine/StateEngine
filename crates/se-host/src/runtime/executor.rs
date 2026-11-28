@@ -158,6 +158,9 @@ pub(super) async fn finish(
         OpStep::Custody(CustodyPlan::ImportNode(input)) => {
             finish_import(context, input, admission, kernel, deadline, host_phases).await
         }
+        OpStep::Custody(CustodyPlan::Initialize(input)) => {
+            finish_init(context, input, admission, kernel, deadline, host_phases).await
+        }
         OpStep::Custody(CustodyPlan::Forget(input)) => {
             finish_forget(context, input, admission, deadline, host_phases).await
         }
@@ -347,6 +350,24 @@ async fn finish_import(
         host_phases,
         output: super::history_import::execute(context, input, admission, kernel, &deadline)
             .await?,
+        write_timings: None,
+        committed: None,
+        capture_commits: Vec::new(),
+        capture_keys: Vec::new(),
+    })
+}
+/// Execute live project registration through the authoritative hosted writer.
+async fn finish_init(
+    context: ExecutionContext,
+    input: se_core::ops::ProjectInit,
+    admission: Admission,
+    kernel: Kernel,
+    deadline: Deadline,
+    host_phases: se_core::ops::HostPhaseTimings,
+) -> Result<ExecutedCall> {
+    Ok(ExecutedCall {
+        host_phases,
+        output: super::project_init::execute(context, input, admission, kernel, &deadline).await?,
         write_timings: None,
         committed: None,
         capture_commits: Vec::new(),

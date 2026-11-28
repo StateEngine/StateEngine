@@ -233,7 +233,7 @@ fn register_project(
     }
     Ok(project)
 }
-fn record_git_identity(
+pub(super) fn record_git_identity(
     repository: &repository::Repository,
     id: &ProjectId,
     created: bool,
@@ -265,7 +265,7 @@ fn record_git_identity(
         }
     }
 }
-fn import_hint(repository: &repository::Repository) -> Option<String> {
+pub(super) fn import_hint(repository: &repository::Repository) -> Option<String> {
     let node_source = repository.path.join(".stateengine/projects.jsonl");
     if cfg!(feature = "import") {
         match se_proc::NativeSourcePin::open(&node_source) {

@@ -60,7 +60,7 @@ pub fn options() -> ClientOptions {
         cancelled: Arc::new(AtomicBool::new(false)),
     }
 }
-fn forwarding_options(
+pub(super) fn forwarding_options(
     cx: &Bootstrap,
     files: &Files,
     endpoint: &se_host::EndpointRecord,

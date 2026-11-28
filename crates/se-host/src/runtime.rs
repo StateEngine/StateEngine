@@ -77,6 +77,8 @@ pub(crate) mod mail;
 #[cfg(feature = "listener")]
 mod mail_follow;
 #[cfg(feature = "listener")]
+mod project_init;
+#[cfg(feature = "listener")]
 mod remote;
 #[cfg(feature = "listener")]
 pub use mail::MailRecipient;

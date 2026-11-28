@@ -356,7 +356,7 @@ fn input_command_meta(name: &str, c: Command) -> Command {
 fn input_command_project(name: &str, c: Command) -> Command {
     match name {
         "project.init" => c
-            .arg(value("harness").help(format!("Choose {}, qwen-code, goose, hermes or a configured protocol harness", harness_list())))
+            .arg(value("harness").help(format!("Choose {}, cursor, opencode, gemini, qwen-code, goose, hermes or a configured protocol harness", harness_list())))
             .arg(value("repo").help("Existing repository folder to register as this project"))
             .arg(value("name").help("Project name shown in status and listings"))
             .arg(value("agent").default_value("main").help("Name for your first saved agent"))

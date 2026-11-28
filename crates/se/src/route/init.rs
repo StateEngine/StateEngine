@@ -123,7 +123,15 @@ fn prepare_input(
         .transpose()?;
     Ok((configuration, repository, adoption))
 }
-fn acquire_setup_lease(cx: &Bootstrap) -> Result<DirectLease> {
+enum SetupLease {
+    Direct(DirectLease),
+    LiveHost {
+        files: Files,
+        endpoint: Box<se_host::EndpointRecord>,
+        observed: owner::FileOwner,
+    },
+}
+fn acquire_setup_lease(cx: &Bootstrap) -> Result<SetupLease> {
     // Ordinary setup changes only this state home. Its no-replace publication
     // and direct writer lease coordinate setup without blocking other homes
     // behind an unrelated account-wide install or PATH edit.
@@ -138,16 +146,33 @@ fn acquire_setup_lease(cx: &Bootstrap) -> Result<DirectLease> {
     observed.authorize("project.init", observed.os_owner(), false, false)?;
     let files = Files::create(&cx.home).map_err(|e| store_error(&e))?;
     drop(before);
-    DirectLease::acquire_setup(
+    if let Some(lease) = DirectLease::acquire_setup(
         files,
-        LeaseIdentity { store: None, generation: 1, mode: LeaseMode::DirectClient },
+        LeaseIdentity {
+            store: None,
+            generation: 1,
+            mode: LeaseMode::DirectClient,
+        },
     )
     .map_err(|e| store_error(&e))?
-    .ok_or_else(|| SeError::new(se_types::Detail::StateConflict(
+    {
+        return Ok(SetupLease::Direct(lease));
+    }
+    let files = Files::open(&cx.home).map_err(|e| store_error(&e))?;
+    if let Read::Present { value: endpoint } = execute::endpoint(&files)? {
+        return Ok(SetupLease::LiveHost {
+            files,
+            endpoint: Box::new(endpoint),
+            observed,
+        });
+    }
+    Err(SeError::new(se_types::Detail::StateConflict(
         se_types::details::StateConflict {
             subject: "setup writer".into(),
             reason: "another setup, removal, uninstall or runtime holds this home's lease".into(),
-            next_step: "Wait for that operation, or run se down with the same --home, then retry se init".into(),
+            next_step:
+                "Wait for that operation, or run se down with the same --home, then retry se init"
+                    .into(),
         },
     )))
 }
@@ -242,9 +267,108 @@ fn open_setup_store(cx: &Bootstrap, lease: &mut DirectLease) -> Result<(SqliteDi
     lease.identity.store = Some(info.id.clone());
     Ok((store, info))
 }
+fn configure_provider_mcp(
+    cx: &Bootstrap,
+    repository: &repository::Repository,
+    configuration: &ConfigFile,
+    value: &mut AnyOutput,
+) -> Result<()> {
+    let AnyOutput::ProjectInit(output) = value else {
+        return Err(SeError::invalid(
+            "setup result",
+            "the committed project setup output",
+        ));
+    };
+    let alternate_home = (crate::bootstrap::default_home().ok().as_ref() != Some(&cx.home))
+        .then_some(cx.home.as_path());
+    let provider = output.value.agent.provider;
+    output.value.changed.extend(
+        se_host::provider_mcp::configure(&repository.path, configuration, provider, alternate_home)
+            .map_err(mcp_setup_error)?,
+    );
+    Ok(())
+}
+struct LiveInit<'a> {
+    files: Files,
+    endpoint: Box<se_host::EndpointRecord>,
+    observed: owner::FileOwner,
+    repository: &'a repository::Repository,
+    configuration: &'a ConfigFile,
+    adoption: Option<super::adoption::Plan>,
+}
+fn execute_live(cx: &Bootstrap, mut input: ProjectInit, live: LiveInit<'_>) -> Result<AnyOutput> {
+    let LiveInit {
+        files,
+        endpoint,
+        observed,
+        repository,
+        configuration,
+        adoption,
+    } = live;
+    input.repo = Some(repository.path.display().to_string());
+    let credential = execute::credential(cx, &files)?;
+    let options = execute::forwarding_options(cx, &files, &endpoint)?;
+    let mut value = crate::ipc::forward(
+        &endpoint,
+        credential,
+        AnyOp::ProjectInit(input),
+        &CliSelections::default(),
+        Some(observed.native_observation()),
+        &options,
+    )?;
+    if let AnyOutput::ProjectInit(output) = &mut value {
+        let created = !matches!(output.value.outcome, InitOutcome::AlreadyPresent);
+        if created && (repository.nonempty || repository.git.is_some()) {
+            output.value.outcome = InitOutcome::Adopted;
+        }
+        output.value.repo.git = repository.git.clone();
+        output.value.owner.os_user = observed.os_owner().into();
+        output.value.import_hint = registration::import_hint(repository);
+        output.value.profile.native_server_port = configuration.runtime.listen_port.unwrap_or(0);
+        registration::record_git_identity(
+            repository,
+            &output.value.project.id,
+            created,
+            &mut output.value.changed,
+        );
+        let command = AgentCommand::launch_in_home(
+            &output.value.agent.id,
+            &cx.home,
+            &output.value.project.id,
+            true,
+        )
+        .ok_or_else(|| scope::unreadable("first launch command", AgentCommand::HOME_UNAVAILABLE))?;
+        output.value.next = super::command_hint::next(command, "Launch your first agent");
+    }
+    if let Some(plan) = adoption {
+        super::adoption::install(cx, &repository.path, plan, &mut value)?;
+    }
+    configure_provider_mcp(cx, repository, configuration, &mut value)?;
+    Ok(value)
+}
 pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
     let (configuration, repository, adoption) = prepare_input(cx, &mut input)?;
-    let mut lease = acquire_setup_lease(cx)?;
+    let mut lease = match acquire_setup_lease(cx)? {
+        SetupLease::Direct(lease) => lease,
+        SetupLease::LiveHost {
+            files,
+            endpoint,
+            observed,
+        } => {
+            return execute_live(
+                cx,
+                input,
+                LiveInit {
+                    files,
+                    endpoint,
+                    observed,
+                    repository: &repository,
+                    configuration: &configuration,
+                    adoption,
+                },
+            );
+        }
+    };
     // Preserve strict no-follow staging names under exclusive home custody.
     let recovered_changes = setup::quarantine(&lease.files)?;
     // Re-read after exclusion: another setup or removal may have completed
@@ -277,24 +401,7 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
             }
             // Harness health checks may start the host; release setup custody first.
             drop(lease);
-            let AnyOutput::ProjectInit(output) = &mut value else {
-                return Err(SeError::invalid(
-                    "setup result",
-                    "the committed project setup output",
-                ));
-            };
-            let alternate_home = (crate::bootstrap::default_home().ok().as_ref() != Some(&cx.home))
-                .then_some(cx.home.as_path());
-            let provider = output.value.agent.provider;
-            output.value.changed.extend(
-                se_host::provider_mcp::configure(
-                    &repository.path,
-                    &configuration,
-                    provider,
-                    alternate_home,
-                )
-                .map_err(mcp_setup_error)?,
-            );
+            configure_provider_mcp(cx, &repository, &configuration, &mut value)?;
             Ok(value)
         }
         Err(error) => Err(match closed {

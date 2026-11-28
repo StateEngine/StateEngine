@@ -80,13 +80,15 @@ pub fn client(args: &[std::ffi::OsString]) -> Check {
             let error = output
                 .err()
                 .ok_or_else(|| format!("non-human native presence accepted {name}"))?;
-            assert!(
+            let expected = if mode == "session" {
+                matches!(error.body.detail(), se_types::Detail::OwnerRequired(_))
+            } else {
                 matches!(
                     error.body.detail(),
                     se_types::Detail::HumanTerminalRequired(_)
-                ),
-                "wrong {name} presence refusal: {error}"
-            );
+                )
+            };
+            assert!(expected, "wrong {name} presence refusal: {error}");
             assert_eq!(reader.info()?.head, head, "refused {name} wrote an event");
         }
     }

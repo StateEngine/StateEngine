@@ -91,15 +91,31 @@ fn console_diagnostics_preserve_owner_policy() -> Check {
         false,
         &owner(false, false),
     )?;
+    authorize_file_owner(
+        "ordinary-owner",
+        "native-owner",
+        false,
+        false,
+        &OwnerObservations {
+            provider_marker: true,
+            ..owner(false, false)
+        },
+    )?;
+    let error = authorize_file_owner(
+        "installation.uninstall",
+        "native-owner",
+        false,
+        true,
+        &OwnerObservations {
+            provider_marker: true,
+            ..owner(true, true)
+        },
+    )
+    .err()
+    .ok_or("provider marker unexpectedly passed human-only admission")?;
+    assert_eq!(error.code(), Code::HumanTerminalRequired);
     for (observed, session) in [
         (owner(true, true), true),
-        (
-            OwnerObservations {
-                provider_marker: true,
-                ..owner(true, true)
-            },
-            false,
-        ),
         (
             OwnerObservations {
                 agent_tree: AgentTreeCheck::Inside {
@@ -110,16 +126,18 @@ fn console_diagnostics_preserve_owner_policy() -> Check {
             false,
         ),
     ] {
-        let error = authorize_file_owner(
-            "installation.uninstall",
-            "native-owner",
-            session,
-            true,
-            &observed,
-        )
-        .err()
-        .ok_or("agent admission unexpectedly passed")?;
-        assert_eq!(error.code(), Code::OwnerRequired);
+        for human_only in [false, true] {
+            let error = authorize_file_owner(
+                "installation.uninstall",
+                "native-owner",
+                session,
+                human_only,
+                &observed,
+            )
+            .err()
+            .ok_or("agent admission unexpectedly passed")?;
+            assert_eq!(error.code(), Code::OwnerRequired);
+        }
     }
     let error = authorize_file_owner(
         "installation.uninstall",
