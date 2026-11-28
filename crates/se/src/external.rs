@@ -149,6 +149,7 @@ fn run_msg_activity(sub: &clap::ArgMatches) -> io::Result<u8> {
         _ => ActivityState::Idle,
     };
     let json = sub.get_flag("json");
+    let quiet = sub.get_flag("quiet");
     let result = (|| -> Result<()> {
         let cx = if agent.is_some() {
             crate::bootstrap::Bootstrap::resolve_owner(home, false, json, "session.activity")?
@@ -181,6 +182,9 @@ fn run_msg_activity(sub: &clap::ArgMatches) -> io::Result<u8> {
             };
             format!("External seat {} is {state}", reported.agent_id)
         };
+        if quiet && !json {
+            return Ok(());
+        }
         writeln!(stdout, "{line}").map_err(|e| se_core::scope::unreadable("stdout", &e.to_string()))
     })();
     match result {
@@ -197,6 +201,7 @@ fn run_external(ext: &clap::ArgMatches) -> io::Result<u8> {
     let home = ext.get_one::<String>("home").map(PathBuf::from);
     let project_arg = ext.get_one::<String>("project").cloned();
     let json = ext.get_flag("json");
+    let quiet = ext.get_flag("quiet");
     let result = (|| -> Result<()> {
         let cx =
             crate::bootstrap::Bootstrap::resolve_owner(home, false, json, "external seat control")?;
@@ -230,7 +235,7 @@ fn run_external(ext: &clap::ArgMatches) -> io::Result<u8> {
         };
         let _ = project_needed;
         let out = send_owner_external(&cx, request, Duration::from_secs(30))?;
-        render_external_output(&out, json, &mut stdout)
+        render_external_output(&out, json, quiet, &mut stdout)
             .map_err(|e| se_core::scope::unreadable("stdout", &e.to_string()))
     })();
     match result {
@@ -251,6 +256,7 @@ fn run_msg_wait(wait: &clap::ArgMatches) -> io::Result<u8> {
     let timeout_secs = wait.get_one::<u64>("timeout").copied().unwrap_or(25);
     let timeout_ms = timeout_secs.saturating_mul(1000);
     let json = wait.get_flag("json");
+    let quiet = wait.get_flag("quiet");
     let result = (|| -> Result<()> {
         let cx = if agent.is_some() {
             crate::bootstrap::Bootstrap::resolve_owner(home, false, json, "msg.wait")?
@@ -283,34 +289,9 @@ fn run_msg_wait(wait: &clap::ArgMatches) -> io::Result<u8> {
                     .map_err(|e| se_core::scope::unreadable("json", &e.to_string()))?
             )
             .map_err(|e| se_core::scope::unreadable("stdout", &e.to_string()))?;
-        } else if waited.status == "busy" {
-            writeln!(
-                stdout,
-                "Seat is busy: {} unread message(s) held until it reports idle (cursor: {})",
-                waited.ids.len(),
-                waited.cursor
-            )
-            .map_err(|e| se_core::scope::unreadable("stdout", &e.to_string()))?;
-        } else if waited.ids.is_empty() || waited.status != "messages" {
-            writeln!(
-                stdout,
-                "No new mail (status: {}, cursor: {})",
-                waited.status, waited.cursor
-            )
-            .map_err(|e| se_core::scope::unreadable("stdout", &e.to_string()))?;
-        } else {
-            writeln!(
-                stdout,
-                "Pending mail ({} message(s), complete: {}, cursor: {}):",
-                waited.ids.len(),
-                waited.complete,
-                waited.cursor
-            )
-            .map_err(|e| se_core::scope::unreadable("stdout", &e.to_string()))?;
-            for id in &waited.ids {
-                writeln!(stdout, "  {id}")
-                    .map_err(|e| se_core::scope::unreadable("stdout", &e.to_string()))?;
-            }
+        } else if !quiet {
+            write_wait_plain(&waited, &mut stdout)
+                .map_err(|e| se_core::scope::unreadable("stdout", &e.to_string()))?;
         }
         Ok(())
     })();
@@ -466,13 +447,48 @@ fn resolve_required_project(
     })
 }
 
+fn write_wait_plain(waited: &ExternalMailWaitOutput, stdout: &mut impl Write) -> io::Result<()> {
+    if waited.status == "busy" {
+        return writeln!(
+            stdout,
+            "Seat is busy: {} unread message(s) held until it reports idle (cursor: {})",
+            waited.ids.len(),
+            waited.cursor
+        );
+    }
+    if waited.ids.is_empty() || waited.status != "messages" {
+        return writeln!(
+            stdout,
+            "No new mail (status: {}, cursor: {})",
+            waited.status, waited.cursor
+        );
+    }
+    writeln!(
+        stdout,
+        "Pending mail ({} message(s), complete: {}, cursor: {}):",
+        waited.ids.len(),
+        waited.complete,
+        waited.cursor
+    )?;
+    for id in &waited.ids {
+        writeln!(stdout, "  {id}")?;
+    }
+    Ok(())
+}
+
+/// Like the ordinary CLI, `--quiet` suppresses plain success output; JSON and
+/// refusals still print.
 fn render_external_output(
     out: &OperationOutput,
     json: bool,
+    quiet: bool,
     stdout: &mut impl Write,
 ) -> io::Result<()> {
     if json {
         writeln!(stdout, "{}", out.value)?;
+        return Ok(());
+    }
+    if quiet {
         return Ok(());
     }
     match out.schema.as_str() {

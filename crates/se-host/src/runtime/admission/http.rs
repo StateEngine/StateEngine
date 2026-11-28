@@ -12,7 +12,7 @@ impl AdmissionContext {
         self.mail_page_for_purpose(secret, crate::MCP_BEARER_PURPOSE, None)
     }
 
-    /// `after`, when given, must be a mail cursor this recipient's scope issued.
+    /// `after`, when given, must decode as a mail cursor for this recipient's scope.
     pub(crate) fn mail_page_for_purpose(
         &self,
         secret: &se_types::Secret,
@@ -209,8 +209,9 @@ impl AdmissionContext {
     }
 }
 
-/// A wait cursor must be one this recipient scope issued: a malformed,
-/// foreign-scope or other-store token is refused instead of echoed back.
+/// A wait cursor must decode as a checked position for this recipient scope:
+/// a malformed, other-store, other-scope or beyond-head token is refused
+/// instead of echoed back. The scope is bound; the position itself is not.
 fn check_wait_cursor(read: &se_store::SqliteSnapshot, after: &se_types::Cursor) -> Result<()> {
     match read.cursor_position(after, se_store::PositionPurpose::Checked) {
         Ok(_) => Ok(()),

@@ -104,8 +104,9 @@ impl Watch {
             Phase::Idle => Some(untracked(has_ids, fresh)),
             Phase::TurnEnded => {
                 let Some(sender) = self.sender.upgrade() else {
-                    // The lease retired; the next read refuses.
-                    return Some(Gate::Hold);
+                    // The lease retired after the read: retry, so the caller
+                    // re-resolves the authoritative lease and refuses.
+                    return None;
                 };
                 let consumed = sender.send_if_modified(|current| {
                     let exact = *current == seen;
