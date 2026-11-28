@@ -242,7 +242,7 @@ fn transport_commands(root: Command) -> Command {
     });
     root.subcommand(
         Command::new("external")
-            .about("Manage owner-approved external seats (Owner terminal only)")
+            .about("Manage owner-approved external seats (Owner authority outside StateEngine agent trees)")
             .disable_help_flag(true)
             .disable_version_flag(true)
             .disable_help_subcommand(true)

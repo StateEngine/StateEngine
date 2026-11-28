@@ -269,6 +269,9 @@ impl AdmissionContext {
                         se_proc::native_ipc::IpcPrincipal::Unix { uid } => uid.to_string(),
                         se_proc::native_ipc::IpcPrincipal::Windows { sid } => sid.clone(),
                     };
+                    // Raw Owner IPC callers without CLI presence are still verified by
+                    // `self.owner_peer(phase, peer)?` above and receive `HumanTerminal::Refused`
+                    // below, so `human_only` ops always fail closed when `presence` is absent.
                     if presence.is_some() {
                         OwnerPresence::require_owner_cli(presence, peer, "owner IPC")?;
                     }
