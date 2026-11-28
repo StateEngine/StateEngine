@@ -64,6 +64,7 @@ fn wire_mac_binding_domains_and_cross_connection_replay_are_enforced() -> Check 
                                 expected_generation: None,
                                 maximum_reply_bytes: nonzero(4096)?,
                                 authority: PresentedAuthority::OwnerProof { nonce, mac },
+                                client_capabilities: None,
                             })?
                         };
                         frame.as_bytes().to_vec()
@@ -134,6 +135,7 @@ fn product_listener_refuses_closed_and_pre_auth_bounded_frames() -> Check {
                     expected_generation: None,
                     maximum_reply_bytes: nonzero(4096)?,
                     authority: PresentedAuthority::Session(secret(3)?),
+                    client_capabilities: None,
                 })?;
                 let text = String::from_utf8(payload(&hello)?)?;
                 let body = match mode {

@@ -19,6 +19,12 @@ struct ReadyWire {
     maximum_reply_bytes: NonZeroU32,
     #[serde(default)]
     lease: Option<ConnectionTicketWire>,
+    #[serde(default)]
+    package_version: Option<String>,
+    #[serde(default)]
+    store_id: Option<String>,
+    #[serde(default)]
+    capabilities: Option<Vec<String>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -38,6 +44,12 @@ struct ReadyRef<'a> {
     maximum_reply_bytes: NonZeroU32,
     #[serde(skip_serializing_if = "Option::is_none")]
     lease: Option<ConnectionTicketRef<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    package_version: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    store_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capabilities: Option<&'a [String]>,
 }
 #[derive(Serialize)]
 struct ConnectionTicketRef<'a> {
@@ -48,10 +60,35 @@ struct ConnectionTicketRef<'a> {
     secret: &'a se_types::Secret,
     lifetime_ms: u64,
 }
+fn validate_metadata(
+    package_version: Option<&str>,
+    store_id: Option<&str>,
+    capabilities: Option<&[String]>,
+) -> Result<()> {
+    if let Some(version) = package_version
+        && (version.is_empty() || version.len() > 128)
+    {
+        return Err(refused("invalid server package version"));
+    }
+    if let Some(id) = store_id
+        && (id.is_empty() || id.len() > 128)
+    {
+        return Err(refused("invalid server store ID"));
+    }
+    if let Some(caps) = capabilities {
+        crate::client::auth::validate_capabilities(caps)?;
+    }
+    Ok(())
+}
 pub fn encode_server_hello(hello: &crate::ServerHello) -> Result<wire::WireBytes> {
     if hello.maximum_reply_bytes.get() as usize > MAX_FRAME_BYTES {
         return Err(refused("reply cap exceeds 1 MiB"));
     }
+    validate_metadata(
+        hello.package_version.as_deref(),
+        hello.store_id.as_deref(),
+        hello.capabilities.as_deref(),
+    )?;
     encode_frame(
         &ReadyRef {
             version: hello.version.into(),
@@ -65,6 +102,9 @@ pub fn encode_server_hello(hello: &crate::ServerHello) -> Result<wire::WireBytes
                 secret: &guest.secret,
                 lifetime_ms: guest.lifetime_ms,
             }),
+            package_version: hello.package_version.as_deref(),
+            store_id: hello.store_id.as_deref(),
+            capabilities: hello.capabilities.as_deref(),
         },
         MAX_ENDPOINT_BYTES,
     )
@@ -119,6 +159,11 @@ pub fn decode_server_hello(
         }
         (_, None) => {}
     }
+    validate_metadata(
+        wire.package_version.as_deref(),
+        wire.store_id.as_deref(),
+        wire.capabilities.as_deref(),
+    )?;
     Ok(crate::ServerHello {
         version: wire.version.into(),
         epoch: wire.epoch,
@@ -131,5 +176,8 @@ pub fn decode_server_hello(
             secret: std::sync::Arc::new(guest.secret),
             lifetime_ms: guest.lifetime_ms,
         }),
+        package_version: wire.package_version,
+        store_id: wire.store_id,
+        capabilities: wire.capabilities,
     })
 }

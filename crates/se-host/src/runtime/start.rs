@@ -51,6 +51,14 @@ pub struct HostLease {
     identity: se_store::LeaseIdentity,
     _lock: File,
 }
+impl HostLease {
+    pub(crate) fn store_id(&self) -> Option<String> {
+        self.identity
+            .store
+            .as_ref()
+            .map(|id| id.as_str().to_owned())
+    }
+}
 impl RuntimeLease for HostLease {
     fn identity(&self) -> se_store::StoreResult<se_store::LeaseIdentity> {
         Ok(self.identity.clone())

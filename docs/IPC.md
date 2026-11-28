@@ -1,0 +1,257 @@
+# StateEngine Local IPC Wire Specification (v1)
+
+This document specifies the local-IPC wire protocol (`api: { "major": 1, "minor": 0 }`) used by the `se` CLI and supported for external local clients (desktop applications, editors, and custom tools) without any Cargo crate coupling.
+
+---
+
+## 1. Endpoint Discovery (`endpoint.json`)
+
+A running StateEngine host publishes its local transport address and process identity to `<state_home>/endpoint.json`:
+
+- **Unix (Linux & macOS):** State directory permissions `0700`, `endpoint.json` permissions `0600`, Unix domain socket inside the protected state directory.
+- **Windows:** State directory and `endpoint.json` protected by an owner-only DACL; local Named Pipe (`\\.\pipe\<name>`) created with an owner-only DACL.
+
+### `endpoint.json` Schema (v1)
+
+All fields are closed (`deny_unknown_fields`); `schema` must be `1` and `package_version` must be non-empty.
+
+```json
+{
+  "schema": 1,
+  "address": {
+    "kind": "unix_socket",
+    "path": { "encoding": "unix_bytes", "units": [47, 118, 97, 114, 47, 114, 117, 110, 47, 115, 101, 46, 115, 111, 99, 107] }
+  },
+  "epoch": {
+    "owner": {
+      "machine": "machine-id",
+      "boot": "boot-id",
+      "pid": 12345,
+      "started": { "os": "linux", "start_ticks": 987654321 },
+      "executable": { "encoding": "unix_bytes", "units": [47, 117, 115, 114, 47, 108, 111, 99, 97, 108, 47, 98, 105, 110, 47, 115, 101] },
+      "argv_sha256": "<64-hex-chars>"
+    },
+    "generation": 1
+  },
+  "generation": 1,
+  "kind": "standalone",
+  "listener_port": 49152,
+  "api": { "major": 1, "minor": 0 },
+  "package_version": "0.1.3",
+  "image_sha256": "<64-hex-chars>"
+}
+```
+
+- `address.kind`:
+  - `"unix_socket"` with `path` encoded as a `NativePath` (`{ "encoding": "unix_bytes", "units": [u8...] }`).
+  - `"windows_pipe"` with `name` matching `\\.\pipe\<segment>` (no NUL or path separators in `<segment>`, max 1024 UTF-16 code units).
+- `epoch.owner.started.os`:
+  - `"linux"`: `{ "os": "linux", "start_ticks": u64 }`
+  - `"macos"`: `{ "os": "macos", "start_seconds": i64, "start_micros": i64 }`
+  - `"windows"`: `{ "os": "windows", "creation_filetime": u64 }`
+- `kind`: `"standalone"` or `"embedded_secode"`.
+- `listener_port`: Loopback HTTP port for managed MCP sessions (`null` if absent; never `0`).
+
+### Native Server Verification
+
+Before sending credentials, a client SHOULD verify the connected OS peer matches `endpoint.json`:
+
+1. Same OS user/principal as the client.
+2. Connected server PID, process start time, and executable SHA-256 match `epoch.owner` and `image_sha256`.
+
+---
+
+## 2. Framing & Bounds
+
+Every message on the local IPC stream is framed as:
+
+```text
++-----------------------+-----------------------------------+
+| length (4 bytes, BE)  | UTF-8 JSON payload (length bytes) |
++-----------------------+-----------------------------------+
+```
+
+- **Length prefix:** Unsigned 32-bit big-endian integer (`u32::to_be_bytes`).
+- **Bounds:**
+  - `MAX_FRAME_BYTES = 1,048,576` (1 MiB) — absolute upper bound for any frame.
+  - `DEFAULT_REPLY_BYTES = 262,144` (256 KiB) — default negotiated `maximum_reply_bytes`.
+  - `MAX_ENDPOINT_BYTES = 16,384` (16 KiB) — maximum size for `endpoint.json` and all handshake frames (`ServerChallenge`, `ClientHello`, `ServerHello`, and handshake refusals).
+  - `MAX_JSON_DEPTH = 64` — maximum nesting depth for JSON objects/arrays.
+- **Rejection before allocation:** Zero-length (`0`) and oversized (`> limit`) length prefixes are rejected immediately before allocating the payload buffer.
+- **Strict parsing:** All wire envelopes use closed schemas (`deny_unknown_fields`). Unknown or duplicate keys are rejected.
+
+---
+
+## 3. Three-Step Mutual-Auth Handshake
+
+All three handshake frames are bounded by `MAX_ENDPOINT_BYTES` (16 KiB) and a 5-second handshake timeout (`HELLO_TIMEOUT`).
+
+### Step 1: Host -> Client (`ServerChallenge`)
+
+Immediately after accepting a connection and observing the client's native OS peer identity, the host sends either a `ServerChallenge` or a refusal (`{ "error": ErrorEnvelope }`):
+
+```json
+{
+  "version": { "major": 1, "minor": 0 },
+  "epoch": { "...": "same HostEpoch as endpoint.json" },
+  "nonce": [/* 32 random bytes (u8 array) */],
+  "image_sha256": "<64-hex-chars>"
+}
+```
+
+The client MUST verify that `version`, `epoch`, and `image_sha256` match the verified `endpoint.json` before proceeding.
+
+### Step 2: Client -> Host (`ClientHello`)
+
+The client replies with a `ClientHello`:
+
+```json
+{
+  "version": { "major": 1, "minor": 0 },
+  "expected_generation": 1,
+  "maximum_reply_bytes": 262144,
+  "authority": {
+    "kind": "owner_proof",
+    "proof": {
+      "nonce": [/* 32 random client bytes */],
+      "mac": [/* 32-byte HMAC-SHA256 */]
+    }
+  },
+  "client_capabilities": ["ipc.capabilities"]
+}
+```
+
+- `expected_generation`: Optional `u64` (`null` to accept any live generation). If present and different from the host's current generation, the host refuses with a stale-generation error.
+- `maximum_reply_bytes`: Non-zero `u32`, at most `1,048,576` (1 MiB).
+- `authority`: Tagged union (`kind` + `proof`), supporting:
+  - `owner_proof`: `{ "nonce": [u8; 32], "mac": [u8; 32] }` — HMAC-SHA256 using the owner's local machine key (`<state_home>/machine.key`, `>= 32` bytes) over the following `u32`-big-endian length-prefixed fields in order:
+    1. Domain tag: `b"se.ipc.owner/v1"`
+    2. API version: `major` (`u16` BE) concatenated with `minor` (`u16` BE) (4 bytes)
+    3. Canonical `challenge.epoch` JSON with object keys sorted lexicographically and no extra whitespace
+    4. `challenge.image_sha256` raw bytes (32 bytes)
+    5. `challenge.nonce` (32 bytes)
+    6. Client `nonce` (32 bytes)
+    7. Canonical native OS peer binding bytes observed on the channel
+  - `external_session`: `[u8; N]` — UTF-8 bytes of an owner-approved external seat capability (`sext1.<hex>`), held in transport memory only.
+  - `external_claim`: `ExternalClaimBootstrap` (`{ "project": ProjectId | null, "cwd": NativePath, "agent": String, "connection_nonce": [u8; 32] }`) — opens a pending external seat claim awaiting out-of-band `se external approve <claim_id>`.
+  - `session` / `launch` / `guest_bootstrap` / `session_bootstrap` / `lease`: Managed session and read-only guest bootstrap credentials used by `se` itself.
+- `client_capabilities` *(optional)*: Array of ASCII capability names indicating that the client supports capability negotiation.
+  - Bounds: at most `32` entries, each `1..=64` ASCII bytes matching `[A-Za-z0-9._-]`.
+  - **Rolling-upgrade rule:** Omit `client_capabilities` when connecting to a host that does not support capability negotiation (for example, `v0.1.2` hosts whose `ClientHello` decoder rejects unknown fields).
+
+### Step 3: Host -> Client (`ServerHello`)
+
+If authentication and admission succeed, the host replies with `ServerHello` (or `{ "error": ErrorEnvelope }` on refusal):
+
+```json
+{
+  "version": { "major": 1, "minor": 0 },
+  "epoch": { "...": "HostEpoch" },
+  "generation": 1,
+  "maximum_reply_bytes": 262144,
+  "package_version": "0.1.3",
+  "store_id": "st_01...",
+  "capabilities": ["ipc.capabilities"]
+}
+```
+
+- `maximum_reply_bytes`: `min(client.maximum_reply_bytes, server_cap, 1_048_576)`.
+- `lease` *(optional)*: Present only for `guest_bootstrap` / `session_bootstrap` handshakes (`ConnectionTicket`).
+- **Rolling-upgrade capability fields:** `package_version`, `store_id`, and `capabilities` are **only** serialized when the client sent `client_capabilities` (`Some(...)`) in `ClientHello`. When a client omits `client_capabilities`, the host omits all three fields so older clients enforcing `deny_unknown_fields` never reject the response.
+  - `package_version`: The host's semantic version string (same as `endpoint.json`).
+  - `store_id`: The host's persistent SQLite store identifier (`st_...`), stable across host restarts. Omitted if unavailable.
+  - `capabilities`: Exact list of optional capabilities supported by this host binary. Hosts never advertise unimplemented capabilities.
+    - `"ipc.capabilities"`: Capability negotiation handshake is supported.
+
+---
+
+## 4. Request / Response Exchange
+
+After `ServerHello`, the connection enters a sequential request/response loop (one outstanding request per connection; idle connections time out after 300 seconds, except parked external bridge witnesses and streaming `mail_follow` connections).
+
+### Request (`IpcEnvelope`)
+
+```json
+{
+  "version": { "major": 1, "minor": 0 },
+  "request_id": 1,
+  "generation": 1,
+  "authority": null,
+  "request": {
+    "kind": "operation",
+    "input": {
+      "name": "project.status",
+      "arguments": {},
+      "key": null
+    }
+  }
+}
+```
+
+- `request_id`: Strictly positive `u64` (`>= 1`). Echoed back in `IpcResponse`.
+- `generation`: Must equal `ServerHello.generation`.
+- `authority`: Optional per-request authority override (`null` inherits the connection's authenticated authority; external seat connections forbid authority overrides).
+- `presence` *(optional)*: Omitted when `null`. Owner terminal presence attestation for destructive or privilege-changing actions.
+- `cli_selections` *(optional)*: Omitted when `null`. CLI routing metadata (never widens authority).
+- `request`: Tagged union (`kind` + `input`):
+  - `"operation"`: `{ "name": "<op>", "arguments": { ... }, "key": "<idempotency-key>" | null }`
+  - `"external"`: External seat lifecycle and blocking mail wait (`claim_open`, `claim_wait`, `list`, `approve`, `revoke`, `mail_wait`).
+  - `"adopt"` / `"hook"` / `"remote_owner"`: Specialized CLI/hook/remote control requests.
+
+### Idempotency Keys
+
+Every mutating operation requires a caller-supplied `key` (`IdempotencyKey`) in `request.input.key` (and/or inside `arguments` per the operation's schema). If a network/IPC failure leaves a commit outcome uncertain, retry with the **exact same `key`** and arguments after rediscovering the endpoint—never mint a new key for an uncertain write.
+
+### Response (`IpcResponse`)
+
+Success (`state: "output"`):
+
+```json
+{
+  "version": { "major": 1, "minor": 0 },
+  "request_id": 1,
+  "generation": 1,
+  "result": {
+    "state": "output",
+    "value": {
+      "schema": "se.project-status/v1",
+      "value": { "...": "operation output payload" },
+      "window": null
+    }
+  }
+}
+```
+
+Error (`state: "error"`):
+
+```json
+{
+  "version": { "major": 1, "minor": 0 },
+  "request_id": 1,
+  "generation": 1,
+  "result": {
+    "state": "error",
+    "value": {
+      "schema": "se.error/v1",
+      "code": "...",
+      "class": "...",
+      "message": "...",
+      "remedy": { "text": "...", "command": null },
+      "retry": { "kind": "never" }
+    }
+  }
+}
+```
+
+---
+
+## 5. Operation Schemas
+
+Exact JSON Schemas for every registered operation's input and output are exported directly by the installed `se` binary (offline, without a running host):
+
+```sh
+se schema --list                   # list all registered operation names
+se schema project.status --json    # exact input/output JSON schema for one operation
+```
+
+See [docs/OPS.md](OPS.md) for the complete operation inventory and [docs/USING.md](USING.md) for external seat workflows (`se agent add <name> --external`, `se external approve`, `se msg wait`).

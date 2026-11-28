@@ -46,6 +46,7 @@ struct Envelope {
     expected_generation: Field<Option<se_types::Generation>>,
     maximum_reply_bytes: Field<std::num::NonZeroU32>,
     authority: Field<AuthorityWire>,
+    client_capabilities: Field<Option<Vec<String>>>,
     control_endpoint: Field<String>,
     project_id: Field<se_types::ProjectId>,
     agent_id: Field<se_types::AgentId>,
@@ -76,6 +77,13 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedHandshake> {
             if maximum_reply_bytes.get() as usize > wire::MAX_FRAME_BYTES {
                 return Err(invalid());
             }
+            let client_capabilities = match input.client_capabilities {
+                Field::Missing | Field::Present(None) => None,
+                Field::Present(Some(caps)) => {
+                    super::auth::validate_capabilities(&caps)?;
+                    Some(caps)
+                }
+            };
             Ok(DecodedHandshake::Call(ClientHello {
                 version: input.version.required()?.into(),
                 expected_generation: match input.expected_generation {
@@ -84,6 +92,7 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedHandshake> {
                 },
                 maximum_reply_bytes,
                 authority: input.authority.required()?.into(),
+                client_capabilities,
             }))
         }
         Field::Present(protocol) => {
@@ -92,6 +101,7 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedHandshake> {
                     || !input.expected_generation.missing()
                     || !input.maximum_reply_bytes.missing()
                     || !input.authority.missing()
+                    || !input.client_capabilities.missing()
                     || !input.key.missing()
                     || !input.deadline_at.missing()
                     || !input.nonce.missing()
@@ -117,6 +127,7 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedHandshake> {
                 || !input.expected_generation.missing()
                 || !input.maximum_reply_bytes.missing()
                 || !input.authority.missing()
+                || !input.client_capabilities.missing()
             {
                 return Err(invalid());
             }
