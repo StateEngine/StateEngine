@@ -47,30 +47,48 @@ struct InitProgress {
 
 impl InitProgress {
     /// Preserve confirmed commit receipts across any later readback, phase, or
-    /// output-rendering failure, distinguishing confirmed events from the failed step.
+    /// output-rendering failure, merging confirmed IDs from incoming
+    /// `CommittedResponseUnavailable` details and keeping uncertain phases distinct.
     fn wrap_error(&self, error: SeError, id: Option<&ProjectId>, key: &IdempotencyKey) -> SeError {
-        if self.events.is_empty() {
+        let mut committed = self.events.clone();
+        if let se_types::Detail::CommittedResponseUnavailable(known) = error.body.detail() {
+            for event in &known.committed_events {
+                if !committed.contains(event) {
+                    committed.push(event.clone());
+                }
+            }
+        }
+        if committed.is_empty() {
             return error;
         }
+        let uncertain = matches!(
+            error.body.detail(),
+            se_types::Detail::CommitOutcomeUnknown(_)
+        );
         let mut wrapped = CommittedWrite {
             operation: "project.init".into(),
             key: Some(key.clone()),
             natural_events: Vec::new(),
-            committed_events: self.events.clone(),
+            committed_events: committed.clone(),
         }
         .response_error(error);
         let scope_note = id
             .map(|project| format!(" for project {project}"))
             .unwrap_or_default();
         let steps = if self.changed.is_empty() {
-            format!("{} confirmed event(s)", self.events.len())
+            format!("{} confirmed event(s)", committed.len())
         } else {
             self.changed.join(", ")
         };
+        let later_state = if uncertain {
+            "A later setup phase ended with an uncertain commit outcome (not in the confirmed list)."
+        } else {
+            "A later setup step failed after those writes committed."
+        };
         wrapped.body = wrapped.body.with_remedy(se_types::Remedy {
             text: format!(
-                "Earlier setup writes already committed{scope_note} ({steps}; confirmed events: {}). Resolve the later failure and retry `se init` with the exact same `--key {key}` to resume.",
-                self.events
+                "Earlier setup writes already committed{scope_note} ({steps}; confirmed events: {}). {later_state} Resolve the failure and retry `se init` with the exact same `--key {key}` to resume.",
+                committed
                     .iter()
                     .map(EventId::as_str)
                     .collect::<Vec<_>>()
@@ -445,7 +463,9 @@ fn validate_harness(
     let Some(name) = input.harness.as_deref() else {
         return Ok(());
     };
-    if !matches!(name, "claude" | "codex") && !configuration.harnesses.contains_key(name) {
+    let is_selectable_builtin = se_types::Provider::from_id(name)
+        .is_some_and(|provider| provider.registration().selectable);
+    if !is_selectable_builtin && !configuration.harnesses.contains_key(name) {
         return Err(SeError::new(se_types::Detail::StateConflict(
             se_types::details::StateConflict {
                 subject: "running host configuration".into(),
