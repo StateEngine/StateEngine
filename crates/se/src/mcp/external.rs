@@ -55,7 +55,10 @@ impl ExternalBackend {
         let cwd = std::env::current_dir()
             .map_err(|e| se_core::scope::unreadable("current directory", &e.to_string()))?;
         let cwd = NativePath::from_local(cwd)?;
-        let project = project.map(|p| p.parse::<ProjectId>()).transpose()?;
+        let project = project
+            .as_deref()
+            .map(|p| crate::route::select::resolve_project_selector(&state_home, p))
+            .transpose()?;
         let connection_nonce = se_host::client::auth::fresh_nonce()?;
         let bootstrap = ExternalClaimBootstrap {
             project,

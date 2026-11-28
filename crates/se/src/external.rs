@@ -20,30 +20,84 @@ use std::{
     time::Duration,
 };
 
+/// Extract the first two positional subcommand words after skipping standard
+/// leading global flags (`--home`, `-p`/`--project`, `--json`, `--quiet`,
+/// `--no-color`, `--key`, `--config`, `--format`).
+fn leading_subcommands(args: &[OsString]) -> Option<(&str, Option<&str>)> {
+    let mut i = 1;
+    let mut first: Option<&str> = None;
+    while let Some(raw) = args.get(i) {
+        let token = raw.to_str()?;
+        if token == "--" {
+            break;
+        }
+        if matches!(
+            token,
+            "--home" | "--project" | "-p" | "--config" | "--key" | "--format"
+        ) {
+            i += 2;
+            continue;
+        }
+        if token.starts_with("--home=")
+            || token.starts_with("--project=")
+            || token.starts_with("-p=")
+            || token.starts_with("--config=")
+            || token.starts_with("--key=")
+            || token.starts_with("--format=")
+            || matches!(token, "--json" | "--quiet" | "-q" | "--no-color")
+        {
+            i += 1;
+            continue;
+        }
+        if token.starts_with('-') {
+            return None;
+        }
+        match first {
+            None => first = Some(token),
+            Some(cmd1) => return Some((cmd1, Some(token))),
+        }
+        i += 1;
+    }
+    first.map(|cmd1| (cmd1, None))
+}
+
 pub(crate) fn entry(args: &[OsString]) -> Option<io::Result<u8>> {
-    let first = args.get(1)?.to_str()?;
-    if first == "external" {
-        return Some(run_external(args));
+    match leading_subcommands(args)? {
+        ("external", _) => Some(run_external(args)),
+        ("msg", Some("wait")) => Some(run_msg_wait(args)),
+        _ => None,
     }
-    if first == "msg" && args.get(2).and_then(|s| s.to_str()) == Some("wait") {
-        return Some(run_msg_wait(args));
-    }
-    None
+}
+
+fn with_global_flags(cmd: Command) -> Command {
+    cmd.arg(Arg::new("home").long("home").global(true))
+        .arg(Arg::new("project").short('p').long("project").global(true))
+        .arg(
+            Arg::new("json")
+                .long("json")
+                .action(ArgAction::SetTrue)
+                .global(true),
+        )
+        .arg(
+            Arg::new("quiet")
+                .short('q')
+                .long("quiet")
+                .action(ArgAction::SetTrue)
+                .global(true),
+        )
+        .arg(
+            Arg::new("no_color")
+                .long("no-color")
+                .action(ArgAction::SetTrue)
+                .global(true),
+        )
 }
 
 fn external_command() -> Command {
-    Command::new("se").subcommand(
+    with_global_flags(Command::new("se")).subcommand(
         Command::new("external")
             .about("Manage owner-approved external seats")
             .subcommand_required(true)
-            .arg(Arg::new("home").long("home").global(true))
-            .arg(Arg::new("project").long("project").global(true))
-            .arg(
-                Arg::new("json")
-                    .long("json")
-                    .action(ArgAction::SetTrue)
-                    .global(true),
-            )
             .subcommand(
                 Command::new("list").about("List pending external seat claims and active leases"),
             )
@@ -61,12 +115,10 @@ fn external_command() -> Command {
 }
 
 fn msg_wait_command() -> Command {
-    Command::new("se").subcommand(
+    with_global_flags(Command::new("se")).subcommand(
         Command::new("msg").subcommand(
             Command::new("wait")
                 .about("Block on the host's recipient-scoped mail registry until mail arrives or the seat closes")
-                .arg(Arg::new("home").long("home"))
-                .arg(Arg::new("project").long("project"))
                 .arg(Arg::new("as").long("as").help("External seat agent name or ID to wait on"))
                 .arg(Arg::new("after").long("after").help("Cursor from a previous wait"))
                 .arg(
@@ -74,8 +126,7 @@ fn msg_wait_command() -> Command {
                         .long("timeout")
                         .value_parser(clap::value_parser!(u64))
                         .help("Wait timeout in seconds (1..=300)"),
-                )
-                .arg(Arg::new("json").long("json").action(ArgAction::SetTrue)),
+                ),
         ),
     )
 }
@@ -357,8 +408,8 @@ fn resolve_optional_project(
     cx: &crate::bootstrap::Bootstrap,
     explicit: Option<&str>,
 ) -> Result<Option<ProjectId>> {
-    if let Some(id) = explicit {
-        return id.parse::<ProjectId>().map(Some);
+    if let Some(selector) = explicit {
+        return crate::route::select::resolve_project_selector(&cx.home, selector).map(Some);
     }
     let crate::route::setup::Setup::Present((files, (reader, mut phase))) =
         crate::route::setup::inspect_phase(
