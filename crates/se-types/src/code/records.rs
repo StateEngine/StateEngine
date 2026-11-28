@@ -46,6 +46,8 @@ pub enum RecordKind {
     Working,
     Edit,
     Commit,
+    /// A published turn's decision and changed paths.
+    Turn,
 }
 
 /// Canonical principal keys; display names never confer visibility.

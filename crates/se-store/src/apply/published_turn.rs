@@ -32,6 +32,11 @@ pub(super) fn apply(
             "published turn role must be user, assistant or tool",
         ));
     }
+    if turn.content_sha256.is_some() && body.is_none() {
+        return Err(invalid(
+            "a published turn keeps content_sha256 only beside a stored body, so se forget can erase both",
+        ));
+    }
     let session = key(c, "session", turn.session.as_str(), &scope, false)?;
     let agent = key(c, "agent", turn.agent.as_str(), &scope, false)?;
     let head = codec::session::head(c, &p, &session)?;

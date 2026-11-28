@@ -598,9 +598,9 @@ impl Snapshot for SqliteSnapshot {
         let row: Option<(i64, i64, i64, i64, Option<f64>, i64)> = self
             .db
             .query_row(
-                "SELECT input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost_usd,occurred_at_us FROM published_turns INDEXED BY published_turns_session_seq
+                "SELECT input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost_usd,occurred_at_us FROM published_turns INDEXED BY published_turns_session_time
                  WHERE project_id=? AND session_id=? AND agent_id=? AND input_tokens IS NOT NULL AND parent_session_id IS NULL
-                 ORDER BY event_seq DESC LIMIT 1",
+                 ORDER BY occurred_at_us DESC,event_seq DESC LIMIT 1",
                 crate::sql_value::sql_params![p, s, a],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             )

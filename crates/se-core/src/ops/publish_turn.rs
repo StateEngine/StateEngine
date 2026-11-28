@@ -139,7 +139,8 @@ pub struct PublishTurnRequest {
     #[serde(default)]
     pub body_omitted_bytes: u64,
     /// Lowercase hex SHA-256 of the complete UTF-8 body. It is checked when the
-    /// whole body is supplied and recorded as reported otherwise.
+    /// whole body is supplied and recorded as reported otherwise. It is kept only
+    /// when prose is stored, so `se forget` can erase the two together.
     pub content_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<PublishedUsage>,
@@ -191,6 +192,16 @@ impl Validate for PublishTurnRequest {
             ));
         }
         digest(&self.content_sha256)?;
+        if self
+            .body_text
+            .as_ref()
+            .is_some_and(|t| t.len() > MAX_PROSE_BYTES)
+        {
+            return Err(SeError::invalid(
+                "body_text",
+                "at most 1 MiB; send a shorter body and report body_omitted_bytes",
+            ));
+        }
         if self.body_omitted_bytes > i64::MAX as u64 {
             return Err(SeError::invalid(
                 "body_omitted_bytes",
@@ -205,7 +216,9 @@ impl Validate for PublishTurnRequest {
                 usage.cache_write_tokens,
             ];
             if counts.iter().any(|n| *n > i64::MAX as u64)
-                || usage.cost_usd.is_some_and(|c| !c.is_finite() || c < 0.0)
+                || usage
+                    .cost_usd
+                    .is_some_and(|c| !c.is_finite() || c.is_sign_negative())
             {
                 return Err(SeError::invalid(
                     "usage",
@@ -255,6 +268,8 @@ pub struct SessionPublishTurnOutput {
     pub cursor: u64,
     /// Whether a prose body was stored.
     pub body_stored: bool,
+    /// Whether `content_sha256` was kept; it is kept only beside stored prose.
+    pub content_sha256_stored: bool,
     /// True when the stored body is complete and matched `content_sha256`.
     pub content_verified: bool,
     pub commit: WriteReceipt,
@@ -362,7 +377,7 @@ pub fn write<R: Snapshot>(
         occurred_at_us: input.occurred_at_us,
         role,
         body_omitted_bytes: input.body_omitted_bytes,
-        content_sha256: Some(reported),
+        content_sha256: body.as_ref().map(|_| reported),
         content_verified,
         usage: input.usage.as_ref().map(|u| TurnUsage {
             input_tokens: u.input_tokens,
@@ -425,6 +440,7 @@ pub fn committed<R: Snapshot>(
         vendor_turn_id: turn.vendor_turn,
         cursor: receipt.first.sequence(),
         body_stored: body.is_some(),
+        content_sha256_stored: turn.content_sha256.is_some(),
         content_verified: turn.content_verified,
         commit,
     }

@@ -80,7 +80,7 @@ pub(super) fn command(name: &str, c: Command) -> Command {
             .arg(positional("query", 1, true))
             .arg(value("kind").default_value("all").value_parser([
                 "all", "code", "symbol", "text", "path", "message", "working", "edit",
-                "commit",
+                "commit", "turn",
             ]))
             .arg(value("mode").value_parser(["exact", "literal", "phrase", "broad", "related"]))
             .arg(

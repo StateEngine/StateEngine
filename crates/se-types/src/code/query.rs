@@ -119,6 +119,7 @@ pub enum SearchKind {
     Working,
     Edit,
     Commit,
+    Turn,
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]

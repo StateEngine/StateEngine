@@ -253,6 +253,7 @@ are not shipped.
   turn with the `stateengine_session_publish_turn` tool, or from an Owner terminal with
   `se session publish-turn TURN_JSON --key KEY`: a summary, reported token usage, diff
   counts and a decision. A session publishes only its own turns. History shows them,
-  `se status` uses the reported usage for context fill until a live runtime reports its
-  own, and `se forget --event ID` erases the summary, decision and paths while keeping
-  the counts.
+  `se status` uses the reported usage of the latest turn for context fill until a live
+  runtime reports its own, and `se atlas find --kind turn` and `se atlas inspect` show a
+  turn's decision and changed paths. `se forget --event ID` erases the summary, decision,
+  paths and content digest, and removes the turn from Atlas, while keeping the counts.

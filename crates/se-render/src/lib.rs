@@ -130,7 +130,8 @@ fn render_human(value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
         | HumanKind::Diagnosis
         | HumanKind::Repair
         | HumanKind::Status => render_project(kind, value, out),
-        HumanKind::Assignment | HumanKind::PublishTurn => render_assignment(kind, value, out),
+        HumanKind::Assignment => render_assignment(kind, value, out),
+        HumanKind::PublishTurn => render_publish_turn(value, out),
         HumanKind::Captain => render_captain(kind, value, out),
         HumanKind::ConfigReceipt
         | HumanKind::ConfigValue
@@ -250,28 +251,31 @@ fn render_assignment(kind: HumanKind, value: &AnyOutput, out: &mut impl Write) -
         (HumanKind::Assignment, AnyOutput::AssignmentList(value)) => {
             read::assignments(&value.value, out)
         }
-        (HumanKind::PublishTurn, AnyOutput::SessionPublishTurn(value)) => {
-            let value = &value.value;
-            let verb = if matches!(value.commit.state, se_types::CommitState::Replayed) {
-                "already published"
-            } else {
-                "published"
-            };
-            writeln!(
-                out,
-                "Turn {} {verb} as event {} (cursor {})",
-                value.vendor_turn_id, value.commit.event_id, value.cursor
-            )?;
-            let body = match (value.body_stored, value.content_verified) {
-                (false, _) => "no prose stored",
-                (true, true) => "prose stored; complete body matched its digest",
-                (true, false) => "prose stored; body digest recorded as reported",
-            };
-            writeln!(out, "Session {}: {body}", value.session_id)?;
-            writeln!(out, "Request key: {}", value.commit.idempotency_key)
-        }
         _ => Err(renderer_disagreement()),
     }
+}
+fn render_publish_turn(value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
+    let AnyOutput::SessionPublishTurn(value) = value else {
+        return Err(renderer_disagreement());
+    };
+    let value = &value.value;
+    let verb = if matches!(value.commit.state, se_types::CommitState::Replayed) {
+        "already published"
+    } else {
+        "published"
+    };
+    writeln!(
+        out,
+        "Turn {} {verb} as event {} (cursor {})",
+        value.vendor_turn_id, value.commit.event_id, value.cursor
+    )?;
+    let body = match (value.body_stored, value.content_verified) {
+        (false, _) => "no prose stored, so its digest was not kept",
+        (true, true) => "prose stored; complete body matched its digest",
+        (true, false) => "prose stored; body digest recorded as reported",
+    };
+    writeln!(out, "Session {}: {body}", value.session_id)?;
+    writeln!(out, "Request key: {}", value.commit.idempotency_key)
 }
 fn render_captain(kind: HumanKind, value: &AnyOutput, out: &mut impl Write) -> io::Result<()> {
     match (kind, value) {

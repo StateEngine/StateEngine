@@ -177,6 +177,7 @@ pub(crate) fn kind_name(kind: RecordKind) -> &'static str {
         RecordKind::Working => "working",
         RecordKind::Edit => "edit",
         RecordKind::Commit => "commit",
+        RecordKind::Turn => "turn",
     }
 }
 

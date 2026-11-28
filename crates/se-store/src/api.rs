@@ -409,8 +409,9 @@ pub trait Snapshot {
     /// One agent's most recent session in any state, ended and revoked
     /// included, with its original preparation; absent if it never had one.
     fn latest_session(&mut self, agent: AgentId) -> StoreResult<Read<ProjectionRecord>>;
-    /// The newest published main-conversation turn of this agent's session that
-    /// reported usage. Nested turns describe another context and are skipped.
+    /// The published main-conversation turn of this agent's session that reported
+    /// usage and occurred last; a late backfill of an older turn never wins.
+    /// Nested turns describe another context and are skipped.
     fn published_usage(
         &mut self,
         agent: AgentId,

@@ -27,11 +27,13 @@ CREATE TABLE published_turns(
   parent_session_id BLOB CHECK(parent_session_id IS NULL OR length(parent_session_id)=16),
   nested_agent TEXT CHECK(nested_agent IS NULL OR length(nested_agent) BETWEEN 1 AND 256),
   nesting_depth INTEGER CHECK(nesting_depth IS NULL OR nesting_depth BETWEEN 1 AND 64),
+  -- The digest only lives beside a stored body, so erasing the body erases both.
+  CHECK(content_sha256 IS NULL OR body_payload IS NOT NULL),
   UNIQUE(project_id,session_id,harness,vendor_turn),
   FOREIGN KEY(project_id,session_id) REFERENCES sessions(project_id,session_id)
 ) STRICT;
 CREATE INDEX published_turns_agent_seq ON published_turns(project_id,agent_id,event_seq);
-CREATE INDEX published_turns_session_seq ON published_turns(project_id,session_id,event_seq);
+CREATE INDEX published_turns_session_time ON published_turns(project_id,session_id,occurred_at_us,event_seq);
 CREATE TRIGGER published_turns_no_update BEFORE UPDATE ON published_turns
 WHEN NOT (NEW.event_seq=OLD.event_seq AND NEW.project_id=OLD.project_id
   AND NEW.agent_id=OLD.agent_id AND NEW.session_id=OLD.session_id
